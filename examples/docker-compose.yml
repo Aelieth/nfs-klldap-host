@@ -1,0 +1,105 @@
+# =============================================================================
+# Example docker-compose.yml for alma_nfs-kerb (PR1 - hardened container)
+#
+# This demonstrates the realistic runtime requirements for running real
+# kernel NFSv4 + Kerberos inside a container.
+#
+# IMPORTANT: Most people run this with host networking + elevated capabilities.
+#            Unprivileged mode is extremely difficult for NFS.
+# =============================================================================
+version: "3.8"
+
+services:
+  nfs-kerb:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: alma-nfs-kerb:latest
+    container_name: alma-nfs-kerb
+
+    # Host networking is strongly recommended for NFS
+    network_mode: host
+
+    # Required capabilities / privileges
+    # SYS_ADMIN is usually sufficient; some environments need privileged: true
+    cap_add:
+      - SYS_ADMIN
+      - SYS_RESOURCE
+    # privileged: true     # Use only if SYS_ADMIN is not enough in your environment
+
+    # Hostname MUST match the instance part of your NFS principal
+    # (i.e. the keytab should contain nfs/this-hostname@REALM)
+    hostname: nfs-server-01.example.com
+
+    # Volumes - adjust paths on the left (host) to match your setup
+    volumes:
+      # === Required for kernel nfsd to function ===
+      - /proc/fs/nfsd:/proc/fs/nfsd:rw
+      - /var/lib/nfs:/var/lib/nfs:rw
+
+      # === Your shares (example) ===
+      # The path inside the container becomes the exported path.
+      - /srv/nfs/share1:/export/share1:rw
+      - /srv/nfs/share2:/export/share2:rw
+
+      # === Dynamic exports ===
+      # Put files named *.exports here on the host. They are read by exportfs.
+      # Example content:
+      #   /export/share1  *(rw,sec=krb5p,no_root_squash,sync)
+      - ./exports.d:/etc/exports.d:ro
+
+      # === Kerberos keytab ===
+      # Must contain: nfs/<hostname>@REALM
+      # Prepare with proper permissions (600) on the host.
+      # See examples/secrets/README.md for guidance.
+      - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
+
+      # === Kerberos configuration ===
+      - ./config/krb5.conf:/etc/krb5.conf:ro
+
+      # === SSSD configuration (primary on AlmaLinux 10) ===
+      # See container/config/sssd.conf for a starting template.
+      - ./config/sssd.conf:/etc/sssd/sssd.conf:ro
+
+      # === idmapd configuration ===
+      - ./config/idmapd.conf:/etc/idmapd.conf:ro
+
+      # === Templates (separate directory for clarity) ===
+      # Bind-mount the directory containing your .template files.
+      # Edit the templates directly — the container renders them on every start.
+      #
+      # You can change the path with: -e TEMPLATES_DIR=/your/templates
+      - ./templates:/container/templates:ro
+
+      # Final/override configs (optional - direct mounts take precedence)
+      # - ./config/sssd.conf:/etc/sssd/sssd.conf:ro
+      # - ./config/krb5.conf:/etc/krb5.conf:ro
+      # - ./config/idmapd.conf:/etc/idmapd.conf:ro
+
+      # Optional: custom CA bundle for LDAPS to LLDAP
+      # - ./secrets/ca.crt:/etc/ssl/certs/ca-bundle.crt:ro
+
+    # No mandatory environment variables.
+    # The main way to configure is by bind-mounting templates:
+    #
+    #   -v ./my-configs:/container/config:ro
+    #
+    # Inside that directory you can have:
+    #   krb5.conf.template
+    #   sssd.conf.template
+    #   idmapd.conf.template
+    #
+    # Any environment variables you set here will be available for envsubst
+    # expansion inside the templates.
+
+    environment:
+      # Example (optional) - you can reference ${MY_LDAP_HOST} etc. in templates
+      # - MY_LDAP_HOST=lldap.example.com
+
+      # The management tool (future) or operators can send SIGHUP to re-export:
+      #   docker kill -s HUP <container>   or   kill -HUP 1 inside the container
+      # This triggers "exportfs -ra" without restarting NFS daemons.
+
+    restart: unless-stopped
+
+    # Healthcheck is defined in the Dockerfile and uses container/healthcheck.sh

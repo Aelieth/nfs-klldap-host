@@ -1,0 +1,20 @@
+# Example sudoers rules for the management tool
+#
+# Run the tool as a low-privilege user (e.g. nfs-mgmt).
+# These rules are intentionally very narrow.
+#
+# Install with:  visudo -f /etc/sudoers.d/nfs-mgmt
+
+# Allow the management user to change ownership only on specific shares
+nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chown [0-9]*:[0-9]* /media/SSD-01/**
+nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chown [0-9]*:[0-9]* /srv/nfs/**
+
+# Allow changing permissions only on specific shares
+nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chmod [0-7]* /media/SSD-01/**
+nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chmod [0-7]* /srv/nfs/**
+
+# Optional: allow triggering re-export on the container
+nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/docker kill -s HUP nfs-kerb
+
+# You can make these even tighter by using a small wrapper script
+# instead of allowing raw chown/chmod.

@@ -1,0 +1,7 @@
+# Another share example
+# You can use different security flavors per export if needed, but krb5p is preferred.
+
+/export/share2   *(rw,sec=krb5p,no_root_squash,sync,hide)
+
+# Example with a specific client (still using user Kerberos tickets):
+# /export/share2   client1.example.com(rw,sec=krb5p,no_root_squash,sync)

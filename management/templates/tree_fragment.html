@@ -1,0 +1,16 @@
+<ul class="tree">
+{% for child in children %}
+    <li>
+        <span class="dir" 
+              data-path="{{ child.path }}"
+              hx-get="/tree?path={{ child.path }}"
+              hx-target="next .children"
+              hx-swap="innerHTML"
+              hx-trigger="click once"
+              style="cursor: pointer; user-select: none;">
+            ▶ {{ child.name }}
+        </span>
+        <div class="children" style="margin-left: 1.5em;"></div>
+    </li>
+{% endfor %}
+</ul>

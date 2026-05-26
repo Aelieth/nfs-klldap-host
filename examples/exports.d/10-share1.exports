@@ -1,0 +1,5 @@
+# Example NFSv4 export using Kerberos (user tickets only)
+# File naming: anything ending in .exports under /etc/exports.d/ is picked up.
+
+# sec=krb5p is strongly recommended (privacy + integrity + authentication)
+/export/share1   *(rw,sec=krb5p,no_root_squash,sync,hide)

@@ -1,0 +1,17 @@
+# Example configuration for the management tool
+# Copy to config.toml and adjust.
+
+# Allowed base directories the tool may touch (very important for security)
+allowed_roots = [
+    "/media/SSD-01",
+    "/srv/nfs",
+]
+
+# Path to the small privileged helper binary
+helper_path = "/usr/local/bin/nfs-perm-helper"
+
+# Prefix calls with sudo? (set to false only if the helper is setuid root)
+use_sudo = true
+
+# LLDAP / KLLDAP GraphQL endpoint (your custom fork)
+# lldap_graphql_url = "https://lldap.example.com:6360/api/graphql"

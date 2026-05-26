@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NFS Kerb Manager</title>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 2rem; }
+        .tree { margin-left: 1rem; }
+        .dir { cursor: pointer; }
+        .dir:hover { background: #f0f0f0; }
+        .form { margin-top: 1rem; padding: 1rem; border: 1px solid #ccc; }
+        .suggestion {
+            padding: 4px 8px;
+            cursor: pointer;
+            border-bottom: 1px solid #eee;
+        }
+        .suggestion:hover {
+            background: #f8f8f8;
+        }
+        .current-state {
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            padding: 8px 12px;
+            margin: 12px 0;
+            font-size: 0.9em;
+            border-radius: 4px;
+        }
+        .state-label {
+            font-weight: 600;
+            color: #555;
+        }
+        .mode-hint {
+            color: #888;
+            font-size: 0.85em;
+        }
+    </style>
+    <script>
+        function selectUser(name, uid) {
+            const input = document.getElementById('owner_user');
+            if (input) input.value = name;
+            const suggestions = document.getElementById('user-suggestions');
+            if (suggestions) suggestions.innerHTML = '';
+        }
+        function selectGroup(name, gid) {
+            const input = document.getElementById('owner_group');
+            if (input) input.value = name;
+            const suggestions = document.getElementById('group-suggestions');
+            if (suggestions) suggestions.innerHTML = '';
+        }
+
+        // Load permission form when clicking any .dir in the tree (delegated)
+        document.body.addEventListener('click', function(evt) {
+            const dir = evt.target.closest('.dir');
+            if (dir) {
+                const path = dir.dataset.path;
+                if (path) {
+                    htmx.ajax('GET', '/directory?path=' + encodeURIComponent(path), {
+                        target: '#permission-form',
+                        swap: 'innerHTML'
+                    });
+                    const panel = document.getElementById('permission-form');
+                    if (panel) panel.style.display = 'block';
+                }
+            }
+        });
+    </script>
+</head>
+<body>
+    <h1>NFS Kerb Permission Manager</h1>
+    <p>Real-time from filesystem + LLDAP. No database.</p>
+
+    {% block content %}{% endblock %}
+</body>
+</html>

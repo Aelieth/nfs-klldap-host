@@ -67,6 +67,8 @@ Container (AlmaLinux 10)
 docker run -d \
   --name nfs-klldap \
   --hostname "$(hostname)-nfs" \
+  -p 2049:2049/tcp \
+  -p 2049:2049/udp \
   -e NFS_CONFIG=/config/nfs-klldap.conf \
   -v /path/to/config:/config \
   -v /media/sda1/krb5/krb5.keytab:/etc/krb5.keytab:ro \

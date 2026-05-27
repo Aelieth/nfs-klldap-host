@@ -11,13 +11,16 @@
 //! Usage (called by the main tool):
 //!   echo '{"path":"/media/SSD-01/datastore","uid":3001,"gid":3002,"mode":504,"recursive":true}' | sudo /usr/local/bin/nfs-perm-helper
 //!
-//! The helper will only operate on paths under explicitly configured allowed roots
-//! (currently hardcoded for safety — can be made configurable via a root-owned config later).
+//! Allowed roots are derived at runtime from the [[shares]] host_path entries in
+//! the central nfs-klldap.conf (same file used by the UI and the container generator).
+//! The path is communicated via NFS_KLLDAP_CONF (preferred) or a small set of
+//! conventional locations. If the config cannot be read, the helper denies all operations.
 
+use nfs_klldap_config::load_host_paths_only;
 use serde::Deserialize;
 use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 
 #[derive(Deserialize)]
@@ -30,14 +33,45 @@ struct Request {
     recursive: bool,
 }
 
-/// Hardcoded allowed roots for now. In production this should come from a
-/// root-owned config file that the helper reads.
-// On ZimaOS / locked-down appliances only attached/media drives are used.
-// System paths such as /srv/nfs do not exist for exports.
-const ALLOWED_ROOTS: &[&str] = &["/media/SSD-01", "/media/USB-01", "/mnt"];
+/// Resolve the central config path using the same convention as the UI:
+/// 1. NFS_KLLDAP_CONF env (set by caller when spawning helper)
+/// 2. Fallback to "nfs-klldap.conf" in current working directory.
+fn resolve_config_path() -> PathBuf {
+    std::env::var("NFS_KLLDAP_CONF")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("nfs-klldap.conf"))
+}
 
-fn is_path_allowed(path: &Path) -> bool {
-    ALLOWED_ROOTS.iter().any(|root| path.starts_with(root))
+/// Load the current set of allowed host roots from the TOML (live on every invocation).
+/// Returns empty vec on any error (deny-by-default).
+fn load_allowed_roots() -> Vec<PathBuf> {
+    let path = resolve_config_path();
+    match load_host_paths_only(&path) {
+        Ok(roots) => {
+            if roots.is_empty() {
+                eprintln!(
+                    "priv-helper: no shares found in {} (deny all)",
+                    path.display()
+                );
+            }
+            roots
+        }
+        Err(e) => {
+            eprintln!(
+                "priv-helper: failed to load allowed roots from {}: {} (deny all)",
+                path.display(),
+                e
+            );
+            vec![]
+        }
+    }
+}
+
+fn is_path_allowed(path: &Path, allowed: &[PathBuf]) -> bool {
+    if allowed.is_empty() {
+        return false;
+    }
+    allowed.iter().any(|root| path.starts_with(root))
 }
 
 fn main() {
@@ -57,8 +91,12 @@ fn main() {
 
     let target = Path::new(&req.path);
 
+    // Live allow-list from the central TOML (re-read on every helper invocation so share additions
+    // via the UI are immediately effective for subsequent permission operations).
+    let allowed_roots = load_allowed_roots();
+
     // === Strict validation (this is the important security boundary) ===
-    if !is_path_allowed(target) {
+    if !is_path_allowed(target, &allowed_roots) {
         eprintln!("Path not under any allowed root: {}", req.path);
         process::exit(1);
     }
@@ -75,21 +113,21 @@ fn main() {
         process::exit(1);
     }
 
-    let uid = req.uid as libc::uid_t;
-    let gid = req.gid as libc::gid_t;
+    let uid = req.uid; // u32 — matches std::os::unix::fs::chown signature
+    let gid = req.gid;
     let mode = req.mode;
 
     if req.recursive {
         // Safe recursive walk with improved symlink/traversal hardening.
         for entry in walkdir::WalkDir::new(target)
-            .follow_links(false)           // Never follow symlinks during traversal
+            .follow_links(false) // Never follow symlinks during traversal
             .into_iter()
             .filter_map(|e| e.ok())
         {
             let p = entry.path();
 
-            // Basic allow-list check
-            if !is_path_allowed(p) {
+            // Basic allow-list check (live from TOML)
+            if !is_path_allowed(p, &allowed_roots) {
                 eprintln!("Skipping path outside allowed roots: {}", p.display());
                 continue;
             }
@@ -98,14 +136,21 @@ fn main() {
             // This catches symlinks that escape the allowed roots.
             match std::fs::canonicalize(p) {
                 Ok(canonical) => {
-                    if !is_path_allowed(&canonical) {
-                        eprintln!("Refusing symlink traversal escape: {} -> {}", p.display(), canonical.display());
+                    if !is_path_allowed(&canonical, &allowed_roots) {
+                        eprintln!(
+                            "Refusing symlink traversal escape: {} -> {}",
+                            p.display(),
+                            canonical.display()
+                        );
                         continue;
                     }
                 }
                 Err(_) => {
                     // If we can't canonicalize (broken symlink, permission, etc.), be conservative and skip.
-                    eprintln!("Skipping unresolvable path during recursion: {}", p.display());
+                    eprintln!(
+                        "Skipping unresolvable path during recursion: {}",
+                        p.display()
+                    );
                     continue;
                 }
             }
@@ -116,17 +161,10 @@ fn main() {
                 process::exit(1);
             }
 
-            // Apply chown via libc
-            unsafe {
-                if libc::chown(
-                    std::ffi::CString::new(p.to_string_lossy().as_bytes()).unwrap().as_ptr(),
-                    uid,
-                    gid,
-                ) != 0
-                {
-                    eprintln!("chown failed on {} with errno {}", p.display(), std::io::Error::last_os_error());
-                    process::exit(1);
-                }
+            // Apply chown (safe std API since Rust 1.73)
+            if let Err(e) = std::os::unix::fs::chown(p, Some(uid), Some(gid)) {
+                eprintln!("chown failed on {}: {}", p.display(), e);
+                process::exit(1);
             }
         }
     } else {
@@ -136,18 +174,45 @@ fn main() {
             process::exit(1);
         }
 
-        unsafe {
-            if libc::chown(
-                std::ffi::CString::new(req.path.as_bytes()).unwrap().as_ptr(),
-                uid,
-                gid,
-            ) != 0
-            {
-                eprintln!("chown failed with errno {}", std::io::Error::last_os_error());
-                process::exit(1);
-            }
+        // Apply chown (safe std API)
+        if let Err(e) = std::os::unix::fs::chown(target, Some(uid), Some(gid)) {
+            eprintln!("chown failed on {}: {}", target.display(), e);
+            process::exit(1);
         }
     }
 
-    println!("OK: applied uid={} gid={} mode={:o} on {} (recursive={})", req.uid, req.gid, mode, req.path, req.recursive);
+    println!(
+        "OK: applied uid={} gid={} mode={:o} on {} (recursive={})",
+        req.uid, req.gid, mode, req.path, req.recursive
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_path_allowed_works_with_empty_and_populated_lists() {
+        let empty: Vec<PathBuf> = vec![];
+        assert!(!is_path_allowed(Path::new("/media/SSD/foo"), &empty));
+
+        let allowed = vec![PathBuf::from("/media/SSD-01"), PathBuf::from("/mnt/data")];
+        assert!(is_path_allowed(Path::new("/media/SSD-01/movies"), &allowed));
+        assert!(is_path_allowed(Path::new("/mnt/data/backups"), &allowed));
+        assert!(!is_path_allowed(Path::new("/root"), &allowed));
+        assert!(!is_path_allowed(Path::new("/media/SSD-02"), &allowed));
+    }
+
+    #[test]
+    fn resolve_config_path_prefers_env() {
+        std::env::set_var("NFS_KLLDAP_CONF", "/etc/nfs/my.conf");
+        assert_eq!(resolve_config_path(), PathBuf::from("/etc/nfs/my.conf"));
+        std::env::remove_var("NFS_KLLDAP_CONF");
+    }
+
+    #[test]
+    fn resolve_config_path_defaults_to_local_file() {
+        std::env::remove_var("NFS_KLLDAP_CONF");
+        assert_eq!(resolve_config_path(), PathBuf::from("nfs-klldap.conf"));
+    }
 }

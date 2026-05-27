@@ -4,6 +4,14 @@ This is a tiny, security-critical binary whose **only job** is to perform `chown
 
 ## Build & Install
 
+For the easiest experience (including cross-compilation for amd64/arm64), use the top-level Makefile:
+
+```bash
+make dist                  # produces dist/nfs-perm-helper-amd64 and -arm64
+```
+
+Or build directly:
+
 ```bash
 cd priv-helper
 cargo build --release

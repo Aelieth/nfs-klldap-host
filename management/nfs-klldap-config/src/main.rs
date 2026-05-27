@@ -9,7 +9,9 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
-use nfs_klldap_config::{generate_all, write_default_config_if_missing, ConfigError, GenerationPaths, NfsKlldapConfig};
+use nfs_klldap_config::{
+    generate_all, write_default_config_if_missing, ConfigError, GenerationPaths, NfsKlldapConfig,
+};
 
 fn usage() {
     eprintln!(
@@ -87,7 +89,10 @@ fn handle_init(path: &Path) -> Result<(), ConfigError> {
             Ok(())
         }
         Ok(false) => {
-            println!("Config already exists at {} — not overwriting.", path.display());
+            println!(
+                "Config already exists at {} — not overwriting.",
+                path.display()
+            );
             Ok(())
         }
         Err(e) => Err(e),
@@ -103,7 +108,12 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
         println!("realm:    {}", cfg.effective_realm());
         println!("shares:   {}", cfg.shares.len());
         for s in &cfg.shares {
-            println!("  - {} → host:{}  container:{}", s.name, s.host_path.display(), cfg.container_path_for(s));
+            println!(
+                "  - {} → host:{}  container:{}",
+                s.name,
+                s.host_path.display(),
+                cfg.container_path_for(s)
+            );
         }
         return Ok(());
     }
@@ -115,7 +125,11 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
     println!("  sssd:    {}", paths.sssd_conf.display());
     println!("  krb5:    {}", paths.krb5_conf.display());
     println!("  ganesha: {}", paths.ganesha_conf.display());
-    println!("  exports: {} ({} share fragments)", paths.exports_dir.display(), cfg.shares.len());
+    println!(
+        "  exports: {} ({} share fragments)",
+        paths.exports_dir.display(),
+        cfg.shares.len()
+    );
     Ok(())
 }
 

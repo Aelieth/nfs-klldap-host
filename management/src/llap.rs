@@ -146,7 +146,8 @@ impl LldapClient {
             "variables": variables
         });
 
-        let response = self.client
+        let response = self
+            .client
             .post(&self.graphql_url)
             .json(&body)
             .send()
@@ -196,7 +197,9 @@ impl LldapClient {
                     // Retry once after refresh
                     self._execute_query::<T>(query, variables).await
                 } else {
-                    Err(LldapError::Auth("Token expired and no credentials for refresh".into()))
+                    Err(LldapError::Auth(
+                        "Token expired and no credentials for refresh".into(),
+                    ))
                 }
             }
             Err(e) => Err(e),
@@ -227,7 +230,9 @@ impl LldapClient {
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
             if status.as_u16() == 401 {
-                return Err(LldapError::Auth("Unauthorized (token may be expired)".into()));
+                return Err(LldapError::Auth(
+                    "Unauthorized (token may be expired)".into(),
+                ));
             }
             return Err(LldapError::GraphQL(format!("{} - {}", status, text)));
         }
@@ -292,26 +297,22 @@ impl LldapClient {
 
         // Note: The exact group query name may vary slightly in forks.
         // This is the common pattern.
-        let data: serde_json::Value = self
-            .run_query(query, Some(variables))
-            .await
-            .ok()?;
+        let data: serde_json::Value = self.run_query(query, Some(variables)).await.ok()?;
 
         // Flexible parsing
         let group = data.get("group")?;
-        let display = group.get("displayName")
+        let display = group
+            .get("displayName")
             .and_then(|v| v.as_str())
             .unwrap_or(name)
             .to_string();
 
-        let gid = group.get("attributes")
+        let gid = group
+            .get("attributes")
             .and_then(|attrs| attrs.as_array())
             .and_then(|arr| {
-                arr.iter().find(|a| {
-                    a.get("name")
-                        .and_then(|n| n.as_str())
-                        == Some("gidNumber")
-                })
+                arr.iter()
+                    .find(|a| a.get("name").and_then(|n| n.as_str()) == Some("gidNumber"))
             })
             .and_then(|a| a.get("value"))
             .and_then(|v| v.as_array())
@@ -347,7 +348,9 @@ impl LldapClient {
             .filter(|u| {
                 filter.is_none_or(|f| {
                     u.id.to_lowercase().contains(&f.to_lowercase())
-                        || u.display_name.as_ref().is_some_and(|d| d.to_lowercase().contains(&f.to_lowercase()))
+                        || u.display_name
+                            .as_ref()
+                            .is_some_and(|d| d.to_lowercase().contains(&f.to_lowercase()))
                 })
             })
             .map(|raw| {
@@ -392,7 +395,9 @@ impl LldapClient {
             .filter(|g| {
                 filter.is_none_or(|f| {
                     g.id.to_lowercase().contains(&f.to_lowercase())
-                        || g.display_name.as_ref().is_some_and(|d| d.to_lowercase().contains(&f.to_lowercase()))
+                        || g.display_name
+                            .as_ref()
+                            .is_some_and(|d| d.to_lowercase().contains(&f.to_lowercase()))
                 })
             })
             .map(|raw| {

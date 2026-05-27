@@ -78,20 +78,25 @@ services:
     # It verifies: ganesha.nfsd process + listening on 2049 + basic responsiveness.
 
 # =============================================================================
-# Notes for the host-side UI (nfs-klldap-ui)
+# Notes for the host-side tools
 #
-# - Run the UI on the host, pointing it at the same ./config/nfs-klldap.conf
-#   that the container uses:
-#     cd management
-#     cargo run --bin management -- --config ../config/nfs-klldap.conf
+# Build everything with the top-level Makefile:
 #
-# - The UI has two pages:
+#     make build                 # native
+#     make dist                  # cross-compiled amd64 + arm64 binaries in ./dist/
+#     make docker-multi          # multi-platform container image
+#
+# Then run the UI from the host:
+#     ./dist/nfs-klldap-ui-amd64 --config ./config/nfs-klldap.conf     # (or the arm64 variant)
+#
+# The UI has two pages:
 #     /settings   → edit the central TOML (raw editor recommended for comments)
 #     /           → Share Permissions (tree browser + live KLLDAP + helper for chown/chmod)
 #
-# - After editing shares or settings in the UI, the container will pick up the
-#   change (via its config watcher or `docker kill -s HUP <container>`).
+# After editing shares or settings in the UI, the container will pick up the
+# change (via its config watcher or `docker kill -s HUP <container>`).
 #
-# - The privileged helper (nfs-perm-helper) must be installed on the host
-#   (setuid or narrow sudoers) for permission changes.
+# The privileged helper (`nfs-perm-helper`) **must** be installed on the host
+# (not inside the container). It usually needs setuid root or a narrow sudoers
+# rule. See `make install-helper` and management/examples/sudoers.example.
 # =============================================================================

@@ -10,7 +10,7 @@ Designed for hosts that cannot (or do not want to) run the kernel NFS stack.
 
 Plug this container into any Linux host (even one without kernel NFS modules) and it becomes a fully functional, authoritative Kerberized NFSv4 server.
 
-**The new architecture (v0.23)** replaces the old template-heavy system with a single source of truth:
+**The architecture (v0.3)** uses a single source of truth:
 
 - One `nfs-klldap.conf` (TOML) file
 - A small, type-safe Rust binary (`nfs-klldap-config`) bundled in the container that auto-derives and generates everything else
@@ -58,6 +58,45 @@ Container (AlmaLinux 10)
 2. The Rust binary detects the change and regenerates all downstream configs
 3. Ganesha and SSSD reload automatically
 4. Permissions on host data are managed through the privileged helper
+
+---
+
+## Building
+
+A `Makefile` provides the complete build story for both host tools and container images.
+
+```bash
+# Native release build of the UI and privileged helper
+make build
+
+# Cross-compile host tools for amd64 + arm64 (produces binaries in dist/)
+make dist
+
+# Build the container image locally
+make docker
+
+# Multi-platform build (linux/amd64/v2 + linux/arm64) using Docker Buildx
+make docker-multi
+```
+
+See `make help` for all targets.
+
+The privileged helper (`nfs-perm-helper`) **must** be installed on the Docker host (not inside the container) and usually requires setuid root or a narrow sudoers rule. The Makefile includes an `install-helper` target with guidance.
+
+See [management/examples/sudoers.example](management/examples/sudoers.example) for recommended sudoers configuration.
+
+## What's New in v0.3
+
+- Comprehensive test coverage for `FsManager` (using real temporary filesystems) and key Axum handlers.
+- Production-grade `Makefile` with cross-compilation for host tools and multi-platform Docker builds (`linux/amd64/v2` + `linux/arm64`).
+- All handwritten `unsafe` removed from the privileged helper.
+- Strict formatting + clippy enforcement (`-D warnings`).
+
+See [TESTING.md](TESTING.md) and the root `Makefile` for details.
+
+## Testing & Documentation
+
+See [TESTING.md](TESTING.md) for the current testing strategy, how to run tests, and which behaviors are covered by executable tests (many of which also serve as documentation for tricky areas like credential parsing and the helper's allow-list logic).
 
 ---
 

@@ -1,18 +1,42 @@
+# syntax=docker/dockerfile:1
 # =============================================================================
 # Stage 1: Build the tiny Rust config generator (type-safe TOML logic)
 # This binary is the ONLY thing that ever parses or generates from nfs-klldap.conf.
 # It has zero web / async / heavy deps — tiny attack surface + fast container builds.
+#
+# This stage is cross-compilation aware for multi-platform Docker builds
+# (linux/amd64/v2 + linux/arm64) via `docker buildx`.
 # =============================================================================
-FROM rust:1.82-slim AS config-builder
+FROM --platform=$BUILDPLATFORM rust:1.82-slim AS config-builder
+
+ARG TARGETARCH
 
 WORKDIR /build
+
+# Install the correct Rust target for the final architecture we are building for.
+RUN case "$TARGETARCH" in \
+      amd64)  rustup target add x86_64-unknown-linux-gnu ;; \
+      arm64)  rustup target add aarch64-unknown-linux-gnu ;; \
+      *)      echo "Unsupported TARGETARCH: $TARGETARCH" && exit 1 ;; \
+    esac
+
 # Copy only the config crate (minimal context)
 COPY management/nfs-klldap-config /build/nfs-klldap-config
 WORKDIR /build/nfs-klldap-config
 
-# Build static-friendly release binary (no web features)
-RUN cargo build --release --bin nfs-klldap-config \
-    && strip target/release/nfs-klldap-config || true
+# Build for the target architecture, then normalize the binary location
+# so the COPY in the next stage works regardless of architecture.
+RUN case "$TARGETARCH" in \
+      amd64) \
+        cargo build --release --bin nfs-klldap-config --target x86_64-unknown-linux-gnu && \
+        mkdir -p target/release && \
+        cp target/x86_64-unknown-linux-gnu/release/nfs-klldap-config target/release/ ;; \
+      arm64) \
+        cargo build --release --bin nfs-klldap-config --target aarch64-unknown-linux-gnu && \
+        mkdir -p target/release && \
+        cp target/aarch64-unknown-linux-gnu/release/nfs-klldap-config target/release/ ;; \
+    esac && \
+    strip target/release/nfs-klldap-config || true
 
 # =============================================================================
 # Stage 2: Final runtime image (AlmaLinux 10 + Ganesha + SSSD + our generator)

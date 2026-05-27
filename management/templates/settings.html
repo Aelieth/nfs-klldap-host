@@ -49,9 +49,14 @@
 </form>
 
 <script>
+// Sequential counter (avoids gigantic Date.now() indices and makes server-side
+// collection trivial + deterministic). Start high to never collide with the
+// static example row that uses index 0.
+let nextShareIdx = 1000;
+
 function addShareRow() {
     const c = document.getElementById('shares-container');
-    const idx = Date.now();
+    const idx = nextShareIdx++;
     const d = document.createElement('div');
     d.className = 'share-row';
     d.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;';

@@ -41,7 +41,10 @@ async fn main() {
             Arc::new(c)
         }
         Err(e) => {
-            eprintln!("Warning: {} — using minimal defaults. Point --config at your nfs-klldap.conf", e);
+            eprintln!(
+                "Warning: {} — using minimal defaults. Point --config at your nfs-klldap.conf",
+                e
+            );
             Arc::new(crate::config::Config::default())
         }
     };
@@ -54,18 +57,32 @@ async fn main() {
     }
 
     // Filesystem manager (real-time, no DB) — now driven by central shares
-    let fs = Arc::new(crate::fs::FsManager::new((*config).clone()));
+    let fs = Arc::new(crate::fs::FsManager::new_with_path(
+        (*config).clone(),
+        config_path.clone(),
+    ));
 
     // LLDAP client (GraphQL + POSIX). Derive URL from the central conf when possible.
     let lldap_url = crate::config::derive_lldap_url(&config);
     let mut lldap = crate::llap::LldapClient::new(&lldap_url);
 
-    // TODO: real credentials (env / keyring / prompt). The placeholder will fail until fixed.
-    if let Err(e) = lldap
-        .authenticate("admin", "your-password-here")
-        .await
+    // Real credentials from the same nfs-klldap.conf (sssd section) with env override support.
+    // Interactive prompt is intentionally avoided for daemon/container use cases.
+    let (lldap_user, lldap_pass) = crate::config::lldap_login_creds(&config);
+    if lldap_pass.trim().is_empty()
+        || lldap_pass == "CHANGE_THIS_TO_A_STRONG_SECRET"
+        || lldap_pass == "SET_ME"
     {
-        eprintln!("Warning: Could not authenticate to KLLDAP at startup: {}", e);
+        eprintln!(
+            "WARNING: LLDAP credentials not configured (see sssd.ldap_default_authtok or NFS_KLLDAP_LLDAP_PW). \
+             User/group searches and permission lookups will be non-functional."
+        );
+    }
+    if let Err(e) = lldap.authenticate(&lldap_user, &lldap_pass).await {
+        eprintln!(
+            "Warning: Could not authenticate to KLLDAP at startup: {}",
+            e
+        );
     }
     let lldap = Arc::new(Mutex::new(lldap));
 

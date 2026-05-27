@@ -165,8 +165,7 @@ impl From<std::io::Error> for ConfigError {
 impl NfsKlldapConfig {
     /// Load from file + full validation + auto-derive
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let contents = fs::read_to_string(path)
-            .map_err(ConfigError::Io)?;
+        let contents = fs::read_to_string(path).map_err(ConfigError::Io)?;
 
         let mut cfg: Self = toml::from_str(&contents).map_err(|e| ConfigError::Parse {
             path: path.display().to_string(),
@@ -192,7 +191,11 @@ impl NfsKlldapConfig {
 
         // Auto-derive port
         if self.sssd.port.is_none() {
-            self.sssd.port = Some(if self.ldap_uri.starts_with("ldaps://") { 636 } else { 389 });
+            self.sssd.port = Some(if self.ldap_uri.starts_with("ldaps://") {
+                636
+            } else {
+                389
+            });
         }
 
         // Auto search bases (simple but effective)
@@ -239,10 +242,14 @@ impl NfsKlldapConfig {
 
         // Require bind credentials for sssd
         if self.sssd.ldap_default_bind_dn.trim().is_empty() {
-            return Err(ConfigError::Validation("sssd.ldap_default_bind_dn is required".into()));
+            return Err(ConfigError::Validation(
+                "sssd.ldap_default_bind_dn is required".into(),
+            ));
         }
         if self.sssd.ldap_default_authtok.trim().is_empty() {
-            return Err(ConfigError::Validation("sssd.ldap_default_authtok is required (use a strong secret)".into()));
+            return Err(ConfigError::Validation(
+                "sssd.ldap_default_authtok is required (use a strong secret)".into(),
+            ));
         }
 
         Ok(())
@@ -250,25 +257,69 @@ impl NfsKlldapConfig {
 
     /// Hostname to use (server.hostname or system hostname)
     pub fn effective_hostname(&self) -> String {
-        self.server
-            .hostname
-            .clone()
-            .unwrap_or_else(|| {
-                hostname::get()
-                    .map(|h| h.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| "nfs-host".to_string())
-            })
+        self.server.hostname.clone().unwrap_or_else(|| {
+            hostname::get()
+                .map(|h| h.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "nfs-host".to_string())
+        })
     }
 
     /// Realm (guaranteed after derive)
     pub fn effective_realm(&self) -> String {
-        self.kerberos.realm.clone().unwrap_or_else(|| "EXAMPLE.COM".to_string())
+        self.kerberos
+            .realm
+            .clone()
+            .unwrap_or_else(|| "EXAMPLE.COM".to_string())
     }
 
     /// Derived container path for a share (used in Ganesha Path=)
     pub fn container_path_for(&self, share: &Share) -> String {
-        format!("{}/{}", self.storage.container_root.trim_end_matches('/'), share.name)
+        format!(
+            "{}/{}",
+            self.storage.container_root.trim_end_matches('/'),
+            share.name
+        )
     }
+
+    /// Returns the list of host-side paths declared in shares (used by UI + priv-helper allow-list).
+    pub fn host_paths(&self) -> Vec<PathBuf> {
+        self.shares.iter().map(|s| s.host_path.clone()).collect()
+    }
+}
+
+/// Load only the [[shares]] host_path entries from a config file.
+///
+/// This is intentionally tolerant of missing credentials / incomplete config
+/// so the privileged permission helper can still enforce its allow-list even
+/// if the rest of the TOML is in a transitional state. Only well-formed
+/// absolute host_path values are returned.
+pub fn load_host_paths_only(path: &Path) -> Result<Vec<PathBuf>, ConfigError> {
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let contents = fs::read_to_string(path).map_err(ConfigError::Io)?;
+
+    #[derive(Deserialize)]
+    struct SharesOnly {
+        #[serde(default)]
+        shares: Vec<RawShare>,
+    }
+    #[derive(Deserialize)]
+    struct RawShare {
+        host_path: Option<PathBuf>,
+    }
+
+    let partial: SharesOnly = toml::from_str(&contents).map_err(|e| ConfigError::Parse {
+        path: path.display().to_string(),
+        msg: e.to_string(),
+    })?;
+
+    Ok(partial
+        .shares
+        .into_iter()
+        .filter_map(|s| s.host_path)
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect())
 }
 
 fn derive_realm_from_uri(uri: &str) -> Option<String> {
@@ -338,7 +389,8 @@ use_sudo = true
 # name = "backups"
 # host_path = "/media/SSD-01/backups"
 # security = "krb5i"
-"#.to_string()
+"#
+    .to_string()
 }
 
 /// Write the default template only if the file does not exist.
@@ -375,10 +427,7 @@ pub fn generate_all(cfg: &NfsKlldapConfig, paths: &GenerationPaths) -> Result<()
 
 fn write_sssd_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError> {
     let realm = cfg.effective_realm();
-    let search_base = format!(
-        "dc={}",
-        realm.to_lowercase().replace('.', ",dc=")
-    );
+    let search_base = format!("dc={}", realm.to_lowercase().replace('.', ",dc="));
 
     let content = format!(
         r#"[sssd]
@@ -402,8 +451,16 @@ enumerate = False
         search_base = search_base,
         bind_dn = cfg.sssd.ldap_default_bind_dn,
         bind_pw = cfg.sssd.ldap_default_authtok,
-        user_base = cfg.sssd.ldap_user_search_base.as_deref().unwrap_or("ou=people,dc=example,dc=com"),
-        group_base = cfg.sssd.ldap_group_search_base.as_deref().unwrap_or("ou=groups,dc=example,dc=com"),
+        user_base = cfg
+            .sssd
+            .ldap_user_search_base
+            .as_deref()
+            .unwrap_or("ou=people,dc=example,dc=com"),
+        group_base = cfg
+            .sssd
+            .ldap_group_search_base
+            .as_deref()
+            .unwrap_or("ou=groups,dc=example,dc=com"),
     );
 
     fs::write(out, content.as_bytes())?;
@@ -447,7 +504,11 @@ fn write_krb5_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
     Ok(())
 }
 
-fn write_ganesha_main(cfg: &NfsKlldapConfig, out: &Path, exports_dir: &Path) -> Result<(), ConfigError> {
+fn write_ganesha_main(
+    cfg: &NfsKlldapConfig,
+    out: &Path,
+    exports_dir: &Path,
+) -> Result<(), ConfigError> {
     let sec = &cfg.ganesha.default_security;
 
     let content = format!(
@@ -533,7 +594,13 @@ fn extract_host_from_uri(uri: &str) -> String {
 
 fn sanitize_name(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -567,7 +634,6 @@ mod hostname {
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::PathBuf;
 
     fn minimal_cfg() -> NfsKlldapConfig {
         let mut c = NfsKlldapConfig {
@@ -598,7 +664,7 @@ mod tests {
 
     #[test]
     fn load_and_derive_works() {
-        let mut c = minimal_cfg();
+        let c = minimal_cfg();
         assert_eq!(c.effective_realm(), "TEST");
         assert!(c.sssd.port.is_some());
         assert_eq!(c.shares.len(), 2);
@@ -627,28 +693,78 @@ mod tests {
         let main = fs::read_to_string(&paths.ganesha_conf).unwrap();
         assert!(main.contains("%include"));
 
-        let exports: Vec<_> = fs::read_dir(&paths.exports_dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let exports: Vec<_> = fs::read_dir(&paths.exports_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(exports.len(), 2);
         // one fragment should mention krb5i for the second share
-        let frag = fs::read_to_string(paths.exports_dir.join("11-data.conf")).unwrap_or_else(|_| {
-            // fallback find
-            let mut s = String::new();
-            for e in fs::read_dir(&paths.exports_dir).unwrap() {
-                let p = e.unwrap().path();
-                if p.to_string_lossy().contains("data") {
-                    s = fs::read_to_string(p).unwrap();
+        let frag =
+            fs::read_to_string(paths.exports_dir.join("11-data.conf")).unwrap_or_else(|_| {
+                // fallback find
+                let mut s = String::new();
+                for e in fs::read_dir(&paths.exports_dir).unwrap() {
+                    let p = e.unwrap().path();
+                    if p.to_string_lossy().contains("data") {
+                        s = fs::read_to_string(p).unwrap();
+                    }
                 }
-            }
-            s
-        });
+                s
+            });
         assert!(frag.contains("SecType = krb5i") || frag.contains("data"));
     }
 
     #[test]
     fn duplicate_names_rejected() {
         let mut c = minimal_cfg();
-        c.shares.push(Share { name: "movies".into(), host_path: "/x".into(), ..Default::default() });
+        c.shares.push(Share {
+            name: "movies".into(),
+            host_path: "/x".into(),
+            ..Default::default()
+        });
         assert!(c.validate_and_derive().is_err());
     }
-}
 
+    #[test]
+    fn load_host_paths_only_returns_only_host_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("partial.conf");
+
+        // Write a config that is intentionally missing bind credentials (should still work for helper)
+        let partial = r#"
+            ldap_uri = "ldaps://kllap.test:6360"
+            [[shares]]
+            name = "movies"
+            host_path = "/media/SSD/movies"
+            [[shares]]
+            name = "backups"
+            host_path = "/media/SSD/backups"
+        "#;
+        fs::write(&path, partial).unwrap();
+
+        let roots = load_host_paths_only(&path).expect("should parse partial config");
+        assert_eq!(roots.len(), 2);
+        assert!(roots.iter().any(|p| p.to_string_lossy().contains("movies")));
+        assert!(roots
+            .iter()
+            .any(|p| p.to_string_lossy().contains("backups")));
+    }
+
+    #[test]
+    fn sanitize_name_replaces_invalid_chars() {
+        assert_eq!(sanitize_name("my share!"), "my-share-");
+        assert_eq!(sanitize_name("data_01"), "data_01");
+        assert_eq!(sanitize_name("foo@bar#baz"), "foo-bar-baz");
+    }
+
+    #[test]
+    fn derive_export_id_is_deterministic() {
+        let id1 = derive_export_id("movies", 1000);
+        let id2 = derive_export_id("movies", 1000);
+        assert_eq!(id1, id2);
+        assert_ne!(
+            derive_export_id("movies", 1000),
+            derive_export_id("data", 1000)
+        );
+    }
+}

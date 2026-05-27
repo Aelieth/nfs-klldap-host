@@ -7,10 +7,28 @@ It directly edits the shared `nfs-klldap.conf` (the single source of truth) and 
 - **System Settings** page — edit the central TOML (raw editor with full comment preservation + basic structured view)
 - **Share Permissions** page — real-time directory trees under your shares + live KLLDAP user/group search + recursive POSIX owner/group/mode changes via the narrow privileged helper
 
-## Running
+## Building & Running
+
+Use the top-level Makefile for the recommended build story (including cross-compilation):
 
 ```bash
-cargo run --bin management -- --config /path/to/shared/nfs-klldap.conf
+make build                 # native release
+make dist                  # cross-compiled binaries in ../dist/
+```
+
+You can still build directly:
+
+```bash
+cargo build --release --bin nfs-klldap-ui
+cargo build --release -p nfs-perm-helper --manifest-path priv-helper/Cargo.toml
+```
+
+Run the UI:
+
+```bash
+./target/release/nfs-klldap-ui --config /path/to/shared/nfs-klldap.conf
+# or after `make dist`:
+# ./dist/nfs-klldap-ui-amd64 --config ...
 ```
 
 The path must point at the same volume/directory the container mounts at `/config`.
@@ -31,3 +49,7 @@ The old `policy.rs`, `ganesha.rs`, and `exports.rs` have been removed (generatio
 See `docs/security.md` for the recommended low-privilege user + narrow `nfs-perm-helper` (setuid or sudoers) model.
 
 The UI itself only ever talks to the helper for `chown`/`chmod` and validates paths against the shares declared in `nfs-klldap.conf`.
+
+## Testing
+
+See the root [TESTING.md](../../TESTING.md) for current coverage. The `FsManager` and several web handlers now have solid unit/integration tests.

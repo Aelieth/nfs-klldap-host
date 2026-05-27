@@ -36,42 +36,26 @@ Host (no kernel NFS modules required anywhere)
 Container (AlmaLinux 10)
 ├── NFS-Ganesha (ganesha.nfsd)     — the complete NFSv4 + Kerberos server
 ├── SSSD                           — LLDAP POSIX provider (nss + id mapping)
-├── DBUS + ganesha-ctl wrapper     — bridge for direct runtime export management
-└── Templates rendered at start (TEMPLATES_DIR)
+├── nfs-klldap-config (Rust)       — bundled generator (parses central TOML → sssd/krb5/ganesha configs)
+└── inotify-based watcher          — triggers regeneration + Ganesha reload on nfs-klldap.conf changes
 ```
 
-The management tool (host) and container work together as a "one stop NFS plugin":
+The management tool (host) and container work together with a **single source of truth** (`nfs-klldap.conf`):
 
-- LLDAP is the source of truth for identity and POSIX attributes.
-- The container serves Kerberized NFSv4 and **manages its own export reloads** via the internal `ganesha-export-watcher` (no DBUS, no host socket required).
-- The web UI lets administrators manage shares and any subdirectory permissions visually.
+- One TOML file edited by the host `nfs-klldap-ui` (or by hand).
+- The Rust generator inside the container produces all derived configs.
+- Permission changes on host data go through the narrow `nfs-perm-helper` (setuid or sudo).
 
-## Key Technical Choices
+## Key Technical Choices (v0.3+)
 
-- **No kernel NFS** in the image or entrypoint.
-- **Native Ganesha EXPORT blocks** (not classic `/etc/exports`).
-- **Self-contained file-based management**: the management tool writes `EXPORT {}` fragments into the bind-mounted exports directory. The container's `ganesha-export-watcher` (inotify) detects changes and restarts Ganesha. No DBUS and no host socket mount are required. This is the primary path for ZimaOS and locked-down appliances.
-- **SSSD** as the bridge to LLDAP POSIX attributes (`uidNumber`, `gidNumber`).
-- **Templates + envsubst** for clean, host-driven configuration.
-- **Share-centric UI** — each share has its own browsable tree; any subfolder can have its POSIX ownership changed with live LLDAP lookup + recursive apply.
+- **No kernel NFS** anywhere.
+- **Central `nfs-klldap.conf`** (TOML) is the *only* file users normally edit.
+- **Rust generator** (`nfs-klldap-config`) is the single place that understands the schema and produces `sssd.conf`, `krb5.conf`, and Ganesha `EXPORT` fragments.
+- **No host-side exports.d or templates bind mount** in the normal deployment model.
+- **Self-contained reload**: container watches the config file (or reacts to SIGHUP) and regenerates + reloads Ganesha.
+- **Strong separation**: host UI never runs privileged code directly — it always goes through the narrow helper.
 
-## Runtime Export Management
-
-Ganesha supports fully dynamic add/remove of exports at runtime via the DBUS interface `org.ganesha.nfsd.exportmgr` (`AddExport`, `RemoveExport`, `ShowExports`, etc.).
-
-The project ships a small `ganesha-ctl` helper inside the container (now file-based, no DBUS) and a `ganesha-export-watcher` script. The host tool simply writes fragment files into the bind-mounted directory. The watcher detects changes and restarts Ganesha. This design works on ZimaOS and other locked-down platforms that cannot expose a host DBUS socket.
-
-See `container/scripts/ganesha-export-watcher`, `container/scripts/ganesha-ctl`, and the management tool's `exports.rs` for details.
-
-## Configuration
-
-Everything is driven by bind-mounted templates (or final configs):
-
-- `sssd.conf.template`
-- `krb5.conf.template`
-- `ganesha.conf.template` (includes `/etc/ganesha/exports.d/*.conf`)
-
-The `ganesha.conf.template` enables the DBUS management interface and includes per-share export fragments written by the management tool.
+See the root `TESTING.md` for how this architecture is exercised in tests (especially the partial `load_host_paths_only` used by the helper and the credential helpers used by the UI).
 
 ## Health and Verification
 
@@ -90,10 +74,13 @@ volumes:
   - /media/SSD-01/project-alpha:/export/project-alpha:rw
   - /media/SSD-01/backups:/export/backups:rw
 
-  - ./ganesha-exports.d:/etc/ganesha/exports.d:rw
+  # Single source of truth (shared with host-side nfs-klldap-ui)
+  - ./config:/config:rw
+
   - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
-  - ./templates:/container/templates:ro
-  # No DBUS socket mount is required. The container is fully self-contained.
+
+  # No exports.d or templates bind mounts are needed in the normal model.
+  # The container generates everything from nfs-klldap.conf via the bundled Rust binary.
 ```
 
 ## Summary

@@ -1,0 +1,125 @@
+# Testing nfs-klldap-host
+
+This document describes the testing strategy, current coverage, and how to run tests. It is maintained alongside the code — writing or expanding tests is the primary way new behavior is documented.
+
+## Philosophy
+
+- **Prefer pure unit tests** for logic that does not touch the filesystem, network, or external processes.
+- **Use realistic integration tests** (with `tempfile`, in-memory servers, etc.) where they provide high value without excessive fragility.
+- **Document hard-to-test areas** explicitly (privileged operations, external `sudo`, live LLDAP).
+- The privileged helper (`nfs-perm-helper`) and web UI handlers are intentionally narrow; most of their correctness comes from strong validation + small pure functions.
+
+## Current State (as of v0.3)
+
+| Crate / Area                  | Test Coverage                          | Notes |
+|-------------------------------|----------------------------------------|-------|
+| `nfs-klldap-config` (lib)     | Good + actively expanded               | Core validation, generation, `load_host_paths_only`, helper functions. |
+| `management` (UI)             | Good for critical pure logic           | `config.rs` helpers, `FsManager` (with real temp dirs), Axum handlers for settings save. |
+| `priv-helper`                 | Good for pure safety logic             | `is_path_allowed`, config path resolution, request handling. |
+| Web handlers (`web.rs`)       | Targeted (settings flows)              | Uses `tower::ServiceExt` against real router + realistic `AppState`. |
+| Auth (`auth.rs`)              | Partial                                | Session management well covered; sudo interaction remains external. |
+| LLDAP client (`llap.rs`)      | None                                   | Requires live (or mocked) GraphQL server — intentionally limited. |
+| Container / entrypoint        | None (shell + healthcheck)             | Best exercised via Docker / compose runs. |
+
+## Running Tests
+
+```bash
+# All tests
+make test
+
+# Or directly
+cargo test --workspace
+
+# Strict linting (used in CI)
+make clippy
+```
+
+## Recommended Testing Patterns
+
+### 1. Pure Configuration & Helper Logic (`management/src/config.rs`)
+
+Functions like `lldap_login_creds`, `derive_lldap_url`, and `all_managed_roots` are excellent for unit tests.
+
+Example (add under `#[cfg(test)] mod tests`):
+
+```rust
+#[test]
+fn lldap_creds_parses_dn_and_prefers_env() {
+    // test DN parsing + env override
+}
+```
+
+### 2. Filesystem Manager (`management/src/fs.rs`)
+
+- Construct `FsManager` with a known `Config` containing specific shares.
+- Use `tempfile::tempdir()` to create real directory trees for `build_tree` tests.
+- Test `is_allowed` behavior in isolation.
+
+### 3. Privileged Helper Logic
+
+Even though `main.rs` is a binary, we can test internal functions:
+
+- `is_path_allowed`
+- `resolve_config_path` (with `std::env::set_var` / `remove_var` — use a test helper that restores state)
+- Request deserialization round-trips
+
+For safety-critical checks (root UID refusal, mode bits, etc.), add explicit tests.
+
+### 4. Web Layer (when adding)
+
+Use Axum's test utilities:
+
+```rust
+use axum::body::Body;
+use http::Request;
+use tower::ServiceExt; // for `oneshot`
+
+// then
+let response = app.oneshot(request).await.unwrap();
+```
+
+### 5. Config Library (`nfs-klldap-config`)
+
+Continue expanding here for:
+- `load_host_paths_only` (tolerant partial parse)
+- Edge cases in `validate_and_derive`
+- Export ID determinism
+- Share name sanitization
+
+## Hard-to-Test Areas (Documented Limitations)
+
+- Anything that calls `sudo -S` or `id` externally.
+- Full recursive `apply_permissions` (requires the real helper binary + privileges).
+- End-to-end flows that need a live LLDAP + Kerberos environment.
+- Container startup / watcher behavior (best exercised via manual Docker runs or compose tests).
+
+For these areas we rely on:
+- Strong type safety + validation in the happy path.
+- Narrow, auditable unsafe-free privileged code (after the 2026 cleanup).
+- Manual testing + healthchecks.
+
+## Adding New Tests — Checklist
+
+1. Can this logic be made pure or given controlled inputs? If yes → unit test.
+2. Does the test exercise a security boundary or config derivation? High priority.
+3. Does writing the test reveal that the code or docs are unclear? Update docs immediately.
+4. Update this `TESTING.md` with any new patterns or newly testable modules.
+
+## Currently Well-Tested Behaviors (with links to tests)
+
+- **LLDAP credential extraction** (`lldap_login_creds`): DN parsing (`uid=`, `cn=`), environment variable override, graceful fallback. See `management/src/config.rs` tests.
+- **URL derivation** for the GraphQL client (`derive_lldap_url`).
+- **Allow-list root computation** (`all_managed_roots` + `is_path_allowed` in the helper).
+- **FsManager** (`is_allowed`, `build_tree`): Tested with real temporary directory trees created via `tempfile`. See `management/src/fs.rs` tests.
+- **Axum handlers** (settings save raw + structured): Tested using `tower::ServiceExt::oneshot` against the real router with realistic `AppState` (temp config files + pre-created auth sessions). See `management/src/web.rs` tests.
+- **Partial config loading** for the privileged helper (`load_host_paths_only`) — explicitly tolerant of missing bind secrets.
+- **Name sanitization** and deterministic export ID generation in the generator.
+- **Safety checks** inside the helper (root UID/GID refusal, high-bit mode refusal) — exercised via the request flow + pure helpers.
+
+These tests serve as both regression protection and living specification.
+
+## Documentation & Tests Are One Activity
+
+Every time a new test is written for a previously under-documented area (e.g., `load_host_paths_only` behavior, DN parsing rules, share allow-list semantics), the corresponding documentation (in code comments, `TESTING.md`, root `README`, or architecture docs) should be updated in the same change.
+
+This repository treats "I added a test that forced me to understand X" as the trigger for improving the docs for X.

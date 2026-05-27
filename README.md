@@ -1,19 +1,20 @@
-# alma_nfs-kerb
+# nfs-klldap-host
 
 **AlmaLinux 10 container that acts as a complete Kerberized NFSv4 server (via NFS-Ganesha) for systems that cannot (or do not want to) run the NFS stack on the host itself.**
+- Get KLLDAP from: https://github.com/Aelieth/lldap-with-kerberos
 
 It provides:
 - Full NFSv4 serving using **NFS-Ganesha** (user-space) — no host kernel `nfs`/`nfsd`/`rpcsec_gss_krb5` modules required.
-- UID/GID mapping backed by **LLDAP** (POSIX attributes via SSSD inside the container).
+- UID/GID mapping backed by **KLLDAP** (POSIX attributes via SSSD inside the container).
 - Easy visual management of shares and POSIX permissions from the host via a small Rust web tool (Axum + HTMX).
 - Self-contained export management inside the container (no host DBUS socket required — ideal for ZimaOS and locked-down appliances). The container watches its own exports directory and restarts Ganesha automatically when fragments change.
 
-**Core idea:** Plug this container into any Linux host (even one without kernel NFS) and it becomes the authoritative Kerberized NFSv4 server for that system. Clients authenticate with ordinary user Kerberos tickets (no machine principals required). POSIX ownership on the host directories must match the `uidNumber`/`gidNumber` values stored in LLDAP.
+**Core idea:** Plug this container into any Linux host (even one without kernel NFS) and it becomes the authoritative Kerberized NFSv4 server for that system. Clients authenticate with ordinary user Kerberos tickets (no machine principals required). POSIX ownership on the host directories must match the `uidNumber`/`gidNumber` values stored in KLLDAP.
 
 ## Goals
 
 - Deliver a complete Kerberized NFSv4 service from inside a container (no reliance on host kernel NFS).
-- Use LLDAP (or any POSIX-capable LDAP) as the source of truth for `uidNumber`/`gidNumber`.
+- Use KLLDAP (or any POSIX-capable LDAP) as the source of truth for `uidNumber`/`gidNumber`.
 - Allow administrators to manage shares and POSIX permissions visually from the host using a small Rust web UI.
 - Make it trivial to add/remove shares and fix permissions on any subdirectory under a share.
 - Support **direct runtime management** of Ganesha exports (the management tool speaks directly to Ganesha's management interface).
@@ -26,17 +27,17 @@ Host (any Linux — no kernel NFS needed)
 ├── ganesha-exports.d/                  (native Ganesha EXPORT {} blocks, written by the tool)
 ├── templates/                          (sssd, krb5, ganesha.conf templates — can live on attached drive)
 ├── secrets/krb5.keytab                 (nfs/<hostname>@REALM — can live on attached drive)
-└── management/ (Rust web UI)           (talks LLDAP + privileged helper; writes fragments, container watcher reloads)
+└── management/ (Rust web UI)           (talks KLLDAP + privileged helper; writes fragments, container watcher reloads)
 
 Container (AlmaLinux 10)
 ├── NFS-Ganesha (ganesha.nfsd)          — the actual NFSv4 + Kerberos server
-├── SSSD                                — talks to LLDAP, provides nss + POSIX IDs
-├── ganesha-export-watcher (inotify)    — container watches exports.d/ and restarts Ganesha on changes (self-contained, no DBUS)
+├── SSSD                                — talks to KLLDAP, provides nss + POSIX IDs
+├── ganesha-export-watcher (inotify)    — container watches exports.d/ and restarts Ganesha on changes (self-contained)
 └── Configuration rendered from templates
 ```
 
 The Rust management tool (runs on the host) does:
-- Live LLDAP lookups (users/groups → uidNumber/gidNumber)
+- Live KLLDAP lookups (users/groups → uidNumber/gidNumber)
 - Real-time filesystem tree per share
 - Permission editor on *any* subfolder under a share (owner, group, mode, recursive)
 - `chown`/`chmod` via a narrow privileged helper
@@ -47,7 +48,7 @@ The Rust management tool (runs on the host) does:
 - Time synchronization (Kerberos requirement)
 - A DNS-resolvable hostname that matches the NFS service principal (`nfs/<hostname>@REALM`)
 - Keytab with that principal (mode 600)
-- Attached/media drives that will be exported (the management tool helps keep their POSIX ownership in sync with LLDAP). System paths such as /srv/nfs are not used. The keytab and templates may also live on an attached drive.
+- Attached/media drives that will be exported (the management tool helps keep their POSIX ownership in sync with KLLDAP). System paths such as /srv/nfs are not used. The keytab and templates may also live on an attached drive.
 - Docker / Podman (no special DBUS socket mount is required — the container is self-contained)
 
 The host does **not** need the kernel NFS stack.
@@ -74,7 +75,7 @@ Start the container, then run the management tool (from the `management/` direct
 ```bash
 cd management
 cp config.toml.example config.toml
-# edit config.toml with your LLDAP URL, shares, etc.
+# edit config.toml with your KLLDAP URL, shares, etc.
 cargo run
 ```
 
@@ -152,15 +153,14 @@ ls -l /mnt/test
 
 ## Current Status
 
-Ganesha-only. Kernel NFS path has been removed from the main image and tooling.
+Ganesha-only.
 
-The project now fully matches the original vision: a pluggable, LLDAP-backed, Kerberized NFSv4 server that any Linux machine can use without running NFS itself, with a friendly web UI for share and permission management.
+A pluggable, KLLDAP-backed, Kerberized NFSv4 server that any Linux machine can use without running NFS itself, with a friendly web UI for share and permission management.
 
 ## References
 
-- NFS-Ganesha documentation (the project no longer uses the DBUS export manager; export changes are handled by the container's internal inotify watcher + supervisor restart)
+- NFS-Ganesha documentation
 - LLDAP (POSIX attributes, GraphQL)
-- Your custom fork with Kerberos integration if applicable
 
 ---
 

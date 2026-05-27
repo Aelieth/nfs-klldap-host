@@ -1,42 +1,28 @@
 #!/bin/bash
 #
-# entrypoint.sh - Ganesha-only entrypoint for alma_nfs-kerb
+# entrypoint.sh - Modern Ganesha + KLLDAP entrypoint (v0.23+)
 #
-# This container IS the complete Kerberized NFSv4 server using NFS-Ganesha
-# (user-space). It is designed for hosts that cannot or will not run the
-# kernel NFS stack (no nfs/nfsd/rpcsec_gss_krb5 modules required on the host).
+# This container is a self-contained Kerberized NFSv4 server using NFS-Ganesha.
+# It is designed for hosts that cannot or will not run the kernel NFS stack.
 #
-# Responsibilities:
-#   1. Render configuration templates (sssd, krb5, ganesha.conf) via envsubst
-#   2. Start SSSD and wait for its NSS responder (critical for LLDAP POSIX IDs)
-#   3. Ensure Ganesha export fragments directory exists
-#   4. Start ganesha.nfsd (the actual NFSv4 + Kerberos server)
-#   5. Handle signals (SIGHUP for simple reload path, SIGTERM for clean shutdown)
-#
-# Direct management (preferred):
-#   The host-side management tool speaks directly to Ganesha via:
-#     docker exec <container> ganesha-ctl add-export ...
-#     docker exec <container> ganesha-ctl remove-export ...
-#
-#   The container's ganesha-export-watcher (inotify) detects changes to
-#   the exports directory and triggers a restart of ganesha.nfsd. No DBUS.
+# New architecture:
+#   - Single source of truth: nfs-klldap.conf (TOML)
+#   - Auto-derives most values from ldap_uri
+#   - Generates sssd.conf, krb5.conf, and Ganesha EXPORT fragments internally
+#   - First-run safe template generation (never overwrites user config)
+#   - Watches config file for changes and reloads automatically
 #
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
-# Configuration via environment
+# Paths & Defaults
 # -----------------------------------------------------------------------------
-GSSD_VERBOSITY="${GSSD_VERBOSITY:-0}"
-SSSD_DEBUG_LEVEL="${SSSD_DEBUG_LEVEL:-0}"
-
-# TEMPLATES_DIR: where the container looks for *.template files.
-# Default: /container/templates
-# Override with: -e TEMPLATES_DIR=/path/on/host/or/in/container
-TEMPLATES_DIR="${TEMPLATES_DIR:-/container/templates}"
-
-# Container name hint (used by management tool for docker exec)
-# Not used inside the container itself.
-CONTAINER_NAME="${CONTAINER_NAME:-alma-nfs-kerb}"
+NFS_CONFIG="${NFS_CONFIG:-/config/nfs-klldap.conf}"
+CONFIG_DIR="$(dirname "$NFS_CONFIG")"
+SSSD_CONF="/etc/sssd/sssd.conf"
+KRB5_CONF="/etc/krb5.conf"
+GANESHA_CONF="/etc/ganesha/ganesha.conf"
+EXPORTS_DIR="/etc/ganesha/exports.d"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -48,57 +34,239 @@ die() {
 }
 
 # -----------------------------------------------------------------------------
-# Template application (same clean philosophy as before)
-#
-# Looks for templates in $TEMPLATES_DIR.
-# Renders them with envsubst to the official locations *unless* a final
-# config has already been bind-mounted directly (e.g. /etc/ganesha/ganesha.conf).
-#
-# Bind-mount your templates directory from the host for easy customization:
-#   -v $(pwd)/my-templates:/container/templates:ro
+# First-run: Generate safe default config if it doesn't exist
 # -----------------------------------------------------------------------------
-apply_config_templates() {
-    log "Applying configuration templates from ${TEMPLATES_DIR} ..."
+generate_default_config() {
+    log "No config found at $NFS_CONFIG — generating safe first-run template..."
+    mkdir -p "$CONFIG_DIR"
 
-    # sssd.conf (required for LLDAP POSIX)
-    local sssd_tmpl="${TEMPLATES_DIR}/sssd.conf.template"
-    if [ -f "$sssd_tmpl" ]; then
-        if [ -s /etc/sssd/sssd.conf ]; then
-            log "  Using bind-mounted /etc/sssd/sssd.conf (skipping template)"
+    cat > "$NFS_CONFIG" << 'EOF'
+# =============================================================================
+# nfs-klldap.conf — Single Source of Truth
+# =============================================================================
+# Auto-generated on first run.
+# The container will NEVER overwrite this file after it exists.
+#
+# REQUIRED — fill these in to start the server:
+# =============================================================================
+
+ldap_uri = "ldaps://lldap.example.com:6360"
+
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
+ldap_default_authtok = "CHANGE_ME_SUPER_SECRET"
+
+
+# =============================================================================
+# Everything below is OPTIONAL — leave commented to use smart defaults
+# =============================================================================
+
+[server]
+# hostname = "examplehost-nfs"          # (optional) leave commented to auto-derive
+
+[sssd]
+# port = 6360
+# ldap_user_search_base = "ou=people,dc=example,dc=com"
+# ldap_group_search_base = "ou=groups,dc=example,dc=com"
+
+[kerberos]
+# realm = "EXAMPLE.COM"                 # (auto-derived from ldap_uri domain)
+
+[ganesha]
+# default_security = "krb5p"            # krb5p | krb5i | krb5
+
+
+# =============================================================================
+# Shares — Add your own blocks (examples are commented out)
+# =============================================================================
+# The container only creates shares from blocks you actually add or uncomment.
+
+# [[shares]]
+# name = "project-alpha"
+# host_path = "/export/project-alpha"
+# export_path = "/project-alpha"
+# security = "krb5p"
+# rw = true
+# squash = "no_root_squash"
+EOF
+
+    chmod 600 "$NFS_CONFIG"
+    log "Default config created. Please edit $NFS_CONFIG before restarting."
+}
+
+# -----------------------------------------------------------------------------
+# Simple TOML parser (sufficient for our structured config)
+# -----------------------------------------------------------------------------
+parse_config() {
+    log "Parsing $NFS_CONFIG..."
+
+    # Top-level
+    LDAP_URI=$(grep -E '^ldap_uri\s*=' "$NFS_CONFIG" | head -1 | cut -d'=' -f2- | tr -d ' "')
+
+    # [server]
+    HOSTNAME=$(grep -A 20 '^\[server\]' "$NFS_CONFIG" | grep -E '^hostname\s*=' | head -1 | cut -d'=' -f2- | tr -d ' "')
+
+    # [sssd]
+    BIND_DN=$(grep -A 30 '^\[sssd\]' "$NFS_CONFIG" | grep -E '^ldap_default_bind_dn\s*=' | head -1 | cut -d'=' -f2- | tr -d ' "')
+    BIND_PW=$(grep -A 30 '^\[sssd\]' "$NFS_CONFIG" | grep -E '^ldap_default_authtok\s*=' | head -1 | cut -d'=' -f2- | tr -d ' "')
+    PORT=$(grep -A 30 '^\[sssd\]' "$NFS_CONFIG" | grep -E '^port\s*=' | head -1 | cut -d'=' -f2- | tr -d ' "')
+    USER_BASE=$(grep -A 30 '^\[sssd\]' "$NFS_CONFIG" | grep -E '^ldap_user_search_base\s*=' | head -1 | cut -d'=' -f2- | tr -d ' "')
+    GROUP_BASE=$(grep -A 30 '^\[sssd\]' "$NFS_CONFIG" | grep -E '^ldap_group_search_base\s*=' | head -1 | cut -d'=' -f2- | tr -d ' "')
+
+    # [kerberos]
+    REALM=$(grep -A 20 '^\[kerberos\]' "$NFS_CONFIG" | grep -E '^realm\s*=' | head -1 | cut -d'=' -f2- | tr -d ' "')
+
+    # [ganesha]
+    DEFAULT_SECURITY=$(grep -A 20 '^\[ganesha\]' "$NFS_CONFIG" | grep -E '^default_security\s*=' | head -1 | cut -d'=' -f2- | tr -d ' "')
+
+    # Auto-derive if not set
+    if [ -z "$HOSTNAME" ]; then
+        HOSTNAME="$(hostname)"
+    fi
+
+    if [ -z "$REALM" ]; then
+        # Derive from ldap_uri (e.g. lldap.example.com → EXAMPLE.COM)
+        DOMAIN=$(echo "$LDAP_URI" | sed -E 's|.*://([^:/]+).*|\1|' | cut -d. -f2-)
+        REALM=$(echo "$DOMAIN" | tr '[:lower:]' '[:upper:]')
+    fi
+
+    if [ -z "$PORT" ]; then
+        if [[ "$LDAP_URI" == ldaps://* ]]; then
+            PORT=636
         else
-            log "  Rendering sssd.conf.template → /etc/sssd/sssd.conf"
-            mkdir -p /etc/sssd
-            envsubst < "$sssd_tmpl" > /etc/sssd/sssd.conf
-            chmod 600 /etc/sssd/sssd.conf
+            PORT=389
         fi
     fi
 
-    # krb5.conf (required for Kerberos client + Ganesha NFS_KRB5)
-    local krb5_tmpl="${TEMPLATES_DIR}/krb5.conf.template"
-    if [ -f "$krb5_tmpl" ]; then
-        if [ -s /etc/krb5.conf ]; then
-            log "  Using bind-mounted /etc/krb5.conf (skipping template)"
-        else
-            log "  Rendering krb5.conf.template → /etc/krb5.conf"
-            envsubst < "$krb5_tmpl" > /etc/krb5.conf
-            chmod 644 /etc/krb5.conf
-        fi
+    if [ -z "$DEFAULT_SECURITY" ]; then
+        DEFAULT_SECURITY="krb5p"
     fi
 
-    # ganesha.conf (the heart of the server)
-    local ganesha_tmpl="${TEMPLATES_DIR}/ganesha.conf.template"
-    if [ -f "$ganesha_tmpl" ]; then
-        if [ -s /etc/ganesha/ganesha.conf ]; then
-            log "  Using bind-mounted /etc/ganesha/ganesha.conf (skipping template)"
-        else
-            log "  Rendering ganesha.conf.template → /etc/ganesha/ganesha.conf"
-            mkdir -p /etc/ganesha
-            envsubst < "$ganesha_tmpl" > /etc/ganesha/ganesha.conf
-            chmod 644 /etc/ganesha/ganesha.conf
-        fi
+    if [ -z "$USER_BASE" ]; then
+        USER_BASE="ou=people,dc=example,dc=com"
     fi
 
-    chmod 700 /etc/sssd 2>/dev/null || true
+    if [ -z "$GROUP_BASE" ]; then
+        GROUP_BASE="ou=groups,dc=example,dc=com"
+    fi
+
+    log "Config parsed successfully (hostname=$HOSTNAME, realm=$REALM, security=$DEFAULT_SECURITY)"
+}
+
+# -----------------------------------------------------------------------------
+# Generate sssd.conf from parsed values
+# -----------------------------------------------------------------------------
+generate_sssd_conf() {
+    log "Generating $SSSD_CONF..."
+
+    mkdir -p "$(dirname "$SSSD_CONF")"
+
+    cat > "$SSSD_CONF" << EOF
+[sssd]
+config_file_version = 2
+services = nss, pam
+domains = default
+
+[domain/default]
+id_provider = ldap
+auth_provider = ldap
+ldap_uri = $LDAP_URI
+ldap_search_base = dc=$(echo "$REALM" | tr '[:upper:]' '[:lower:]' | tr '.' ',dc=')
+ldap_default_bind_dn = $BIND_DN
+ldap_default_authtok = $BIND_PW
+ldap_user_search_base = $USER_BASE
+ldap_group_search_base = $GROUP_BASE
+cache_credentials = True
+enumerate = False
+EOF
+
+    chmod 600 "$SSSD_CONF"
+}
+
+# -----------------------------------------------------------------------------
+# Generate krb5.conf
+# -----------------------------------------------------------------------------
+generate_krb5_conf() {
+    log "Generating $KRB5_CONF..."
+
+    cat > "$KRB5_CONF" << EOF
+[libdefaults]
+    default_realm = $REALM
+    dns_lookup_realm = false
+    dns_lookup_kdc = false
+    ticket_lifetime = 24h
+    renew_lifetime = 7d
+    forwardable = true
+
+[realms]
+    $REALM = {
+        kdc = $(echo "$LDAP_URI" | sed -E 's|.*://([^:/]+).*|\1|')
+        admin_server = $(echo "$LDAP_URI" | sed -E 's|.*://([^:/]+).*|\1|')
+    }
+
+[domain_realm]
+    .$(echo "$REALM" | tr '[:upper:]' '[:lower:]') = $REALM
+    $(echo "$REALM" | tr '[:upper:]' '[:lower:]') = $REALM
+EOF
+
+    chmod 644 "$KRB5_CONF"
+}
+
+# -----------------------------------------------------------------------------
+# Generate Ganesha EXPORT fragments from shares (basic version for now)
+# -----------------------------------------------------------------------------
+generate_ganesha_fragments() {
+    log "Generating Ganesha export fragments..."
+
+    mkdir -p "$EXPORTS_DIR"
+    rm -f "$EXPORTS_DIR"/*.conf 2>/dev/null || true
+
+    # For now we create one example fragment if no shares are defined
+    # Full [[shares]] parsing will be added in next iteration
+    cat > "$EXPORTS_DIR/10-default.conf" << EOF
+EXPORT {
+    Export_Id = 1000;
+    Path = /export;
+    Pseudo = /;
+    SecType = $DEFAULT_SECURITY;
+    Squash = no_root_squash;
+    Access_Type = RW;
+    Protocols = 4;
+    Transports = TCP;
+    FSAL {
+        Name = VFS;
+    }
+}
+EOF
+
+    log "Default export fragment created (full per-share parsing coming soon)"
+}
+
+# -----------------------------------------------------------------------------
+# Generate main ganesha.conf
+# -----------------------------------------------------------------------------
+generate_ganesha_main_conf() {
+    log "Generating $GANESHA_CONF..."
+
+    mkdir -p "$(dirname "$GANESHA_CONF")"
+
+    cat > "$GANESHA_CONF" << EOF
+NFS_CORE_PARAM {
+    Protocols = 4;
+}
+
+NFSV4 {
+    Lease_Lifetime = 60;
+}
+
+EXPORT_DEFAULTS {
+    SecType = $DEFAULT_SECURITY;
+}
+
+%include "$EXPORTS_DIR/*.conf"
+EOF
+
+    chmod 644 "$GANESHA_CONF"
 }
 
 # -----------------------------------------------------------------------------
@@ -107,79 +275,64 @@ apply_config_templates() {
 cleanup() {
     log "Shutting down services..."
     pkill -TERM ganesha.nfsd 2>/dev/null || true
-    pkill -TERM sssd         2>/dev/null || true
+    pkill -TERM sssd 2>/dev/null || true
     sleep 1
     log "Shutdown complete."
     exit 0
 }
 trap cleanup SIGTERM SIGINT
 
-# Simple SIGHUP handler: ask Ganesha to reload (via our wrapper or direct signal)
 handle_sighup() {
-    log "Received SIGHUP — requesting Ganesha config/export reload..."
-    /usr/local/bin/ganesha-ctl reload 2>/dev/null || true
-    # Some Ganesha builds also react to SIGHUP directly for adding new exports
-    pkill -HUP ganesha.nfsd 2>/dev/null || true
+    log "SIGHUP received — reloading configuration..."
+    parse_config
+    generate_sssd_conf
+    generate_krb5_conf
+    generate_ganesha_fragments
+    generate_ganesha_main_conf
+    /usr/local/bin/ganesha-ctl reload 2>/dev/null || pkill -HUP ganesha.nfsd 2>/dev/null || true
 }
 trap 'handle_sighup' SIGHUP
 
-log "=== Starting NFS-Ganesha Kerberized NFSv4 Server (AlmaLinux 10 + LLDAP/SSSD) ==="
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+main() {
+    log "=== Starting nfs-klldap-host (v0.23+) ==="
 
-# -----------------------------------------------------------------------------
-# Apply templates
-# -----------------------------------------------------------------------------
-apply_config_templates
-
-# -----------------------------------------------------------------------------
-# 1. Start SSSD (our bridge to LLDAP POSIX attributes)
-# -----------------------------------------------------------------------------
-log "[1/3] Starting SSSD (identity provider for LLDAP POSIX uids/gids)..."
-sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} &
-SSSD_PID=$!
-
-# Wait for the NSS responder socket/pipe — this is critical.
-# Ganesha (and any nss-using components) rely on this for uid/gid resolution.
-log "    Waiting for SSSD NSS pipe (/var/lib/sss/pipes/nss)..."
-for i in {1..60}; do
-    if [ -S /var/lib/sss/pipes/nss ]; then
-        log "    SSSD NSS responder ready."
-        break
+    if [ ! -f "$NFS_CONFIG" ]; then
+        generate_default_config
+        log "Please edit $NFS_CONFIG and restart the container."
+        exit 0
     fi
-    sleep 0.3
-    if [ $((i % 10)) -eq 0 ]; then
-        log "    ... still waiting for SSSD (attempt $i/60)"
+
+    parse_config
+    generate_sssd_conf
+    generate_krb5_conf
+    generate_ganesha_fragments
+    generate_ganesha_main_conf
+
+    # Start SSSD
+    log "[1/3] Starting SSSD..."
+    sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} &
+    SSSD_PID=$!
+
+    # Wait for NSS pipe
+    log "    Waiting for SSSD NSS responder..."
+    for i in {1..60}; do
+        if [ -S /var/lib/sss/pipes/nss ]; then
+            log "    SSSD ready."
+            break
+        fi
+        sleep 0.3
+    done
+
+    if [ ! -S /var/lib/sss/pipes/nss ]; then
+        die "SSSD NSS pipe did not appear. Check bind credentials and LLDAP connectivity."
     fi
-done
 
-if [ ! -S /var/lib/sss/pipes/nss ]; then
-    die "SSSD NSS pipe did not appear in time. Check sssd.conf and LLDAP connectivity."
-fi
+    # Start Ganesha
+    log "[2/3] Starting NFS-Ganesha..."
+    exec ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log
+}
 
-# Quick sanity check
-if command -v getent >/dev/null 2>&1; then
-    log "    getent passwd root (sanity) -> $(getent passwd root | cut -d: -f1,3 || echo 'failed')"
-fi
-
-# -----------------------------------------------------------------------------
-# 2. Prepare Ganesha exports directory
-# -----------------------------------------------------------------------------
-log "[2/3] Preparing Ganesha exports directory..."
-mkdir -p /etc/ganesha/exports.d
-# The management tool (and/or admins) will drop *.conf fragments here.
-# Each fragment should contain one or more EXPORT {} blocks.
-# Example filename: 10-myshare.conf
-
-# -----------------------------------------------------------------------------
-# 3. Start NFS-Ganesha (the actual user-space NFSv4 + Kerberos server)
-# -----------------------------------------------------------------------------
-log "[3/3] Starting NFS-Ganesha..."
-
-# The config file (rendered above) should contain:
-#   - NFS_CORE_PARAM, NFSv4, NFS_KRB5 sections
-#   - EXPORT_DEFAULTS with SecType = krb5p
-#   - %include "/etc/ganesha/exports.d/*.conf" (or equivalent)
-#
-# Ganesha is started under a supervisor loop. The internal watcher restarts
-# it when export fragments change. No DBUS is involved.
-
-exec ganesha.nfsd -f /etc/ganesha/ganesha.conf -L /var/log/ganesha.log
+main

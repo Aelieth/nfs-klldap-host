@@ -1,25 +1,67 @@
 # nfs-klldap-host
 
-**AlmaLinux 10 container that provides a complete Kerberized NFSv4 server (via NFS-Ganesha) backed by KLLDAP for POSIX attributes.**
+**AlmaLinux 10 container that provides a complete Kerberized NFSv4 server using NFS-Ganesha, backed by KLLDAP for POSIX UID/GID attributes.**
+
+Designed for hosts that cannot (or do not want to) run the kernel NFS stack.
 
 ---
 
-## Current Status (v0.23 — May 2026)
+## Core Idea
 
-**Full cutover complete** to the new minimal architecture:
+Plug this container into any Linux host (even one without kernel NFS modules) and it becomes a fully functional, authoritative Kerberized NFSv4 server.
 
-- Single source of truth: `nfs-klldap.conf` (TOML)
-- Container auto-derives **everything** (sssd.conf, krb5.conf, Ganesha EXPORT fragments) from `ldap_uri` + shares using a small, type-safe Rust binary (`nfs-klldap-config`) bundled in the image.
-- Only three volume mounts in normal use.
-- Host-only management UI (`nfs-klldap-ui`) that directly edits the shared `nfs-klldap.conf` volume.
-- Narrow privileged helper on the host for `chown`/`chmod`.
-- No templates, no host-side `ganesha-exports.d` bind mount, no DBUS, no kernel NFS on the host.
+**The new architecture (v0.23)** replaces the old template-heavy system with a single source of truth:
 
-See the architecture and quick-start below.
+- One `nfs-klldap.conf` (TOML) file
+- A small, type-safe Rust binary (`nfs-klldap-config`) bundled in the container that auto-derives and generates everything else
+- Host-side management UI that edits the shared config volume directly
+- Narrow privileged helper for filesystem operations
+
+This gives you **maximum simplicity with full power** — minimal volumes, no templates, no DBUS, no kernel NFS on the host, and automatic reloads when you change the config.
 
 ---
 
-## Target Docker Run (minimal)
+## Goals
+
+- Deliver a complete Kerberized NFSv4 service from inside a container with almost zero host configuration
+- Use KLLDAP (LLDAP + Kerberos in one) as the single source of truth for both POSIX attributes and Kerberos
+- Make share and permission management visual and trivial through a host-side web UI
+- Support per-share security settings (`krb5p` / `krb5i`) and complex multi-share environments
+- Keep the container itself unprivileged while still allowing powerful host filesystem operations via a narrow helper
+- Enable future one-command deployment from a KLLDAP server
+
+---
+
+## How It Works (Architecture)
+
+```
+Host (any Linux — no kernel NFS needed)
+├── /media/SSD-01/...                  (real data on attached drives)
+├── nfs-klldap.conf                    (single TOML config — the only file you edit)
+├── management/ (Rust UI + priv-helper)
+│   └── nfs-klldap-ui                  (edits config + calls privileged helper for chown/chmod)
+└── keytab (nfs/<hostname>@REALM)
+
+Container (AlmaLinux 10)
+├── entrypoint.sh                      (minimal supervisor)
+├── nfs-klldap-config (Rust binary)    (parses TOML → generates sssd.conf, krb5.conf, Ganesha fragments)
+├── NFS-Ganesha (ganesha.nfsd)         (the actual NFSv4 + Kerberos server)
+├── SSSD                               (provides POSIX IDs from KLLDAP)
+└── Generated configs (internal only):
+    ├── /etc/sssd/sssd.conf
+    ├── /etc/krb5.conf
+    └── /etc/ganesha/exports.d/*.conf
+```
+
+**Flow:**
+1. You edit `nfs-klldap.conf` (via UI or by hand)
+2. The Rust binary detects the change and regenerates all downstream configs
+3. Ganesha and SSSD reload automatically
+4. Permissions on host data are managed through the privileged helper
+
+---
+
+## Quick Start
 
 ```bash
 docker run -d \
@@ -32,45 +74,126 @@ docker run -d \
   ghcr.io/aelieth/nfs-klldap-host:latest
 ```
 
-Only three volumes.
-
-First run creates a safe, heavily-commented `nfs-klldap.conf` for you to edit.
+**First run** automatically generates a safe, heavily-commented `nfs-klldap.conf` for you to customize.
 
 ---
 
-## Host-Side Management UI
-
-The UI runs on the **host** (not inside the container) and mounts the same config volume:
+## Management UI (Host-side)
 
 ```bash
 cd management
 cargo run --bin management -- --config /path/to/your/config/nfs-klldap.conf
 ```
 
-Two pages:
-- **System Settings** (`/settings`) — edit the central TOML (raw editor + basic structured view)
-- **Share Permissions** (`/`) — real-time FS trees + live KLLDAP user/group search + recursive permission apply via the narrow helper
+**Two pages:**
+- **System Settings** (`/settings`) — edit the central TOML (raw editor + structured form)
+- **Share Permissions** (`/`) — real-time filesystem tree browser + live KLLDAP user/group search + recursive `chown`/`chmod` via the narrow privileged helper
 
 ---
 
-## Key Files
+## Configuration (`nfs-klldap.conf`)
 
-- `nfs-klldap.conf` — the **only** file users normally edit
-- `entrypoint.sh` — minimal supervisor; delegates all TOML work to the Rust binary
-- `management/nfs-klldap-config/` — tiny Rust crate (also the binary bundled in the container)
-- `management/` — the host UI (`nfs-klldap-ui`)
+```toml
+ldap_uri = "ldaps://lldap.example.com:6360"
 
-Generated inside the container (never exposed):
-- `sssd.conf`
-- `krb5.conf`
-- Ganesha `EXPORT {}` fragments
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
+ldap_default_authtok = "your-password"
+
+[server]
+# hostname = "examplehost-nfs"          # optional (auto-derived from container hostname)
+
+[kerberos]
+# realm = "EXAMPLE.COM"                 # optional (auto-derived from ldap_uri)
+
+[ganesha]
+# default_security = "krb5p"            # krb5p | krb5i | krb5   (per-share override possible)
+
+[[shares]]
+name = "project-alpha"
+host_path = "/export/project-alpha"
+export_path = "/project-alpha"
+security = "krb5p"
+rw = true
+squash = "no_root_squash"
+
+[[shares]]
+name = "backups"
+host_path = "/export/backups"
+export_path = "/backups"
+security = "krb5i"
+rw = false
+squash = "root_squash"
+```
+
+The Rust binary handles all derivation and generation from this single file.
+
+---
+
+## Prerequisites
+
+- Time synchronization (Kerberos requirement)
+- DNS-resolvable hostname that matches the NFS service principal (`nfs/<hostname>@REALM`)
+- Keytab with that principal (mode 600)
+- Attached/media drives for exported data (system paths like `/srv/nfs` are not recommended)
+- Docker / Podman
+
+---
+
+## Verification
+
+**Inside the container:**
+```bash
+getent passwd some-ldap-user
+id some-ldap-user
+klist -k /etc/krb5.keytab
+ganesha-ctl show-exports
+```
+
+**From a client:**
+```bash
+kinit alice
+mount -t nfs4 -o sec=krb5p nfs-server-01.example.com:/project-alpha /mnt/test
+ls -l /mnt/test
+```
+
+---
+
+## Project Structure
+
+```
+nfs-klldap-host/
+├── entrypoint.sh                 # Minimal supervisor (delegates TOML work to Rust binary)
+├── Dockerfile
+├── management/
+│   ├── nfs-klldap-config/        # Rust binary that generates sssd.conf, krb5.conf, Ganesha fragments
+│   ├── priv-helper/              # Narrow privileged helper for host filesystem operations
+│   └── src/                      # Host UI (Axum + HTMX)
+├── nfs-klldap.conf               # Single source of truth (user-editable TOML)
+└── README.md
+```
+
+**Generated inside container (never exposed):**
+- `/etc/sssd/sssd.conf`
+- `/etc/krb5.conf`
+- `/etc/ganesha/exports.d/*.conf`
+
+---
+
+## Important Notes
+
+- Host filesystem numeric ownership must match the `uidNumber`/`gidNumber` values in KLLDAP for users and groups that should own the data.
+- The management UI exists precisely to make keeping permissions in sync easy and visual.
+- The container hostname should match the instance part of the NFS principal in your keytab.
 
 ---
 
 ## Long-term Vision
 
-One-command deployment from a KLLDAP server, extremely low maintenance for homelab/small business, still powerful for complex multi-share environments with different security requirements per share.
+- One-command deployment directly from a KLLDAP server
+- Extremely low maintenance for homelab and small business environments
+- Still powerful enough for complex multi-share setups with different security and permission requirements per share
 
 ---
 
-**License:** TBD (likely MIT or similar)
+**License:** TBD (likely MIT)

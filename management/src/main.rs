@@ -18,7 +18,7 @@ mod exports;
 mod fs;
 mod ganesha;
 mod llap;
-mod policy;
+
 mod web;
 
 use std::sync::Arc;
@@ -62,6 +62,9 @@ async fn main() {
             .unwrap_or("https://lldap.example.com:6360/api/graphql"),
     );
 
+    // TODO: Replace the placeholder credentials below with real configuration
+    // (e.g. from environment variables or a secrets file). These will cause
+    // LLDAP authentication to fail until you provide valid admin credentials.
     if let Err(e) = lldap
         .authenticate("admin", "your-password-here")
         .await

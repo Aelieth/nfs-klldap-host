@@ -26,9 +26,9 @@ pub struct DirectoryPolicy {
 }
 
 impl DirectoryPolicy {
-    pub fn policy_path_for_share(share_path: &PathBuf) -> PathBuf {
+    pub fn policy_path_for_share(share_path: &std::path::Path) -> PathBuf {
         // Simple convention: next to the directory or in a sidecar location
-        let mut p = share_path.clone();
+        let mut p = share_path.to_path_buf();
         p.set_extension("policy.toml");
         p
     }

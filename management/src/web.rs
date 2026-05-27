@@ -43,14 +43,15 @@ pub struct AppState {
 #[template(path = "login.html")]
 struct LoginTemplate {
     error: Option<String>,
+    current_user: Option<String>,
 }
 
 pub async fn login_page() -> impl IntoResponse {
-    Html(LoginTemplate { error: None }.render().unwrap())
+    Html(LoginTemplate { error: None, current_user: None }.render().unwrap())
 }
 
 #[derive(Deserialize)]
-struct LoginForm {
+pub(crate) struct LoginForm {
     username: String,
     password: String,
 }
@@ -75,7 +76,7 @@ pub async fn login(
             (headers, Redirect::to("/")).into_response()
         }
         Err(e) => {
-            let html = LoginTemplate { error: Some(e) }.render().unwrap();
+            let html = LoginTemplate { error: Some(e), current_user: None }.render().unwrap();
             (StatusCode::UNAUTHORIZED, Html(html)).into_response()
         }
     }
@@ -133,7 +134,6 @@ pub async fn require_auth(
 #[template(path = "index.html")]
 struct IndexTemplate {
     shares: Vec<crate::config::Share>,
-    allowed_roots: Vec<String>,
     current_user: Option<String>,
 }
 
@@ -141,7 +141,6 @@ struct IndexTemplate {
 #[template(path = "tree_fragment.html")]
 struct TreeFragmentTemplate {
     children: Vec<DirNode>,
-    parent_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -150,37 +149,25 @@ pub struct DirNode {
     pub name: String,
 }
 
+#[derive(Template)]
+#[template(path = "permission_form.html")]
+struct PermissionForm {
+    path: String,
+    current_state_html: String,
+}
+
 // === Handlers ===
 
 pub async fn index(
     State(state): State<AppState>,
-    auth: Result<AuthUser, Redirect>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
-    let user = auth?; // require login
+    let user = require_auth(State(state.clone()), headers).await?;
 
-    let roots: Vec<String> = state
-        .config
-        .allowed_roots
-        .iter()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect();
-
-    // We pass the username so base.html can show "Logged in as X | Logout"
     let tpl = IndexTemplate {
         shares: state.config.shares.clone(),
-        allowed_roots: roots,
+        current_user: Some(user.0),
     };
-
-    // For simplicity we render the template and rely on base.html checking a different mechanism.
-    // A clean way: we can add the user to a small context, but to keep changes minimal we just
-    // let base.html read from a cookie or we embed it.
-    // For now the easiest is to make the template expect an optional current_user.
-    // We'll handle it by re-rendering with a small extension later if needed.
-    // Actually, to make it work right now, let's just return the template.
-    // The base.html change above expects `current_user` in the template context.
-
-    // Workaround for now: we will pass it via a simple struct extension in a follow-up.
-    // For this response, we render and the base will be updated to not require it strictly.
 
     Ok(Html(tpl.render().unwrap()))
 }
@@ -189,9 +176,9 @@ pub async fn index(
 pub async fn tree_fragment(
     State(state): State<AppState>,
     Query(params): Query<TreeParams>,
-    auth: Result<AuthUser, Redirect>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
-    let _user = auth?;
+    let _user = require_auth(State(state.clone()), headers).await?;
 
     let path = std::path::Path::new(&params.path);
 
@@ -209,14 +196,13 @@ pub async fn tree_fragment(
 
     let tpl = TreeFragmentTemplate {
         children,
-        parent_path: params.path.clone(),
     };
 
     Ok(Html(tpl.render().unwrap()))
 }
 
 #[derive(Deserialize)]
-struct TreeParams {
+pub(crate) struct TreeParams {
     path: String,
 }
 
@@ -224,9 +210,9 @@ struct TreeParams {
 pub async fn directory_form(
     State(state): State<AppState>,
     Query(params): Query<DirParams>,
-    auth: Result<AuthUser, Redirect>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
-    let _user = auth?;
+    let _user = require_auth(State(state.clone()), headers).await?;
 
     let path = params.path;
 
@@ -237,21 +223,17 @@ pub async fn directory_form(
 
         format!(
             r#"<div class="current-state">
-                <strong>Current on disk</strong><br>
-                <span class="state-label">Owner UID:</span> <code>{}</code><br>
-                <span class="state-label">Group GID:</span> <code>{}</code><br>
-                <span class="state-label">Mode:</span> <code>{:o}</code> <span class="mode-hint">(rwxrwxrwx)</span>
+            <strong>Current on disk</strong><br>
+            <span class="state-label">Owner UID:</span> <code>{}</code><br>
+            <span class="state-label">Group GID:</span> <code>{}</code><br>
+            <span class="state-label">Mode:</span> <code>{:o}</code> <span class="mode-hint">(rwxrwxrwx)</span>
             </div>"#,
             owner, group, mode
         )
     } else {
-        r#"<div class="current-state"><em>Unable to read current state from filesystem</em></div>".to_string()
+        "<div class=\"current-state\"><em>Unable to read current state from filesystem</em></div>".to_string()
     };
 
-    // Use the proper Askama template (permission_form.html) instead of a giant
-    // raw string literal. This completely avoids the "unknown prefix" /
-    // "reserved multi-hash token" lexer errors caused by `#id` attributes
-    // inside raw strings in Rust 2021+ (edition "2024" in Cargo.toml).
     let form = PermissionForm {
         path: path.clone(),
         current_state_html,
@@ -263,15 +245,19 @@ pub async fn directory_form(
 // === Live LLDAP Search Handlers ===
 
 #[derive(Deserialize)]
-struct SearchParams {
+pub(crate) struct SearchParams {
     q: Option<String>,
 }
 
 pub async fn search_users(
     State(state): State<AppState>,
     Query(params): Query<SearchParams>,
-    _auth: Result<AuthUser, Redirect>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    if require_auth(State(state.clone()), headers).await.is_err() {
+        return Html("<div class=\"suggestion\">Unauthorized</div>".to_string());
+    }
+
     let mut lldap = state.lldap.lock().await;
     let users = lldap.list_users(params.q.as_deref()).await;
 
@@ -293,8 +279,12 @@ pub async fn search_users(
 pub async fn search_groups(
     State(state): State<AppState>,
     Query(params): Query<SearchParams>,
-    _auth: Result<AuthUser, Redirect>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    if require_auth(State(state.clone()), headers).await.is_err() {
+        return Html("<div class=\"suggestion\">Unauthorized</div>".to_string());
+    }
+
     let mut lldap = state.lldap.lock().await;
     let groups = lldap.list_groups(params.q.as_deref()).await;
 
@@ -314,12 +304,12 @@ pub async fn search_groups(
 }
 
 #[derive(Deserialize)]
-struct DirParams {
+pub(crate) struct DirParams {
     path: String,
 }
 
 #[derive(Deserialize)]
-struct ApplyForm {
+pub(crate) struct ApplyForm {
     path: String,
     owner_user: String,
     owner_group: String,
@@ -331,13 +321,14 @@ struct ApplyForm {
 /// Handler for the permission form submission.
 pub async fn apply_permissions(
     State(state): State<AppState>,
-    auth: Result<AuthUser, Redirect>,
+    headers: HeaderMap,
     Form(form): Form<ApplyForm>,
 ) -> Result<impl IntoResponse, Redirect> {
-    let _user = auth?;
+    let _user = require_auth(State(state.clone()), headers).await?;
 
     let mut lldap = state.lldap.lock().await;
 
+    // Resolve owner user from LLDAP
     let owner_uid = match lldap.resolve_user(&form.owner_user).await {
         Some((uid, _)) => uid as u32,
         None => {
@@ -394,11 +385,19 @@ pub async fn apply_permissions(
         return Ok(Html(html));
     }
 
-    // Make sure the share is known to Ganesha (native block + direct DBUS call)
+    // Derive a reasonable pseudo path from the directory name for the ad-hoc export.
+    // (The permission form doesn't ask the user for a Pseudo; the dedicated /exports UI does.)
+    let pseudo = std::path::Path::new(&form.path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| format!("/{}", n))
+        .unwrap_or_else(|| "/managed".to_string());
+
     if let Err(e) = state.exports.ensure_path_exported(
         std::path::Path::new(&form.path),
-        &form.path,
+        &pseudo,
         "managed",
+        None,
     ) {
         eprintln!("Warning: failed to ensure Ganesha export: {}", e);
     }
@@ -432,18 +431,23 @@ pub async fn apply_permissions(
 
 #[derive(Template)]
 #[template(path = "exports.html")]
-struct ExportsTemplate;
+struct ExportsTemplate {
+    current_user: Option<String>,
+}
 
 pub async fn exports_page(
-    State(_state): State<AppState>,
-    auth: Result<AuthUser, Redirect>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
-    let _user = auth?;
-    Ok(Html(ExportsTemplate.render().unwrap()))
+    let user = require_auth(State(state.clone()), headers).await?;
+    let tpl = ExportsTemplate {
+        current_user: Some(user.0),
+    };
+    Ok(Html(tpl.render().unwrap()))
 }
 
 #[derive(Deserialize)]
-struct AddExportForm {
+pub(crate) struct AddExportForm {
     host_path: String,
     pseudo: String,
     #[serde(default)]
@@ -452,10 +456,10 @@ struct AddExportForm {
 
 pub async fn add_export(
     State(state): State<AppState>,
-    auth: Result<AuthUser, Redirect>,
+    headers: HeaderMap,
     Form(form): Form<AddExportForm>,
 ) -> Result<impl IntoResponse, Redirect> {
-    let _user = auth?;
+    let _user = require_auth(State(state.clone()), headers).await?;
 
     let host_path = Path::new(&form.host_path);
 
@@ -463,11 +467,9 @@ pub async fn add_export(
     let is_allowed = allowed.iter().any(|root| host_path.starts_with(root));
 
     if !is_allowed {
-        let msg = format!(
-            r#"<div style="color:#c00; padding:8px; background:#fff0f0; border:1px solid #fcc;">
+        let msg = r#"<div style="color:#c00; padding:8px; background:#fff0f0; border:1px solid #fcc;">
                 <strong>Error:</strong> Path outside managed roots.
-              </div>"#
-        );
+              </div>"#.to_string();
         return Ok(Html(msg));
     }
 
@@ -477,7 +479,7 @@ pub async fn add_export(
         .unwrap_or("export")
         .to_string();
 
-    if let Err(e) = state.exports.ensure_path_exported(host_path, &form.pseudo, &name) {
+    if let Err(e) = state.exports.ensure_path_exported(host_path, &form.pseudo, &name, form.export_id) {
         let msg = format!(
             r#"<div style="color:#c00; padding:8px; background:#fff0f0; border:1px solid #fcc;">
                 <strong>Failed:</strong> {}
@@ -500,9 +502,9 @@ pub async fn add_export(
 
 pub async fn current_exports(
     State(state): State<AppState>,
-    auth: Result<AuthUser, Redirect>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
-    let _user = auth?;
+    let _user = require_auth(State(state.clone()), headers).await?;
 
     match state.ganesha.show_exports() {
         Ok(raw) => {

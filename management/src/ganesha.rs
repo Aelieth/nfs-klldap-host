@@ -39,12 +39,6 @@ impl GaneshaClient {
         }
     }
 
-    /// Allow overriding the container runtime (podman, nerdctl, etc.).
-    pub fn with_runtime(mut self, runtime: &str) -> Self {
-        self.runtime = runtime.to_string();
-        self
-    }
-
     /// Add (or update) an export by pointing Ganesha at a fragment file that
     /// already exists inside the container (usually written by us via the
     /// bind-mounted exports directory).
@@ -83,34 +77,6 @@ impl GaneshaClient {
         Ok(())
     }
 
-    /// Remove an export by its numeric Export_Id (obtained via show_exports or
-    /// previously recorded when we created it).
-    pub fn remove_export(&self, export_id: u16) -> Result<(), String> {
-        let output = Command::new(&self.runtime)
-            .args([
-                "exec",
-                &self.container_name,
-                "ganesha-ctl",
-                "remove-export",
-                &export_id.to_string(),
-            ])
-            .output()
-            .map_err(|e| format!("failed to spawn {} exec: {}", self.runtime, e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "ganesha-ctl remove-export {} failed ({}): {}",
-                export_id,
-                output.status,
-                stderr.trim()
-            ));
-        }
-
-        println!("Ganesha: removed export id={}", export_id);
-        Ok(())
-    }
-
     /// Ask Ganesha for the current list of active exports (raw output).
     /// Useful for debugging and for the UI to show "currently exported".
     pub fn show_exports(&self) -> Result<String, String> {
@@ -134,27 +100,6 @@ impl GaneshaClient {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    }
-
-    /// Trigger a config/export reload inside the container.
-    /// This is a secondary path; the primary mechanism is direct Add/RemoveExport.
-    pub fn reload(&self) -> Result<(), String> {
-        let output = Command::new(&self.runtime)
-            .args(["exec", &self.container_name, "ganesha-ctl", "reload"])
-            .output()
-            .map_err(|e| format!("failed to spawn {} exec: {}", self.runtime, e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "ganesha-ctl reload failed ({}): {}",
-                output.status,
-                stderr.trim()
-            ));
-        }
-
-        println!("Ganesha: reload requested");
-        Ok(())
     }
 
     /// Convenience: given a host-side fragment path that we just wrote,

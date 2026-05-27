@@ -86,7 +86,7 @@ impl AuthManager {
         if output.status.success() {
             Ok(())
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let _stderr = String::from_utf8_lossy(&output.stderr);
             // Common sudo failure messages are intentionally vague for security.
             Err(format!("sudo authentication failed for user '{}'.", username))
         }

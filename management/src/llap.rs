@@ -188,17 +188,18 @@ impl LldapClient {
         let first_result = self._execute_query::<T>(query, variables.clone()).await;
 
         match first_result {
-            Ok(data) => return Ok(data),
+            Ok(data) => Ok(data),
             Err(LldapError::Auth(_)) => {
                 // Attempt refresh if we have credentials
                 if let (Some(user), Some(pass)) = (self.username.clone(), self.password.clone()) {
                     self._perform_login(&user, &pass).await?;
                     // Retry once after refresh
-                    return self._execute_query::<T>(query, variables).await;
+                    self._execute_query::<T>(query, variables).await
+                } else {
+                    Err(LldapError::Auth("Token expired and no credentials for refresh".into()))
                 }
-                return Err(LldapError::Auth("Token expired and no credentials for refresh".into()));
             }
-            Err(e) => return Err(e),
+            Err(e) => Err(e),
         }
     }
 
@@ -309,7 +310,7 @@ impl LldapClient {
                 arr.iter().find(|a| {
                     a.get("name")
                         .and_then(|n| n.as_str())
-                        .map_or(false, |s| s == "gidNumber")
+                        == Some("gidNumber")
                 })
             })
             .and_then(|a| a.get("value"))
@@ -344,9 +345,9 @@ impl LldapClient {
         data.users
             .into_iter()
             .filter(|u| {
-                filter.map_or(true, |f| {
+                filter.is_none_or(|f| {
                     u.id.to_lowercase().contains(&f.to_lowercase())
-                        || u.display_name.as_ref().map_or(false, |d| d.to_lowercase().contains(&f.to_lowercase()))
+                        || u.display_name.as_ref().is_some_and(|d| d.to_lowercase().contains(&f.to_lowercase()))
                 })
             })
             .map(|raw| {
@@ -389,9 +390,9 @@ impl LldapClient {
         data.groups
             .into_iter()
             .filter(|g| {
-                filter.map_or(true, |f| {
+                filter.is_none_or(|f| {
                     g.id.to_lowercase().contains(&f.to_lowercase())
-                        || g.display_name.as_ref().map_or(false, |d| d.to_lowercase().contains(&f.to_lowercase()))
+                        || g.display_name.as_ref().is_some_and(|d| d.to_lowercase().contains(&f.to_lowercase()))
                 })
             })
             .map(|raw| {

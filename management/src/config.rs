@@ -21,10 +21,6 @@ pub struct Share {
     /// This becomes the `Pseudo` (and usually `Path` inside the container) in the EXPORT block.
     pub export_path: String,
 
-    /// Optional stable Export_Id for Ganesha RemoveExport / management.
-    /// If omitted, the tool will pick one based on a simple hash or you can assign them manually.
-    #[serde(default)]
-    pub export_id: Option<u16>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -126,7 +122,6 @@ impl Config {
                     name: format!("{}-{}", name, i + 1),
                     host_path: root.clone(),
                     export_path: format!("/{}", name),
-                    export_id: None,
                 });
             }
         }
@@ -147,13 +142,11 @@ impl Config {
                     name: "share1".to_string(),
                     host_path: PathBuf::from("/srv/nfs/share1"),
                     export_path: "/share1".to_string(),
-                    export_id: Some(1001),
                 },
                 Share {
                     name: "share2".to_string(),
                     host_path: PathBuf::from("/srv/nfs/share2"),
                     export_path: "/share2".to_string(),
-                    export_id: Some(1002),
                 },
             ];
         }

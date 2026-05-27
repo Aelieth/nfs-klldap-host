@@ -132,21 +132,20 @@ impl Config {
         }
 
         if cfg.allowed_roots.is_empty() && cfg.shares.is_empty() {
-            // Last-resort dev defaults
+            // Last-resort dev defaults — realistic for attached-drive only environments
             cfg.allowed_roots = vec![
                 PathBuf::from("/media"),
-                PathBuf::from("/srv/nfs"),
             ];
             cfg.shares = vec![
                 Share {
-                    name: "share1".to_string(),
-                    host_path: PathBuf::from("/srv/nfs/share1"),
-                    export_path: "/share1".to_string(),
+                    name: "project-alpha".to_string(),
+                    host_path: PathBuf::from("/media/SSD-01/project-alpha"),
+                    export_path: "/project-alpha".to_string(),
                 },
                 Share {
-                    name: "share2".to_string(),
-                    host_path: PathBuf::from("/srv/nfs/share2"),
-                    export_path: "/share2".to_string(),
+                    name: "backups".to_string(),
+                    host_path: PathBuf::from("/media/SSD-01/backups"),
+                    export_path: "/backups".to_string(),
                 },
             ];
         }

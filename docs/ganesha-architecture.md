@@ -15,14 +15,14 @@ NFS-Ganesha (user-space) is the production-grade solution that delivers:
 - Full NFSv4 (including 4.1/4.2)
 - Excellent Kerberos/GSS support (`sec=krb5p` etc.) for user-only tickets
 - FSAL_VFS for directly exporting host directories that are bind-mounted in
-- Dynamic export management via DBUS (`org.ganesha.nfsd.exportmgr`)
+- Self-contained dynamic export management via inotify watcher + supervisor restart (no DBUS, no host socket mount required)
 - No dependency whatsoever on host kernel NFS modules
 
 ## Current Architecture
 
 ```
 Host (no kernel NFS modules required anywhere)
-├── Real data directories          (/srv/nfs/*, /media/*, etc.)
+├── Real data directories          (/media/SSD-01/*, /mnt/disk*/* — attached drives only)
 │   └── Numeric uid/gid ownership must match LLDAP uidNumber/gidNumber
 ├── ganesha-exports.d/             (native Ganesha EXPORT {} blocks)
 ├── templates/                     (sssd.conf.template, krb5.conf.template, ganesha.conf.template)
@@ -43,14 +43,14 @@ Container (AlmaLinux 10)
 The management tool (host) and container work together as a "one stop NFS plugin":
 
 - LLDAP is the source of truth for identity and POSIX attributes.
-- The container serves Kerberized NFSv4.
+- The container serves Kerberized NFSv4 and **manages its own export reloads** via the internal `ganesha-export-watcher` (no DBUS, no host socket required).
 - The web UI lets administrators manage shares and any subdirectory permissions visually.
 
 ## Key Technical Choices
 
 - **No kernel NFS** in the image or entrypoint.
 - **Native Ganesha EXPORT blocks** (not classic `/etc/exports`).
-- **Direct DBUS management** via the `ganesha-ctl` wrapper (the management tool calls `docker exec ... ganesha-ctl add-export ...` etc.).
+- **Self-contained file-based management**: the management tool writes `EXPORT {}` fragments into the bind-mounted exports directory. The container's `ganesha-export-watcher` (inotify) detects changes and restarts Ganesha. No DBUS and no host socket mount are required. This is the primary path for ZimaOS and locked-down appliances.
 - **SSSD** as the bridge to LLDAP POSIX attributes (`uidNumber`, `gidNumber`).
 - **Templates + envsubst** for clean, host-driven configuration.
 - **Share-centric UI** — each share has its own browsable tree; any subfolder can have its POSIX ownership changed with live LLDAP lookup + recursive apply.
@@ -59,9 +59,9 @@ The management tool (host) and container work together as a "one stop NFS plugin
 
 Ganesha supports fully dynamic add/remove of exports at runtime via the DBUS interface `org.ganesha.nfsd.exportmgr` (`AddExport`, `RemoveExport`, `ShowExports`, etc.).
 
-The project ships a small `ganesha-ctl` helper inside the container that the host tool (and operators) can invoke via `docker exec`. This is the preferred mechanism. A simple SIGHUP path is also supported as a fallback.
+The project ships a small `ganesha-ctl` helper inside the container (now file-based, no DBUS) and a `ganesha-export-watcher` script. The host tool simply writes fragment files into the bind-mounted directory. The watcher detects changes and restarts Ganesha. This design works on ZimaOS and other locked-down platforms that cannot expose a host DBUS socket.
 
-See `container/scripts/ganesha-ctl` and the management tool's `ganesha.rs` / `exports.rs` for implementation details.
+See `container/scripts/ganesha-export-watcher`, `container/scripts/ganesha-ctl`, and the management tool's `exports.rs` for details.
 
 ## Configuration
 
@@ -86,15 +86,18 @@ The old kernel-oriented commands (`rpc.idmapd -f -vvv`, `exportfs -s`, `rpcinfo`
 ```yaml
 cap_add: [SYS_ADMIN, DAC_READ_SEARCH]
 volumes:
-  - /srv/nfs/myshare:/export/myshare:rw
+  # All data lives on attached/media drives (example)
+  - /media/SSD-01/project-alpha:/export/project-alpha:rw
+  - /media/SSD-01/backups:/export/backups:rw
+
   - ./ganesha-exports.d:/etc/ganesha/exports.d:rw
   - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
   - ./templates:/container/templates:ro
-  - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:rw   # required for direct management
+  # No DBUS socket mount is required. The container is fully self-contained.
 ```
 
 ## Summary
 
 This document now describes the **final** architecture. The kernel NFS path has been fully removed. The system is a clean, pluggable, LLDAP-backed Kerberized NFSv4 appliance that can be dropped onto any Linux host.
 
-All future development, documentation, and tooling should assume Ganesha + direct DBUS management + share-centric LLDAP permission editing.
+All future development, documentation, and tooling should assume Ganesha + self-contained inotify watcher (no DBUS) + share-centric LLDAP permission editing. The direct DBUS path is no longer used or required.

@@ -27,7 +27,7 @@
 <h3 id="current-share-title" style="margin-top: 0.5rem;">Directory tree</h3>
 
 <div id="tree-root"
-     hx-get="/tree?path={% if shares.len() > 0 %}{{ shares[0].host_path.display() }}{% else %}/srv/nfs{% endif %}"
+     hx-get="/tree?path={% if shares.len() > 0 %}{{ shares[0].host_path.display() }}{% else %}/media{% endif %}"
      hx-trigger="load"
      hx-swap="innerHTML">
     Loading tree...

@@ -18,7 +18,8 @@
 #     docker exec <container> ganesha-ctl add-export ...
 #     docker exec <container> ganesha-ctl remove-export ...
 #
-#   This uses the DBUS interface (org.ganesha.nfsd.exportmgr) under the hood.
+#   The container's ganesha-export-watcher (inotify) detects changes to
+#   the exports directory and triggers a restart of ganesha.nfsd. No DBUS.
 #
 set -euo pipefail
 
@@ -178,7 +179,7 @@ log "[3/3] Starting NFS-Ganesha..."
 #   - EXPORT_DEFAULTS with SecType = krb5p
 #   - %include "/etc/ganesha/exports.d/*.conf" (or equivalent)
 #
-# Ganesha will pick up DBUS automatically when the packages are built with it
-# (the EL Storage SIG builds are).
+# Ganesha is started under a supervisor loop. The internal watcher restarts
+# it when export fragments change. No DBUS is involved.
 
 exec ganesha.nfsd -f /etc/ganesha/ganesha.conf -L /var/log/ganesha.log

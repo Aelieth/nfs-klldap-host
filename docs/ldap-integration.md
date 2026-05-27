@@ -105,6 +105,7 @@ klist -k /etc/krb5.keytab
 # 5. Quick end-to-end test from a client with a user ticket
 kinit alice
 mount -t nfs4 -o sec=krb5p nfs-server-01.example.com:/project-alpha /mnt/test
+# (data for /project-alpha lives on an attached drive such as /media/SSD-01/project-alpha on the server)
 ls -l /mnt/test
 ```
 
@@ -125,8 +126,7 @@ ls -l /mnt/test
 - Run the container with `SSSD_DEBUG_LEVEL=7` and look at the logs.
 
 **Direct management (ganesha-ctl) not working**
-- The host DBUS socket is not mounted into the container (`/run/dbus/system_bus_socket`).
-- The DBUS policy file for Ganesha is missing or too restrictive.
+- (Historical) The host DBUS socket is not mounted into the container. This is no longer required or used. The container is fully self-contained.
 
 ## 5. Client-side Considerations
 
@@ -139,16 +139,16 @@ This gives nice `ls` output (names instead of numbers) and improves some applica
 1. Create the user + POSIX attributes (`uidNumber`, `gidNumber`, etc.) in LLDAP.
 2. Use the management web UI (or the privileged helper directly) to `chown`/`chmod` the host directories so the numeric IDs match LLDAP.
 3. Define the share in the management tool's `config.toml` (or drop a fragment into `ganesha-exports.d/`).
-4. The tool writes a native Ganesha `EXPORT {}` block and calls `ganesha-ctl add-export` (direct DBUS).
+4. The tool writes a native Ganesha `EXPORT {}` fragment into the bind-mounted exports directory. The container's internal `ganesha-export-watcher` detects the change and restarts Ganesha (no DBUS involved).
 5. Verify with the commands in section 3 and from a Kerberized client.
 
 ## References
 
 - Current templates: `container/templates/`
-- `ganesha-ctl` wrapper and DBUS policy: `container/scripts/`, `container/dbus/`
+- `ganesha-ctl` (now file-based) and `ganesha-export-watcher`: `container/scripts/`
 - Management tool source: `management/`
 - LLDAP documentation (POSIX attributes + GraphQL)
 
 ---
 
-This document is intentionally practical. For deeper SSSD tuning see `sssd.conf(5)`. For Ganesha runtime management see the official DBUS export manager documentation.
+This document is intentionally practical. For deeper SSSD tuning see `sssd.conf(5)`. Ganesha export changes are now handled entirely inside the container via the inotify watcher + supervisor restart (no DBUS).

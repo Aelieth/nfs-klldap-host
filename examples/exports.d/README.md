@@ -29,6 +29,6 @@ After adding a file, either:
 - Restart the container, or
 - Run: `docker exec alma-nfs-kerb ganesha-ctl add-export /etc/ganesha/exports.d/10-example.conf "EXPORT(Path=/example)"`
 
-The `ganesha-ctl` wrapper (shipped in the image) talks to Ganesha's DBUS management interface.
+The `ganesha-ctl` helper (shipped in the image) is now file-based (no DBUS). It lets operators inspect and remove export fragments from inside the container. The container's `ganesha-export-watcher` automatically restarts Ganesha when fragments are added or removed.
 
 **Note:** The old kernel-style `*.exports` files are no longer used. This project is Ganesha-only.

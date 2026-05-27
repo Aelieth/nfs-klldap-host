@@ -4,7 +4,9 @@
 #
 # This is the Ganesha-only version. The tool now:
 # - Manages native Ganesha EXPORT {} blocks (not classic kernel exports)
-# - Speaks directly to Ganesha inside the container via ganesha-ctl (DBUS)
+# - Writes EXPORT fragments into ganesha_exports_dir. The container's internal
+#   ganesha-export-watcher (inotify) detects changes and restarts Ganesha.
+#   No DBUS or host socket mount is required (works on ZimaOS and locked-down appliances).
 # - Presents a share-centric UI for browsing and setting POSIX permissions
 #   on any subdirectory under each share (with LLDAP user/group lookup + recursive apply)
 # =============================================================================
@@ -12,10 +14,14 @@
 # -----------------------------------------------------------------------------
 # Security boundary: directories the tool is allowed to touch for chown/chmod.
 # The privileged helper will refuse anything outside these roots.
+#
+# On ZimaOS / locked-down appliances only attached/media drives are used.
+# Typical paths look like /media/SSD-01, /media/USB-01, /mnt/disk1, etc.
+# System paths such as /srv/nfs do not exist or are not used for exports.
 # -----------------------------------------------------------------------------
 allowed_roots = [
     "/media/SSD-01",
-    "/srv/nfs",
+    "/media/USB-01",
 ]
 
 # -----------------------------------------------------------------------------
@@ -52,9 +58,11 @@ ganesha_exports_dir = "./ganesha-exports.d"
 # The host_path must exist on the Docker host and be bind-mounted into the
 # NFS container at the corresponding container path.
 # -----------------------------------------------------------------------------
+# All shares come from attached/media drives.
+# The paths below are realistic for a ZimaOS-style environment.
 [[shares]]
 name = "project-alpha"
-host_path = "/srv/nfs/project-alpha"
+host_path = "/media/SSD-01/project-alpha"
 export_path = "/project-alpha"
 export_id = 1001
 
@@ -64,5 +72,6 @@ host_path = "/media/SSD-01/backups"
 export_path = "/backups"
 export_id = 1002
 
-# Add more shares as needed. Each one appears in the UI as its own top-level
-# item with its own expandable directory tree underneath.
+# Add more shares as needed (all from attached drives).
+# Each one appears in the UI as its own top-level item with its own
+# expandable directory tree underneath.

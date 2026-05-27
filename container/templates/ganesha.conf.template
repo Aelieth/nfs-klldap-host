@@ -9,7 +9,8 @@
 # - This file includes them via %include (glob supported in Ganesha 7+).
 # - The management tool can also speak directly to Ganesha at runtime
 #   using: docker exec <container> ganesha-ctl add-export ...
-#   (which calls the DBUS org.ganesha.nfsd.exportmgr interface).
+#   The container's internal ganesha-export-watcher (inotify) detects changes
+#   to this directory and restarts ganesha.nfsd so the new exports are loaded.
 #
 # No kernel NFS modules are required on the host.
 #
@@ -20,11 +21,9 @@ NFS_CORE_PARAM {
     # NFSv4 only (recommended for this project; v3 can be added if truly needed)
     Protocols = 4;
 
-    # Enable the DBUS management interface.
-    # This is what allows the host management tool to add/remove exports
-    # at runtime without restarting Ganesha.
-    # The EL Storage SIG packages are built with DBUS support.
-    # DBUS_Name = org.ganesha.nfsd;   # default is usually fine
+    # No DBUS management interface is used.
+    # Export changes are handled entirely by the container's internal
+    # ganesha-export-watcher (inotify + supervisor restart loop).
 }
 
 NFSv4 {
@@ -86,7 +85,8 @@ EXPORT_DEFAULTS {
 #   docker exec <container> ganesha-ctl add-export /etc/ganesha/exports.d/10-xxx.conf "EXPORT(Path=/...)"
 #   docker exec <container> ganesha-ctl remove-export <export_id>
 #
-# The ganesha-ctl wrapper talks to the DBUS interface under the hood.
+# The ganesha-ctl helper is now file-based (show-exports lists fragments,
+# remove-export deletes them). The watcher handles reloads. No DBUS.
 # -----------------------------------------------------------------------------
 %include "/etc/ganesha/exports.d/*.conf"
 

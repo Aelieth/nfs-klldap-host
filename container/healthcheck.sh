@@ -38,13 +38,11 @@ else
     fi
 fi
 
-# 3. Quick check that the management interface is at least responsive
-# (ganesha-ctl show-exports will fail if DBUS/Ganesha is broken)
+# 3. Quick check that at least one export fragment exists (optional but useful).
+# In the self-contained watcher model we no longer rely on DBUS.
 if command -v /usr/local/bin/ganesha-ctl >/dev/null 2>&1; then
     if ! /usr/local/bin/ganesha-ctl show-exports >/dev/null 2>&1; then
-        # Not fatal for basic health — Ganesha may just have no exports yet.
-        # We only warn.
-        echo "WARN: ganesha-ctl show-exports failed (DBUS or no exports yet?)"
+        echo "WARN: ganesha-ctl show-exports reported no exports (or tool unavailable)"
     fi
 fi
 

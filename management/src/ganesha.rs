@@ -1,18 +1,17 @@
-//! Ganesha management client.
+//! Ganesha management client (optional direct path).
 //!
-//! This module lets the host-side management tool speak *directly* to the
-//! running NFS-Ganesha instance inside the container using the `ganesha-ctl`
-//! wrapper (which in turn talks to the DBUS `org.ganesha.nfsd.exportmgr`
-//! interface).
+//! In the default self-contained mode (recommended for ZimaOS and locked-down
+//! environments) the management tool does **not** use this path. It simply
+//! writes native `EXPORT {}` fragments into the bind-mounted exports directory.
+//! The container's internal `ganesha-export-watcher` (inotify) detects the
+//! change and restarts ganesha.nfsd.
 //!
-//! This fulfills the design goal: "management tool speaks directly to
-//! Ganesha's management interface" instead of only doing SIGHUP + exportfs.
+//! This module still exists for users who can mount the host DBUS socket and
+//! want the old direct `docker exec ... ganesha-ctl` behavior. It is disabled
+//! by default (`direct_ganesha_management = false` in config.toml).
 //!
-//! The tool invokes commands of the form:
-//!   docker exec <container> ganesha-ctl add-export /etc/ganesha/exports.d/10-foo.conf "EXPORT(Path=/foo)"
-//!   docker exec <container> ganesha-ctl remove-export 42
-//!
-//! We use std::process::Command so we do not need a DBUS crate in the tool itself.
+//! When enabled, the tool invokes `ganesha-ctl` (now a file-based helper)
+//! via `docker exec`. No DBUS crate is needed in the tool.
 
 use std::path::Path;
 use std::process::Command;

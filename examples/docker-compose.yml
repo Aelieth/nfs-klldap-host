@@ -38,39 +38,40 @@ services:
 
     volumes:
       # ---------------------------------------------------------------------
-      # Your actual data (bind-mounted from host). These become the NFS shares.
+      # Your actual data — bind-mounted from *attached/media drives only*.
+      #
+      # On ZimaOS (and similar locked-down appliances) there are no "system"
+      # export roots like /srv/nfs. All real data lives on attached drives
+      # that appear under /media/... or similar paths at runtime.
+      #
       # The numeric uid/gid on these directories MUST match the uidNumber/gidNumber
       # values in your LLDAP POSIX attributes for the users/groups that should
       # own the data.
       # ---------------------------------------------------------------------
-      - /srv/nfs/share1:/export/share1:rw
-      - /srv/nfs/share2:/export/share2:rw
-      # Add more as needed...
+      - /media/SSD-01/project-alpha:/export/project-alpha:rw
+      - /media/SSD-01/backups:/export/backups:rw
+      # Add more attached-drive paths as needed...
 
       # ---------------------------------------------------------------------
-      # Ganesha export definitions (NATIVE Ganesha blocks, not classic exports)
+      # Ganesha export definitions (NATIVE Ganesha blocks)
       #
       # The management tool writes files here containing EXPORT { ... } blocks.
-      # The container (and ganesha-ctl) reads them.
-      #
-      # You can also drop hand-written .conf files here for static exports.
+      # The container's internal ganesha-export-watcher reads them and restarts
+      # ganesha.nfsd when they change. No DBUS required.
       # ---------------------------------------------------------------------
       - ./ganesha-exports.d:/etc/ganesha/exports.d:rw
 
       # ---------------------------------------------------------------------
-      # Kerberos keytab containing the NFS service principal:
-      #   nfs/<hostname>@YOUR.REALM
+      # Kerberos keytab + templates can live on an attached drive.
       #
-      # This must be mode 600 and owned by root inside the container.
+      # Example (if your keytab and templates are on the same SSD as the data):
+      #   - /media/SSD-01/secrets/krb5.keytab:/etc/krb5.keytab:ro
+      #   - /media/SSD-01/templates:/container/templates:ro
+      #
+      # Below are the classic "files next to the compose file" locations,
+      # which also work fine.
       # ---------------------------------------------------------------------
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
-
-      # ---------------------------------------------------------------------
-      # Templates (sssd.conf.template, krb5.conf.template, ganesha.conf.template)
-      #
-      # The container renders these on every start unless you bind-mount
-      # final versions directly to /etc/... (see below).
-      # ---------------------------------------------------------------------
       - ./templates:/container/templates:ro
 
       # ---------------------------------------------------------------------
@@ -86,15 +87,17 @@ services:
       # - ./secrets/ca.crt:/etc/ssl/certs/ca-bundle.crt:ro
 
       # ---------------------------------------------------------------------
-      # CRITICAL for "management tool speaks directly to Ganesha":
+      # No DBUS mount is required.
       #
-      # Mount the host's system DBUS socket so the container can talk to
-      # the real org.ganesha.nfsd service and the management tool (via
-      # "docker exec ... ganesha-ctl") can add/remove exports at runtime.
+      # The container is fully self-contained. It runs `ganesha-export-watcher`
+      # (inotify) internally. When the management tool (or an admin) writes
+      # a new EXPORT fragment into the bind-mounted ./ganesha-exports.d/
+      # directory, the watcher detects the change and restarts ganesha.nfsd
+      # so the new exports are loaded.
       #
-      # Path may vary on your distro (sometimes /var/run/dbus/...).
+      # This design is required for ZimaOS and other locked-down environments
+      # that cannot expose the host DBUS socket or certain internal paths.
       # ---------------------------------------------------------------------
-      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:rw
 
     environment:
       # No mandatory variables. Everything is driven by templates + files.

@@ -32,7 +32,9 @@ struct Request {
 
 /// Hardcoded allowed roots for now. In production this should come from a
 /// root-owned config file that the helper reads.
-const ALLOWED_ROOTS: &[&str] = &["/media/SSD-01", "/srv/nfs"];
+// On ZimaOS / locked-down appliances only attached/media drives are used.
+// System paths such as /srv/nfs do not exist for exports.
+const ALLOWED_ROOTS: &[&str] = &["/media/SSD-01", "/media/USB-01", "/mnt"];
 
 fn is_path_allowed(path: &Path) -> bool {
     ALLOWED_ROOTS.iter().any(|root| path.starts_with(root))

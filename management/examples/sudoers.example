@@ -6,12 +6,13 @@
 # Install with:  visudo -f /etc/sudoers.d/nfs-mgmt
 
 # Allow the management user to change ownership only on specific shares
+# All paths are on attached/media drives only (no /srv/nfs style system paths)
 nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chown [0-9]*:[0-9]* /media/SSD-01/**
-nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chown [0-9]*:[0-9]* /srv/nfs/**
+nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chown [0-9]*:[0-9]* /media/USB-01/**
 
 # Allow changing permissions only on specific shares
 nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chmod [0-7]* /media/SSD-01/**
-nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chmod [0-7]* /srv/nfs/**
+nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chmod [0-7]* /media/USB-01/**
 
 # Optional: allow triggering re-export on the container
 nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/docker kill -s HUP nfs-kerb

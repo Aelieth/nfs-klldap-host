@@ -10,7 +10,8 @@
 //!     1. Resolve names via LLDAP
 //!     2. chown/chmod via privileged helper (recursive supported)
 //!     3. Write/update native Ganesha EXPORT {} block for the share
-//!     4. Speak directly to Ganesha inside the container (ganesha-ctl + DBUS)
+//!     4. (Optional) Speak directly to Ganesha via ganesha-ctl (only when
+//!        direct_ganesha_management = true and the host can mount DBUS)
 
 mod auth;
 mod config;

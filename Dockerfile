@@ -21,10 +21,6 @@ LABEL org.opencontainers.image.source="https://github.com/your-org/alma_nfs-kerb
 # Kerberos client:
 #   krb5-workstation + krb5-libs      : kinit, klist, gss support for Ganesha
 #
-# DBUS (critical for "management tool speaks directly to Ganesha"):
-#   dbus + dbus-tools                 : Allows ganesha-ctl / management tool to call
-#                                       org.ganesha.nfsd.exportmgr at runtime
-#
 # Misc:
 #   gettext (envsubst) for template rendering
 #   Debugging / ops tools
@@ -45,11 +41,9 @@ RUN dnf install -y epel-release && \
         # === Kerberos client (for Ganesha NFS_KRB5 + GSS) ===
         krb5-workstation \
         krb5-libs \
-        # === DBUS (enables direct runtime export management) ===
-        dbus \
-        dbus-tools \
-        # === Templating + ops ===
+        # === Templating + ops + self-contained export watching (no DBUS) ===
         gettext \
+        inotify-tools \
         procps-ng \
         iproute \
         net-tools \
@@ -69,14 +63,7 @@ RUN mkdir -p \
     /etc/sssd \
     /var/lib/sss \
     /container/templates \
-    /container/scripts \
-    /container/dbus
-
-# -----------------------------------------------------------------------------
-# Copy Ganesha DBUS policy (allows root processes to manage exports at runtime)
-# This is required for ganesha-ctl and the host management tool to work.
-# -----------------------------------------------------------------------------
-COPY container/dbus/org.ganesha.nfsd.conf /etc/dbus-1/system.d/org.ganesha.nfsd.conf
+    /container/scripts
 
 # -----------------------------------------------------------------------------
 # Copy templates (sssd, krb5, ganesha.conf, etc.)

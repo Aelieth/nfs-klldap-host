@@ -1,24 +1,40 @@
 #!/bin/bash
 #
-# ganesha-ctl - Thin wrapper around NFS-Ganesha DBUS management interface.
+# ganesha-ctl - DBUS-free management helper for NFS-Ganesha (self-contained mode).
 #
-# This script is intended to be called from the host via:
-#   docker exec <container> ganesha-ctl <command> [args...]
+# This script is the supported way to inspect and manage exports from inside
+# the container (or via `docker exec` / `podman exec` from the host).
 #
-# It lets the management tool speak directly to Ganesha's runtime export manager
-# without the tool needing to speak DBUS natively.
+# Because we no longer rely on DBUS (required for locked-down environments
+# such as ZimaOS where the host DBUS socket cannot be mounted), the old
+# org.ganesha.nfsd.exportmgr calls are gone.
+#
+# Instead:
+#   - The source of truth is the directory /etc/ganesha/exports.d/
+#   - Any *.conf file containing one or more EXPORT {} blocks is loaded
+#   - The ganesha-export-watcher (running inside the container) detects
+#     filesystem changes and restarts ganesha.nfsd so the new config is used.
 #
 # Commands:
-#   add-export <config_file> [search_expr]   - Add (or update) export(s) from file
-#   remove-export <export_id>                - Remove export by numeric ID
-#   show-exports                             - List active exports
-#   reload                                   - Ask Ganesha to reload config (where supported)
+#   add-export <file> [name]     - Deprecated / no-op. The watcher handles changes.
+#                                  The file should already be in exports.d/.
+#   remove-export <name-or-id>   - Best-effort removal: delete the matching
+#                                  fragment file (e.g. "10-myshare" or "myshare").
+#   show-exports                 - List all current export fragments (the real state).
+#   reload                       - Force an immediate restart of ganesha.nfsd
+#                                  so it re-reads exports.d/.
 #
-# The search expression for AddExport is typically something like:
-#   "EXPORT(Path=/export/myshare)"
-#   or "EXPORT(export_id=101)"
+# Typical interactive use from the host:
+#   docker exec alma-nfs-kerb ganesha-ctl show-exports
+#   docker exec alma-nfs-kerb ganesha-ctl reload
 #
+# The management tool (Rust) normally just writes files into the bind-mounted
+# exports.d directory. The container takes care of the rest.
+#
+
 set -euo pipefail
+
+EXPORTS_DIR="/etc/ganesha/exports.d"
 
 log() {
     echo "[ganesha-ctl] $*"
@@ -29,91 +45,150 @@ die() {
     exit 1
 }
 
-# Ensure we have dbus-send
-if ! command -v dbus-send >/dev/null 2>&1; then
-    die "dbus-send not found in PATH. Is dbus installed in the container?"
-fi
+usage() {
+    cat <<EOF
+ganesha-ctl - NFS-Ganesha management helper (DBUS-free / self-contained)
+
+Usage:
+  ganesha-ctl add-export <file> [name]     # (no-op, watcher-driven)
+  ganesha-ctl remove-export <name-or-id>   # delete matching fragment
+  ganesha-ctl show-exports                 # list current exports.d/*.conf
+  ganesha-ctl reload                       # restart ganesha to pick up changes
+
+The container watches exports.d/ internally using inotify and restarts
+ganesha.nfsd automatically when fragments are added, changed, or removed.
+No host DBUS socket is required.
+EOF
+}
+
+# Best-effort mapping from a user-supplied name/id to a fragment filename.
+# Accepts things like "10-myshare", "myshare", "project-alpha", or even an old numeric ID.
+resolve_fragment() {
+    local name="$1"
+    local candidate
+
+    # Direct filename match
+    for ext in conf cfg; do
+        candidate="${EXPORTS_DIR}/${name}.${ext}"
+        if [ -f "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+
+    # Try with numeric prefix stripped (common pattern: 10-myshare.conf)
+    for f in "${EXPORTS_DIR}"/*.conf "${EXPORTS_DIR}"/*.cfg; do
+        [ -f "$f" ] || continue
+        base=$(basename "$f" | sed 's/\.[^.]*$//')
+        if [ "$base" = "$name" ] || [[ "$base" == *"-${name}" ]] || [[ "$base" == *"${name}" ]]; then
+            echo "$f"
+            return 0
+        fi
+    done
+
+    # Last resort: try to find any file whose content mentions the name as Path or Pseudo
+    for f in "${EXPORTS_DIR}"/*.conf "${EXPORTS_DIR}"/*.cfg; do
+        [ -f "$f" ] || continue
+        if grep -qE "(Path|Pseudo)\s*=\s*[^;]*${name}" "$f" 2>/dev/null; then
+            echo "$f"
+            return 0
+        fi
+    done
+
+    echo ""
+}
 
 CMD="${1:-}"
 shift || true
 
 case "$CMD" in
     add-export)
-        # Usage: ganesha-ctl add-export /etc/ganesha/exports.d/10-myshare.conf "EXPORT(Path=/export/myshare)"
+        # In the self-contained world this is mostly a no-op.
+        # The management tool (or admin) is expected to write the file directly
+        # into the bind-mounted exports.d directory. The watcher will notice.
         FILE="${1:-}"
-        EXPR="${2:-EXPORT(Path=*)}"
+        NAME="${2:-}"
 
-        if [ ! -f "$FILE" ]; then
-            die "Export config file not found: $FILE"
+        if [ -z "$FILE" ]; then
+            die "Usage: ganesha-ctl add-export <file-in-exports.d> [name]"
         fi
 
-        log "AddExport file=$FILE expr=$EXPR"
+        if [ ! -f "$FILE" ]; then
+            # Allow calling with just a basename; look it up in exports.d
+            if [ -f "${EXPORTS_DIR}/$(basename "$FILE")" ]; then
+                FILE="${EXPORTS_DIR}/$(basename "$FILE")"
+            else
+                die "Fragment file not found: $FILE (did you write it into ${EXPORTS_DIR}?)"
+            fi
+        fi
 
-        dbus-send --system --print-reply --dest=org.ganesha.nfsd \
-            /org/ganesha/nfsd/ExportMgr \
-            org.ganesha.nfsd.exportmgr.AddExport \
-            string:"$FILE" \
-            string:"$EXPR" \
-            2>&1 || die "AddExport failed (is Ganesha running and DBUS socket mounted?)"
+        log "add-export received for $FILE"
+        log "In self-contained mode the ganesha-export-watcher will pick this up automatically."
+        log "If you just wrote the file from outside, the change should already be processing."
+        log "You can force an immediate reload with: ganesha-ctl reload"
         ;;
 
     remove-export)
-        # Usage: ganesha-ctl remove-export 101
-        ID="${1:-}"
+        # Best effort: delete the fragment file that matches the given name or old ID.
+        TARGET="${1:-}"
 
-        if [ -z "$ID" ]; then
-            die "Usage: ganesha-ctl remove-export <export_id>"
+        if [ -z "$TARGET" ]; then
+            die "Usage: ganesha-ctl remove-export <name-or-fragment>"
         fi
 
-        log "RemoveExport id=$ID"
+        FRAG=$(resolve_fragment "$TARGET")
 
-        dbus-send --system --print-reply --dest=org.ganesha.nfsd \
-            /org/ganesha/nfsd/ExportMgr \
-            org.ganesha.nfsd.exportmgr.RemoveExport \
-            uint16:"$ID" \
-            2>&1 || die "RemoveExport failed"
+        if [ -z "$FRAG" ] || [ ! -f "$FRAG" ]; then
+            log "No fragment found matching '$TARGET' under ${EXPORTS_DIR}"
+            log "Nothing to remove. Current fragments:"
+            ls -1 "${EXPORTS_DIR}"/*.conf "${EXPORTS_DIR}"/*.cfg 2>/dev/null || echo "  (directory empty)"
+            exit 0
+        fi
+
+        log "Removing fragment: $FRAG"
+        rm -f "$FRAG" || die "Failed to remove $FRAG"
+
+        log "Fragment removed. Triggering reload so ganesha drops the export..."
+        pkill -TERM ganesha.nfsd 2>/dev/null || true
+        log "Done. ganesha will restart and the export will be gone."
         ;;
 
     show-exports)
-        log "ShowExports"
+        log "Current export fragments in ${EXPORTS_DIR}:"
 
-        dbus-send --system --print-reply --dest=org.ganesha.nfsd \
-            /org/ganesha/nfsd/ExportMgr \
-            org.ganesha.nfsd.exportmgr.ShowExports \
-            2>&1 || die "ShowExports failed"
+        shopt -s nullglob
+        files=( "${EXPORTS_DIR}"/*.conf "${EXPORTS_DIR}"/*.cfg )
+        shopt -u nullglob
+
+        if [ ${#files[@]} -eq 0 ]; then
+            echo "  (no export fragments found)"
+            exit 0
+        fi
+
+        for f in "${files[@]}"; do
+            echo ""
+            echo "=== $(basename "$f") ==="
+            # Show the file with line numbers for easy reading
+            cat -n "$f"
+        done
+        echo ""
+        log "These fragments are the source of truth. Ganesha is (re)started by the internal watcher when they change."
         ;;
 
     reload)
-        # Some Ganesha builds support a config reload signal or admin method.
-        # We fall back to a no-op hint if not available.
-        log "Requesting config reload (if supported by this Ganesha build)..."
-
-        # Try the admin interface reload if present
-        dbus-send --system --print-reply --dest=org.ganesha.nfsd \
-            /org/ganesha/nfsd/admin \
-            org.ganesha.nfsd.admin.reload 2>&1 || true
-
-        # Also try SIGHUP to the ganesha process (harmless if it only adds)
-        pkill -HUP ganesha.nfsd 2>/dev/null || true
-
-        log "Reload request sent."
+        log "Requesting immediate Ganesha restart (self-contained watcher path)..."
+        # Prefer the dedicated watcher trigger if present
+        if [ -x /usr/local/bin/ganesha-export-watcher ]; then
+            /usr/local/bin/ganesha-export-watcher reload || true
+        else
+            pkill -TERM ganesha.nfsd 2>/dev/null || true
+        fi
+        log "Reload triggered. Supervisor will restart ganesha.nfsd and it will re-read exports.d/."
         ;;
 
     *)
-        cat <<EOF
-ganesha-ctl - NFS-Ganesha management helper
-
-Usage:
-  ganesha-ctl add-export <file> [search_expr]
-  ganesha-ctl remove-export <export_id>
-  ganesha-ctl show-exports
-  ganesha-ctl reload
-
-Examples:
-  ganesha-ctl add-export /etc/ganesha/exports.d/10-myshare.conf "EXPORT(Path=/export/myshare)"
-  ganesha-ctl remove-export 42
-  ganesha-ctl show-exports
-EOF
+        usage
         exit 1
         ;;
 esac
+

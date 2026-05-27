@@ -4,7 +4,8 @@
 <h2>Manage Ganesha Exports</h2>
 <p style="color:#555; max-width: 700px;">
     Create native Ganesha <code>EXPORT {}</code> blocks from host paths and load them directly
-    into the running Ganesha instance (via <code>ganesha-ctl</code> + DBUS).
+    into the bind-mounted exports directory. The container's internal watcher
+    (ganesha-export-watcher) detects the change and restarts Ganesha. No DBUS.
 </p>
 
 <div style="margin: 1.5rem 0; padding: 1rem; border: 1px solid #ddd; border-radius: 6px; background: #fafafa;">
@@ -13,7 +14,7 @@
     <form hx-post="/exports/add" hx-target="#export-result" hx-swap="innerHTML">
         <div style="margin-bottom: 0.75rem;">
             <label><strong>Host path</strong> (must be under a managed root)<br>
-                <input type="text" name="host_path" placeholder="/srv/nfs/newproject" required
+                <input type="text" name="host_path" placeholder="/media/SSD-01/newshare" required
                        style="width: 420px; padding: 6px;">
             </label>
         </div>

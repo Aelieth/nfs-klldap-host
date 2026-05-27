@@ -16,10 +16,11 @@ Create very narrow sudoers rules that only allow this user to perform the exact 
 
 ```sudoers
 # Allow nfs-mgmt user to change ownership only under managed shares
+# All paths are on attached/media drives only (ZimaOS-style environment)
 nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chown [0-9]*:[0-9]* /media/SSD-01/**
-nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chown [0-9]*:[0-9]* /srv/nfs/**
+nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chown [0-9]*:[0-9]* /media/USB-01/**
 nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chmod [0-7]* /media/SSD-01/**
-nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chmod [0-7]* /srv/nfs/**
+nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chmod [0-7]* /media/USB-01/**
 
 # Optional: allow the tool to send SIGHUP to the NFS container
 nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/docker kill -s HUP nfs-kerb

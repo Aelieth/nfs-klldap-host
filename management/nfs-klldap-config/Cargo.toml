@@ -1,0 +1,23 @@
+[package]
+name = "nfs-klldap-config"
+version = "0.23.0"
+edition = "2021"
+description = "Tiny type-safe TOML config loader + generator for nfs-klldap-host (bundled in container)"
+license = "MIT OR Apache-2.0"
+authors = ["Aelieth"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nfs-klldap-config"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+serde_json = "1.0"
+# thiserror kept out for tiny container binary size; manual error impl below
+
+[dev-dependencies]
+tempfile = "3"

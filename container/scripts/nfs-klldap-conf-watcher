@@ -1,0 +1,60 @@
+#!/bin/bash
+#
+# nfs-klldap-conf-watcher - Watches the central nfs-klldap.conf and regenerates
+# derived configs (sssd, krb5, ganesha exports) + reloads Ganesha.
+#
+# This is the recommended way to get automatic reload when the host UI (or
+# an admin) edits the single source-of-truth config file.
+#
+# Usage:
+#   nfs-klldap-conf-watcher [path-to-config]
+#
+# Environment:
+#   NFS_CONFIG          - fallback config path
+#   WATCHER_DEBOUNCE_SECONDS (default 2)
+#
+set -euo pipefail
+
+CONFIG_PATH="${1:-${NFS_CONFIG:-/config/nfs-klldap.conf}}"
+DEBOUNCE="${WATCHER_DEBOUNCE_SECONDS:-2}"
+CONFIG_BIN="/usr/local/bin/nfs-klldap-config"
+
+log() { echo "[nfs-klldap-conf-watcher] $*"; }
+
+if [ ! -f "$CONFIG_PATH" ]; then
+    log "WARNING: Config file $CONFIG_PATH does not exist yet. Watching anyway..."
+fi
+
+if ! command -v inotifywait >/dev/null 2>&1; then
+    log "FATAL: inotifywait not found (install inotify-tools)"
+    exit 1
+fi
+
+if [ ! -x "$CONFIG_BIN" ]; then
+    log "FATAL: $CONFIG_BIN not found or not executable"
+    exit 1
+fi
+
+log "Watching $CONFIG_PATH for changes (debounce ${DEBOUNCE}s)"
+
+while true; do
+    if inotifywait -q -e modify,move,create,delete "$CONFIG_PATH" 2>/dev/null; then
+        log "Change detected on $CONFIG_PATH"
+        sleep "$DEBOUNCE"
+
+        if "$CONFIG_BIN" generate --config "$CONFIG_PATH"; then
+            log "Regenerated configs successfully"
+            # Trigger Ganesha reload (the supervisor will bring it back)
+            if command -v /usr/local/bin/ganesha-ctl >/dev/null 2>&1; then
+                /usr/local/bin/ganesha-ctl reload || true
+            else
+                pkill -TERM ganesha.nfsd 2>/dev/null || true
+            fi
+        else
+            log "ERROR: Generator failed for $CONFIG_PATH"
+        fi
+    else
+        log "inotifywait error, retrying in 3s..."
+        sleep 3
+    fi
+done

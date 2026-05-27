@@ -1,76 +1,71 @@
-//! Management tool entry point (visual GUI).
+//! nfs-klldap-ui — Host-side management tool (Axum + HTMX).
 //!
-//! Ganesha-only version with native EXPORT blocks and direct management interface calls.
+//! Two-page web UI for the central `nfs-klldap.conf` (the single source of truth):
+//! - System Settings (/settings): edit the TOML (raw editor + basic structured)
+//! - Share Permissions (/): browse real-time FS trees under shares and apply
+//!   POSIX owner/group/mode changes via the narrow privileged helper + live KLLDAP lookups.
 //!
-//! Features:
-//! - Real-time FS tree per share (no DB)
-//! - LLDAP user/group dropdowns with live uidNumber/gidNumber translation
-//! - Owner + group + mode + recursive on *any* subfolder under a share
-//! - On "save & apply":
-//!     1. Resolve names via LLDAP
-//!     2. chown/chmod via privileged helper (recursive supported)
-//!     3. Write/update native Ganesha EXPORT {} block for the share
-//!     4. (Optional) Speak directly to Ganesha via ganesha-ctl (only when
-//!        direct_ganesha_management = true and the host can mount DBUS)
+//! The container (using the bundled `nfs-klldap-config` binary) auto-derives
+//! sssd.conf, krb5.conf, and all Ganesha EXPORT fragments from the same file.
+//! No templates, no host-side exports.d bind mount in the normal model.
 
 mod auth;
 mod config;
-mod exports;
 mod fs;
-mod ganesha;
 mod llap;
 
 mod web;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() {
-    println!("=== Starting NFS Kerb Management Tool (Ganesha + LLDAP + Axum/HTMX) ===\n");
+    println!("=== nfs-klldap-ui (host management tool) — v0.23 central TOML ===\n");
 
-    // Load configuration (now with Shares + Ganesha settings)
-    let config = match crate::config::Config::load(std::path::Path::new("config.toml")) {
-        Ok(c) => Arc::new(c),
+    // Support --config /path or NFS_KLLDAP_CONF env (the shared volume with the container)
+    let mut config_path: Option<PathBuf> = std::env::var("NFS_KLLDAP_CONF").ok().map(PathBuf::from);
+    let args: Vec<String> = std::env::args().collect();
+    for i in 0..args.len() {
+        if (args[i] == "--config" || args[i] == "-c") && i + 1 < args.len() {
+            config_path = Some(PathBuf::from(&args[i + 1]));
+            break;
+        }
+    }
+    let config_path = config_path.unwrap_or_else(|| PathBuf::from("nfs-klldap.conf"));
+
+    let config = match crate::config::load_config_from(&config_path) {
+        Ok(c) => {
+            println!("Loaded central config from {}", config_path.display());
+            Arc::new(c)
+        }
         Err(e) => {
-            eprintln!("Warning: Could not load config.toml ({}). Using defaults.", e);
+            eprintln!("Warning: {} — using minimal defaults. Point --config at your nfs-klldap.conf", e);
             Arc::new(crate::config::Config::default())
         }
     };
 
     println!("Configured shares: {}", config.shares.len());
     for s in &config.shares {
-        println!("  - {} → {} (host: {})", s.name, s.export_path, s.host_path.display());
+        let default_ep = format!("/{}", s.name);
+        let ep = s.export_path.as_deref().unwrap_or(&default_ep);
+        println!("  - {} → {} (host: {})", s.name, ep, s.host_path.display());
     }
 
-    // Filesystem manager (real-time, no DB)
+    // Filesystem manager (real-time, no DB) — now driven by central shares
     let fs = Arc::new(crate::fs::FsManager::new((*config).clone()));
 
-    // Ganesha direct management client (the "speak directly" piece)
-    let ganesha = Arc::new(crate::ganesha::GaneshaClient::new(&config.ganesha_container_name));
+    // LLDAP client (GraphQL + POSIX). Derive URL from the central conf when possible.
+    let lldap_url = crate::config::derive_lldap_url(&config);
+    let mut lldap = crate::llap::LldapClient::new(&lldap_url);
 
-    // Exports manager that writes native Ganesha blocks + calls the direct interface
-    let exports = Arc::new(crate::exports::ExportsManager::new(
-        config.ganesha_exports_dir.clone(),
-        (*ganesha).clone(),
-    ));
-
-    // LLDAP client (GraphQL + POSIX attribute extraction)
-    let mut lldap = crate::llap::LldapClient::new(
-        config
-            .lldap_graphql_url
-            .as_deref()
-            .unwrap_or("https://lldap.example.com:6360/api/graphql"),
-    );
-
-    // TODO: Replace the placeholder credentials below with real configuration
-    // (e.g. from environment variables or a secrets file). These will cause
-    // LLDAP authentication to fail until you provide valid admin credentials.
+    // TODO: real credentials (env / keyring / prompt). The placeholder will fail until fixed.
     if let Err(e) = lldap
         .authenticate("admin", "your-password-here")
         .await
     {
-        eprintln!("Warning: Could not authenticate to LLDAP at startup: {}", e);
+        eprintln!("Warning: Could not authenticate to KLLDAP at startup: {}", e);
     }
     let lldap = Arc::new(Mutex::new(lldap));
 
@@ -81,16 +76,16 @@ async fn main() {
         fs,
         lldap,
         config: config.clone(),
-        ganesha,
-        exports,
         auth,
+        config_path: config_path.clone(),
     };
 
     let app = crate::web::router(state);
 
     let addr = "127.0.0.1:3000";
     println!("\nListening on http://{addr}");
-    println!("Open this URL to manage shares, browse trees, and apply POSIX permissions from LLDAP.");
+    println!("Open this URL for the two-page UI (System Settings + Share Permissions).");
+    println!("Point the UI at the same nfs-klldap.conf volume the container uses.");
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

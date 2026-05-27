@@ -1,8 +1,27 @@
+# =============================================================================
+# Stage 1: Build the tiny Rust config generator (type-safe TOML logic)
+# This binary is the ONLY thing that ever parses or generates from nfs-klldap.conf.
+# It has zero web / async / heavy deps — tiny attack surface + fast container builds.
+# =============================================================================
+FROM rust:1.82-slim AS config-builder
+
+WORKDIR /build
+# Copy only the config crate (minimal context)
+COPY management/nfs-klldap-config /build/nfs-klldap-config
+WORKDIR /build/nfs-klldap-config
+
+# Build static-friendly release binary (no web features)
+RUN cargo build --release --bin nfs-klldap-config \
+    && strip target/release/nfs-klldap-config || true
+
+# =============================================================================
+# Stage 2: Final runtime image (AlmaLinux 10 + Ganesha + SSSD + our generator)
+# =============================================================================
 FROM almalinux:10
 
 LABEL maintainer="Aelieth"
-LABEL description="AlmaLinux 10 NFS-Ganesha (user-space NFSv4) server with LLDAP/SSSD POSIX UID/GID mapping. One-stop Kerberized NFSv4 plugin for hosts without kernel NFS."
-LABEL org.opencontainers.image.source="https://github.com/your-org/alma_nfs-kerb"
+LABEL description="AlmaLinux 10 NFS-Ganesha (user-space NFSv4) server with KLLDAP/SSSD POSIX UID/GID mapping. v0.23+ central TOML + bundled Rust generator. Minimal volumes, host-only UI."
+LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 # -----------------------------------------------------------------------------
 # Package installation - GANESHA ONLY
@@ -42,7 +61,6 @@ RUN dnf install -y epel-release && \
         krb5-workstation \
         krb5-libs \
         # === Templating + ops + self-contained export watching (no DBUS) ===
-        gettext \
         inotify-tools \
         procps-ng \
         iproute \
@@ -54,7 +72,7 @@ RUN dnf install -y epel-release && \
     && dnf clean all
 
 # -----------------------------------------------------------------------------
-# Directories
+# Directories (no more templates/ — everything is generated from nfs-klldap.conf by Rust)
 # -----------------------------------------------------------------------------
 RUN mkdir -p \
     /etc/ganesha \
@@ -62,24 +80,24 @@ RUN mkdir -p \
     /var/log/ganesha \
     /etc/sssd \
     /var/lib/sss \
-    /container/templates \
     /container/scripts
 
 # -----------------------------------------------------------------------------
-# Copy templates (sssd, krb5, ganesha.conf, etc.)
-# Bind-mount your own templates dir at runtime for customization.
+# Copy the Rust config generator (built in stage 1) — this is the heart of v0.23+
 # -----------------------------------------------------------------------------
-COPY container/templates/ /container/templates/
+COPY --from=config-builder /build/nfs-klldap-config/target/release/nfs-klldap-config /usr/local/bin/nfs-klldap-config
+RUN chmod +x /usr/local/bin/nfs-klldap-config
 
 # -----------------------------------------------------------------------------
-# Copy ganesha-ctl wrapper (the bridge for "management tool speaks directly")
-# The host-side Rust tool calls this via: docker exec <name> ganesha-ctl ...
+# Copy container scripts (ganesha-ctl, healthcheck, optional conf watcher)
 # -----------------------------------------------------------------------------
 COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl
-RUN chmod +x /usr/local/bin/ganesha-ctl
+COPY container/scripts/nfs-klldap-conf-watcher /usr/local/bin/nfs-klldap-conf-watcher
+COPY container/healthcheck.sh /container/healthcheck.sh
+RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /container/healthcheck.sh
 
 # -----------------------------------------------------------------------------
-# Entrypoint (Ganesha only - kernel path has been removed)
+# Entrypoint (now delegates TOML work to the bundled Rust binary)
 # -----------------------------------------------------------------------------
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -87,9 +105,6 @@ RUN chmod +x /entrypoint.sh
 # -----------------------------------------------------------------------------
 # Healthcheck
 # -----------------------------------------------------------------------------
-COPY container/healthcheck.sh /container/healthcheck.sh
-RUN chmod +x /container/healthcheck.sh
-
 HEALTHCHECK --interval=30s --timeout=10s --start-period=25s --retries=3 \
     CMD /container/healthcheck.sh || exit 1
 

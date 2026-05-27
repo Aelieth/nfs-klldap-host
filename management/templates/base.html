@@ -68,15 +68,20 @@
     </script>
 </head>
 <body>
-    <h1>NFS Kerb Permission Manager</h1>
-    <p>Real-time from filesystem + LLDAP. No database.</p>
+    <h1>nfs-klldap-host Manager</h1>
 
     {% if let Some(user) = current_user %}
-        <div style="background:#f0f0f0; padding:6px 12px; margin-bottom:1rem; border-radius:4px; font-size:0.9em;">
+        <div style="background:#f0f0f0; padding:6px 12px; margin-bottom:0.5rem; border-radius:4px; font-size:0.9em;">
             Logged in as <strong>{{ user }}</strong> &nbsp;|&nbsp;
             <a href="/logout" style="color:#c00; text-decoration:none;">Logout</a>
         </div>
     {% endif %}
+
+    <nav style="margin-bottom:1rem; border-bottom:1px solid #ddd; padding-bottom:6px;">
+        <a href="/settings" style="margin-right:1rem; font-weight:600;">System Settings</a>
+        <a href="/" style="margin-right:1rem;">Share Permissions</a>
+        <span style="color:#999;">(edits the same nfs-klldap.conf the container uses)</span>
+    </nav>
 
     {% block content %}{% endblock %}
 </body>

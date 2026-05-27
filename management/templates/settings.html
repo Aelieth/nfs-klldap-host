@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>System Settings</h2>
+<p>Editing: <code>{{ config_path }}</code></p>
+
+{% if let Some(msg) = message %}
+    <div style="background:#e6ffe6; border:1px solid #0a0; padding:8px; margin:1rem 0;">
+        {{ msg }}
+    </div>
+{% endif %}
+
+<h3>Structured Editor (top fields + shares)</h3>
+<form method="post" action="/settings/save" style="max-width: 920px;">
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <label>ldap_uri<br><input name="ldap_uri" style="width:100%" placeholder="ldaps://kllap.example.com:6360"></label>
+        <label>storage.container_root<br><input name="storage_container_root" value="/export" style="width:100%"></label>
+        <label>server.hostname (optional)<br><input name="server_hostname" style="width:100%"></label>
+        <label>ganesha.default_security<br>
+            <select name="ganesha_default_security" style="width:100%">
+                <option value="krb5p">krb5p</option>
+                <option value="krb5i">krb5i</option>
+                <option value="krb5">krb5</option>
+            </select>
+        </label>
+    </div>
+
+    <h4 style="margin-top:1rem">SSSD Credentials</h4>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <label>sssd.bind_dn<br><input name="sssd_bind_dn" style="width:100%" required></label>
+        <label>sssd.bind_pw (secret)<br><input type="password" name="sssd_bind_pw" style="width:100%" required></label>
+    </div>
+
+    <h4 style="margin-top:1rem">Shares</h4>
+    <div id="shares-container">
+        <!-- Existing shares would be rendered here in a fuller version -->
+        <!-- For this step we provide blank rows + JS add -->
+        <div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
+            <input name="share_name_0" placeholder="name" style="width:130px">
+            <input name="share_host_0" placeholder="host_path" style="flex:1">
+            <input name="share_export_0" placeholder="/pseudo (opt)" style="width:160px">
+            <button type="button" onclick="this.closest('.share-row').remove()">×</button>
+        </div>
+    </div>
+    <button type="button" onclick="addShareRow()" style="margin:6px 0;">+ Add share</button>
+
+    <br>
+    <button type="submit" style="padding:8px 16px;">Save Structured</button>
+</form>
+
+<script>
+function addShareRow() {
+    const c = document.getElementById('shares-container');
+    const idx = Date.now();
+    const d = document.createElement('div');
+    d.className = 'share-row';
+    d.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;';
+    d.innerHTML = `<input name="share_name_${idx}" placeholder="name" style="width:130px">
+                   <input name="share_host_${idx}" placeholder="host_path" style="flex:1">
+                   <input name="share_export_${idx}" placeholder="/pseudo (opt)" style="width:160px">
+                   <button type="button" onclick="this.closest('.share-row').remove()">×</button>`;
+    c.appendChild(d);
+}
+</script>
+
+<hr>
+
+<h3>Raw TOML Editor (full control + comments preserved)</h3>
+<form method="post" action="/settings/save-raw">
+    <textarea name="raw_content" rows="16" style="width:100%; font-family:monospace;">{{ raw_toml }}</textarea><br>
+    <button type="submit" style="margin-top:6px;">Save Raw TOML</button>
+</form>
+
+<p style="color:#666;font-size:0.9em;margin-top:1rem;">
+    The container watches the config file and will regenerate + reload automatically.
+</p>
+
+<p><a href="/">← Back to Share Permissions</a></p>
+{% endblock %}

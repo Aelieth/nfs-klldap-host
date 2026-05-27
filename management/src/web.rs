@@ -1,27 +1,26 @@
-//! Axum + HTMX web UI for the NFS Kerb management tool (Ganesha version).
+//! Axum + HTMX web UI for nfs-klldap-host (two-page: System Settings + Share Permissions).
 //!
-//! Now with simple local sudo auth: only users who can actually do privileged
-//! operations on this machine (root or wheel/sudo-capable) may log in.
+//! The UI edits the central `nfs-klldap.conf` directly and uses the narrow
+//! privileged helper for host-side chown/chmod. Local sudo-auth is used to
+//! restrict access to users who can perform privileged operations.
 
 use askama::Template;
 use axum::{
     extract::{Form, Query, State},
     http::{header::SET_COOKIE, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde::Deserialize;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::{
     auth::AuthManager,
     config::Config,
-    exports::ExportsManager,
     fs::FsManager,
-    ganesha::GaneshaClient,
     llap::LldapClient,
 };
 
@@ -32,9 +31,10 @@ pub struct AppState {
     pub fs: Arc<FsManager>,
     pub lldap: Arc<Mutex<LldapClient>>,
     pub config: Arc<Config>,
-    pub ganesha: Arc<GaneshaClient>,
-    pub exports: Arc<ExportsManager>,
     pub auth: Arc<AuthManager>,
+    /// Absolute path to the nfs-klldap.conf file being edited (same one the container uses).
+    /// Needed for raw TOML view + save, and for System Settings.
+    pub config_path: PathBuf,
 }
 
 // === Public routes (no auth) ===
@@ -154,6 +154,18 @@ pub struct DirNode {
 struct PermissionForm {
     path: String,
     current_state_html: String,
+}
+
+// === System Settings (two-page UI - System Settings page) ===
+
+#[derive(Template)]
+#[template(path = "settings.html")]
+struct SettingsTemplate {
+    current_user: Option<String>,
+    /// Raw file contents for the textarea editor (preserves comments)
+    raw_toml: String,
+    config_path: String,
+    message: Option<String>,
 }
 
 // === Handlers ===
@@ -385,23 +397,8 @@ pub async fn apply_permissions(
         return Ok(Html(html));
     }
 
-    // Derive a reasonable pseudo path from the directory name for the ad-hoc export.
-    // (The permission form doesn't ask the user for a Pseudo; the dedicated /exports UI does.)
-    let pseudo = std::path::Path::new(&form.path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| format!("/{}", n))
-        .unwrap_or_else(|| "/managed".to_string());
-
-    if let Err(e) = state.exports.ensure_path_exported(
-        std::path::Path::new(&form.path),
-        &pseudo,
-        "managed",
-        None,
-    ) {
-        eprintln!("Warning: failed to ensure Ganesha export: {}", e);
-    }
-
+    // NOTE (v0.23 cutover): Exports are now generated inside the container from the central nfs-klldap.conf.
+    // The host UI no longer writes fragments. Permission changes are applied via the helper only.
     let html = format!(
         r#"<div class="form">
             <h3>Successfully applied permissions for <code>{}</code></h3>
@@ -427,95 +424,226 @@ pub async fn apply_permissions(
     Ok(Html(html))
 }
 
-// === Ganesha Export Builder (protected) ===
+// v0.23: Direct Ganesha export management from the host UI has been removed.
+// All fragments are generated inside the container from the central config.
 
-#[derive(Template)]
-#[template(path = "exports.html")]
-struct ExportsTemplate {
-    current_user: Option<String>,
-}
-
-pub async fn exports_page(
+pub async fn settings_page(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(State(state.clone()), headers).await?;
-    let tpl = ExportsTemplate {
+
+    let raw_toml = std::fs::read_to_string(&state.config_path)
+        .unwrap_or_else(|_| "# Could not read config file".to_string());
+
+    // (summary no longer rendered in template - kept for potential future use or logging)
+    let _summary = format!(
+        "ldap_uri = {}\nshares = {} (see raw editor or nfs-klldap.conf for full details)",
+        state.config.ldap_uri,
+        state.config.shares.len()
+    );
+
+    let tpl = SettingsTemplate {
         current_user: Some(user.0),
+
+        raw_toml,
+        config_path: state.config_path.display().to_string(),
+        message: None,
+
     };
     Ok(Html(tpl.render().unwrap()))
 }
 
 #[derive(Deserialize)]
-pub(crate) struct AddExportForm {
-    host_path: String,
-    pseudo: String,
-    #[serde(default)]
-    export_id: Option<u16>,
+pub(crate) struct RawSaveForm {
+    raw_content: String,
 }
 
-pub async fn add_export(
+// Structured form for the common editable parts of nfs-klldap.conf
+#[derive(Deserialize, Debug, Default)]
+pub(crate) struct StructuredSettingsForm {
+    // Top level
+    ldap_uri: Option<String>,
+
+    // [storage]
+    storage_container_root: Option<String>,
+
+    // [server]
+    server_hostname: Option<String>,
+
+    // [sssd]
+    sssd_bind_dn: Option<String>,
+    sssd_bind_pw: Option<String>,
+    sssd_port: Option<u16>,
+    sssd_user_base: Option<String>,
+    sssd_group_base: Option<String>,
+
+    // [kerberos]
+    kerberos_realm: Option<String>,
+
+    // [ganesha]
+    ganesha_default_security: Option<String>,
+
+    // Simple repeated fields for shares (we'll collect them in the handler)
+    // Using indexed names in the template: share_name_0, share_host_0, ...
+    #[serde(flatten)]
+    extra: std::collections::HashMap<String, String>,
+}
+
+pub async fn settings_save_raw(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Form(form): Form<AddExportForm>,
+    Form(form): Form<RawSaveForm>,
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(State(state.clone()), headers).await?;
 
-    let host_path = Path::new(&form.host_path);
+    // Best-effort validation via the shared crate before writing
+    let tmp_path = state.config_path.with_extension("tmp-validate");
+    if let Err(e) = std::fs::write(&tmp_path, &form.raw_content) {
+        let msg = format!("Failed to write temp file for validation: {}", e);
+        return Ok(Html(format!("<p style='color:#c00'>{}</p>", msg)));
+    }
+    let validation = nfs_klldap_config::NfsKlldapConfig::load(&tmp_path);
+    let _ = std::fs::remove_file(&tmp_path);
 
-    let allowed = state.config.all_managed_roots();
-    let is_allowed = allowed.iter().any(|root| host_path.starts_with(root));
-
-    if !is_allowed {
-        let msg = r#"<div style="color:#c00; padding:8px; background:#fff0f0; border:1px solid #fcc;">
-                <strong>Error:</strong> Path outside managed roots.
-              </div>"#.to_string();
-        return Ok(Html(msg));
+    if let Err(e) = validation {
+        let msg = format!("Validation failed — not saving: {}", e);
+        return Ok(Html(format!("<p style='color:#c00'>{}</p>", msg)));
     }
 
-    let name = host_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("export")
-        .to_string();
-
-    if let Err(e) = state.exports.ensure_path_exported(host_path, &form.pseudo, &name, form.export_id) {
-        let msg = format!(
-            r#"<div style="color:#c00; padding:8px; background:#fff0f0; border:1px solid #fcc;">
-                <strong>Failed:</strong> {}
-              </div>"#,
-            e
-        );
-        return Ok(Html(msg));
+    // Atomic-ish write
+    let tmp = state.config_path.with_extension("conf.saving");
+    if let Err(e) = std::fs::write(&tmp, form.raw_content.as_bytes()) {
+        return Ok(Html(format!("<p style='color:#c00'>Write failed: {}</p>", e)));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &state.config_path) {
+        return Ok(Html(format!("<p style='color:#c00'>Rename failed: {}</p>", e)));
     }
 
-    let success = format!(
-        "<div style=\"color:#060; padding:8px; background:#f0fff0; border:1px solid #9c9;\">\
-            <strong>Success!</strong> Created export <code>{}</code> → <code>{}</code>.<br>\
-            <button hx-get=\"/exports/current\" hx-target=\"#current_exports\">Refresh</button>\
-        </div>",
-        form.host_path, form.pseudo
-    );
+    // Re-read for the response
+    let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+    let tpl = SettingsTemplate {
+        current_user: None,
 
-    Ok(Html(success))
+        raw_toml,
+        config_path: state.config_path.display().to_string(),
+        message: Some("Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into()),
+
+    };
+    Ok(Html(tpl.render().unwrap()))
 }
 
-pub async fn current_exports(
+/// Handle structured form save from /settings
+pub async fn settings_save_structured(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Form(form): Form<StructuredSettingsForm>,
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(State(state.clone()), headers).await?;
 
-    match state.ganesha.show_exports() {
-        Ok(raw) => {
-            let safe = raw.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-            Ok(Html(format!(
-                "<code style=\"white-space:pre-wrap; display:block; font-size:0.85em;\">{}</code>",
-                safe
-            )))
+    // Load current config as base (so we don't lose fields not in the form)
+    let mut cfg = nfs_klldap_config::NfsKlldapConfig::load(&state.config_path)
+        .unwrap_or_default();
+
+    // Apply top-level changes from form
+    if let Some(v) = form.ldap_uri { cfg.ldap_uri = v; }
+    if let Some(v) = form.storage_container_root { cfg.storage.container_root = v; }
+    if let Some(v) = form.server_hostname { cfg.server.hostname = Some(v); }
+
+    if let Some(v) = form.sssd_bind_dn { cfg.sssd.ldap_default_bind_dn = v; }
+    if let Some(v) = form.sssd_bind_pw { cfg.sssd.ldap_default_authtok = v; }
+    if let Some(v) = form.sssd_port { cfg.sssd.port = Some(v); }
+    if let Some(v) = form.sssd_user_base { cfg.sssd.ldap_user_search_base = Some(v); }
+    if let Some(v) = form.sssd_group_base { cfg.sssd.ldap_group_search_base = Some(v); }
+
+    if let Some(v) = form.kerberos_realm { cfg.kerberos.realm = Some(v); }
+    if let Some(v) = form.ganesha_default_security { cfg.ganesha.default_security = v; }
+
+    // Collect shares from indexed form fields (share_name_0, share_host_0, ...)
+    let mut new_shares: Vec<nfs_klldap_config::Share> = vec![];
+    let mut i = 0;
+    loop {
+        let name_key = format!("share_name_{}", i);
+        let host_key = format!("share_host_{}", i);
+
+        let name = form.extra.get(&name_key).cloned().unwrap_or_default().trim().to_string();
+        let host = form.extra.get(&host_key).cloned().unwrap_or_default().trim().to_string();
+
+        if name.is_empty() && host.is_empty() {
+            // Check a few ahead in case of gaps
+            if i > 20 { break; }
+            i += 1;
+            continue;
         }
-        Err(e) => Ok(Html(format!("<span style=\"color:#c00;\">{}</span>", e))),
+        if name.is_empty() || host.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        let export_path = form.extra.get(&format!("share_export_{}", i))
+            .cloned()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| Some(format!("/{}", name)));
+
+        let security = form.extra.get(&format!("share_security_{}", i))
+            .cloned()
+            .filter(|s| !s.trim().is_empty());
+
+        new_shares.push(nfs_klldap_config::Share {
+            name,
+            host_path: PathBuf::from(host),
+            export_path,
+            security,
+            rw: Some(true),
+            squash: Some("no_root_squash".to_string()),
+        });
+        i += 1;
     }
+
+    if !new_shares.is_empty() {
+        cfg.shares = new_shares;
+    }
+
+    // Validate + save
+    if let Err(e) = cfg.validate_and_derive() {
+        let msg = format!("Validation error: {}", e);
+        // Re-render with error (simple approach)
+        let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+        let tpl = SettingsTemplate {
+            current_user: None,
+
+            raw_toml,
+            config_path: state.config_path.display().to_string(),
+            message: Some(msg),
+
+        };
+        return Ok(Html(tpl.render().unwrap()));
+    }
+
+    if let Err(e) = crate::config::save_config(&cfg, &state.config_path) {
+        let msg = format!("Failed to save: {}", e);
+        let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+        let tpl = SettingsTemplate {
+            current_user: None,
+
+            raw_toml,
+            config_path: state.config_path.display().to_string(),
+            message: Some(msg),
+
+        };
+        return Ok(Html(tpl.render().unwrap()));
+    }
+
+    // Success - re-render the page with a success message (keeps types simple)
+    let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+    let tpl = SettingsTemplate {
+        current_user: None,
+
+        raw_toml,
+        config_path: state.config_path.display().to_string(),
+        message: Some("Structured settings saved. Container will regenerate configs shortly.".into()),
+    };
+    Ok(Html(tpl.render().unwrap()))
 }
 
 // === Router ===
@@ -525,15 +653,16 @@ pub fn router(state: AppState) -> Router {
         // Public
         .route("/login", get(login_page).post(login))
         .route("/logout", axum::routing::post(logout))
-        // Protected
+        // Protected (two-page UI + core permission editor)
         .route("/", get(index))
         .route("/tree", get(tree_fragment))
         .route("/directory", get(directory_form))
         .route("/users/search", get(search_users))
         .route("/groups/search", get(search_groups))
         .route("/apply", axum::routing::post(apply_permissions))
-        .route("/exports", get(exports_page))
-        .route("/exports/add", axum::routing::post(add_export))
-        .route("/exports/current", get(current_exports))
+        // Two-page UI
+        .route("/settings", get(settings_page))
+        .route("/settings/save-raw", post(settings_save_raw))
+        .route("/settings/save", post(settings_save_structured))
         .with_state(state)
 }

@@ -1,28 +1,31 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h2>NFS Shares (Ganesha)</h2>
-<p>Click a share to browse its directory tree. Click any subfolder to change POSIX owner/group/mode (with live LLDAP lookup + recursive apply).</p>
+<h2>Share Permissions</h2>
+<p>Click a share to browse its directory tree under the <strong>host_path</strong>. Click any subfolder to change POSIX owner/group/mode (live KLLDAP lookup + recursive apply via the privileged helper).</p>
+<p style="font-size:0.9em; color:#555;">Use <a href="/settings">System Settings</a> to manage the shares and other config in nfs-klldap.conf.</p>
 
 {% if shares.len() > 0 %}
     <div class="shares-list" style="margin-bottom: 1.5rem;">
         {% for share in shares %}
+            {% set ep = share.export_path.as_deref().unwrap_or(share.name.as_str()) %}
             <div class="share-card"
                  style="border: 1px solid #ddd; padding: 10px 14px; margin-bottom: 8px; border-radius: 6px; cursor: pointer; background: #fafafa;"
                  hx-get="/tree?path={{ share.host_path.display() }}"
                  hx-target="#tree-root"
                  hx-swap="innerHTML"
-                 onclick="selectShare('{{ share.name }}', '{{ share.export_path }}', '{{ share.host_path.display() }}')">
+                 onclick="selectShare('{{ share.name }}', '/{{ ep }}', '{{ share.host_path.display() }}')">
                 <strong>{{ share.name }}</strong><br>
-                <small style="color:#555;">NFS path: <code>{{ share.export_path }}</code> &nbsp;•&nbsp; Host: <code>{{ share.host_path.display() }}</code></small>
+                <small style="color:#555;">NFS path: <code>/{{ ep }}</code> &nbsp;•&nbsp; Host: <code>{{ share.host_path.display() }}</code></small>
             </div>
         {% endfor %}
     </div>
 {% else %}
-    <p style="color:#888;">No shares configured in config.toml. Using legacy allowed_roots.</p>
+    <p style="color:#888;">No shares configured in your nfs-klldap.conf yet. Use the <strong>System Settings</strong> page to add some.</p>
 {% endif %}
 
-<p><a href="/exports" style="font-weight:600;">→ Manage / Create Ganesha Exports (direct runtime control)</a></p>
+{# Old direct exports page removed in v0.23 cutover — exports are now generated inside the container from the central config. #}
+{# <p><a href="/exports" style="font-weight:600;">→ Manage / Create Ganesha Exports (direct runtime control)</a></p> #}
 
 <h3 id="current-share-title" style="margin-top: 0.5rem;">Directory tree</h3>
 

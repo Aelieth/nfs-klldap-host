@@ -138,7 +138,7 @@ This gives nice `ls` output (names instead of numbers) and improves some applica
 
 1. Create the user + POSIX attributes (`uidNumber`, `gidNumber`, etc.) in LLDAP.
 2. Use the management web UI (or the privileged helper directly) to `chown`/`chmod` the host directories so the numeric IDs match LLDAP.
-3. Define the share in the management tool's `config.toml` (or drop a fragment into `ganesha-exports.d/`).
+3. Define shares in the central `nfs-klldap.conf` (the container and host UI both use it).
 4. The tool writes a native Ganesha `EXPORT {}` fragment into the bind-mounted exports directory. The container's internal `ganesha-export-watcher` detects the change and restarts Ganesha (no DBUS involved).
 5. Verify with the commands in section 3 and from a Kerberized client.
 

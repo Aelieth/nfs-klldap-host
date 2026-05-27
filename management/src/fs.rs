@@ -10,7 +10,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -42,21 +42,17 @@ impl FsManager {
 
         let meta = fs::metadata(root).ok()?;
         let mode = meta.permissions().mode();
+        let owner = Some(meta.uid());
+        let group = Some(meta.gid());
 
         let mut node = DirectoryNode {
             path: root.to_path_buf(),
             name: root.file_name().unwrap_or_default().to_string_lossy().into_owned(),
-            owner: None,
-            group: None,
+            owner,
+            group,
             mode,
             children: vec![],
         };
-
-        // Real-time owner/group lookup (stat) - using std for skeleton
-        if let Ok(meta) = fs::metadata(root) {
-            // In a real version we would use nix or libc for uid/gid from metadata
-            let _ = meta;
-        }
 
         // Recursively build children (directories only, as per user request)
         if let Ok(entries) = fs::read_dir(root) {
@@ -101,9 +97,12 @@ impl FsManager {
             "recursive": recursive
         });
 
-        let helper_path = &self.config.helper_path;
+        // New central config shape: management section (with sensible defaults for the host UI)
+        let helper_path = self.config.management.helper_path.clone()
+            .unwrap_or_else(|| PathBuf::from("/usr/local/bin/nfs-perm-helper"));
+        let use_sudo = self.config.management.use_sudo.unwrap_or(true);
 
-        let mut cmd = if self.config.use_sudo {
+        let mut cmd = if use_sudo {
             let mut c = Command::new("sudo");
             c.arg(helper_path);
             c
@@ -137,6 +136,7 @@ impl FsManager {
     }
 
     fn is_allowed(&self, path: &Path) -> bool {
-        self.config.allowed_roots.iter().any(|root| path.starts_with(root))
+        // New central config: allowed = the host_path of every declared share
+        crate::config::all_managed_roots(&self.config).iter().any(|root| path.starts_with(root))
     }
 }

@@ -26,7 +26,7 @@
   - Recursive checkbox.
   - "Save & Apply" button → calls backend → uses privileged helper → updates exports.d → SIGHUP container.
 - Top bar: Status of last operation, quick "Re-export all" button.
-- Settings page: LLDAP endpoint, allowed roots, helper path (from config.toml).
+- System Settings page: central nfs-klldap.conf editing (raw + structured), LLDAP URL, helper path (from [management] section).
 
 **Auth for the web UI**
 - Simple HTTP Basic Auth (username/password) protected by a reverse proxy (nginx Proxy Manager) or built-in using a simple shared secret / htpasswd.
@@ -66,9 +66,8 @@ When you want the tool to be directly accessible without a reverse proxy, we can
 2. User searches for a user/group → HTMX → `llap.resolve_user` or `list_users` → returns JSON with id + uidNumber.
 3. User clicks Save → POST with desired owner/group/mode/recursive → backend:
    - Calls LLDAP again to confirm IDs (defense in depth).
-   - Calls privileged helper with the numeric IDs.
-   - Updates (or creates) the corresponding `*.exports` file.
-   - Triggers SIGHUP on the NFS container.
+   - Calls privileged helper with the numeric IDs (only on paths declared in the central config).
+   - The container (via its watcher or SIGHUP) picks up any share/config changes and regenerates Ganesha exports.
 4. UI shows success + refreshed current state from filesystem.
 
 ## Open Decisions / Next Steps

@@ -38,66 +38,27 @@ services:
 
     volumes:
       # ---------------------------------------------------------------------
-      # Your actual data — bind-mounted from *attached/media drives only*.
-      #
-      # On ZimaOS (and similar locked-down appliances) there are no "system"
-      # export roots like /srv/nfs. All real data lives on attached drives
-      # that appear under /media/... or similar paths at runtime.
-      #
-      # The numeric uid/gid on these directories MUST match the uidNumber/gidNumber
-      # values in your LLDAP POSIX attributes for the users/groups that should
-      # own the data.
+      # Storage (the only data volume in the new minimal model)
+      # Mount whatever media drives you want under /export inside the container.
+      # The numeric uid/gid on the host **must** match KLLDAP uidNumber/gidNumber.
       # ---------------------------------------------------------------------
-      - /media/SSD-01/project-alpha:/export/project-alpha:rw
-      - /media/SSD-01/backups:/export/backups:rw
-      # Add more attached-drive paths as needed...
+      - /media/SSD-01:/export:rw
 
       # ---------------------------------------------------------------------
-      # Ganesha export definitions (NATIVE Ganesha blocks)
-      #
-      # The management tool writes files here containing EXPORT { ... } blocks.
-      # The container's internal ganesha-export-watcher reads them and restarts
-      # ganesha.nfsd when they change. No DBUS required.
+      # The single source of truth (shared with the host UI)
+      # The host-side `nfs-klldap-ui` edits this file directly.
+      # The container's Rust generator watches it (or reacts to SIGHUP) and
+      # regenerates sssd.conf / krb5.conf / Ganesha fragments.
       # ---------------------------------------------------------------------
-      - ./ganesha-exports.d:/etc/ganesha/exports.d:rw
+      - ./config:/config:rw
 
       # ---------------------------------------------------------------------
-      # Kerberos keytab + templates can live on an attached drive.
-      #
-      # Example (if your keytab and templates are on the same SSD as the data):
-      #   - /media/SSD-01/secrets/krb5.keytab:/etc/krb5.keytab:ro
-      #   - /media/SSD-01/templates:/container/templates:ro
-      #
-      # Below are the classic "files next to the compose file" locations,
-      # which also work fine.
+      # Kerberos keytab (ro)
       # ---------------------------------------------------------------------
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
-      - ./templates:/container/templates:ro
 
-      # ---------------------------------------------------------------------
-      # OPTIONAL: direct final configs (these win over templates)
-      # ---------------------------------------------------------------------
-      # - ./config/sssd.conf:/etc/sssd/sssd.conf:ro
-      # - ./config/krb5.conf:/etc/krb5.conf:ro
-      # - ./config/ganesha.conf:/etc/ganesha/ganesha.conf:ro
-
-      # ---------------------------------------------------------------------
-      # OPTIONAL: CA bundle for LDAPS to LLDAP (if using custom/internal CA)
-      # ---------------------------------------------------------------------
-      # - ./secrets/ca.crt:/etc/ssl/certs/ca-bundle.crt:ro
-
-      # ---------------------------------------------------------------------
-      # No DBUS mount is required.
-      #
-      # The container is fully self-contained. It runs `ganesha-export-watcher`
-      # (inotify) internally. When the management tool (or an admin) writes
-      # a new EXPORT fragment into the bind-mounted ./ganesha-exports.d/
-      # directory, the watcher detects the change and restarts ganesha.nfsd
-      # so the new exports are loaded.
-      #
-      # This design is required for ZimaOS and other locked-down environments
-      # that cannot expose the host DBUS socket or certain internal paths.
-      # ---------------------------------------------------------------------
+      # No templates/ or ganesha-exports.d bind mounts are needed in the
+      # standard v0.23+ flow — everything is derived from nfs-klldap.conf.
 
     environment:
       # No mandatory variables. Everything is driven by templates + files.
@@ -117,16 +78,20 @@ services:
     # It verifies: ganesha.nfsd process + listening on 2049 + basic responsiveness.
 
 # =============================================================================
-# Notes for users of the management tool (Rust web UI)
+# Notes for the host-side UI (nfs-klldap-ui)
 #
-# 1. The tool runs on the host (not inside this container).
-# 2. It talks to LLDAP over GraphQL to resolve user/group names → uidNumber/gidNumber.
-# 3. It uses a tiny privileged helper (sudo or setuid) to do recursive chown/chmod
-#    on the host directories so they match LLDAP.
-# 4. It writes native Ganesha EXPORT {} blocks into ./ganesha-exports.d/
-# 5. It speaks directly to Ganesha inside the container via:
-#      docker exec alma-nfs-kerb ganesha-ctl add-export ...
-#      docker exec alma-nfs-kerb ganesha-ctl remove-export ...
+# - Run the UI on the host, pointing it at the same ./config/nfs-klldap.conf
+#   that the container uses:
+#     cd management
+#     cargo run --bin management -- --config ../config/nfs-klldap.conf
 #
-# See management/ for the tool source and configuration.
+# - The UI has two pages:
+#     /settings   → edit the central TOML (raw editor recommended for comments)
+#     /           → Share Permissions (tree browser + live KLLDAP + helper for chown/chmod)
+#
+# - After editing shares or settings in the UI, the container will pick up the
+#   change (via its config watcher or `docker kill -s HUP <container>`).
+#
+# - The privileged helper (nfs-perm-helper) must be installed on the host
+#   (setuid or narrow sudoers) for permission changes.
 # =============================================================================

@@ -6,9 +6,31 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+/// A single NFS share managed by the tool.
+/// Each share corresponds to one top-level Ganesha EXPORT block.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Share {
+    /// Human-friendly name for the share (used for filenames and UI)
+    pub name: String,
+
+    /// Absolute path on the *host* where the data lives.
+    /// The management tool will only manage directories under this path.
+    pub host_path: PathBuf,
+
+    /// The NFS pseudo path clients will see (e.g. "/projectalpha" or "/export/projectalpha").
+    /// This becomes the `Pseudo` (and usually `Path` inside the container) in the EXPORT block.
+    pub export_path: String,
+
+    /// Optional stable Export_Id for Ganesha RemoveExport / management.
+    /// If omitted, the tool will pick one based on a simple hash or you can assign them manually.
+    #[serde(default)]
+    pub export_id: Option<u16>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    /// Directories the tool is allowed to manage (security boundary)
+    /// Directories the tool is allowed to manage (security boundary).
+    /// Kept for backward compatibility; new configs should prefer the `shares` list.
     #[serde(default)]
     pub allowed_roots: Vec<PathBuf>,
 
@@ -24,6 +46,25 @@ pub struct Config {
     /// LLDAP / KLLDAP GraphQL endpoint (example)
     #[serde(default)]
     pub lldap_graphql_url: Option<String>,
+
+    // ---------------------------------------------------------------------
+    // Ganesha-specific settings (new in the Ganesha-only world)
+    // ---------------------------------------------------------------------
+
+    /// Name of the running Ganesha container (used for `docker exec` / `podman exec`)
+    #[serde(default = "default_ganesha_container_name")]
+    pub ganesha_container_name: String,
+
+    /// Host-side directory that is bind-mounted into the container at
+    /// /etc/ganesha/exports.d/. The tool writes native Ganesha EXPORT {} blocks here.
+    #[serde(default = "default_ganesha_exports_dir")]
+    pub ganesha_exports_dir: PathBuf,
+
+    /// Explicit list of shares. This is the preferred model going forward.
+    /// Each share gets its own Ganesha EXPORT block and a browsable tree
+    /// in the management UI.
+    #[serde(default)]
+    pub shares: Vec<Share>,
 }
 
 fn default_helper_path() -> PathBuf {
@@ -34,6 +75,15 @@ fn default_use_sudo() -> bool {
     true
 }
 
+fn default_ganesha_container_name() -> String {
+    "alma-nfs-kerb".to_string()
+}
+
+fn default_ganesha_exports_dir() -> PathBuf {
+    // Sensible default that matches the example docker-compose.yml
+    PathBuf::from("./ganesha-exports.d")
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -41,6 +91,9 @@ impl Default for Config {
             helper_path: default_helper_path(),
             use_sudo: default_use_sudo(),
             lldap_graphql_url: None,
+            ganesha_container_name: default_ganesha_container_name(),
+            ganesha_exports_dir: default_ganesha_exports_dir(),
+            shares: vec![],
         }
     }
 }
@@ -58,15 +111,65 @@ impl Config {
         let mut cfg: Self = toml::from_str(&contents)
             .map_err(|e| format!("Failed to parse config {}: {}", path.display(), e))?;
 
-        // Ensure at least some roots are configured
-        if cfg.allowed_roots.is_empty() {
-            // Sensible defaults for development — override in production config
+        // Backward-compat / convenience: if no explicit shares are configured
+        // but we have allowed_roots, synthesize simple shares from them.
+        // This lets old configs keep working during the transition.
+        if cfg.shares.is_empty() && !cfg.allowed_roots.is_empty() {
+            for (i, root) in cfg.allowed_roots.iter().enumerate() {
+                let name = root
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("share")
+                    .to_string();
+
+                cfg.shares.push(Share {
+                    name: format!("{}-{}", name, i + 1),
+                    host_path: root.clone(),
+                    export_path: format!("/{}", name),
+                    export_id: None,
+                });
+            }
+        }
+
+        // Ensure we still have at least something for security boundaries
+        if cfg.allowed_roots.is_empty() && !cfg.shares.is_empty() {
+            cfg.allowed_roots = cfg.shares.iter().map(|s| s.host_path.clone()).collect();
+        }
+
+        if cfg.allowed_roots.is_empty() && cfg.shares.is_empty() {
+            // Last-resort dev defaults
             cfg.allowed_roots = vec![
                 PathBuf::from("/media"),
                 PathBuf::from("/srv/nfs"),
             ];
+            cfg.shares = vec![
+                Share {
+                    name: "share1".to_string(),
+                    host_path: PathBuf::from("/srv/nfs/share1"),
+                    export_path: "/share1".to_string(),
+                    export_id: Some(1001),
+                },
+                Share {
+                    name: "share2".to_string(),
+                    host_path: PathBuf::from("/srv/nfs/share2"),
+                    export_path: "/share2".to_string(),
+                    export_id: Some(1002),
+                },
+            ];
         }
 
         Ok(cfg)
+    }
+
+    /// Return all host paths that are considered managed roots (union of
+    /// explicit allowed_roots and the host_path of every share).
+    pub fn all_managed_roots(&self) -> Vec<PathBuf> {
+        let mut roots: Vec<PathBuf> = self.allowed_roots.clone();
+        for s in &self.shares {
+            if !roots.contains(&s.host_path) {
+                roots.push(s.host_path.clone());
+            }
+        }
+        roots
     }
 }

@@ -71,6 +71,13 @@
     <h1>NFS Kerb Permission Manager</h1>
     <p>Real-time from filesystem + LLDAP. No database.</p>
 
+    {% if let Some(user) = current_user %}
+        <div style="background:#f0f0f0; padding:6px 12px; margin-bottom:1rem; border-radius:4px; font-size:0.9em;">
+            Logged in as <strong>{{ user }}</strong> &nbsp;|&nbsp;
+            <a href="/logout" style="color:#c00; text-decoration:none;">Logout</a>
+        </div>
+    {% endif %}
+
     {% block content %}{% endblock %}
 </body>
 </html>

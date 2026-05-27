@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Login</h2>
+<p style="max-width: 520px; color:#555;">
+    This management UI is restricted to users who can perform privileged operations
+    (root or accounts allowed to <code>sudo</code> / in the <code>wheel</code> group) on this machine.
+</p>
+
+<form method="post" action="/login" style="max-width: 420px; margin-top: 1rem;">
+    <div style="margin-bottom: 0.75rem;">
+        <label>Username<br>
+            <input type="text" name="username" required autocomplete="username"
+                   style="width: 100%; padding: 8px;">
+        </label>
+    </div>
+    <div style="margin-bottom: 0.75rem;">
+        <label>Password<br>
+            <input type="password" name="password" required autocomplete="current-password"
+                   style="width: 100%; padding: 8px;">
+        </label>
+    </div>
+    <button type="submit" style="padding: 10px 20px;">Log in</button>
+</form>
+
+{% if let Some(err) = error %}
+    <p style="color:#c00; margin-top: 1rem;">{{ err }}</p>
+{% endif %}
+
+<p style="margin-top: 2rem; font-size: 0.9em; color:#666;">
+    The password is only used for a one-time <code>sudo</code> test and is never stored.
+</p>
+{% endblock %}

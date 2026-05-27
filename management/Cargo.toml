@@ -17,3 +17,7 @@ axum = { version = "0.7", features = ["macros"] }
 tower-http = { version = "0.5", features = ["fs", "trace"] }
 askama = { version = "0.12", features = ["with-axum"] }
 askama_axum = "0.4"
+
+# Minimal local sudo auth (cookie + random tokens + sudo test)
+cookie = { version = "0.18", features = ["private"] }
+rand = "0.8"

@@ -1,17 +1,24 @@
 #!/bin/bash
 #
-# entrypoint.sh - Hardened entrypoint for AlmaLinux 10 Kerberized NFSv4 + SSSD
+# entrypoint.sh - Ganesha-only entrypoint for alma_nfs-kerb
 #
-# Correct daemon startup order is critical:
-#   1. rpcbind
-#   2. SSSD (nss responder) + wait for readiness socket
-#   3. rpc.idmapd (uses SSSD or nsswitch for name<->id mapping)
-#   4. rpc.gssd (Kerberos GSS context handling for NFS)
-#   5. exportfs -ra
-#   6. rpc.nfsd
+# This container IS the complete Kerberized NFSv4 server using NFS-Ganesha
+# (user-space). It is designed for hosts that cannot or will not run the
+# kernel NFS stack (no nfs/nfsd/rpcsec_gss_krb5 modules required on the host).
 #
-# This ordering ensures that idmapping works for user@REALM principals
-# before any NFS traffic or Kerberos ticket validation occurs.
+# Responsibilities:
+#   1. Render configuration templates (sssd, krb5, ganesha.conf) via envsubst
+#   2. Start SSSD and wait for its NSS responder (critical for LLDAP POSIX IDs)
+#   3. Ensure Ganesha export fragments directory exists
+#   4. Start ganesha.nfsd (the actual NFSv4 + Kerberos server)
+#   5. Handle signals (SIGHUP for simple reload path, SIGTERM for clean shutdown)
+#
+# Direct management (preferred):
+#   The host-side management tool speaks directly to Ganesha via:
+#     docker exec <container> ganesha-ctl add-export ...
+#     docker exec <container> ganesha-ctl remove-export ...
+#
+#   This uses the DBUS interface (org.ganesha.nfsd.exportmgr) under the hood.
 #
 set -euo pipefail
 
@@ -19,13 +26,16 @@ set -euo pipefail
 # Configuration via environment
 # -----------------------------------------------------------------------------
 GSSD_VERBOSITY="${GSSD_VERBOSITY:-0}"
-USE_LEGACY_NSLCD="${USE_LEGACY_NSLCD:-false}"
 SSSD_DEBUG_LEVEL="${SSSD_DEBUG_LEVEL:-0}"
 
 # TEMPLATES_DIR: where the container looks for *.template files.
-# Default: /container/templates (cleanly separated from final configs).
+# Default: /container/templates
 # Override with: -e TEMPLATES_DIR=/path/on/host/or/in/container
 TEMPLATES_DIR="${TEMPLATES_DIR:-/container/templates}"
+
+# Container name hint (used by management tool for docker exec)
+# Not used inside the container itself.
+CONTAINER_NAME="${CONTAINER_NAME:-alma-nfs-kerb}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -37,23 +47,19 @@ die() {
 }
 
 # -----------------------------------------------------------------------------
-# Template application (core of configuration flexibility)
+# Template application (same clean philosophy as before)
 #
-# Looks for templates in $TEMPLATES_DIR (default /container/templates).
+# Looks for templates in $TEMPLATES_DIR.
 # Renders them with envsubst to the official locations *unless* a final
-# config has already been bind-mounted directly (e.g. /etc/sssd/sssd.conf).
+# config has already been bind-mounted directly (e.g. /etc/ganesha/ganesha.conf).
 #
-# This gives clear separation:
-#   - Templates live in one directory (bind-mount your templates here)
-#   - Final/override configs are either direct /etc/ mounts or in a separate dir
-#
-# Any environment variables you set on the container are available inside
-# the templates (e.g. ${DOMAIN}, ${REALM}, ${LDAP_HOST}, etc.).
+# Bind-mount your templates directory from the host for easy customization:
+#   -v $(pwd)/my-templates:/container/templates:ro
 # -----------------------------------------------------------------------------
 apply_config_templates() {
     log "Applying configuration templates from ${TEMPLATES_DIR} ..."
 
-    # sssd
+    # sssd.conf (required for LLDAP POSIX)
     local sssd_tmpl="${TEMPLATES_DIR}/sssd.conf.template"
     if [ -f "$sssd_tmpl" ]; then
         if [ -s /etc/sssd/sssd.conf ]; then
@@ -66,7 +72,7 @@ apply_config_templates() {
         fi
     fi
 
-    # krb5.conf
+    # krb5.conf (required for Kerberos client + Ganesha NFS_KRB5)
     local krb5_tmpl="${TEMPLATES_DIR}/krb5.conf.template"
     if [ -f "$krb5_tmpl" ]; then
         if [ -s /etc/krb5.conf ]; then
@@ -78,15 +84,16 @@ apply_config_templates() {
         fi
     fi
 
-    # idmapd.conf
-    local idmap_tmpl="${TEMPLATES_DIR}/idmapd.conf.template"
-    if [ -f "$idmap_tmpl" ]; then
-        if [ -s /etc/idmapd.conf ]; then
-            log "  Using bind-mounted /etc/idmapd.conf (skipping template)"
+    # ganesha.conf (the heart of the server)
+    local ganesha_tmpl="${TEMPLATES_DIR}/ganesha.conf.template"
+    if [ -f "$ganesha_tmpl" ]; then
+        if [ -s /etc/ganesha/ganesha.conf ]; then
+            log "  Using bind-mounted /etc/ganesha/ganesha.conf (skipping template)"
         else
-            log "  Rendering idmapd.conf.template → /etc/idmapd.conf"
-            envsubst < "$idmap_tmpl" > /etc/idmapd.conf
-            chmod 644 /etc/idmapd.conf
+            log "  Rendering ganesha.conf.template → /etc/ganesha/ganesha.conf"
+            mkdir -p /etc/ganesha
+            envsubst < "$ganesha_tmpl" > /etc/ganesha/ganesha.conf
+            chmod 644 /etc/ganesha/ganesha.conf
         fi
     fi
 
@@ -94,138 +101,84 @@ apply_config_templates() {
 }
 
 # -----------------------------------------------------------------------------
-# Signal handling for graceful shutdown
+# Signal handling
 # -----------------------------------------------------------------------------
 cleanup() {
     log "Shutting down services..."
-    pkill -TERM rpc.nfsd     2>/dev/null || true
-    pkill -TERM rpc.gssd     2>/dev/null || true
-    pkill -TERM rpc.idmapd   2>/dev/null || true
+    pkill -TERM ganesha.nfsd 2>/dev/null || true
     pkill -TERM sssd         2>/dev/null || true
     sleep 1
-    exportfs -ua 2>/dev/null || true
     log "Shutdown complete."
     exit 0
 }
-trap cleanup SIGTERM SIGINT SIGHUP
+trap cleanup SIGTERM SIGINT
 
-# Special handler for SIGHUP: re-export without full restart (useful for management tool)
+# Simple SIGHUP handler: ask Ganesha to reload (via our wrapper or direct signal)
 handle_sighup() {
-    log "Received SIGHUP — re-exporting shares (exportfs -ra)..."
-    exportfs -ra 2>&1 | while read -r line; do log "  exportfs: $line"; done
+    log "Received SIGHUP — requesting Ganesha config/export reload..."
+    /usr/local/bin/ganesha-ctl reload 2>/dev/null || true
+    # Some Ganesha builds also react to SIGHUP directly for adding new exports
+    pkill -HUP ganesha.nfsd 2>/dev/null || true
 }
 trap 'handle_sighup' SIGHUP
 
-log "=== Starting Kerberized NFSv4 Server (AlmaLinux 10 + SSSD) ==="
+log "=== Starting NFS-Ganesha Kerberized NFSv4 Server (AlmaLinux 10 + LLDAP/SSSD) ==="
 
 # -----------------------------------------------------------------------------
-# Apply templates (see apply_config_templates above for details)
+# Apply templates
 # -----------------------------------------------------------------------------
 apply_config_templates
 
 # -----------------------------------------------------------------------------
-# 1. rpcbind
+# 1. Start SSSD (our bridge to LLDAP POSIX attributes)
 # -----------------------------------------------------------------------------
-log "[1/6] Starting rpcbind..."
-rpcbind -w || die "Failed to start rpcbind"
+log "[1/3] Starting SSSD (identity provider for LLDAP POSIX uids/gids)..."
+sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} &
+SSSD_PID=$!
 
-# -----------------------------------------------------------------------------
-# 2. Identity provider (SSSD primary, legacy nslcd supported with warning)
-# -----------------------------------------------------------------------------
-if [ "${USE_LEGACY_NSLCD}" = "true" ]; then
-    log "WARNING: USE_LEGACY_NSLCD=true is set."
-    log "         nss-pam-ldapd (nslcd) is NOT available in AlmaLinux 10 base repos."
-    log "         This will almost certainly fail unless you built nslcd yourself."
-    log "         The supported path is SSSD + sssd-nfs-idmap."
-    log "[2/6] Starting legacy nslcd (not recommended on AL10)..."
-    nslcd || die "Failed to start nslcd"
-    # Wait for nslcd socket if it creates one (less standardized)
-    for i in {1..30}; do
-        if pgrep -x nslcd >/dev/null; then break; fi
-        sleep 0.2
-    done
-else
-    log "[2/6] Starting SSSD (primary identity provider)..."
-    # sssd -i : run in foreground (we background it)
-    # --logger=files : useful inside containers
-    sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} &
-    SSSD_PID=$!
-
-    # Wait for the NSS responder socket/pipe to appear.
-    # This is the critical readiness signal that rpc.idmapd relies on.
-    log "    Waiting for SSSD NSS pipe (/var/lib/sss/pipes/nss)..."
-    for i in {1..60}; do
-        if [ -S /var/lib/sss/pipes/nss ]; then
-            log "    SSSD NSS responder ready."
-            break
-        fi
-        sleep 0.3
-        if [ $((i % 10)) -eq 0 ]; then
-            log "    ... still waiting for SSSD (attempt $i/60)"
-        fi
-    done
-
-    if [ ! -S /var/lib/sss/pipes/nss ]; then
-        die "SSSD NSS pipe did not appear in time. Check sssd.conf and LLDAP connectivity."
+# Wait for the NSS responder socket/pipe — this is critical.
+# Ganesha (and any nss-using components) rely on this for uid/gid resolution.
+log "    Waiting for SSSD NSS pipe (/var/lib/sss/pipes/nss)..."
+for i in {1..60}; do
+    if [ -S /var/lib/sss/pipes/nss ]; then
+        log "    SSSD NSS responder ready."
+        break
     fi
+    sleep 0.3
+    if [ $((i % 10)) -eq 0 ]; then
+        log "    ... still waiting for SSSD (attempt $i/60)"
+    fi
+done
+
+if [ ! -S /var/lib/sss/pipes/nss ]; then
+    die "SSSD NSS pipe did not appear in time. Check sssd.conf and LLDAP connectivity."
 fi
 
-# -----------------------------------------------------------------------------
-# 3. rpc.idmapd (NFSv4 name-to-ID mapping)
-#    Must start AFTER the identity provider (SSSD/nslcd) is ready.
-# -----------------------------------------------------------------------------
-log "[3/6] Starting rpc.idmapd..."
-rpc.idmapd -f &
-IDMAPD_PID=$!
-sleep 0.5
-
-# Optional: quick sanity check that idmapd can talk to the backend
+# Quick sanity check
 if command -v getent >/dev/null 2>&1; then
-    log "    getent passwd root (sanity check) -> $(getent passwd root | cut -d: -f1,3 || echo 'failed')"
+    log "    getent passwd root (sanity) -> $(getent passwd root | cut -d: -f1,3 || echo 'failed')"
 fi
 
 # -----------------------------------------------------------------------------
-# 4. rpc.gssd (Kerberos ticket handling for NFS)
+# 2. Prepare Ganesha exports directory
 # -----------------------------------------------------------------------------
-log "[4/6] Starting rpc.gssd (Kerberos)..."
-if [ "$GSSD_VERBOSITY" -gt 0 ]; then
-    # rpc.gssd verbosity is controlled via /etc/nfs.conf or command line in some versions
-    rpc.gssd -f -v "$GSSD_VERBOSITY" &
-else
-    rpc.gssd -f &
-fi
-GSSD_PID=$!
-sleep 0.5
+log "[2/3] Preparing Ganesha exports directory..."
+mkdir -p /etc/ganesha/exports.d
+# The management tool (and/or admins) will drop *.conf fragments here.
+# Each fragment should contain one or more EXPORT {} blocks.
+# Example filename: 10-myshare.conf
 
 # -----------------------------------------------------------------------------
-# 5. Apply exports
+# 3. Start NFS-Ganesha (the actual user-space NFSv4 + Kerberos server)
 # -----------------------------------------------------------------------------
-log "[5/6] Applying NFS exports (exportfs -ra)..."
-exportfs -ra || log "WARNING: exportfs -ra returned non-zero (check /etc/exports or /etc/exports.d/)"
+log "[3/3] Starting NFS-Ganesha..."
 
-log "    Current exports:"
-exportfs -s || true
+# The config file (rendered above) should contain:
+#   - NFS_CORE_PARAM, NFSv4, NFS_KRB5 sections
+#   - EXPORT_DEFAULTS with SecType = krb5p
+#   - %include "/etc/ganesha/exports.d/*.conf" (or equivalent)
+#
+# Ganesha will pick up DBUS automatically when the packages are built with it
+# (the EL Storage SIG builds are).
 
-# -----------------------------------------------------------------------------
-# 6. Start NFS server (NFSv4 only - no v2/v3 for security)
-# -----------------------------------------------------------------------------
-log "[6/6] Starting rpc.nfsd (NFSv4 only)..."
-# -N 4 -V 4 : disable versions < 4, enable only v4
-# You can tune threads with -t (default is usually fine)
-rpc.nfsd -N 2 -N 3 -V 4 -t 8 || die "Failed to start rpc.nfsd"
-
-log "=== NFS server is ready ==="
-log "    Keytab:   /etc/krb5.keytab"
-log "    Exports:  /etc/exports + /etc/exports.d/*.exports  (SIGHUP re-exports)"
-log "    Identity: $([ "${USE_LEGACY_NSLCD}" = "true" ] && echo 'LEGACY nslcd (unsupported on AL10)' || echo 'SSSD (recommended)')"
-log "    Hostname (must == NFS principal instance): $(hostname)"
-log ""
-log "    Re-export shares:   kill -HUP 1    (or docker kill -s HUP ...)"
-log "    Debug idmapping:    rpc.idmapd -f -vvv"
-log "    Check exports:      exportfs -s"
-log "    Inspect keytab:     klist -k /etc/krb5.keytab"
-
-# -----------------------------------------------------------------------------
-# Keep the container alive and wait for signals
-# -----------------------------------------------------------------------------
-wait
+exec ganesha.nfsd -f /etc/ganesha/ganesha.conf -L /var/log/ganesha.log

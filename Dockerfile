@@ -1,38 +1,55 @@
 FROM almalinux:10
 
 LABEL maintainer="Aelieth"
-LABEL description="AlmaLinux 10 Kerberized NFSv4 server with SSSD/LDAP idmapping (PR1 foundation)"
+LABEL description="AlmaLinux 10 NFS-Ganesha (user-space NFSv4) server with LLDAP/SSSD POSIX UID/GID mapping. One-stop Kerberized NFSv4 plugin for hosts without kernel NFS."
 LABEL org.opencontainers.image.source="https://github.com/your-org/alma_nfs-kerb"
 
 # -----------------------------------------------------------------------------
-# Package installation
-# -----------------------------------------------------------------------------
-# Core NFS + Kerberos
-#   nfs-utils          : rpc.nfsd, exportfs, mount.nfs, rpc.mountd (even if not always used), etc.
-#   krb5-workstation   : rpc.gssd, kinit, klist, ktutil
-#   rpcbind            : required for NFS services
+# Package installation - GANESHA ONLY
 #
-# Identity / LDAP (AlmaLinux 10 / EL10 supported path)
-#   sssd + sssd-ldap + sssd-nfs-idmap : Primary recommendation. Provides nss and the libnfsidmap plugin
-#                                       that rpc.idmapd uses for principal -> UID/GID mapping.
-#   openldap-clients   : ldapsearch, useful for debugging LLDAP connectivity
+# We deliberately do NOT install the kernel NFS stack (nfs-utils, rpcbind
+# daemons for kernel nfsd, etc.). This container IS the NFS server.
 #
-# Debugging / ops
-#   bind-utils, iproute, procps-ng, net-tools, strace, less, nano
+# Core:
+#   nfs-ganesha + nfs-ganesha-vfs     : The user-space NFSv4 server (the whole point)
+#   nfs-ganesha-utils                 : ganesha-admin + management tools (for direct control)
+#   nfs-ganesha-selinux               : SELinux policy (recommended)
+#
+# Identity:
+#   sssd + sssd-ldap                  : Talks to LLDAP, provides nss + POSIX IDs
+#
+# Kerberos client:
+#   krb5-workstation + krb5-libs      : kinit, klist, gss support for Ganesha
+#
+# DBUS (critical for "management tool speaks directly to Ganesha"):
+#   dbus + dbus-tools                 : Allows ganesha-ctl / management tool to call
+#                                       org.ganesha.nfsd.exportmgr at runtime
+#
+# Misc:
+#   gettext (envsubst) for template rendering
+#   Debugging / ops tools
 # -----------------------------------------------------------------------------
 RUN dnf install -y epel-release && \
+    # CentOS Storage SIG is the recommended source for modern nfs-ganesha on EL10
+    dnf install -y centos-release-nfs-ganesha7 2>/dev/null || true && \
     dnf install -y \
-        # NFS + Kerberos core
-        nfs-utils \
-        krb5-workstation \
-        rpcbind \
-        krb5-libs \
-        # SSSD + NFS idmapping (the supported path on AL10)
+        # === Ganesha (user-space NFSv4 server) ===
+        nfs-ganesha \
+        nfs-ganesha-vfs \
+        nfs-ganesha-utils \
+        nfs-ganesha-selinux \
+        # === Identity (LLDAP POSIX via SSSD) ===
         sssd \
         sssd-ldap \
-        sssd-nfs-idmap \
         openldap-clients \
-        # Debugging & troubleshooting
+        # === Kerberos client (for Ganesha NFS_KRB5 + GSS) ===
+        krb5-workstation \
+        krb5-libs \
+        # === DBUS (enables direct runtime export management) ===
+        dbus \
+        dbus-tools \
+        # === Templating + ops ===
+        gettext \
         procps-ng \
         iproute \
         net-tools \
@@ -40,49 +57,56 @@ RUN dnf install -y epel-release && \
         strace \
         less \
         nano \
-        # For envsubst templating of sssd/krb5/idmapd configs from DOMAIN env var
-        gettext \
     && dnf clean all
 
 # -----------------------------------------------------------------------------
 # Directories
 # -----------------------------------------------------------------------------
 RUN mkdir -p \
-    /var/lib/nfs \
-    /etc/exports.d \
-    /var/log/nfs \
+    /etc/ganesha \
+    /etc/ganesha/exports.d \
+    /var/log/ganesha \
     /etc/sssd \
-    /container/config
+    /var/lib/sss \
+    /container/templates \
+    /container/scripts \
+    /container/dbus
 
 # -----------------------------------------------------------------------------
-# Copy default templates.
-# These live in a dedicated directory so they can be cleanly bind-mounted
-# separately from any final/override config files.
-#
-# Default location: /container/templates
-# Override with:   -e TEMPLATES_DIR=/your/path
+# Copy Ganesha DBUS policy (allows root processes to manage exports at runtime)
+# This is required for ganesha-ctl and the host management tool to work.
+# -----------------------------------------------------------------------------
+COPY container/dbus/org.ganesha.nfsd.conf /etc/dbus-1/system.d/org.ganesha.nfsd.conf
+
+# -----------------------------------------------------------------------------
+# Copy templates (sssd, krb5, ganesha.conf, etc.)
+# Bind-mount your own templates dir at runtime for customization.
 # -----------------------------------------------------------------------------
 COPY container/templates/ /container/templates/
 
-# Legacy location (still copied for transition). Prefer the templates/ dir above.
-COPY container/config/ /container/config/
+# -----------------------------------------------------------------------------
+# Copy ganesha-ctl wrapper (the bridge for "management tool speaks directly")
+# The host-side Rust tool calls this via: docker exec <name> ganesha-ctl ...
+# -----------------------------------------------------------------------------
+COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl
+RUN chmod +x /usr/local/bin/ganesha-ctl
 
 # -----------------------------------------------------------------------------
-# Entrypoint
+# Entrypoint (Ganesha only - kernel path has been removed)
 # -----------------------------------------------------------------------------
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # -----------------------------------------------------------------------------
-# Healthcheck (lightweight)
+# Healthcheck
 # -----------------------------------------------------------------------------
 COPY container/healthcheck.sh /container/healthcheck.sh
 RUN chmod +x /container/healthcheck.sh
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=25s --retries=3 \
     CMD /container/healthcheck.sh || exit 1
 
-# Ports are documentation only when using host networking
-EXPOSE 111/tcp 111/udp 2049/tcp 2049/udp
+# Ports are documentation only when using host networking or explicit -p
+EXPOSE 2049/tcp 2049/udp 111/tcp 111/udp
 
 ENTRYPOINT ["/entrypoint.sh"]

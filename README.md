@@ -1,209 +1,164 @@
 # alma_nfs-kerb
 
-AlmaLinux 10 container providing **Kerberized NFSv4** shares with LDAP-backed UID/GID mapping (via SSSD) and a future small Rust management UI.
+**AlmaLinux 10 container that acts as a complete Kerberized NFSv4 server (via NFS-Ganesha) for systems that cannot (or do not want to) run the NFS stack on the host itself.**
 
-**Current status:** PR 1 foundation — hardened container + correct daemon ordering + SSSD support.
+It provides:
+- Full NFSv4 serving using **NFS-Ganesha** (user-space) — no host kernel `nfs`/`nfsd`/`rpcsec_gss_krb5` modules required.
+- UID/GID mapping backed by **LLDAP** (POSIX attributes via SSSD inside the container).
+- Easy visual management of shares and POSIX permissions from the host via a small Rust web tool (Axum + HTMX).
+- **Direct control** of Ganesha exports at runtime from the management tool (via DBUS / `ganesha-ctl`).
+
+**Core idea:** Plug this container into any Linux host (even one without kernel NFS) and it becomes the authoritative Kerberized NFSv4 server for that system. Clients authenticate with ordinary user Kerberos tickets (no machine principals required). POSIX ownership on the host directories must match the `uidNumber`/`gidNumber` values stored in LLDAP.
 
 ## Goals
 
-- Run real kernel `nfsd` (NFSv4 only) in a container on AlmaLinux 10.
-- Support **user-only Kerberos tickets** (no machine keytabs or host principals required on NFS clients).
-- Use LLDAP (or any POSIX-capable LDAP) for reliable `uidNumber`/`gidNumber` mapping via `rpc.idmapd` + SSSD.
-- Make it easy to add new shares via simple host volume mounts (`/etc/exports.d/*.exports`).
-- Provide a small, pleasant Rust-based visual management tool in later PRs (Axum + HTMX primary path).
+- Deliver a complete Kerberized NFSv4 service from inside a container (no reliance on host kernel NFS).
+- Use LLDAP (or any POSIX-capable LDAP) as the source of truth for `uidNumber`/`gidNumber`.
+- Allow administrators to manage shares and POSIX permissions visually from the host using a small Rust web UI.
+- Make it trivial to add/remove shares and fix permissions on any subdirectory under a share.
+- Support **direct runtime management** of Ganesha exports (the management tool speaks directly to Ganesha's management interface).
 
-## Architecture (PR 1)
+## Architecture (Ganesha-only)
 
 ```
-Host
- ├── /srv/nfs/...               (your actual data)
- ├── /etc/exports.d/            (share definitions)
- ├── secrets/krb5.keytab        (nfs/hostname@REALM)
- └── config/
-      ├── sssd.conf             (LLDAP connection + POSIX)
-      ├── idmapd.conf
-      └── krb5.conf
+Host (any Linux — no kernel NFS needed)
+├── /srv/nfs/... or /media/...          (real data — host only sees numbers)
+├── ganesha-exports.d/                  (native Ganesha EXPORT {} blocks, written by the tool)
+├── templates/                          (sssd, krb5, ganesha.conf templates)
+├── secrets/krb5.keytab                 (nfs/<hostname>@REALM)
+└── management/ (Rust web UI)           (talks LLDAP + privileged helper + docker exec ganesha-ctl)
 
-Container (privileged-ish, host net)
- ├── rpcbind
- ├── sssd (+ readiness wait)
- ├── rpc.idmapd
- ├── rpc.gssd
- ├── exportfs
- └── rpc.nfsd (NFSv4 only)
+Container (AlmaLinux 10)
+├── NFS-Ganesha (ganesha.nfsd)          — the actual NFSv4 + Kerberos server
+├── SSSD                                — talks to LLDAP, provides nss + POSIX IDs
+├── DBUS + ganesha-ctl wrapper          — allows direct Add/RemoveExport from the host tool
+└── Configuration rendered from templates
 ```
 
-The container is **not** a full replacement for a proper NAS, but it is excellent for:
-- Lab / homelab Kerberized shares
-- Consistent UID/GID across many machines using the same LLDAP
-- Easy addition of new exports without rebuilding images
+The Rust management tool (runs on the host) does:
+- Live LLDAP lookups (users/groups → uidNumber/gidNumber)
+- Real-time filesystem tree per share
+- Permission editor on *any* subfolder under a share (owner, group, mode, recursive)
+- `chown`/`chmod` via a narrow privileged helper
+- Writes native Ganesha `EXPORT {}` blocks
+- Calls directly into the running Ganesha via `docker exec <name> ganesha-ctl add-export ...` (DBUS)
 
-## Host Prerequisites (Critical)
+## Host Prerequisites
 
-Before running the container you **must** do the following on the Docker host:
+- Time synchronization (Kerberos requirement)
+- A DNS-resolvable hostname that matches the NFS service principal (`nfs/<hostname>@REALM`)
+- Keytab with that principal (mode 600)
+- Directories on the host that will be exported (the management tool helps keep their POSIX ownership in sync with LLDAP)
+- Docker / Podman with the ability to mount the host's DBUS socket (for direct Ganesha management)
 
-1. **Load kernel modules**
-   ```bash
-   modprobe nfs
-   modprobe nfsd
-   modprobe rpcsec_gss_krb5
-   ```
+The host does **not** need the kernel NFS stack.
 
-2. **Time synchronization** — Kerberos is extremely sensitive to clock skew.
-   ```bash
-   chronyc tracking
-   ```
+## Quick Start (docker compose)
 
-3. **DNS / hostname** — The container hostname must exactly match the instance in your NFS principal (e.g. `nfs/nfs-server-01.example.com@EXAMPLE.COM`).
-
-4. **Keytab** — Create the NFS service keytab (`nfs/<hostname>@REALM`) and bind-mount it at `/etc/krb5.keytab` (mode 600). See `examples/secrets/README.md`.
-
-5. **Share directories** — Create them on the host and chown to the numeric UID/GID from LLDAP.
-   ```bash
-   mkdir -p /srv/nfs/share1
-   chown 10000:10000 /srv/nfs/share1
-   ```
-
-## Keytab
-
-The container requires a keytab containing only the NFS service principal for its hostname:
-
-    nfs/nfs-server-01.example.com@EXAMPLE.COM
-
-Mount it read-only with strict permissions:
+See `examples/docker-compose.yml`. The important volumes are:
 
 ```yaml
-- ./secrets/krb5.keytab:/etc/krb5.keytab:ro
+volumes:
+  - /srv/nfs/project-alpha:/export/project-alpha:rw
+  - ./ganesha-exports.d:/etc/ganesha/exports.d:rw
+  - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
+  - ./templates:/container/templates:ro
+  - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:rw   # critical for direct management
 ```
 
-See `examples/secrets/README.md` for preparation steps.
-
-## Configuration via Templates (Clear Separation)
-
-The container looks for `*.template` files in a dedicated directory controlled by the `TEMPLATES_DIR` environment variable (default: `/container/templates`).
-
-It renders them (via `envsubst`) to the official locations **unless** you also bind-mount final versions directly to `/etc/...`.
-
-This keeps templates and final configs in separate directories when you export volumes from the host — no mixing of `foo.template` and `foo.conf` in the same place.
-
-**How to customize:**
-
-1. Bind-mount your templates directory (recommended):
-   ```bash
-   -v ./my-templates:/container/templates:ro
-   # or point anywhere:
-   -e TEMPLATES_DIR=/path/inside/container
-   ```
-
-2. Optionally bind-mount final configs directly (they win):
-   ```bash
-   -v ./final/sssd.conf:/etc/sssd/sssd.conf:ro
-   ```
-
-3. (Optional) You can still use environment variables inside templates if you want (`${MY_LDAP_HOST}` etc.). Most admins simply edit the values directly in the templates.
-
-There are **no mandatory environment variables**. The system is driven by the templates you maintain.
-
-## Quick Start (docker run)
+Start the container, then run the management tool (from the `management/` directory):
 
 ```bash
-docker run -d \
-  --name alma-nfs-kerb \
-  --net=host \
-  --hostname nfs-server-01.example.com \
-  --cap-add SYS_ADMIN \
-  -v /proc/fs/nfsd:/proc/fs/nfsd:rw \
-  -v /var/lib/nfs:/var/lib/nfs:rw \
-  -v /srv/nfs:/export:rw \
-  -v $(pwd)/exports.d:/etc/exports.d:ro \
-  -v $(pwd)/secrets/krb5.keytab:/etc/krb5.keytab:ro \
-  # Templates (separate volume/dir)
-  -v $(pwd)/my-templates:/container/templates:ro \
-  # Or override the templates directory:
-  # -e TEMPLATES_DIR=/container/my-templates \
-  alma-nfs-kerb:latest
+cd management
+cp config.toml.example config.toml
+# edit config.toml with your LLDAP URL, shares, etc.
+cargo run
 ```
 
-See `examples/docker-compose.yml` for the recommended compose pattern.
-
-**Dynamic re-exports (new in this iteration):**  
-Send `SIGHUP` to the container (or `kill -HUP 1` inside it) to run `exportfs -ra` without restarting the NFS daemons. This is the mechanism the future management tool will use.
-
-## Verification
-
-Inside the container (or with `docker exec`):
-
-```bash
-# Check exports
-exportfs -s
-
-# Check that SSSD can see your POSIX users
-getent passwd some-ldap-user
-id some-ldap-user
-
-# Debug idmapping in real time (very useful)
-rpc.idmapd -f -vvv
-
-# Check Kerberos keytab
-klist -k /etc/krb5.keytab
-
-# From a client with a user ticket
-kinit alice
-mount -t nfs4 -o sec=krb5p nfs-server-01.example.com:/export/share1 /mnt/test
-```
-
-From the client `ls -n /mnt/test` should show the numeric IDs that match LLDAP, and `ls` (without `-n`) should resolve names once client-side idmapping is also configured.
-
-## Dynamic Shares
-
-Add or remove shares by dropping `*.exports` files into a host directory bind-mounted to `/etc/exports.d/`.
-
-Example (`exports.d/10-myshare.exports`):
-
-```exports
-/export/myshare   *(rw,sec=krb5p,no_root_squash,sync,hide)
-```
-
-Send `SIGHUP` to the container to re-export without restart:
-
-```bash
-docker kill -s HUP <container>
-```
-
-See `examples/exports.d/` and the SIGHUP note in `entrypoint.sh`.
-
-## Important Warnings
-
-- **Hostname / principal matching** is not optional.
-- **Host filesystem ownership** must match the `uidNumber`/`gidNumber` values stored in LLDAP. The container cannot magically fix this.
-- Running real `nfsd` inside Docker requires elevated privileges and host networking in almost all practical deployments.
-- Client-side `rpc.idmapd` (with matching `Domain` and `Method = sss` or nsswitch) is still very useful for nice `ls` output and some applications, even though the server does the authoritative mapping.
+Open http://127.0.0.1:3000 — you will see your configured shares, can browse trees under them, and change POSIX permissions on any subfolder with live LLDAP dropdowns + recursive apply.
 
 ## Configuration Templates
 
-See `container/templates/` for the `.template` files. Bind-mount this directory (or set `TEMPLATES_DIR`) and edit them directly. The container renders them to the real locations on every start.
+Bind-mount your own `templates/` directory (or set `TEMPLATES_DIR`) containing:
 
-## Project Status & Roadmap
+- `sssd.conf.template`
+- `krb5.conf.template`
+- `ganesha.conf.template`
 
-PR 1 (container foundation + SSSD + templates) is complete.
+The container renders them on every start unless final versions are bind-mounted directly to `/etc/...`.
 
-PR 2 (dynamic shares via `exports.d/` + proper keytab patterns) is complete.
+See `container/templates/` for the starting points.
 
-Next: PR 3 — LLDAP POSIX integration guide + validation scripts (the most important operational piece).
+## Management Tool (Rust Web UI)
 
-See `docs/ldap-integration.md` and `scripts/verify-idmap.sh`.
+Located in `management/`.
+
+Key behaviors (Ganesha world):
+
+- `config.toml` now supports a `[[shares]]` list (preferred) with `name`, `host_path`, `export_path`, and optional `export_id`.
+- The tool writes proper Ganesha `EXPORT { ... }` fragments into `ganesha_exports_dir`.
+- On "Save & Apply" it also calls directly into Ganesha inside the container using `ganesha-ctl` (which uses the DBUS `org.ganesha.nfsd.exportmgr` interface).
+- No more classic `/etc/exports.d/*.exports` or `exportfs -ra`.
+
+The UI lets you:
+- See all configured shares
+- Expand the directory tree under any share
+- Click any subfolder → LLDAP user/group search dropdowns → mode + recursive checkbox → apply
+- The privileged helper does the actual recursive `chown`/`chmod` on the host
+
+## Direct Ganesha Management (from the tool or manually)
+
+Inside the container the `ganesha-ctl` wrapper is available:
+
+```bash
+docker exec alma-nfs-kerb ganesha-ctl show-exports
+docker exec alma-nfs-kerb ganesha-ctl add-export /etc/ganesha/exports.d/10-myshare.conf "EXPORT(Path=/myshare)"
+docker exec alma-nfs-kerb ganesha-ctl remove-export 42
+```
+
+This is the mechanism the Rust management tool uses.
+
+## Verification (inside the container)
+
+```bash
+# Is Ganesha healthy?
+/container/healthcheck.sh
+
+# Current exports (via the management wrapper)
+ganesha-ctl show-exports
+
+# Check that SSSD sees LLDAP users
+getent passwd some-ldap-user
+id some-ldap-user
+
+# Kerberos keytab
+klist -k /etc/krb5.keytab
+
+# From a client
+kinit alice
+mount -t nfs4 -o sec=krb5p nfs-server-01.example.com:/project-alpha /mnt/test
+ls -l /mnt/test
+```
+
+## Important Notes
+
+- Host filesystem numeric ownership **must** match the `uidNumber`/`gidNumber` values in LLDAP for the users/groups that should own the data.
+- The management tool exists precisely to make keeping them in sync easy and visual.
+- The container hostname must match the instance part of the NFS principal in the keytab.
+- DBUS socket must be mounted from the host for the "direct management" path to work.
+
+## Current Status
+
+Ganesha-only. Kernel NFS path has been removed from the main image and tooling.
+
+The project now fully matches the original vision: a pluggable, LLDAP-backed, Kerberized NFSv4 server that any Linux machine can use without running NFS itself, with a friendly web UI for share and permission management.
 
 ## References
 
-- Design document (full architecture, security model, PR plan): see the `design/` artifacts or the original design run output
-- erichough/docker-nfs-server (excellent reference patterns for containerized kernel NFS)
-- Red Hat / AlmaLinux SSSD + NFS integration guidance
-- `idmapd.conf(5)`, `rpc.gssd(8)`, `rpc.idmapd(8)`, `sssd.conf(5)`
-
-## Contributing
-
-PRs are welcome once the foundational pieces (especially PR 3) are in place. Please read the design doc first so we stay aligned on the user-only Kerberos + LLDAP POSIX model and the "small management tool" philosophy.
+- NFS-Ganesha documentation (especially the DBUS export manager interface)
+- LLDAP (POSIX attributes, GraphQL)
+- Your custom fork with Kerberos integration if applicable
 
 ---
 
-**License:** TBD (likely MIT or similar once we have more code)
+**License:** TBD (likely MIT or similar)

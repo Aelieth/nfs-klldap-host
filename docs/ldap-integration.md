@@ -1,8 +1,10 @@
-# LLDAP POSIX Integration for NFSv4 ID Mapping
+# LLDAP POSIX Integration for NFSv4 ID Mapping (Ganesha)
 
 This is the most critical operational piece for reliable UID/GID mapping when using user-only Kerberos tickets.
 
-The container uses SSSD (primary on AlmaLinux 10) + `rpc.idmapd` to translate Kerberos principals (`user@REALM`) into POSIX numeric IDs from LLDAP.
+The container uses **SSSD** (talking to LLDAP) as the source of POSIX `uidNumber`/`gidNumber` values. NFS-Ganesha serves the files with those numeric IDs. The management tool on the host keeps directory ownership in sync with LLDAP.
+
+The old kernel path (`rpc.idmapd`, `exportfs`, `rpc.gssd`, etc.) has been removed. All guidance below is for the current Ganesha + SSSD architecture.
 
 ## 1. LLDAP Requirements
 
@@ -83,50 +85,48 @@ ldap_user_gid_number = gidNumber
 
 Enable enumeration (`enumerate = true`) during initial bring-up — it makes `getent` and idmapping more reliable for small environments.
 
-## 3. Verification Commands (run inside the container)
-
-After the container is running with your LLDAP and keytab:
+## 3. Verification Commands (inside the running container)
 
 ```bash
-# 1. Can SSSD see the user?
+# 1. Healthcheck (recommended first step)
+ /container/healthcheck.sh
+
+# 2. Can SSSD see LLDAP users and groups?
 getent passwd alice
 id alice
+getent group some-ldap-group
 
-# 2. Can the NFS idmapper resolve the principal?
-rpc.idmapd -f -vvv
-# In another shell, try to access a share or run:
-#   ls -n /export/some-share
-# Watch the idmapd output
+# 3. What does Ganesha currently have loaded?
+ganesha-ctl show-exports
 
-# 3. Check current exports
-exportfs -s
+# 4. Kerberos keytab and principal
+klist -k /etc/krb5.keytab
 
-# 4. Quick sanity check from a Kerberized client
+# 5. Quick end-to-end test from a client with a user ticket
 kinit alice
-mount -t nfs4 -o sec=krb5p server.example.com:/export/share1 /mnt/test
+mount -t nfs4 -o sec=krb5p nfs-server-01.example.com:/project-alpha /mnt/test
 ls -l /mnt/test
 ```
 
 ## 4. Common Problems & Fixes
 
 **Everything maps to nobody / 65534**
-- `idmapd.conf` `Domain` does not match your Kerberos realm.
-- `rpc.idmapd` started before SSSD was ready (the entrypoint should prevent this).
-- LLDAP user is missing `posixAccount` or the `uidNumber` attribute.
+- LLDAP user/group is missing `posixAccount` / `posixGroup` or the `uidNumber`/`gidNumber` attributes.
+- SSSD has not enumerated or the NSS pipe is not ready (the entrypoint waits for it).
+- Mismatch between `Domain` / realm settings in `krb5.conf` and `ganesha.conf`.
 
-**Permission denied even with correct numeric IDs**
-- Host filesystem ownership does not match the `uidNumber`/`gidNumber` in LLDAP.
-- SELinux or AppArmor on the host is interfering.
+**Permission denied even with correct numeric IDs on the wire**
+- Host filesystem ownership does not match the `uidNumber`/`gidNumber` values in LLDAP.
+- SELinux / AppArmor on the host is interfering with the bind mounts.
 
 **SSSD cannot contact LLDAP**
-- TLS/certificate issues (`ldap_tls_reqcert = demand` is strict).
-- Bind credentials (if required) are wrong or missing.
-- Firewall between container and LLDAP.
+- TLS/certificate problems (`ldap_tls_reqcert = demand`).
+- Firewall, bind credentials, or wrong `ldap_uri`.
+- Run the container with `SSSD_DEBUG_LEVEL=7` and look at the logs.
 
-**Debugging tips**
-- Run the container with `SSSD_DEBUG_LEVEL=7` (or higher).
-- Inside the container: `sss_cache -E` then retry `getent`.
-- Check container logs for SSSD and `rpc.idmapd`.
+**Direct management (ganesha-ctl) not working**
+- The host DBUS socket is not mounted into the container (`/run/dbus/system_bus_socket`).
+- The DBUS policy file for Ganesha is missing or too restrictive.
 
 ## 5. Client-side Considerations
 
@@ -136,18 +136,19 @@ This gives nice `ls` output (names instead of numbers) and improves some applica
 
 ## 6. Recommended Workflow
 
-1. Create user + POSIX attributes in LLDAP.
-2. `chown` the host directories to the same numeric IDs.
-3. Add an `*.exports` file in your `exports.d/` directory.
-4. Send `SIGHUP` to the container (or restart it).
-5. Verify with the commands in section 3.
+1. Create the user + POSIX attributes (`uidNumber`, `gidNumber`, etc.) in LLDAP.
+2. Use the management web UI (or the privileged helper directly) to `chown`/`chmod` the host directories so the numeric IDs match LLDAP.
+3. Define the share in the management tool's `config.toml` (or drop a fragment into `ganesha-exports.d/`).
+4. The tool writes a native Ganesha `EXPORT {}` block and calls `ganesha-ctl add-export` (direct DBUS).
+5. Verify with the commands in section 3 and from a Kerberized client.
 
 ## References
 
-- Current working templates: `container/templates/`
-- Validation script: `scripts/verify-idmap.sh`
-- LLDAP documentation on custom attributes and POSIX objectClasses
+- Current templates: `container/templates/`
+- `ganesha-ctl` wrapper and DBUS policy: `container/scripts/`, `container/dbus/`
+- Management tool source: `management/`
+- LLDAP documentation (POSIX attributes + GraphQL)
 
 ---
 
-This document is intentionally practical. For deeper SSSD tuning, see `sssd.conf(5)` and the Red Hat SSSD + NFS integration guides.
+This document is intentionally practical. For deeper SSSD tuning see `sssd.conf(5)`. For Ganesha runtime management see the official DBUS export manager documentation.

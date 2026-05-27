@@ -1,11 +1,14 @@
 # =============================================================================
-# Example docker-compose.yml for alma_nfs-kerb (PR1 - hardened container)
+# Example docker-compose.yml for alma_nfs-kerb (Ganesha / user-space NFS ONLY)
 #
-# This demonstrates the realistic runtime requirements for running real
-# kernel NFSv4 + Kerberos inside a container.
+# This is the recommended (and now only supported) configuration.
 #
-# IMPORTANT: Most people run this with host networking + elevated capabilities.
-#            Unprivileged mode is extremely difficult for NFS.
+# The container itself is the complete Kerberized NFSv4 server using
+# NFS-Ganesha (user-space) + SSSD for LLDAP POSIX UID/GID mapping.
+#
+# The host does NOT need kernel NFS modules (nfs, nfsd, rpcsec_gss_krb5).
+# This makes it suitable for ZimaOS, TrueNAS SCALE, minimal appliances,
+# or any Linux machine that can't or won't run a full NFS stack.
 # =============================================================================
 version: "3.8"
 
@@ -17,89 +20,110 @@ services:
     image: alma-nfs-kerb:latest
     container_name: alma-nfs-kerb
 
-    # Host networking is strongly recommended for NFS
+    # Host networking is often simplest for NFS (especially with Kerberos + DNS).
+    # You can also publish ports explicitly if you prefer.
     network_mode: host
 
-    # Required capabilities / privileges
-    # SYS_ADMIN is usually sufficient; some environments need privileged: true
+    # Ganesha (VFS FSAL) needs certain privileges to export host bind-mounted
+    # directories and manipulate file handles.
     cap_add:
       - SYS_ADMIN
-      - SYS_RESOURCE
-    # privileged: true     # Use only if SYS_ADMIN is not enough in your environment
+      - DAC_READ_SEARCH
+      # - SYS_RESOURCE   # sometimes helpful for large numbers of exports
 
-    # Hostname MUST match the instance part of your NFS principal
-    # (i.e. the keytab should contain nfs/this-hostname@REALM)
-    hostname: nfs-server-01.example.com
+    # Optional but recommended for some environments:
+    # privileged: true
 
-    # Volumes - adjust paths on the left (host) to match your setup
+    hostname: nfs-server-01.example.com   # MUST match the NFS principal in the keytab
+
     volumes:
-      # === Required for kernel nfsd to function ===
-      - /proc/fs/nfsd:/proc/fs/nfsd:rw
-      - /var/lib/nfs:/var/lib/nfs:rw
-
-      # === Your shares (example) ===
-      # The path inside the container becomes the exported path.
+      # ---------------------------------------------------------------------
+      # Your actual data (bind-mounted from host). These become the NFS shares.
+      # The numeric uid/gid on these directories MUST match the uidNumber/gidNumber
+      # values in your LLDAP POSIX attributes for the users/groups that should
+      # own the data.
+      # ---------------------------------------------------------------------
       - /srv/nfs/share1:/export/share1:rw
       - /srv/nfs/share2:/export/share2:rw
+      # Add more as needed...
 
-      # === Dynamic exports ===
-      # Put files named *.exports here on the host. They are read by exportfs.
-      # Example content:
-      #   /export/share1  *(rw,sec=krb5p,no_root_squash,sync)
-      - ./exports.d:/etc/exports.d:ro
+      # ---------------------------------------------------------------------
+      # Ganesha export definitions (NATIVE Ganesha blocks, not classic exports)
+      #
+      # The management tool writes files here containing EXPORT { ... } blocks.
+      # The container (and ganesha-ctl) reads them.
+      #
+      # You can also drop hand-written .conf files here for static exports.
+      # ---------------------------------------------------------------------
+      - ./ganesha-exports.d:/etc/ganesha/exports.d:rw
 
-      # === Kerberos keytab ===
-      # Must contain: nfs/<hostname>@REALM
-      # Prepare with proper permissions (600) on the host.
-      # See examples/secrets/README.md for guidance.
+      # ---------------------------------------------------------------------
+      # Kerberos keytab containing the NFS service principal:
+      #   nfs/<hostname>@YOUR.REALM
+      #
+      # This must be mode 600 and owned by root inside the container.
+      # ---------------------------------------------------------------------
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 
-      # === Kerberos configuration ===
-      - ./config/krb5.conf:/etc/krb5.conf:ro
-
-      # === SSSD configuration (primary on AlmaLinux 10) ===
-      # See container/config/sssd.conf for a starting template.
-      - ./config/sssd.conf:/etc/sssd/sssd.conf:ro
-
-      # === idmapd configuration ===
-      - ./config/idmapd.conf:/etc/idmapd.conf:ro
-
-      # === Templates (separate directory for clarity) ===
-      # Bind-mount the directory containing your .template files.
-      # Edit the templates directly — the container renders them on every start.
+      # ---------------------------------------------------------------------
+      # Templates (sssd.conf.template, krb5.conf.template, ganesha.conf.template)
       #
-      # You can change the path with: -e TEMPLATES_DIR=/your/templates
+      # The container renders these on every start unless you bind-mount
+      # final versions directly to /etc/... (see below).
+      # ---------------------------------------------------------------------
       - ./templates:/container/templates:ro
 
-      # Final/override configs (optional - direct mounts take precedence)
+      # ---------------------------------------------------------------------
+      # OPTIONAL: direct final configs (these win over templates)
+      # ---------------------------------------------------------------------
       # - ./config/sssd.conf:/etc/sssd/sssd.conf:ro
       # - ./config/krb5.conf:/etc/krb5.conf:ro
-      # - ./config/idmapd.conf:/etc/idmapd.conf:ro
+      # - ./config/ganesha.conf:/etc/ganesha/ganesha.conf:ro
 
-      # Optional: custom CA bundle for LDAPS to LLDAP
+      # ---------------------------------------------------------------------
+      # OPTIONAL: CA bundle for LDAPS to LLDAP (if using custom/internal CA)
+      # ---------------------------------------------------------------------
       # - ./secrets/ca.crt:/etc/ssl/certs/ca-bundle.crt:ro
 
-    # No mandatory environment variables.
-    # The main way to configure is by bind-mounting templates:
-    #
-    #   -v ./my-configs:/container/config:ro
-    #
-    # Inside that directory you can have:
-    #   krb5.conf.template
-    #   sssd.conf.template
-    #   idmapd.conf.template
-    #
-    # Any environment variables you set here will be available for envsubst
-    # expansion inside the templates.
+      # ---------------------------------------------------------------------
+      # CRITICAL for "management tool speaks directly to Ganesha":
+      #
+      # Mount the host's system DBUS socket so the container can talk to
+      # the real org.ganesha.nfsd service and the management tool (via
+      # "docker exec ... ganesha-ctl") can add/remove exports at runtime.
+      #
+      # Path may vary on your distro (sometimes /var/run/dbus/...).
+      # ---------------------------------------------------------------------
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:rw
 
     environment:
-      # Example (optional) - you can reference ${MY_LDAP_HOST} etc. in templates
+      # No mandatory variables. Everything is driven by templates + files.
+      #
+      # You can still pass variables that will be expanded inside templates:
+      # - REALM=YOUR.REALM
       # - MY_LDAP_HOST=lldap.example.com
-
-      # The management tool (future) or operators can send SIGHUP to re-export:
-      #   docker kill -s HUP <container>   or   kill -HUP 1 inside the container
-      # This triggers "exportfs -ra" without restarting NFS daemons.
+      #
+      # The management tool (or operators) can send SIGHUP for a simple reload:
+      #   docker kill -s HUP alma-nfs-kerb
+      #
+      # Preferred method is direct control via ganesha-ctl (see README).
 
     restart: unless-stopped
 
-    # Healthcheck is defined in the Dockerfile and uses container/healthcheck.sh
+    # The healthcheck is defined in the Dockerfile and uses container/healthcheck.sh
+    # It verifies: ganesha.nfsd process + listening on 2049 + basic responsiveness.
+
+# =============================================================================
+# Notes for users of the management tool (Rust web UI)
+#
+# 1. The tool runs on the host (not inside this container).
+# 2. It talks to LLDAP over GraphQL to resolve user/group names → uidNumber/gidNumber.
+# 3. It uses a tiny privileged helper (sudo or setuid) to do recursive chown/chmod
+#    on the host directories so they match LLDAP.
+# 4. It writes native Ganesha EXPORT {} blocks into ./ganesha-exports.d/
+# 5. It speaks directly to Ganesha inside the container via:
+#      docker exec alma-nfs-kerb ganesha-ctl add-export ...
+#      docker exec alma-nfs-kerb ganesha-ctl remove-export ...
+#
+# See management/ for the tool source and configuration.
+# =============================================================================

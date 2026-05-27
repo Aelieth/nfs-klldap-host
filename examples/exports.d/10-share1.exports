@@ -1,5 +1,14 @@
-# Example NFSv4 export using Kerberos (user tickets only)
-# File naming: anything ending in .exports under /etc/exports.d/ is picked up.
+# LEGACY / HISTORICAL ONLY
+#
+# This file contains the old kernel-style export syntax.
+# The project has completed the full conversion to NFS-Ganesha.
+#
+# Native Ganesha EXPORT {} blocks now live in the parent of this directory
+# or in the directory bind-mounted as /etc/ganesha/exports.d/ inside the container.
+#
+# See README.md in this directory for the current format.
+#
+# This file is kept only as a historical reference and is no longer used.
 
-# sec=krb5p is strongly recommended (privacy + integrity + authentication)
-/export/share1   *(rw,sec=krb5p,no_root_squash,sync,hide)
+# Old kernel syntax (no longer consumed):
+# /export/share1   *(rw,sec=krb5p,no_root_squash,sync,hide)

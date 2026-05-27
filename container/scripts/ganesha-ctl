@@ -1,0 +1,119 @@
+#!/bin/bash
+#
+# ganesha-ctl - Thin wrapper around NFS-Ganesha DBUS management interface.
+#
+# This script is intended to be called from the host via:
+#   docker exec <container> ganesha-ctl <command> [args...]
+#
+# It lets the management tool speak directly to Ganesha's runtime export manager
+# without the tool needing to speak DBUS natively.
+#
+# Commands:
+#   add-export <config_file> [search_expr]   - Add (or update) export(s) from file
+#   remove-export <export_id>                - Remove export by numeric ID
+#   show-exports                             - List active exports
+#   reload                                   - Ask Ganesha to reload config (where supported)
+#
+# The search expression for AddExport is typically something like:
+#   "EXPORT(Path=/export/myshare)"
+#   or "EXPORT(export_id=101)"
+#
+set -euo pipefail
+
+log() {
+    echo "[ganesha-ctl] $*"
+}
+
+die() {
+    echo "[ganesha-ctl] ERROR: $*" >&2
+    exit 1
+}
+
+# Ensure we have dbus-send
+if ! command -v dbus-send >/dev/null 2>&1; then
+    die "dbus-send not found in PATH. Is dbus installed in the container?"
+fi
+
+CMD="${1:-}"
+shift || true
+
+case "$CMD" in
+    add-export)
+        # Usage: ganesha-ctl add-export /etc/ganesha/exports.d/10-myshare.conf "EXPORT(Path=/export/myshare)"
+        FILE="${1:-}"
+        EXPR="${2:-EXPORT(Path=*)}"
+
+        if [ ! -f "$FILE" ]; then
+            die "Export config file not found: $FILE"
+        fi
+
+        log "AddExport file=$FILE expr=$EXPR"
+
+        dbus-send --system --print-reply --dest=org.ganesha.nfsd \
+            /org/ganesha/nfsd/ExportMgr \
+            org.ganesha.nfsd.exportmgr.AddExport \
+            string:"$FILE" \
+            string:"$EXPR" \
+            2>&1 || die "AddExport failed (is Ganesha running and DBUS socket mounted?)"
+        ;;
+
+    remove-export)
+        # Usage: ganesha-ctl remove-export 101
+        ID="${1:-}"
+
+        if [ -z "$ID" ]; then
+            die "Usage: ganesha-ctl remove-export <export_id>"
+        fi
+
+        log "RemoveExport id=$ID"
+
+        dbus-send --system --print-reply --dest=org.ganesha.nfsd \
+            /org/ganesha/nfsd/ExportMgr \
+            org.ganesha.nfsd.exportmgr.RemoveExport \
+            uint16:"$ID" \
+            2>&1 || die "RemoveExport failed"
+        ;;
+
+    show-exports)
+        log "ShowExports"
+
+        dbus-send --system --print-reply --dest=org.ganesha.nfsd \
+            /org/ganesha/nfsd/ExportMgr \
+            org.ganesha.nfsd.exportmgr.ShowExports \
+            2>&1 || die "ShowExports failed"
+        ;;
+
+    reload)
+        # Some Ganesha builds support a config reload signal or admin method.
+        # We fall back to a no-op hint if not available.
+        log "Requesting config reload (if supported by this Ganesha build)..."
+
+        # Try the admin interface reload if present
+        dbus-send --system --print-reply --dest=org.ganesha.nfsd \
+            /org/ganesha/nfsd/admin \
+            org.ganesha.nfsd.admin.reload 2>&1 || true
+
+        # Also try SIGHUP to the ganesha process (harmless if it only adds)
+        pkill -HUP ganesha.nfsd 2>/dev/null || true
+
+        log "Reload request sent."
+        ;;
+
+    *)
+        cat <<EOF
+ganesha-ctl - NFS-Ganesha management helper
+
+Usage:
+  ganesha-ctl add-export <file> [search_expr]
+  ganesha-ctl remove-export <export_id>
+  ganesha-ctl show-exports
+  ganesha-ctl reload
+
+Examples:
+  ganesha-ctl add-export /etc/ganesha/exports.d/10-myshare.conf "EXPORT(Path=/export/myshare)"
+  ganesha-ctl remove-export 42
+  ganesha-ctl show-exports
+EOF
+        exit 1
+        ;;
+esac

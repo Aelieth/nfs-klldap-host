@@ -1,27 +1,77 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h2>Managed Directories</h2>
+<h2>NFS Shares (Ganesha)</h2>
+<p>Click a share to browse its directory tree. Click any subfolder to change POSIX owner/group/mode (with live LLDAP lookup + recursive apply).</p>
+
+{% if shares.len() > 0 %}
+    <div class="shares-list" style="margin-bottom: 1.5rem;">
+        {% for share in shares %}
+            <div class="share-card"
+                 style="border: 1px solid #ddd; padding: 10px 14px; margin-bottom: 8px; border-radius: 6px; cursor: pointer; background: #fafafa;"
+                 hx-get="/tree?path={{ share.host_path }}"
+                 hx-target="#tree-root"
+                 hx-swap="innerHTML"
+                 onclick="selectShare('{{ share.name }}', '{{ share.export_path }}', '{{ share.host_path }}')">
+                <strong>{{ share.name }}</strong><br>
+                <small style="color:#555;">NFS path: <code>{{ share.export_path }}</code> &nbsp;•&nbsp; Host: <code>{{ share.host_path }}</code></small>
+            </div>
+        {% endfor %}
+    </div>
+{% else %}
+    <p style="color:#888;">No shares configured in config.toml. Using legacy allowed_roots.</p>
+{% endif %}
+
+<p><a href="/exports" style="font-weight:600;">→ Manage / Create Ganesha Exports (direct runtime control)</a></p>
+
+<h3 id="current-share-title" style="margin-top: 0.5rem;">Directory tree</h3>
 
 <div id="tree-root"
-     hx-get="/tree?path=/media"
+     hx-get="/tree?path={% if shares.len() > 0 %}{{ shares[0].host_path }}{% else %}/srv/nfs{% endif %}"
      hx-trigger="load"
      hx-swap="innerHTML">
     Loading tree...
 </div>
 
-<div id="permission-form" class="form" style="display:none;">
+<div id="permission-form" class="form" style="display:none; margin-top: 1rem;">
     <!-- Populated by HTMX when a directory is clicked -->
 </div>
 
 <script>
-    // Simple helper: when a directory is clicked in the tree, load its form
+    let currentShareName = null;
+
+    function selectShare(name, exportPath, hostPath) {
+        currentShareName = name;
+        document.getElementById('current-share-title').innerHTML =
+            'Directory tree for share <strong>' + name + '</strong> <small>(NFS: ' + exportPath + ')</small>';
+
+        // Load the tree for this share's root
+        htmx.ajax('GET', '/tree?path=' + encodeURIComponent(hostPath), {
+            target: '#tree-root',
+            swap: 'innerHTML'
+        });
+    }
+
+    // Delegated click handler for any .dir in the tree (works for lazy-loaded fragments too)
     document.body.addEventListener('click', function(evt) {
-        if (evt.target.classList.contains('dir')) {
-            const path = evt.target.dataset.path;
-            htmx.ajax('GET', '/directory?path=' + encodeURIComponent(path), {target: '#permission-form', swap: 'innerHTML'});
-            document.getElementById('permission-form').style.display = 'block';
+        const dir = evt.target.closest('.dir');
+        if (dir) {
+            const path = dir.dataset.path;
+            if (path) {
+                htmx.ajax('GET', '/directory?path=' + encodeURIComponent(path), {
+                    target: '#permission-form',
+                    swap: 'innerHTML'
+                });
+                document.getElementById('permission-form').style.display = 'block';
+            }
         }
     });
 </script>
+
+<style>
+    .share-card:hover {
+        background: #f0f4ff;
+        border-color: #4a90e2;
+    }
+</style>
 {% endblock %}

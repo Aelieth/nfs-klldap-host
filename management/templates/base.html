@@ -81,8 +81,8 @@
     <div style="background:#fff8e1; border:1px solid #f0c36b; padding:4px 10px; margin-bottom:0.75rem; border-radius:4px; font-size:0.85em; color:#664e04;">
         <strong>Container hostname for keytab:</strong>
         <code style="background:#fff; padding:1px 4px; border-radius:2px;">nfs/HOSTNAME@REALM</code>
-        — set via <code>--hostname</code> on the container (or let it auto-append <code>-nfs</code>).
-        See <a href="/settings">System Settings</a> for the exact value derived from your config.
+        — must be set with <code>--hostname</code> when starting the container (e.g. <code>--hostname "$(hostname)-nfs"</code>).
+        See <a href="/settings">System Settings</a> for the value from your config.
     </div>
 
     <nav style="margin-bottom:1rem; border-bottom:1px solid #ddd; padding-bottom:6px;">

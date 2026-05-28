@@ -31,7 +31,8 @@ Example principal:
 
 ## Important
 
-- The container hostname must exactly match the instance part of the principal.
+- You must start the container with `--hostname` (or the compose `hostname:` field) so that it exactly matches the instance part of the NFS principal in the keytab.
+- The container does **not** auto-detect or auto-append "-nfs" to the hostname.
 - Never commit the real keytab to git. This directory contains only an example.
 - For automated renewal later, the keytab can be refreshed in place and the container sent SIGHUP (or restarted).
 

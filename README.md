@@ -106,6 +106,7 @@ See [TESTING.md](TESTING.md) for the current testing strategy, how to run tests,
 ```bash
 docker run -d \
   --name nfs-klldap \
+  --hostname "$(hostname)-nfs" \
   -p 2049:2049/tcp -p 2049:2049/udp \
   -v /path/to/nfs-config:/config \
   -v /secure/location/krb5.keytab:/etc/krb5.keytab:ro \
@@ -145,7 +146,7 @@ ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
 ldap_default_authtok = "your-password"
 
 [server]
-# hostname = "examplehost-nfs"          # optional (auto-derived from container hostname)
+# hostname = "examplehost-nfs"          # optional override (must match the container's --hostname)
 
 [kerberos]
 # realm = "KRB.EXAMPLE.COM"             # required if auto-derivation from ldap_uri fails (or use NFS_REALM env)
@@ -177,8 +178,12 @@ The Rust binary handles all derivation and generation from this single file.
 ## Prerequisites
 
 - Time synchronization (Kerberos requirement)
-- DNS-resolvable hostname that matches the NFS service principal (`nfs/<hostname>@REALM`)
-- Keytab with that principal (mode 600)
+- You **must** start the container with an explicit hostname that matches your keytab, e.g.:
+  ```bash
+  --hostname "$(hostname)-nfs"
+  ```
+  The container will **not** auto-derive this. The value must match the NFS principal in your keytab (`nfs/<chosen-hostname>@REALM`).
+- Keytab with the matching principal (mode 600, readable by the container)
 - Attached/media drives for exported data (system paths like `/srv/nfs` are not recommended)
 - Docker / Podman
 

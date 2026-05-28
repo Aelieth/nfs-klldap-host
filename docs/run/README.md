@@ -59,56 +59,62 @@ See the top-level [examples/docker-compose.yml](../examples/docker-compose.yml).
 services:
   nfs-kerb:
     # ... build/image ...
-    user: "nfs"
+    hostname: myhost-nfs     # Must match the NFS principal in your keytab: nfs/myhost-nfs@REALM
+    # Do NOT set "user: nfs" here — the entrypoint needs root for setup and will
+    # use gosu to drop to the unprivileged user for the actual daemons.
     environment:
       - NFS_REALM=KRB.EXAMPLE.COM   # only needed if your ldap_uri won't auto-derive cleanly
     # cap_add, volumes, etc. as before
 ```
 
-## Recommended Minimal-Privilege Patterns (Non-Root by Default)
+**Note:** The container no longer attempts any automatic hostname adjustment. You are responsible for setting `--hostname` (or the compose `hostname:` field) to the exact value that exists in your keytab.
 
-The image now ships with proactive hardening so that the default experience with `--user nfs` (or no user override) requires as little admin intervention as possible.
+## Privilege Model (Root for Setup, Drop to nfs for Daemons)
 
-### What the image does for you automatically
+The container image is designed so that:
 
-- Creates an unprivileged system user `nfs` (and a companion `keytab` group).
-- Pre-creates and chowns all known runtime directories (`/var/log/ganesha`, `/var/lib/sss`, `/var/run/ganesha`, `/etc/ganesha*`, etc.).
-- Runs `setcap cap_net_bind_service+ep` on the ganesha binary.
-- Emits **clear, copy-pasteable remediation commands** at startup (in `entrypoint.sh`) the first time it detects a keytab permission problem or a missing write permission — before the daemons fail cryptically.
-- Supports two supported operating modes (see below).
+- `entrypoint.sh` runs as **root** (this is the default). This allows it to:
+  - Generate config files into `/etc/sssd`, `/etc/krb5.conf`, `/etc/ganesha/`, etc.
+  - Perform early permission checks and directory setup.
+  - Run any other bootstrap operations that require elevated privileges.
 
-### Primary recommended mode: Capabilities + unprivileged user (no sudo inside image)
+- Once setup is complete, the entrypoint uses `gosu nfs` to drop privileges before starting the long-running processes (`sssd`, `ganesha.nfsd`, and the config watcher). Most of the container's runtime is therefore as the unprivileged `nfs` user.
 
-This is the default and preferred path. It keeps the attack surface smallest.
+You should generally **not** pass `--user nfs` (or `user: "nfs"` in compose) — doing so would prevent the entrypoint from performing its required root-level setup steps and would lead to permission errors.
+
+### Recommended capabilities
+
+Even though the daemons run as the `nfs` user, the following capabilities are still very useful (and recommended) at the `docker run` / compose level:
 
 ```yaml
 # docker-compose excerpt
 services:
   nfs-kerb:
-    user: "nfs"                    # or omit; the image defaults to this
     cap_add:
       - CHOWN
       - FOWNER
       - DAC_OVERRIDE
-      - DAC_READ_SEARCH     # often still useful for VFS FSAL
+      - DAC_READ_SEARCH     # often helpful for Ganesha VFS FSAL
       - NET_BIND_SERVICE    # for listening on privileged port 2049
     group_add:
-      - "keytab"                   # lets the nfs user read a group-readable keytab
+      - "keytab"            # lets the nfs user read a group-readable keytab
     volumes:
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 ```
 
-On the **host**, make your keytab group-readable by a GID that matches the container's `keytab` group (or use ACLs):
+On the host, make the keytab group-readable for the container's `keytab` group (the image creates this group and adds the `nfs` user to it):
 
 ```bash
-# On the host — one-time
-sudo chgrp  (getent group keytab | cut -d: -f3)  /path/to/your/krb5.keytab
+# On the host — one-time (adjust path as needed)
+sudo chgrp "$(docker run --rm --entrypoint getent ghcr.io/aelieth/nfs-klldap-host:latest keytab | cut -d: -f3)" /path/to/your/krb5.keytab
 sudo chmod g+r /path/to/your/krb5.keytab
 ```
 
-The entrypoint now prints the exact command you need if it detects the problem.
+The entrypoint prints the exact remediation command when it detects permission problems.
 
-### Alternative mode: Narrow sudoers for daemon startup (maximum compatibility)
+### Alternative (largely superseded): Narrow sudoers inside the image
+
+> **Note:** With the current design (entrypoint runs as root and uses `gosu` to drop to the `nfs` user for daemons), the need for an internal sudoers fragment is greatly reduced. The section below is kept for historical/compatibility reasons.
 
 Some environments or older Ganesha VFS behavior work more reliably when the daemons themselves run with real uid 0. For these cases we provide a **very narrow, auditable sudoers fragment**:
 
@@ -146,9 +152,9 @@ It automatically detects the correct GID from the image and applies the right pe
 
 You should almost never have to debug "Kerberos not working" blindly anymore.
 
-### When you might still choose `--user root`
+### Running the entire container as root
 
-Only as a temporary debugging step or in environments where the required capabilities (CHOWN, FOWNER, DAC_OVERRIDE, etc.) are blocked by the container runtime or security policy. The goal is to run with the smallest practical capability set.
+You can still force the whole container (including entrypoint) to run as root with `--user root` (or `user: "root"` in compose). This is occasionally useful for debugging permission issues or in very restrictive environments where even the gosu drop causes problems. It is not the recommended default.
 
 ## Host-Side Volume Permissions (config + data)
 
@@ -163,9 +169,9 @@ The new proactive permission checks in the entrypoint will loudly tell you (with
 
 The healthcheck (`/container/healthcheck.sh`) and the config watcher (`nfs-klldap-conf-watcher`) continue to function under the non-root user. The watcher PID is now correctly tracked for clean shutdown (see entrypoint.sh).
 
-## Troubleshooting Non-Root Starts
+## Troubleshooting Permission Issues at Startup
 
-The entrypoint now runs `check_runtime_permissions()` very early and prints prominent, copy-pasteable remediation for the two most common problems (keytab readability and unwritable runtime directories).
+The entrypoint (running as root) runs `check_runtime_permissions()` very early and prints prominent, copy-pasteable remediation for common problems (keytab readability and unwritable runtime directories). The actual daemons then run as the `nfs` user via `gosu`.
 
 ```bash
 # Watch the startup logs — the diagnostics are emitted here before daemons start
@@ -182,12 +188,14 @@ docker exec -it <name> /bin/bash -c '
 docker kill -s HUP <name>
 ```
 
-If you still need to fall back to root for a specific container (temporary debugging only):
+If you need to run the entire container (including entrypoint) as root for debugging:
 
 ```bash
 docker run ... --user root ...
 # or in compose: user: "root"
 ```
+
+This disables the normal `gosu` privilege drop for the daemons.
 
 ## Related Hardening Items (Already Applied)
 

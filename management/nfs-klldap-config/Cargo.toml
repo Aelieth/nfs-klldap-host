@@ -13,6 +13,14 @@ path = "src/lib.rs"
 name = "nfs-klldap-config"
 path = "src/main.rs"
 
+# New startup/orchestration binary.
+# This will gradually take over the complex guided setup, reachability testing,
+# and runtime diagnostics that currently live in entrypoint.sh (replacing
+# fragile grep|cut|tr|sed parsing of the TOML).
+[[bin]]
+name = "nfs-klldap-startup"
+path = "src/bin/nfs_klldap_startup.rs"
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"

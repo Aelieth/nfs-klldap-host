@@ -43,7 +43,17 @@ services:
     # Optional but recommended for some environments:
     # privileged: true
 
-    hostname: nfs-server-01.example.com   # MUST match the NFS principal in the keytab
+    # IMPORTANT: The container hostname must exactly match the NFS principal in your keytab.
+    # Recommended pattern on the host:
+    #   hostname: "$(hostname)-nfs"
+    #
+    # When using docker-compose you usually set it explicitly or via an .env file, e.g.:
+    #   hostname: ${HOSTNAME}-nfs
+    hostname: myhost-nfs               # Must match the principal: nfs/myhost-nfs@YOUR.REALM
+
+    # Do not set "user: nfs" at the service level. The entrypoint runs as root
+    # to perform setup (config generation, etc.) and then uses gosu to drop to
+    # the unprivileged nfs user for sssd / ganesha / watcher.
 
     volumes:
       # ---------------------------------------------------------------------

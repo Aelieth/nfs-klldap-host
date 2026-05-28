@@ -172,8 +172,26 @@ RUN chown -R nfs:nfs \
 # Ports are documentation only when using host networking or explicit -p
 EXPOSE 2049/tcp 2049/udp 111/tcp 111/udp
 
-# Run the container as the unprivileged nfs user by default.
-# Recommended runtime capabilities (add these at `docker run` / docker-compose time):
+# Install gosu for secure privilege dropping.
+# We run the entrypoint as root (to perform setup, config generation, permission
+# fixes, etc.), then use gosu to drop to the unprivileged "nfs" user for the
+# actual long-running daemons (sssd, ganesha, config watcher).
+ARG TARGETARCH
+RUN curl -fsSL -o /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/1.17/gosu-${TARGETARCH:-amd64}" \
+    && chmod +x /usr/local/bin/gosu \
+    && gosu --version
+
+# The container starts as root (no final USER directive) so that entrypoint.sh
+# can perform all necessary setup as root:
+#   - Writing generated config files (/etc/sssd, /etc/krb5.conf, ganesha configs)
+#   - Directory creation and permission checks
+#   - Other early bootstrap operations
+#
+# Once setup is complete, the entrypoint uses `gosu nfs` to drop privileges
+# before starting the long-running daemons (sssd, ganesha, config watcher).
+#
+# Recommended runtime capabilities (add these at `docker run` / docker-compose time)
+# are still useful for the nfs user after the gosu switch:
 #
 #   --cap-add CHOWN
 #   --cap-add FOWNER
@@ -181,9 +199,5 @@ EXPOSE 2049/tcp 2049/udp 111/tcp 111/udp
 #   --cap-add DAC_READ_SEARCH
 #   --cap-add NET_BIND_SERVICE
 #
-# These are the minimal set that allows the container (and the host UI via
-# `docker exec`) to perform chown/chmod on the bind-mounted export volumes
-# while still allowing Ganesha to bind to port 2049.
-USER nfs
-
+# The setcap on ganesha.nfsd (done at image build time) also remains effective.
 ENTRYPOINT ["/entrypoint.sh"]

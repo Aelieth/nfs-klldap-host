@@ -23,15 +23,17 @@ use crate::{auth::AuthManager, config::Config, fs::FsManager, llap::LldapClient}
 /// Compute the hostname that the *container* will present for Kerberos (the value
 /// that must appear in the nfs/ principal inside the keytab).
 /// Prefers the explicit [server] hostname from nfs-klldap.conf; otherwise falls
-/// back to the host's view of hostname (user will usually pass --hostname or let
-/// the container auto-append -nfs).
+/// back to the host's hostname (the UI runs on the host).
+///
+/// The container itself should be started with --hostname "$(hostname)-nfs"
+/// so that the kernel hostname inside matches the keytab principal.
 fn compute_effective_hostname(cfg: &Config) -> String {
     if let Some(h) = &cfg.server.hostname {
         if !h.trim().is_empty() {
             return h.trim().to_string();
         }
     }
-    // Fallback to local hostname (with a hint that container may differ)
+    // Fallback to the host machine's hostname (UI runs on the host)
     std::env::var("HOSTNAME")
         .or_else(|_| {
             // Small hostname helper (mirrors the one inside the container's nfs-klldap-config)

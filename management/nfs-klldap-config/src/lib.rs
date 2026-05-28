@@ -315,7 +315,8 @@ impl NfsKlldapConfig {
         Ok(())
     }
 
-    /// Hostname to use (server.hostname or system hostname)
+    /// Hostname to use (server.hostname override, or the container's actual hostname at runtime).
+    /// The container must be started with --hostname matching the keytab principal.
     pub fn effective_hostname(&self) -> String {
         self.server.hostname.clone().unwrap_or_else(|| {
             hostname::get()
@@ -345,6 +346,40 @@ impl NfsKlldapConfig {
     pub fn host_paths(&self) -> Vec<PathBuf> {
         self.shares.iter().map(|s| s.host_path.clone()).collect()
     }
+}
+
+/// Returns true if the given config path is on a persistent volume (i.e. a real
+/// host bind mount) rather than living inside the container's own filesystem layer.
+///
+/// This is used for the guided first-run experience: we refuse to do meaningful
+/// work until the user has mounted a real volume at /config (or wherever
+/// NFS_CONFIG points).
+#[cfg(unix)]
+pub fn is_persistent_config(path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+
+    use std::os::unix::fs::MetadataExt;
+
+    let config_meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let root_meta = match std::fs::metadata("/") {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+
+    // Different device IDs => the file lives on a different mount (i.e. host volume)
+    config_meta.dev() != root_meta.dev()
+}
+
+#[cfg(not(unix))]
+pub fn is_persistent_config(_path: &Path) -> bool {
+    // On non-Unix we conservatively say "assume it's persistent" so the
+    // guided flow doesn't block forever in weird environments.
+    true
 }
 
 /// Load only the [[shares]] host_path entries from a config file.
@@ -420,7 +455,9 @@ ldap_uri = "ldaps://kllap.example.com:6360"
 container_root = "/export"
 
 [server]
-# hostname = "yourhost-nfs"   # defaults to container hostname (must match NFS principal)
+# hostname = "yourhost-nfs"   # Optional override. The actual container hostname
+#                             # (set via --hostname at docker run time) must match
+#                             # the NFS principal in your keytab.
 
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
@@ -652,7 +689,10 @@ EXPORT {{
     Ok(())
 }
 
-fn extract_host_from_uri(uri: &str) -> String {
+/// Extract the host portion from an ldap/ldaps URI.
+/// Public so the startup binary (and future slimmed-down shell) can use the
+/// same robust logic instead of fragile sed/grep.
+pub fn extract_host_from_uri(uri: &str) -> String {
     let after = uri.split("://").nth(1).unwrap_or(uri);
     // IPv6 literal: ldaps://[2001:db8::1]:636  or ldaps://[::1]/...
     if let Some(rest) = after.strip_prefix('[') {

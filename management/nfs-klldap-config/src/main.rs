@@ -22,7 +22,10 @@ Usage:
   nfs-klldap-config generate --config <path> [--dry-run]
   nfs-klldap-config validate --config <path>
 
-The binary is intended to be called by entrypoint.sh and the host UI."
+Companion binary:
+  nfs-klldap-startup         (guided container startup / orchestration — replaces most of entrypoint.sh logic over time)
+
+The binaries are intended to be called by the container entrypoint and the host UI."
     );
 }
 

@@ -64,8 +64,10 @@ services:
       # ---------------------------------------------------------------------
       # Kerberos keytab (ro)
       # The container ships with a "keytab" group. For non-root operation,
-      # make this file group-readable on the *host* by a GID that you also
-      # add to the container via group_add, or use an ACL. See docs/run/.
+      # make this file group-readable on the *host*. The easiest way is:
+      #     ./scripts/fix-keytab-perms.sh ./secrets/krb5.keytab
+      # Then (optionally) add the GID via group_add in this compose file.
+      # See docs/run/README.md for details.
       # ---------------------------------------------------------------------
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 

@@ -12,12 +12,14 @@
 # Instead:
 #   - The source of truth is the directory /etc/ganesha/exports.d/
 #   - Any *.conf file containing one or more EXPORT {} blocks is loaded
-#   - The ganesha-export-watcher (running inside the container) detects
-#     filesystem changes and restarts ganesha.nfsd so the new config is used.
+#   - Changes to exports.d/ (or SIGHUP / ganesha-ctl reload) cause the
+#     entrypoint to restart ganesha.nfsd so the new config is picked up.
+#   - No dedicated ganesha-export-watcher binary is shipped or needed.
 #
 # Commands:
-#   add-export <file> [name]     - Deprecated / no-op. The watcher handles changes.
-#                                  The file should already be in exports.d/.
+#   add-export <file> [name]     - Deprecated / no-op.
+#                                  Just place the file in the bind-mounted exports.d/
+#                                  directory; the container supervisor will reload.
 #   remove-export <name-or-id>   - Best-effort removal: delete the matching
 #                                  fragment file (e.g. "10-myshare" or "myshare").
 #   show-exports                 - List all current export fragments (the real state).
@@ -123,7 +125,7 @@ case "$CMD" in
         fi
 
         log "add-export received for $FILE"
-        log "In self-contained mode the ganesha-export-watcher will pick this up automatically."
+        log "In self-contained mode the container supervisor will pick this up (via inotify + restart)."
         log "If you just wrote the file from outside, the change should already be processing."
         log "You can force an immediate reload with: ganesha-ctl reload"
         ;;
@@ -176,14 +178,11 @@ case "$CMD" in
         ;;
 
     reload)
-        log "Requesting immediate Ganesha restart (self-contained watcher path)..."
-        # Prefer the dedicated watcher trigger if present
-        if [ -x /usr/local/bin/ganesha-export-watcher ]; then
-            /usr/local/bin/ganesha-export-watcher reload || true
-        else
-            pkill -TERM ganesha.nfsd 2>/dev/null || true
-        fi
-        log "Reload triggered. Supervisor will restart ganesha.nfsd and it will re-read exports.d/."
+        log "Requesting immediate Ganesha restart (self-contained mode)..."
+        # In this image we use a simple pkill + restart model driven by the
+        # entrypoint. There is no separate ganesha-export-watcher binary.
+        pkill -TERM ganesha.nfsd 2>/dev/null || true
+        log "Reload triggered. The container supervisor will restart ganesha.nfsd."
         ;;
 
     *)

@@ -139,13 +139,13 @@ This gives nice `ls` output (names instead of numbers) and improves some applica
 1. Create the user + POSIX attributes (`uidNumber`, `gidNumber`, etc.) in LLDAP.
 2. Use the management web UI (it asks the container via `docker exec`) to `chown`/`chmod` the host directories so the numeric IDs match LLDAP.
 3. Define shares in the central `nfs-klldap.conf` (the container and host UI both use it).
-4. The tool writes a native Ganesha `EXPORT {}` fragment into the bind-mounted exports directory. The container's internal `ganesha-export-watcher` detects the change and restarts Ganesha (no DBUS involved).
+4. The tool writes a native Ganesha `EXPORT {}` fragment into the bind-mounted exports directory. The container supervisor detects the change (via inotify + pkill) and restarts Ganesha (no DBUS involved).
 5. Verify with the commands in section 3 and from a Kerberized client.
 
 ## References
 
 - Current templates: `container/templates/`
-- `ganesha-ctl` (now file-based) and `ganesha-export-watcher`: `container/scripts/`
+- `ganesha-ctl` (file-based reload helper): `container/scripts/`
 - Management tool source: `management/`
 - LLDAP documentation (POSIX attributes + GraphQL)
 

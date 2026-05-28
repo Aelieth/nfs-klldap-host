@@ -145,6 +145,11 @@ main() {
     check_runtime_permissions
 
     # Start SSSD
+    # We use `-i` (interactive/foreground) so sssd does not daemonize away from
+    # our shell supervisor. This is the standard container-friendly way to run
+    # sssd. Combined with `--logger=files` it behaves well under a simple script
+    # supervisor. We background it here so we can start the config watcher and
+    # then exec ganesha.nfsd as the main process.
     log "[1/3] Starting SSSD..."
     sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} &
     SSSD_PID=$!

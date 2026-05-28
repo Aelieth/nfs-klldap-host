@@ -45,6 +45,7 @@ nfs ALL=(root) NOPASSWD: /usr/bin/pkill -TERM sssd
 
 # One-time safe copy of the (usually read-only) keytab so ganesha can read it
 # even when the bind mount arrives with root-only permissions.
+# (Most users should prefer the ./scripts/fix-keytab-perms.sh approach instead.)
 nfs ALL=(root) NOPASSWD: /usr/bin/cp /etc/krb5.keytab /tmp/krb5.keytab
 nfs ALL=(root) NOPASSWD: /usr/bin/chmod 440 /tmp/krb5.keytab
 nfs ALL=(root) NOPASSWD: /usr/bin/chgrp keytab /tmp/krb5.keytab

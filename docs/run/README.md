@@ -130,6 +130,14 @@ The image now:
 - Creates a `keytab` system group and adds the `nfs` user to it.
 - Runs an early `check_runtime_permissions()` that prints the exact host-side `chgrp` + `chmod` (or `group_add`) command if `/etc/krb5.keytab` is present but unreadable.
 
+For even less friction, use the helper script:
+
+```bash
+./scripts/fix-keytab-perms.sh /path/on/host/to/krb5.keytab
+```
+
+It automatically detects the correct GID from the image and applies the right permissions on the host file.
+
 You should almost never have to debug "Kerberos not working" blindly anymore.
 
 ### When you might still choose `--user root`

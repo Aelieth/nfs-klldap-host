@@ -44,7 +44,7 @@ The management tool (host) and container work together with a **single source of
 
 - One TOML file edited by the host `nfs-klldap-ui` (or by hand).
 - The Rust generator inside the container produces all derived configs.
-- Permission changes on host data go through the narrow `nfs-perm-helper` (setuid or sudo).
+- Permission changes (chown/chmod) on exported data are performed by the container itself when requested by the host management UI.
 
 ## Key Technical Choices (v0.3+)
 

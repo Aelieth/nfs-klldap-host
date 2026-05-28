@@ -20,7 +20,6 @@ You can still build directly:
 
 ```bash
 cargo build --release --bin nfs-klldap-ui
-cargo build --release -p nfs-perm-helper --manifest-path priv-helper/Cargo.toml
 ```
 
 Run the UI:
@@ -46,7 +45,7 @@ The old `policy.rs`, `ganesha.rs`, and `exports.rs` have been removed (generatio
 
 **Never run the UI as root in production.**
 
-See `docs/security.md` for the recommended low-privilege user + narrow `nfs-perm-helper` (setuid or sudoers) model.
+The management UI runs unprivileged. It asks the running NFS container (via docker exec) to perform chown/chmod on the bind-mounted export paths.
 
 The UI itself only ever talks to the helper for `chown`/`chmod` and validates paths against the shares declared in `nfs-klldap.conf`.
 

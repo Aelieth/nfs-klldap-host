@@ -38,8 +38,8 @@ This gives you **maximum simplicity with full power** — minimal volumes, no te
 Host (any Linux — no kernel NFS needed)
 ├── /media/SSD-01/...                  (real data on attached drives)
 ├── nfs-klldap.conf                    (single TOML config — the only file you edit)
-├── management/ (Rust UI + priv-helper)
-│   └── nfs-klldap-ui                  (edits config + calls privileged helper for chown/chmod)
+├── management/ (Rust UI)
+│   └── nfs-klldap-ui                  (edits config; asks the container to perform chown/chmod on exported data)
 └── keytab (nfs/<hostname>@REALM)
 
 Container (AlmaLinux 10)
@@ -81,7 +81,7 @@ make docker-multi
 
 See `make help` for all targets.
 
-The privileged helper (`nfs-perm-helper`) **must** be installed on the Docker host (not inside the container) and usually requires setuid root or a narrow sudoers rule. The Makefile includes an `install-helper` target with guidance.
+
 
 See [management/examples/sudoers.example](management/examples/sudoers.example) for recommended sudoers configuration.
 
@@ -117,6 +117,8 @@ docker run -d \
 
 **First run** automatically generates a safe, heavily-commented `nfs-klldap.conf` for you to customize.
 
+See [docs/run/README.md](docs/run/README.md) for practical examples (including the non-root `nfs` user, required capabilities, realm enforcement, and docker-compose patterns).
+
 ---
 
 ## Management UI (Host-side)
@@ -145,7 +147,7 @@ ldap_default_authtok = "your-password"
 # hostname = "examplehost-nfs"          # optional (auto-derived from container hostname)
 
 [kerberos]
-# realm = "EXAMPLE.COM"                 # optional (auto-derived from ldap_uri)
+# realm = "KRB.EXAMPLE.COM"             # required if auto-derivation from ldap_uri fails (or use NFS_REALM env)
 
 [ganesha]
 # default_security = "krb5p"            # krb5p | krb5i | krb5   (per-share override possible)
@@ -208,7 +210,6 @@ nfs-klldap-host/
 ├── Dockerfile
 ├── management/
 │   ├── nfs-klldap-config/        # Rust binary that generates sssd.conf, krb5.conf, Ganesha fragments
-│   ├── priv-helper/              # Narrow privileged helper for host filesystem operations
 │   └── src/                      # Host UI (Axum + HTMX)
 ├── nfs-klldap.conf               # Single source of truth (user-editable TOML)
 └── README.md

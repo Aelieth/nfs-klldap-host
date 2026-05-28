@@ -4,8 +4,7 @@
 #
 # This Makefile provides a coherent build story for:
 #   - Host-side tools (run on the machine that will run the NFS container):
-#       * nfs-klldap-ui  (management web UI)
-#       * nfs-perm-helper (privileged helper for chown/chmod — setuid or sudo)
+#       * nfs-klldap-ui  (management web UI — performs chown/chmod by asking the container)
 #   - The container image (multi-architecture)
 #
 # Supported host tool targets:
@@ -83,8 +82,6 @@ help:
 	@echo "  make clippy                Strict clippy (as used in CI)"
 	@echo "  make clean"
 	@echo ""
-	@echo "Installation helpers:"
-	@echo "  make install-helper        Install nfs-perm-helper (with guidance for setuid/sudo)"
 	@echo ""
 	@echo "Variables:"
 	@echo "  VERSION=...                Override version tag"
@@ -99,19 +96,15 @@ help:
 build:
 	@echo "==> Building host tools (native)..."
 	$(CARGO) build --release -p management
-	$(CARGO) build --release -p nfs-perm-helper --manifest-path management/priv-helper/Cargo.toml
 	@echo "Binaries:"
 	@echo "  target/release/nfs-klldap-ui"
-	@echo "  management/priv-helper/target/release/nfs-perm-helper"
 
 .PHONY: build-cross
 build-cross:
 	@echo "==> Cross-compiling host tools for $(AMD64_TARGET) and $(ARM64_TARGET)..."
 	rustup target add $(AMD64_TARGET) $(ARM64_TARGET) || true
 	$(CARGO) build --release --target $(AMD64_TARGET) -p management
-	$(CARGO) build --release --target $(AMD64_TARGET) -p nfs-perm-helper --manifest-path management/priv-helper/Cargo.toml
 	$(CARGO) build --release --target $(ARM64_TARGET) -p management
-	$(CARGO) build --release --target $(ARM64_TARGET) -p nfs-perm-helper --manifest-path management/priv-helper/Cargo.toml
 	@echo "Done."
 
 # Produce a clean dist/ directory with architecture-suffixed binaries
@@ -122,19 +115,16 @@ dist: build-cross
 	mkdir -p $(DIST_DIR)
 	# amd64
 	cp target/$(AMD64_TARGET)/release/nfs-klldap-ui       $(DIST_DIR)/nfs-klldap-ui-amd64
-	cp target/$(AMD64_TARGET)/release/nfs-perm-helper     $(DIST_DIR)/nfs-perm-helper-amd64
 	# arm64
 	cp target/$(ARM64_TARGET)/release/nfs-klldap-ui       $(DIST_DIR)/nfs-klldap-ui-arm64
-	cp target/$(ARM64_TARGET)/release/nfs-perm-helper     $(DIST_DIR)/nfs-perm-helper-arm64
 	# Make them executable
-	chmod +x $(DIST_DIR)/nfs-klldap-ui-* $(DIST_DIR)/nfs-perm-helper-*
+	chmod +x $(DIST_DIR)/nfs-klldap-ui-*
 	@echo ""
 	@echo "Distribution ready:"
 	@ls -l $(DIST_DIR)/
 	@echo ""
-	@echo "On an amd64 host, copy nfs-perm-helper-amd64 → /usr/local/bin/nfs-perm-helper"
-	@echo "On an arm64 host, copy nfs-perm-helper-arm64 → /usr/local/bin/nfs-perm-helper"
-	@echo "(then set permissions / sudoers as documented in management/examples/sudoers.example)"
+	@echo "The only host-side binary is nfs-klldap-ui (the management web UI)."
+	@echo "It asks the running container to perform any required chown/chmod on exported data."
 
 # -----------------------------------------------------------------------------
 # Container Image
@@ -173,31 +163,4 @@ clean:
 	$(CARGO) clean
 	rm -rf $(DIST_DIR)
 
-# -----------------------------------------------------------------------------
-# Installation helper for the privileged binary
-# -----------------------------------------------------------------------------
-.PHONY: install-helper
-install-helper:
-	@echo "==> Installing nfs-perm-helper (you must run this as root or with sudo)"
-	@echo ""
-	@if [ ! -f target/release/nfs-perm-helper ] && [ ! -f target/x86_64-unknown-linux-gnu/release/nfs-perm-helper ] && [ ! -f target/aarch64-unknown-linux-gnu/release/nfs-perm-helper ]; then \
-		echo "No release binary found. Run 'make build' or 'make dist' first."; \
-		exit 1; \
-	fi
-	@echo "Copying binary to /usr/local/bin/nfs-perm-helper..."
-	install -m 0755 \
-		$$(find target -name nfs-perm-helper -type f | head -1) \
-		/usr/local/bin/nfs-perm-helper
-	@echo ""
-	@echo "IMPORTANT: The helper must run with elevated privileges."
-	@echo "Recommended options (choose one):"
-	@echo ""
-	@echo "  1. setuid root (simplest for single-user appliances):"
-	@echo "       sudo chown root:root /usr/local/bin/nfs-perm-helper"
-	@echo "       sudo chmod 4755 /usr/local/bin/nfs-perm-helper"
-	@echo ""
-	@echo "  2. sudoers rule (more auditable — see management/examples/sudoers.example):"
-	@echo "       sudo visudo -f /etc/sudoers.d/nfs-mgmt"
-	@echo ""
-	@echo "After installation, point the management UI at the same nfs-klldap.conf"
-	@echo "that the container uses."
+

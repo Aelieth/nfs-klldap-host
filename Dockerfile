@@ -93,10 +93,21 @@ RUN dnf install -y epel-release && \
         strace \
         less \
         nano \
+        libcap \
     && dnf clean all
 
 # -----------------------------------------------------------------------------
+# Service user for hardening (non-root container operation where possible)
+# We also create a "keytab" group so that a read-only mounted krb5.keytab can
+# be made readable to the container without making it world-readable on the host.
+# -----------------------------------------------------------------------------
+RUN groupadd -r keytab && \
+    useradd -r -U -s /sbin/nologin -d /nonexistent -c "nfs-klldap service user" -G keytab nfs
+
+# -----------------------------------------------------------------------------
 # Directories (no more templates/ — everything is generated from nfs-klldap.conf by Rust)
+# Prepare all known runtime locations that ganesha, sssd, and our tools may write to.
+# These are chowned later so the default unprivileged user can operate.
 # -----------------------------------------------------------------------------
 RUN mkdir -p \
     /etc/ganesha \
@@ -104,6 +115,8 @@ RUN mkdir -p \
     /var/log/ganesha \
     /etc/sssd \
     /var/lib/sss \
+    /var/run/ganesha \
+    /var/run/sssd \
     /container/scripts
 
 # -----------------------------------------------------------------------------
@@ -118,7 +131,9 @@ RUN chmod +x /usr/local/bin/nfs-klldap-config
 COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl
 COPY container/scripts/nfs-klldap-conf-watcher /usr/local/bin/nfs-klldap-conf-watcher
 COPY container/healthcheck.sh /container/healthcheck.sh
-RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /container/healthcheck.sh
+COPY container/sudoers.d/nfs /container/sudoers.d/nfs.example
+RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /container/healthcheck.sh && \
+    chmod 644 /container/sudoers.d/nfs.example || true
 
 # -----------------------------------------------------------------------------
 # Entrypoint (now delegates TOML work to the bundled Rust binary)
@@ -132,7 +147,33 @@ RUN chmod +x /entrypoint.sh
 HEALTHCHECK --interval=30s --timeout=10s --start-period=25s --retries=3 \
     CMD /container/healthcheck.sh || exit 1
 
+# -----------------------------------------------------------------------------
+# Runtime permission hardening for non-root user
+# Give the nfs user (and keytab group) ownership of directories the processes
+# need. ganesha.nfsd + sssd still benefit from the narrow capability set
+# documented in docs/run/README.md. We also setcap the port-binding capability
+# directly on the ganesha binary as a belt-and-suspenders measure.
+# -----------------------------------------------------------------------------
+RUN chown -R nfs:nfs \
+        /var/log/ganesha \
+        /var/lib/sss \
+        /var/run/ganesha \
+        /var/run/sssd \
+        /etc/ganesha \
+        /etc/ganesha/exports.d \
+        /etc/sssd \
+        /container \
+        /container/sudoers.d \
+    && chown root:keytab /etc/ganesha /etc/ganesha/exports.d 2>/dev/null || true \
+    && chmod 755 /container /container/scripts \
+    && chmod 755 /container/sudoers.d || true \
+    && setcap cap_net_bind_service+ep /usr/bin/ganesha.nfsd 2>/dev/null || true
+
 # Ports are documentation only when using host networking or explicit -p
 EXPOSE 2049/tcp 2049/udp 111/tcp 111/udp
+
+# Run the container as the unprivileged nfs user by default.
+# Override with --user root (or your own uid) if ganesha/sssd need it in your setup.
+USER nfs
 
 ENTRYPOINT ["/entrypoint.sh"]

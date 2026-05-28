@@ -6,65 +6,23 @@ The management tool has significant power: it can change ownership and permissio
 
 **Never run the management tool as root.**
 
-## Recommended Simple Secure Setup (Sudoers)
+The tool validates requests and then asks the running NFS container (via `docker exec`) to perform the actual `chown`/`chmod` operations on the bind-mounted data. The container is the privileged actor.
 
-Run the tool as a dedicated low-privilege user (example: `nfs-mgmt`).
+## How Permission Changes Work
 
-Create very narrow sudoers rules that only allow this user to perform the exact operations the tool needs, limited to specific paths.
+1. The unprivileged management UI (web or CLI) receives a user request (owner, group, mode, recursive).
+2. It performs allow-list validation against the current `[[shares]]` `host_path` entries in `nfs-klldap.conf`.
+3. It refuses uid/gid 0 and modes containing setuid/setgid/sticky bits.
+4. It maps the host path to the equivalent path inside the container (using each share's `name` + `storage.container_root`).
+5. It executes the change inside the container using `docker exec <name> chown ...` / `chmod ...`.
 
-### Example sudoers rules (`/etc/sudoers.d/nfs-mgmt`)
+Because the container already runs with the capabilities required for Ganesha VFS and has the bind mounts, it can safely mutate ownership and permissions on the exported trees.
 
-```sudoers
-# Allow nfs-mgmt user to change ownership only under managed shares
-# All paths are on attached/media drives only (ZimaOS-style environment)
-nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chown [0-9]*:[0-9]* /media/SSD-01/**
-nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chown [0-9]*:[0-9]* /media/USB-01/**
-nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chmod [0-7]* /media/SSD-01/**
-nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/chmod [0-7]* /media/USB-01/**
+The host user running the management tool only needs permission to run `docker exec` against the specific container (typically by being in the `docker` group or an equivalent narrow policy).
 
-# Optional: allow the tool to send SIGHUP to the NFS container
-nfs-mgmt ALL=(root) NOPASSWD: /usr/bin/docker kill -s HUP nfs-kerb
-```
+## Optional: Narrow Host Sudoers (Alternative Path)
 
-### How the tool uses it
-
-The tool never calls `chown`/`chmod` directly. Instead it does:
-
-```rust
-Command::new("sudo")
-    .arg("chown")
-    .arg(format!("{}:{}", uid, gid))
-    .arg(path)
-    .status()?;
-```
-
-This way:
-- The tool itself can run as an unprivileged user.
-- All dangerous operations go through the kernel's sudoers policy.
-- The attack surface is limited to the whitelisted paths and commands.
-
-## Stronger Alternative (Small Privileged Helper)
-
-If you want even tighter control, create a tiny Rust binary (or shell script) that:
-
-1. Only accepts a very strict input format (e.g. JSON on stdin or command line with validated paths).
-2. Re-validates that the target is under an allowed root.
-3. Performs the chown/chmod.
-4. Is the *only* thing granted sudo rights.
-
-The main management tool (running unprivileged) communicates with this helper.
-
-This is more code but gives you full auditing and input sanitization in one place.
-
-## Current Implementation Status
-
-The skeleton in `src/fs.rs` currently uses raw `Command::new("chown")`.
-
-The next step is to introduce a `PermissionBackend` enum (or trait) that supports:
-- `Direct` (only for testing / root — not recommended in production)
-- `Sudo` (the default secure path)
-
-Configuration will specify which backend to use and the allowed base paths.
+If you prefer not to give the management user docker exec rights, you can instead create narrow sudoers rules on the host that allow direct `chown`/`chmod` limited to the managed share paths (and combine with the container name for SIGHUP reloads if desired). This is a deployment choice — the primary supported model uses the container as the permission actor.
 
 ## Additional Hardening Recommendations
 
@@ -73,4 +31,4 @@ Configuration will specify which backend to use and the allowed base paths.
 - Consider making the tool read-only by default and require an explicit "apply" step.
 - Never allow the tool to manage paths outside explicitly configured roots.
 
-This model keeps the tool simple while respecting the principle that it should not run with broad root privileges.
+This model keeps the host-side tool unprivileged while still allowing safe, auditable permission management on the exported data.

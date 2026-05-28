@@ -2,14 +2,14 @@
 //!
 //! All state comes from the live filesystem (no database).
 //! - Directory tree is built on demand by walking the configured base paths.
-//! - Permission changes are applied via a secure backend (sudo by default).
+//! - Permission changes (chown/chmod) are performed by the running container
+//!   via `docker exec` on the bind-mounted paths. The host tool stays unprivileged.
 //! - Recursive option is supported exactly as the user described.
 //!
 //! Security: The tool itself should run as a low-privilege user.
-//! All chown/chmod operations go through narrow sudoers rules.
+//! Validation + execution happen inside the privileged container context.
 
 use std::fs;
-use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -26,9 +26,9 @@ pub struct DirectoryNode {
 
 pub struct FsManager {
     pub config: crate::config::Config,
-    /// Path to the central nfs-klldap.conf. Used to pass NFS_KLLDAP_CONF to the
-    /// privileged helper on each invocation so it can derive live ALLOWED_ROOTS
-    /// from the current shares (no hardcoded paths, no staleness after UI edits).
+    /// Path to the central nfs-klldap.conf. Previously used to communicate with a
+    /// host-side privileged helper; retained for future container-exec extensions.
+    #[allow(dead_code)]
     config_path: Option<PathBuf>,
 }
 
@@ -85,10 +85,10 @@ impl FsManager {
     /// Apply owner + group + permissions to a directory (and optionally recursive).
     /// This is the core action the visual GUI will call on "save and apply".
     ///
-    /// This version routes all mutations through the small privileged helper
-    /// (`nfs-perm-helper`) for safety. The main tool should run unprivileged.
-    ///
-    /// See docs/security.md and priv-helper/ for details.
+    /// All mutations are performed by the running container via `docker exec`
+    /// (or equivalent). The container has the bind mounts and the necessary
+    /// capabilities. The host-side management tool never needs a local
+    /// privileged binary.
     pub fn apply_permissions(
         &self,
         path: &Path,
@@ -101,66 +101,105 @@ impl FsManager {
             return Err("Path is outside allowed managed roots".into());
         }
 
-        // Build request for the privileged helper
-        let request = serde_json::json!({
-            "path": path.to_string_lossy(),
-            "uid": owner_uid,
-            "gid": group_gid,
-            "mode": mode,
-            "recursive": recursive
-        });
+        // Defense-in-depth policy (same rules previously enforced by the
+        // container-executed permission helper).
+        if owner_uid == 0 || group_gid == 0 {
+            return Err("Refusing to set UID or GID 0".into());
+        }
+        if mode & 0o7000 != 0 {
+            return Err("Refusing mode with setuid/setgid/sticky bits".into());
+        }
 
-        // New central config shape: management section (with sensible defaults for the host UI)
-        let helper_path = self
+        let container_name = self
             .config
             .management
-            .helper_path
+            .ganesha_container_name
             .clone()
-            .unwrap_or_else(|| PathBuf::from("/usr/local/bin/nfs-perm-helper"));
-        let use_sudo = self.config.management.use_sudo.unwrap_or(true);
+            .unwrap_or_else(|| "nfs-klldap".to_string());
 
-        let mut cmd = if use_sudo {
-            let mut c = Command::new("sudo");
-            c.arg(helper_path);
-            c
-        } else {
-            Command::new(helper_path)
-        };
+        let container_path = self.host_path_to_container_path(path)?;
 
-        // Propagate the exact config path the UI is using so the helper can
-        // load the current [[shares]] host_paths for its allow-list on this invocation.
-        if let Some(p) = &self.config_path {
-            cmd.env("NFS_KLLDAP_CONF", p);
-        } else if let Ok(env_p) = std::env::var("NFS_KLLDAP_CONF") {
-            cmd.env("NFS_KLLDAP_CONF", env_p);
+        // Perform the changes inside the container (it sees the bind-mounted
+        // data under its container_root and has the required caps).
+        self.run_container_fs_op(&container_name, "chown", &container_path, recursive, Some((owner_uid, group_gid)))?;
+        self.run_container_fs_op(&container_name, "chmod", &container_path, recursive, Some((mode, 0)))?;
+
+        Ok(())
+    }
+
+    /// Map a host-side path (from the UI / config shares) to the equivalent
+    /// path as seen inside the container.
+    fn host_path_to_container_path(&self, host_path: &Path) -> Result<PathBuf, String> {
+        let root = self.config.storage.container_root.trim_end_matches('/');
+
+        for share in &self.config.shares {
+            if host_path.starts_with(&share.host_path) {
+                let rel = host_path.strip_prefix(&share.host_path).unwrap_or(Path::new(""));
+                let mut cpath = PathBuf::from(root);
+                cpath.push(&share.name);
+                if !rel.as_os_str().is_empty() {
+                    cpath.push(rel);
+                }
+                return Ok(cpath);
+            }
         }
 
-        cmd.stdin(std::process::Stdio::piped());
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
+        Err(format!(
+            "Path {} is not under any configured share host_path",
+            host_path.display()
+        ))
+    }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("failed to spawn helper: {}", e))?;
+    /// Execute a filesystem mutation inside the container using docker exec.
+    /// `op` is "chown" or "chmod".
+    /// For chown, `arg` is (uid, gid).
+    /// For chmod, `arg` is (mode, _).
+    fn run_container_fs_op(
+        &self,
+        container: &str,
+        op: &str,
+        container_path: &Path,
+        recursive: bool,
+        arg: Option<(u32, u32)>,
+    ) -> Result<(), String> {
+        let mut args = vec!["exec".to_string(), container.to_string()];
 
-        // Write JSON request to stdin
-        {
-            let stdin = child.stdin.as_mut().ok_or("failed to open helper stdin")?;
-            writeln!(stdin, "{}", request)
-                .map_err(|e| format!("failed to write to helper: {}", e))?;
+        match op {
+            "chown" => {
+                let (uid, gid) = arg.unwrap();
+                let mut cmd = "chown".to_string();
+                if recursive {
+                    cmd.push_str(" -R");
+                }
+                cmd.push_str(&format!(" {}:{} {}", uid, gid, container_path.display()));
+                args.extend(["sh".to_string(), "-c".to_string(), cmd]);
+            }
+            "chmod" => {
+                let (mode, _) = arg.unwrap();
+                let mut cmd = "chmod".to_string();
+                if recursive {
+                    cmd.push_str(" -R");
+                }
+                cmd.push_str(&format!(" {:o} {}", mode, container_path.display()));
+                args.extend(["sh".to_string(), "-c".to_string(), cmd]);
+            }
+            _ => return Err(format!("unsupported container fs op: {}", op)),
         }
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("helper execution failed: {}", e))?;
+        let output = Command::new("docker")
+            .args(&args)
+            .output()
+            .map_err(|e| format!("failed to execute docker {}: {}", op, e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("helper rejected operation: {}", stderr.trim()));
+            return Err(format!(
+                "docker exec {} failed inside container '{}': {}",
+                op,
+                container,
+                stderr.trim()
+            ));
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        println!("Helper response: {}", stdout.trim());
 
         Ok(())
     }

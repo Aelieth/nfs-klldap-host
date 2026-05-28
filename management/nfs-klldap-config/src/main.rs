@@ -15,7 +15,7 @@ use nfs_klldap_config::{
 
 fn usage() {
     eprintln!(
-        "nfs-klldap-config v0.23 — type-safe config tool for nfs-klldap-host
+        "nfs-klldap-config v0.3 — type-safe config tool for nfs-klldap-host
 
 Usage:
   nfs-klldap-config init     --config <path>

@@ -6,8 +6,8 @@ This document describes the testing strategy, current coverage, and how to run t
 
 - **Prefer pure unit tests** for logic that does not touch the filesystem, network, or external processes.
 - **Use realistic integration tests** (with `tempfile`, in-memory servers, etc.) where they provide high value without excessive fragility.
-- **Document hard-to-test areas** explicitly (privileged operations, external `sudo`, live LLDAP).
-- The privileged helper (`nfs-perm-helper`) and web UI handlers are intentionally narrow; most of their correctness comes from strong validation + small pure functions.
+- **Document hard-to-test areas** explicitly (privileged operations delegated to the container, live LLDAP).
+- Permission changes are performed inside the container after host-side validation in the web handlers and `FsManager`.
 
 ## Current State (as of v0.3)
 
@@ -15,7 +15,6 @@ This document describes the testing strategy, current coverage, and how to run t
 |-------------------------------|----------------------------------------|-------|
 | `nfs-klldap-config` (lib)     | Good + actively expanded               | Core validation, generation, `load_host_paths_only`, helper functions. |
 | `management` (UI)             | Good for critical pure logic           | `config.rs` helpers, `FsManager` (with real temp dirs), Axum handlers for settings save. |
-| `priv-helper`                 | Good for pure safety logic             | `is_path_allowed`, config path resolution, request handling. |
 | Web handlers (`web.rs`)       | Targeted (settings flows)              | Uses `tower::ServiceExt` against real router + realistic `AppState`. |
 | Auth (`auth.rs`)              | Partial                                | Session management well covered; sudo interaction remains external. |
 | LLDAP client (`llap.rs`)      | None                                   | Requires live (or mocked) GraphQL server — intentionally limited. |

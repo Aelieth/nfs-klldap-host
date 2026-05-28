@@ -24,11 +24,15 @@ services:
     # You can also publish ports explicitly if you prefer.
     network_mode: host
 
-    # Ganesha (VFS FSAL) needs certain privileges to export host bind-mounted
-    # directories and manipulate file handles.
+    # Ganesha (VFS FSAL) + SSSD + port 2049 binding.
+    # These are the *minimal* recommended capabilities for smooth non-root operation
+    # (the container defaults to the unprivileged "nfs" user).
+    # SYS_ADMIN is still broad; if your runtime allows dropping it while keeping
+    # the others, test carefully — many VFS FSAL operations need it today.
     cap_add:
       - SYS_ADMIN
       - DAC_READ_SEARCH
+      - NET_BIND_SERVICE
       # - SYS_RESOURCE   # sometimes helpful for large numbers of exports
 
     # Optional but recommended for some environments:
@@ -54,6 +58,9 @@ services:
 
       # ---------------------------------------------------------------------
       # Kerberos keytab (ro)
+      # The container ships with a "keytab" group. For non-root operation,
+      # make this file group-readable on the *host* by a GID that you also
+      # add to the container via group_add, or use an ACL. See docs/run/.
       # ---------------------------------------------------------------------
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 
@@ -96,7 +103,7 @@ services:
 # After editing shares or settings in the UI, the container will pick up the
 # change (via its config watcher or `docker kill -s HUP <container>`).
 #
-# The privileged helper (`nfs-perm-helper`) **must** be installed on the host
-# (not inside the container). It usually needs setuid root or a narrow sudoers
-# rule. See `make install-helper` and management/examples/sudoers.example.
+# The host-side management UI asks the running container (via docker exec) to
+# perform any required chown/chmod operations on the bind-mounted data.
+# No host-side privileged helper binary is required.
 # =============================================================================

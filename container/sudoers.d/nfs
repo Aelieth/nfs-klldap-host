@@ -1,0 +1,55 @@
+# =============================================================================
+# Narrow sudoers fragment for the container's "nfs" user (optional hardening path)
+# =============================================================================
+#
+# Purpose:
+#   Allow the default unprivileged user ("nfs") to start/stop/reload only the
+#   two long-lived privileged daemons (sssd + ganesha.nfsd) and to perform the
+#   one-time keytab copy that is sometimes required when the RO bind mount
+#   arrives owned by root.
+#
+#   Everything else in the container (config generation, watcher, healthcheck,
+#   ganesha-ctl, signal handling) continues to run as the unprivileged nfs user.
+#
+# This is an *alternative* to relying solely on container capabilities
+# (SYS_ADMIN + DAC_READ_SEARCH + NET_BIND_SERVICE). Use this when:
+#   - Your container runtime or SELinux policy blocks file capabilities, or
+#   - You want the daemons themselves to run with real uid 0 for maximum
+#     VFS FSAL compatibility.
+#
+# Installation inside a derived image or at runtime (example):
+#   COPY container/sudoers.d/nfs /etc/sudoers.d/nfs
+#   RUN chmod 440 /etc/sudoers.d/nfs && chown root:root /etc/sudoers.d/nfs
+#   RUN dnf install -y sudo   # (or microdnf / whatever your base uses)
+#
+# Then update entrypoint.sh (or your own supervisor) to use:
+#   sudo -n -- ganesha.nfsd ...
+#   sudo -n -- sssd ...
+# when running as non-root.
+#
+# The rules below are intentionally extremely specific. Do not loosen them.
+# =============================================================================
+
+# Allow the nfs user to start ganesha with the exact config we generate
+nfs ALL=(root) NOPASSWD: /usr/bin/ganesha.nfsd -f /etc/ganesha/ganesha.conf -L /var/log/ganesha.log
+
+# Allow starting sssd in the exact way the entrypoint uses it
+nfs ALL=(root) NOPASSWD: /usr/sbin/sssd -i --logger=files
+nfs ALL=(root) NOPASSWD: /usr/sbin/sssd -i --logger=files -d *
+
+# Allow the very specific reload / shutdown signals we send from the supervisor,
+# watcher, and ganesha-ctl. We only allow TERM and HUP against the exact binaries.
+nfs ALL=(root) NOPASSWD: /usr/bin/pkill -TERM ganesha.nfsd
+nfs ALL=(root) NOPASSWD: /usr/bin/pkill -HUP ganesha.nfsd
+nfs ALL=(root) NOPASSWD: /usr/bin/pkill -TERM sssd
+
+# One-time safe copy of the (usually read-only) keytab so ganesha can read it
+# even when the bind mount arrives with root-only permissions.
+nfs ALL=(root) NOPASSWD: /usr/bin/cp /etc/krb5.keytab /tmp/krb5.keytab
+nfs ALL=(root) NOPASSWD: /usr/bin/chmod 440 /tmp/krb5.keytab
+nfs ALL=(root) NOPASSWD: /usr/bin/chgrp keytab /tmp/krb5.keytab
+nfs ALL=(root) NOPASSWD: /usr/bin/chgrp nfs /tmp/krb5.keytab
+
+# Optional but convenient: allow asking for the numeric GID of the keytab group
+# from inside scripts without granting broader "id" rights.
+nfs ALL=(root) NOPASSWD: /usr/bin/getent group keytab

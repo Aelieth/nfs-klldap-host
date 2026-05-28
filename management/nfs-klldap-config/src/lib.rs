@@ -93,7 +93,7 @@ pub struct ManagementSection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Share {
     pub name: String,
-    /// Full absolute path on the *Docker host* (used only by host UI + priv-helper)
+    /// Full absolute path on the *Docker host* (used by host UI; container performs chown/chmod on the bind mount)
     pub host_path: PathBuf,
     /// Optional explicit NFS pseudo path. Defaults to "/" + name (short + clean)
     pub export_path: Option<String>,
@@ -182,10 +182,41 @@ impl NfsKlldapConfig {
             return Err(ConfigError::Validation("ldap_uri is required".into()));
         }
 
-        // Auto-derive realm if missing
+        // Auto-derive realm if missing (from ldap_uri)
         if self.kerberos.realm.is_none() {
             if let Some(realm) = derive_realm_from_uri(&self.ldap_uri) {
                 self.kerberos.realm = Some(realm);
+            }
+        }
+
+        // Allow env var override / injection (NFS_REALM or REALM). Env takes precedence
+        // over ldap_uri derivation and over an omitted config value.
+        if let Ok(env_realm) = std::env::var("NFS_REALM") {
+            let t = env_realm.trim();
+            if !t.is_empty() {
+                self.kerberos.realm = Some(t.to_string());
+            }
+        }
+        if self.kerberos.realm.is_none() {
+            if let Ok(env_realm) = std::env::var("REALM") {
+                let t = env_realm.trim();
+                if !t.is_empty() {
+                    self.kerberos.realm = Some(t.to_string());
+                }
+            }
+        }
+
+        // Enforce a usable realm: no silent fallback to EXAMPLE.COM.
+        // Validation must fail (container will not start) if the user never provides a real realm
+        // and auto-derivation could not produce one (e.g. IP-based ldap_uri).
+        {
+            let r = self.kerberos.realm.as_deref().unwrap_or("").trim();
+            if r.is_empty() || r.eq_ignore_ascii_case("EXAMPLE.COM") || r.eq_ignore_ascii_case("EXAMPLE") {
+                return Err(ConfigError::Validation(
+                    "kerberos.realm is required (auto-derivation from ldap_uri failed or produced a placeholder).\n\
+                     Set [kerberos] realm = \"YOUR.REALM\" in nfs-klldap.conf, or provide NFS_REALM env var.\n\
+                     Example: realm = \"KRB.EXAMPLE.COM\"".into(),
+                ));
             }
         }
 
@@ -206,9 +237,18 @@ impl NfsKlldapConfig {
             self.sssd.ldap_group_search_base = Some("ou=groups,dc=example,dc=com".to_string());
         }
 
-        // Default security
+        // Default security + enum validation (Ganesha only supports these)
         if self.ganesha.default_security.trim().is_empty() {
             self.ganesha.default_security = "krb5p".to_string();
+        }
+        {
+            const ALLOWED: &[&str] = &["krb5p", "krb5i", "krb5"];
+            if !ALLOWED.contains(&self.ganesha.default_security.as_str()) {
+                return Err(ConfigError::Validation(format!(
+                    "ganesha.default_security must be one of krb5p, krb5i, krb5 (got '{}')",
+                    self.ganesha.default_security
+                )));
+            }
         }
 
         // Default storage root
@@ -238,6 +278,16 @@ impl NfsKlldapConfig {
             if share.export_path.is_none() {
                 share.export_path = Some(format!("/{}", share.name));
             }
+            // Validate per-share security if provided
+            if let Some(ref sec) = share.security {
+                const ALLOWED: &[&str] = &["krb5p", "krb5i", "krb5"];
+                if !ALLOWED.contains(&sec.as_str()) {
+                    return Err(ConfigError::Validation(format!(
+                        "share '{}' security must be one of krb5p, krb5i, krb5 (got '{}')",
+                        share.name, sec
+                    )));
+                }
+            }
         }
 
         // Require bind credentials for sssd
@@ -264,12 +314,12 @@ impl NfsKlldapConfig {
         })
     }
 
-    /// Realm (guaranteed after derive)
+    /// Realm (guaranteed to be a real value after successful validate_and_derive)
     pub fn effective_realm(&self) -> String {
         self.kerberos
             .realm
             .clone()
-            .unwrap_or_else(|| "EXAMPLE.COM".to_string())
+            .expect("effective_realm called on config that did not pass validation (no EXAMPLE.COM fallback)")
     }
 
     /// Derived container path for a share (used in Ganesha Path=)
@@ -281,7 +331,7 @@ impl NfsKlldapConfig {
         )
     }
 
-    /// Returns the list of host-side paths declared in shares (used by UI + priv-helper allow-list).
+    /// Returns the list of host-side paths declared in shares (used by host UI for validation before asking the container to perform chown/chmod).
     pub fn host_paths(&self) -> Vec<PathBuf> {
         self.shares.iter().map(|s| s.host_path.clone()).collect()
     }
@@ -360,17 +410,16 @@ ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
 ldap_default_authtok = "CHANGE_THIS_TO_A_STRONG_SECRET"
 
 # [kerberos]
-# realm = "EXAMPLE.COM"      # auto-derived from ldap_uri domain if omitted
+# realm = "KRB.EXAMPLE.COM"  # REQUIRED if auto-derivation from ldap_uri host domain fails
+#                            # (or set NFS_REALM env var before starting the container)
 
 [ganesha]
 default_security = "krb5p"   # krb5p (recommended) | krb5i | krb5
 
 [management]
-# Host-side UI settings (container ignores this section)
+# Host-side UI settings (container ignores most of this section)
 lldap_graphql_url = "https://kllap.example.com:6360/api/graphql"
-helper_path = "/usr/local/bin/nfs-perm-helper"
-use_sudo = true
-# ganesha_container_name = "nfs-klldap"
+# ganesha_container_name = "nfs-klldap"   # used when the UI asks the container to perform chown/chmod on exported data
 
 # =============================================================================
 # Shares — add as many as you need. Names must be unique.
@@ -726,6 +775,17 @@ mod tests {
     }
 
     #[test]
+    fn invalid_security_rejected() {
+        let mut c = minimal_cfg();
+        c.ganesha.default_security = "krb5x".into();
+        assert!(c.validate_and_derive().is_err());
+
+        let mut c2 = minimal_cfg();
+        c2.shares[0].security = Some("aes-256".into());
+        assert!(c2.validate_and_derive().is_err());
+    }
+
+    #[test]
     fn load_host_paths_only_returns_only_host_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("partial.conf");
@@ -766,5 +826,56 @@ mod tests {
             derive_export_id("movies", 1000),
             derive_export_id("data", 1000)
         );
+    }
+
+    #[test]
+    fn realm_is_required_no_silent_example() {
+        // Explicit placeholder in config must be rejected (core user complaint)
+        let mut c = NfsKlldapConfig {
+            ldap_uri: "ldaps://kllap.example.com:6360".into(),
+            kerberos: KerberosSection { realm: Some("EXAMPLE.COM".into()) },
+            sssd: SssdSection {
+                ldap_default_bind_dn: "uid=a,ou=people,dc=x,dc=com".into(),
+                ldap_default_authtok: "s".into(),
+                ..Default::default()
+            },
+            shares: vec![Share {
+                name: "t".into(),
+                host_path: "/t".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let err = c.validate_and_derive().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("kerberos.realm is required"));
+        assert!(msg.contains("NFS_REALM"));
+
+        // Explicit good realm passes
+        c.kerberos.realm = Some("MY.REALM".into());
+        assert!(c.validate_and_derive().is_ok());
+        assert_eq!(c.effective_realm(), "MY.REALM");
+    }
+
+    #[test]
+    fn realm_from_env_works() {
+        std::env::set_var("NFS_REALM", "ENV.REALM");
+        let mut c = NfsKlldapConfig {
+            ldap_uri: "ldaps://kllap.test:6360".into(), // would derive "TEST" without env
+            sssd: SssdSection {
+                ldap_default_bind_dn: "uid=a,ou=people,dc=x,dc=com".into(),
+                ldap_default_authtok: "s".into(),
+                ..Default::default()
+            },
+            shares: vec![Share {
+                name: "t".into(),
+                host_path: "/t".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(c.validate_and_derive().is_ok());
+        assert_eq!(c.effective_realm(), "ENV.REALM");
+        std::env::remove_var("NFS_REALM");
     }
 }

@@ -33,6 +33,47 @@ die() {
     exit 1
 }
 
+# -----------------------------------------------------------------------------
+# Proactive diagnostics for non-root / hardened operation.
+# These run before we start the daemons so the user gets actionable messages
+# instead of opaque failures deep in ganesha or sssd logs.
+# -----------------------------------------------------------------------------
+check_runtime_permissions() {
+    log "Checking runtime permissions for non-root operation..."
+
+    # 1. Keytab readability (most common source of "it worked as root but not now")
+    if [ -f /etc/krb5.keytab ]; then
+        if [ -r /etc/krb5.keytab ]; then
+            log "    Keytab /etc/krb5.keytab is readable by current user — good."
+        else
+            log "    WARNING: /etc/krb5.keytab exists but is not readable by $(id -un 2>/dev/null || echo 'current user')."
+            log "    This is the #1 cause of Kerberos/GSS failures when running as non-root."
+            log "    On the Docker *host*, run one of the following (pick the matching path):"
+            log "      sudo chgrp keytab /path/on/host/to/krb5.keytab && sudo chmod g+r /path/on/host/to/krb5.keytab"
+            log "      # or use a numeric GID that matches the 'keytab' group inside the container:"
+            log "      # (find it with: docker exec <name> getent group keytab)"
+            log "    You can also add the container to the host group with group_add in compose."
+            # Do not die — some people use other auth methods or will fix it and SIGHUP.
+        fi
+    else
+        log "    NOTE: No /etc/krb5.keytab found at container start (mount it read-only)."
+    fi
+
+    # 2. Critical writable locations (defensive — we chown these in the image)
+    for d in /var/log/ganesha /var/lib/sss /etc/ganesha /etc/ganesha/exports.d /etc/sssd /var/run/ganesha /var/run/sssd; do
+        if [ -d "$d" ]; then
+            if ! touch "$d/.nfs-perms-check.$$" 2>/dev/null; then
+                log "    WARNING: Cannot write to $d as current user. Daemon startup may fail."
+                log "    This should not happen in the stock image. Check your volume mounts."
+            else
+                rm -f "$d/.nfs-perms-check.$$" 2>/dev/null || true
+            fi
+        fi
+    done
+
+    log "    Permission pre-flight checks complete."
+}
+
 # First-run template generation is now handled by: nfs-klldap-config init
 # (kept the old function name only as a comment for git history; fully removed)
 
@@ -61,10 +102,17 @@ generate_configs() {
 # -----------------------------------------------------------------------------
 # Signal handling
 # -----------------------------------------------------------------------------
+WATCHER_PID=""
+
 cleanup() {
     log "Shutting down services..."
     pkill -TERM ganesha.nfsd 2>/dev/null || true
     pkill -TERM sssd 2>/dev/null || true
+    if [ -n "$WATCHER_PID" ]; then
+        kill -TERM "$WATCHER_PID" 2>/dev/null || true
+    else
+        pkill -TERM nfs-klldap-conf-watcher 2>/dev/null || true
+    fi
     sleep 1
     log "Shutdown complete."
     exit 0
@@ -92,6 +140,9 @@ main() {
     fi
 
     generate_configs
+
+    # Proactive checks so non-root operation fails with clear guidance instead of later
+    check_runtime_permissions
 
     # Start SSSD
     log "[1/3] Starting SSSD..."

@@ -9,6 +9,10 @@
 # =============================================================================
 FROM --platform=$BUILDPLATFORM rust:1.82-slim AS config-builder
 
+# Changing this ARG (or passing --build-arg BINARY_BUILD_ID=$(date +%s)) will
+# force the cargo build layer to re-run, which is often needed when adding
+# new [[bin]] targets because Docker layer caching can be stubborn.
+ARG BINARY_BUILD_ID=1
 ARG TARGETARCH
 
 WORKDIR /build
@@ -24,19 +28,36 @@ RUN case "$TARGETARCH" in \
 COPY management/nfs-klldap-config /build/nfs-klldap-config
 WORKDIR /build/nfs-klldap-config
 
+# === DIAGNOSTICS: Show what we actually copied ===
+RUN echo "=== Files in src/bin after COPY ===" && \
+    find src/bin -type f 2>/dev/null || echo "(no src/bin directory or files)" && \
+    echo "=== [[bin]] sections in Cargo.toml ===" && \
+    grep -A2 '\[\[bin\]\]' Cargo.toml || true
+
 # Build for the target architecture, then normalize the binary location
 # so the COPY in the next stage works regardless of architecture.
+WORKDIR /build/nfs-klldap-config
+
+# Build BOTH binaries (config + guided startup) for the target architecture.
+# We explicitly verify both binaries exist after the build because adding
+# new [[bin]] targets can hit Docker layer cache issues.
 RUN case "$TARGETARCH" in \
-      amd64) \
-        cargo build --release --bin nfs-klldap-config --target x86_64-unknown-linux-gnu && \
-        mkdir -p target/release && \
-        cp target/x86_64-unknown-linux-gnu/release/nfs-klldap-config target/release/ ;; \
-      arm64) \
-        cargo build --release --bin nfs-klldap-config --target aarch64-unknown-linux-gnu && \
-        mkdir -p target/release && \
-        cp target/aarch64-unknown-linux-gnu/release/nfs-klldap-config target/release/ ;; \
+      amd64)  TARGET="x86_64-unknown-linux-gnu" ;; \
+      arm64)  TARGET="aarch64-unknown-linux-gnu" ;; \
+      *)      echo "Unsupported TARGETARCH: $TARGETARCH" && exit 1 ;; \
     esac && \
-    strip target/release/nfs-klldap-config || true
+    echo "=== BINARY_BUILD_ID=$BINARY_BUILD_ID ===" && \
+    echo "=== Building for target $TARGET ===" && \
+    cargo build --release \
+        --bin nfs-klldap-config \
+        --bin nfs-klldap-startup \
+        --target "$TARGET" && \
+    mkdir -p target/release && \
+    cp "target/$TARGET/release/nfs-klldap-config" target/release/ && \
+    cp "target/$TARGET/release/nfs-klldap-startup" target/release/ && \
+    echo "=== Verifying built binaries ===" && \
+    ls -l target/release/nfs-klldap-config target/release/nfs-klldap-startup && \
+    strip target/release/nfs-klldap-config target/release/nfs-klldap-startup || true
 
 # =============================================================================
 # Stage 2: Final runtime image (AlmaLinux 10 + Ganesha + SSSD + our generator)
@@ -120,10 +141,23 @@ RUN mkdir -p \
     /container/scripts
 
 # -----------------------------------------------------------------------------
-# Copy the Rust config generator (built in stage 1) — this is the heart of v0.23+
+# Copy the Rust binaries (built in stage 1)
+# We build two binaries from the same small crate:
+#   - nfs-klldap-config   : TOML validation + sssd/krb5/ganesha generation
+#   - nfs-klldap-startup  : Guided first-run TUI + reachability diagnostics (replaces most of old entrypoint.sh logic)
 # -----------------------------------------------------------------------------
-COPY --from=config-builder /build/nfs-klldap-config/target/release/nfs-klldap-config /usr/local/bin/nfs-klldap-config
-RUN chmod +x /usr/local/bin/nfs-klldap-config
+# Copy the entire normalized release dir from the builder, then install only
+# the binaries we need. This is more resilient to cache ordering issues.
+COPY --from=config-builder /build/nfs-klldap-config/target/release/ /tmp/rust-bins/
+RUN set -e && \
+    echo "=== Binaries available in builder output ===" && \
+    ls -l /tmp/rust-bins/ && \
+    cp /tmp/rust-bins/nfs-klldap-config /usr/local/bin/ && \
+    cp /tmp/rust-bins/nfs-klldap-startup /usr/local/bin/ && \
+    chmod +x /usr/local/bin/nfs-klldap-config /usr/local/bin/nfs-klldap-startup && \
+    rm -rf /tmp/rust-bins && \
+    echo "=== Installed Rust binaries ===" && \
+    ls -l /usr/local/bin/nfs-klldap-*
 
 # -----------------------------------------------------------------------------
 # Copy container scripts (ganesha-ctl, healthcheck, optional conf watcher)

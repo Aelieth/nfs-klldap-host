@@ -1,8 +1,9 @@
 //! Axum + HTMX web UI for nfs-klldap-host (two-page: System Settings + Share Permissions).
 //!
-//! The UI edits the central `nfs-klldap.conf` directly and uses the narrow
-//! privileged helper for host-side chown/chmod. Local sudo-auth is used to
-//! restrict access to users who can perform privileged operations.
+//! The UI edits the central `nfs-klldap.conf` directly. Permission changes
+//! (chown/chmod) are delegated to the running container via `docker exec`.
+//! Local sudo-auth is used to restrict access to users who can perform
+//! privileged operations.
 
 use askama::Template;
 use axum::{
@@ -417,7 +418,7 @@ pub async fn apply_permissions(
     }
 
     // NOTE (v0.23 cutover): Exports are now generated inside the container from the central nfs-klldap.conf.
-    // The host UI no longer writes fragments. Permission changes are applied via the helper only.
+    // The host UI no longer writes fragments. Permission changes are applied via the container.
     let html = format!(
         r#"<div class="form">
             <h3>Successfully applied permissions for <code>{}</code></h3>
@@ -427,7 +428,7 @@ pub async fn apply_permissions(
                 <strong>Mode:</strong> {}<br>
                 <strong>Recursive:</strong> {}
             </p>
-            <p style="color: green;">Changes applied via privileged helper. Ganesha export ensured.</p>
+            <p style="color: green;">Changes applied via container (docker exec). Ganesha export ensured.</p>
             <button type="button" onclick="htmx.ajax('GET', '/directory?path={}', {{target: '#permission-form', swap: 'innerHTML'}})">
                 Reload editor (see live state)
             </button>

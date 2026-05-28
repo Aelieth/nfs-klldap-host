@@ -3,11 +3,12 @@
 //! All state comes from the live filesystem (no database).
 //! - Directory tree is built on demand by walking the configured base paths.
 //! - Permission changes (chown/chmod) are performed by the running container
-//!   via `docker exec` on the bind-mounted paths. The host tool stays unprivileged.
+//!   via `docker exec $CONTAINER chown ... && chmod ...` on the bind-mounted paths.
+//!   The host tool stays unprivileged.
 //! - Recursive option is supported exactly as the user described.
 //!
 //! Security: The tool itself should run as a low-privilege user.
-//! Validation + execution happen inside the privileged container context.
+//! Validation happens in the host UI; the actual mutations use the container's capabilities.
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -27,14 +28,13 @@ pub struct DirectoryNode {
 pub struct FsManager {
     pub config: crate::config::Config,
     /// Path to the central nfs-klldap.conf. Previously used to communicate with a
-    /// host-side privileged helper; retained for future container-exec extensions.
+    /// Retained for potential future use with container-exec flows.
     #[allow(dead_code)]
     config_path: Option<PathBuf>,
 }
 
 impl FsManager {
-    /// Construct with explicit config path (preferred for helper env propagation
-    /// so the privileged helper can derive live ALLOWED_ROOTS from current shares).
+    /// Construct with explicit config path.
     pub fn new_with_path(config: crate::config::Config, config_path: PathBuf) -> Self {
         Self {
             config,
@@ -101,8 +101,7 @@ impl FsManager {
             return Err("Path is outside allowed managed roots".into());
         }
 
-        // Defense-in-depth policy (same rules previously enforced by the
-        // container-executed permission helper).
+        // Defense-in-depth policy (refuse dangerous operations before asking the container).
         if owner_uid == 0 || group_gid == 0 {
             return Err("Refusing to set UID or GID 0".into());
         }
@@ -119,10 +118,16 @@ impl FsManager {
 
         let container_path = self.host_path_to_container_path(path)?;
 
-        // Perform the changes inside the container (it sees the bind-mounted
-        // data under its container_root and has the required caps).
-        self.run_container_fs_op(&container_name, "chown", &container_path, recursive, Some((owner_uid, group_gid)))?;
-        self.run_container_fs_op(&container_name, "chmod", &container_path, recursive, Some((mode, 0)))?;
+        // Ask the container to perform the permission change.
+        // The UI runs `docker exec $CONTAINER chown -R ... && chmod -R ...` (when recursive).
+        self.perform_container_chown_chmod(
+            &container_name,
+            &container_path,
+            owner_uid,
+            group_gid,
+            mode,
+            recursive,
+        )?;
 
         Ok(())
     }
@@ -150,52 +155,40 @@ impl FsManager {
         ))
     }
 
-    /// Execute a filesystem mutation inside the container using docker exec.
-    /// `op` is "chown" or "chmod".
-    /// For chown, `arg` is (uid, gid).
-    /// For chmod, `arg` is (mode, _).
-    fn run_container_fs_op(
+    /// Ask the running container (via `docker exec`) to perform chown + chmod
+    /// on the given container-internal path. This is the mechanism the host UI
+    /// uses to change ownership/permissions on the bind-mounted export data.
+    fn perform_container_chown_chmod(
         &self,
         container: &str,
-        op: &str,
         container_path: &Path,
+        uid: u32,
+        gid: u32,
+        mode: u32,
         recursive: bool,
-        arg: Option<(u32, u32)>,
     ) -> Result<(), String> {
-        let mut args = vec!["exec".to_string(), container.to_string()];
+        let rec = if recursive { " -R" } else { "" };
 
-        match op {
-            "chown" => {
-                let (uid, gid) = arg.unwrap();
-                let mut cmd = "chown".to_string();
-                if recursive {
-                    cmd.push_str(" -R");
-                }
-                cmd.push_str(&format!(" {}:{} {}", uid, gid, container_path.display()));
-                args.extend(["sh".to_string(), "-c".to_string(), cmd]);
-            }
-            "chmod" => {
-                let (mode, _) = arg.unwrap();
-                let mut cmd = "chmod".to_string();
-                if recursive {
-                    cmd.push_str(" -R");
-                }
-                cmd.push_str(&format!(" {:o} {}", mode, container_path.display()));
-                args.extend(["sh".to_string(), "-c".to_string(), cmd]);
-            }
-            _ => return Err(format!("unsupported container fs op: {}", op)),
-        }
+        // Build a single command the UI effectively runs:
+        //   docker exec $CONTAINER sh -c 'chown -R uid:gid /path && chmod -R mode /path'
+        let cmd = format!(
+            "chown{rec} {uid}:{gid} {path} && chmod{rec} {mode:o} {path}",
+            rec = rec,
+            uid = uid,
+            gid = gid,
+            mode = mode,
+            path = container_path.display()
+        );
 
         let output = Command::new("docker")
-            .args(&args)
+            .args(["exec", container, "sh", "-c", &cmd])
             .output()
-            .map_err(|e| format!("failed to execute docker {}: {}", op, e))?;
+            .map_err(|e| format!("failed to run docker exec for chown/chmod: {}", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!(
-                "docker exec {} failed inside container '{}': {}",
-                op,
+                "docker exec chown/chmod failed inside container '{}': {}",
                 container,
                 stderr.trim()
             ));

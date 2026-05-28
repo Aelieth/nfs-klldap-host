@@ -29,11 +29,16 @@ services:
     # (the container defaults to the unprivileged "nfs" user).
     # SYS_ADMIN is still broad; if your runtime allows dropping it while keeping
     # the others, test carefully — many VFS FSAL operations need it today.
+    # Minimal capabilities needed for the container to:
+    # - run Ganesha VFS + bind to port 2049
+    # - perform chown/chmod on the bind-mounted export data (requested by the host UI)
     cap_add:
-      - SYS_ADMIN
-      - DAC_READ_SEARCH
-      - NET_BIND_SERVICE
-      # - SYS_RESOURCE   # sometimes helpful for large numbers of exports
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+      - DAC_READ_SEARCH     # frequently needed by Ganesha VFS FSAL
+      - NET_BIND_SERVICE    # for 2049
+      # - SYS_RESOURCE      # sometimes helpful for large numbers of exports
 
     # Optional but recommended for some environments:
     # privileged: true
@@ -105,5 +110,5 @@ services:
 #
 # The host-side management UI asks the running container (via docker exec) to
 # perform any required chown/chmod operations on the bind-mounted data.
-# No host-side privileged helper binary is required.
+# No host-side privileged helper binary is required. The container performs chown/chmod.
 # =============================================================================

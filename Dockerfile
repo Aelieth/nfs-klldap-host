@@ -173,7 +173,17 @@ RUN chown -R nfs:nfs \
 EXPOSE 2049/tcp 2049/udp 111/tcp 111/udp
 
 # Run the container as the unprivileged nfs user by default.
-# Override with --user root (or your own uid) if ganesha/sssd need it in your setup.
+# Recommended runtime capabilities (add these at `docker run` / docker-compose time):
+#
+#   --cap-add CHOWN
+#   --cap-add FOWNER
+#   --cap-add DAC_OVERRIDE
+#   --cap-add DAC_READ_SEARCH
+#   --cap-add NET_BIND_SERVICE
+#
+# These are the minimal set that allows the container (and the host UI via
+# `docker exec`) to perform chown/chmod on the bind-mounted export volumes
+# while still allowing Ganesha to bind to port 2049.
 USER nfs
 
 ENTRYPOINT ["/entrypoint.sh"]

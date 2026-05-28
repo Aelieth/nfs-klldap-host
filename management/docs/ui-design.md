@@ -24,7 +24,7 @@
   - Live preview: "aelieth (3001) : users (3002)"
   - Permission editor: Checkboxes or octal input for owner/group/other.
   - Recursive checkbox.
-  - "Save & Apply" button → calls backend → uses privileged helper → updates exports.d → SIGHUP container.
+  - "Save & Apply" button → calls backend → `docker exec` into container for chown/chmod → (optional) SIGHUP for exports if needed.
 - Top bar: Status of last operation, quick "Re-export all" button.
 - System Settings page: central nfs-klldap.conf editing (raw + structured), LLDAP URL, helper path (from [management] section).
 
@@ -66,7 +66,7 @@ When you want the tool to be directly accessible without a reverse proxy, we can
 2. User searches for a user/group → HTMX → `llap.resolve_user` or `list_users` → returns JSON with id + uidNumber.
 3. User clicks Save → POST with desired owner/group/mode/recursive → backend:
    - Calls LLDAP again to confirm IDs (defense in depth).
-   - Calls privileged helper with the numeric IDs (only on paths declared in the central config).
+   - Requests chown/chmod via `docker exec` into the container (only on paths declared in the central config).
    - The container (via its watcher or SIGHUP) picks up any share/config changes and regenerates Ganesha exports.
 4. UI shows success + refreshed current state from filesystem.
 

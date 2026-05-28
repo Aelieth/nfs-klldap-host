@@ -9,8 +9,11 @@ docker run -d \
   --name nfs-klldap \
   --hostname "$(hostname)-nfs" \
   --user nfs \
-  --cap-add SYS_ADMIN \
-  --cap-add DAC_READ_SEARCH \
+  --cap-add CHOWN \
+  --cap-add FOWNER \
+  --cap-add DAC_OVERRIDE \
+  --cap-add DAC_READ_SEARCH \   # helpful for Ganesha VFS
+  --cap-add NET_BIND_SERVICE \  # for port 2049
   -p 2049:2049/tcp \
   -p 2049:2049/udp \
   -e NFS_CONFIG=/config/nfs-klldap.conf \
@@ -78,9 +81,11 @@ services:
   nfs-kerb:
     user: "nfs"                    # or omit; the image defaults to this
     cap_add:
-      - SYS_ADMIN
-      - DAC_READ_SEARCH
-      - NET_BIND_SERVICE           # for 2049 without root
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+      - DAC_READ_SEARCH     # often still useful for VFS FSAL
+      - NET_BIND_SERVICE    # for listening on privileged port 2049
     group_add:
       - "keytab"                   # lets the nfs user read a group-readable keytab
     volumes:
@@ -129,7 +134,7 @@ You should almost never have to debug "Kerberos not working" blindly anymore.
 
 ### When you might still choose `--user root`
 
-Only as a temporary debugging step or in environments where even `SYS_ADMIN` + the narrow sudoers is blocked by the container runtime / security policy. The goal of the current work is to make this the *exception*, not the common case.
+Only as a temporary debugging step or in environments where the required capabilities (CHOWN, FOWNER, DAC_OVERRIDE, etc.) are blocked by the container runtime or security policy. The goal is to run with the smallest practical capability set.
 
 ## Host-Side Volume Permissions (config + data)
 

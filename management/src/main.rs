@@ -3,7 +3,7 @@
 //! Two-page web UI for the central `nfs-klldap.conf` (the single source of truth):
 //! - System Settings (/settings): edit the TOML (raw editor + basic structured)
 //! - Share Permissions (/): browse real-time FS trees under shares and apply
-//!   POSIX owner/group/mode changes via the narrow privileged helper + live KLLDAP lookups.
+//!   POSIX owner/group/mode changes requested via the container (docker exec) + live KLLDAP lookups.
 //!
 //! The container (using the bundled `nfs-klldap-config` binary) auto-derives
 //! sssd.conf, krb5.conf, and all Ganesha EXPORT fragments from the same file.

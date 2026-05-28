@@ -15,7 +15,7 @@ Plug this container into any Linux host (even one without kernel NFS modules) an
 - One `nfs-klldap.conf` (TOML) file
 - A small, type-safe Rust binary (`nfs-klldap-config`) bundled in the container that auto-derives and generates everything else
 - Host-side management UI that edits the shared config volume directly
-- Narrow privileged helper for filesystem operations
+- Container performs chown/chmod on exported data when requested by the UI via `docker exec`
 
 This gives you **maximum simplicity with full power** — minimal volumes, no templates, no DBUS, no kernel NFS on the host, and automatic reloads when you change the config.
 
@@ -27,7 +27,7 @@ This gives you **maximum simplicity with full power** — minimal volumes, no te
 - Use KLLDAP (LLDAP + Kerberos in one) as the single source of truth for both POSIX attributes and Kerberos
 - Make share and permission management visual and trivial through a host-side web UI
 - Support per-share security settings (`krb5p` / `krb5i`) and complex multi-share environments
-- Keep the container itself unprivileged while still allowing powerful host filesystem operations via a narrow helper
+- Keep the container itself unprivileged (using targeted capabilities) while still allowing the host UI to request chown/chmod on exported data via `docker exec`
 - Enable future one-command deployment from a KLLDAP server
 
 ---
@@ -57,7 +57,7 @@ Container (AlmaLinux 10)
 1. You edit `nfs-klldap.conf` (via UI or by hand)
 2. The Rust binary detects the change and regenerates all downstream configs
 3. Ganesha and SSSD reload automatically
-4. Permissions on host data are managed through the privileged helper
+4. Permissions (chown/chmod) on exported data are performed by the container when requested by the host UI via `docker exec`
 
 ---
 
@@ -66,7 +66,7 @@ Container (AlmaLinux 10)
 A `Makefile` provides the complete build story for both host tools and container images.
 
 ```bash
-# Native release build of the UI and privileged helper
+# Native release build of the host management UI
 make build
 
 # Cross-compile host tools for amd64 + arm64 (produces binaries in dist/)
@@ -89,7 +89,7 @@ See [management/examples/sudoers.example](management/examples/sudoers.example) f
 
 - Comprehensive test coverage for `FsManager` (using real temporary filesystems) and key Axum handlers.
 - Production-grade `Makefile` with cross-compilation for host tools and multi-platform Docker builds (`linux/amd64/v2` + `linux/arm64`).
-- All handwritten `unsafe` removed from the privileged helper.
+- All handwritten `unsafe` removed from host-side privileged code (permission changes now delegated to the container).
 - Strict formatting + clippy enforcement (`-D warnings`).
 
 See [TESTING.md](TESTING.md) and the root `Makefile` for details.
@@ -130,7 +130,7 @@ cargo run --bin management -- --config /path/to/your/config/nfs-klldap.conf
 
 **Two pages:**
 - **System Settings** (`/settings`) — edit the central TOML (raw editor + structured form)
-- **Share Permissions** (`/`) — real-time filesystem tree browser + live KLLDAP user/group search + recursive `chown`/`chmod` via the narrow privileged helper
+- **Share Permissions** (`/`) — real-time filesystem tree browser + live KLLDAP user/group search + recursive `chown`/`chmod` performed by the container (via `docker exec` from the UI)
 
 ---
 

@@ -29,7 +29,7 @@ Host (no kernel NFS modules required anywhere)
 ├── secrets/krb5.keytab            (nfs/<hostname>@REALM, mode 600)
 └── management/ (Rust web UI)      (Axum + HTMX)
     ├── Talks to LLDAP (GraphQL) for live user/group → uid/gid
-    ├── Uses narrow privileged helper for recursive chown/chmod on host
+    ├── Requests recursive chown/chmod on exported data via `docker exec` into the container
     ├── Writes native Ganesha EXPORT {} fragments
     └── Speaks directly to Ganesha via: docker exec <name> ganesha-ctl ...
 
@@ -53,9 +53,9 @@ The management tool (host) and container work together with a **single source of
 - **Rust generator** (`nfs-klldap-config`) is the single place that understands the schema and produces `sssd.conf`, `krb5.conf`, and Ganesha `EXPORT` fragments.
 - **No host-side exports.d or templates bind mount** in the normal deployment model.
 - **Self-contained reload**: container watches the config file (or reacts to SIGHUP) and regenerates + reloads Ganesha.
-- **Strong separation**: host UI never runs privileged code directly — it always goes through the narrow helper.
+- **Strong separation**: host UI never runs privileged code directly. It validates paths and then asks the container (via `docker exec`) to perform `chown`/`chmod` on the bind-mounted data using the container's capabilities.
 
-See the root `TESTING.md` for how this architecture is exercised in tests (especially the partial `load_host_paths_only` used by the helper and the credential helpers used by the UI).
+See the root `TESTING.md` for current test coverage of `FsManager` path validation and the web handlers.
 
 ## Health and Verification
 
@@ -68,7 +68,12 @@ The old kernel-oriented commands (`rpc.idmapd -f -vvv`, `exportfs -s`, `rpcinfo`
 ## Privileges and Volumes (Typical)
 
 ```yaml
-cap_add: [SYS_ADMIN, DAC_READ_SEARCH]
+cap_add:
+  - CHOWN
+  - FOWNER
+  - DAC_OVERRIDE
+  - DAC_READ_SEARCH   # often still useful for VFS FSAL
+  - NET_BIND_SERVICE  # for listening on 2049
 volumes:
   # All data lives on attached/media drives (example)
   - /media/SSD-01/project-alpha:/export/project-alpha:rw

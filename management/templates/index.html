@@ -2,7 +2,7 @@
 
 {% block content %}
 <h2>Share Permissions</h2>
-<p>Click a share to browse its directory tree under the <strong>host_path</strong>. Click any subfolder to change POSIX owner/group/mode (live KLLDAP lookup + recursive apply via the privileged helper).</p>
+<p>Click a share to browse its directory tree under the <strong>host_path</strong>. Click any subfolder to change POSIX owner/group/mode (live KLLDAP lookup + recursive apply via the container).</p>
 <p style="font-size:0.9em; color:#555;">Use <a href="/settings">System Settings</a> to manage the shares and other config in nfs-klldap.conf.</p>
 
 {% if shares.len() > 0 %}

@@ -54,15 +54,16 @@ fn lldap_creds_parses_dn_and_prefers_env() {
 - Use `tempfile::tempdir()` to create real directory trees for `build_tree` tests.
 - Test `is_allowed` behavior in isolation.
 
-### 3. Privileged Helper Logic
+### 3. Container-Delegated Permission Logic
 
-Even though `main.rs` is a binary, we can test internal functions:
+Permission changes are validated in the host UI (`FsManager::is_allowed`, refusal of uid 0 / dangerous modes) and then executed inside the container via `docker exec`.
 
-- `is_path_allowed`
-- `resolve_config_path` (with `std::env::set_var` / `remove_var` — use a test helper that restores state)
-- Request deserialization round-trips
+Relevant testable pieces:
+- Host path → container path translation
+- Recursive vs non-recursive command construction
+- Error handling when `docker exec` fails
 
-For safety-critical checks (root UID refusal, mode bits, etc.), add explicit tests.
+Full end-to-end `apply_permissions` is best exercised with a running container.
 
 ### 4. Web Layer (when adding)
 
@@ -88,7 +89,7 @@ Continue expanding here for:
 ## Hard-to-Test Areas (Documented Limitations)
 
 - Anything that calls `sudo -S` or `id` externally.
-- Full recursive `apply_permissions` (requires the real helper binary + privileges).
+- Full recursive `apply_permissions` (requires a running container with the right capabilities + docker socket access).
 - End-to-end flows that need a live LLDAP + Kerberos environment.
 - Container startup / watcher behavior (best exercised via manual Docker runs or compose tests).
 
@@ -108,12 +109,12 @@ For these areas we rely on:
 
 - **LLDAP credential extraction** (`lldap_login_creds`): DN parsing (`uid=`, `cn=`), environment variable override, graceful fallback. See `management/src/config.rs` tests.
 - **URL derivation** for the GraphQL client (`derive_lldap_url`).
-- **Allow-list root computation** (`all_managed_roots` + `is_path_allowed` in the helper).
-- **FsManager** (`is_allowed`, `build_tree`): Tested with real temporary directory trees created via `tempfile`. See `management/src/fs.rs` tests.
-- **Axum handlers** (settings save raw + structured): Tested using `tower::ServiceExt::oneshot` against the real router with realistic `AppState` (temp config files + pre-created auth sessions). See `management/src/web.rs` tests.
-- **Partial config loading** for the privileged helper (`load_host_paths_only`) — explicitly tolerant of missing bind secrets.
+- **Allow-list root computation** (`all_managed_roots` + `is_allowed` in `FsManager`).
+- **FsManager** (`is_allowed`, `build_tree`, host→container path mapping): Tested with real temporary directory trees. See `management/src/fs.rs` tests.
+- **Axum handlers** (settings save raw + structured + permission apply): Tested using `tower::ServiceExt::oneshot` against the real router. See `management/src/web.rs` tests.
+- **Partial config loading** (`load_host_paths_only`) — still useful for the host UI allow-list.
 - **Name sanitization** and deterministic export ID generation in the generator.
-- **Safety checks** inside the helper (root UID/GID refusal, high-bit mode refusal) — exercised via the request flow + pure helpers.
+- **Safety checks** before delegating to the container (root UID/GID refusal, high-bit mode refusal).
 
 These tests serve as both regression protection and living specification.
 

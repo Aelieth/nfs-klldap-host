@@ -85,12 +85,13 @@ See `make help` for all targets.
 
 See [management/examples/sudoers.example](management/examples/sudoers.example) for recommended sudoers configuration.
 
-## What's New in v0.3
+## What's New in v0.33
 
 - Comprehensive test coverage for `FsManager` (using real temporary filesystems) and key Axum handlers.
 - Production-grade `Makefile` with cross-compilation for host tools and multi-platform Docker builds (`linux/amd64/v2` + `linux/arm64`).
 - All handwritten `unsafe` removed from host-side privileged code (permission changes now delegated to the container).
 - Strict formatting + clippy enforcement (`-D warnings`).
+- Helpful entrypoint.sh with instructions to guide users with basic diagnostic information
 
 See [TESTING.md](TESTING.md) and the root `Makefile` for details.
 
@@ -105,13 +106,12 @@ See [TESTING.md](TESTING.md) for the current testing strategy, how to run tests,
 ```bash
 docker run -d \
   --name nfs-klldap \
-  --hostname "$(hostname)-nfs" \
-  -p 2049:2049/tcp \
-  -p 2049:2049/udp \
-  -e NFS_CONFIG=/config/nfs-klldap.conf \
-  -v /path/to/config:/config \
-  -v /media/sda1/krb5/krb5.keytab:/etc/krb5.keytab:ro \
-  -v /media/sda1:/export \
+  -p 2049:2049/tcp -p 2049:2049/udp \
+  -v /path/to/nfs-config:/config \
+  -v /secure/location/krb5.keytab:/etc/krb5.keytab:ro \
+  -v /media/data:/export \
+  --user nfs \
+  --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE \
   ghcr.io/aelieth/nfs-klldap-host:latest
 ```
 
@@ -137,6 +137,7 @@ cargo run --bin management -- --config /path/to/your/config/nfs-klldap.conf
 ## Configuration (`nfs-klldap.conf`)
 
 ```toml
+# ldap_uri host must be a DNS name (not an IP). See Prerequisites.
 ldap_uri = "ldaps://lldap.example.com:6360"
 
 [sssd]
@@ -180,6 +181,12 @@ The Rust binary handles all derivation and generation from this single file.
 - Keytab with that principal (mode 600)
 - Attached/media drives for exported data (system paths like `/srv/nfs` are not recommended)
 - Docker / Podman
+
+**DNS requirements for `ldap_uri`:** The host in `ldap_uri` (e.g. `ldaps://kllap.example.com:6360`) **must be a DNS hostname**, not an IP address. IP addresses are rejected at config validation time with:
+
+> LDAP IP addresses are not supported, DNS resolution is required for operation.
+
+Forward and reverse (PTR) DNS for both the NFS server hostname and the LDAP/KDC host are required for correct NFS service principal handling in the keytab and Kerberos authentication.
 
 ---
 

@@ -43,6 +43,12 @@ You must either:
 
 Auto-derivation only works when `ldap_uri` contains a usable DNS domain (e.g. `ldaps://kllap.example.com:6360` → `EXAMPLE.COM`). IP-based URIs or single-label names that produce `EXAMPLE.COM` will now cause a clear validation error on `generate`.
 
+**New explicit check:** `ldap_uri` whose host portion is a literal IP address (IPv4 or IPv6) is rejected early with the message:
+
+> LDAP IP addresses are not supported, DNS resolution is required for operation.
+
+Forward + reverse DNS is mandatory for the NFS `nfs/<hostname>@REALM` service principal (keytab) and for reliable Kerberos/GSSAPI operation with NFS-Ganesha. The KDC host is derived from your `ldap_uri`.
+
 This is intentional hardening so misconfigurations are loud.
 
 ## docker-compose Example (Recommended)

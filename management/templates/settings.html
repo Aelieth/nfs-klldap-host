@@ -4,6 +4,16 @@
 <h2>System Settings</h2>
 <p>Editing: <code>{{ config_path }}</code></p>
 
+<div class="current-state">
+    <span class="state-label">NFS Kerberos principal hostname (keytab must match this):</span>
+    <strong>{{ effective_hostname }}</strong><br>
+    <span class="mode-hint">
+        Your <code>/etc/krb5.keytab</code> (mounted into the container) <strong>must</strong> contain a principal
+        <code>nfs/{{ effective_hostname }}@YOUR.REALM</code>.<br>
+        The container's entrypoint will warn loudly on mismatch.
+    </span>
+</div>
+
 {% if let Some(msg) = message %}
     <div style="background:#e6ffe6; border:1px solid #0a0; padding:8px; margin:1rem 0;">
         {{ msg }}

@@ -182,6 +182,16 @@ impl NfsKlldapConfig {
             return Err(ConfigError::Validation("ldap_uri is required".into()));
         }
 
+        // Enforce DNS name (not IP) for ldap_uri. Forward + reverse DNS is mandatory
+        // for the NFS service principal (keytab) and Kerberos GSSAPI operation.
+        let host = extract_host_from_uri(&self.ldap_uri);
+        if host_is_ip(&host) {
+            return Err(ConfigError::Validation(
+                "LDAP IP addresses are not supported, DNS resolution is required for operation."
+                    .into(),
+            ));
+        }
+
         // Auto-derive realm if missing (from ldap_uri)
         if self.kerberos.realm.is_none() {
             if let Some(realm) = derive_realm_from_uri(&self.ldap_uri) {
@@ -374,8 +384,12 @@ pub fn load_host_paths_only(path: &Path) -> Result<Vec<PathBuf>, ConfigError> {
 
 fn derive_realm_from_uri(uri: &str) -> Option<String> {
     // ldaps://kllap.example.com:6360 → EXAMPLE.COM
-    let host = uri.split("://").nth(1)?.split([':', '/']).next()?;
-    let domain = host.split_once('.').map(|(_, d)| d).unwrap_or(host);
+    // ldaps://sub.host.example.co.uk:636 → EXAMPLE.CO.UK (current behavior)
+    let host = extract_host_from_uri(uri);
+    if host.is_empty() {
+        return None;
+    }
+    let domain = host.split_once('.').map(|(_, d)| d).unwrap_or(&host);
     Some(domain.to_uppercase())
 }
 
@@ -390,6 +404,9 @@ pub fn generate_default_template() -> String {
 # krb5.conf, and all Ganesha EXPORT fragments from it.
 #
 # REQUIRED: ldap_uri + [sssd] bind credentials.
+# ldap_uri host MUST be a DNS name (A/AAAA + PTR recommended). IP addresses are
+# rejected because forward/reverse DNS is required for the NFS service principal
+# in the keytab and for Kerberos GSSAPI operation.
 # Everything else has smart defaults.
 #
 # After first edit: the container NEVER overwrites this file.
@@ -411,7 +428,8 @@ ldap_default_authtok = "CHANGE_THIS_TO_A_STRONG_SECRET"
 
 # [kerberos]
 # realm = "KRB.EXAMPLE.COM"  # REQUIRED if auto-derivation from ldap_uri host domain fails
-#                            # (or set NFS_REALM env var before starting the container)
+#                            # (or set NFS_REALM env var before starting the container).
+#                            # Auto-derivation only works for real DNS hostnames in ldap_uri.
 
 [ganesha]
 default_security = "krb5p"   # krb5p (recommended) | krb5i | krb5
@@ -530,6 +548,7 @@ fn write_krb5_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
     default_realm = {realm}
     dns_lookup_realm = false
     dns_lookup_kdc = false
+    rdns = false
     ticket_lifetime = 24h
     renew_lifetime = 7d
     forwardable = true
@@ -634,11 +653,28 @@ EXPORT {{
 }
 
 fn extract_host_from_uri(uri: &str) -> String {
-    uri.split("://")
-        .nth(1)
-        .and_then(|s| s.split([':', '/']).next())
+    let after = uri.split("://").nth(1).unwrap_or(uri);
+    // IPv6 literal: ldaps://[2001:db8::1]:636  or ldaps://[::1]/...
+    if let Some(rest) = after.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            return rest[..end].to_string();
+        }
+    }
+    after
+        .split([':', '/'])
+        .next()
         .unwrap_or("localhost")
         .to_string()
+}
+
+/// Returns true if the host portion (from ldap_uri) is a literal IP address (v4 or v6).
+/// Used to reject IP-based ldap_uri (DNS forward+reverse required for Kerberos NFS principals).
+fn host_is_ip(host: &str) -> bool {
+    let h = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    h.parse::<std::net::IpAddr>().is_ok()
 }
 
 fn sanitize_name(s: &str) -> String {
@@ -738,6 +774,7 @@ mod tests {
 
         let krb = fs::read_to_string(&paths.krb5_conf).unwrap();
         assert!(krb.contains("default_realm = TEST"));
+        assert!(krb.contains("rdns = false"), "krb5.conf should include rdns=false for improved Kerberos reverse-DNS tolerance");
 
         let main = fs::read_to_string(&paths.ganesha_conf).unwrap();
         assert!(main.contains("%include"));
@@ -830,6 +867,10 @@ mod tests {
 
     #[test]
     fn realm_is_required_no_silent_example() {
+        // Ensure no env var leakage from parallel tests (NFS_REALM/REALM can override)
+        std::env::remove_var("NFS_REALM");
+        std::env::remove_var("REALM");
+
         // Explicit placeholder in config must be rejected (core user complaint)
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://kllap.example.com:6360".into(),
@@ -859,6 +900,8 @@ mod tests {
 
     #[test]
     fn realm_from_env_works() {
+        // Save/restore to avoid polluting other tests (parallel execution)
+        let prior = std::env::var("NFS_REALM").ok();
         std::env::set_var("NFS_REALM", "ENV.REALM");
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://kllap.test:6360".into(), // would derive "TEST" without env
@@ -876,6 +919,58 @@ mod tests {
         };
         assert!(c.validate_and_derive().is_ok());
         assert_eq!(c.effective_realm(), "ENV.REALM");
+        match prior {
+            Some(v) => std::env::set_var("NFS_REALM", v),
+            None => std::env::remove_var("NFS_REALM"),
+        }
+    }
+
+    #[test]
+    fn ldap_uri_ip_rejected_with_exact_message() {
         std::env::remove_var("NFS_REALM");
+        std::env::remove_var("REALM");
+
+        fn make_minimal(ip_uri: &str) -> NfsKlldapConfig {
+            NfsKlldapConfig {
+                ldap_uri: ip_uri.into(),
+                sssd: SssdSection {
+                    ldap_default_bind_dn: "uid=admin,ou=people,dc=x,dc=com".into(),
+                    ldap_default_authtok: "s".into(),
+                    ..Default::default()
+                },
+                shares: vec![Share {
+                    name: "t".into(),
+                    host_path: "/t".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+        }
+
+        // IPv4
+        let mut c = make_minimal("ldaps://192.168.10.5:6360");
+        let err = c.validate_and_derive().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LDAP IP addresses are not supported, DNS resolution is required for operation."),
+            "unexpected error: {}",
+            msg
+        );
+
+        // IPv6 (with brackets in URI)
+        let mut c6 = make_minimal("ldaps://[2001:db8::1]:6360");
+        let err6 = c6.validate_and_derive().unwrap_err();
+        assert!(err6.to_string().contains("LDAP IP addresses are not supported"));
+
+        // Also bare IPv6 without port etc.
+        let mut c6b = make_minimal("ldap://[::1]");
+        assert!(c6b.validate_and_derive().is_err());
+
+        // Hostname is allowed (validation proceeds to other required fields)
+        let mut ch = make_minimal("ldaps://kllap.example.com:6360");
+        // Will fail on realm (no EXAMPLE), but NOT on the IP check
+        let hmsg = ch.validate_and_derive().unwrap_err().to_string();
+        assert!(!hmsg.contains("IP addresses are not supported"));
+        assert!(hmsg.contains("kerberos.realm is required"));
     }
 }

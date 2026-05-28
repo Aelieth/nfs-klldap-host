@@ -56,6 +56,12 @@ async fn main() {
         println!("  - {} → {} (host: {})", s.name, ep, s.host_path.display());
     }
 
+    // Startup banner: make the keytab hostname requirement impossible to miss
+    let keytab_host = config.server.hostname.clone().filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| std::env::var("HOSTNAME").unwrap_or_else(|_| "your-container-hostname".into()));
+    println!("\nKeytab reminder: your krb5.keytab must contain  nfs/{keytab_host}@YOUR.REALM");
+    println!("(Set [server] hostname in nfs-klldap.conf or pass --hostname to the container.)");
+
     // Filesystem manager (real-time, no DB) — now driven by central shares
     let fs = Arc::new(crate::fs::FsManager::new_with_path(
         (*config).clone(),

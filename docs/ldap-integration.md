@@ -44,23 +44,21 @@ See the LLDAP documentation for bulk creation. The attribute names above are the
 
 ## 2. Container Configuration
 
-The container already ships good default templates in `container/templates/`.
+The container uses a single `nfs-klldap.conf` (TOML) as the source of truth. The bundled Rust binary auto-derives `sssd.conf`, `krb5.conf`, and Ganesha exports. No template bind-mounts are needed.
 
 ### Recommended approach
 
-1. Bind-mount your templates directory:
-   ```yaml
-   - ./templates:/container/templates:ro
-   ```
+Mount the central config (and your data + keytab). Edit `nfs-klldap.conf` via the host UI
+or by hand; the container regenerates `sssd.conf` / `krb5.conf` / Ganesha exports automatically.
 
-2. Copy the provided templates and customize:
-   - `sssd.conf.template` — the most important file
-   - `idmapd.conf.template` — usually fine with `Method = sss`
-   - `krb5.conf.template`
+```yaml
+volumes:
+  - ./config:/config:rw
+  - /media/SSD-01:/export:rw
+  - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
+```
 
-### Key sssd.conf settings for LLDAP + NFS
-
-See the current `container/templates/sssd.conf.template` for a working starting point.
+### Key settings (in nfs-klldap.conf) for LLDAP + NFS
 
 Critical sections:
 

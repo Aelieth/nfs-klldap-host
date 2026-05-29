@@ -4,6 +4,9 @@
 //! - The 4-step guided first-run TUI / state machine (previously in entrypoint.sh)
 //! - Reachability tests (LDAP port, bind, DNS, share paths)
 //! - Persistent volume detection
+//! - Best-effort realm derivation for the banner (from ldap_uri)
+//! - Hostname suggestion using the recommended insertion pattern
+//!   (host.example.com → host-nfs.example.com, not host.example.com-nfs)
 //!
 //! It is designed to run as root (as the entrypoint does during setup) so it
 //! has full access to the host bind mounts and can write generated configs
@@ -19,7 +22,10 @@ use std::process::{exit, Command};
 use std::thread;
 use std::time::Duration;
 
-use nfs_klldap_config::{extract_host_from_uri, is_persistent_config, load_host_paths_only, NfsKlldapConfig, ConfigError};
+use nfs_klldap_config::{
+    derive_realm_from_uri, extract_host_from_uri, is_persistent_config, load_host_paths_only,
+    looks_like_docker_default_hostname, suggested_nfs_hostname, NfsKlldapConfig, ConfigError,
+};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -31,12 +37,14 @@ fn main() {
 
     match cmd {
         "run" | "startup" => {
+            ensure_good_hostname();
             if let Err(e) = run_guided_startup(&config_path) {
                 eprintln!("FATAL: {}", e);
                 exit(2);
             }
         }
         "check" => {
+            ensure_good_hostname();
             if let Err(e) = run_one_shot_diagnostics(&config_path) {
                 eprintln!("ERROR: {}", e);
                 exit(2);
@@ -60,17 +68,282 @@ fn print_help() {
 Usage:
   nfs-klldap-startup run      Run the full guided 4-step waiting TUI until ready
   nfs-klldap-startup check    Run diagnostics once and exit
+
+Hostname behavior (standard since v0.4):
+  - The startup binary retrieves the real Docker *host* machine's hostname
+    (not the container ID) so it can derive the correct <short>-nfs.<domain> name.
+  - Supported: -e HOST_HOSTNAME=...   or   -v /etc/hostname:/etc/hostname:ro
+  - Explicit --hostname on docker run always bypasses the auto logic.
 "
     );
 }
 
+// -----------------------------------------------------------------------------
+// Auto hostname normalization (new standard behavior)
+// -----------------------------------------------------------------------------
+
+/// Ensure we are using a good, Kerberos-friendly hostname of the form
+/// <shortname>-nfs.<domain> derived from the *Docker host's* hostname.
+///
+/// This implements the requested standard "auto" behavior:
+///
+/// - If the user explicitly passed `--hostname` on `docker run`, Docker sets
+///   that value and it will contain a dot or otherwise look intentional.
+///   We detect this and leave it completely alone (explicit always wins).
+///
+/// - Otherwise (Docker assigned a default container-ID style hostname such as
+///   a 12-char hex string with no dot), we attempt to discover the real
+///   hostname of the machine the operator is logged into ("the Docker host")
+///   via:
+///     1. `HOST_HOSTNAME` environment variable (easiest):
+///        docker run -e HOST_HOSTNAME="$(hostname)" ...
+///     2. Bind-mounting the host's /etc/hostname (fully automatic discovery):
+///        -v /etc/hostname:/etc/hostname:ro
+///        The startup binary detects when the file content differs from the
+///        live container hostname and uses it as the real host name.
+///     3. Other conventional mount points (/host/hostname, etc.).
+///
+///   We then derive the `-nfs` variant using `suggested_nfs_hostname` and
+///   attempt to apply it with the `hostname` command.
+///
+/// Because the startup binary runs as root, it can also use privileged
+/// techniques (reading the host kernel hostname via /proc/1/root or
+/// executing the host's `hostname` binary) to discover the real machine
+/// name even when the distro has no /etc/hostname file at all.
+///
+/// Setting the hostname from inside the container requires CAP_SYS_ADMIN
+/// (or running the container with `--privileged`). If the set fails we emit
+/// precise, copy-pasteable instructions telling the user the exact value
+/// they should pass with `--hostname` on the next start.
+fn ensure_good_hostname() {
+    let current = current_hostname();
+
+    if !looks_like_docker_default_hostname(&current) {
+        // Looks like the user (or orchestration) provided an explicit --hostname.
+        // Explicit always takes precedence; do nothing.
+        return;
+    }
+
+    let host_base = discover_host_base_name();
+    if host_base.is_empty() {
+        // Keep the message short so it doesn't interleave with or pollute the TUI.
+        eprintln!("[HOSTNAME] Docker default hostname detected ({current}). No HOST_HOSTNAME or host /etc/hostname provided.");
+        eprintln!("           Pass -e HOST_HOSTNAME=\"$(hostname)\" (recommended) or --hostname <good-name> for Kerberos.");
+        eprintln!("           Continuing with current name; keytab must match exactly what you see in the banner below.");
+        eprintln!();
+        return;
+    }
+
+    let desired = suggested_nfs_hostname(&host_base);
+    if desired == current {
+        return;
+    }
+
+    println!("\n[HOSTNAME] Container has Docker default hostname ('{current}').");
+    println!("           Auto-deriving recommended name from host: {desired}");
+
+    // Attempt the set. This will succeed only with sufficient capability.
+    let status = Command::new("hostname").arg(&desired).status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("           [OK] Container hostname set to {desired}.");
+            // Keep $HOSTNAME in sync for anything that reads the variable later.
+            std::env::set_var("HOSTNAME", &desired);
+        }
+        _ => {
+            eprintln!("           [ACTION REQUIRED] Could not set hostname (no CAP_SYS_ADMIN).");
+            eprintln!("           Restart with explicit:  --hostname {desired}");
+            eprintln!("           Or the easy one-liner on the host:  --hostname \"$(hostname | sed 's/^\\([^.]*\\)/\\1-nfs/')\"");
+            eprintln!("           Continuing with current name '{current}'. Keytab must match it.");
+        }
+    }
+}
+
+/// Return the current hostname, preferring the kernel view then the env var.
+fn current_hostname() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|s| s.trim().to_string())
+        .ok()
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+// (looks_like_docker_default_hostname is now provided by the library)
+
+/// Discover the *Docker host's* real hostname (the machine running Docker,
+/// not this container).
+///
+/// The goal is for the startup binary to automatically retrieve the real
+/// host's hostname so it can derive the recommended <short>-nfs.<domain>
+/// name without the user always having to pass --hostname.
+///
+/// Detection order (first good candidate wins):
+/// 1. HOST_HOSTNAME environment variable (easiest explicit signal).
+/// 2. The file /etc/hostname when it has been bind-mounted from the host.
+/// 3. Common explicit mount points for the host hostname file.
+/// 4. Privileged root-based discovery (since we run as root during startup):
+///    - Read /proc/1/root/proc/sys/kernel/hostname (works on hosts without
+///      any /etc/hostname file at all — the hostname lives only in the kernel).
+///    - Execute the host's `hostname` binary via /proc/1/root (the method
+///      the user requested: "use root commands such as simply 'hostname'").
+///    - Fall back to nsenter if available on the host.
+///
+/// This tier allows fully automatic operation on privileged or semi-privileged
+/// containers without the operator having to pass any extra flags or mounts.
+fn discover_host_base_name() -> String {
+    // 1. Explicit env var — user is deliberately telling us the host name.
+    if let Ok(val) = std::env::var("HOST_HOSTNAME") {
+        let t = val.trim();
+        if !t.is_empty() && !looks_like_docker_default_hostname(t) {
+            return t.to_string();
+        }
+    }
+
+    // 2. The single most useful passive method:
+    //    User did: -v /etc/hostname:/etc/hostname:ro
+    //    Inside the container the *file* now contains the Docker host's real
+    //    hostname, while the live kernel hostname is still the container ID
+    //    (or whatever Docker assigned).
+    if let Ok(file_content) = std::fs::read_to_string("/etc/hostname") {
+        let t = file_content.trim();
+        let live = current_hostname();
+        if !t.is_empty()
+            && t != live
+            && !looks_like_docker_default_hostname(t)
+        {
+            return t.to_string();
+        }
+    }
+
+    // 3. Explicitly mounted copies at conventional locations.
+    //    Users who don't want to replace the container's /etc/hostname can use
+    //    one of these instead.
+    let candidates: [&str; 6] = [
+        "/host/hostname",
+        "/host/etc/hostname",
+        "/etc/hostname.host",
+        "/run/host/hostname",
+        "/mnt/host/hostname",
+        "/proc/1/root/etc/hostname", // privileged: view from the real host init ns
+    ];
+
+    for path in &candidates {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            let t = contents.trim();
+            if !t.is_empty() && !looks_like_docker_default_hostname(t) {
+                return t.to_string();
+            }
+        }
+    }
+
+    // 4. Privileged discovery using root access (we run as root during startup).
+    //    Many distros do not have /etc/hostname at all — the hostname lives
+    //    only in the kernel (UTS namespace). Since we are root, we can reach
+    //    into the host's namespace via /proc/1/root and run "hostname" or read
+    //    the kernel hostname file directly.
+    if let Some(hostname) = try_read_host_hostname_via_privileged_root() {
+        return hostname;
+    }
+
+    String::new()
+}
+
+/// When running as root (which the startup binary does), attempt to discover
+/// the real Docker host's hostname by reaching into the host's root filesystem
+/// via /proc/1/root.
+///
+/// This is the method of last resort for hosts that have no /etc/hostname file
+/// (very common on minimal, systemd-only, or appliance distros). The hostname
+/// is only maintained live in the kernel.
+///
+/// We try:
+/// - Reading the host's live kernel hostname directly
+/// - Executing the host's `hostname` binary (various common paths)
+///
+/// These only work when the container has sufficient privileges
+/// (typically --privileged or a combination of pid/host + CAP_SYS_ADMIN etc.).
+fn try_read_host_hostname_via_privileged_root() -> Option<String> {
+    // Method A: Read the host kernel's live hostname.
+    // This is the most universal and doesn't depend on any hostname package.
+    // On many systems without /etc/hostname, `hostname` command itself reads this.
+    if let Ok(contents) = std::fs::read_to_string("/proc/1/root/proc/sys/kernel/hostname") {
+        let t = contents.trim();
+        if !t.is_empty() && !looks_like_docker_default_hostname(t) {
+            return Some(t.to_string());
+        }
+    }
+
+    // Method B: Execute the host's "hostname" binary directly.
+    // We try the most common locations across distros.
+    let hostname_binaries: [&str; 4] = [
+        "/proc/1/root/bin/hostname",
+        "/proc/1/root/usr/bin/hostname",
+        "/proc/1/root/usr/local/bin/hostname",
+        "/proc/1/root/sbin/hostname",
+    ];
+
+    for bin in &hostname_binaries {
+        if !std::path::Path::new(bin).exists() {
+            continue;
+        }
+        if let Ok(output) = Command::new(bin).output() {
+            if output.status.success() {
+                let t = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !t.is_empty() && !looks_like_docker_default_hostname(&t) {
+                    return Some(t);
+                }
+            }
+        }
+    }
+
+    // Method C (optional extra): Try nsenter if it exists on the host.
+    // This can work even without full --privileged in some configurations.
+    let nsenter_paths: [&str; 2] = [
+        "/proc/1/root/usr/bin/nsenter",
+        "/proc/1/root/bin/nsenter",
+    ];
+
+    for nsenter in &nsenter_paths {
+        if std::path::Path::new(nsenter).exists() {
+            // Try to run: nsenter -t 1 -m -u hostname
+            if let Ok(output) = Command::new(nsenter)
+                .args(["-t", "1", "-m", "-u", "--", "hostname"])
+                .output()
+            {
+                if output.status.success() {
+                    let t = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !t.is_empty() && !looks_like_docker_default_hostname(&t) {
+                        return Some(t);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// The main guided startup loop. This is the Rust replacement for the big
 /// wait_for_valid_config + print_current_step_guidance dance in entrypoint.sh.
+///
+/// The 4 steps are:
+///   1. Persistent volume at $NFS_CONFIG (different device from container root)
+///   2. ldap_uri present + TCP reachable (must be DNS name, not IP)
+///   3. Bind DN + password present and ldapsearch succeeds
+///   4. At least one [[shares]] with a host_path that exists on the host
+///
+/// Steps are marked [x] as soon as they are satisfied (see is_step_complete).
 fn run_guided_startup(config_path: &Path) -> Result<(), ConfigError> {
     println!("\x1b[2J\x1b[H"); // Clear screen + home for the TUI
 
     loop {
-        print_header();
+        // Small delay to let recent writes to the bind-mounted config file become
+        // visible inside the container (some Docker storage drivers / filesystems
+        // have slight propagation delay on host -> container updates).
+        thread::sleep(Duration::from_millis(250));
+
+        print_header(config_path);
         let step = compute_current_step(config_path);
 
         print_step_status(&step);
@@ -96,7 +369,7 @@ enum StartupStep {
     Ready,
 }
 
-fn print_header() {
+fn print_header(config_path: &Path) {
     // Get hostname portably (no dependency on the 'hostname' binary)
     let effective_host = std::fs::read_to_string("/proc/sys/kernel/hostname")
         .map(|s| s.trim().to_string())
@@ -104,15 +377,70 @@ fn print_header() {
         .or_else(|| std::env::var("HOSTNAME").ok())
         .unwrap_or_else(|| "unknown".to_string());
 
+    // Best-effort realm derivation for the banner (works even if other config is missing).
+    // We only need ldap_uri to be parseable; we do NOT run full validation here.
+    let realm_display = attempt_realm_for_display(config_path)
+        .unwrap_or_else(|| "YOUR.REALM (set ldap_uri to auto-derive)".to_string());
+
+    // Build a friendly hostname line for the banner.
+    // Never suggest mangling a Docker container-ID (e.g. "3c896c1c2e24-nfs").
+    // Only offer the "(recommended: ...)" hint when we have a plausible real host name.
+    let host_line = if looks_like_docker_default_hostname(&effective_host) {
+        format!("{}   (Docker default — pass -e HOST_HOSTNAME or --hostname)", effective_host)
+    } else {
+        let suggested = suggested_nfs_hostname(&effective_host);
+        if suggested != effective_host {
+            format!("{}   (recommended: {})", effective_host, suggested)
+        } else {
+            effective_host.clone()
+        }
+    };
+
     println!("╔══════════════════════════════════════════════════════════════════════════════╗");
     println!("║  nfs-klldap-host — FIRST RUN SETUP (Step-by-Step)  [Rust guided mode]        ║");
     println!("╠══════════════════════════════════════════════════════════════════════════════╣");
-    println!("║  Container hostname: {:<55} ║", effective_host);
-    println!("║  Keytab must contain: nfs/{:<50} ║", format!("{}@YOUR.REALM", effective_host));
+    println!("║  Container hostname: {:<55} ║", host_line);
+
+    // The keytab line must never advertise a container-ID principal.
+    let keytab_line = if looks_like_docker_default_hostname(&effective_host) {
+        "nfs/<realhost>-nfs.<domain>@REALM   (pass -e HOST_HOSTNAME or --hostname)".to_string()
+    } else {
+        format!("{}@{}", effective_host, realm_display)
+    };
+    println!("║  Keytab must contain: nfs/{:<50} ║", keytab_line);
     println!("║                                                                              ║");
     println!("║  The container is WAITING. It will auto-start services when these steps      ║");
     println!("║  are complete (no manual restart needed).                                    ║");
     println!("╚══════════════════════════════════════════════════════════════════════════════╝\n");
+}
+
+/// Tolerantly extract ldap_uri from the config file (even if incomplete) and
+/// derive a realm for display in the startup banner. Does not require full
+/// validation or bind credentials.
+fn attempt_realm_for_display(config_path: &Path) -> Option<String> {
+    if !config_path.exists() {
+        return None;
+    }
+    let contents = std::fs::read_to_string(config_path).ok()?;
+    // Very small tolerant parse: look for ldap_uri = "..." or ldap_uri = '...'
+    for line in contents.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("ldap_uri") {
+            // Accept optional whitespace, =, and optional quotes
+            if let Some(eq_pos) = rest.find('=') {
+                let val = rest[eq_pos + 1..].trim().trim_matches(|c| c == '"' || c == '\'');
+                if !val.is_empty() && (val.starts_with("ldap://") || val.starts_with("ldaps://")) {
+                    if let Some(r) = derive_realm_from_uri(val) {
+                        // Never surface the placeholder as a success
+                        if !r.eq_ignore_ascii_case("EXAMPLE.COM") && !r.eq_ignore_ascii_case("EXAMPLE") {
+                            return Some(r);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn print_step_status(current: &StartupStep) {
@@ -129,21 +457,32 @@ fn print_step_status(current: &StartupStep) {
             // Print extra guidance for the current step
             print_current_step_guidance(current);
         } else if is_step_complete(step, current) {
-            println!("  [OK] {}  {}", label, desc);
+            println!("  [x] {}  {}", label, desc);
         } else {
             println!("  [  ] {}  {}", label, desc);
         }
     }
 }
 
+/// Returns true if `step` has been completed given that we are now at `current`.
+/// Ordering: WaitForPersistentVolume < SetLdapUri < AddBindCredentials < AddShares < Ready
 fn is_step_complete(step: &StartupStep, current: &StartupStep) -> bool {
-    // Simple ordering: everything before the current step is considered complete
+    if *step == *current {
+        return false;
+    }
+    // Ready means everything before it is done
+    if *current == StartupStep::Ready {
+        return true;
+    }
     match (step, current) {
-        (StartupStep::WaitForPersistentVolume, _) => false,
-        (StartupStep::SetLdapUri, StartupStep::WaitForPersistentVolume) => false,
-        (StartupStep::AddBindCredentials, StartupStep::WaitForPersistentVolume | StartupStep::SetLdapUri) => false,
-        (StartupStep::AddShares, StartupStep::WaitForPersistentVolume | StartupStep::SetLdapUri | StartupStep::AddBindCredentials) => false,
-        _ => true,
+        // Step 1 is complete once we are past it
+        (StartupStep::WaitForPersistentVolume, StartupStep::SetLdapUri | StartupStep::AddBindCredentials | StartupStep::AddShares) => true,
+        // Step 2 is complete once we are past it
+        (StartupStep::SetLdapUri, StartupStep::AddBindCredentials | StartupStep::AddShares) => true,
+        // Step 3 is complete once we are past it
+        (StartupStep::AddBindCredentials, StartupStep::AddShares) => true,
+        // Step 4 is only complete when we reach Ready (handled above)
+        _ => false,
     }
 }
 
@@ -396,8 +735,13 @@ fn print_keytab_hostname_alignment() {
     if kt_hosts.iter().any(|h| h == &current_host) {
         println!("             (hostname and keytab: aligned)   hostname={}   keytab={}", current_host, kt_str);
     } else {
+        let suggested = suggested_nfs_hostname(&current_host);
         println!("             WARNING: (hostname and keytab: mismatch! change hostname or recreate keytab)");
         println!("                      Container hostname : {}", current_host);
+        if suggested != current_host {
+            println!("                      Recommended hostname for this host: {}", suggested);
+            println!("                      (Use --hostname {} when starting the container)", suggested);
+        }
         println!("                      nfs/ principals in keytab : {}", kt_str);
         println!("                      Services will continue to start.");
         println!("                      See the web UI (System Settings page) for current status and remediation steps.");

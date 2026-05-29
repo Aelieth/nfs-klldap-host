@@ -6,10 +6,14 @@
 //!
 //! Core responsibilities:
 //! - Parse + validate the single source-of-truth config
-//! - Smart auto-derivation (realm, ports, bases, paths)
+//! - Smart auto-derivation (realm from ldap_uri, ports, bases, paths)
 //! - Generate sssd.conf, krb5.conf, ganesha.conf + per-share EXPORT fragments
 //! - First-run safe default template (never overwrites)
 //! - Dup share name detection (short, unique NFS paths)
+//!
+//! Public helpers for the guided startup binary and host tooling:
+//! - `derive_realm_from_uri`
+//! - `suggested_nfs_hostname` (insertion pattern: host → host-nfs.domain)
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -417,7 +421,10 @@ pub fn load_host_paths_only(path: &Path) -> Result<Vec<PathBuf>, ConfigError> {
         .collect())
 }
 
-fn derive_realm_from_uri(uri: &str) -> Option<String> {
+/// Attempt to derive a Kerberos realm from an ldap/ldaps URI.
+/// Used by both the generator and the guided startup TUI for display purposes.
+/// Example: ldaps://kllap.example.com:6360 → "EXAMPLE.COM"
+pub fn derive_realm_from_uri(uri: &str) -> Option<String> {
     // ldaps://kllap.example.com:6360 → EXAMPLE.COM
     // ldaps://sub.host.example.co.uk:636 → EXAMPLE.CO.UK (current behavior)
     let host = extract_host_from_uri(uri);
@@ -455,9 +462,10 @@ ldap_uri = "ldaps://kllap.example.com:6360"
 container_root = "/export"
 
 [server]
-# hostname = "yourhost-nfs"   # Optional override. The actual container hostname
-#                             # (set via --hostname at docker run time) must match
-#                             # the NFS principal in your keytab.
+# hostname = "yourhost-nfs"   # Optional override only. The modern standard is to
+#                             # pass -e HOST_HOSTNAME="$(hostname)" on docker run;
+#                             # nfs-klldap-startup will auto-derive the -nfs form.
+#                             # Explicit --hostname always bypasses the auto logic.
 
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
@@ -705,6 +713,60 @@ pub fn extract_host_from_uri(uri: &str) -> String {
         .next()
         .unwrap_or("localhost")
         .to_string()
+}
+
+/// Compute the recommended container hostname for Kerberized NFS.
+///
+/// The container hostname must match the `nfs/<hostname>@REALM` principal in the keytab.
+/// Because Docker's `--hostname` is used for both the system hostname and Kerberos
+/// principal derivation, we need a stable, DNS-resolvable name.
+///
+/// Recommended convention: take the host's short name and insert "-nfs" before the
+/// first dot (or append if there is no dot).
+///
+/// Examples:
+/// - "aurora.satomlin.com" → "aurora-nfs.satomlin.com"
+/// - "myserver"            → "myserver-nfs"
+/// - "foo.bar.baz.co.uk"   → "foo-nfs.bar.baz.co.uk"
+///
+/// This is the value users should pass to `--hostname` (or compose `hostname:`).
+pub fn suggested_nfs_hostname(host: &str) -> String {
+    let h = host.trim();
+    if h.is_empty() || h == "." {
+        return "nfs-server".to_string();
+    }
+    // Remove any leading/trailing dots for safety
+    let h = h.trim_matches('.');
+    if h.is_empty() {
+        return "nfs-server".to_string();
+    }
+    if let Some((first, rest)) = h.split_once('.') {
+        if first.is_empty() {
+            // Should not happen after trim, but be defensive
+            format!("{}-nfs", h)
+        } else {
+            format!("{}-nfs.{}", first, rest)
+        }
+    } else {
+        // No dot: simple hostname, just append
+        format!("{}-nfs", h)
+    }
+}
+
+/// Returns true if the string looks like a Docker auto-assigned default hostname
+/// (the short container ID). These are 8-20 lowercase hex digits with no dot.
+/// When we see one, we know the user did not pass --hostname and we should
+/// attempt auto-derivation via HOST_HOSTNAME or a mounted host /etc/hostname.
+pub fn looks_like_docker_default_hostname(h: &str) -> bool {
+    let h = h.trim();
+    if h.contains('.') {
+        return false;
+    }
+    let len = h.len();
+    if !(8..=20).contains(&len) {
+        return false;
+    }
+    h.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Returns true if the host portion (from ldap_uri) is a literal IP address (v4 or v6).
@@ -1012,5 +1074,54 @@ mod tests {
         let hmsg = ch.validate_and_derive().unwrap_err().to_string();
         assert!(!hmsg.contains("IP addresses are not supported"));
         assert!(hmsg.contains("kerberos.realm is required"));
+    }
+
+    #[test]
+    fn suggested_nfs_hostname_inserts_before_first_dot() {
+        // Primary use case from the bug report
+        assert_eq!(
+            suggested_nfs_hostname("aurora.satomlin.com"),
+            "aurora-nfs.satomlin.com"
+        );
+        // Multi-label
+        assert_eq!(
+            suggested_nfs_hostname("foo.bar.baz.co.uk"),
+            "foo-nfs.bar.baz.co.uk"
+        );
+        // No dot → append
+        assert_eq!(suggested_nfs_hostname("myserver"), "myserver-nfs");
+        // Already has -nfs (idempotent-ish, we still transform the first label)
+        assert_eq!(
+            suggested_nfs_hostname("aurora-nfs.satomlin.com"),
+            "aurora-nfs-nfs.satomlin.com"
+        );
+        // Empty / degenerate
+        assert_eq!(suggested_nfs_hostname(""), "nfs-server");
+        assert_eq!(suggested_nfs_hostname("."), "nfs-server");
+        assert_eq!(suggested_nfs_hostname(".."), "nfs-server");
+    }
+
+    #[test]
+    fn docker_default_hostname_detection() {
+        assert!(looks_like_docker_default_hostname("3c896c1c2e24"));
+        assert!(looks_like_docker_default_hostname("a1b2c3d4e5f6"));
+        assert!(looks_like_docker_default_hostname("0123456789abcdef"));
+        assert!(!looks_like_docker_default_hostname("myhost.example.com"));
+        assert!(!looks_like_docker_default_hostname("myhost"));
+        assert!(!looks_like_docker_default_hostname("abc")); // too short
+        assert!(!looks_like_docker_default_hostname("3c896c1c2e24-nfs"));
+    }
+
+    #[test]
+    fn derive_realm_from_uri_is_public_and_works() {
+        assert_eq!(
+            derive_realm_from_uri("ldaps://kllap.example.com:6360"),
+            Some("EXAMPLE.COM".into())
+        );
+        assert_eq!(
+            derive_realm_from_uri("ldap://sub.host.satomlin.local"),
+            Some("HOST.SATOMLIN.LOCAL".into())
+        );
+        assert_eq!(derive_realm_from_uri(""), None);
     }
 }

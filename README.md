@@ -43,7 +43,8 @@ Host (any Linux — no kernel NFS needed)
 └── keytab (nfs/<hostname>@REALM)
 
 Container (AlmaLinux 10)
-├── entrypoint.sh                      (minimal supervisor)
+├── entrypoint.sh                      (minimal supervisor + gosu launcher)
+├── nfs-klldap-startup (Rust)          (guided 4-step TUI, reachability tests, realm/hostname guidance)
 ├── nfs-klldap-config (Rust binary)    (parses TOML → generates sssd.conf, krb5.conf, Ganesha fragments)
 ├── NFS-Ganesha (ganesha.nfsd)         (the actual NFSv4 + Kerberos server)
 ├── SSSD                               (provides POSIX IDs from KLLDAP)
@@ -85,13 +86,17 @@ See `make help` for all targets.
 
 See [management/examples/sudoers.example](management/examples/sudoers.example) for recommended sudoers configuration.
 
-## What's New in v0.33
+## What's New in v0.4
 
-- Comprehensive test coverage for `FsManager` (using real temporary filesystems) and key Axum handlers.
-- Production-grade `Makefile` with cross-compilation for host tools and multi-platform Docker builds (`linux/amd64/v2` + `linux/arm64`).
-- All handwritten `unsafe` removed from host-side privileged code (permission changes now delegated to the container).
-- Strict formatting + clippy enforcement (`-D warnings`).
-- Helpful entrypoint.sh with instructions to guide users with basic diagnostic information
+- Major migration: the 4-step guided first-run experience, reachability tests, banner,
+  and runtime diagnostics have moved from `entrypoint.sh` into the Rust binary
+  `nfs-klldap-startup` (part of the `nfs-klldap-config` crate).
+- Realm is now shown in the startup banner via best-effort derivation from `ldap_uri`.
+- Hostname guidance now recommends the DNS-friendly insertion pattern
+  (`aurora.satomlin.com` → `aurora-nfs.satomlin.com`) and the TUI suggests the correct name.
+- Step progress in the guided TUI now correctly marks completed steps with `[x]`.
+- Documentation (READMEs, architecture docs, compose examples) updated for the new
+  startup flow and hostname convention.
 
 See [TESTING.md](TESTING.md) and the root `Makefile` for details.
 
@@ -106,8 +111,9 @@ See [TESTING.md](TESTING.md) for the current testing strategy, how to run tests,
 ```bash
 docker run -d \
   --name nfs-klldap \
-  --hostname "$(hostname)-nfs" \
+  -e HOST_HOSTNAME="$(hostname)" \
   -p 2049:2049/tcp -p 2049:2049/udp \
+  -v /etc/hostname:/etc/hostname:ro \
   -v /path/to/nfs-config:/config \
   -v /secure/location/krb5.keytab:/etc/krb5.keytab:ro \
   -v /media/data:/export \
@@ -146,7 +152,7 @@ ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
 ldap_default_authtok = "your-password"
 
 [server]
-# hostname = "examplehost-nfs"          # optional override (must match the container's --hostname)
+# hostname = "examplehost-nfs"          # optional override (modern standard is -e HOST_HOSTNAME on docker run; startup auto-derives the -nfs name)
 
 [kerberos]
 # realm = "KRB.EXAMPLE.COM"             # required if auto-derivation from ldap_uri fails (or use NFS_REALM env)
@@ -178,11 +184,29 @@ The Rust binary handles all derivation and generation from this single file.
 ## Prerequisites
 
 - Time synchronization (Kerberos requirement)
-- You **must** start the container with an explicit hostname that matches your keytab, e.g.:
+- The container must end up with a stable, DNS-resolvable hostname that matches the NFS principal in your keytab (`nfs/<name>@REALM`).
+  **Standard automatic retrieval of the host's hostname (the machine running Docker):**
+
+The `nfs-klldap-startup` binary (running as root during startup) automatically retrieves the real hostname of the Docker *host machine* (not the container's assigned ID) and derives the recommended `<short>-nfs.<domain>` form for Kerberos.
+
+Because it runs as root, it can use privileged root commands to discover the host name even when the distro has no `/etc/hostname` file at all (the hostname lives only in the kernel on many systems):
+
+- Environment variable (lightest explicit method):
   ```bash
-  --hostname "$(hostname)-nfs"
+  -e HOST_HOSTNAME="$(hostname)"
   ```
-  The container will **not** auto-derive this. The value must match the NFS principal in your keytab (`nfs/<chosen-hostname>@REALM`).
+
+- Bind mount:
+  ```bash
+  -v /etc/hostname:/etc/hostname:ro
+  ```
+
+- **Privileged root discovery (often zero extra flags needed):**
+  The binary will try to read the host's live kernel hostname (`/proc/1/root/proc/sys/kernel/hostname`) or directly execute the real host's `hostname` command via paths under `/proc/1/root`. This is the method that works on minimal distros that do not ship an `/etc/hostname` file.
+
+Explicit `--hostname` always bypasses the auto logic completely.
+
+Explicit `--hostname` on the docker command line always wins and disables the auto logic.
 - Keytab with the matching principal (mode 600, readable by the container)
 - Attached/media drives for exported data (system paths like `/srv/nfs` are not recommended)
 - Docker / Podman
@@ -218,12 +242,14 @@ ls -l /mnt/test
 
 ```
 nfs-klldap-host/
-├── entrypoint.sh                 # Minimal supervisor (delegates TOML work to Rust binary)
+├── entrypoint.sh                      # Minimal supervisor (delegates to Rust binaries)
 ├── Dockerfile
 ├── management/
-│   ├── nfs-klldap-config/        # Rust binary that generates sssd.conf, krb5.conf, Ganesha fragments
-│   └── src/                      # Host UI (Axum + HTMX)
-├── nfs-klldap.conf               # Single source of truth (user-editable TOML)
+│   ├── nfs-klldap-config/             # Bundled in container:
+│   │   ├── src/bin/nfs_klldap_startup.rs  # Guided first-run TUI + diagnostics
+│   │   └── src/lib.rs                     # TOML loader + generator + derivation helpers
+│   └── src/                           # Host UI (Axum + HTMX)
+├── nfs-klldap.conf                    # Single source of truth (user-editable TOML)
 └── README.md
 ```
 

@@ -43,19 +43,29 @@ services:
     # Optional but recommended for some environments:
     # privileged: true
 
-    # IMPORTANT: The container hostname must exactly match the NFS principal in your keytab.
-    # Recommended pattern on the host:
-    #   hostname: "$(hostname)-nfs"
+    # The startup binary (nfs-klldap-startup) runs as root and automatically
+    # retrieves the real hostname of the Docker *host machine* using privileged
+    # root commands (reading the host kernel hostname or executing the host's
+    # "hostname" binary via /proc/1/root). This works even on distros that have
+    # no /etc/hostname file at all.
     #
-    # When using docker-compose you usually set it explicitly or via an .env file, e.g.:
-    #   hostname: ${HOSTNAME}-nfs
-    hostname: myhost-nfs               # Must match the principal: nfs/myhost-nfs@YOUR.REALM
+    # Explicit `hostname:` (or --hostname) always bypasses auto discovery.
+    environment:
+      - HOST_HOSTNAME=${HOST_HOSTNAME:-}   # optional explicit hint
+
+    # hostname: myhost-nfs               # Only set if you want to force a specific value (bypasses auto)
 
     # Do not set "user: nfs" at the service level. The entrypoint runs as root
     # to perform setup (config generation, etc.) and then uses gosu to drop to
     # the unprivileged nfs user for sssd / ganesha / watcher.
 
     volumes:
+      # ---------------------------------------------------------------------
+      # Optional but recommended for fully automatic host hostname discovery
+      # by the startup binary (no HOST_HOSTNAME env var needed):
+      # - /etc/hostname:/etc/hostname:ro
+      # ---------------------------------------------------------------------
+
       # ---------------------------------------------------------------------
       # Storage (the only data volume in the new minimal model)
       # Mount whatever media drives you want under /export inside the container.

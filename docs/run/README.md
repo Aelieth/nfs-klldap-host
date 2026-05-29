@@ -7,7 +7,7 @@ This document focuses on day-to-day container invocation after the v0.3+ central
 ```bash
 docker run -d \
   --name nfs-klldap \
-  --hostname "$(hostname)-nfs" \
+  -e HOST_HOSTNAME="$(hostname)" \
   --user nfs \
   --cap-add CHOWN \
   --cap-add FOWNER \
@@ -59,15 +59,47 @@ See the top-level [examples/docker-compose.yml](../examples/docker-compose.yml).
 services:
   nfs-kerb:
     # ... build/image ...
-    hostname: myhost-nfs     # Must match the NFS principal in your keytab: nfs/myhost-nfs@REALM
+    # The startup binary can automatically retrieve the real Docker host hostname.
+    # Preferred methods (pick one):
+    environment:
+      - HOST_HOSTNAME=${HOST_HOSTNAME:-}     # export HOST_HOSTNAME=$(hostname) on the host
+    # volumes:
+    #   - /etc/hostname:/etc/hostname:ro     # alternative: lets startup discover it passively
     # Do NOT set "user: nfs" here — the entrypoint needs root for setup and will
     # use gosu to drop to the unprivileged user for the actual daemons.
-    environment:
-      - NFS_REALM=KRB.EXAMPLE.COM   # only needed if your ldap_uri won't auto-derive cleanly
     # cap_add, volumes, etc. as before
+
+    # hostname: myhost-nfs   # Only add this if you want to force a specific name (disables auto)
 ```
 
-**Note:** The container no longer attempts any automatic hostname adjustment. You are responsible for setting `--hostname` (or the compose `hostname:` field) to the exact value that exists in your keytab.
+**Standard automatic retrieval of the Docker host's hostname (v0.4+)**
+
+The `nfs-klldap-startup` binary is responsible for retrieving the **real hostname of the machine running Docker**, not the container's Docker-assigned ID (e.g. `3c896c1c2e24`).
+
+Because the startup binary runs as root, it can use privileged root-level commands to discover the host name automatically in several ways:
+
+1. Environment variable (lightest):
+   ```bash
+   -e HOST_HOSTNAME="$(hostname)"
+   ```
+
+2. Bind mount of the host's hostname file (the code detects this automatically):
+   ```bash
+   -v /etc/hostname:/etc/hostname:ro
+   ```
+
+3. **Privileged root discovery (the most automatic method)**:
+   On many Linux distributions (especially minimal, appliance, or modern systemd-only systems) there is no `/etc/hostname` file at all — the hostname exists only as the live kernel value.
+   Since the startup runs as root, it will attempt to:
+   - Read the host's real kernel hostname via `/proc/1/root/proc/sys/kernel/hostname`
+   - Execute the actual host's `hostname` command by running the host's binary under `/proc/1/root` (e.g. `/proc/1/root/usr/bin/hostname`)
+   - Fall back to `nsenter` into the host if available
+
+   This often lets you start the container with almost no extra flags and still get the correct `yourhost-nfs.yourdomain` name for Kerberos.
+
+Explicit `--hostname` (or compose `hostname:`) always completely bypasses all auto-discovery logic.
+
+If the container cannot set its own hostname (lacking `CAP_SYS_ADMIN`), the TUI will print the exact `--hostname` value you need to use on the next start.
 
 ## Privilege Model (Root for Setup, Drop to nfs for Daemons)
 

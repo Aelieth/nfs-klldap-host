@@ -39,21 +39,21 @@ die() {
 }
 
 # -----------------------------------------------------------------------------
-# All guided setup, reachability tests (test_ldap_*, test_share_path, etc.),
-# persistent volume detection, and permission/keytab diagnostics have been
-# moved into the Rust binary `nfs-klldap-startup`.
+# All guided setup (4-step TUI), reachability tests, persistent volume detection,
+# realm derivation display, hostname suggestions, and permission/keytab diagnostics
+# have been moved into the Rust binary `nfs-klldap-startup`.
 #
 # The shell is now a minimal launcher + daemon supervisor using gosu.
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
-# NOTE: The entire 4-step guided setup, reachability tests, banner, waiting
-# loop, and runtime permission/keytab/hostname diagnostics have been moved
-# into the Rust binary `nfs-klldap-startup`.
+# NOTE: The entire 4-step guided setup TUI, reachability tests, banner (with
+# auto-derived realm), waiting loop, hostname suggestion logic, and runtime
+# permission/keytab/hostname diagnostics now live in the Rust binary
+# `nfs-klldap-startup` (built from nfs-klldap-config crate).
 #
-# The old shell implementations (print_*, test_*, check_*, wait_for_*) have
-# been removed to slim the entrypoint. Only the thin orchestration + gosu
-# daemon startup remains here.
+# The old shell implementations have been removed. Only thin orchestration
+# + gosu daemon startup remains here.
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
@@ -106,9 +106,9 @@ trap 'handle_sighup' SIGHUP
 main() {
     log "=== Starting nfs-klldap-host (v0.3+ guided setup) ==="
 
-    # Hostname reporting and guidance has been moved into the Rust startup binary
-    # (`nfs-klldap-startup run`) so it is part of the guided first-run TUI.
-    # This keeps entrypoint.sh as a thin launcher.
+    # Hostname auto-normalization (HOST_HOSTNAME env → <short>-nfs.<rest> when Docker
+    # gave us a default container ID) plus all guidance now lives in the Rust
+    # `nfs-klldap-startup` binary. entrypoint.sh remains a thin launcher.
 
     ensure_config_binary
 

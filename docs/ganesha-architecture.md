@@ -24,8 +24,7 @@ NFS-Ganesha (user-space) is the production-grade solution that delivers:
 Host (no kernel NFS modules required anywhere)
 ├── Real data directories          (/media/SSD-01/*, /mnt/disk*/* — attached drives only)
 │   └── Numeric uid/gid ownership must match LLDAP uidNumber/gidNumber
-├── ganesha-exports.d/             (native Ganesha EXPORT {} blocks)
-├── templates/                     (sssd.conf.template, krb5.conf.template, ganesha.conf.template)
+├── nfs-klldap.conf                (single source of truth TOML — edited via UI or by hand)
 ├── secrets/krb5.keytab            (nfs/<hostname>@REALM, mode 600)
 └── management/ (Rust web UI)      (Axum + HTMX)
     ├── Talks to LLDAP (GraphQL) for live user/group → uid/gid
@@ -51,7 +50,7 @@ The management tool (host) and container work together with a **single source of
 - **No kernel NFS** anywhere.
 - **Central `nfs-klldap.conf`** (TOML) is the *only* file users normally edit.
 - **Rust generator** (`nfs-klldap-config`) is the single place that understands the schema and produces `sssd.conf`, `krb5.conf`, and Ganesha `EXPORT` fragments.
-- **No host-side exports.d or templates bind mount** in the normal deployment model.
+- **No host-side exports.d or templates bind mount** in the normal deployment model (everything is generated from the single `nfs-klldap.conf`).
 - **Self-contained reload**: container watches the config file (or reacts to SIGHUP) and regenerates + reloads Ganesha.
 - **Strong separation**: host UI never runs privileged code directly. It validates paths and then asks the container (via `docker exec`) to perform `chown`/`chmod` on the bind-mounted data using the container's capabilities.
 

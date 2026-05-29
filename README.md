@@ -32,33 +32,40 @@ This gives you **maximum simplicity with full power** — minimal volumes, no te
 
 ---
 
-## How It Works (Architecture)
+## How It Works (The Core Model)
 
-```
-Host (any Linux — no kernel NFS needed)
-├── /media/SSD-01/...                  (real data on attached drives)
-├── nfs-klldap.conf                    (single TOML config — the only file you edit)
-├── management/ (Rust UI)
-│   └── nfs-klldap-ui                  (edits config; asks the container to perform chown/chmod on exported data)
-└── keytab (nfs/<hostname>@REALM)
+This system is built around **one simple idea**:
 
-Container (AlmaLinux 10)
-├── entrypoint.sh                      (minimal supervisor + gosu launcher)
-├── nfs-klldap-startup (Rust)          (guided 4-step TUI, reachability tests, realm/hostname guidance)
-├── nfs-klldap-config (Rust binary)    (parses TOML → generates sssd.conf, krb5.conf, Ganesha fragments)
-├── NFS-Ganesha (ganesha.nfsd)         (the actual NFSv4 + Kerberos server)
-├── SSSD                               (provides POSIX IDs from KLLDAP)
-└── Generated configs (internal only):
-    ├── /etc/sssd/sssd.conf
-    ├── /etc/krb5.conf
-    └── /etc/ganesha/exports.d/*.conf
-```
+> A single TOML file (`nfs-klldap.conf`) is the only thing you edit.  
+> Everything else — SSSD config, Kerberos config, Ganesha exports, and permission management — is automatically derived and kept in sync.
 
-**Flow:**
-1. You edit `nfs-klldap.conf` (via UI or by hand)
-2. The Rust binary detects the change and regenerates all downstream configs
-3. Ganesha and SSSD reload automatically
-4. Permissions (chown/chmod) on exported data are performed by the container when requested by the host UI via `docker exec`
+### Why This Design?
+
+- **Simplicity**: No templates, no multiple config files, no manual sssd.conf editing.
+- **Safety**: The container stays unprivileged. Permission changes (`chown`/`chmod`) are requested by the host web UI and executed inside the container via `docker exec`.
+- **Correctness**: `host_path` (real location on your host) is separated from the container path Ganesha actually serves. This allows the web UI to manage real host permissions while Ganesha only sees bind-mounted paths.
+- **Flexibility**: You control bind mounts. The config just tells the system *where* the data lives on the host.
+
+### The Flow (Step by Step)
+
+1. **You edit** `nfs-klldap.conf` (via the web UI or by hand)
+2. **Rust binary** (`nfs-klldap-config`) detects the change and regenerates:
+   - `/etc/sssd/sssd.conf`
+   - `/etc/krb5.conf`
+   - Ganesha export fragments
+3. **Ganesha + SSSD** automatically reload
+4. **Web UI** (on the host) can request `chown`/`chmod` on the real `host_path` directories via the container's privileged helper
+
+### Key Concepts
+
+| Concept          | What It Is                                                                 | Who Uses It                  |
+|------------------|----------------------------------------------------------------------------|------------------------------|
+| `host_path`      | Real absolute path on your Docker **host**                                 | Web UI + permission helper   |
+| Bind mount (`-v`)| Makes host data visible inside the container at `/export/{name}`           | You (when starting container)|
+| `export_path`    | Path NFS clients see (defaults to `/<name>`)                               | NFS clients + Ganesha        |
+| `container_root` | Base inside container (default `/export`)                                  | Ganesha only                 |
+
+This separation is what allows powerful host-side management while keeping the container simple and secure.
 
 ---
 
@@ -86,18 +93,6 @@ See `make help` for all targets.
 
 See [management/examples/sudoers.example](management/examples/sudoers.example) for recommended sudoers configuration.
 
-## What's New in v0.4
-
-- Major migration: the 4-step guided first-run experience, reachability tests, banner,
-  and runtime diagnostics have moved from `entrypoint.sh` into the Rust binary
-  `nfs-klldap-startup` (part of the `nfs-klldap-config` crate).
-- Realm is now shown in the startup banner via best-effort derivation from `ldap_uri`.
-- Hostname guidance now recommends the DNS-friendly insertion pattern
-  (`testpc.example.com` → `testpc-nfs.example.com`) and the TUI suggests the correct name.
-- Step progress in the guided TUI now correctly marks completed steps with `[√]`.
-- Documentation (READMEs, architecture docs, compose examples) updated for the new
-  startup flow and hostname convention.
-
 See [TESTING.md](TESTING.md) and the root `Makefile` for details.
 
 ## Testing & Documentation
@@ -112,10 +107,9 @@ See [TESTING.md](TESTING.md) for the current testing strategy, how to run tests,
 docker run -d \
   --name nfs-klldap \
   --uts=host \
-  -p 2049:2049/tcp -p 2049:2049/udp \
-  -v /path/to/nfs-config:/config \
-  -v /secure/location/krb5.keytab:/etc/krb5.keytab:ro \
-  -v /media/data:/export \
+  -v /path/to/nfs-config:/config \                          #host path where you want the nfs-confg.conf to be saved / edited
+  -v /secure/location/krb5.keytab:/etc/krb5.keytab:ro \     #host path where you want to securely store the krb5.keytab
+  -v /media/data:/export/sharename \                        #host path for nfs shares - top level with shares under it, or add multiple mounts and shares
   ghcr.io/aelieth/nfs-klldap-host:latest
 ```
 
@@ -124,13 +118,6 @@ docker run -d \
 See [docs/run/README.md](docs/run/README.md) for practical examples (including the non-root `nfs` user, required capabilities, realm enforcement, and docker-compose patterns).
 
 ---
-
-## Management UI (Host-side)
-
-```bash
-cd management
-cargo run --bin management -- --config /path/to/your/config/nfs-klldap.conf
-```
 
 **Two pages:**
 - **System Settings** (`/settings`) — edit the central TOML (raw editor + structured form)
@@ -158,20 +145,12 @@ ldap_default_authtok = "your-password"
 # default_security = "krb5p"            # krb5p | krb5i | krb5   (per-share override possible)
 
 [[shares]]
-name = "project-alpha"
-host_path = "/export/project-alpha"
-export_path = "/project-alpha"
-security = "krb5p"
-rw = true
-squash = "no_root_squash"
+name = "sharename"
+host_path = "/media/data"
 
-[[shares]]
-name = "backups"
-host_path = "/export/backups"
-export_path = "/backups"
-security = "krb5i"
-rw = false
-squash = "root_squash"
+#[[shares]]
+#name = "backups"
+#host_path = "/export/backups"
 ```
 
 The Rust binary handles all derivation and generation from this single file.
@@ -182,8 +161,8 @@ The Rust binary handles all derivation and generation from this single file.
 
 - Time synchronization (Kerberos requirement)
 - **Recommended:** Use `--uts=host` when starting the container.  
-  The container will share the Docker host's UTS namespace, so the hostname inside the container will be the real hostname of the machine running Docker (e.g. `aurora.satomlin.com`).  
-  The guided startup TUI will automatically show you the correct Kerberos principal you need in your keytab using the `-nfs` insertion pattern (`nfs/aurora-nfs.satomlin.com@REALM`).
+  The container will share the Docker host's UTS namespace, so the hostname inside the container will be the real hostname of the machine running Docker (e.g. `testpc.example.com`).  
+  The guided startup TUI will automatically show you the correct Kerberos principal you need in your keytab using the `-nfs` insertion pattern (`nfs/testpc-nfs.example.com@EXAMPLE.COM`).
 
 - You can still pass `--hostname your-chosen-name` if you want the container to use a completely different hostname (this takes precedence).
 

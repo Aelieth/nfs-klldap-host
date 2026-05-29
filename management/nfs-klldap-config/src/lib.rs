@@ -490,21 +490,38 @@ lldap_graphql_url = "https://kllap.example.com:6360/api/graphql"
 
 # =============================================================================
 # Shares — add as many as you need. Names must be unique.
-# NFS path will be short and clean: /<name>
+# =============================================================================
+#
+# IMPORTANT:
+#   host_path  = The REAL absolute path on your Docker HOST machine.
+#                This is used by the web UI and privileged helper for permissions
+#                (chown/chmod). Ganesha does NOT use this value.
+#
+#   You MUST still provide a bind mount when starting the container so the data
+#   becomes visible inside at the expected path (/export/{name} by default).
+#
+# Recommended patterns:
+#
+#   1. Mount parent directory (cleanest):
+#      -v /home/user/nfs-data:/export
+#
+#      Then in config:
+#      host_path = "/home/user/nfs-data/movies"
+#
+#   2. Mount specific directories:
+#      -v /home/user/nfs-data/movies:/export/movies
+#      host_path = "/home/user/nfs-data/movies"
+#
+# The NFS client will see short clean paths like /movies (not /export/movies).
 # =============================================================================
 
 # [[shares]]
 # name = "movies"
-# host_path = "/media/SSD-01/movies"   # absolute on the Docker *host*
-# # export_path = "/movies"            # defaults to / + name (recommended)
-# security = "krb5p"
-# rw = true
-# squash = "no_root_squash"
-
+# host_path = "/home/user/nfs-data/movies"   # REAL path on the HOST
+#
 # [[shares]]
 # name = "backups"
-# host_path = "/media/SSD-01/backups"
-# security = "krb5i"
+# host_path = "/home/user/nfs-data/backups"
 "#
     .to_string()
 }

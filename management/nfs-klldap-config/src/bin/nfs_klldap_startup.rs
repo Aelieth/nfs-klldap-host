@@ -23,7 +23,7 @@ use std::thread;
 use std::time::Duration;
 
 use nfs_klldap_config::{
-    derive_realm_from_uri, extract_host_from_uri, is_persistent_config, load_host_paths_only,
+    derive_realm_from_uri, extract_host_from_uri, is_persistent_config,
     suggested_nfs_hostname, NfsKlldapConfig, ConfigError,
 };
 
@@ -120,8 +120,8 @@ fn check_persistent_writable_config(path: &Path) -> bool {
 #[derive(Debug)]
 enum LdapReachability {
     Reachable,
-    DnsFailure { host: String, detail: String },
-    Unreachable { host: String, port: u16, detail: String },
+    DnsFailure { detail: String },
+    Unreachable { detail: String },
 }
 
 /// Performs a thorough reachability check using tools available in the image
@@ -139,7 +139,6 @@ fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
         if !out.status.success() {
             let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
             return LdapReachability::DnsFailure {
-                host: host.to_string(),
                 detail: if msg.is_empty() { "Host not found in DNS".to_string() } else { msg },
             };
         }
@@ -164,8 +163,6 @@ fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
                 LdapReachability::Reachable
             } else {
                 LdapReachability::Unreachable {
-                    host: host.to_string(),
-                    port,
                     detail: if combined.is_empty() {
                         "Connection failed with no specific error from nc".to_string()
                     } else {
@@ -176,8 +173,6 @@ fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
         }
         Err(e) => {
             LdapReachability::Unreachable {
-                host: host.to_string(),
-                port,
                 detail: format!("Failed to execute timeout/nc: {}", e),
             }
         }
@@ -190,7 +185,10 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     let dn = &cfg.sssd.ldap_default_bind_dn;
     let pw = &cfg.sssd.ldap_default_authtok;
 
-    let output = match Command::new("ldapsearch")
+    let is_ldaps = uri.starts_with("ldaps://");
+
+    let mut cmd = Command::new("timeout");
+    cmd.args(["10", "ldapsearch"])
         .args([
             "-H", uri,
             "-D", dn,
@@ -198,9 +196,16 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
             "-s", "base",
             "-b", "",
             "-o", "nettimeout=5",
-        ])
-        .output()
-    {
+        ]);
+
+    // Auto TLS handling based on URI scheme
+    if is_ldaps {
+        // Pragmatic default for LLDAP / internal self-signed certs.
+        // We can make this configurable later via a dedicated config option.
+        cmd.env("LDAPTLS_REQCERT", "never");
+    }
+
+    let output = match cmd.output() {
         Ok(o) => o,
         Err(e) => return Err(format!("Could not execute ldapsearch: {}", e)),
     };
@@ -214,8 +219,8 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
 
         let friendly = if raw.contains("Invalid credentials") || raw.contains("(49)") {
             format!("BIND FAILED: Invalid credentials (error 49).\n             → Double-check ldap_default_bind_dn and ldap_default_authtok.\n             Raw ldapsearch output: {}", raw)
-        } else if raw.contains("Can't contact LDAP server") || raw.contains("(-1)") {
-            format!("BIND FAILED: Cannot contact LDAP server.\n             → Common causes: wrong port, TLS certificate problem, or firewall blocking the port.\n             Raw: {}", raw)
+        } else if raw.contains("Can't contact LDAP server") || raw.contains("(-1)") || raw.contains("TLS") || raw.contains("certificate") {
+            format!("BIND FAILED: Cannot contact LDAP server or TLS/certificate issue.\n             → Common causes: wrong port, self-signed cert (we set LDAPTLS_REQCERT=never for ldaps), or firewall.\n             Raw: {}", raw)
         } else {
             format!("BIND FAILED:\n             {}", raw)
         };
@@ -384,63 +389,103 @@ fn print_current_step_guidance(current: &StartupStep) {
         }
 
         StartupStep::SetLdapUri => {
-            println!("             ldap_uri = \"ldaps://lldap.yourdomain.com:6360\"");
-            println!("             (must be a real DNS name — IP addresses are rejected)");
-            println!();
+            // Always show current value first (if present), then a clearly labeled example
+            println!("             Current value in config:");
 
-            // If we have a partial config, show real diagnostics
-            if let Ok(contents) = std::fs::read_to_string(
-                std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string())
-            ) {
+            let config_path_str = std::env::var("NFS_CONFIG")
+                .unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
+            let mut current_val: Option<String> = None;
+
+            if let Ok(contents) = std::fs::read_to_string(&config_path_str) {
                 for line in contents.lines() {
                     let t = line.trim();
                     if t.starts_with("ldap_uri") {
                         if let Some(eq) = t.find('=') {
-                            let val = t[eq+1..].trim().trim_matches(|c| c == '"' || c == '\'');
-                            if !val.is_empty() {
-                                let host = extract_host_from_uri(val);
-                                let port: u16 = val.split(':').last()
-                                    .and_then(|s| s.trim_end_matches(|c:char| !c.is_ascii_digit()).parse().ok())
-                                    .unwrap_or(636);
-
-                                println!("             [TROUBLESHOOTING] Testing reachability of {}:{}", host, port);
-
-                                match check_ldap_reachability(&host, val) {
-                                    LdapReachability::DnsFailure { detail, .. } => {
-                                        println!("             ❌ DNS FAILURE: Could not resolve '{}'", host);
-                                        println!("                Detail: {}", detail);
-                                        println!("                → Fix: Check spelling, or run `getent hosts {}` from the host.", host);
-                                    }
-                                    LdapReachability::Unreachable { detail, .. } => {
-                                        println!("             ❌ PORT UNREACHABLE");
-                                        println!("                Detail: {}", detail);
-                                        println!("                → Common fixes:");
-                                        println!("                  - Is the port correct? (ldaps usually 636, ldap usually 389)");
-                                        println!("                  - Firewall blocking the port from the Docker host?");
-                                        println!("                  - Try from the Docker host:  nc -zv {} {}", host, port);
-                                    }
-                                    LdapReachability::Reachable => {
-                                        println!("             ✓ Basic TCP reachability OK (DNS + port open)");
-                                    }
-                                }
+                            let val = t[eq + 1..].trim().trim_matches(|c| c == '"' || c == '\'');
+                            if !val.is_empty() && (val.starts_with("ldap://") || val.starts_with("ldaps://")) {
+                                println!("             {}", t);
+                                current_val = Some(val.to_string());
                             }
                         }
                         break;
                     }
                 }
             }
+
+            if current_val.is_none() {
+                println!("             (not yet set)");
+            }
+
+            println!();
+            println!("             Example (copy-paste ready):");
+            println!("             ldap_uri = \"ldaps://lldap.yourdomain.com:6360\"");
+            println!("             (must be a real DNS name — IP addresses are rejected)");
+            println!();
+
+            // Real reachability diagnostics only when we have a value
+            if let Some(val) = current_val {
+                let host = extract_host_from_uri(&val);
+                let port: u16 = val
+                    .split(':')
+                    .last()
+                    .and_then(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok())
+                    .unwrap_or(636);
+
+                println!("             [TROUBLESHOOTING] Testing reachability of {}:{}", host, port);
+
+                match check_ldap_reachability(&host, &val) {
+                    LdapReachability::DnsFailure { detail, .. } => {
+                        println!("             ❌ DNS FAILURE");
+                        println!("                Could not resolve hostname '{}'", host);
+                        println!("                Detail: {}", detail);
+                        println!("                → Common fixes:");
+                        println!("                  - Check spelling / DNS records on the Docker host");
+                        println!("                  - Container may need --network=host or --dns=...");
+                        println!("                  - Test from host: getent hosts {}", host);
+                    }
+                    LdapReachability::Unreachable { detail, .. } => {
+                        println!("             ❌ PORT UNREACHABLE (resolved successfully)");
+                        println!("                Detail: {}", detail);
+                        println!("                → Common fixes:");
+                        println!("                  - Is the port correct? (ldaps usually 636, ldap usually 389)");
+                        println!("                  - Firewall / SELinux blocking from Docker host?");
+                        println!("                  - Try from the Docker host:  nc -zv {} {}", host, port);
+                    }
+                    LdapReachability::Reachable => {
+                        println!("             ✓ Basic TCP reachability OK (DNS + port open)");
+                    }
+                }
+            }
         }
 
         StartupStep::AddBindCredentials => {
-            println!("             ldap_default_bind_dn  = \"uid=admin,ou=people,dc=...\"");
-            println!("             ldap_default_authtok = \"your-strong-password\"");
-            println!();
+            println!("             Current values from config:");
 
-            println!("             [TROUBLESHOOTING] Testing LDAP bind...");
-
-            // Try to load config to show actual bind attempt result
             let config_path = std::env::var("NFS_CONFIG")
                 .unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
+
+            if let Ok(cfg) = NfsKlldapConfig::load(Path::new(&config_path)) {
+                let dn = if cfg.sssd.ldap_default_bind_dn.trim().is_empty() {
+                    "(not set)".to_string()
+                } else {
+                    cfg.sssd.ldap_default_bind_dn.clone()
+                };
+                let pw_masked = if cfg.sssd.ldap_default_authtok.trim().is_empty() {
+                    "(not set)".to_string()
+                } else {
+                    "********".to_string()
+                };
+
+                println!("             ldap_default_bind_dn  = \"{}\"", dn);
+                println!("             ldap_default_authtok = \"{}\"", pw_masked);
+            } else {
+                println!("             ldap_default_bind_dn  = \"(config not loadable)\"");
+                println!("             ldap_default_authtok = \"(config not loadable)\"");
+            }
+
+            println!();
+            println!("             [TROUBLESHOOTING] Testing LDAP bind...");
+
             if let Ok(cfg) = NfsKlldapConfig::load(Path::new(&config_path)) {
                 match check_ldap_bind(&cfg) {
                     Ok(_) => {
@@ -458,7 +503,11 @@ fn print_current_step_guidance(current: &StartupStep) {
         StartupStep::AddShares => {
             println!("             [[shares]]");
             println!("             name = \"my-share\"");
-            println!("             host_path = \"/export/my-share\"   # must exist on the host");
+            println!("             host_path = \"/home/user/data/my-share\"   # REAL path on the Docker HOST");
+            println!();
+            println!("             # host_path = real location on your host (used by web UI for permissions)");
+            println!("             # You must still provide a matching bind mount, e.g.:");
+            println!("             #   -v /home/user/data/my-share:/export/my-share");
             println!();
 
             println!("             [TROUBLESHOOTING] Checking shares...");
@@ -466,24 +515,32 @@ fn print_current_step_guidance(current: &StartupStep) {
             let config_path = std::env::var("NFS_CONFIG")
                 .unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
 
-            if let Ok(host_paths) = load_host_paths_only(Path::new(&config_path)) {
-                if host_paths.is_empty() {
-                    println!("             No [[shares]] sections found yet.");
-                } else {
-                    for p in &host_paths {
-                        println!("             Checking host_path: {}", p.display());
-                        if !p.is_absolute() {
-                            println!("             ❌ Must be an absolute path (starting with /)");
-                        } else if !p.exists() {
-                            println!("             ❌ Directory does not exist on the Docker *host*");
-                            println!("                → The path must exist on the host machine, not inside the container.");
-                            println!("                → Fix the path or create the directory on the host.");
-                        } else if !p.is_dir() {
-                            println!("             ❌ Path exists but is not a directory");
-                        } else {
-                            println!("             ✓ Path exists and is a directory");
+            match NfsKlldapConfig::load(Path::new(&config_path)) {
+                Ok(cfg) => {
+                    if cfg.shares.is_empty() {
+                        println!("             No [[shares]] sections found yet.");
+                    } else {
+                        for share in &cfg.shares {
+                            let container_path = cfg.container_path_for(share);
+                            let host_p = &share.host_path;
+
+                            println!("             Share: {}  →  host: {}  |  container: {}",
+                                share.name, host_p.display(), container_path);
+
+                            if !host_p.is_absolute() {
+                                println!("             ❌ host_path must be absolute (start with /)");
+                            } else if Path::new(&container_path).exists() {
+                                println!("             ✓ Data visible inside container at {}", container_path);
+                            } else {
+                                println!("             ⚠ Data NOT visible inside container at {}", container_path);
+                                println!("                → Add this bind mount when starting the container:");
+                                println!("                  -v {}:{}", host_p.display(), container_path);
+                            }
                         }
                     }
+                }
+                Err(_) => {
+                    println!("             Could not load config to validate shares.");
                 }
             }
         }
@@ -531,19 +588,24 @@ fn compute_current_step(config_path: &Path) -> StartupStep {
         return StartupStep::AddBindCredentials;
     }
 
-    // Step 4: At least one share with a valid host_path?
-    let host_paths = match load_host_paths_only(config_path) {
-        Ok(p) => p,
-        Err(_) => vec![],
-    };
+    // Step 4: At least one share whose data is visible inside the container
+    match NfsKlldapConfig::load(config_path) {
+        Ok(cfg) => {
+            if cfg.shares.is_empty() {
+                return StartupStep::AddShares;
+            }
 
-    if host_paths.is_empty() {
-        return StartupStep::AddShares;
-    }
+            // Check that at least one share's container path is visible
+            let any_visible = cfg.shares.iter().any(|share| {
+                let container_path = cfg.container_path_for(share);
+                Path::new(&container_path).exists()
+            });
 
-    // Check that the first declared host_path actually exists on the host
-    if let Some(first) = host_paths.first() {
-        if !first.exists() {
+            if !any_visible {
+                return StartupStep::AddShares;
+            }
+        }
+        Err(_) => {
             return StartupStep::AddShares;
         }
     }

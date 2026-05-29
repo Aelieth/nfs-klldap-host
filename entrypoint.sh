@@ -106,17 +106,9 @@ trap 'handle_sighup' SIGHUP
 main() {
     log "=== Starting nfs-klldap-host (v0.3+ guided setup) ==="
 
-    # The container's hostname becomes the NFS service principal name.
-    # You MUST start the container with --hostname to match your keytab.
-    #
-    # Recommended:
-    #   docker run ... --hostname "$(hostname)-nfs" ...
-    #
-    # The hostname you choose here is what must exist in your krb5.keytab
-    # as: nfs/<chosen-hostname>@YOUR.REALM
-    effective_host=$(hostname)
-    log "Container hostname: $effective_host"
-    log "  → Your keytab MUST contain: nfs/$effective_host@YOUR.REALM"
+    # Hostname reporting and guidance has been moved into the Rust startup binary
+    # (`nfs-klldap-startup run`) so it is part of the guided first-run TUI.
+    # This keeps entrypoint.sh as a thin launcher.
 
     ensure_config_binary
 

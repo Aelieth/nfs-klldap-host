@@ -67,7 +67,7 @@ Usage:
 /// The main guided startup loop. This is the Rust replacement for the big
 /// wait_for_valid_config + print_current_step_guidance dance in entrypoint.sh.
 fn run_guided_startup(config_path: &Path) -> Result<(), ConfigError> {
-    println!("\x1b[2J\x1b[H"); // Clear screen + home
+    println!("\x1b[2J\x1b[H"); // Clear screen + home for the TUI
 
     loop {
         print_header();
@@ -97,9 +97,19 @@ enum StartupStep {
 }
 
 fn print_header() {
+    // Get hostname portably (no dependency on the 'hostname' binary)
+    let effective_host = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|s| s.trim().to_string())
+        .ok()
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .unwrap_or_else(|| "unknown".to_string());
+
     println!("╔══════════════════════════════════════════════════════════════════════════════╗");
     println!("║  nfs-klldap-host — FIRST RUN SETUP (Step-by-Step)  [Rust guided mode]        ║");
     println!("╠══════════════════════════════════════════════════════════════════════════════╣");
+    println!("║  Container hostname: {:<55} ║", effective_host);
+    println!("║  Keytab must contain: nfs/{:<50} ║", format!("{}@YOUR.REALM", effective_host));
+    println!("║                                                                              ║");
     println!("║  The container is WAITING. It will auto-start services when these steps      ║");
     println!("║  are complete (no manual restart needed).                                    ║");
     println!("╚══════════════════════════════════════════════════════════════════════════════╝\n");

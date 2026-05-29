@@ -457,7 +457,7 @@ pub fn generate_default_template() -> String {
 # After first edit: the container NEVER overwrites this file.
 # =============================================================================
 
-ldap_uri = "ldaps://kllap.example.com:6360"
+ldap_uri = "ldaps://klldap.example.com:6360"
 
 [storage]
 # container_root is the base inside the container where your data appears.
@@ -484,8 +484,8 @@ ldap_default_authtok = "CHANGE_THIS_TO_A_STRONG_SECRET"
 default_security = "krb5p"   # krb5p (recommended) | krb5i | krb5
 
 [management]
-# Host-side UI settings (container ignores most of this section)
-lldap_graphql_url = "https://kllap.example.com:6360/api/graphql"
+# Host-side UI settings (change only if needed)
+# lldap_graphql_url = "https://kllap.example.com:6360/api/graphql"
 # ganesha_container_name = "nfs-klldap"   # used when the UI asks the container to perform chown/chmod on exported data
 
 # =============================================================================

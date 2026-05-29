@@ -23,7 +23,7 @@ use std::thread;
 use std::time::Duration;
 
 use nfs_klldap_config::{
-    derive_realm_from_uri, extract_host_from_uri, is_persistent_config,
+    derive_realm_from_uri, extract_host_from_uri, is_persistent_config, load_host_paths_only,
     suggested_nfs_hostname, NfsKlldapConfig, ConfigError,
 };
 
@@ -242,7 +242,7 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
 ///   3. Bind DN + password present and ldapsearch succeeds
 ///   4. At least one [[shares]] with a host_path that exists on the host
 ///
-/// Steps are marked [√] as soon as they are satisfied (see is_step_complete).
+/// Steps are marked [✓] as soon as they are satisfied (see is_step_complete).
 fn run_guided_startup(config_path: &Path) -> Result<(), ConfigError> {
     println!("\x1b[2J\x1b[H"); // Clear screen + home for the TUI
 
@@ -347,7 +347,7 @@ fn print_step_status(current: &StartupStep) {
             // Print extra guidance for the current step
             print_current_step_guidance(current);
         } else if is_step_complete(step, current) {
-            println!("  [√] {}  {}", label, desc);
+            println!("  [✓] {}  {}", label, desc);
         } else {
             println!("  [ ] {}  {}", label, desc);
         }

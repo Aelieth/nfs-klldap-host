@@ -43,29 +43,19 @@ services:
     # Optional but recommended for some environments:
     # privileged: true
 
-    # The startup binary (nfs-klldap-startup) runs as root and automatically
-    # retrieves the real hostname of the Docker *host machine* using privileged
-    # root commands (reading the host kernel hostname or executing the host's
-    # "hostname" binary via /proc/1/root). This works even on distros that have
-    # no /etc/hostname file at all.
-    #
-    # Explicit `hostname:` (or --hostname) always bypasses auto discovery.
-    environment:
-      - HOST_HOSTNAME=${HOST_HOSTNAME:-}   # optional explicit hint
+    # Recommended: share the Docker host's UTS namespace so the container
+    # sees the real hostname of the machine (e.g. myhost.example.com).
+    # The TUI will then tell you the exact principal to put in the keytab
+    # using the -nfs insertion (myhost-nfs.example.com).
+    uts: host
 
-    # hostname: myhost-nfs               # Only set if you want to force a specific value (bypasses auto)
+    # hostname: myhost-nfs   # Only set if you want the container to use a different name (bypasses the inherited hostname)
 
     # Do not set "user: nfs" at the service level. The entrypoint runs as root
     # to perform setup (config generation, etc.) and then uses gosu to drop to
     # the unprivileged nfs user for sssd / ganesha / watcher.
 
     volumes:
-      # ---------------------------------------------------------------------
-      # Optional but recommended for fully automatic host hostname discovery
-      # by the startup binary (no HOST_HOSTNAME env var needed):
-      # - /etc/hostname:/etc/hostname:ro
-      # ---------------------------------------------------------------------
-
       # ---------------------------------------------------------------------
       # Storage (the only data volume in the new minimal model)
       # Mount whatever media drives you want under /export inside the container.

@@ -81,7 +81,7 @@
     <div style="background:#fff8e1; border:1px solid #f0c36b; padding:4px 10px; margin-bottom:0.75rem; border-radius:4px; font-size:0.85em; color:#664e04;">
         <strong>Container hostname for keytab:</strong>
         <code style="background:#fff; padding:1px 4px; border-radius:2px;">nfs/HOSTNAME@REALM</code>
-        — the <code>nfs-klldap-startup</code> guided TUI now auto-derives the recommended <code>&lt;short&gt;-nfs.&lt;domain&gt;</code> name when you pass <code>-e HOST_HOSTNAME="$(hostname)"</code> (the new standard). Explicit <code>--hostname</code> always bypasses the auto logic.
+        — use <code>--uts=host</code> (recommended) so the container sees the real host hostname. The TUI will display the exact principal you need in the keytab (with <code>-nfs</code> inserted). Explicit <code>--hostname</code> is supported as an override.
         See <a href="/settings">System Settings</a> for the value from your config.
     </div>
 

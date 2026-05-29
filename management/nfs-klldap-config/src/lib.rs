@@ -14,6 +14,9 @@
 //! Public helpers for the guided startup binary and host tooling:
 //! - `derive_realm_from_uri`
 //! - `suggested_nfs_hostname` (insertion pattern: host → host-nfs.domain)
+//!
+//! Note: Hostname handling is now based on the user passing --uts=host to Docker.
+//! The container then naturally sees the real host hostname.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -462,10 +465,11 @@ ldap_uri = "ldaps://kllap.example.com:6360"
 container_root = "/export"
 
 [server]
-# hostname = "yourhost-nfs"   # Optional override only. The modern standard is to
-#                             # pass -e HOST_HOSTNAME="$(hostname)" on docker run;
-#                             # nfs-klldap-startup will auto-derive the -nfs form.
-#                             # Explicit --hostname always bypasses the auto logic.
+# hostname = "yourhost-nfs"   # Optional override. The recommended way is to start
+#                             # the container with --uts=host so it sees the real
+#                             # host hostname. The TUI will tell you the exact
+#                             # principal (with -nfs insertion) to use in the keytab.
+#                             # Explicit --hostname takes precedence if set.
 
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
@@ -756,7 +760,7 @@ pub fn suggested_nfs_hostname(host: &str) -> String {
 /// Returns true if the string looks like a Docker auto-assigned default hostname
 /// (the short container ID). These are 8-20 lowercase hex digits with no dot.
 /// When we see one, we know the user did not pass --hostname and we should
-/// attempt auto-derivation via HOST_HOSTNAME or a mounted host /etc/hostname.
+/// (historical note — hostname handling is now based on --uts=host)
 pub fn looks_like_docker_default_hostname(h: &str) -> bool {
     let h = h.trim();
     if h.contains('.') {

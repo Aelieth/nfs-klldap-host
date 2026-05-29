@@ -93,8 +93,8 @@ See [management/examples/sudoers.example](management/examples/sudoers.example) f
   `nfs-klldap-startup` (part of the `nfs-klldap-config` crate).
 - Realm is now shown in the startup banner via best-effort derivation from `ldap_uri`.
 - Hostname guidance now recommends the DNS-friendly insertion pattern
-  (`aurora.satomlin.com` → `aurora-nfs.satomlin.com`) and the TUI suggests the correct name.
-- Step progress in the guided TUI now correctly marks completed steps with `[x]`.
+  (`testpc.example.com` → `testpc-nfs.example.com`) and the TUI suggests the correct name.
+- Step progress in the guided TUI now correctly marks completed steps with `[√]`.
 - Documentation (READMEs, architecture docs, compose examples) updated for the new
   startup flow and hostname convention.
 
@@ -111,14 +111,11 @@ See [TESTING.md](TESTING.md) for the current testing strategy, how to run tests,
 ```bash
 docker run -d \
   --name nfs-klldap \
-  -e HOST_HOSTNAME="$(hostname)" \
+  --uts=host \
   -p 2049:2049/tcp -p 2049:2049/udp \
-  -v /etc/hostname:/etc/hostname:ro \
   -v /path/to/nfs-config:/config \
   -v /secure/location/krb5.keytab:/etc/krb5.keytab:ro \
   -v /media/data:/export \
-  --user nfs \
-  --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE \
   ghcr.io/aelieth/nfs-klldap-host:latest
 ```
 
@@ -152,7 +149,7 @@ ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
 ldap_default_authtok = "your-password"
 
 [server]
-# hostname = "examplehost-nfs"          # optional override (modern standard is -e HOST_HOSTNAME on docker run; startup auto-derives the -nfs name)
+# hostname = "examplehost-nfs"          # optional override (recommended: start with --uts=host; TUI shows the required principal with -nfs insertion)
 
 [kerberos]
 # realm = "KRB.EXAMPLE.COM"             # required if auto-derivation from ldap_uri fails (or use NFS_REALM env)
@@ -184,29 +181,13 @@ The Rust binary handles all derivation and generation from this single file.
 ## Prerequisites
 
 - Time synchronization (Kerberos requirement)
-- The container must end up with a stable, DNS-resolvable hostname that matches the NFS principal in your keytab (`nfs/<name>@REALM`).
-  **Standard automatic retrieval of the host's hostname (the machine running Docker):**
+- **Recommended:** Use `--uts=host` when starting the container.  
+  The container will share the Docker host's UTS namespace, so the hostname inside the container will be the real hostname of the machine running Docker (e.g. `aurora.satomlin.com`).  
+  The guided startup TUI will automatically show you the correct Kerberos principal you need in your keytab using the `-nfs` insertion pattern (`nfs/aurora-nfs.satomlin.com@REALM`).
 
-The `nfs-klldap-startup` binary (running as root during startup) automatically retrieves the real hostname of the Docker *host machine* (not the container's assigned ID) and derives the recommended `<short>-nfs.<domain>` form for Kerberos.
+- You can still pass `--hostname your-chosen-name` if you want the container to use a completely different hostname (this takes precedence).
 
-Because it runs as root, it can use privileged root commands to discover the host name even when the distro has no `/etc/hostname` file at all (the hostname lives only in the kernel on many systems):
-
-- Environment variable (lightest explicit method):
-  ```bash
-  -e HOST_HOSTNAME="$(hostname)"
-  ```
-
-- Bind mount:
-  ```bash
-  -v /etc/hostname:/etc/hostname:ro
-  ```
-
-- **Privileged root discovery (often zero extra flags needed):**
-  The binary will try to read the host's live kernel hostname (`/proc/1/root/proc/sys/kernel/hostname`) or directly execute the real host's `hostname` command via paths under `/proc/1/root`. This is the method that works on minimal distros that do not ship an `/etc/hostname` file.
-
-Explicit `--hostname` always bypasses the auto logic completely.
-
-Explicit `--hostname` on the docker command line always wins and disables the auto logic.
+See the Quick Start above and [docs/run/README.md](docs/run/README.md) for the current recommended command line.
 - Keytab with the matching principal (mode 600, readable by the container)
 - Attached/media drives for exported data (system paths like `/srv/nfs` are not recommended)
 - Docker / Podman

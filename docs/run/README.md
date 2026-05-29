@@ -7,7 +7,7 @@ This document focuses on day-to-day container invocation after the v0.3+ central
 ```bash
 docker run -d \
   --name nfs-klldap \
-  -e HOST_HOSTNAME="$(hostname)" \
+  --uts=host \
   --user nfs \
   --cap-add CHOWN \
   --cap-add FOWNER \
@@ -59,47 +59,41 @@ See the top-level [examples/docker-compose.yml](../examples/docker-compose.yml).
 services:
   nfs-kerb:
     # ... build/image ...
-    # The startup binary can automatically retrieve the real Docker host hostname.
-    # Preferred methods (pick one):
-    environment:
-      - HOST_HOSTNAME=${HOST_HOSTNAME:-}     # export HOST_HOSTNAME=$(hostname) on the host
-    # volumes:
-    #   - /etc/hostname:/etc/hostname:ro     # alternative: lets startup discover it passively
+    # Recommended standard: share the host UTS namespace so the container
+    # sees the real hostname of the machine running Docker.
+    uts: host
+
     # Do NOT set "user: nfs" here — the entrypoint needs root for setup and will
     # use gosu to drop to the unprivileged user for the actual daemons.
     # cap_add, volumes, etc. as before
 
-    # hostname: myhost-nfs   # Only add this if you want to force a specific name (disables auto)
+    # hostname: myhost-nfs   # Only set if you want the container to use a different name
 ```
 
-**Standard automatic retrieval of the Docker host's hostname (v0.4+)**
+**Hostname with `--uts=host` (current standard)**
 
-The `nfs-klldap-startup` binary is responsible for retrieving the **real hostname of the machine running Docker**, not the container's Docker-assigned ID (e.g. `3c896c1c2e24`).
+The recommended way to run the container is with `--uts=host`:
 
-Because the startup binary runs as root, it can use privileged root-level commands to discover the host name automatically in several ways:
+```bash
+docker run ... --uts=host ...
+```
 
-1. Environment variable (lightest):
-   ```bash
-   -e HOST_HOSTNAME="$(hostname)"
-   ```
+This makes the container share the Docker host's UTS namespace. As a result, commands like `hostname` and the value in `/proc/sys/kernel/hostname` inside the container will return the real hostname of the machine running Docker (for example `aurora.satomlin.com`).
 
-2. Bind mount of the host's hostname file (the code detects this automatically):
-   ```bash
-   -v /etc/hostname:/etc/hostname:ro
-   ```
+The `nfs-klldap-startup` guided TUI will then automatically compute and display the recommended Kerberos service principal using the `-nfs` insertion pattern:
 
-3. **Privileged root discovery (the most automatic method)**:
-   On many Linux distributions (especially minimal, appliance, or modern systemd-only systems) there is no `/etc/hostname` file at all — the hostname exists only as the live kernel value.
-   Since the startup runs as root, it will attempt to:
-   - Read the host's real kernel hostname via `/proc/1/root/proc/sys/kernel/hostname`
-   - Execute the actual host's `hostname` command by running the host's binary under `/proc/1/root` (e.g. `/proc/1/root/usr/bin/hostname`)
-   - Fall back to `nsenter` into the host if available
+- Real host hostname seen: `aurora.satomlin.com`
+- Recommended keytab principal: `nfs/aurora-nfs.satomlin.com@YOUR.REALM`
 
-   This often lets you start the container with almost no extra flags and still get the correct `yourhost-nfs.yourdomain` name for Kerberos.
+You do **not** need to pass `-e HOST_HOSTNAME`, mount `/etc/hostname`, or use any privileged discovery tricks. `--uts=host` gives the container the real name directly.
 
-Explicit `--hostname` (or compose `hostname:`) always completely bypasses all auto-discovery logic.
+**Override with `--hostname`**
 
-If the container cannot set its own hostname (lacking `CAP_SYS_ADMIN`), the TUI will print the exact `--hostname` value you need to use on the next start.
+If you want the container to present a completely different hostname, simply pass `--hostname your-desired-name`. This is fully supported and takes precedence.
+
+**Warning about combining `--uts=host` with `--hostname`**
+
+Using both at the same time will attempt to change the hostname in the shared UTS namespace, which affects the Docker host itself. Only do this if you really intend to change the host's hostname. In normal use, prefer `--uts=host` by itself (no `--hostname` flag) and let the TUI tell you the correct principal to put in the keytab.
 
 ## Privilege Model (Root for Setup, Drop to nfs for Daemons)
 

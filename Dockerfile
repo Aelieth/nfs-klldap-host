@@ -124,6 +124,7 @@ RUN microdnf install -y --assumeyes epel-release && \
         iproute \
         net-tools \
         bind-utils \
+        nmap-ncat \
         strace \
         less \
         nano \

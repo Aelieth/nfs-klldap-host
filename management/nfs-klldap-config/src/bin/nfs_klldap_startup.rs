@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use nfs_klldap_config::{
     derive_realm_from_uri, extract_host_from_uri, is_persistent_config, load_host_paths_only,
-    looks_like_docker_default_hostname, suggested_nfs_hostname, NfsKlldapConfig, ConfigError,
+    suggested_nfs_hostname, NfsKlldapConfig, ConfigError,
 };
 
 fn main() {
@@ -37,14 +37,12 @@ fn main() {
 
     match cmd {
         "run" | "startup" => {
-            ensure_good_hostname();
             if let Err(e) = run_guided_startup(&config_path) {
                 eprintln!("FATAL: {}", e);
                 exit(2);
             }
         }
         "check" => {
-            ensure_good_hostname();
             if let Err(e) = run_one_shot_diagnostics(&config_path) {
                 eprintln!("ERROR: {}", e);
                 exit(2);
@@ -69,260 +67,166 @@ Usage:
   nfs-klldap-startup run      Run the full guided 4-step waiting TUI until ready
   nfs-klldap-startup check    Run diagnostics once and exit
 
-Hostname behavior (standard since v0.4):
-  - The startup binary retrieves the real Docker *host* machine's hostname
-    (not the container ID) so it can derive the correct <short>-nfs.<domain> name.
-  - Supported: -e HOST_HOSTNAME=...   or   -v /etc/hostname:/etc/hostname:ro
-  - Explicit --hostname on docker run always bypasses the auto logic.
+Hostname (new standard):
+  Use --uts=host on the docker/podman command line.
+  The container will then see the real hostname of the Docker host machine.
+  The TUI will show the recommended Kerberos principal using the -nfs insertion
+  (e.g. realhost.example.com → nfs/realhost-nfs.example.com@REALM).
+
+  You may still pass --hostname if you want to override the name presented by
+  the container.
 "
     );
 }
 
 // -----------------------------------------------------------------------------
-// Auto hostname normalization (new standard behavior)
+// Hostname handling (new standard: --uts=host)
+//
+// The recommended docker/podman command now includes --uts=host.
+// This makes the container share the Docker host's UTS namespace, so the
+// hostname visible inside the container is the real hostname of the machine
+// running Docker.
+//
+// The TUI simply reads this hostname and uses suggested_nfs_hostname() to
+// compute the recommended Kerberos principal (insertion of "-nfs" before the
+// first dot).
+//
+// Explicit --hostname on the docker command line is supported as an override.
 // -----------------------------------------------------------------------------
 
-/// Ensure we are using a good, Kerberos-friendly hostname of the form
-/// <shortname>-nfs.<domain> derived from the *Docker host's* hostname.
-///
-/// This implements the requested standard "auto" behavior:
-///
-/// - If the user explicitly passed `--hostname` on `docker run`, Docker sets
-///   that value and it will contain a dot or otherwise look intentional.
-///   We detect this and leave it completely alone (explicit always wins).
-///
-/// - Otherwise (Docker assigned a default container-ID style hostname such as
-///   a 12-char hex string with no dot), we attempt to discover the real
-///   hostname of the machine the operator is logged into ("the Docker host")
-///   via:
-///     1. `HOST_HOSTNAME` environment variable (easiest):
-///        docker run -e HOST_HOSTNAME="$(hostname)" ...
-///     2. Bind-mounting the host's /etc/hostname (fully automatic discovery):
-///        -v /etc/hostname:/etc/hostname:ro
-///        The startup binary detects when the file content differs from the
-///        live container hostname and uses it as the real host name.
-///     3. Other conventional mount points (/host/hostname, etc.).
-///
-///   We then derive the `-nfs` variant using `suggested_nfs_hostname` and
-///   attempt to apply it with the `hostname` command.
-///
-/// Because the startup binary runs as root, it can also use privileged
-/// techniques (reading the host kernel hostname via /proc/1/root or
-/// executing the host's `hostname` binary) to discover the real machine
-/// name even when the distro has no /etc/hostname file at all.
-///
-/// Setting the hostname from inside the container requires CAP_SYS_ADMIN
-/// (or running the container with `--privileged`). If the set fails we emit
-/// precise, copy-pasteable instructions telling the user the exact value
-/// they should pass with `--hostname` on the next start.
-fn ensure_good_hostname() {
-    let current = current_hostname();
+// -----------------------------------------------------------------------------
+// Rich diagnostic helpers for the guided TUI — crucial troubleshooting feedback
+// -----------------------------------------------------------------------------
 
-    if !looks_like_docker_default_hostname(&current) {
-        // Looks like the user (or orchestration) provided an explicit --hostname.
-        // Explicit always takes precedence; do nothing.
-        return;
+/// Enhanced persistent volume check + writability test.
+/// Gives the user immediate, actionable feedback instead of mysterious later failures.
+fn check_persistent_writable_config(path: &Path) -> bool {
+    if !is_persistent_config(path) {
+        return false;
     }
 
-    let host_base = discover_host_base_name();
-    if host_base.is_empty() {
-        // Keep the message short so it doesn't interleave with or pollute the TUI.
-        eprintln!("[HOSTNAME] Docker default hostname detected ({current}). No HOST_HOSTNAME or host /etc/hostname provided.");
-        eprintln!("           Pass -e HOST_HOSTNAME=\"$(hostname)\" (recommended) or --hostname <good-name> for Kerberos.");
-        eprintln!("           Continuing with current name; keytab must match exactly what you see in the banner below.");
-        eprintln!();
-        return;
+    // Verify we can actually write to the location (as root during startup)
+    let parent = path.parent().unwrap_or(Path::new("/config"));
+    let test_file = parent.join(".nfs-klldap-persist-test");
+
+    let can_write = std::fs::File::create(&test_file).is_ok();
+    if can_write {
+        let _ = std::fs::remove_file(&test_file);
     }
-
-    let desired = suggested_nfs_hostname(&host_base);
-    if desired == current {
-        return;
-    }
-
-    println!("\n[HOSTNAME] Container has Docker default hostname ('{current}').");
-    println!("           Auto-deriving recommended name from host: {desired}");
-
-    // Attempt the set. This will succeed only with sufficient capability.
-    let status = Command::new("hostname").arg(&desired).status();
-
-    match status {
-        Ok(s) if s.success() => {
-            println!("           [OK] Container hostname set to {desired}.");
-            // Keep $HOSTNAME in sync for anything that reads the variable later.
-            std::env::set_var("HOSTNAME", &desired);
-        }
-        _ => {
-            eprintln!("           [ACTION REQUIRED] Could not set hostname (no CAP_SYS_ADMIN).");
-            eprintln!("           Restart with explicit:  --hostname {desired}");
-            eprintln!("           Or the easy one-liner on the host:  --hostname \"$(hostname | sed 's/^\\([^.]*\\)/\\1-nfs/')\"");
-            eprintln!("           Continuing with current name '{current}'. Keytab must match it.");
-        }
-    }
+    can_write
 }
 
-/// Return the current hostname, preferring the kernel view then the env var.
-fn current_hostname() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|s| s.trim().to_string())
-        .ok()
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .unwrap_or_else(|| "unknown".to_string())
+/// Rich result for LDAP server reachability diagnostics (much better than bool).
+#[derive(Debug)]
+enum LdapReachability {
+    Reachable,
+    DnsFailure { host: String, detail: String },
+    Unreachable { host: String, port: u16, detail: String },
 }
 
-// (looks_like_docker_default_hostname is now provided by the library)
+/// Performs a thorough reachability check using tools available in the image
+/// (getent + nc + timeout) to give the user excellent diagnostic messages.
+fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
+    let port: u16 = uri
+        .split(':')
+        .last()
+        .and_then(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok())
+        .unwrap_or(636);
 
-/// Discover the *Docker host's* real hostname (the machine running Docker,
-/// not this container).
-///
-/// The goal is for the startup binary to automatically retrieve the real
-/// host's hostname so it can derive the recommended <short>-nfs.<domain>
-/// name without the user always having to pass --hostname.
-///
-/// Detection order (first good candidate wins):
-/// 1. HOST_HOSTNAME environment variable (easiest explicit signal).
-/// 2. The file /etc/hostname when it has been bind-mounted from the host.
-/// 3. Common explicit mount points for the host hostname file.
-/// 4. Privileged root-based discovery (since we run as root during startup):
-///    - Read /proc/1/root/proc/sys/kernel/hostname (works on hosts without
-///      any /etc/hostname file at all — the hostname lives only in the kernel).
-///    - Execute the host's `hostname` binary via /proc/1/root (the method
-///      the user requested: "use root commands such as simply 'hostname'").
-///    - Fall back to nsenter if available on the host.
-///
-/// This tier allows fully automatic operation on privileged or semi-privileged
-/// containers without the operator having to pass any extra flags or mounts.
-fn discover_host_base_name() -> String {
-    // 1. Explicit env var — user is deliberately telling us the host name.
-    if let Ok(val) = std::env::var("HOST_HOSTNAME") {
-        let t = val.trim();
-        if !t.is_empty() && !looks_like_docker_default_hostname(t) {
-            return t.to_string();
+    // DNS resolution test (very important to distinguish from port issues)
+    let dns = Command::new("getent").args(["hosts", host]).output();
+    if let Ok(out) = dns {
+        if !out.status.success() {
+            let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return LdapReachability::DnsFailure {
+                host: host.to_string(),
+                detail: if msg.is_empty() { "Host not found in DNS".to_string() } else { msg },
+            };
         }
     }
 
-    // 2. The single most useful passive method:
-    //    User did: -v /etc/hostname:/etc/hostname:ro
-    //    Inside the container the *file* now contains the Docker host's real
-    //    hostname, while the live kernel hostname is still the container ID
-    //    (or whatever Docker assigned).
-    if let Ok(file_content) = std::fs::read_to_string("/etc/hostname") {
-        let t = file_content.trim();
-        let live = current_hostname();
-        if !t.is_empty()
-            && t != live
-            && !looks_like_docker_default_hostname(t)
-        {
-            return t.to_string();
-        }
-    }
+    // Port connectivity test using nc (we now guarantee nmap-ncat is installed in the image)
+    let nc = Command::new("timeout")
+        .args(["4", "nc", "-w", "3", "-zv", host, &port.to_string()])
+        .output();
 
-    // 3. Explicitly mounted copies at conventional locations.
-    //    Users who don't want to replace the container's /etc/hostname can use
-    //    one of these instead.
-    let candidates: [&str; 6] = [
-        "/host/hostname",
-        "/host/etc/hostname",
-        "/etc/hostname.host",
-        "/run/host/hostname",
-        "/mnt/host/hostname",
-        "/proc/1/root/etc/hostname", // privileged: view from the real host init ns
-    ];
+    match nc {
+        Ok(out) => {
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+            .trim()
+            .to_string();
 
-    for path in &candidates {
-        if let Ok(contents) = std::fs::read_to_string(path) {
-            let t = contents.trim();
-            if !t.is_empty() && !looks_like_docker_default_hostname(t) {
-                return t.to_string();
-            }
-        }
-    }
-
-    // 4. Privileged discovery using root access (we run as root during startup).
-    //    Many distros do not have /etc/hostname at all — the hostname lives
-    //    only in the kernel (UTS namespace). Since we are root, we can reach
-    //    into the host's namespace via /proc/1/root and run "hostname" or read
-    //    the kernel hostname file directly.
-    if let Some(hostname) = try_read_host_hostname_via_privileged_root() {
-        return hostname;
-    }
-
-    String::new()
-}
-
-/// When running as root (which the startup binary does), attempt to discover
-/// the real Docker host's hostname by reaching into the host's root filesystem
-/// via /proc/1/root.
-///
-/// This is the method of last resort for hosts that have no /etc/hostname file
-/// (very common on minimal, systemd-only, or appliance distros). The hostname
-/// is only maintained live in the kernel.
-///
-/// We try:
-/// - Reading the host's live kernel hostname directly
-/// - Executing the host's `hostname` binary (various common paths)
-///
-/// These only work when the container has sufficient privileges
-/// (typically --privileged or a combination of pid/host + CAP_SYS_ADMIN etc.).
-fn try_read_host_hostname_via_privileged_root() -> Option<String> {
-    // Method A: Read the host kernel's live hostname.
-    // This is the most universal and doesn't depend on any hostname package.
-    // On many systems without /etc/hostname, `hostname` command itself reads this.
-    if let Ok(contents) = std::fs::read_to_string("/proc/1/root/proc/sys/kernel/hostname") {
-        let t = contents.trim();
-        if !t.is_empty() && !looks_like_docker_default_hostname(t) {
-            return Some(t.to_string());
-        }
-    }
-
-    // Method B: Execute the host's "hostname" binary directly.
-    // We try the most common locations across distros.
-    let hostname_binaries: [&str; 4] = [
-        "/proc/1/root/bin/hostname",
-        "/proc/1/root/usr/bin/hostname",
-        "/proc/1/root/usr/local/bin/hostname",
-        "/proc/1/root/sbin/hostname",
-    ];
-
-    for bin in &hostname_binaries {
-        if !std::path::Path::new(bin).exists() {
-            continue;
-        }
-        if let Ok(output) = Command::new(bin).output() {
-            if output.status.success() {
-                let t = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !t.is_empty() && !looks_like_docker_default_hostname(&t) {
-                    return Some(t);
+            if out.status.success() {
+                LdapReachability::Reachable
+            } else {
+                LdapReachability::Unreachable {
+                    host: host.to_string(),
+                    port,
+                    detail: if combined.is_empty() {
+                        "Connection failed with no specific error from nc".to_string()
+                    } else {
+                        combined
+                    },
                 }
             }
         }
-    }
-
-    // Method C (optional extra): Try nsenter if it exists on the host.
-    // This can work even without full --privileged in some configurations.
-    let nsenter_paths: [&str; 2] = [
-        "/proc/1/root/usr/bin/nsenter",
-        "/proc/1/root/bin/nsenter",
-    ];
-
-    for nsenter in &nsenter_paths {
-        if std::path::Path::new(nsenter).exists() {
-            // Try to run: nsenter -t 1 -m -u hostname
-            if let Ok(output) = Command::new(nsenter)
-                .args(["-t", "1", "-m", "-u", "--", "hostname"])
-                .output()
-            {
-                if output.status.success() {
-                    let t = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if !t.is_empty() && !looks_like_docker_default_hostname(&t) {
-                        return Some(t);
-                    }
-                }
+        Err(e) => {
+            LdapReachability::Unreachable {
+                host: host.to_string(),
+                port,
+                detail: format!("Failed to execute timeout/nc: {}", e),
             }
         }
     }
-
-    None
 }
+
+/// Attempts LDAP bind and returns rich error information for the user.
+fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
+    let uri = &cfg.ldap_uri;
+    let dn = &cfg.sssd.ldap_default_bind_dn;
+    let pw = &cfg.sssd.ldap_default_authtok;
+
+    let output = match Command::new("ldapsearch")
+        .args([
+            "-H", uri,
+            "-D", dn,
+            "-w", pw,
+            "-s", "base",
+            "-b", "",
+            "-o", "nettimeout=5",
+        ])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => return Err(format!("Could not execute ldapsearch: {}", e)),
+    };
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let raw = if !stderr.is_empty() { stderr } else { stdout };
+
+        let friendly = if raw.contains("Invalid credentials") || raw.contains("(49)") {
+            format!("BIND FAILED: Invalid credentials (error 49).\n             → Double-check ldap_default_bind_dn and ldap_default_authtok.\n             Raw ldapsearch output: {}", raw)
+        } else if raw.contains("Can't contact LDAP server") || raw.contains("(-1)") {
+            format!("BIND FAILED: Cannot contact LDAP server.\n             → Common causes: wrong port, TLS certificate problem, or firewall blocking the port.\n             Raw: {}", raw)
+        } else {
+            format!("BIND FAILED:\n             {}", raw)
+        };
+
+        Err(friendly)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Original is_persistent_config remains below for the helper used by the UI
+// -----------------------------------------------------------------------------
 
 /// The main guided startup loop. This is the Rust replacement for the big
 /// wait_for_valid_config + print_current_step_guidance dance in entrypoint.sh.
@@ -333,7 +237,7 @@ fn try_read_host_hostname_via_privileged_root() -> Option<String> {
 ///   3. Bind DN + password present and ldapsearch succeeds
 ///   4. At least one [[shares]] with a host_path that exists on the host
 ///
-/// Steps are marked [x] as soon as they are satisfied (see is_step_complete).
+/// Steps are marked [√] as soon as they are satisfied (see is_step_complete).
 fn run_guided_startup(config_path: &Path) -> Result<(), ConfigError> {
     println!("\x1b[2J\x1b[H"); // Clear screen + home for the TUI
 
@@ -370,47 +274,28 @@ enum StartupStep {
 }
 
 fn print_header(config_path: &Path) {
-    // Get hostname portably (no dependency on the 'hostname' binary)
-    let effective_host = std::fs::read_to_string("/proc/sys/kernel/hostname")
+    // With the new recommended --uts=host, this will be the real Docker host hostname.
+    let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname")
         .map(|s| s.trim().to_string())
         .ok()
         .or_else(|| std::env::var("HOSTNAME").ok())
         .unwrap_or_else(|| "unknown".to_string());
 
-    // Best-effort realm derivation for the banner (works even if other config is missing).
-    // We only need ldap_uri to be parseable; we do NOT run full validation here.
     let realm_display = attempt_realm_for_display(config_path)
         .unwrap_or_else(|| "YOUR.REALM (set ldap_uri to auto-derive)".to_string());
 
-    // Build a friendly hostname line for the banner.
-    // Never suggest mangling a Docker container-ID (e.g. "3c896c1c2e24-nfs").
-    // Only offer the "(recommended: ...)" hint when we have a plausible real host name.
-    let host_line = if looks_like_docker_default_hostname(&effective_host) {
-        format!("{}   (Docker default — pass -e HOST_HOSTNAME or --hostname)", effective_host)
-    } else {
-        let suggested = suggested_nfs_hostname(&effective_host);
-        if suggested != effective_host {
-            format!("{}   (recommended: {})", effective_host, suggested)
-        } else {
-            effective_host.clone()
-        }
-    };
+    // Compute the recommended NFS service principal name using the insertion pattern.
+    let recommended_principal = suggested_nfs_hostname(&hostname);
 
     println!("╔══════════════════════════════════════════════════════════════════════════════╗");
     println!("║  nfs-klldap-host — FIRST RUN SETUP (Step-by-Step)  [Rust guided mode]        ║");
     println!("╠══════════════════════════════════════════════════════════════════════════════╣");
-    println!("║  Container hostname: {:<55} ║", host_line);
-
-    // The keytab line must never advertise a container-ID principal.
-    let keytab_line = if looks_like_docker_default_hostname(&effective_host) {
-        "nfs/<realhost>-nfs.<domain>@REALM   (pass -e HOST_HOSTNAME or --hostname)".to_string()
-    } else {
-        format!("{}@{}", effective_host, realm_display)
-    };
-    println!("║  Keytab must contain: nfs/{:<50} ║", keytab_line);
+    println!("║  Container hostname: {:<55} ║", hostname);
+    println!("║  Keytab must contain: nfs/{:<50} ║", format!("{}@{}", recommended_principal, realm_display));
     println!("║                                                                              ║");
-    println!("║  The container is WAITING. It will auto-start services when these steps      ║");
-    println!("║  are complete (no manual restart needed).                                    ║");
+    println!("║  Standard: Use --uts=host (container sees the real host hostname).           ║");
+    println!("║  The name above is what your keytab principal should be.                     ║");
+    println!("║  Explicit --hostname on docker run overrides this if you need something else.║");
     println!("╚══════════════════════════════════════════════════════════════════════════════╝\n");
 }
 
@@ -453,13 +338,13 @@ fn print_step_status(current: &StartupStep) {
 
     for (step, label, desc) in &steps {
         if *step == *current {
-            println!("  [  ] {}  {}", label, desc);
+            println!("  [ ] {}  {}", label, desc);
             // Print extra guidance for the current step
             print_current_step_guidance(current);
         } else if is_step_complete(step, current) {
-            println!("  [x] {}  {}", label, desc);
+            println!("  [√] {}  {}", label, desc);
         } else {
-            println!("  [  ] {}  {}", label, desc);
+            println!("  [ ] {}  {}", label, desc);
         }
     }
 }
@@ -490,20 +375,119 @@ fn print_current_step_guidance(current: &StartupStep) {
     match current {
         StartupStep::WaitForPersistentVolume => {
             println!("             -v /path/on/your/host:/config");
+            println!();
+            println!("             [TROUBLESHOOTING]");
+            println!("             The config file is currently inside the container's ephemeral overlay.");
+            println!("             Any changes will be lost when the container restarts.");
+            println!("             You MUST bind-mount a real host directory at /config.");
+            println!("             Example:  -v /home/user/nfs-config:/config");
         }
+
         StartupStep::SetLdapUri => {
             println!("             ldap_uri = \"ldaps://lldap.yourdomain.com:6360\"");
             println!("             (must be a real DNS name — IP addresses are rejected)");
+            println!();
+
+            // If we have a partial config, show real diagnostics
+            if let Ok(contents) = std::fs::read_to_string(
+                std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string())
+            ) {
+                for line in contents.lines() {
+                    let t = line.trim();
+                    if t.starts_with("ldap_uri") {
+                        if let Some(eq) = t.find('=') {
+                            let val = t[eq+1..].trim().trim_matches(|c| c == '"' || c == '\'');
+                            if !val.is_empty() {
+                                let host = extract_host_from_uri(val);
+                                let port: u16 = val.split(':').last()
+                                    .and_then(|s| s.trim_end_matches(|c:char| !c.is_ascii_digit()).parse().ok())
+                                    .unwrap_or(636);
+
+                                println!("             [TROUBLESHOOTING] Testing reachability of {}:{}", host, port);
+
+                                match check_ldap_reachability(&host, val) {
+                                    LdapReachability::DnsFailure { detail, .. } => {
+                                        println!("             ❌ DNS FAILURE: Could not resolve '{}'", host);
+                                        println!("                Detail: {}", detail);
+                                        println!("                → Fix: Check spelling, or run `getent hosts {}` from the host.", host);
+                                    }
+                                    LdapReachability::Unreachable { detail, .. } => {
+                                        println!("             ❌ PORT UNREACHABLE");
+                                        println!("                Detail: {}", detail);
+                                        println!("                → Common fixes:");
+                                        println!("                  - Is the port correct? (ldaps usually 636, ldap usually 389)");
+                                        println!("                  - Firewall blocking the port from the Docker host?");
+                                        println!("                  - Try from the Docker host:  nc -zv {} {}", host, port);
+                                    }
+                                    LdapReachability::Reachable => {
+                                        println!("             ✓ Basic TCP reachability OK (DNS + port open)");
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
         }
+
         StartupStep::AddBindCredentials => {
             println!("             ldap_default_bind_dn  = \"uid=admin,ou=people,dc=...\"");
             println!("             ldap_default_authtok = \"your-strong-password\"");
+            println!();
+
+            println!("             [TROUBLESHOOTING] Testing LDAP bind...");
+
+            // Try to load config to show actual bind attempt result
+            let config_path = std::env::var("NFS_CONFIG")
+                .unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
+            if let Ok(cfg) = NfsKlldapConfig::load(Path::new(&config_path)) {
+                match check_ldap_bind(&cfg) {
+                    Ok(_) => {
+                        println!("             ✓ Bind successful!");
+                    }
+                    Err(err) => {
+                        println!("             {}", err);
+                        println!("             → Verify the DN exactly matches what is in your LDAP server.");
+                        println!("             → Make sure the password has no extra spaces or newlines.");
+                    }
+                }
+            }
         }
+
         StartupStep::AddShares => {
             println!("             [[shares]]");
             println!("             name = \"my-share\"");
             println!("             host_path = \"/export/my-share\"   # must exist on the host");
+            println!();
+
+            println!("             [TROUBLESHOOTING] Checking shares...");
+
+            let config_path = std::env::var("NFS_CONFIG")
+                .unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
+
+            if let Ok(host_paths) = load_host_paths_only(Path::new(&config_path)) {
+                if host_paths.is_empty() {
+                    println!("             No [[shares]] sections found yet.");
+                } else {
+                    for p in &host_paths {
+                        println!("             Checking host_path: {}", p.display());
+                        if !p.is_absolute() {
+                            println!("             ❌ Must be an absolute path (starting with /)");
+                        } else if !p.exists() {
+                            println!("             ❌ Directory does not exist on the Docker *host*");
+                            println!("                → The path must exist on the host machine, not inside the container.");
+                            println!("                → Fix the path or create the directory on the host.");
+                        } else if !p.is_dir() {
+                            println!("             ❌ Path exists but is not a directory");
+                        } else {
+                            println!("             ✓ Path exists and is a directory");
+                        }
+                    }
+                }
+            }
         }
+
         StartupStep::Ready => {}
     }
 }
@@ -513,7 +497,7 @@ fn print_current_step_guidance(current: &StartupStep) {
 /// print_current_step_guidance + the various test_* shell functions.
 fn compute_current_step(config_path: &Path) -> StartupStep {
     // Step 1: Persistent volume?
-    if !is_persistent_config(config_path) {
+    if !check_persistent_writable_config(config_path) {
         return StartupStep::WaitForPersistentVolume;
     }
 
@@ -527,15 +511,15 @@ fn compute_current_step(config_path: &Path) -> StartupStep {
         }
     };
 
-    // Step 2: ldap_uri present and port reachable?
+    // Step 2: ldap_uri present and server reachable?
     if cfg.ldap_uri.trim().is_empty() {
         return StartupStep::SetLdapUri;
     }
 
-    // Lightweight port check (mirrors the old `nc -z` test)
     let host = extract_host_from_uri(&cfg.ldap_uri);
-    if !tcp_port_reachable(&host, &cfg.ldap_uri) {
-        return StartupStep::SetLdapUri;
+    match check_ldap_reachability(&host, &cfg.ldap_uri) {
+        LdapReachability::Reachable => {}
+        _ => return StartupStep::SetLdapUri,
     }
 
     // Step 3: Bind credentials present and working?
@@ -543,8 +527,7 @@ fn compute_current_step(config_path: &Path) -> StartupStep {
         return StartupStep::AddBindCredentials;
     }
 
-    // Quick bind test (uses ldapsearch like the shell did)
-    if !ldap_bind_works(&cfg) {
+    if check_ldap_bind(&cfg).is_err() {
         return StartupStep::AddBindCredentials;
     }
 
@@ -569,48 +552,10 @@ fn compute_current_step(config_path: &Path) -> StartupStep {
 }
 
 // -----------------------------------------------------------------------------
-// Rust wrappers for the reachability / diagnostic tests (replacing shell logic)
+// (Rich diagnostics are defined earlier in the file)
 // -----------------------------------------------------------------------------
 
-fn tcp_port_reachable(host: &str, uri: &str) -> bool {
-    // Try to extract port, default 636 for ldaps
-    let port: u16 = uri
-        .split(':')
-        .last()
-        .and_then(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok())
-        .unwrap_or(636);
 
-    // Use a simple TCP connect attempt. We prefer this over shelling to `nc`
-    // when possible (more portable, no extra tool dependency).
-    std::net::TcpStream::connect_timeout(
-        &format!("{}:{}", host, port).parse().unwrap_or_else(|_| "127.0.0.1:1".parse().unwrap()),
-        Duration::from_secs(3),
-    )
-    .is_ok()
-}
-
-fn ldap_bind_works(cfg: &NfsKlldapConfig) -> bool {
-    // Mirror the old `ldapsearch -D ... -w ...` test.
-    // We keep using the real ldapsearch tool for now (it understands SASL, TLS, etc.).
-    let uri = &cfg.ldap_uri;
-    let dn = &cfg.sssd.ldap_default_bind_dn;
-    let pw = &cfg.sssd.ldap_default_authtok;
-
-    let status = Command::new("ldapsearch")
-        .args([
-            "-H", uri,
-            "-D", dn,
-            "-w", pw,
-            "-s", "base",
-            "-b", "",
-        ])
-        .output();
-
-    match status {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
-    }
-}
 
 /// One-shot diagnostics (useful for `nfs-klldap-startup check` and for the
 /// future when we want to expose health info).

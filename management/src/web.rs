@@ -26,9 +26,9 @@ use crate::{auth::AuthManager, config::Config, fs::FsManager, llap::LldapClient}
 /// back to the host's hostname (the UI runs on the host).
 ///
 /// The container hostname must match the keytab principal.
-/// Standard method (v0.4+): pass -e HOST_HOSTNAME="$(hostname)" on the host; the
-/// nfs-klldap-startup binary will derive the <short>-nfs.<rest> form automatically.
-/// Explicit --hostname always bypasses the auto logic.
+/// Recommended: use --uts=host so the container inherits the real host hostname.
+/// The startup TUI will show the required principal with the -nfs insertion.
+/// Explicit --hostname is still supported as an override.
 /// so that the kernel hostname inside matches the keytab principal.
 fn compute_effective_hostname(cfg: &Config) -> String {
     if let Some(h) = &cfg.server.hostname {

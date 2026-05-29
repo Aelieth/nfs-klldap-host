@@ -47,13 +47,11 @@ die() {
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
-# NOTE: The entire 4-step guided setup TUI, reachability tests, banner (with
-# auto-derived realm), waiting loop, hostname suggestion logic, and runtime
-# permission/keytab/hostname diagnostics now live in the Rust binary
-# `nfs-klldap-startup` (built from nfs-klldap-config crate).
+# NOTE: The 4-step guided setup TUI, reachability tests, banner, waiting loop,
+# and runtime diagnostics (including hostname/keytab guidance based on --uts=host)
+# now live in the Rust binary `nfs-klldap-startup`.
 #
-# The old shell implementations have been removed. Only thin orchestration
-# + gosu daemon startup remains here.
+# Only thin orchestration + gosu daemon startup remains in this shell script.
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
@@ -106,9 +104,10 @@ trap 'handle_sighup' SIGHUP
 main() {
     log "=== Starting nfs-klldap-host (v0.3+ guided setup) ==="
 
-    # Hostname auto-normalization (HOST_HOSTNAME env → <short>-nfs.<rest> when Docker
-    # gave us a default container ID) plus all guidance now lives in the Rust
-    # `nfs-klldap-startup` binary. entrypoint.sh remains a thin launcher.
+    # Hostname guidance is now based on --uts=host (the new standard).
+    # With --uts=host the container sees the real host hostname; the Rust
+    # `nfs-klldap-startup` TUI shows the recommended keytab principal.
+    # entrypoint.sh remains a thin launcher.
 
     ensure_config_binary
 

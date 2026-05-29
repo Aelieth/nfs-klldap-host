@@ -95,18 +95,23 @@ If you want the container to present a completely different hostname, simply pas
 
 Using both at the same time will attempt to change the hostname in the shared UTS namespace, which affects the Docker host itself. Only do this if you really intend to change the host's hostname. In normal use, prefer `--uts=host` by itself (no `--hostname` flag) and let the TUI tell you the correct principal to put in the keytab.
 
-## Privilege Model (Root for Setup, Drop to nfs for Daemons)
+## Privilege Model (Root for Setup + SSSD, Unprivileged for Ganesha + Watcher)
 
-The container image is designed so that:
+The container uses a carefully tuned split-privilege model:
 
-- `entrypoint.sh` runs as **root** (this is the default). This allows it to:
-  - Generate config files into `/etc/sssd`, `/etc/krb5.conf`, `/etc/ganesha/`, etc.
-  - Perform early permission checks and directory setup.
-  - Run any other bootstrap operations that require elevated privileges.
+- The entrypoint shell runs as **root** and stays as pid 1 for the life of the container. This is required so it can:
+  - Run the Rust generator (which must produce `/etc/sssd/sssd.conf` as **root:root 0600** — SSSD's `access_check_file()` strictly enforces this and rejects any other owner, even 0600 files owned by another user).
+  - Start **sssd** itself as root (standard for SSSD; it creates responder pipes/sockets with tight permissions).
+  - Handle SIGHUP for privileged regeneration + daemon restarts.
+  - Perform the post-start fixups that let the unprivileged user talk to SSSD's NSS responder.
 
-- Once setup is complete, the entrypoint uses `gosu nfs` to drop privileges before starting the long-running processes (`sssd`, `ganesha.nfsd`, and the config watcher). Most of the container's runtime is therefore as the unprivileged `nfs` user.
+- **ganesha.nfsd** and the **config watcher** run as the unprivileged `nfs` user (via `gosu`). This is the important security boundary for VFS access to user data and for the inotify watcher.
 
-You should generally **not** pass `--user nfs` (or `user: "nfs"` in compose) — doing so would prevent the entrypoint from performing its required root-level setup steps and would lead to permission errors.
+- After sssd starts we explicitly relax the permissions on its responder pipes (`/var/lib/sss/pipes`) so that `getent`/`id` and Ganesha (running as `nfs`) can still perform UID/GID mapping via the NSS module.
+
+You should generally **not** pass `--user nfs` (or `user: "nfs"` in compose) — doing so would prevent the root supervisor from doing the required privileged steps (especially writing a root-owned sssd.conf).
+
+If you need a fully unprivileged container for some other reason, the only viable path is to start the whole thing as root (`--user root`) and accept that sssd + generator run privileged (still the safest practical choice for this workload).
 
 ### Recommended capabilities
 
@@ -136,7 +141,7 @@ sudo chgrp "$(docker run --rm --entrypoint getent ghcr.io/aelieth/nfs-klldap-hos
 sudo chmod g+r /path/to/your/krb5.keytab
 ```
 
-The entrypoint prints the exact remediation command when it detects permission problems.
+The entrypoint (and Rust diagnostics) print exact remediation commands. After the root-owned generate step the entrypoint now does an automatic `chown nfs:nfs + chmod 600` on `sssd.conf` (the main historical source of "Permission denied" at SSSD start when running daemons as the unprivileged user).
 
 ### Alternative (largely superseded): Narrow sudoers inside the image
 

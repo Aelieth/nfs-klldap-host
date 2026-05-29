@@ -72,6 +72,81 @@ pub struct SssdSection {
     pub port: Option<u16>,
     pub ldap_user_search_base: Option<String>,
     pub ldap_group_search_base: Option<String>,
+
+    /// Optional explicit override for the main ldap_search_base.
+    /// When unset, it is derived from the Kerberos realm (recommended).
+    pub ldap_search_base: Option<String>,
+
+    // TLS / connection security options (for both ldaps:// and plain ldap:// + STARTTLS).
+    // These are emitted verbatim into the generated [domain/default] section.
+    // Common values for self-signed LLDAP:
+    //   ldap_tls_reqcert = "never"
+    // For insecure ldap:// with opportunistic STARTTLS upgrade:
+    //   ldap_id_use_start_tls = true
+    //   ldap_tls_reqcert = "never"
+    pub ldap_tls_reqcert: Option<String>,
+    pub ldap_tls_cacert: Option<String>,
+    pub ldap_id_use_start_tls: Option<bool>,
+
+    // === Rich LLDAP + POSIX attribute mapping (broad spectrum support) ===
+    // These have excellent defaults for typical LLDAP deployments with POSIX attributes.
+    // Override only when your LLDAP schema differs.
+    pub enumerate: Option<bool>,
+
+    // Object classes (user often has inetOrgPerson + posixAccount auxiliary in LLDAP)
+    pub ldap_user_object_class: Option<String>,
+    pub ldap_group_object_class: Option<String>,
+
+    // User attribute mappings (highly recommended for correct UID/GID + home/shell)
+    pub ldap_user_name: Option<String>,
+    pub ldap_user_uid_number: Option<String>,
+    pub ldap_user_gid_number: Option<String>,
+    pub ldap_user_home_directory: Option<String>,
+    pub ldap_user_shell: Option<String>,
+    pub ldap_user_fullname: Option<String>,
+
+    // Group attribute mappings
+    pub ldap_group_name: Option<String>,
+    pub ldap_group_gid_number: Option<String>,
+    pub ldap_group_member: Option<String>,
+
+    // === Advanced / production knobs from real deployments ===
+    /// Name of the SSSD domain section. Defaults to "default".
+    /// Setting this to "lldap" produces [domain/lldap] which some people prefer.
+    pub domain: Option<String>,
+
+    /// Authentication provider. Common values: "ldap" or "krb5".
+    /// For Kerberized NFS environments, many people prefer auth_provider = krb5
+    /// while still using LDAP for POSIX identity (uidNumber/gidNumber etc.).
+    pub auth_provider: Option<String>,
+
+    /// chpass_provider when using Kerberos auth (usually also "krb5").
+    pub chpass_provider: Option<String>,
+
+    /// LDAP schema. Common with modern LLDAP + POSIX: "rfc2307bis".
+    pub ldap_schema: Option<String>,
+
+    /// Explicitly disable ID mapping (recommended when LLDAP provides real uidNumber/gidNumber).
+    pub ldap_id_mapping: Option<bool>,
+
+    /// Very important safety flag when using plain ldap:// (non-TLS).
+    /// The generator will automatically set this to true for ldap:// URIs unless overridden.
+    pub ldap_auth_disable_tls_never_use_in_production: Option<bool>,
+
+    /// Access control. "permit" is common and simple for trusted internal setups.
+    pub access_provider: Option<String>,
+
+    /// Whether to use fully qualified names (user@REALM). Usually false for homelab/small setups.
+    pub use_fully_qualified_names: Option<bool>,
+
+    /// Optional explicit Kerberos settings for the domain (when auth_provider = krb5).
+    /// If not set, they are derived from ldap_uri host + the effective realm.
+    pub krb5_server: Option<String>,
+    pub krb5_kpasswd: Option<String>,
+
+    // Additional Kerberos tuning seen in real ldaps production configs
+    pub krb5_validate: Option<bool>,
+    pub krb5_store_password_if_offline: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -169,6 +244,20 @@ impl From<std::io::Error> for ConfigError {
     }
 }
 
+/// Treat a present but blank/whitespace-only Option<String> as absent.
+/// This is the central rule so that "defined with a real value in nfs-klldap.conf"
+/// always wins over auto-derived values and our LLDAP defaults.
+fn normalize_blank(field: &mut Option<String>) {
+    if let Some(v) = field {
+        if v.trim().is_empty() {
+            *field = None;
+        } else {
+            // Also trim in place so we don't emit leading/trailing spaces later
+            *field = Some(v.trim().to_string());
+        }
+    }
+}
+
 impl NfsKlldapConfig {
     /// Load from file + full validation + auto-derive
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
@@ -187,6 +276,39 @@ impl NfsKlldapConfig {
     pub fn validate_and_derive(&mut self) -> Result<(), ConfigError> {
         if self.ldap_uri.trim().is_empty() {
             return Err(ConfigError::Validation("ldap_uri is required".into()));
+        }
+
+        // Normalize all [sssd] string override fields:
+        // Treat blank / whitespace-only values the same as "not specified".
+        // This ensures that an explicit value in nfs-klldap.conf always takes
+        // precedence, while blank values fall back to auto-derived or good defaults.
+        {
+            let s = &mut self.sssd;
+            normalize_blank(&mut s.ldap_search_base);
+            normalize_blank(&mut s.ldap_user_search_base);
+            normalize_blank(&mut s.ldap_group_search_base);
+            normalize_blank(&mut s.ldap_tls_reqcert);
+            normalize_blank(&mut s.ldap_tls_cacert);
+            normalize_blank(&mut s.ldap_user_object_class);
+            normalize_blank(&mut s.ldap_group_object_class);
+            normalize_blank(&mut s.ldap_user_name);
+            normalize_blank(&mut s.ldap_user_uid_number);
+            normalize_blank(&mut s.ldap_user_gid_number);
+            normalize_blank(&mut s.ldap_user_home_directory);
+            normalize_blank(&mut s.ldap_user_shell);
+            normalize_blank(&mut s.ldap_user_fullname);
+            normalize_blank(&mut s.ldap_group_name);
+            normalize_blank(&mut s.ldap_group_gid_number);
+            normalize_blank(&mut s.ldap_group_member);
+
+            // New advanced fields
+            normalize_blank(&mut s.domain);
+            normalize_blank(&mut s.auth_provider);
+            normalize_blank(&mut s.chpass_provider);
+            normalize_blank(&mut s.ldap_schema);
+            normalize_blank(&mut s.krb5_server);
+            normalize_blank(&mut s.krb5_kpasswd);
+            // krb5_validate and krb5_store_password_if_offline are bools — no string normalization needed
         }
 
         // Enforce DNS name (not IP) for ldap_uri. Forward + reverse DNS is mandatory
@@ -246,12 +368,13 @@ impl NfsKlldapConfig {
             });
         }
 
-        // Auto search bases (simple but effective)
+        // Auto search bases — derive from the actual realm (no more stale example.com defaults)
+        let base_dn = format!("dc={}", self.effective_realm().to_lowercase().replace('.', ",dc="));
         if self.sssd.ldap_user_search_base.is_none() {
-            self.sssd.ldap_user_search_base = Some("ou=people,dc=example,dc=com".to_string());
+            self.sssd.ldap_user_search_base = Some(format!("ou=people,{}", base_dn));
         }
         if self.sssd.ldap_group_search_base.is_none() {
-            self.sssd.ldap_group_search_base = Some("ou=groups,dc=example,dc=com".to_string());
+            self.sssd.ldap_group_search_base = Some(format!("ou=groups,{}", base_dn));
         }
 
         // Default security + enum validation (Ganesha only supports these)
@@ -475,6 +598,23 @@ container_root = "/export"
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
 ldap_default_authtok = "CHANGE_THIS_TO_A_STRONG_SECRET"
 
+# The generator now produces a much richer sssd.conf based on real-world
+# LLDAP + Kerberos + Ganesha production setups (both your ldap:// and ldaps:// examples).
+#
+# It auto-switches based on the scheme in ldap_uri:
+#   - ldap://   → emits the "I know this is insecure" safety flags
+#   - ldaps://  → defaults to stricter tls_reqcert=demand
+#
+# It also supports the popular hybrid model (LDAP for identity + Kerberos for auth).
+#
+# Common overrides:
+#   auth_provider = "krb5"
+#   domain = "lldap"
+#   ldap_schema = "rfc2307bis"
+#   ldap_id_mapping = false
+#   enumerate = false          # conservative setting used in some production ldaps configs
+#   access_provider = "permit"
+
 # [kerberos]
 # realm = "KRB.EXAMPLE.COM"  # REQUIRED if auto-derivation from ldap_uri host domain fails
 #                            # (or set NFS_REALM env var before starting the container).
@@ -560,41 +700,76 @@ pub fn generate_all(cfg: &NfsKlldapConfig, paths: &GenerationPaths) -> Result<()
 
 fn write_sssd_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError> {
     let realm = cfg.effective_realm();
-    let search_base = format!("dc={}", realm.to_lowercase().replace('.', ",dc="));
+    let search_base = cfg
+        .sssd
+        .ldap_search_base
+        .clone()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| format!("dc={}", realm.to_lowercase().replace('.', ",dc=")));
 
-    let content = format!(
+    let default_user_base = format!("ou=people,{}", search_base);
+    let default_group_base = format!("ou=groups,{}", search_base);
+
+    let user_base = cfg
+        .sssd
+        .ldap_user_search_base
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(&default_user_base);
+    let group_base = cfg
+        .sssd
+        .ldap_group_search_base
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(&default_group_base);
+
+    let domain_name = cfg
+        .sssd
+        .domain
+        .clone()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "default".to_string());
+
+    let is_plain_ldap = cfg.ldap_uri.starts_with("ldap://");
+
+    // Determine auth provider (default "ldap", but "krb5" is very common in Kerberized NFS setups)
+    let auth_provider = cfg
+        .sssd
+        .auth_provider
+        .clone()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "ldap".to_string());
+
+    let mut content = format!(
         r#"[sssd]
 config_file_version = 2
 services = nss, pam
-domains = default
+domains = {domain_name}
 
-[domain/default]
+[nss]
+filter_users = root
+filter_groups = root
+
+[domain/{domain_name}]
 id_provider = ldap
-auth_provider = ldap
+auth_provider = {auth_provider}
 ldap_uri = {ldap_uri}
 ldap_search_base = {search_base}
 ldap_default_bind_dn = {bind_dn}
 ldap_default_authtok = {bind_pw}
-ldap_user_search_base = {user_base}
-ldap_group_search_base = {group_base}
-cache_credentials = True
-enumerate = False
+cache_credentials = true
 "#,
+        domain_name = domain_name,
+        auth_provider = auth_provider,
         ldap_uri = cfg.ldap_uri,
         search_base = search_base,
         bind_dn = cfg.sssd.ldap_default_bind_dn,
         bind_pw = cfg.sssd.ldap_default_authtok,
-        user_base = cfg
-            .sssd
-            .ldap_user_search_base
-            .as_deref()
-            .unwrap_or("ou=people,dc=example,dc=com"),
-        group_base = cfg
-            .sssd
-            .ldap_group_search_base
-            .as_deref()
-            .unwrap_or("ou=groups,dc=example,dc=com"),
     );
+
+    // Rich LLDAP + POSIX attribute mappings + production safety flags.
+    // The helper now also handles hybrid Kerberos authentication when requested.
+    content.push_str(&build_ldap_domain_options(cfg, user_base, group_base, is_plain_ldap));
 
     fs::write(out, content.as_bytes())?;
     #[cfg(unix)]
@@ -603,6 +778,145 @@ enumerate = False
         fs::set_permissions(out, fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
+}
+
+/// Builds the rich body of the [domain/xxx] section.
+///
+/// This is the main "broad spectrum" helper. It aims to generate something
+/// very close to real-world proven LLDAP + Kerberos + Ganesha configurations
+/// (both plain ldap:// and ldaps:// variants).
+fn build_ldap_domain_options(cfg: &NfsKlldapConfig, user_base: &str, group_base: &str, is_plain_ldap: bool) -> String {
+    let s = &cfg.sssd;
+
+    // --- POSIX attribute mappings (user overrides always win) ---
+    let user_obj   = s.ldap_user_object_class.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "posixAccount".to_string());
+    let group_obj  = s.ldap_group_object_class.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "posixGroup".to_string());
+
+    let u_name     = s.ldap_user_name.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "uid".to_string());
+    let u_uid      = s.ldap_user_uid_number.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "uidNumber".to_string());
+    let u_gid      = s.ldap_user_gid_number.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "gidNumber".to_string());
+    let u_home     = s.ldap_user_home_directory.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "homeDirectory".to_string());
+    let u_shell    = s.ldap_user_shell.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "loginShell".to_string());
+
+    let g_name     = s.ldap_group_name.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "cn".to_string());
+    let g_gid      = s.ldap_group_gid_number.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "gidNumber".to_string());
+
+    // enumerate default = true because this project (Ganesha + permission helper + getent usage)
+    // benefits from a warm cache in typical homelab/small environments.
+    // Users with larger directories or different operational needs can set enumerate = false.
+    let enumerate = if s.enumerate.unwrap_or(true) { "true" } else { "false" };
+
+    let mut out = format!(
+        r#"ldap_user_search_base = {user_base}
+ldap_user_object_class = {user_obj}
+ldap_user_name = {u_name}
+ldap_user_uid_number = {u_uid}
+ldap_user_gid_number = {u_gid}
+ldap_user_home_directory = {u_home}
+ldap_user_shell = {u_shell}
+
+ldap_group_search_base = {group_base}
+ldap_group_object_class = {group_obj}
+ldap_group_name = {g_name}
+ldap_group_gid_number = {g_gid}
+
+enumerate = {enumerate}
+access_provider = {access}
+use_fully_qualified_names = {fq}
+"#,
+        user_base = user_base,
+        group_base = group_base,
+        access = s.access_provider.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim()).unwrap_or("permit"),
+        fq = if s.use_fully_qualified_names.unwrap_or(false) { "true" } else { "false" },
+    );
+
+    // ldap_schema (very useful with modern LLDAP)
+    if let Some(schema) = s.ldap_schema.as_ref().filter(|v| !v.trim().is_empty()) {
+        out.push_str(&format!("ldap_schema = {}\n", schema.trim()));
+    }
+
+    // ldap_id_mapping (usually false when LLDAP provides real numbers)
+    if let Some(idmap) = s.ldap_id_mapping {
+        out.push_str(&format!("ldap_id_mapping = {}\n", if idmap { "true" } else { "false" }));
+    }
+
+    // === TLS / safety flags (auto-switches based on ldap vs ldaps) ===
+    // User-provided values always take full precedence.
+
+    // Always emit cacert if user set one
+    if let Some(ref v) = s.ldap_tls_cacert {
+        if !v.trim().is_empty() {
+            out.push_str(&format!("ldap_tls_cacert = {}\n", v.trim()));
+        }
+    }
+
+    if is_plain_ldap {
+        // === Plain LDAP (insecure) profile ===
+        // Emit strong safety/acknowledgement flags by default.
+        if s.ldap_auth_disable_tls_never_use_in_production.unwrap_or(true) {
+            out.push_str("ldap_auth_disable_tls_never_use_in_production = true\n");
+        }
+
+        let reqcert = s.ldap_tls_reqcert.as_ref()
+            .filter(|v| !v.trim().is_empty())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "never".to_string());
+        out.push_str(&format!("ldap_tls_reqcert = {}\n", reqcert));
+
+        let use_start = s.ldap_id_use_start_tls.unwrap_or(false);
+        out.push_str(&format!("ldap_id_use_start_tls = {}\n", if use_start { "true" } else { "false" }));
+    } else {
+        // === LDAPS (secure) profile ===
+        // Default to stricter validation ("demand") unless user overrides.
+        let reqcert = s.ldap_tls_reqcert.as_ref()
+            .filter(|v| !v.trim().is_empty())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "demand".to_string());
+        out.push_str(&format!("ldap_tls_reqcert = {}\n", reqcert));
+
+        if let Some(true) = s.ldap_id_use_start_tls {
+            out.push_str("ldap_id_use_start_tls = true\n");
+        }
+    }
+
+    // === Kerberos authentication block (hybrid mode) ===
+    // When auth_provider is krb5, we emit the full Kerberos settings under the domain.
+    // This matches real production usage of LLDAP + Kerberized NFS (LDAP for identity, Kerberos for auth).
+    let auth = s.auth_provider.as_ref().map(|s| s.trim()).unwrap_or("ldap");
+    if auth.eq_ignore_ascii_case("krb5") {
+        let chpass = s.chpass_provider.as_ref().filter(|v| !v.trim().is_empty())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "krb5".to_string());
+
+        let kdc_host = s.krb5_server.as_ref().filter(|v| !v.trim().is_empty())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| extract_host_from_uri(&cfg.ldap_uri));
+
+        let kpasswd = s.krb5_kpasswd.as_ref().filter(|v| !v.trim().is_empty())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| kdc_host.clone());
+
+        out.push_str(&format!(
+            r#"
+# === Kerberos Authentication (hybrid with LDAP identity) ===
+chpass_provider = {chpass}
+krb5_server = {kdc_host}
+krb5_realm = {realm}
+krb5_kpasswd = {kpasswd}
+"#,
+            realm = cfg.effective_realm()
+        ));
+
+        // Extra Kerberos tuning from real ldaps production configs
+        if let Some(v) = s.krb5_validate {
+            out.push_str(&format!("krb5_validate = {}\n", if v { "true" } else { "false" }));
+        }
+        if let Some(v) = s.krb5_store_password_if_offline {
+            out.push_str(&format!("krb5_store_password_if_offline = {}\n", if v { "true" } else { "false" }));
+        }
+    }
+
+    out
 }
 
 fn write_krb5_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError> {
@@ -635,6 +949,12 @@ fn write_krb5_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
     );
 
     fs::write(out, content.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // krb5.conf is public config (no secrets)
+        let _ = fs::set_permissions(out, fs::Permissions::from_mode(0o644));
+    }
     Ok(())
 }
 
@@ -1046,6 +1366,35 @@ mod tests {
             Some(v) => std::env::set_var("NFS_REALM", v),
             None => std::env::remove_var("NFS_REALM"),
         }
+    }
+
+    #[test]
+    fn sssd_tls_options_are_emitted_when_set() {
+        let mut c = minimal_cfg();
+        c.sssd.ldap_tls_reqcert = Some("never".into());
+        c.sssd.ldap_id_use_start_tls = Some(true);
+        c.sssd.ldap_tls_cacert = Some("/etc/pki/ca.crt".into());
+        // Force a non-ldaps uri so STARTTLS makes sense in the test
+        c.ldap_uri = "ldap://kllap.test:389".into();
+        // Re-derive (port etc.) — validate will also set search bases
+        let _ = c.validate_and_derive();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = GenerationPaths {
+            sssd_conf: tmp.path().join("sssd.conf"),
+            krb5_conf: tmp.path().join("krb5.conf"),
+            ganesha_conf: tmp.path().join("ganesha.conf"),
+            exports_dir: tmp.path().join("exports.d"),
+        };
+        generate_all(&c, &paths).expect("generate with tls");
+
+        let sssd = fs::read_to_string(&paths.sssd_conf).unwrap();
+        assert!(sssd.contains("ldap_tls_reqcert = never"));
+        // We accept both casings; the generator now prefers lowercase to match real production examples.
+        assert!(sssd.to_lowercase().contains("ldap_id_use_start_tls = true"));
+        assert!(sssd.contains("ldap_tls_cacert = /etc/pki/ca.crt"));
+        // Should still have the core ldap_uri from the (overridden) config
+        assert!(sssd.contains("ldap_uri = ldap://kllap.test:389"));
     }
 
     #[test]

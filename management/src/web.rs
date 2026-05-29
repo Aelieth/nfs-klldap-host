@@ -523,8 +523,15 @@ pub(crate) struct StructuredSettingsForm {
     sssd_bind_dn: Option<String>,
     sssd_bind_pw: Option<String>,
     sssd_port: Option<u16>,
+    sssd_search_base: Option<String>,   // main ldap_search_base override
     sssd_user_base: Option<String>,
     sssd_group_base: Option<String>,
+    // TLS options for ldap/ldaps flexibility (insecure vs secure, self-signed etc.)
+    sssd_ldap_tls_reqcert: Option<String>,
+    sssd_ldap_tls_cacert: Option<String>,
+    sssd_ldap_id_use_start_tls: Option<bool>,
+    // Common and important for LLDAP bring-up
+    sssd_enumerate: Option<bool>,
 
     // [kerberos]
     kerberos_realm: Option<String>,
@@ -618,12 +625,23 @@ pub async fn settings_save_structured(
     if let Some(v) = form.sssd_port {
         cfg.sssd.port = Some(v);
     }
+    if let Some(v) = form.sssd_search_base.clone() {
+        cfg.sssd.ldap_search_base = if v.trim().is_empty() { None } else { Some(v) };
+    }
     if let Some(v) = form.sssd_user_base.clone() {
-        cfg.sssd.ldap_user_search_base = Some(v);
+        cfg.sssd.ldap_user_search_base = if v.trim().is_empty() { None } else { Some(v) };
     }
     if let Some(v) = form.sssd_group_base.clone() {
-        cfg.sssd.ldap_group_search_base = Some(v);
+        cfg.sssd.ldap_group_search_base = if v.trim().is_empty() { None } else { Some(v) };
     }
+    if let Some(v) = form.sssd_ldap_tls_reqcert.clone() {
+        cfg.sssd.ldap_tls_reqcert = if v.trim().is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = form.sssd_ldap_tls_cacert.clone() {
+        cfg.sssd.ldap_tls_cacert = if v.trim().is_empty() { None } else { Some(v) };
+    }
+    cfg.sssd.ldap_id_use_start_tls = form.sssd_ldap_id_use_start_tls;
+    cfg.sssd.enumerate = form.sssd_enumerate;
 
     if let Some(v) = form.kerberos_realm.clone() {
         cfg.kerberos.realm = Some(v);
@@ -887,6 +905,7 @@ mod tests {
             [sssd]
             ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
             ldap_default_authtok = "sekret"
+            # ldap_tls_reqcert = "never"   # example for self-signed LLDAP certs
             [[shares]]
             name = "data"
             host_path = "/tmp/data"
@@ -935,7 +954,8 @@ mod tests {
         let new_content = r#"ldap_uri = "ldaps://kllap.test:6360"
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
-ldap_default_authtok = "sekret""#;
+ldap_default_authtok = "sekret"
+# ldap_tls_reqcert = "never"   # example for self-signed LLDAP certs"#;
 
         let req = Request::builder()
             .method("POST")

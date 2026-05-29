@@ -92,9 +92,28 @@ cleanup() {
 trap cleanup SIGTERM SIGINT
 
 handle_sighup() {
-    log "SIGHUP received — reloading configuration via Rust generator..."
+    log "SIGHUP received — reloading configuration via Rust generator (as root)..."
     generate_configs
+
+    # Fix perms again after regeneration (sssd.conf must stay root:root 0600).
+    chown root:root /etc/sssd/sssd.conf 2>/dev/null || true
+    chmod 600 /etc/sssd/sssd.conf 2>/dev/null || true
+    chown root:root /etc/krb5.conf 2>/dev/null || true
+    chmod 644 /etc/krb5.conf 2>/dev/null || true
+    chown -R nfs:nfs /etc/ganesha 2>/dev/null || true
+    chmod -R a+rX /etc/ganesha 2>/dev/null || true
+
+    # Ganesha can usually be reloaded via its own mechanism or a TERM that
+    # the supervisor will turn into a restart.
     /usr/local/bin/ganesha-ctl reload 2>/dev/null || pkill -HUP ganesha.nfsd 2>/dev/null || true
+
+    # SSSD config changes (bind DN, TLS settings, uri, etc.) generally require
+    # a full restart of the daemon. We do a controlled stop + start here.
+    # This is safe because we are still the root supervisor.
+    pkill -TERM sssd 2>/dev/null || true
+    sleep 1
+    sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} 2>/dev/null &
+    log "    SSSD restarted to pick up any config changes."
 }
 trap 'handle_sighup' SIGHUP
 
@@ -130,9 +149,45 @@ main() {
     # inside the Rust startup binary (see `nfs-klldap-startup check` or the
     # end of the `run` guided flow). The old shell functions have been retired.
 
-    # Start SSSD (as the unprivileged nfs user)
+    # -----------------------------------------------------------------------------
+    # Permission model (carefully tuned for both SSSD requirements and the
+    # project's unprivileged ganesha goal)
+    # -----------------------------------------------------------------------------
+    # - /etc/sssd/sssd.conf MUST be root:root 0600. SSSD's internal
+    #   access_check_file() explicitly rejects any other owner (even if the
+    #   running user could read it via kernel perms). This is why we can no
+    #   longer chown it to the 'nfs' user.
+    # - sssd itself therefore runs as root (standard and required for its
+    #   own config + pipe creation behavior).
+    # - ganesha.nfsd and the config watcher run unprivileged as the 'nfs' user
+    #   (via gosu). This is the important containment boundary for VFS access
+    #   to user data.
+    # - The root entrypoint shell stays as pid 1 (no final exec) so it can
+    #   continue to handle SIGHUP, perform privileged regenerate, fix perms,
+    #   and orchestrate child restarts. This gives us "permissions across the
+    #   board" without needing sudo for the normal reload path.
+    # - After sssd starts we fix up the responder pipes so the unprivileged
+    #   'nfs' user (ganesha, getent, etc.) can still perform NSS lookups.
+    # -----------------------------------------------------------------------------
+
+    # Force correct ownership for the main SSSD config (non-negotiable).
+    chown root:root /etc/sssd/sssd.conf 2>/dev/null || true
+    chmod 600 /etc/sssd/sssd.conf 2>/dev/null || true
+
+    # krb5.conf is public config; root-owned 0644 is fine and expected.
+    chown root:root /etc/krb5.conf 2>/dev/null || true
+    chmod 644 /etc/krb5.conf 2>/dev/null || true
+
+    # Ganesha fragments and main config need to be readable by the nfs user
+    # (ganesha runs as nfs). The directory is already prepared in the image.
+    chown -R nfs:nfs /etc/ganesha 2>/dev/null || true
+    chmod -R a+rX /etc/ganesha 2>/dev/null || true
+
+    # Start SSSD as root (required by its strict config ownership validator and
+    # how it creates responder sockets/pipes). This is the one daemon we run
+    # privileged; everything else that touches user data stays as 'nfs'.
     log "[1/3] Starting SSSD..."
-    run_as_nfs sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} &
+    sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} &
     SSSD_PID=$!
 
     log "    Waiting for SSSD NSS responder..."
@@ -148,17 +203,44 @@ main() {
         die "SSSD NSS pipe did not appear. Check bind credentials and LLDAP connectivity."
     fi
 
-    # Start config watcher (as the unprivileged nfs user)
+    # -----------------------------------------------------------------------------
+    # Make SSSD responder pipes usable by the unprivileged 'nfs' user.
+    # Even when sssd runs as root it often creates /var/lib/sss/pipes with
+    # tight ownership (root or sssd group). Ganesha (as nfs) and tools like
+    # getent/id need to talk to the NSS responder for UID/GID mapping.
+    # We make the pipes directory group-readable by the nfs user (who is
+    # a member of the sssd group when the image was built correctly).
+    # -----------------------------------------------------------------------------
+    log "    Fixing SSSD responder pipe permissions for unprivileged NSS access..."
+    chown -R root:sssd /var/lib/sss/pipes 2>/dev/null || true
+    chmod -R 0770 /var/lib/sss/pipes 2>/dev/null || true
+    # Also ensure the broader cache area is traversable (some mc caches etc.)
+    find /var/lib/sss -type d -exec chmod g+rx {} + 2>/dev/null || true
+    chown -R root:nfs /var/lib/sss/mc /var/lib/sss/pubconf 2>/dev/null || true
+
+    # Start config watcher (as the unprivileged nfs user).
+    # The watcher now signals the root supervisor (pid 1) on changes instead of
+    # calling the generator directly. This guarantees that regeneration of
+    # sssd.conf always happens with root privileges → correct ownership.
     if [ -x /usr/local/bin/nfs-klldap-conf-watcher ]; then
         run_as_nfs /usr/local/bin/nfs-klldap-conf-watcher "$NFS_CONFIG" &
         WATCHER_PID=$!
         log "    Config watcher started (auto-reload on changes)."
     fi
 
-    # Start Ganesha (drop to unprivileged nfs user; gosu + setcap on the binary
-    # gives it the necessary privileges like NET_BIND_SERVICE)
+    # Start Ganesha as the unprivileged nfs user (the important containment
+    # boundary). We do NOT exec here — the root shell must remain as pid 1
+    # so SIGHUP continues to work for privileged regeneration and so we can
+    # reap children cleanly.
     log "[2/3] Starting NFS-Ganesha..."
-    exec gosu nfs ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log
+    run_as_nfs ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    GANESHA_PID=$!
+
+    log "All services launched. Supervisor (this shell) remains as root for signal handling and privileged regen."
+
+    # Wait for children. If any die the script exits and the container will
+    # be restarted by the policy (unless-stopped etc.).
+    wait
 }
 
 main

@@ -39,7 +39,22 @@
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
         <label>sssd.bind_dn<br><input name="sssd_bind_dn" style="width:100%" required></label>
         <label>sssd.bind_pw (secret)<br><input type="password" name="sssd_bind_pw" style="width:100%" required></label>
+        <label>sssd.ldap_search_base (optional override)<br><input name="sssd_search_base" placeholder="dc=...,dc=..." style="width:100%"></label>
     </div>
+
+    <h4 style="margin-top:0.6rem">SSSD TLS / Security (ldap vs ldaps, self-signed certs)</h4>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <label>sssd.ldap_tls_reqcert (e.g. never / demand)<br><input name="sssd_ldap_tls_reqcert" placeholder="never" style="width:100%"></label>
+        <label>sssd.ldap_tls_cacert (optional path)<br><input name="sssd_ldap_tls_cacert" placeholder="/etc/pki/..." style="width:100%"></label>
+    </div>
+    <label style="display:block; margin:4px 0;">
+        <input type="checkbox" name="sssd_ldap_id_use_start_tls" value="true">
+        sssd.ldap_id_use_start_tls (only for plain ldap:// + STARTTLS)
+    </label>
+    <label style="display:block; margin:4px 0;">
+        <input type="checkbox" name="sssd_enumerate" value="true" checked>
+        sssd.enumerate (recommended True for small LLDAP environments during bring-up)
+    </label>
 
     <h4 style="margin-top:1rem">Shares</h4>
     <div id="shares-container">

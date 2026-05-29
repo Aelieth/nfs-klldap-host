@@ -33,7 +33,9 @@
 # Allow the nfs user to start ganesha with the exact config we generate
 nfs ALL=(root) NOPASSWD: /usr/bin/ganesha.nfsd -f /etc/ganesha/ganesha.conf -L /var/log/ganesha.log
 
-# Allow starting sssd in the exact way the entrypoint uses it
+# Allow starting sssd in the exact way the entrypoint uses it (used only in
+# the alternative "run everything via sudo from the nfs user" deployment model).
+# In the standard deployment the root supervisor starts sssd directly.
 nfs ALL=(root) NOPASSWD: /usr/sbin/sssd -i --logger=files
 nfs ALL=(root) NOPASSWD: /usr/sbin/sssd -i --logger=files -d *
 

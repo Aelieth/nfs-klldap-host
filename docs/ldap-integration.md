@@ -60,28 +60,26 @@ volumes:
 
 ### Key settings (in nfs-klldap.conf) for LLDAP + NFS
 
-Critical sections:
+The container's Rust generator produces a minimal but functional `sssd.conf` from the single TOML.
+Critical sections live under the top-level `ldap_uri` and `[sssd]`:
 
-```ini
-[domain/default]
-id_provider = ldap
-auth_provider = ldap
-access_provider = permit
+```toml
+ldap_uri = "ldaps://lldap.example.com:6360"
 
-ldap_uri = ldaps://lldap.example.com:6360
-ldap_search_base = dc=example,dc=com
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
+ldap_default_authtok = "your-password"
+ldap_user_search_base = "ou=people,dc=example,dc=com"
+ldap_group_search_base = "ou=groups,dc=example,dc=com"
 
-ldap_user_search_base = ou=people,dc=example,dc=com
-ldap_group_search_base = ou=groups,dc=example,dc=com
-
-# POSIX mappings
-ldap_user_object_class = inetOrgPerson
-ldap_user_uid_number = uidNumber
-ldap_user_gid_number = gidNumber
-...
+# TLS flexibility (new in current version)
+# ldap_tls_reqcert = "never"          # accept self-signed LLDAP certs (common)
+# ldap_id_use_start_tls = true        # only when using plain ldap:// + STARTTLS
 ```
 
-Enable enumeration (`enumerate = true`) during initial bring-up — it makes `getent` and idmapping more reliable for small environments.
+The generator emits the standard ldap_* search bases + bind credentials. For advanced POSIX attribute mapping or custom objectClasses you can still drop a fully custom `/etc/sssd/sssd.conf` (advanced users only; the watcher will overwrite on next nfs-klldap.conf change unless you disable it).
+
+Enable enumeration during initial bring-up by adding `enumerate = true` under `[domain/default]` via a raw edit if the minimal generator output needs it for your LLDAP data.
 
 ## 3. Verification Commands (inside the running container)
 
@@ -119,7 +117,7 @@ ls -l /mnt/test
 - SELinux / AppArmor on the host is interfering with the bind mounts.
 
 **SSSD cannot contact LLDAP**
-- TLS/certificate problems (`ldap_tls_reqcert = demand`).
+- TLS/certificate problems (set `ldap_tls_reqcert = "never"` under [sssd] in nfs-klldap.conf for self-signed LLDAP certs).
 - Firewall, bind credentials, or wrong `ldap_uri`.
 - Run the container with `SSSD_DEBUG_LEVEL=7` and look at the logs.
 

@@ -137,7 +137,12 @@ RUN microdnf install -y --assumeyes epel-release && \
 # Service user + directories
 # -----------------------------------------------------------------------------
 RUN groupadd -r keytab && \
-    useradd -r -U -s /sbin/nologin -d /nonexistent -c "nfs-klldap service user" -G keytab nfs
+    useradd -r -U -s /sbin/nologin -d /nonexistent -c "nfs-klldap service user" -G keytab nfs && \
+    # Defensive: ensure sssd group exists (package usually creates it) and add the
+    # unprivileged nfs user to it. This helps with SSSD responder sockets/pipes
+    # that are often created with group sssd and tight perms.
+    groupadd -r sssd 2>/dev/null || true && \
+    usermod -aG sssd nfs 2>/dev/null || true
 
 RUN mkdir -p \
     /etc/ganesha \
@@ -198,10 +203,19 @@ RUN chown -R nfs:nfs \
         /var/run/sssd \
         /etc/ganesha \
         /etc/ganesha/exports.d \
-        /etc/sssd \
         /container \
         /container/sudoers.d && \
-    chown root:keytab /etc/ganesha /etc/ganesha/exports.d 2>/dev/null || true && \
+    # /etc/sssd is primarily managed as root:root 0600 for the main config
+    # (SSSD's access_check_file is strict about owner == 0). The generator
+    # (run as root via supervisor) will create the file with correct ownership.
+    # We still ensure the directory exists and is traversable.
+    chown root:root /etc/sssd && \
+    chmod 755 /etc/sssd && \
+    # ganesha exports fragments are written by the (root) generator or watcher
+    # path; make the directory writable by the nfs user so either path works
+    # and ganesha (running as nfs) can read them.
+    chown -R nfs:nfs /etc/ganesha/exports.d && \
+    chmod 775 /etc/ganesha/exports.d && \
     chmod 755 /container /container/scripts && \
     chmod 755 /container/sudoers.d || true && \
     setcap cap_net_bind_service+ep /usr/bin/ganesha.nfsd 2>/dev/null || true

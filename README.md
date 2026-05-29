@@ -134,6 +134,7 @@ ldap_uri = "ldaps://lldap.example.com:6360"
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
 ldap_default_authtok = "your-password"
+# ldap_tls_reqcert = "never"   # for self-signed LLDAP certs (ldaps or STARTTLS)
 
 [server]
 # hostname = "examplehost-nfs"          # optional override (recommended: start with --uts=host; TUI shows the required principal with -nfs insertion)
@@ -214,7 +215,7 @@ nfs-klldap-host/
 ```
 
 **Generated inside container (never exposed):**
-- `/etc/sssd/sssd.conf`
+- `/etc/sssd/sssd.conf` (must be root:root 0600 — SSSD internally rejects other owners)
 - `/etc/krb5.conf`
 - `/etc/ganesha/exports.d/*.conf`
 

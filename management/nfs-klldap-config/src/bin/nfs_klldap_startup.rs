@@ -23,7 +23,7 @@ use std::thread;
 use std::time::Duration;
 
 use nfs_klldap_config::{
-    derive_realm_from_uri, extract_host_from_uri, is_persistent_config, load_host_paths_only,
+    derive_realm_from_uri, extract_host_from_uri, is_persistent_config,
     suggested_nfs_hostname, NfsKlldapConfig, ConfigError,
 };
 
@@ -680,7 +680,9 @@ fn print_runtime_diagnostics() {
             } else {
                 println!("             [ACTION REQUIRED] {} is not writable by current user", d);
                 println!("                    Fix on host (or add --user root temporarily for debugging):");
-                println!("                      sudo chown -R 1000:1000 {}   # (example UID; use the container's nfs uid)", d);
+                println!("                      # Determine the runtime 'nfs' UID inside the image:");
+                println!("                      NFS_UID=$(docker run --rm --entrypoint id {} -u nfs 2>/dev/null | tr -cd 0-9)", "$d");
+                println!("                      sudo chown -R $NFS_UID:$NFS_UID {}   # (use the real container nfs uid)", d);
             }
         }
     }

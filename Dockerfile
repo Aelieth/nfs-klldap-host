@@ -49,69 +49,64 @@ RUN rustc --version && cargo --version
 RUN cargo install cargo-chef --locked
 
 # -----------------------------------------------------------------------------
-# Stage 2: Planner (generate dependency recipe)
+# Stage 2: Planner (generate dependency recipe at workspace root)
 # -----------------------------------------------------------------------------
 FROM chef AS planner
 
 WORKDIR /build
 
-# Copy workspace root manifests first — required for [workspace.package] inheritance
-# and for `cargo metadata` / cargo-chef to resolve the workspace graph.
-COPY --chown=nfs:nfs Cargo.toml Cargo.lock ./
-
-# Copy crate sources (full for planner, per historical design)
-COPY --chown=nfs:nfs nfs-klldap-config /build/nfs-klldap-config
-COPY --chown=nfs:nfs nfs-klldap-ui /build/nfs-klldap-ui
-
-# Prepare recipe from workspace root (so it sees both members and inherited fields)
-RUN cargo chef prepare --recipe-path /build/nfs-klldap-config/recipe.json
-
-# -----------------------------------------------------------------------------
-# Stage 3: Builder (build both binaries with caching)
-# -----------------------------------------------------------------------------
-FROM chef AS builder
-
-COPY --from=planner --chown=nfs:nfs /build/nfs-klldap-config/recipe.json /build/nfs-klldap-config/recipe.json
-
-WORKDIR /build
-
-# Bring in workspace manifests (for chef cook + later cargo invocations that need
-# to resolve [workspace.package] inheritance and member paths).
+# Copy only the manifests first (canonical cargo-chef workspace pattern)
 COPY --chown=nfs:nfs Cargo.toml Cargo.lock ./
 COPY --chown=nfs:nfs nfs-klldap-config/Cargo.toml ./nfs-klldap-config/
 COPY --chown=nfs:nfs nfs-klldap-ui/Cargo.toml ./nfs-klldap-ui/
 
-WORKDIR /build/nfs-klldap-config
+# Prepare a single recipe from the workspace root
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Cook dependencies using the recipe (this is the cacheable layer)
+# -----------------------------------------------------------------------------
+# Stage 3: Builder (build using workspace root + -p selectors)
+# -----------------------------------------------------------------------------
+FROM chef AS builder
+
+# Bring in the workspace-level recipe
+COPY --from=planner --chown=nfs:nfs /build/recipe.json /build/recipe.json
+
+WORKDIR /build
+
+# Copy manifests (for chef cook)
+COPY --chown=nfs:nfs Cargo.toml Cargo.lock ./
+COPY --chown=nfs:nfs nfs-klldap-config/Cargo.toml ./nfs-klldap-config/
+COPY --chown=nfs:nfs nfs-klldap-ui/Cargo.toml ./nfs-klldap-ui/
+
+# Cook dependencies at the workspace root (canonical pattern)
 RUN cargo chef cook --release --recipe-path recipe.json
 
-# Copy full source (overwrites the stub manifests above; only app code changes invalidate this layer)
+# Copy full source
 COPY --chown=nfs:nfs nfs-klldap-config /build/nfs-klldap-config
 COPY --chown=nfs:nfs nfs-klldap-ui /build/nfs-klldap-ui
 
-# Build binaries for the target architecture
-RUN set -eux && \
+# Build binaries for the target architecture from the workspace root
+RUN set -euxo pipefail && \
     case "$(uname -m)" in \
         x86_64)  TARGET="x86_64-unknown-linux-gnu" ;; \
         aarch64) TARGET="aarch64-unknown-linux-gnu" ;; \
         *)       echo "Unsupported architecture: $(uname -m)" && exit 1 ;; \
     esac && \
     echo "=== Building for target $TARGET ===" && \
-    # Build the small container binaries
-    (cd /build/nfs-klldap-config && \
-     rm -rf target && \
-     cargo build --release \
-        --bin nfs-klldap-config \
-        --bin nfs-klldap-startup \
-        --target "$TARGET" && \
-     cp "target/$TARGET/release/nfs-klldap-config" /output/ && \
-     cp "target/$TARGET/release/nfs-klldap-startup" /output/) && \
-    # Build the WebUI binary (runs inside the container on port 9630)
-    (cd /build/nfs-klldap-ui && \
-     rm -rf target && \
-     cargo build --release --bin nfs-klldap-ui --target "$TARGET" && \
-     cp "target/$TARGET/release/nfs-klldap-ui" /output/) && \
+    rm -rf target && \
+    # Build both binaries from the config crate
+    cargo build --release --target "$TARGET" \
+        -p nfs-klldap-config --bin nfs-klldap-config --bin nfs-klldap-startup && \
+    echo "=== nfs-klldap-config artifacts ===" && \
+    ls -l target/$TARGET/release/ || true && \
+    # Build the WebUI binary
+    cargo build --release --target "$TARGET" -p nfs-klldap-ui --bin nfs-klldap-ui && \
+    echo "=== nfs-klldap-ui artifacts ===" && \
+    ls -l target/$TARGET/release/ || true && \
+    # Copy artifacts
+    cp "target/$TARGET/release/nfs-klldap-config" /output/ && \
+    cp "target/$TARGET/release/nfs-klldap-startup" /output/ && \
+    cp "target/$TARGET/release/nfs-klldap-ui" /output/ && \
     echo "=== Verifying built binaries ===" && \
     ls -l /output/ && \
     (strip /output/nfs-klldap-config /output/nfs-klldap-startup /output/nfs-klldap-ui || true)

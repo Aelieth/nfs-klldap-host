@@ -188,4 +188,19 @@ mod tests {
         let result = load_cert_and_key(&cert_path, &key_path);
         assert!(matches!(result, Err(CertError::Io(_))));
     }
+
+    #[test]
+    fn load_fails_on_corrupt_pem_files() {
+        let dir = tempdir().unwrap();
+        let cert_path = dir.path().join("bad.crt");
+        let key_path = dir.path().join("bad.key");
+
+        // Write garbage that is not valid PEM
+        std::fs::write(&cert_path, "NOT A CERTIFICATE").unwrap();
+        std::fs::write(&key_path, "NOT A PRIVATE KEY").unwrap();
+
+        let result = load_cert_and_key(&cert_path, &key_path);
+        // rustls_pemfile will fail to parse → mapped to Io(InvalidData) or Pem variant
+        assert!(matches!(result, Err(CertError::Io(_)) | Err(CertError::Pem) | Err(CertError::Invalid)));
+    }
 }

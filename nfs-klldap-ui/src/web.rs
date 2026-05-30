@@ -1172,7 +1172,7 @@ mod tests {
     use super::*;
     use axum::{
         body::Body,
-        http::{header::COOKIE, Request, StatusCode},
+        http::{header::{COOKIE, SET_COOKIE}, Request, StatusCode},
     };
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -1230,7 +1230,8 @@ mod tests {
     async fn settings_save_raw_accepts_valid_toml_and_preserves_user() {
         let (state, _tmp) = make_test_state_with_temp_config();
         let auth = state.auth.clone();
-        let token = auth.create_session("testadmin");
+        // Use the real privileged session creator (same path the login handlers use)
+        let token = auth.create_privileged_session("testadmin", crate::auth::AuthRole::LocalAdmin);
 
         let app = router(state);
 
@@ -1260,7 +1261,8 @@ ldap_default_authtok = "sekret"
     async fn settings_save_structured_updates_top_level_fields() {
         let (state, _tmp) = make_test_state_with_temp_config();
         let auth = state.auth.clone();
-        let token = auth.create_session("testadmin");
+        // Use the real privileged session creator (same path the login handlers use)
+        let token = auth.create_privileged_session("testadmin", crate::auth::AuthRole::LocalAdmin);
 
         let app = router(state);
 
@@ -1278,5 +1280,124 @@ ldap_default_authtok = "sekret"
 
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Exercises the complete localhost first-run + normal login + session + protected route flow.
+    /// This is the primary self-contained authentication path that does not require a live LLDAP.
+    #[tokio::test]
+    async fn full_localhost_first_run_login_session_and_protected_route_flow() {
+        let (state, _tmp) = make_test_state_with_temp_config();
+        let auth = state.auth.clone();
+
+        // Router is cheap to clone for multi-request flows
+        let app = router(state);
+
+        // === Phase 1: First-run state ===
+        assert!(
+            !auth.has_simple_password(),
+            "fresh AuthManager must report no simple password"
+        );
+
+        // GET /login should succeed (renders first-run form)
+        let login_page_req = Request::builder()
+            .method("GET")
+            .uri("/login")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(login_page_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // === Phase 2: First-run password setup ===
+        // The form (and LoginForm deserializer) expects both fields, even though
+        // the setup handler conceptually only cares about the password.
+        let setup_body = "username=localhost&password=initialStrongPass123";
+        let setup_req = Request::builder()
+            .method("POST")
+            .uri("/setup-password")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(setup_body))
+            .unwrap();
+        let resp = app.clone().oneshot(setup_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER); // redirect after success
+
+        // Must have set a session cookie
+        let set_cookie = resp
+            .headers()
+            .get(SET_COOKIE)
+            .expect("setup-password must set session cookie")
+            .to_str()
+            .unwrap();
+        assert!(set_cookie.contains("session="), "cookie header must contain session token");
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Strict"));
+
+        assert!(
+            auth.has_simple_password(),
+            "sidecar password file must now exist after setup"
+        );
+
+        // Extract the token we just received (simple parse sufficient for test)
+        let _token = set_cookie
+            .split(';')
+            .next()
+            .unwrap()
+            .strip_prefix("session=")
+            .unwrap()
+            .to_string();
+
+        // === Phase 3: Normal login as localhost with the password we just set ===
+        let login_body = "username=localhost&password=initialStrongPass123";
+        let login_req = Request::builder()
+            .method("POST")
+            .uri("/login")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(login_body))
+            .unwrap();
+        let resp = app.clone().oneshot(login_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+        let login_set_cookie = resp
+            .headers()
+            .get(SET_COOKIE)
+            .expect("successful login must set session cookie")
+            .to_str()
+            .unwrap();
+        let login_token = login_set_cookie
+            .split(';')
+            .next()
+            .unwrap()
+            .strip_prefix("session=")
+            .unwrap()
+            .to_string();
+        assert!(!login_token.is_empty());
+
+        // === Phase 4: Use the session to access a protected route ===
+        let protected_req = Request::builder()
+            .method("GET")
+            .uri("/settings")
+            .body(Body::empty())
+            .unwrap();
+        let protected_req = add_session_cookie(protected_req, &login_token);
+
+        let resp = app.clone().oneshot(protected_req).await.unwrap();
+        // Should reach the handler (200), not be redirected to /login
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // === Phase 5: Logout clears the session ===
+        let logout_req = Request::builder()
+            .method("POST")
+            .uri("/logout")
+            .header("cookie", format!("session={}", login_token))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(logout_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+        let cleared = resp
+            .headers()
+            .get(SET_COOKIE)
+            .map(|v| v.to_str().unwrap_or(""))
+            .unwrap_or("");
+        assert!(cleared.contains("Max-Age=0") || cleared.contains("session="), "logout should clear session cookie");
     }
 }

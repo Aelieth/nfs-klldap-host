@@ -162,6 +162,126 @@ The small helper script `webui-certs` (run early by the entrypoint) discovers us
 ### Authentication
 See the [docs/run/README.md](docs/run/README.md) section on the WebUI for current login options (local `localhost` password or LLDAP accounts).
 
+### Detailed WebUI Architecture, Startup Flow & Access Model
+
+The WebUI (`nfs-klldap-ui`) is a self-contained Axum + HTMX + Askama application compiled into the container image. It **always** speaks HTTPS (no plain HTTP code path exists). It is the only way most operators interact with the single source-of-truth `nfs-klldap.conf`.
+
+#### High-Level Startup & Lifecycle Flow
+
+```mermaid
+flowchart TB
+    subgraph Container Boot
+        EP["entrypoint.sh (pid 1)"]
+        PRE["preflight_checks (binaries + inotifywait)"]
+        START["nfs-klldap-startup run\n(guided TUI + reachability)"]
+        GEN1["nfs-klldap-config generate"]
+    end
+
+    subgraph Core Daemons
+        SSSD["sssd -i"]
+        WATCH["nfs-klldap-conf-watcher\n(inotify on nfs-klldap.conf)"]
+        GANESHA["ganesha.nfsd -f ..."]
+    end
+
+    subgraph WebUI Launch
+        CERTS["webui-certs script\n(discover custom certs or prepare /var/run/webui-certs/)"]
+        UI["nfs-klldap-ui\n(Rust binary)"]
+        RUSTLS["rustls::crypto::ring::install_default()"]
+        CERTENSURE["ensure_webui_tls_certs()\n(rcgen self-signed OR use provided)"]
+        BIND["axum_server::bind_rustls(0.0.0.0:9630)"]
+    end
+
+    subgraph Runtime
+        AUTH["Hybrid Auth\n- localhost + bcrypt sidecar (webui-password 0600)\n- LLDAP user + webui_admin_group membership"]
+        ROUTER["Router\n/login, /setup-password (first-run)\n/, /settings (protected)\n/tree, /directory, /apply (HTMX)\n/users/search, /groups/search\n/settings/save*, /settings/lldap-status, /settings/reload-nfs-client"]
+        FSM["FsManager (real FS walks + libc chown/chmod)"]
+        LLAP["LldapClient (GraphQL + /auth/simple/login)"]
+        STATE["AppState (Arc<FsManager>, Mutex<LldapClient>, Arc<Config>, Arc<AuthManager>)"]
+    end
+
+    subgraph Config Change Path
+        EDIT["Operator edits nfs-klldap.conf\n(via WebUI or host editor)"]
+        INO["inotify event"]
+        SIGHUP["kill -HUP 1"]
+        GEN2["entrypoint: nfs-klldap-config generate\n+ fix_derived_permissions (sssd.conf 0600)"]
+        RELOAD["SSSD restart or Ganesha reload via ganesha-ctl"]
+    end
+
+    subgraph Observability
+        HEALTH["healthcheck.sh\n(ganesha on 2049 + SSSD NSS pipe + WebUI on 9630)"]
+        LOGS["/var/log/webui.log (tee'd) + container stdout"]
+    end
+
+    EP --> PRE --> START --> GEN1 --> SSSD
+    GEN1 --> WATCH
+    GEN1 --> GANESHA
+    GANESHA --> CERTS --> UI
+    UI --> RUSTLS --> CERTENSURE --> BIND
+
+    BIND --> STATE
+    STATE --> ROUTER
+    ROUTER --> AUTH
+    ROUTER --> FSM
+    ROUTER --> LLAP
+
+    EDIT --> INO --> SIGHUP --> GEN2 --> RELOAD
+    HEALTH -. polls .-> GANESHA
+    HEALTH -. polls .-> SSSD
+    HEALTH -. polls .-> BIND
+
+    classDef rust fill:#f4d,stroke:#333
+    classDef shell fill:#9cf,stroke:#333
+    class UI,FSM,LLAP,STATE,RUSTLS,CERTENSURE,ROUTER,GEN1,GEN2 rust
+    class EP,CERTS,WATCH,START,SSHD,HEALTH,LOGS shell
+```
+
+**Key invariants shown above:**
+- All services (including WebUI) run as root inside the container.
+- The WebUI binary itself is responsible for self-signed certificate generation using `rcgen` when no user certs are present (see `nfs-klldap-ui/src/certs.rs:48`).
+- Config changes flow through the watcher → SIGHUP → privileged regeneration in the pid-1 entrypoint (this is how `sssd.conf` always gets `root:root 0600`).
+- The healthcheck (Docker/Podman) will mark the container unhealthy if the WebUI is not listening on 9630.
+
+#### How the Two Pages Work
+
+1. **Share Permissions** (`/`)
+   - Renders list of shares from the loaded `Config`.
+   - HTMX lazy-loads directory trees via `GET /tree?path=...` (only directories, `FsManager::build_tree`).
+   - Clicking a directory fires `GET /directory?path=...` which renders the live `stat()` owner/gid/mode form (`permission_form.html`).
+   - Live search boxes do `GET /users/search?q=...` and `/groups/search` against the `LldapClient` (GraphQL).
+   - Submit posts to `/apply` → resolves names to uid/gid via LLDAP again (defense in depth) → `FsManager::apply_permissions` (allow-list check, refuse uid/gid 0 and setuid bits) → direct `libc::chown` + `set_permissions` on the bind-mounted path inside the container.
+
+2. **System Settings** (`/settings`)
+   - Raw TOML editor (`/settings/save-raw`) — does best-effort validation via the shared `nfs_klldap_config` crate before atomic write.
+   - Structured form (`/settings/save`) — comment-preserving edit using `toml_edit`, also validates via `cfg.validate_and_derive()`.
+   - Live fragment `GET /settings/lldap-status` shows the current service-account identity of the permission client + staleness warning when bind DN/PW changed on disk.
+   - `POST /settings/reload-nfs-client` rebuilds the `LldapClient` from current on-disk/env values and swaps it into `AppState`.
+
+#### TLS / SSL Specifics (Why "Refuses to Connect" Usually Happens)
+
+- The listener is **exclusively** `axum_server::bind_rustls`. There is no HTTP fallback.
+- Certificate material is guaranteed by `ensure_webui_tls_certs()` before `bind_rustls` is called. If loading fails after generation, the process does `eprintln!("FATAL...")` + `exit(1)`.
+- The entrypoint captures quick deaths and tails `/var/log/webui.log`.
+- **Most common causes of "connection refused" on 9630** (in order):
+  1. Port not published (`-p 9630:9630` missing when not using `network_mode: host` or `uts: host` + host networking).
+  2. Container never reached the WebUI launch step (startup TUI still waiting, or `nfs-klldap-startup` failed).
+  3. WebUI crashed on TLS material (check `docker logs` + inside-container `/var/log/webui.log`).
+  4. Firewall / SELinux on the Docker host blocking the published port.
+  5. Using an IP or hostname in the browser URL that does not appear in the certificate SANs (self-signed cert only contains the two-tier consistent hostname + `localhost` + `127.0.0.1`).
+
+**Diagnosis commands:**
+```bash
+# Is the process alive and listening inside the container?
+docker exec <name> sh -c 'pgrep -a nfs-klldap-ui; ss -tlnp | grep 9630 || netstat -tlnp | grep 9630'
+
+# Recent WebUI output
+docker exec <name> tail -n 100 /var/log/webui.log
+
+# Full container boot log (the important early part)
+docker logs <name> 2>&1 | head -200
+```
+
+The Dockerfile currently only `EXPOSE`s the NFS ports (2049). Port 9630 is intentionally not listed there because it is management-only and often accessed via host networking or explicit publishing.
+
 ---
 
 ## Configuration (`nfs-klldap.conf`)

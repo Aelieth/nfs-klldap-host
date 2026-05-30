@@ -1,4 +1,25 @@
-## Unreleased — Workspace Centralization & Self-Contained Cleanup
+## Unreleased — Workspace Centralization & Modularization
+
+### Internal Modularization of `nfs-klldap-config`
+
+- Major refactor to split the previously monolithic `src/lib.rs` (~1,529 lines) into focused, maintainable modules.
+- New module layout:
+  - `config.rs` — Data model (`NfsKlldapConfig`, all sections, `Share`, `GenerationPaths`)
+  - `error.rs` — `ConfigError`
+  - `validate.rs` — Loading, validation, and auto-derivation logic
+  - `persist.rs` — Persistent volume detection and tolerant partial share loading
+  - `uri.rs` — URI parsing helpers (`extract_host_from_uri`, `derive_realm_from_uri`)
+  - `hostname.rs` — Hostname suggestion logic and Docker default detection
+  - `template.rs` — First-run safe default template + write-if-missing helper
+  - `generate.rs` — Full generation engine (sssd.conf, krb5.conf, Ganesha exports)
+- `lib.rs` is now a thin, well-documented facade containing only:
+  - Crate-level documentation
+  - Module declarations
+  - Deliberate public re-exports
+- The **public API surface** (all types and functions re-exported from the crate root) remains **100% unchanged**.
+- Internal module layout is explicitly documented as **not** part of the semver contract.
+- All consumers (`nfs-klldap-config` binary, `nfs-klldap-startup` binary, and `nfs-klldap-ui`) continue to work without any code changes.
+- This addresses long-term project growth while preserving the "single source of truth" guarantees of the crate.
 
 ### Structural Refactor
 - Crates moved to top-level for a cleaner layout:

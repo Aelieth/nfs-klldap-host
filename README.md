@@ -257,7 +257,11 @@ nfs-klldap-host/
 ├── Makefile
 │
 ├── nfs-klldap-config/         # Bundled in the container image
-│   ├── src/lib.rs             # TOML loader, generator, derivation helpers
+│   ├── src/lib.rs             # Thin facade + public API re-exports + documentation
+│   ├── src/config.rs          # Data model (NfsKlldapConfig + sections)
+│   ├── src/generate.rs        # Core generation logic (sssd/krb5/ganesha)
+│   ├── src/template.rs        # Default config template
+│   ├── src/validate.rs        # Validation + auto-derivation
 │   ├── src/main.rs            # `nfs-klldap-config` binary (generation)
 │   └── src/bin/nfs_klldap_startup.rs   # `nfs-klldap-startup` (guided first-run TUI + diagnostics)
 │
@@ -276,7 +280,8 @@ nfs-klldap-host/
 
 **Key crates (both ship inside the final container):**
 
-- `nfs-klldap-config` — The single source of truth for config derivation.
+- `nfs-klldap-config` — The single source of truth for config derivation.  
+  The crate has been modularized for maintainability (`lib.rs` is now a thin facade; core logic lives in focused modules such as `config`, `generate`, `validate`, `template`, etc.). Only the re-exports at the crate root are part of the stable public API.
 - `nfs-klldap-ui` — The management WebUI (runs on port 9630 inside the container).
 
 **Generated inside container (never exposed to the host):**

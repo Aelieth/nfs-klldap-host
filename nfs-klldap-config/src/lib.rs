@@ -1,26 +1,29 @@
-//! nfs-klldap-config — Tiny, type-safe TOML loader + generator for nfs-klldap-host (v0.5+).
+//! nfs-klldap-config — Type-safe TOML loader + generator for nfs-klldap-host.
 //!
-//! This crate is the *only* place that understands nfs-klldap.conf.
-//! It is bundled as a small static-friendly binary inside the container.
-//! The host UI (nfs-klldap-ui) depends on it for loading/saving the same schema.
+//! This crate is the single source of truth for `nfs-klldap.conf`.
+//! It handles parsing, validation, smart auto-derivation, and generation of
+//! derived configs (sssd.conf, krb5.conf, Ganesha exports).
 //!
-//! Core responsibilities:
-//! - Parse + validate the single source-of-truth config
-//! - Smart auto-derivation (realm from ldap_uri, ports, bases, paths)
-//! - Generate sssd.conf, krb5.conf, ganesha.conf + per-share EXPORT fragments
-//! - First-run safe default template (never overwrites)
-//! - Dup share name detection (short, unique NFS paths)
+//! ## Public API
 //!
-//! Public helpers for the guided startup binary and host tooling:
-//! - `derive_realm_from_uri`
-//! - `suggested_nfs_hostname` (insertion pattern: host → host-nfs.domain)
+//! Only the items re-exported below are part of the stable public surface.
+//! The internal module layout is **not** part of the semver contract.
 //!
-//! Note: Hostname handling is now based on the user passing --uts=host to Docker.
-//! The container then naturally sees the real host hostname.
+//! ## Internal Module Layout
+//!
+//! - `config`   — Data model (`NfsKlldapConfig`, sections, `Share`, `GenerationPaths`)
+//! - `error`    — `ConfigError`
+//! - `validate` — Loading, validation, and derivation (`validate_and_derive`, `effective_*`)
+//! - `persist`  — Volume detection + tolerant partial share loading
+//! - `uri`      — URI helpers (`extract_host_from_uri`, `derive_realm_from_uri`)
+//! - `hostname` — Hostname suggestion + Docker default detection
+//! - `template` — First-run safe default template + write-if-missing
+//! - `generate` — Full generation of sssd/krb5/ganesha configs
+//!
+//! Note: Hostname handling expects the container to be started with `--uts=host`.
 
 // =============================================================================
-// Internal modules (private). Only items explicitly re-exported below are part
-// of the public API surface. This layout is not semver-guaranteed.
+// Internal modules (private — only re-exports below are public API)
 // =============================================================================
 mod config;
 mod error;
@@ -32,7 +35,7 @@ mod generate;
 mod template;
 
 // =============================================================================
-// Public API re-exports (the stable contract for binaries + nfs-klldap-ui)
+// Public API (stable surface for binaries + nfs-klldap-ui)
 // =============================================================================
 pub use config::{
     GenerationPaths, GaneshaSection, KerberosSection, ManagementSection, NfsKlldapConfig,
@@ -47,31 +50,8 @@ pub use generate::generate_all;
 pub use uri::{derive_realm_from_uri, extract_host_from_uri};
 
 // =============================================================================
-// Stable public orchestration / generation entry points
-//
-// These four functions are the primary public API called by:
-//   - src/main.rs (the generator CLI)
-//   - src/bin/nfs_klldap_startup.rs (guided startup + diagnostics)
-//   - nfs-klldap-ui (via NfsKlldapConfig::load + helpers)
-//
-// They are currently defined directly in this facade during the modularization
-// (Phases 0-3 complete). They will be moved to their logical modules and
-// re-exported here in later phases (persist.rs in Phase 4, generate.rs in
-// Phase 5). This comment + the per-function notes below make the intent
-// explicit so the surface cannot be accidentally dropped.
-//
-// See the approved modularization plan for details.
+// Imports needed by the facade / coordination layer
 // =============================================================================
-
-// =============================================================================
-// Imports needed by the remaining facade / coordination code
-// =============================================================================
-
-
-
-
-
-
 
 #[cfg(test)]
 mod tests {

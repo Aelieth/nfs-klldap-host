@@ -253,12 +253,23 @@ access_provider = {access}"#,
         }
     }
     if let Some(v) = s.ldap_id_use_start_tls {
-        out.push_str(&format!("\nldap_id_use_start_tls = {}", if v { "true" } else { "false" }));
+        out.push_str(&format!(
+            "\nldap_id_use_start_tls = {}",
+            if v { "true" } else { "false" }
+        ));
     }
-    if let Some(v) = s.ldap_user_fullname.as_ref().filter(|v| !v.trim().is_empty()) {
+    if let Some(v) = s
+        .ldap_user_fullname
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+    {
         out.push_str(&format!("\nldap_user_fullname = {}", v.trim()));
     }
-    if let Some(v) = s.ldap_group_member.as_ref().filter(|v| !v.trim().is_empty()) {
+    if let Some(v) = s
+        .ldap_group_member
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+    {
         out.push_str(&format!("\nldap_group_member = {}", v.trim()));
     }
 
@@ -270,7 +281,10 @@ access_provider = {access}"#,
         out.push_str(&format!("\nkrb5_kpasswd = {}", v.trim()));
     }
     if let Some(v) = s.krb5_validate {
-        out.push_str(&format!("\nkrb5_validate = {}", if v { "true" } else { "false" }));
+        out.push_str(&format!(
+            "\nkrb5_validate = {}",
+            if v { "true" } else { "false" }
+        ));
     }
     if let Some(v) = s.krb5_store_password_if_offline {
         out.push_str(&format!(
@@ -280,7 +294,10 @@ access_provider = {access}"#,
     }
 
     // Plain ldap:// safety flag
-    if is_plain_ldap && s.ldap_auth_disable_tls_never_use_in_production.unwrap_or(true) {
+    if is_plain_ldap
+        && s.ldap_auth_disable_tls_never_use_in_production
+            .unwrap_or(true)
+    {
         out.push_str("\nldap_auth_disable_tls_never_use_in_production = true");
     }
 

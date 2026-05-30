@@ -115,7 +115,10 @@ impl NfsKlldapConfig {
         // and auto-derivation could not produce one (e.g. IP-based ldap_uri).
         {
             let r = self.kerberos.realm.as_deref().unwrap_or("").trim();
-            if r.is_empty() || r.eq_ignore_ascii_case("EXAMPLE.COM") || r.eq_ignore_ascii_case("EXAMPLE") {
+            if r.is_empty()
+                || r.eq_ignore_ascii_case("EXAMPLE.COM")
+                || r.eq_ignore_ascii_case("EXAMPLE")
+            {
                 return Err(ConfigError::Validation(
                     "kerberos.realm is required (auto-derivation from ldap_uri failed or produced a placeholder).\n\
                      Set [kerberos] realm = \"YOUR.REALM\" in nfs-klldap.conf, or provide NFS_REALM env var.\n\
@@ -134,7 +137,10 @@ impl NfsKlldapConfig {
         }
 
         // Auto search bases — derive from the actual realm (no more stale example.com defaults)
-        let base_dn = format!("dc={}", self.effective_realm().to_lowercase().replace('.', ",dc="));
+        let base_dn = format!(
+            "dc={}",
+            self.effective_realm().to_lowercase().replace('.', ",dc=")
+        );
         if self.sssd.ldap_user_search_base.is_none() {
             self.sssd.ldap_user_search_base = Some(format!("ou=people,{}", base_dn));
         }
@@ -210,8 +216,12 @@ impl NfsKlldapConfig {
         Ok(())
     }
 
-    /// Hostname to use (server.hostname override, or the container's actual hostname at runtime).
-    /// The container must be started with --hostname matching the keytab principal.
+    /// Hostname to use (server.hostname override, or best-effort container hostname).
+    ///
+    /// Modern callers that need a *guaranteed* consistent value (hostname command
+    /// + /proc must agree) should use `get_consistent_hostname()` from the
+    ///   `hostname` module instead. This method is kept for backward compatibility
+    ///   (CLI dry-run output, etc.).
     pub fn effective_hostname(&self) -> String {
         self.server.hostname.clone().unwrap_or_else(|| {
             crate::hostname::internal::get()
@@ -228,6 +238,29 @@ impl NfsKlldapConfig {
             .expect("effective_realm called on config that did not pass validation (no EXAMPLE.COM fallback)")
     }
 
+    /// Returns a realm string safe for use in keytab principal banners and UI display.
+    ///
+    /// - After a successful `NfsKlldapConfig::load` (which runs validation), this will
+    ///   return the real derived/override realm (never EXAMPLE.COM).
+    /// - In early/TUI or fallback cases where we only have a partial config, it returns
+    ///   a clear placeholder so the UI can still render useful guidance.
+    ///
+    /// This is the value that should appear after the @ in `nfs/<host>@<realm>` reminders.
+    /// It is derived from the same logic that populates `krb5.conf` (see generate.rs).
+    pub fn display_realm(&self) -> String {
+        self.kerberos
+            .realm
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| {
+                !r.is_empty()
+                    && !r.eq_ignore_ascii_case("EXAMPLE.COM")
+                    && !r.eq_ignore_ascii_case("EXAMPLE")
+            })
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "YOUR.REALM".to_string())
+    }
+
     /// Derived container path for a share (used in Ganesha Path=)
     pub fn container_path_for(&self, share: &Share) -> String {
         format!(
@@ -242,5 +275,3 @@ impl NfsKlldapConfig {
         self.shares.iter().map(|s| s.host_path.clone()).collect()
     }
 }
-
-

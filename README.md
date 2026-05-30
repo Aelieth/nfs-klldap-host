@@ -144,17 +144,11 @@ The container's `entrypoint.sh` automatically starts the WebUI after the configu
 - From the Docker host: `https://localhost:9630`
 - From other machines on the same network: `https://<hostname-or-ip>:9630`
 
-You must publish the port when starting the container:
+If not using `--uts=host` you must publish the port when starting the container:
 
 ```bash
--p 9630:9630
-```
-
-Or in docker-compose:
-
-```yaml
-ports:
-  - "9630:9630"
+  -p 9630:9630/tcp \
+  -p 2049:2049/tcp -p 2049:2049/udp \
 ```
 
 ### TLS / Certificates

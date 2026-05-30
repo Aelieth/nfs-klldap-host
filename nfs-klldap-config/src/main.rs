@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::exit;
 
 use nfs_klldap_config::{
-    generate_all, write_default_config_if_missing, ConfigError, GenerationPaths, NfsKlldapConfig,
+    generate_all, get_consistent_hostname, write_default_config_if_missing, ConfigError,
+    GenerationPaths, NfsKlldapConfig,
 };
 
 fn usage() {
@@ -107,7 +108,28 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
 
     if dry_run {
         println!("=== DRY RUN — would generate from {} ===", path.display());
-        println!("hostname: {}", cfg.effective_hostname());
+        println!(
+            "hostname (from config or best-effort): {}",
+            cfg.effective_hostname()
+        );
+
+        // NEW: Show the two-tier confirmed runtime value (primary + secondary must agree).
+        // This is the value the TUI and WebUI will actually use for keytab reminders
+        // when no [server] hostname override is present. Useful for CI / sanity checks
+        // that the same name is seen by nfs-klldap-config, nfs-klldap-startup, and nfs-klldap-ui.
+        match get_consistent_hostname() {
+            Ok(c) => {
+                println!(
+                    "hostname (two-tier confirmed):         {}   [primary+secondary agree]",
+                    c.hostname
+                );
+            }
+            Err(e) => {
+                println!("hostname (two-tier):                   INCONSISTENT");
+                eprintln!("{}", e);
+            }
+        }
+
         println!("realm:    {}", cfg.effective_realm());
         println!("shares:   {}", cfg.shares.len());
         for s in &cfg.shares {

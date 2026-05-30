@@ -20,33 +20,45 @@ use tokio::sync::Mutex;
 
 use crate::{auth::AuthManager, config::Config, fs::FsManager, llap::LldapClient};
 
-/// Compute the hostname that the *container* will present for Kerberos (the value
-/// that must appear in the nfs/ principal inside the keytab).
-/// Prefers the explicit [server] hostname from nfs-klldap.conf; otherwise falls
-/// back to the host's hostname (the UI runs on the host).
+use nfs_klldap_config::get_consistent_hostname;
+
+/// Compute the hostname that must appear in the `nfs/<this>@REALM` keytab principal.
 ///
-/// The container hostname must match the keytab principal.
-/// Recommended: use --uts=host so the container inherits the real host hostname.
-/// The startup TUI will show the required principal with the -nfs insertion.
-/// Explicit --hostname is still supported as an override.
-/// so that the kernel hostname inside matches the keytab principal.
+/// 1. If the operator set `[server] hostname` in the central config, that wins
+///    (explicit escape hatch).
+/// 2. Otherwise we use the **two-tier consistent** runtime hostname
+///    (`hostname` command + /proc/sys/kernel/hostname must agree).
+///
+/// This is the single place the settings page and all templates read the value from.
+/// Because both the startup TUI and the WebUI now call the same
+/// `get_consistent_hostname()`, the value is guaranteed to be identical across
+/// entrypoint.sh → nfs-klldap-config → nfs-klldap-startup → nfs-klldap-ui.
 fn compute_effective_hostname(cfg: &Config) -> String {
     if let Some(h) = &cfg.server.hostname {
         if !h.trim().is_empty() {
             return h.trim().to_string();
         }
     }
-    // Fallback to the host machine's hostname (UI runs on the host)
-    std::env::var("HOSTNAME")
-        .or_else(|_| {
-            // Small hostname helper (mirrors the one inside the container's nfs-klldap-config)
-            if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
-                Ok(h.trim().to_string())
-            } else {
-                Err(())
-            }
-        })
-        .unwrap_or_else(|_| "unknown-host".to_string())
+
+    // Fall back to the production two-tier consistent value.
+    // On inconsistency we still return *something* usable (the UI must stay
+    // functional so the operator can edit the config), but the loud warning
+    // has already been printed at startup (and will appear again here if the
+    // operator navigates to Settings while in a bad state).
+    match get_consistent_hostname() {
+        Ok(c) => c.hostname,
+        Err(_) => std::env::var("HOSTNAME")
+            .or_else(|_| {
+                std::fs::read_to_string("/proc/sys/kernel/hostname").map(|s| s.trim().to_string())
+            })
+            .unwrap_or_else(|_| "unknown-host".to_string()),
+    }
+}
+
+/// Returns the realm to use for keytab principal display in the UI.
+/// Uses the validated/derived value from the config when available.
+fn compute_effective_realm(cfg: &Config) -> String {
+    cfg.display_realm()
 }
 
 // === State ===
@@ -323,9 +335,13 @@ struct SettingsTemplate {
     config_path: String,
     message: Option<String>,
     /// The hostname the container will use for the NFS service principal (nfs/<this>@REALM).
-    /// Comes from [server] hostname in the central config, or falls back to the host's hostname.
-    /// Users must ensure their keytab contains a matching principal.
+    /// Comes from [server] hostname (if set) or the two-tier confirmed runtime hostname
+    /// (hostname command + /proc must agree). This is the value the operator must put in the keytab.
     effective_hostname: String,
+    /// The Kerberos realm for the NFS service principal.
+    /// Comes from [kerberos] realm (or auto-derived from ldap_uri during config load/validation).
+    /// This is the exact value written into krb5.conf by the generator.
+    effective_realm: String,
 }
 
 // === Handlers ===
@@ -614,6 +630,7 @@ pub async fn settings_page(
         config_path: state.config_path.display().to_string(),
         message: None,
         effective_hostname: compute_effective_hostname(&state.config),
+        effective_realm: compute_effective_realm(&state.config),
     };
     Ok(Html(tpl.render().unwrap()))
 }
@@ -705,6 +722,7 @@ pub async fn settings_save_raw(
         config_path: state.config_path.display().to_string(),
         message: Some("Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into()),
         effective_hostname: compute_effective_hostname(&state.config),
+        effective_realm: compute_effective_realm(&state.config),
     };
     Ok(Html(tpl.render().unwrap()))
 }
@@ -834,6 +852,7 @@ pub async fn settings_save_structured(
             config_path: state.config_path.display().to_string(),
             message: Some(msg),
             effective_hostname: compute_effective_hostname(&state.config),
+            effective_realm: compute_effective_realm(&state.config),
         };
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -943,6 +962,7 @@ pub async fn settings_save_structured(
             config_path: state.config_path.display().to_string(),
             message: Some(format!("Failed to write: {}", e)),
             effective_hostname: compute_effective_hostname(&state.config),
+            effective_realm: compute_effective_realm(&state.config),
         };
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -954,6 +974,7 @@ pub async fn settings_save_structured(
             config_path: state.config_path.display().to_string(),
             message: Some(format!("Rename failed: {}", e)),
             effective_hostname: compute_effective_hostname(&state.config),
+            effective_realm: compute_effective_realm(&state.config),
         };
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -975,6 +996,7 @@ pub async fn settings_save_structured(
             "Structured settings saved. Container will regenerate configs shortly.".into(),
         ),
         effective_hostname: compute_effective_hostname(&state.config),
+        effective_realm: compute_effective_realm(&state.config),
     };
     Ok(Html(tpl.render().unwrap()))
 }

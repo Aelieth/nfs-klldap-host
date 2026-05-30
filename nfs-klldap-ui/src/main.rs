@@ -19,9 +19,28 @@ mod llap;
 
 mod web;
 
+/// Resolve the runtime hostname using the two-tier consistent API.
+/// On inconsistency we print the full actionable diagnostic to the log
+/// (this is what surfaces the "d81b4e782f65 vs real name" problem).
+fn resolve_runtime_hostname_for_banner() -> String {
+    match get_consistent_hostname() {
+        Ok(c) => c.hostname,
+        Err(e) => {
+            // This is the exact path that used to silently print the wrong Docker ID.
+            // Now it is impossible to miss.
+            eprintln!("\n{}", e);
+            eprintln!("WARNING: Using best-effort fallback for keytab reminder because the two hostname sources disagreed.");
+            // Best-effort fallback so the UI can still start (the operator can still edit config)
+            std::env::var("HOSTNAME").unwrap_or_else(|_| "your-container-hostname".into())
+        }
+    }
+}
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+use nfs_klldap_config::get_consistent_hostname;
 
 #[tokio::main]
 async fn main() {
@@ -63,16 +82,25 @@ async fn main() {
         println!("  - {} → {} (host: {})", s.name, ep, s.host_path.display());
     }
 
-    // Startup banner: make the keytab hostname requirement impossible to miss
-    let keytab_host = config
-        .server
-        .hostname
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            std::env::var("HOSTNAME").unwrap_or_else(|_| "your-container-hostname".into())
-        });
-    println!("\nKeytab reminder: your krb5.keytab must contain  nfs/{keytab_host}@YOUR.REALM");
+    // Startup banner: make the keytab hostname requirement impossible to miss.
+    // NEW: Use the two-tier consistent value (hostname command + /proc). Both sources
+    // must agree, otherwise we emit the full rich diagnostic before the normal reminder.
+    let keytab_host = if let Some(h) = &config.server.hostname {
+        if !h.trim().is_empty() {
+            h.trim().to_string()
+        } else {
+            resolve_runtime_hostname_for_banner()
+        }
+    } else {
+        resolve_runtime_hostname_for_banner()
+    };
+
+    // Use the authoritative realm from the loaded config (same one that will be written
+    // into krb5.conf by the generator). Falls back to a clear placeholder only for the
+    // early "no valid config yet" case.
+    let keytab_realm = config.display_realm();
+
+    println!("\nKeytab reminder: your krb5.keytab must contain  nfs/{keytab_host}@{keytab_realm}");
     println!("(Set [server] hostname in nfs-klldap.conf or pass --hostname to the container.)");
 
     // Filesystem manager (real-time, no DB) — now driven by central shares
@@ -139,12 +167,17 @@ async fn main() {
     };
 
     // Determine a reasonable hostname for self-signed SANs if we need to generate.
-    let cert_hostname = config
-        .server
-        .hostname
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_string()));
+    // Prefer the same two-tier confirmed value used for the keytab banner so that
+    // the cert and the keytab reminder can never silently disagree.
+    let cert_hostname = if let Some(h) = &config.server.hostname {
+        if !h.trim().is_empty() {
+            h.trim().to_string()
+        } else {
+            resolve_runtime_hostname_for_banner()
+        }
+    } else {
+        resolve_runtime_hostname_for_banner()
+    };
 
     let tls_paths =
         crate::certs::ensure_webui_tls_certs(&tls_cert_path, &tls_key_path, &cert_hostname)

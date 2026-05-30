@@ -24,8 +24,8 @@ use std::thread;
 use std::time::Duration;
 
 use nfs_klldap_config::{
-    derive_realm_from_uri, extract_host_from_uri, is_persistent_config, suggested_nfs_hostname,
-    ConfigError, NfsKlldapConfig,
+    derive_realm_from_uri, extract_host_from_uri, get_consistent_hostname, is_persistent_config,
+    suggested_nfs_hostname, ConfigError, NfsKlldapConfig,
 };
 
 fn main() {
@@ -297,12 +297,22 @@ enum StartupStep {
 }
 
 fn print_header(config_path: &Path) {
-    // With the new recommended --uts=host, this will be the real Docker host hostname.
-    let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|s| s.trim().to_string())
-        .ok()
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .unwrap_or_else(|| "unknown".to_string());
+    // NEW: Two-tier consistent retrieval (hostname command + /proc confirmation).
+    // Both sources must agree. If they don't, we surface a loud, actionable error.
+    let (hostname, consistency_note) = match get_consistent_hostname() {
+        Ok(c) => (c.hostname, " (confirmed by `hostname` + /proc)".to_string()),
+        Err(e) => {
+            // Print the full rich diagnostic immediately — this is the moment
+            // the "hostname one thing, resolution another" problem becomes impossible to miss.
+            eprintln!("\n{}", e);
+            // Still allow the TUI to continue (operator may need to edit config first),
+            // but use a clear placeholder so the rest of the banner is still useful.
+            (
+                "<INCONSISTENT — see error above>".to_string(),
+                String::new(),
+            )
+        }
+    };
 
     let realm_display = attempt_realm_for_display(config_path)
         .unwrap_or_else(|| "YOUR.REALM (set ldap_uri to auto-derive)".to_string());
@@ -314,6 +324,9 @@ fn print_header(config_path: &Path) {
     println!("║  nfs-klldap-host — FIRST RUN SETUP (Step-by-Step)  [Rust guided mode]        ║");
     println!("╠══════════════════════════════════════════════════════════════════════════════╣");
     println!("║  Container hostname: {:<55} ║", hostname);
+    if !consistency_note.is_empty() {
+        println!("║  {:<76} ║", consistency_note);
+    }
     println!(
         "║  Keytab must contain: nfs/{:<50} ║",
         format!("{}@{}", recommended_principal, realm_display)
@@ -796,10 +809,19 @@ fn print_keytab_hostname_alignment() {
         }
     };
 
-    let current_host = Command::new("hostname")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    // Use the same two-tier confirmed value that the TUI banner used.
+    // This guarantees the alignment check and the early banner can never disagree.
+    let current_host = match get_consistent_hostname() {
+        Ok(c) => c.hostname,
+        Err(_) => {
+            // Fall back to the old direct call only for the (rare) case where we are
+            // already in a bad state; the loud warning was already emitted earlier.
+            Command::new("hostname")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|_| "unknown".to_string())
+        }
+    };
 
     // Parse nfs/ principals from klist output
     let mut kt_hosts: Vec<String> = Vec::new();

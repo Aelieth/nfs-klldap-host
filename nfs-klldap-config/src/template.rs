@@ -36,10 +36,11 @@ container_root = "/export"
 
 [server]
 # hostname = "yourhost-nfs"   # Optional override. The recommended way is to start
-#                             # the container with --uts=host so it sees the real
-#                             # host hostname. The TUI will tell you the exact
-#                             # principal (with -nfs insertion) to use in the keytab.
-#                             # Explicit --hostname takes precedence if set.
+#                             # the container with --uts=host (or explicit --hostname)
+#                             # so the two-tier check (`hostname` command + /proc)
+#                             # sees a stable name. The TUI + WebUI will loudly warn
+#                             # (with both observed values) if the sources disagree.
+#                             # The confirmed name is what must appear in your keytab.
 
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"

@@ -16,37 +16,44 @@
 //! - `validate` — Loading, validation, and derivation (`validate_and_derive`, `effective_*`)
 //! - `persist`  — Volume detection + tolerant partial share loading
 //! - `uri`      — URI helpers (`extract_host_from_uri`, `derive_realm_from_uri`)
-//! - `hostname` — Hostname suggestion + Docker default detection
+//! - `hostname` — Hostname suggestion + **two-tier consistent retrieval**
+//!   (primary `hostname` command + /proc confirmation). This is now the
+//!   production contract used by startup TUI, WebUI, and diagnostics.
 //! - `template` — First-run safe default template + write-if-missing
 //! - `generate` — Full generation of sssd/krb5/ganesha configs
 //!
-//! Note: Hostname handling expects the container to be started with `--uts=host`.
+//! Note: The container must be started with `--uts=host` (recommended) or
+//! an explicit `--hostname` so that the two sources agree on a stable name
+//! that matches the nfs/ principal in your keytab.
 
 // =============================================================================
 // Internal modules (private — only re-exports below are public API)
 // =============================================================================
 mod config;
 mod error;
-mod uri;
+mod generate;
 mod hostname;
 mod persist;
-mod validate;
-mod generate;
 mod template;
+mod uri;
+mod validate;
 
 // =============================================================================
 // Public API (stable surface for binaries + nfs-klldap-ui)
 // =============================================================================
 pub use config::{
-    GenerationPaths, GaneshaSection, KerberosSection, ManagementSection, NfsKlldapConfig,
-    ServerSection, Share, StorageSection, SssdSection,
+    GaneshaSection, GenerationPaths, KerberosSection, ManagementSection, NfsKlldapConfig,
+    ServerSection, Share, SssdSection, StorageSection,
 };
 pub use error::ConfigError;
 
-pub use hostname::{looks_like_docker_default_hostname, suggested_nfs_hostname};
+pub use generate::generate_all;
+pub use hostname::{
+    get_consistent_hostname, looks_like_docker_default_hostname, suggested_nfs_hostname,
+    ConsistentHostname, HostnameInconsistency, HostnameObservation, HostnameSource,
+};
 pub use persist::{is_persistent_config, load_host_paths_only};
 pub use template::{generate_default_template, write_default_config_if_missing};
-pub use generate::generate_all;
 pub use uri::{derive_realm_from_uri, extract_host_from_uri};
 
 // =============================================================================
@@ -278,6 +285,45 @@ mod tests {
     }
 
     #[test]
+    fn display_realm_returns_real_value_after_validation_and_placeholder_otherwise() {
+        // Prevent env var pollution from other tests (NFS_REALM / REALM affect derivation)
+        let _g1 = EnvGuard::remove("NFS_REALM");
+        let _g2 = EnvGuard::remove("REALM");
+
+        // After successful load/validate with good ldap_uri, display_realm must match effective_realm
+        // and what the generator will write into krb5.conf.
+        let mut c = NfsKlldapConfig {
+            ldap_uri: "ldaps://ldap.testdomain.com:6360".into(),
+            sssd: SssdSection {
+                ldap_default_bind_dn: "uid=admin,ou=people,dc=testdomain,dc=com".into(),
+                ldap_default_authtok: "sekret".into(),
+                ..Default::default()
+            },
+            shares: vec![Share {
+                name: "t".into(),
+                host_path: "/t".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(c.validate_and_derive().is_ok());
+        assert_eq!(c.effective_realm(), "TESTDOMAIN.COM");
+        assert_eq!(c.display_realm(), "TESTDOMAIN.COM");
+
+        // When no good realm is present (pre-validation or broken config), we get the placeholder
+        let mut broken = NfsKlldapConfig {
+            ldap_uri: "ldaps://192.168.1.5:6360".into(), // IP → no derivation
+            ..Default::default()
+        };
+        // display_realm is safe even before validation
+        assert_eq!(broken.display_realm(), "YOUR.REALM");
+
+        // Explicit EXAMPLE is treated as missing for display
+        broken.kerberos.realm = Some("EXAMPLE.COM".into());
+        assert_eq!(broken.display_realm(), "YOUR.REALM");
+    }
+
+    #[test]
     fn sssd_tls_options_are_emitted_when_set() {
         let mut c = minimal_cfg();
         c.sssd.ldap_tls_reqcert = Some("never".into());
@@ -363,8 +409,8 @@ mod tests {
     fn suggested_nfs_hostname_inserts_before_first_dot() {
         // Primary use case from the bug report
         assert_eq!(
-            suggested_nfs_hostname("aurora.satomlin.com"),
-            "aurora-nfs.satomlin.com"
+            suggested_nfs_hostname("aurora.testdomain.com"),
+            "aurora-nfs.testdomain.com"
         );
         // Multi-label
         assert_eq!(
@@ -375,8 +421,8 @@ mod tests {
         assert_eq!(suggested_nfs_hostname("myserver"), "myserver-nfs");
         // Already has -nfs (idempotent-ish, we still transform the first label)
         assert_eq!(
-            suggested_nfs_hostname("aurora-nfs.satomlin.com"),
-            "aurora-nfs-nfs.satomlin.com"
+            suggested_nfs_hostname("aurora-nfs.testdomain.com"),
+            "aurora-nfs-nfs.testdomain.com"
         );
         // Empty / degenerate
         assert_eq!(suggested_nfs_hostname(""), "nfs-server");
@@ -402,8 +448,8 @@ mod tests {
             Some("EXAMPLE.COM".into())
         );
         assert_eq!(
-            derive_realm_from_uri("ldap://sub.host.satomlin.local"),
-            Some("HOST.SATOMLIN.LOCAL".into())
+            derive_realm_from_uri("ldap://sub.host.testdomain.local"),
+            Some("HOST.TESTDOMAIN.LOCAL".into())
         );
         assert_eq!(derive_realm_from_uri(""), None);
     }

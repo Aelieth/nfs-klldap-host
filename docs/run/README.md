@@ -77,12 +77,12 @@ The recommended way to run the container is with `--uts=host`:
 docker run ... --uts=host ...
 ```
 
-This makes the container share the Docker host's UTS namespace. As a result, commands like `hostname` and the value in `/proc/sys/kernel/hostname` inside the container will return the real hostname of the machine running Docker (for example `aurora.satomlin.com`).
+This makes the container share the Docker host's UTS namespace. As a result, commands like `hostname` and the value in `/proc/sys/kernel/hostname` inside the container will return the real hostname of the machine running Docker (for example `aurora.testdomain.com`).
 
 The `nfs-klldap-startup` guided TUI will then automatically compute and display the recommended Kerberos service principal using the `-nfs` insertion pattern:
 
-- Real host hostname seen: `aurora.satomlin.com`
-- Recommended keytab principal: `nfs/aurora-nfs.satomlin.com@YOUR.REALM`
+- Real host hostname seen: `aurora.testdomain.com`
+- Recommended keytab principal: `nfs/aurora-nfs.testdomain.com@YOUR.REALM`
 
 You do **not** need to pass `-e HOST_HOSTNAME`, mount `/etc/hostname`, or use any privileged discovery tricks. `--uts=host` gives the container the real name directly.
 
@@ -93,6 +93,17 @@ If you want the container to present a completely different hostname, simply pas
 **Warning about combining `--uts=host` with `--hostname`**
 
 Using both at the same time will attempt to change the hostname in the shared UTS namespace, which affects the Docker host itself. Only do this if you really intend to change the host's hostname. In normal use, prefer `--uts=host` by itself (no `--hostname` flag) and let the TUI tell you the correct principal to put in the keytab.
+
+**Hostname two-tier confirmation (new reliability contract)**
+
+The system now requires two independent sources inside the container to report the *exact same* hostname:
+
+- Primary: the `hostname` command
+- Secondary confirmation: `/proc/sys/kernel/hostname`
+
+Both the guided startup TUI (`nfs-klldap-startup`) and the in-container WebUI (`nfs-klldap-ui`) call the same `get_consistent_hostname()` function. If the two sources disagree (the classic case is a random Docker container ID like `d81b4e782f65` when you forget `--uts=host`), you will see a large, unmistakable diagnostic block at startup that shows the exact value from each source and tells you the precise fix.
+
+This guarantees that the name printed in every keytab reminder, on the Settings page, and in the alignment diagnostics is identical across the entire bring-up chain (entrypoint → config library → startup binary → WebUI).
 
 ## Execution Model (All Services as Root)
 

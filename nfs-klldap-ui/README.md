@@ -20,12 +20,12 @@ cargo build -p nfs-klldap-ui --release --bin nfs-klldap-ui
 
 In normal use you do **not** run the binary on the host. It runs inside the container as root (alongside the other services).
 
-## Key Modules (still active)
+## Key Modules
 
-- `llap.rs` — KLLDAP GraphQL client (POSIX uidNumber/gidNumber extraction)
+- `llap.rs` — LLDAP/KLLDAP client (REST `/auth/simple/login` for auth, GraphQL `/api/graphql` for queries; POSIX uid/gid extraction)
 - `fs.rs` — Real-time tree walking + direct permission application inside the container
 - `config.rs` — Thin adapter over the shared `nfs-klldap-config` crate + save helpers
-- `web.rs` + templates/ — The two-page HTMX UI
+- `web.rs` + templates/ — The two-page HTMX UI (includes `/settings/lldap-status` + `/settings/reload-nfs-client` for hot-reloading the service client after bind credential changes)
 
 The old `policy.rs`, `ganesha.rs`, and `exports.rs` have been removed (generation now lives exclusively in the container's Rust binary).
 

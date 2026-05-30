@@ -1001,7 +1001,146 @@ pub async fn settings_save_structured(
     Ok(Html(tpl.render().unwrap()))
 }
 
+// === NFS / LLDAP client reload & status (for bind credential changes) ===
+
+/// Small HTMX fragment: shows the current identity of the LLDAP client used for
+/// NFS permission management (name → uid/gid resolution) plus a reload button.
+/// Highlights when the on-disk credentials (sssd.ldap_default_* or env overrides)
+/// have changed since the client was last authenticated.
+pub async fn lldap_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if require_auth(State(state.clone()), headers).await.is_err() {
+        return Html(
+            "<div id='nfs-client-status' style='color:#c00'>Unauthorized</div>".to_string(),
+        );
+    }
+
+    let client = state.lldap.lock().await;
+    let auth_as = client.authenticated_as().unwrap_or("(none)");
+    let last_auth = client.last_auth_time();
+
+    // Load the *current* on-disk config so we can detect edits to bind DN/PW or lldap_graphql_url
+    let disk_cfg = crate::config::load_config_from(&state.config_path).ok();
+    let (disk_user, _disk_pass) = disk_cfg
+        .as_ref()
+        .map(crate::config::lldap_login_creds)
+        .unwrap_or_else(|| ("(unknown)".to_string(), String::new()));
+
+    let username_differs = disk_user != auth_as;
+
+    let last_str = last_auth
+        .map(|t| {
+            let ago = std::time::Instant::now().duration_since(t);
+            if ago.as_secs() < 60 {
+                format!("{}s ago", ago.as_secs())
+            } else {
+                format!("{}m ago", ago.as_secs() / 60)
+            }
+        })
+        .unwrap_or_else(|| "never (startup failed?)".to_string());
+
+    let notice_html = if username_differs {
+        let mut n = String::from(
+            "<div style='background:#fff3cd; border:1px solid #ffc107; padding:8px; margin:6px 0; border-radius:3px;'>"
+        );
+        n.push_str("<strong>Bind credentials changed on disk.</strong><br>");
+        n.push_str(&format!("On-disk now uses <code>{}</code>, but the running NFS permission client is still using <code>{}</code> (loaded at startup or last reload).<br>", disk_user, auth_as));
+        n.push_str("Use the button below to reconnect with the current values from nfs-klldap.conf.</div>");
+        n
+    } else {
+        String::new()
+    };
+
+    let mut html = String::from(
+        "<div id='nfs-client-status' style='border:1px solid #aaa; background:#f5f5f5; padding:10px; margin:1rem 0; border-radius:4px;'>"
+    );
+    html.push_str("<strong>NFS Permission Client (KLLDAP/LLDAP connection)</strong><br>");
+    html.push_str("<span style='font-size:0.9em;'>Used for live user/group lookups and uid/gid resolution when managing share permissions.</span><br><br>");
+    html.push_str(&format!("Authenticated as: <code>{}</code><br>", auth_as));
+    html.push_str(&format!("Last connected: {}<br>", last_str));
+    html.push_str(&notice_html);
+    if !username_differs {
+        html.push_str("<span style='font-size:0.8em;color:#666;'>Reload always reads the latest bind credentials and GraphQL URL from disk/env.</span><br>");
+    }
+    html.push_str(
+        "<button type='button' hx-post='/settings/reload-nfs-client' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:8px; padding:4px 10px; cursor:pointer;'>Reload NFS client</button>"
+    );
+    html.push_str(
+        " <span style='font-size:0.8em; color:#555; margin-left:6px;'>(re-reads sssd.ldap_default_bind_* + management.lldap_graphql_url and re-authenticates)</span>"
+    );
+    html.push_str("</div>");
+
+    Html(html)
+}
+
+/// Lightweight "reload NFS client": re-creates the LldapClient using whatever
+/// credentials are currently in the on-disk nfs-klldap.conf (or the NFS_KLLDAP_LLDAP_* env
+/// overrides) and swaps it into the running AppState. Focused on keeping NFS
+/// permission management (name → numeric IDs) in sync after editing bind creds.
+pub async fn reload_nfs_client(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if require_auth(State(state.clone()), headers).await.is_err() {
+        return Html(
+            "<div id='nfs-client-status' style='color:#c00'>Unauthorized</div>".to_string(),
+        );
+    }
+
+    let fresh = match crate::config::load_config_from(&state.config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            let mut err = String::from("<div id='nfs-client-status' style='background:#f8d7da;border:1px solid #dc3545;padding:8px;'>");
+            err.push_str(&format!("<strong>Failed to read config:</strong> {}<br>", e));
+            err.push_str("<button type='button' hx-get='/settings/lldap-status' hx-target='#nfs-client-status' hx-swap='outerHTML'>Try again</button>");
+            err.push_str("</div>");
+            return Html(err);
+        }
+    };
+
+    let url = crate::config::derive_lldap_url(&fresh);
+    let (user, pass) = crate::config::lldap_login_creds(&fresh);
+
+    if pass.trim().is_empty() || pass == "SET_ME" || pass == "CHANGE_THIS_TO_A_STRONG_SECRET" {
+        let mut msg = String::from("<div id='nfs-client-status' style='background:#fff3cd;border:1px solid #ffc107;padding:8px;'>");
+        msg.push_str(&format!("<strong>Cannot reload:</strong> No valid password present for <code>{}</code> in the current config (or env).<br>", user));
+        msg.push_str("<button type='button' hx-get='/settings/lldap-status' hx-target='#nfs-client-status' hx-swap='outerHTML'>Refresh</button>");
+        msg.push_str("</div>");
+        return Html(msg);
+    }
+
+    let mut new_client = crate::llap::LldapClient::new(&url);
+
+    match new_client.authenticate(&user, &pass).await {
+        Ok(()) => {
+            // Swap the live client — all subsequent resolve/list operations will use the fresh token
+            {
+                let mut guard = state.lldap.lock().await;
+                *guard = new_client;
+            }
+
+            let mut ok = String::from("<div id='nfs-client-status' style='background:#d4edda;border:1px solid #28a745;padding:8px;border-radius:3px;'>");
+            ok.push_str("<strong>NFS client reloaded successfully.</strong><br>");
+            ok.push_str(&format!("Now authenticated as <code>{}</code> using current values from nfs-klldap.conf.<br>", user));
+            ok.push_str("<button type='button' hx-get='/settings/lldap-status' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:4px;'>Show updated status</button>");
+            ok.push_str("</div>");
+            Html(ok)
+        }
+        Err(e) => {
+            let mut err = String::from("<div id='nfs-client-status' style='background:#f8d7da;border:1px solid #dc3545;padding:8px;'>");
+            err.push_str(&format!("<strong>Re-authentication failed:</strong> {}<br>", e));
+            err.push_str("<small>Verify the bind DN/password (or NFS_KLLDAP_LLDAP_* variables) and that LLDAP/KLLDAP is reachable on the management port.</small><br>");
+            err.push_str("<button type='button' hx-get='/settings/lldap-status' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:4px;'>Retry status</button>");
+            err.push_str("</div>");
+            Html(err)
+        }
+    }
+}
+
 // === Router ===
+
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -1021,6 +1160,10 @@ pub fn router(state: AppState) -> Router {
         .route("/settings", get(settings_page))
         .route("/settings/save-raw", post(settings_save_raw))
         .route("/settings/save", post(settings_save_structured))
+        // Lightweight reload of the LLDAP client used for NFS uid/gid resolution
+        // (notified when bind credentials in nfs-klldap.conf change)
+        .route("/settings/lldap-status", get(lldap_status))
+        .route("/settings/reload-nfs-client", post(reload_nfs_client))
         .with_state(state)
 }
 

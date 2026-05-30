@@ -1,4 +1,19 @@
-## Unreleased — Workspace Centralization & Modularization
+## Unreleased
+
+### LLDAP / KLLDAP WebUI Client (nfs-klldap-ui)
+
+- Fixed management URL derivation: `derive_lldap_url` now produces `http://<host>:17170/api/graphql` (standard LLDAP management port) using the shared `extract_host_from_uri`. Previously incorrectly glued the LDAP service port (6360/3890) and forced https.
+- Switched service + per-user authentication from the legacy GraphQL `login` mutation to the documented REST endpoint `POST /auth/simple/login` (expects `{token, refreshToken}` response). Both `authenticate` (service account at startup) and `verify_user_credentials` (WebUI login) now use it.
+- Added `derive_login_url`, `last_auth_time`, and `authenticated_as()` to `LldapClient`.
+- Added `/settings/lldap-status` (GET fragment) and `/settings/reload-nfs-client` (POST) with HTMX support. Operators can now hot-reload the long-lived permission client (used for live user/group search + `resolve_user`/`resolve_group` before chown) after editing `sssd.ldap_default_bind_dn` / `authtok` or `management.lldap_graphql_url` without restarting the container.
+- Settings page now shows current service identity, last auth time, and a yellow drift notice when on-disk creds differ from the in-memory client.
+- Both new endpoints enforce the existing session auth model (`require_auth`).
+- "localhost" (simple sidecar) sessions continue to use the service bind DN credentials for all LLDAP-backed NFS permission operations (unchanged behavior, now explicitly supported by the reload path).
+- Updated default template comment and relevant tests.
+
+### Documentation & Testing
+- Updated TESTING.md, root + UI READMEs, and ldap-integration.md to reflect the client changes and new reload UX.
+- `cargo test --workspace` + `clippy -D warnings` clean.
 
 ### Internal Modularization of `nfs-klldap-config`
 
@@ -51,8 +66,8 @@ This is a major release focused on correctness, simplicity, and Red Hat compatib
 
 ### WebUI Authentication (v0.5 complete)
 - Full hybrid auth implemented and wired:
-  - Special immutable `localhost` user + bcrypt-hashed sidecar `/config/webui-password` (0600) → local machine admin.
-  - Any other username → LLDAP GraphQL login + membership check in `webui_admin_group` (default `lldap_admin`) → network admin.
+  - Special immutable `localhost` user + bcrypt-hashed sidecar `/config/webui-password` (0600) → local machine admin (uses the service `ldap_default_*` credentials for subsequent LLDAP lookups).
+  - Any other username → LLDAP REST login (`/auth/simple/login`) + membership check in `webui_admin_group` (default `lldap_admin`) → network admin.
   - First-run experience: when no sidecar exists, the login page shows a dedicated "set initial password" form (`POST /setup-password`) that auto-logs the operator in as `localhost`.
   - All legacy sudo/wheel logic removed from auth.rs and the login flow.
 - Login is now fully functional for the intended use cases (the blocking item for "even begin logging in").

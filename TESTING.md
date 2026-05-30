@@ -17,7 +17,7 @@ This document describes the testing strategy, current coverage, and how to run t
 | `nfs-klldap-ui`               | Good for critical pure logic           | `config.rs` helpers, `FsManager` (with real temp dirs), Axum handlers for settings save. |
 | Web handlers (`web.rs`)       | Targeted (settings flows)              | Uses `tower::ServiceExt` against real router + realistic `AppState`. |
 | Auth (`auth.rs`)              | Partial                                | Session management well covered. |
-| LLDAP client (`llap.rs`)      | None                                   | Requires live (or mocked) GraphQL server — intentionally limited. |
+| LLDAP client (`llap.rs`)      | Pure helpers only                      | `derive_lldap_url`, `lldap_login_creds`, `derive_login_url`. Live server auth + queries intentionally not unit-tested. |
 | Container scripts & entrypoint| None (shell)                           | Best exercised via Docker / compose runs. |
 
 ## Running Tests
@@ -106,7 +106,8 @@ For these areas we rely on:
 ## Currently Well-Tested Behaviors (with links to tests)
 
 - **LLDAP credential extraction** (`lldap_login_creds`): DN parsing (`uid=`, `cn=`), environment variable override, graceful fallback. See `nfs-klldap-ui/src/config.rs` tests.
-- **URL derivation** for the GraphQL client (`derive_lldap_url`).
+- **URL derivation** for the LLDAP client (`derive_lldap_url`, `derive_login_url`).
+- **NFS client reload** (`lldap_status` + `reload_nfs_client` handlers + credential drift detection in `web.rs`).
 - **Allow-list root computation** (`all_managed_roots` + `is_allowed` in `FsManager`).
 - **FsManager** (`is_allowed`, `build_tree`, host→container path mapping): Tested with real temporary directory trees. See `nfs-klldap-ui/src/fs.rs` tests.
 - **Axum handlers** (settings save raw + structured + permission apply): Tested using `tower::ServiceExt::oneshot` against the real router. See `nfs-klldap-ui/src/web.rs` tests.

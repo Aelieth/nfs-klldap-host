@@ -1,16 +1,18 @@
-//! LLDAP / KLLDAP client (GraphQL preferred).
+//! LLDAP / KLLDAP client (GraphQL for queries, /auth/simple/login for auth).
 //!
 //! Supports the custom fork at github.com/Aelieth/lldap-with-kerberos
 //! which has a more robust LDAP backend and built-in POSIX attributes.
 //!
-//! We use GraphQL because it is simple and LLDAP/KLLDAP expose rich queries
-//! for users and groups including uidNumber/gidNumber.
+//! Login always uses the documented REST endpoint POST /auth/simple/login
+//! (returning {token, refreshToken}). Queries and group membership checks use
+//! the GraphQL API at /api/graphql with Bearer tokens.
 //!
 //! The management tool runs unprivileged and only needs read access to users/groups
 //! (SSSD in the NFS container handles the actual POSIX directory permissions).
 
 use reqwest::Client;
 use serde::Deserialize;
+use std::time::Instant;
 
 #[derive(Debug)]
 pub enum LldapError {
@@ -37,10 +39,16 @@ impl std::error::Error for LldapError {}
 pub struct LldapClient {
     client: Client,
     graphql_url: String,
+    /// Derived REST login endpoint (POST {username,password} → {token, refreshToken})
+    login_url: String,
     auth_token: Option<String>,
     // Stored for automatic token refresh on 401
     username: Option<String>,
     password: Option<String>,
+    /// When we last successfully authenticated (or refreshed) against LLDAP/KLLDAP.
+    /// Used by the WebUI to detect stale credentials after the operator edits
+    /// sssd.ldap_default_bind_* or management.lldap_graphql_url.
+    last_auth_time: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,11 +72,6 @@ pub struct Group {
 #[derive(Deserialize)]
 struct GraphQLResponse<T> {
     data: T,
-}
-
-#[derive(Deserialize)]
-struct LoginResponse {
-    login: String, // the JWT token
 }
 
 #[derive(Deserialize)]
@@ -108,63 +111,87 @@ struct RawGroup {
     attributes: Vec<Attribute>,
 }
 
+/// Derive the LLDAP / KLLDAP simple-login REST endpoint from whatever GraphQL URL
+/// was provided (explicit override or our derived one).
+/// Handles common shapes: .../api/graphql , .../graphql , or a bare base URL.
+fn derive_login_url(graphql_url: &str) -> String {
+    let trimmed = graphql_url.trim_end_matches('/');
+    if let Some(base) = trimmed.strip_suffix("/api/graphql") {
+        format!("{}/auth/simple/login", base)
+    } else if let Some(base) = trimmed.strip_suffix("/graphql") {
+        format!("{}/auth/simple/login", base)
+    } else {
+        // Treat the provided value as the management base (e.g. "http://host:17170")
+        format!("{}/auth/simple/login", trimmed)
+    }
+}
+
 impl LldapClient {
     pub fn new(graphql_url: &str) -> Self {
+        let login_url = derive_login_url(graphql_url);
         Self {
             client: Client::new(),
             graphql_url: graphql_url.to_string(),
+            login_url,
             auth_token: None,
             username: None,
             password: None,
+            last_auth_time: None,
         }
     }
 
     /// Authenticate against KLLDAP / LLDAP using username + password.
-    /// Stores credentials for automatic token refresh on 401.
+    /// Uses the dedicated /auth/simple/login REST endpoint (not the GraphQL login mutation).
+    /// Stores credentials for automatic token refresh on 401 during later queries.
     /// Works with the Kerberos-integrated fork as well as upstream LLDAP.
     pub async fn authenticate(&mut self, username: &str, password: &str) -> Result<(), LldapError> {
+        let token = self._simple_login(username, password).await?;
         self.username = Some(username.to_string());
         self.password = Some(password.to_string());
-
-        self._perform_login(username, password).await
+        self.auth_token = Some(token);
+        self.last_auth_time = Some(Instant::now());
+        Ok(())
     }
 
-    async fn _perform_login(&mut self, username: &str, password: &str) -> Result<(), LldapError> {
-        let query = r#"
-            mutation($username: String!, $password: String!) {
-                login(username: $username, password: $password)
-            }
-        "#;
-
-        let variables = serde_json::json!({
+    /// Low-level call to LLDAP's REST login endpoint. Does not mutate stored token/creds.
+    async fn _simple_login(&self, username: &str, password: &str) -> Result<String, LldapError> {
+        let body = serde_json::json!({
             "username": username,
             "password": password
         });
 
-        let body = serde_json::json!({
-            "query": query,
-            "variables": variables
-        });
-
         let response = self
             .client
-            .post(&self.graphql_url)
+            .post(&self.login_url)
             .json(&body)
             .send()
             .await
             .map_err(|e| LldapError::Network(e.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(LldapError::Auth(format!("HTTP {}", response.status())));
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(LldapError::Auth(format!("login failed: {} - {}", status, text)));
         }
 
-        let graphql_resp: GraphQLResponse<LoginResponse> = response
+        let v: serde_json::Value = response
             .json()
             .await
             .map_err(|e| LldapError::Parse(e.to_string()))?;
 
-        self.auth_token = Some(graphql_resp.data.login);
-        Ok(())
+        // LLDAP returns { "token": "...", "refreshToken": "..." }
+        if let Some(tok) = v.get("token").and_then(|t| t.as_str()) {
+            if !tok.trim().is_empty() {
+                return Ok(tok.to_string());
+            }
+        }
+        // Some setups or future versions might return bare token string
+        if let Some(tok) = v.as_str() {
+            if !tok.trim().is_empty() {
+                return Ok(tok.to_string());
+            }
+        }
+        Err(LldapError::Auth("no token field in /auth/simple/login response".into()))
     }
 
     fn auth_headers(&self) -> reqwest::header::HeaderMap {
@@ -193,9 +220,15 @@ impl LldapClient {
             Err(LldapError::Auth(_)) => {
                 // Attempt refresh if we have credentials
                 if let (Some(user), Some(pass)) = (self.username.clone(), self.password.clone()) {
-                    self._perform_login(&user, &pass).await?;
-                    // Retry once after refresh
-                    self._execute_query::<T>(query, variables).await
+                    match self._simple_login(&user, &pass).await {
+                        Ok(token) => {
+                            self.auth_token = Some(token);
+                            self.last_auth_time = Some(Instant::now());
+                            // Retry once after refresh
+                            self._execute_query::<T>(query, variables).await
+                        }
+                        Err(e) => Err(e),
+                    }
                 } else {
                     Err(LldapError::Auth(
                         "Token expired and no credentials for refresh".into(),
@@ -418,8 +451,8 @@ impl LldapClient {
     }
 
     /// Verify that a regular (non-service) LLDAP user can authenticate.
-    /// Uses the login mutation but does **not** replace our service token.
-    /// Returns Ok(()) on success. This is used by the WebUI login flow.
+    /// Uses the dedicated /auth/simple/login REST endpoint but does **not** replace
+    /// our service token. Returns Ok(()) on success. This is used by the WebUI login flow.
     pub async fn verify_user_credentials(
         &mut self,
         username: &str,
@@ -427,54 +460,21 @@ impl LldapClient {
     ) -> Result<(), LldapError> {
         // We intentionally do not call self.authenticate() because that would
         // replace the service-account JWT we use for searches.
-        let query = r#"
-            mutation($username: String!, $password: String!) {
-                login(username: $username, password: $password)
-            }
-        "#;
+        // Login is only performed on explicit user login attempts (or container startup).
+        self._simple_login(username, password).await.map(|_| ())
+    }
 
-        let variables = serde_json::json!({
-            "username": username,
-            "password": password
-        });
+    /// Username the service client is currently authenticated as (comes from
+    /// sssd.ldap_default_bind_dn or NFS_KLLDAP_LLDAP_USER at last successful auth/reload).
+    pub fn authenticated_as(&self) -> Option<&str> {
+        self.username.as_deref()
+    }
 
-        let body = serde_json::json!({
-            "query": query,
-            "variables": variables
-        });
-
-        let response = self
-            .client
-            .post(&self.graphql_url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LldapError::Network(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(LldapError::Auth(format!(
-                "login failed: {} - {}",
-                status, text
-            )));
-        }
-
-        let graphql_resp: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| LldapError::Parse(e.to_string()))?;
-
-        if graphql_resp.get("errors").is_some() {
-            return Err(LldapError::Auth("invalid username or password".into()));
-        }
-
-        // If we got a data.login string, success.
-        if graphql_resp["data"]["login"].is_string() {
-            Ok(())
-        } else {
-            Err(LldapError::Auth("unexpected login response".into()))
-        }
+    /// When the last successful authentication (or token refresh) occurred.
+    /// Used by the WebUI to show staleness notices after editing bind credentials
+    /// or the LLDAP management URL in nfs-klldap.conf.
+    pub fn last_auth_time(&self) -> Option<Instant> {
+        self.last_auth_time
     }
 
     /// Returns true if the given LLDAP username is a member of the named group.

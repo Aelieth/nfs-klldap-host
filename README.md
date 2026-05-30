@@ -127,7 +127,7 @@ See [docs/run/README.md](docs/run/README.md) for practical examples (root execut
 ---
 
 **Two pages:**
-- **System Settings** (`/settings`) — edit the central TOML (raw editor + structured form)
+- **System Settings** (`/settings`) — edit the central TOML (raw + structured); includes live NFS permission client status (current bind DN, last auth, drift notice) + "Reload NFS client" (hot-reloads the LLDAP client used for uid/gid resolution after credential changes).
 - **Share Permissions** (`/`) — real-time filesystem tree browser + live KLLDAP user/group search + recursive `chown`/`chmod` performed directly inside the container
 
 ---

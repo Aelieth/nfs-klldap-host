@@ -34,18 +34,20 @@ pub fn all_managed_roots(cfg: &Config) -> Vec<PathBuf> {
 }
 
 /// Derive a reasonable LLDAP GraphQL URL from ldap_uri if the management section doesn't have one.
+///
+/// LLDAP (and KLLDAP forks) serve the management UI + GraphQL API on a *different* port
+/// than the LDAP service itself (default LDAP ports 3890/6360 vs management 17170).
+/// We always derive http on the standard LLDAP management port unless the user provides
+/// an explicit override (for TLS terminators, custom ports, or reverse-proxy setups).
 pub fn derive_lldap_url(cfg: &Config) -> String {
     if let Some(u) = &cfg.management.lldap_graphql_url {
         return u.clone();
     }
-    // ldaps://kllap.example.com:6360 → https://kllap.example.com:6360/api/graphql
-    let host = cfg
-        .ldap_uri
-        .split("://")
-        .nth(1)
-        .and_then(|s| s.split([':', '/']).next())
-        .unwrap_or("localhost");
-    format!("https://{}:6360/api/graphql", host)
+    // Use the shared robust host extractor (handles IPv6 literals etc.)
+    let host = nfs_klldap_config::extract_host_from_uri(&cfg.ldap_uri);
+    // Standard LLDAP: management/GraphQL on 17170 (plain http by default).
+    // Set [management] lldap_graphql_url explicitly if you use https, 17171, or a proxy path.
+    format!("http://{}:17170/api/graphql", host)
 }
 
 /// Return (username, password) for authenticating the LLDAP GraphQL client.
@@ -156,6 +158,7 @@ mod tests {
         let cfg = base_config();
         let url = derive_lldap_url(&cfg);
         assert!(url.contains("kllap.example.com"));
+        assert!(url.contains(":17170")); // LLDAP management port, not the LDAP port from ldap_uri
         assert!(url.ends_with("/api/graphql"));
     }
 

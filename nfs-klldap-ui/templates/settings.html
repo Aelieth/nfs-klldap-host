@@ -20,6 +20,15 @@
     </div>
 {% endif %}
 
+<!-- NFS Permission Client status (LLDAP connection used for uid/gid resolution on shares).
+     HTMX-loaded so it can be refreshed after "Reload NFS client" without full page reload. -->
+<div id="nfs-client-status"
+     hx-get="/settings/lldap-status"
+     hx-trigger="load"
+     style="border:1px solid #aaa; background:#f5f5f5; padding:10px; margin:1rem 0; border-radius:4px;">
+    <em>Loading NFS client status…</em>
+</div>
+
 <h3>Structured Editor (top fields + shares)</h3>
 <form method="post" action="/settings/save" style="max-width: 920px;">
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">

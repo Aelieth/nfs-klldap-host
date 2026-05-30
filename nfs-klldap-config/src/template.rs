@@ -73,7 +73,7 @@ default_security = "krb5p"   # krb5p (recommended) | krb5i | krb5
 
 [management]
 # WebUI settings (in-container on port 9630)
-# lldap_graphql_url = "https://kllap.example.com:6360/api/graphql"
+# lldap_graphql_url = "http://kllap.example.com:17170/api/graphql"  # (or https via reverse proxy; only set if not using LLDAP default)
 # ganesha_container_name = "nfs-klldap"   # (legacy, no longer used — WebUI performs FS ops directly)
 # webui_admin_group = "lldap_admin"       # LLDAP group whose members can modify shares/settings from any machine
 #                                         # (plus the special immutable "localhost" user via simple sidecar password)

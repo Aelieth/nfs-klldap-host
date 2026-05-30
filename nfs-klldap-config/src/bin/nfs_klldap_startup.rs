@@ -189,11 +189,11 @@ fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
 /// Attempts LDAP bind and returns rich error information for the user.
 ///
 /// This now performs a *narrow* search using exactly the same attribute names
-/// that will later be used by SSSD (via the generated ldap_user_attributes /
-/// ldap_*_map settings) and by the WebUI's LLDAP client. This keeps the early
-/// "initial handshake" probe consistent with the "only the SSSD-defined
-/// attributes" principle and minimizes the chance of triggering LLDAP's
-/// "unrecognized user attribute" warnings during container startup.
+/// that will later be used by the WebUI's LLDAP client (and documented in the
+/// generated sssd.conf comments). The actual probe now performs a narrow base
+/// search on the bind DN using only those mapped attributes. This keeps the
+/// early handshake consistent with the rest of the system and avoids feeding
+/// LLDAP extra attribute names during the first bind.
 fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     let uri = &cfg.ldap_uri;
     let dn = &cfg.sssd.ldap_default_bind_dn;

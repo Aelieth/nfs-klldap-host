@@ -132,9 +132,17 @@ cache_credentials = true
 
 /// Builds the rich body of the [domain/xxx] section.
 ///
-/// This is the main "broad spectrum" helper. It aims to generate something
-/// very close to real-world proven LLDAP + Kerberos + Ganesha configurations
-/// (both plain ldap:// and ldaps:// variants).
+/// This is the main helper for producing a practical sssd.conf for LLDAP.
+///
+/// The attribute mapping lists (user_attr_list / group_attr_list) are kept
+/// because they are the single source of truth shared with the WebUI
+/// LldapClient (so GraphQL queries stay narrow). They are also useful as
+/// human-readable documentation of the intended minimal set.
+///
+/// Real reduction of the "usual set" SSSD requests (shadow*, krb*, gecos,
+/// nsAccountLock, authorizedService, login*, userAccountControl, etc.) comes
+/// from the minimizers we always emit: ldap_pwd_policy=none, ldap_id_mapping=false,
+/// ldap_schema=rfc2307bis (overridable), and sensible krb5 provider settings.
 fn build_ldap_domain_options(
     cfg: &NfsKlldapConfig,
     user_base: &str,
@@ -147,13 +155,13 @@ fn build_ldap_domain_options(
     // the WebUI LLDAP client will request). User overrides in the TOML win.
     let mapping = resolve_posix_attribute_mapping(s);
 
-    // Explicit attribute lists for SSSD searches (derived from the same [sssd]
-    // mappings). This prevents SSSD from requesting its broad internal defaults
-    // (krb*, shadow*, accountexpires, authorizedservice, gecos, nsaccountlock,
-    // passkey, etc.) which LLDAP does not recognize on users/groups and logs
-    // WARN spam for on every search. Only the admin-declared POSIX attributes
-    // (plus objectClass) are requested. memberUid (group member) is never placed
-    // in the user list.
+    // These lists are the single source of truth for the *intended* minimal
+    // attribute set (derived from the same [sssd] mappings used by the WebUI
+    // LldapClient). They are emitted below as comments for documentation.
+    //
+    // They do NOT restrict SSSD (ldap_user_extra_attrs only adds to the
+    // hardcoded set). Real control is via the minimizers + schema/provider
+    // settings that follow.
     let user_attr_list = {
         let mut a = vec![
             mapping.user_name.as_str(),
@@ -188,6 +196,21 @@ fn build_ldap_domain_options(
         "false"
     };
 
+    // Effective schema + minimizers that actually reduce what SSSD requests.
+    let ldap_schema = s
+        .ldap_schema
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string())
+        .unwrap_or_else(|| "rfc2307bis".to_string());
+
+    let auth_provider = s
+        .auth_provider
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string())
+        .unwrap_or_else(|| "ldap".to_string());
+
     let mut out = format!(
         r#"ldap_user_search_base = {user_base}
 ldap_user_object_class = {user_obj}
@@ -201,10 +224,11 @@ ldap_group_search_base = {group_base}
 ldap_group_object_class = {group_obj}
 ldap_group_name = {g_name}
 ldap_group_gid_number = {g_gid}
+ldap_group_member = {g_member}
 
-ldap_user_attributes = {user_attrs}
-ldap_group_attributes = {group_attrs}
-
+ldap_schema = {ldap_schema}
+ldap_pwd_policy = none
+ldap_id_mapping = false
 enumerate = {enumerate}
 access_provider = {access}"#,
         user_base = user_base,
@@ -218,8 +242,8 @@ access_provider = {access}"#,
         group_obj = mapping.group_object_class,
         g_name = mapping.group_name,
         g_gid = mapping.group_gid_number,
-        user_attrs = user_attr_list,
-        group_attrs = group_attr_list,
+        g_member = mapping.group_member,
+        ldap_schema = ldap_schema,
         enumerate = enumerate,
         access = s
             .access_provider
@@ -227,6 +251,31 @@ access_provider = {access}"#,
             .filter(|v| !v.trim().is_empty())
             .unwrap_or("permit"),
     );
+
+    // Document the intended narrow set (derived from your [sssd] mappings).
+    // These are the names the WebUI GraphQL client actually requests.
+    // SSSD will still send its broader internal set; the minimizers below
+    // + schema/provider choices are what reduce the real wire traffic.
+    out.push_str(&format!(
+        "\n# Intended minimal attribute set (informational; derived from your [sssd] mappings)\n# ldap_user_extra_attrs only adds — it does not restrict.\n# Real reduction comes from ldap_pwd_policy, ldap_id_mapping, ldap_schema, etc. below.\n#ldap_user_attributes = {}\n#ldap_group_attributes = {}",
+        user_attr_list, group_attr_list
+    ));
+
+    // Real minimizers that actually affect what SSSD requests on the wire.
+    // These go after the core mappings so they are easy to see in the file.
+    out.push_str("\nldap_pwd_policy = none");
+    out.push_str("\nldap_id_mapping = false");
+
+    // When using Kerberos for auth, reduce extra LDAP round-trips that can
+    // trigger more attribute spam on the LLDAP side.
+    if auth_provider == "krb5" {
+        out.push_str("\nchpass_provider = krb5");
+        // krb5_validate=false avoids extra LDAP lookups for TGT validation
+        // in many common LLDAP + krb5 setups.
+        if s.krb5_validate.is_none() {
+            out.push_str("\nkrb5_validate = false");
+        }
+    }
 
     // Optional fields — only emit when explicitly set
     if let Some(v) = &s.ldap_tls_reqcert {
@@ -251,13 +300,6 @@ access_provider = {access}"#,
         .filter(|v| !v.trim().is_empty())
     {
         out.push_str(&format!("\nldap_user_fullname = {}", v.trim()));
-    }
-    if let Some(v) = s
-        .ldap_group_member
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-    {
-        out.push_str(&format!("\nldap_group_member = {}", v.trim()));
     }
 
     // Advanced krb5 knobs

@@ -114,7 +114,7 @@ RUN set -eux && \
      cp "target/$TARGET/release/nfs-klldap-ui" /output/) && \
     echo "=== Verifying built binaries ===" && \
     ls -l /output/ && \
-    strip /output/nfs-klldap-config /output/nfs-klldap-startup /output/nfs-klldap-ui || true
+    (strip /output/nfs-klldap-config /output/nfs-klldap-startup /output/nfs-klldap-ui || true)
 
 # -----------------------------------------------------------------------------
 # Stage 4: Final runtime image (AlmaLinux 10-minimal + Ganesha + SSSD + etc.)

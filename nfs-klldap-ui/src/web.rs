@@ -20,47 +20,6 @@ use tokio::sync::Mutex;
 
 use crate::{auth::AuthManager, config::Config, fs::FsManager, llap::LldapClient};
 
-use nfs_klldap_config::get_consistent_hostname;
-
-/// Compute the hostname that must appear in the `nfs/<this>@REALM` keytab principal.
-///
-/// 1. If the operator set `[server] hostname` in the central config, that wins
-///    (explicit escape hatch).
-/// 2. Otherwise we use the **two-tier consistent** runtime hostname
-///    (`hostname` command + /proc/sys/kernel/hostname must agree).
-///
-/// This is the single place the settings page and all templates read the value from.
-/// Because both the startup TUI and the WebUI now call the same
-/// `get_consistent_hostname()`, the value is guaranteed to be identical across
-/// entrypoint.sh → nfs-klldap-config → nfs-klldap-startup → nfs-klldap-ui.
-fn compute_effective_hostname(cfg: &Config) -> String {
-    if let Some(h) = &cfg.server.hostname {
-        if !h.trim().is_empty() {
-            return h.trim().to_string();
-        }
-    }
-
-    // Fall back to the production two-tier consistent value.
-    // On inconsistency we still return *something* usable (the UI must stay
-    // functional so the operator can edit the config), but the loud warning
-    // has already been printed at startup (and will appear again here if the
-    // operator navigates to Settings while in a bad state).
-    match get_consistent_hostname() {
-        Ok(c) => c.hostname,
-        Err(_) => std::env::var("HOSTNAME")
-            .or_else(|_| {
-                std::fs::read_to_string("/proc/sys/kernel/hostname").map(|s| s.trim().to_string())
-            })
-            .unwrap_or_else(|_| "unknown-host".to_string()),
-    }
-}
-
-/// Returns the realm to use for keytab principal display in the UI.
-/// Uses the validated/derived value from the config when available.
-fn compute_effective_realm(cfg: &Config) -> String {
-    cfg.display_realm()
-}
-
 // === State ===
 
 #[derive(Clone)]
@@ -72,6 +31,13 @@ pub struct AppState {
     /// Absolute path to the nfs-klldap.conf file being edited (same one the container uses).
     /// Needed for raw TOML view + save, and for System Settings.
     pub config_path: PathBuf,
+    /// The exact hostname that must appear in the nfs/<this>@REALM principal in the keytab.
+    /// Computed once at startup using the same two-tier consistent logic (or explicit override)
+    /// as the container's own startup banner. Guarantees the WebUI always shows the value
+    /// that the running container actually requires.
+    pub keytab_hostname: String,
+    /// Kerberos realm for the NFS principal (derived/validated at startup, same as krb5.conf generator).
+    pub keytab_realm: String,
 }
 
 // === Public routes (no auth) ===
@@ -85,6 +51,9 @@ struct LoginTemplate {
     /// The form should offer to set the initial "localhost" password.
     first_run: bool,
     admin_group: String,
+    /// Keytab principal info (always available, even on public login page).
+    keytab_hostname: String,
+    keytab_realm: String,
 }
 
 pub async fn login_page(State(state): State<AppState>) -> impl IntoResponse {
@@ -97,6 +66,8 @@ pub async fn login_page(State(state): State<AppState>) -> impl IntoResponse {
             current_user: None,
             first_run,
             admin_group,
+            keytab_hostname: state.keytab_hostname.clone(),
+            keytab_realm: state.keytab_realm.clone(),
         }
         .render()
         .unwrap(),
@@ -133,25 +104,25 @@ pub async fn login(
         if !verify_ok {
             Err("Invalid username or password (LLDAP)".to_string())
         } else {
-            // 2. Check admin group membership (service account does the query)
+            // 2. Check admin group membership (service account does the query).
+            // Only members of the admin group are allowed to log into the WebUI.
             let is_admin = {
                 let mut l = state.lldap.lock().await;
                 l.user_is_in_group(username, state.auth.admin_group()).await
             };
 
-            let role = if is_admin {
-                crate::auth::AuthRole::LldapAdmin {
-                    username: username.to_string(),
-                }
+            if !is_admin {
+                Err(format!(
+                    "Access denied: '{}' is not a member of the '{}' group in LLDAP.",
+                    username,
+                    state.auth.admin_group()
+                ))
             } else {
-                // Non-admin LLDAP users can log in to view, but cannot mutate.
-                // For v0.5 we still grant a limited role; mutations are gated elsewhere.
-                crate::auth::AuthRole::LldapAdmin {
+                let role = crate::auth::AuthRole::LldapAdmin {
                     username: username.to_string(),
-                }
-            };
-
-            Ok((username.to_string(), role))
+                };
+                Ok((username.to_string(), role))
+            }
         }
     };
 
@@ -177,6 +148,8 @@ pub async fn login(
                 current_user: None,
                 first_run,
                 admin_group,
+                keytab_hostname: state.keytab_hostname.clone(),
+                keytab_realm: state.keytab_realm.clone(),
             }
             .render()
             .unwrap();
@@ -201,6 +174,8 @@ pub async fn setup_password(
             current_user: None,
             first_run: false,
             admin_group: state.auth.admin_group().to_string(),
+            keytab_hostname: state.keytab_hostname.clone(),
+            keytab_realm: state.keytab_realm.clone(),
         }
         .render()
         .unwrap();
@@ -214,6 +189,8 @@ pub async fn setup_password(
             current_user: None,
             first_run: true,
             admin_group: state.auth.admin_group().to_string(),
+            keytab_hostname: state.keytab_hostname.clone(),
+            keytab_realm: state.keytab_realm.clone(),
         }
         .render()
         .unwrap();
@@ -242,6 +219,8 @@ pub async fn setup_password(
                 current_user: None,
                 first_run: true,
                 admin_group: state.auth.admin_group().to_string(),
+                keytab_hostname: state.keytab_hostname.clone(),
+                keytab_realm: state.keytab_realm.clone(),
             }
             .render()
             .unwrap();
@@ -303,6 +282,8 @@ pub async fn require_auth(
 struct IndexTemplate {
     shares: Vec<crate::config::Share>,
     current_user: Option<String>,
+    keytab_hostname: String,
+    keytab_realm: String,
 }
 
 #[derive(Template)]
@@ -342,6 +323,9 @@ struct SettingsTemplate {
     /// Comes from [kerberos] realm (or auto-derived from ldap_uri during config load/validation).
     /// This is the exact value written into krb5.conf by the generator.
     effective_realm: String,
+    /// For the top banner (same values as AppState at startup time).
+    keytab_hostname: String,
+    keytab_realm: String,
 }
 
 // === Handlers ===
@@ -355,6 +339,8 @@ pub async fn index(
     let tpl = IndexTemplate {
         shares: state.config.shares.clone(),
         current_user: Some(user.0),
+        keytab_hostname: state.keytab_hostname.clone(),
+        keytab_realm: state.keytab_realm.clone(),
     };
 
     Ok(Html(tpl.render().unwrap()))
@@ -629,8 +615,10 @@ pub async fn settings_page(
         raw_toml,
         config_path: state.config_path.display().to_string(),
         message: None,
-        effective_hostname: compute_effective_hostname(&state.config),
-        effective_realm: compute_effective_realm(&state.config),
+        effective_hostname: state.keytab_hostname.clone(),
+        effective_realm: state.keytab_realm.clone(),
+        keytab_hostname: state.keytab_hostname.clone(),
+        keytab_realm: state.keytab_realm.clone(),
     };
     Ok(Html(tpl.render().unwrap()))
 }
@@ -721,8 +709,10 @@ pub async fn settings_save_raw(
         raw_toml,
         config_path: state.config_path.display().to_string(),
         message: Some("Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into()),
-        effective_hostname: compute_effective_hostname(&state.config),
-        effective_realm: compute_effective_realm(&state.config),
+        effective_hostname: state.keytab_hostname.clone(),
+        effective_realm: state.keytab_realm.clone(),
+        keytab_hostname: state.keytab_hostname.clone(),
+        keytab_realm: state.keytab_realm.clone(),
     };
     Ok(Html(tpl.render().unwrap()))
 }
@@ -851,8 +841,10 @@ pub async fn settings_save_structured(
             raw_toml,
             config_path: state.config_path.display().to_string(),
             message: Some(msg),
-            effective_hostname: compute_effective_hostname(&state.config),
-            effective_realm: compute_effective_realm(&state.config),
+            effective_hostname: state.keytab_hostname.clone(),
+            effective_realm: state.keytab_realm.clone(),
+            keytab_hostname: state.keytab_hostname.clone(),
+            keytab_realm: state.keytab_realm.clone(),
         };
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -961,8 +953,10 @@ pub async fn settings_save_structured(
             raw_toml,
             config_path: state.config_path.display().to_string(),
             message: Some(format!("Failed to write: {}", e)),
-            effective_hostname: compute_effective_hostname(&state.config),
-            effective_realm: compute_effective_realm(&state.config),
+            effective_hostname: state.keytab_hostname.clone(),
+            effective_realm: state.keytab_realm.clone(),
+            keytab_hostname: state.keytab_hostname.clone(),
+            keytab_realm: state.keytab_realm.clone(),
         };
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -973,8 +967,10 @@ pub async fn settings_save_structured(
             raw_toml,
             config_path: state.config_path.display().to_string(),
             message: Some(format!("Rename failed: {}", e)),
-            effective_hostname: compute_effective_hostname(&state.config),
-            effective_realm: compute_effective_realm(&state.config),
+            effective_hostname: state.keytab_hostname.clone(),
+            effective_realm: state.keytab_realm.clone(),
+            keytab_hostname: state.keytab_hostname.clone(),
+            keytab_realm: state.keytab_realm.clone(),
         };
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -995,8 +991,10 @@ pub async fn settings_save_structured(
         message: Some(
             "Structured settings saved. Container will regenerate configs shortly.".into(),
         ),
-        effective_hostname: compute_effective_hostname(&state.config),
-        effective_realm: compute_effective_realm(&state.config),
+        effective_hostname: state.keytab_hostname.clone(),
+        effective_realm: state.keytab_realm.clone(),
+        keytab_hostname: state.keytab_hostname.clone(),
+        keytab_realm: state.keytab_realm.clone(),
     };
     Ok(Html(tpl.render().unwrap()))
 }
@@ -1007,10 +1005,7 @@ pub async fn settings_save_structured(
 /// NFS permission management (name → uid/gid resolution) plus a reload button.
 /// Highlights when the on-disk credentials (sssd.ldap_default_* or env overrides)
 /// have changed since the client was last authenticated.
-pub async fn lldap_status(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+pub async fn lldap_status(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     if require_auth(State(state.clone()), headers).await.is_err() {
         return Html(
             "<div id='nfs-client-status' style='color:#c00'>Unauthorized</div>".to_string(),
@@ -1047,7 +1042,9 @@ pub async fn lldap_status(
         );
         n.push_str("<strong>Bind credentials changed on disk.</strong><br>");
         n.push_str(&format!("On-disk now uses <code>{}</code>, but the running NFS permission client is still using <code>{}</code> (loaded at startup or last reload).<br>", disk_user, auth_as));
-        n.push_str("Use the button below to reconnect with the current values from nfs-klldap.conf.</div>");
+        n.push_str(
+            "Use the button below to reconnect with the current values from nfs-klldap.conf.</div>",
+        );
         n
     } else {
         String::new()
@@ -1093,7 +1090,10 @@ pub async fn reload_nfs_client(
         Ok(c) => c,
         Err(e) => {
             let mut err = String::from("<div id='nfs-client-status' style='background:#f8d7da;border:1px solid #dc3545;padding:8px;'>");
-            err.push_str(&format!("<strong>Failed to read config:</strong> {}<br>", e));
+            err.push_str(&format!(
+                "<strong>Failed to read config:</strong> {}<br>",
+                e
+            ));
             err.push_str("<button type='button' hx-get='/settings/lldap-status' hx-target='#nfs-client-status' hx-swap='outerHTML'>Try again</button>");
             err.push_str("</div>");
             return Html(err);
@@ -1130,7 +1130,10 @@ pub async fn reload_nfs_client(
         }
         Err(e) => {
             let mut err = String::from("<div id='nfs-client-status' style='background:#f8d7da;border:1px solid #dc3545;padding:8px;'>");
-            err.push_str(&format!("<strong>Re-authentication failed:</strong> {}<br>", e));
+            err.push_str(&format!(
+                "<strong>Re-authentication failed:</strong> {}<br>",
+                e
+            ));
             err.push_str("<small>Verify the bind DN/password (or NFS_KLLDAP_LLDAP_* variables) and that LLDAP/KLLDAP is reachable on the management port.</small><br>");
             err.push_str("<button type='button' hx-get='/settings/lldap-status' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:4px;'>Retry status</button>");
             err.push_str("</div>");
@@ -1141,14 +1144,13 @@ pub async fn reload_nfs_client(
 
 // === Router ===
 
-
 pub fn router(state: AppState) -> Router {
     Router::new()
         // Public
         .route("/login", get(login_page).post(login))
         // First-run only (returns 400 once a simple password exists)
         .route("/setup-password", axum::routing::post(setup_password))
-        .route("/logout", axum::routing::post(logout))
+        .route("/logout", get(logout).post(logout))
         // Protected (two-page UI + core permission editor)
         .route("/", get(index))
         .route("/tree", get(tree_fragment))
@@ -1172,7 +1174,10 @@ mod tests {
     use super::*;
     use axum::{
         body::Body,
-        http::{header::{COOKIE, SET_COOKIE}, Request, StatusCode},
+        http::{
+            header::{COOKIE, SET_COOKIE},
+            Request, StatusCode,
+        },
     };
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -1215,6 +1220,8 @@ mod tests {
             config,
             auth,
             config_path,
+            keytab_hostname: "test-host".to_string(),
+            keytab_realm: "EXAMPLE.COM".to_string(),
         };
 
         (state, tmp)
@@ -1327,7 +1334,10 @@ ldap_default_authtok = "sekret"
             .expect("setup-password must set session cookie")
             .to_str()
             .unwrap();
-        assert!(set_cookie.contains("session="), "cookie header must contain session token");
+        assert!(
+            set_cookie.contains("session="),
+            "cookie header must contain session token"
+        );
         assert!(set_cookie.contains("HttpOnly"));
         assert!(set_cookie.contains("SameSite=Strict"));
 
@@ -1398,6 +1408,9 @@ ldap_default_authtok = "sekret"
             .get(SET_COOKIE)
             .map(|v| v.to_str().unwrap_or(""))
             .unwrap_or("");
-        assert!(cleared.contains("Max-Age=0") || cleared.contains("session="), "logout should clear session cookie");
+        assert!(
+            cleared.contains("Max-Age=0") || cleared.contains("session="),
+            "logout should clear session cookie"
+        );
     }
 }

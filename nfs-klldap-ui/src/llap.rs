@@ -171,7 +171,10 @@ impl LldapClient {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            return Err(LldapError::Auth(format!("login failed: {} - {}", status, text)));
+            return Err(LldapError::Auth(format!(
+                "login failed: {} - {}",
+                status, text
+            )));
         }
 
         let v: serde_json::Value = response
@@ -191,7 +194,9 @@ impl LldapClient {
                 return Ok(tok.to_string());
             }
         }
-        Err(LldapError::Auth("no token field in /auth/simple/login response".into()))
+        Err(LldapError::Auth(
+            "no token field in /auth/simple/login response".into(),
+        ))
     }
 
     fn auth_headers(&self) -> reqwest::header::HeaderMap {

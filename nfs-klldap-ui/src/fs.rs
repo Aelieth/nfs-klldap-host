@@ -133,7 +133,10 @@ impl FsManager {
         ))
     }
 
-    /// Apply chown + chmod directly using libc + std (we are root inside the container).
+    /// Apply chown + chmod directly (we are root inside the container).
+    ///
+    /// All actual syscalls are performed via the safe wrappers in `crate::ffi`.
+    /// This function and the entire rest of the crate contain zero `unsafe` code.
     fn apply_direct(
         &self,
         path: &Path,
@@ -146,35 +149,15 @@ impl FsManager {
             self.apply_recursive(path, uid, gid, mode)
                 .map_err(|e| format!("recursive chown/chmod failed: {}", e))?;
         } else {
-            let res = unsafe {
-                libc::chown(
-                    path.as_os_str().as_encoded_bytes().as_ptr() as *const libc::c_char,
-                    uid,
-                    gid,
-                )
-            };
-            if res != 0 {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
-            let perms = std::fs::Permissions::from_mode(mode);
-            std::fs::set_permissions(path, perms).map_err(|e| e.to_string())?;
+            crate::ffi::chown(path, uid, gid).map_err(|e| e.to_string())?;
+            crate::ffi::chmod(path, mode).map_err(|e| e.to_string())?;
         }
         Ok(())
     }
 
     fn apply_recursive(&self, path: &Path, uid: u32, gid: u32, mode: u32) -> std::io::Result<()> {
-        let res = unsafe {
-            libc::chown(
-                path.as_os_str().as_encoded_bytes().as_ptr() as *const libc::c_char,
-                uid,
-                gid,
-            )
-        };
-        if res != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let perms = std::fs::Permissions::from_mode(mode);
-        std::fs::set_permissions(path, perms)?;
+        crate::ffi::chown(path, uid, gid)?;
+        crate::ffi::chmod(path, mode)?;
 
         if path.is_dir() {
             for entry in std::fs::read_dir(path)? {

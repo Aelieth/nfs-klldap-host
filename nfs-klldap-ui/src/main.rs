@@ -11,9 +11,13 @@
 //! TLS certificates are ensured at startup via `crate::certs::ensure_webui_tls_certs`
 //! (self-signed generation happens in pure Rust using rcgen when needed).
 
+// Enforce that all unsafe code is confined to the ffi module.
+#![deny(unsafe_code)]
+
 mod auth;
 mod certs;
 mod config;
+mod ffi;
 mod fs;
 mod llap;
 
@@ -144,6 +148,8 @@ async fn main() {
         config: config.clone(),
         auth,
         config_path: config_path.clone(),
+        keytab_hostname: keytab_host,
+        keytab_realm,
     };
 
     let app = crate::web::router(state);

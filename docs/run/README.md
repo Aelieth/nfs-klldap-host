@@ -140,9 +140,33 @@ services:
 
 With all services running as root inside the container, a standard root-owned 0600 keytab mounted at `/etc/krb5.keytab:ro` (with `:Z` recommended on SELinux hosts) is directly usable by Ganesha. No special group membership, `chgrp`, or host-side permission scripts are required.
 
-The legacy `./scripts/fix-keytab-perms.sh` is deprecated and no longer needed.
-
 The entrypoint and `nfs-klldap-startup` diagnostics will print clear messages if the keytab or config directory permissions are insufficient at startup.
+
+## Keytab generation from your KDC
+
+On the KDC (or admin workstation with kadmin access):
+
+# 1. Enter kadmin.local (no password needed because of the hash)
+kadmin.local
+
+# Inside the kadmin.local prompt, use these commands one by one:
+# Create the two NFS service principals (one hostname one FQDN)
+addprinc -randkey nfs/examplepc@TESTREALM.COM
+addprinc -randkey nfs/examplepc.testlab.com@TESTREALM.COM
+
+# Extract both into a single keytab file
+ktadd -k /tmp/nfs-examplepc.keytab nfs/examplepc@TESTREALM.COM nfs/examplepc.testlab.com@TESTREALM.COM
+
+# Keytab generated!
+quit
+
+# Verify the keytab was created correctly
+klist -k /tmp/nfs-examplepc.keytab
+
+# (add the -nfs version too if you created it)
+Exit kadmin, then secure the keytab:
+Bashchmod 600 /tmp/krb5.keytab
+chown root:root /tmp/krb5.keytab
 
 ## Management WebUI (Port 9630)
 

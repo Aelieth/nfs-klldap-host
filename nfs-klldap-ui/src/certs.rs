@@ -201,6 +201,9 @@ mod tests {
 
         let result = load_cert_and_key(&cert_path, &key_path);
         // rustls_pemfile will fail to parse → mapped to Io(InvalidData) or Pem variant
-        assert!(matches!(result, Err(CertError::Io(_)) | Err(CertError::Pem) | Err(CertError::Invalid)));
+        assert!(matches!(
+            result,
+            Err(CertError::Io(_)) | Err(CertError::Pem) | Err(CertError::Invalid)
+        ));
     }
 }

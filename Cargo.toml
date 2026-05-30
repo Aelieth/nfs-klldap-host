@@ -1,35 +1,52 @@
 [workspace]
 members = [
-    "management",
-    "management/nfs-klldap-config",
+    "nfs-klldap-config",
+    "nfs-klldap-ui",
 ]
 resolver = "2"
+
+[workspace.package]
+version = "0.5.0"
+edition = "2021"
+authors = ["Aelieth"]
+license = "MIT"
+repository = "https://github.com/aelieth/nfs-klldap-host"
+
+[workspace.dependencies]
+# Shared dependencies (and dev-dependencies) used by both workspace members.
+# This centralizes version management and makes it easy to keep the two crates
+# in sync. Use `foo = { workspace = true }` (or with extra features) in member
+# manifests.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+tempfile = "3"
 
 # =============================================================================
 # nfs-klldap-host Cargo Workspace
 # =============================================================================
 #
-# This root workspace exists purely for build hygiene and developer experience.
+# Primary crates (both ship inside the nfs-klldap-host container):
 #
-# Why two crates under management/?
-#   - management/          → The main WebUI binary (nfs-klldap-ui) that runs
-#                            inside the container on port 9630 (HTTPS).
+#   nfs-klldap-ui/         → The in-container WebUI (Axum + HTMX) on port 9630.
+#                            Binary: nfs-klldap-ui
 #                            Depends on nfs-klldap-config for TOML handling.
-#   - management/nfs-klldap-config/
-#                          → Tiny, no-std-ish library + two binaries:
-#                            * nfs-klldap-config   (the generator used by entrypoint)
+#
+#   nfs-klldap-config/     → Tiny, focused library + two binaries:
+#                            * nfs-klldap-config   (generator used by entrypoint + watcher)
 #                            * nfs-klldap-startup  (guided first-run + diagnostics)
 #
-# Historical note: the "management" directory name and its Cargo package name
-# are retained for minimal diff while we completed the in-container WebUI
-# refactor (v0.5). The root workspace now makes the following work from the
-# repository root exactly as documented in the Makefile:
+# Workspace-level metadata (version, edition, authors, license, repository)
+# is defined once in [workspace.package] and inherited via `version.workspace = true`.
 #
-#     make test
-#     make clippy
+# Shared dependency versions are centralized in [workspace.dependencies].
+# Member crates reference them with `foo = { workspace = true }`.
+# This is the modern, recommended pattern for multi-crate workspaces.
 #
-# Both commands (and their `cargo ... --workspace` equivalents) now succeed.
+# Root workspace commands (as used by Makefile):
+#     cargo build --workspace
+#     cargo test --workspace
+#     cargo clippy --workspace ...
 #
-# There is intentionally no [package] at the root — this is a pure workspace
-# definition. All actual packages live in their subdirectories.
+# There is no [package] at the root — this is a pure workspace definition.
 # =============================================================================

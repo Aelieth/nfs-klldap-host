@@ -1,3 +1,24 @@
+## Unreleased — Workspace Centralization & Self-Contained Cleanup
+
+### Structural Refactor
+- Crates moved to top-level for a cleaner layout:
+  - `nfs-klldap-config/` (library + `nfs-klldap-config` + `nfs-klldap-startup` binaries)
+  - `nfs-klldap-ui/` (the in-container WebUI)
+- Root `Cargo.toml` now defines a proper workspace with `[workspace.package]` (version, edition, authors, license, repository) and `[workspace.dependencies]` (shared `serde`, `toml`, `serde_json`, `tempfile`).
+- All internal path dependencies, Docker build stages, Makefile targets, and documentation updated for the new structure.
+- `cargo build --workspace` and `docker build` are now the primary documented build paths.
+
+### Documentation & Cleanup
+- Major weeding pass across README.md, TESTING.md, CHANGELOG.md, entrypoint.sh, and supporting scripts to remove v0.5 transition scaffolding and pre-centralization language.
+- New `container/README.md` documenting the supporting scripts (`ganesha-ctl`, `nfs-klldap-conf-watcher`, `webui-certs`, `healthcheck.sh`).
+- `entrypoint.sh` and `healthcheck.sh` significantly hardened (preflight checks, extracted permission logic, better logging, configurable paths, robust signal handling).
+- All container scripts audited for absence of legacy host-side/sudo logic and given consistent documentation.
+
+### Other
+- Project now presents a clear "Clone → `cargo build --workspace` or `docker build`" story as the single source of truth.
+
+---
+
 ## What's New in v0.5
 
 This is a major release focused on correctness, simplicity, and Red Hat compatibility.

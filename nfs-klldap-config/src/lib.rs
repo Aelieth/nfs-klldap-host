@@ -1168,6 +1168,37 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// RAII guard to safely set an environment variable for the duration of a test
+    /// and restore the previous value (or remove it) when the test ends.
+    /// This prevents test pollution when running with --workspace (parallel tests).
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     fn minimal_cfg() -> NfsKlldapConfig {
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://kllap.test:6360".into(),
@@ -1315,9 +1346,9 @@ mod tests {
 
     #[test]
     fn realm_is_required_no_silent_example() {
-        // Ensure no env var leakage from parallel tests (NFS_REALM/REALM can override)
-        std::env::remove_var("NFS_REALM");
-        std::env::remove_var("REALM");
+        // Prevent pollution from parallel tests in the workspace
+        let _g1 = EnvGuard::remove("NFS_REALM");
+        let _g2 = EnvGuard::remove("REALM");
 
         // Explicit placeholder in config must be rejected (core user complaint)
         let mut c = NfsKlldapConfig {
@@ -1348,9 +1379,9 @@ mod tests {
 
     #[test]
     fn realm_from_env_works() {
-        // Save/restore to avoid polluting other tests (parallel execution)
-        let prior = std::env::var("NFS_REALM").ok();
-        std::env::set_var("NFS_REALM", "ENV.REALM");
+        // Use guard to prevent pollution of parallel tests in the workspace
+        let _guard = EnvGuard::set("NFS_REALM", "ENV.REALM");
+
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://kllap.test:6360".into(), // would derive "TEST" without env
             sssd: SssdSection {
@@ -1367,10 +1398,6 @@ mod tests {
         };
         assert!(c.validate_and_derive().is_ok());
         assert_eq!(c.effective_realm(), "ENV.REALM");
-        match prior {
-            Some(v) => std::env::set_var("NFS_REALM", v),
-            None => std::env::remove_var("NFS_REALM"),
-        }
     }
 
     #[test]

@@ -11,14 +11,14 @@ It directly edits the shared `nfs-klldap.conf` (the single source of truth) and 
 
 The WebUI is now built into the container image and starts automatically on port **9630**.
 
-If you want to build the binary for development or testing:
+If you want to build the binary for development or testing (from the repository root):
 
 ```bash
-make build                 # native release
-cargo build --release --bin nfs-klldap-ui
+cargo build --workspace          # builds both crates
+cargo build -p nfs-klldap-ui --release --bin nfs-klldap-ui
 ```
 
-In normal use you do **not** run the binary on the host. It runs inside the container.
+In normal use you do **not** run the binary on the host. It runs inside the container as root (alongside the other services).
 
 ## Key Modules (still active)
 
@@ -31,10 +31,10 @@ The old `policy.rs`, `ganesha.rs`, and `exports.rs` have been removed (generatio
 
 ## Security
 
-**Never run the UI as root in production.**
+The WebUI runs inside the container as root alongside the other services (SSSD, Ganesha, etc.). This is the supported and recommended model for compatibility with Red Hat expectations around sssd and Kerberos.
 
-The WebUI runs inside the container as root alongside the other services. It performs `chown`/`chmod` directly on the bind-mounted paths (no `docker exec` needed in normal operation).
+It performs `chown`/`chmod` directly on the bind-mounted paths using libc (no `docker exec` needed in normal operation). See the root `README.md` and `container/README.md` for the overall security model.
 
 ## Testing
 
-See the root [TESTING.md](../../TESTING.md) for current coverage. The `FsManager` and several web handlers now have solid unit/integration tests.
+See the root [TESTING.md](../TESTING.md) for current coverage. The `FsManager` and several web handlers now have solid unit/integration tests.

@@ -2,6 +2,8 @@
 #
 # ganesha-ctl - DBUS-free management helper for NFS-Ganesha (self-contained mode).
 #
+# See container/README.md for the overall container script model.
+#
 # This script is the supported way to inspect and manage exports from inside
 # the container (or via `docker exec` / `podman exec` from the host).
 #

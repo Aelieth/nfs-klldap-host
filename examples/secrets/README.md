@@ -31,8 +31,8 @@ Example principal:
 
 ## Important
 
-- You must start the container with `--hostname` (or the compose `hostname:` field) so that it exactly matches the instance part of the NFS principal in the keytab.
-- The container does **not** auto-detect or auto-append "-nfs" to the hostname.
+- The strongly recommended way to run is with `--uts=host` (or `uts: host` in compose). This lets the container see the real host hostname. The `nfs-klldap-startup` TUI will then automatically compute and display the correct principal using the `-nfs` insertion (e.g. `host.example.com` → `nfs/host-nfs.example.com@REALM`).
+- You can still override with `--hostname` (or compose `hostname:`) if you want a completely different name inside the container. This takes precedence.
 - Never commit the real keytab to git. This directory contains only an example.
 - For automated renewal later, the keytab can be refreshed in place and the container sent SIGHUP (or restarted).
 

@@ -10,7 +10,7 @@ Designed for hosts that cannot (or do not want to) run the kernel NFS stack.
 
 Plug this container into any Linux host (even one without kernel NFS modules) and it becomes a fully functional, authoritative Kerberized NFSv4 server.
 
-**The architecture (v0.5)** uses a single source of truth:
+**The architecture** uses a single source of truth:
 
 - One `nfs-klldap.conf` (TOML) file
 - A small, type-safe Rust binary (`nfs-klldap-config`) bundled in the container that auto-derives and generates everything else
@@ -71,29 +71,36 @@ This design keeps powerful management capabilities while the container remains a
 
 ## Building
 
-A `Makefile` provides the complete build story for both host tools and container images.
+The project uses a standard Rust Cargo workspace. The two crates live at the top level:
 
 ```bash
-# Native release build (the WebUI binary that ends up inside the container image)
-make build
+# Clone
+git clone https://github.com/aelieth/nfs-klldap-host.git
+cd nfs-klldap-host
 
-# Cross-compile for amd64 + arm64 (the resulting binaries are only used for the container image)
-make dist
+# Build both crates (recommended for development)
+cargo build --workspace
 
-# Build the container image locally
-make docker
-
-# Multi-platform build (linux/amd64/v2 + linux/arm64) using Docker Buildx
-make docker-multi
+# Or build the full container image
+docker build -t nfs-klldap-host .
 ```
 
-See `make help` for all targets.
+### Using the Makefile (convenience targets)
 
+The `Makefile` wraps the above for common tasks:
 
+```bash
+make build                 # Native release build of the UI binary
+make dist                  # Cross-compile amd64 + arm64 binaries
+make docker                # Local container image
+make docker-multi          # Multi-arch image via buildx
+make test
+make clippy
+```
 
-(The old host-side sudo model and sudoers.d fragments have been removed in v0.5 — everything runs as root inside the container.)
+Run `make help` for the full list.
 
-See [TESTING.md](TESTING.md) and the root `Makefile` for details.
+See [TESTING.md](TESTING.md) for testing instructions.
 
 ## Testing & Documentation
 
@@ -107,7 +114,7 @@ See [TESTING.md](TESTING.md) for the current testing strategy, how to run tests,
 docker run -d \
   --name nfs-klldap \
   --uts=host \
-  -v /path/to/nfs-config:/config \                          #host path where you want the nfs-confg.conf to be saved / edited
+  -v /path/to/nfs-config:/config \                          # host path where you want nfs-klldap.conf to be saved / edited
   -v /secure/location/krb5.keytab:/etc/krb5.keytab:ro \     #host path where you want to securely store the krb5.keytab
   -v /media/data:/export/sharename \                        #host path for nfs shares - top level with shares under it, or add multiple mounts and shares
   ghcr.io/aelieth/nfs-klldap-host:latest
@@ -151,12 +158,12 @@ ports:
 ```
 
 ### TLS / Certificates
-- By default, the container generates a self-signed certificate at startup (valid for 10 years).
+- By default, the container generates a self-signed certificate at startup (valid for 10 years) using pure Rust (`rcgen` inside the WebUI binary).
 - To use your own certificate, place the files in the **same directory** as `nfs-klldap.conf`:
   - `webui.crt` + `webui.key`, **or**
   - `tls.crt` + `tls.key`
 
-The certificate helper script (`webui-certs`) runs early in the entrypoint and makes the chosen certificate available to the WebUI.
+The small helper script `webui-certs` (run early by the entrypoint) discovers user-provided certificates and makes them available. Self-signed generation, when needed, is handled inside the Rust binary for better reliability and test coverage. See `container/README.md` and `nfs-klldap-ui/src/certs.rs`.
 
 ### Authentication
 See the [docs/run/README.md](docs/run/README.md) section on the WebUI for current login options (local `localhost` password or LLDAP accounts).
@@ -239,21 +246,41 @@ ls -l /mnt/test
 
 ## Project Structure
 
+This is a Cargo workspace with two crates at the repository root:
+
 ```
 nfs-klldap-host/
-├── entrypoint.sh                      # Minimal supervisor (delegates to Rust binaries)
+├── Cargo.toml                 # Workspace root with [workspace.package] + [workspace.dependencies]
+├── Cargo.lock
+├── entrypoint.sh              # Thin pid-1 supervisor + daemon launcher
 ├── Dockerfile
-├── management/
-│   ├── nfs-klldap-config/             # Bundled in container:
-│   │   ├── src/bin/nfs_klldap_startup.rs  # Guided first-run TUI + diagnostics
-│   │   └── src/lib.rs                     # TOML loader + generator + derivation helpers
-│   └── src/                           # WebUI (Axum + HTMX) — runs inside the container on port 9630
-├── nfs-klldap.conf                    # Single source of truth (user-editable TOML)
+├── Makefile
+│
+├── nfs-klldap-config/         # Bundled in the container image
+│   ├── src/lib.rs             # TOML loader, generator, derivation helpers
+│   ├── src/main.rs            # `nfs-klldap-config` binary (generation)
+│   └── src/bin/nfs_klldap_startup.rs   # `nfs-klldap-startup` (guided first-run TUI + diagnostics)
+│
+├── nfs-klldap-ui/             # In-container WebUI (Axum + HTMX + Askama)
+│   ├── src/
+│   └── templates/
+│
+├── container/                 # Small supporting scripts + healthcheck (shipped in image)
+│   ├── healthcheck.sh
+│   └── scripts/
+│
+├── examples/
+├── docs/
 └── README.md
 ```
 
-**Generated inside container (never exposed):**
-- `/etc/sssd/sssd.conf` (must be root:root 0600 — SSSD internally rejects other owners)
+**Key crates (both ship inside the final container):**
+
+- `nfs-klldap-config` — The single source of truth for config derivation.
+- `nfs-klldap-ui` — The management WebUI (runs on port 9630 inside the container).
+
+**Generated inside container (never exposed to the host):**
+- `/etc/sssd/sssd.conf` (root:root 0600 — required by SSSD)
 - `/etc/krb5.conf`
 - `/etc/ganesha/exports.d/*.conf`
 
@@ -275,4 +302,10 @@ nfs-klldap-host/
 
 ---
 
-**License:** TBD (likely MIT)
+## License
+
+Licensed under the [MIT License](LICENSE).
+
+Copyright (c) 2024-2025 Aelieth
+
+See the [LICENSE](LICENSE) file for the full text.

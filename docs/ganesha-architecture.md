@@ -26,7 +26,7 @@ Host (no kernel NFS modules required anywhere)
 │   └── Numeric uid/gid ownership must match LLDAP uidNumber/gidNumber
 ├── nfs-klldap.conf                (single source of truth TOML — edited via UI or by hand)
 ├── secrets/krb5.keytab            (nfs/<hostname>@REALM, mode 600)
-└── management/ (Rust web UI)      (Axum + HTMX)
+└── nfs-klldap-ui/ (Rust web UI)   (Axum + HTMX)
     ├── Talks to LLDAP (GraphQL) for live user/group → uid/gid
     ├── Requests recursive chown/chmod (performed directly inside the container)
     ├── Writes native Ganesha EXPORT {} fragments

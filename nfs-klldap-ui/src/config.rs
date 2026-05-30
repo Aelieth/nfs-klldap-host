@@ -88,6 +88,30 @@ pub fn lldap_login_creds(cfg: &Config) -> (String, String) {
 mod tests {
     use super::*;
 
+    /// RAII guard to safely manipulate environment variables in tests without
+    /// polluting other tests (especially important under `cargo test --workspace`).
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     fn base_config() -> Config {
         Config {
             ldap_uri: "ldaps://kllap.example.com:6360".into(),
@@ -145,16 +169,13 @@ mod tests {
 
     #[test]
     fn lldap_login_creds_prefers_env_vars() {
-        std::env::set_var("NFS_KLLDAP_LLDAP_USER", "svc-account");
-        std::env::set_var("NFS_KLLDAP_LLDAP_PW", "env-secret");
+        let _g1 = EnvGuard::set("NFS_KLLDAP_LLDAP_USER", "svc-account");
+        let _g2 = EnvGuard::set("NFS_KLLDAP_LLDAP_PW", "env-secret");
 
         let cfg = base_config();
         let (user, pass) = lldap_login_creds(&cfg);
         assert_eq!(user, "svc-account");
         assert_eq!(pass, "env-secret");
-
-        std::env::remove_var("NFS_KLLDAP_LLDAP_USER");
-        std::env::remove_var("NFS_KLLDAP_LLDAP_PW");
     }
 
     #[test]

@@ -95,7 +95,7 @@ help:
 .PHONY: build
 build:
 	@echo "==> Building host tools (native)..."
-	$(CARGO) build --release -p management
+	$(CARGO) build --release -p nfs-klldap-ui
 	@echo "Binaries:"
 	@echo "  target/release/nfs-klldap-ui"
 
@@ -103,8 +103,8 @@ build:
 build-cross:
 	@echo "==> Cross-compiling host tools for $(AMD64_TARGET) and $(ARM64_TARGET)..."
 	rustup target add $(AMD64_TARGET) $(ARM64_TARGET) || true
-	$(CARGO) build --release --target $(AMD64_TARGET) -p management
-	$(CARGO) build --release --target $(ARM64_TARGET) -p management
+	$(CARGO) build --release --target $(AMD64_TARGET) -p nfs-klldap-ui
+	$(CARGO) build --release --target $(ARM64_TARGET) -p nfs-klldap-ui
 	@echo "Done."
 
 # Produce a clean dist/ directory with architecture-suffixed binaries

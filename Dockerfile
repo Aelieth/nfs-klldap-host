@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # =============================================================================
-# nfs-klldap-host — Multi-stage build (modeled after KLLDAP pattern)
+# nfs-klldap-host — Multi-stage build
 # =============================================================================
 # Uses AlmaLinux 10-minimal for both builder and runtime (perfect glibc match).
 # Builder installs Rust via rustup as non-root user + cargo-chef for caching.
@@ -12,7 +12,7 @@
 # -----------------------------------------------------------------------------
 FROM quay.io/almalinuxorg/10-minimal AS chef
 
-# Install build dependencies (matching the KLLDAP pattern)
+# Install build dependencies
 RUN microdnf install -y --assumeyes \
         shadow-utils \
         pkgconf \
@@ -53,11 +53,18 @@ RUN cargo install cargo-chef --locked
 # -----------------------------------------------------------------------------
 FROM chef AS planner
 
-COPY --chown=nfs:nfs management/nfs-klldap-config /build/nfs-klldap-config
-COPY --chown=nfs:nfs management /build/management
-WORKDIR /build/nfs-klldap-config
+WORKDIR /build
 
-RUN cargo chef prepare --recipe-path recipe.json
+# Copy workspace root manifests first — required for [workspace.package] inheritance
+# and for `cargo metadata` / cargo-chef to resolve the workspace graph.
+COPY --chown=nfs:nfs Cargo.toml Cargo.lock ./
+
+# Copy crate sources (full for planner, per historical design)
+COPY --chown=nfs:nfs nfs-klldap-config /build/nfs-klldap-config
+COPY --chown=nfs:nfs nfs-klldap-ui /build/nfs-klldap-ui
+
+# Prepare recipe from workspace root (so it sees both members and inherited fields)
+RUN cargo chef prepare --recipe-path /build/nfs-klldap-config/recipe.json
 
 # -----------------------------------------------------------------------------
 # Stage 3: Builder (build both binaries with caching)
@@ -65,14 +72,23 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 
 COPY --from=planner --chown=nfs:nfs /build/nfs-klldap-config/recipe.json /build/nfs-klldap-config/recipe.json
+
+WORKDIR /build
+
+# Bring in workspace manifests (for chef cook + later cargo invocations that need
+# to resolve [workspace.package] inheritance and member paths).
+COPY --chown=nfs:nfs Cargo.toml Cargo.lock ./
+COPY --chown=nfs:nfs nfs-klldap-config/Cargo.toml ./nfs-klldap-config/
+COPY --chown=nfs:nfs nfs-klldap-ui/Cargo.toml ./nfs-klldap-ui/
+
 WORKDIR /build/nfs-klldap-config
 
-# Cook dependencies (cached layer)
+# Cook dependencies using the recipe (this is the cacheable layer)
 RUN cargo chef cook --release --recipe-path recipe.json
 
-# Copy full source
-COPY --chown=nfs:nfs management/nfs-klldap-config /build/nfs-klldap-config
-COPY --chown=nfs:nfs management /build/management
+# Copy full source (overwrites the stub manifests above; only app code changes invalidate this layer)
+COPY --chown=nfs:nfs nfs-klldap-config /build/nfs-klldap-config
+COPY --chown=nfs:nfs nfs-klldap-ui /build/nfs-klldap-ui
 
 # Build binaries for the target architecture
 RUN set -eux && \
@@ -92,7 +108,7 @@ RUN set -eux && \
      cp "target/$TARGET/release/nfs-klldap-config" /output/ && \
      cp "target/$TARGET/release/nfs-klldap-startup" /output/) && \
     # Build the WebUI binary (runs inside the container on port 9630)
-    (cd /build/management && \
+    (cd /build/nfs-klldap-ui && \
      rm -rf target && \
      cargo build --release --bin nfs-klldap-ui --target "$TARGET" && \
      cp "target/$TARGET/release/nfs-klldap-ui" /output/) && \

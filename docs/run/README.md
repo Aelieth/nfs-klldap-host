@@ -8,7 +8,6 @@ This document focuses on day-to-day container invocation after the v0.5 central 
 docker run -d \
   --name nfs-klldap \
   --uts=host \
-  --user nfs \
   --cap-add CHOWN \
   --cap-add FOWNER \
   --cap-add DAC_OVERRIDE \
@@ -63,8 +62,8 @@ services:
     # sees the real hostname of the machine running Docker.
     uts: host
 
-    # Do NOT set "user: nfs" here — the entrypoint needs root for setup and will
-    # The container runs services as root (standard model).
+    # Do NOT set a non-root user here — the entrypoint and all services run as root
+    # (standard model for Red Hat sssd/kerberos appliances).
     # cap_add, volumes, etc. as before
 
     # hostname: myhost-nfs   # Only set if you want the container to use a different name
@@ -122,37 +121,27 @@ services:
       - DAC_OVERRIDE
       - DAC_READ_SEARCH     # often helpful for Ganesha VFS FSAL
       - NET_BIND_SERVICE    # for listening on privileged port 2049
-    group_add:
-      - "keytab"            # lets the nfs user read a group-readable keytab
     volumes:
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 ```
 
-On the host, make the keytab group-readable for the container's `keytab` group (the image creates this group and adds the `nfs` user to it):
-
-```bash
-# On the host — one-time (adjust path as needed)
-sudo chgrp "$(docker run --rm --entrypoint getent ghcr.io/aelieth/nfs-klldap-host:latest keytab | cut -d: -f3)" /path/to/your/krb5.keytab
-sudo chmod g+r /path/to/your/krb5.keytab
-```
-
-The entrypoint (and Rust diagnostics) print exact remediation commands. After the root-owned generate step the entrypoint now does an automatic `chown nfs:nfs + chmod 600` on `sssd.conf` (the main historical source of "Permission denied" at SSSD start when running daemons as the unprivileged user).
-
 ### Keytab handling (now simple)
 
-With all services running as root inside the container, a standard root-owned 0600 keytab mounted at `/etc/krb5.keytab:ro` (with `:Z` recommended on SELinux hosts) is directly usable by Ganesha. No special group membership or host-side `chgrp` steps are required.
+With all services running as root inside the container, a standard root-owned 0600 keytab mounted at `/etc/krb5.keytab:ro` (with `:Z` recommended on SELinux hosts) is directly usable by Ganesha. No special group membership, `chgrp`, or host-side permission scripts are required.
 
-The legacy `./scripts/fix-keytab-perms.sh` is deprecated.
+The legacy `./scripts/fix-keytab-perms.sh` is deprecated and no longer needed.
+
+The entrypoint and `nfs-klldap-startup` diagnostics will print clear messages if the keytab or config directory permissions are insufficient at startup.
 
 ## Management WebUI (Port 9630)
 
 The WebUI runs inside the container and starts automatically from `entrypoint.sh`.
 
 - **Port**: 9630 (HTTPS)
-- **How it starts**: `entrypoint.sh` runs the `webui-certs` helper early, then launches `nfs-klldap-ui`.
+- **How it starts**: `entrypoint.sh` runs the `webui-certs` helper early (for custom cert discovery), then launches `nfs-klldap-ui`.
 - **TLS**:
-  - A self-signed certificate is generated at container startup by default.
-  - Provide your own by placing `webui.crt` + `webui.key` (or `tls.crt` + `tls.key`) in the same directory as `nfs-klldap.conf`.
+  - A self-signed certificate is generated at container startup by default (handled inside the Rust binary using `rcgen`).
+  - Provide your own by placing `webui.crt` + `webui.key` (or `tls.crt` + `tls.key`) in the same directory as `nfs-klldap.conf`. The helper script will make them available.
 - **Access**:
   - From the Docker host: `https://localhost:9630`
   - From the network: `https://<host>:9630` (after publishing the port with `-p 9630:9630`)

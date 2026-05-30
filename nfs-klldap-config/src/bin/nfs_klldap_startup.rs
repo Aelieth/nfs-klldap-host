@@ -13,8 +13,9 @@
 //! into /etc/* (the generator must run as root to produce sssd.conf as root:root 0600).
 //! actual daemons.
 //!
-//! Long term this will replace almost all of the fragile grep|cut|tr|sed
-//! parsing that used to live in entrypoint.sh.
+//! This binary is the primary owner of guided first-run, reachability
+//! diagnostics, and startup orchestration. The entrypoint remains a thin
+//! pid-1 supervisor.
 
 use std::env;
 use std::path::{Path, PathBuf};

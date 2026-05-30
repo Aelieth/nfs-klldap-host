@@ -4,9 +4,9 @@ The management tool has significant power: it can change ownership and permissio
 
 ## Core Principle
 
-**Never run the management tool as root.**
+The WebUI runs inside the container as root (the supported model) and performs `chown`/`chmod` directly on the bind-mounted data using the capabilities and mounts provided to the container.
 
-The WebUI (running inside the container as root) performs `chown`/`chmod` directly on the bind-mounted data.
+Running the UI binary directly on the host as root is not recommended for normal operation.
 
 ## How Permission Changes Work
 
@@ -22,7 +22,7 @@ No special host permissions (beyond access to the container's volumes) are requi
 
 ## Optional: Running the UI outside the container (Advanced / Legacy)
 
-It is still technically possible to build and run `nfs-klldap-ui` as a separate host process. In that case it falls back to using `docker exec` for permission changes. This mode is discouraged and not the primary supported model.
+It is still technically possible to build and run `nfs-klldap-ui` as a separate host process. In that (unsupported) mode it would fall back to using `docker exec` for permission changes. The primary and recommended model is the in-container WebUI running as root.
 
 ## Additional Hardening Recommendations
 

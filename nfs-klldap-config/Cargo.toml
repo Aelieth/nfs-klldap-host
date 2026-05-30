@@ -1,0 +1,29 @@
+[package]
+name = "nfs-klldap-config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tiny type-safe TOML config loader + generator for nfs-klldap-host (bundled in container)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nfs-klldap-config"
+path = "src/main.rs"
+
+# Startup/orchestration binary (guided first-run TUI + reachability + diagnostics).
+[[bin]]
+name = "nfs-klldap-startup"
+path = "src/bin/nfs_klldap_startup.rs"
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+serde_json = { workspace = true }
+# thiserror kept out for tiny container binary size; manual error impl below
+
+[dev-dependencies]
+tempfile = { workspace = true }

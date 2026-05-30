@@ -4,8 +4,10 @@
 # privileged regeneration of derived configs (sssd.conf, krb5.conf, ganesha
 # exports) plus daemon reloads.
 #
+# See container/README.md for the overall container script model.
+#
 # The watcher runs as root and signals the root supervisor (pid 1)
-# supervisor (pid 1) so that /etc/sssd/sssd.conf is always written with the
+# so that /etc/sssd/sssd.conf is always written with the
 # root:root 0600 ownership that modern SSSD strictly requires.
 #
 # This is the recommended way to get automatic reload when the host UI (or
@@ -58,7 +60,7 @@ while true; do
             if "$CONFIG_BIN" generate --config "$CONFIG_PATH"; then
                 log "Regenerated configs (direct, as current user)"
             else
-                log "ERROR: Generator failed for $CONFIG_PATH"
+                log "ERROR: Generator failed for $CONFIG_PATH (see above for details from the binary)"
             fi
         fi
 

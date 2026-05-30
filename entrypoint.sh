@@ -1,238 +1,326 @@
 #!/bin/bash
 #
-# entrypoint.sh - Modern Ganesha + KLLDAP entrypoint (v0.5+)
+# entrypoint.sh — Thin supervisor / launcher for the self-contained
+# nfs-klldap-host container (Ganesha + SSSD + Kerberos + in-container WebUI).
 #
-# This container is a self-contained Kerberized NFSv4 server using NFS-Ganesha.
-# It is designed for hosts that cannot or will not run the kernel NFS stack.
+# Design invariants (do not break these):
+#   - This script runs as root (pid 1) and stays as pid 1 for the life of the
+#     container so it can receive SIGHUP from the config watcher and orchestrate
+#     privileged actions (especially writing sssd.conf as root:root 0600).
+#   - All heavy "bring the container up" logic (guided first-run, reachability,
+#     diagnostics) lives in the Rust binary `nfs-klldap-startup`.
+#   - All config generation lives in `nfs-klldap-config`.
+#   - This shell only does: preflight, launch daemons, permission hygiene,
+#     signal-based reload orchestration, and clean shutdown.
 #
-# v0.5 changes:
-#   - Single source of truth: nfs-klldap.conf (TOML)
-#   - First-run guided setup with smart waiting loop (no more "edit and restart" dance)
-#   - Everything starts with ldap_uri (must be a DNS name — IP addresses rejected)
-#   - Auto-tests LDAP connectivity, ping fallback, and DNS resolution
-#   - Once config is valid → services start automatically
-
+# Future direction:
+#   Longer term, the service supervision + WebUI cert + daemon lifecycle
+#   portion can be moved into `nfs-klldap-startup supervise` (or a dedicated
+#   small Rust supervisor) so this script becomes even thinner (or disappears).
+#
+# Environment variables (all overridable):
+#   NFS_CONFIG=/config/nfs-klldap.conf
+#   SSSD_CONF=/etc/sssd/sssd.conf
+#   KRB5_CONF=/etc/krb5.conf
+#   GANESHA_CONF=/etc/ganesha/ganesha.conf
+#   EXPORTS_DIR=/etc/ganesha/exports.d
+#   LOG_FORMAT=text|json          (default: text)
+#   SSSD_DEBUG_LEVEL=...
+#   WATCHER_DEBOUNCE_SECONDS=2
+#
+# Required executables (checked in preflight):
+#   /usr/local/bin/{nfs-klldap-config,nfs-klldap-startup,nfs-klldap-ui,
+#                   nfs-klldap-conf-watcher,ganesha-ctl,webui-certs}
+#   /container/healthcheck.sh
+#
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
-# Paths & Defaults
+# Paths (all configurable via environment for flexibility in testing/CI)
 # -----------------------------------------------------------------------------
 NFS_CONFIG="${NFS_CONFIG:-/config/nfs-klldap.conf}"
-SSSD_CONF="/etc/sssd/sssd.conf"
-KRB5_CONF="/etc/krb5.conf"
-GANESHA_CONF="/etc/ganesha/ganesha.conf"
-EXPORTS_DIR="/etc/ganesha/exports.d"
+SSSD_CONF="${SSSD_CONF:-/etc/sssd/sssd.conf}"
+KRB5_CONF="${KRB5_CONF:-/etc/krb5.conf}"
+GANESHA_CONF="${GANESHA_CONF:-/etc/ganesha/ganesha.conf}"
+EXPORTS_DIR="${EXPORTS_DIR:-/etc/ganesha/exports.d}"
 
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+# Binaries and helpers (override only if you really know what you're doing)
+CONFIG_BIN="${CONFIG_BIN:-/usr/local/bin/nfs-klldap-config}"
+STARTUP_BIN="${STARTUP_BIN:-/usr/local/bin/nfs-klldap-startup}"
+UI_BIN="${UI_BIN:-/usr/local/bin/nfs-klldap-ui}"
+WATCHER_BIN="${WATCHER_BIN:-/usr/local/bin/nfs-klldap-conf-watcher}"
+GANESHA_CTL="${GANESHA_CTL:-/usr/local/bin/ganesha-ctl}"
+WEBUI_CERTS_BIN="${WEBUI_CERTS_BIN:-/usr/local/bin/webui-certs}"
+HEALTHCHECK="${HEALTHCHECK:-/container/healthcheck.sh}"
+
+# Logging
+LOG_FORMAT="${LOG_FORMAT:-text}"   # text | json
+
+# -----------------------------------------------------------------------------
+# Logging helpers (consistent, optionally structured)
+# -----------------------------------------------------------------------------
+_log_ts() {
+    date -u '+%Y-%m-%dT%H:%M:%S.%3NZ'
 }
 
+log() {
+    local level="${1:-INFO}"
+    shift || true
+    local msg="$*"
+
+    if [[ "$LOG_FORMAT" == "json" ]]; then
+        # Minimal JSON without external dependencies (jq may not be present)
+        # We escape only the most common problematic characters.
+        local escaped
+        escaped=$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+        printf '{"ts":"%s","level":"%s","msg":"%s"}\n' \
+            "$(_log_ts)" "$level" "$escaped"
+    else
+        printf '[%s] %-5s %s\n' "$(_log_ts)" "$level" "$msg"
+    fi
+}
+
+info()  { log "INFO"  "$@"; }
+warn()  { log "WARN"  "$@"; }
+error() { log "ERROR" "$@"; }
+
 die() {
-    log "FATAL: $*"
+    log "FATAL" "$*"
     exit 1
 }
 
 # -----------------------------------------------------------------------------
-# All guided setup (4-step TUI), reachability tests, persistent volume detection,
-# realm derivation display, hostname suggestions, and permission/keytab diagnostics
-# have been moved into the Rust binary `nfs-klldap-startup`.
-#
-# The shell is now a minimal launcher + daemon supervisor (all services run as root).
+# Permission hygiene — single source of truth (eliminates duplication)
 # -----------------------------------------------------------------------------
+fix_derived_permissions() {
+    # sssd.conf is extremely picky about ownership (root:root 0600).
+    chown root:root "$SSSD_CONF" 2>/dev/null || true
+    chmod 600 "$SSSD_CONF" 2>/dev/null || true
 
-# -----------------------------------------------------------------------------
-# NOTE: The 4-step guided setup TUI, reachability tests, banner, waiting loop,
-# and runtime diagnostics (including hostname/keytab guidance based on --uts=host)
-# now live in the Rust binary `nfs-klldap-startup`.
-#
-# Only thin orchestration + daemon startup remains in this shell script.
-# -----------------------------------------------------------------------------
+    # krb5.conf can be world-readable.
+    chown root:root "$KRB5_CONF" 2>/dev/null || true
+    chmod 644 "$KRB5_CONF" 2>/dev/null || true
 
-# -----------------------------------------------------------------------------
-# Delegate ALL complex TOML logic to the bundled Rust binary
-# -----------------------------------------------------------------------------
-CONFIG_BIN="/usr/local/bin/nfs-klldap-config"
+    # Ganesha fragments must be readable by the daemon.
+    chown -R root:root "$EXPORTS_DIR" 2>/dev/null || true
+    chmod -R a+rX "$EXPORTS_DIR" 2>/dev/null || true
 
-ensure_config_binary() {
-    if [ ! -x "$CONFIG_BIN" ]; then
-        die "Missing $CONFIG_BIN — the container image was not built correctly (multi-stage step missing?)"
+    # Also fix the main ganesha.conf if it exists.
+    if [ -f "$GANESHA_CONF" ]; then
+        chown root:root "$GANESHA_CONF" 2>/dev/null || true
+        chmod 644 "$GANESHA_CONF" 2>/dev/null || true
     fi
 }
 
-generate_configs() {
-    ensure_config_binary
-    log "Invoking $CONFIG_BIN generate for $NFS_CONFIG ..."
-    "$CONFIG_BIN" generate --config "$NFS_CONFIG" || die "Rust config generator failed — check $NFS_CONFIG for syntax or required fields (ldap_uri + bind credentials)"
+# -----------------------------------------------------------------------------
+# Preflight — fail fast with clear messages before we start anything heavy
+# -----------------------------------------------------------------------------
+preflight_checks() {
+    local missing=0
+
+    for bin in "$CONFIG_BIN" "$STARTUP_BIN" "$UI_BIN" "$WATCHER_BIN" "$GANESHA_CTL" "$WEBUI_CERTS_BIN"; do
+        if [ ! -x "$bin" ]; then
+            error "Required binary missing or not executable: $bin"
+            missing=1
+        fi
+    done
+
+    if [ ! -x "$HEALTHCHECK" ]; then
+        error "Healthcheck script missing or not executable: $HEALTHCHECK"
+        missing=1
+    fi
+
+    # The watcher depends on inotifywait (provided by inotify-tools in the image)
+    if ! command -v inotifywait >/dev/null 2>&1; then
+        error "inotifywait not found in PATH (inotify-tools package required)"
+        missing=1
+    fi
+
+    if [ "$missing" -ne 0 ]; then
+        die "Preflight failed — container image is incomplete or corrupted"
+    fi
+
+    info "Preflight checks passed"
 }
 
 # -----------------------------------------------------------------------------
-# Signal handling (unchanged)
+# Signal handling (pid 1 supervisor responsibilities)
 # -----------------------------------------------------------------------------
 WATCHER_PID=""
+SSSD_PID=""
+GANESHA_PID=""
+WEBUI_PID=""
 
 cleanup() {
-    log "Shutting down services..."
+    log "INFO" "Shutting down services (received termination signal)..."
+
+    # Prefer killing tracked PIDs when we have them
+    for pidvar in WEBUI_PID GANESHA_PID SSSD_PID WATCHER_PID; do
+        local pid="${!pidvar:-}"
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill -TERM "$pid" 2>/dev/null || true
+        fi
+    done
+
+    # Broad fallback (important for restart races)
     pkill -TERM ganesha.nfsd 2>/dev/null || true
     pkill -TERM sssd 2>/dev/null || true
-    if [ -n "$WATCHER_PID" ]; then
-        kill -TERM "$WATCHER_PID" 2>/dev/null || true
-    else
-        pkill -TERM nfs-klldap-conf-watcher 2>/dev/null || true
-    fi
-    if [ -n "$WEBUI_PID" ]; then
-        kill -TERM "$WEBUI_PID" 2>/dev/null || true
-    fi
+    pkill -TERM nfs-klldap-conf-watcher 2>/dev/null || true
+
+    # Give processes a moment to exit cleanly
     sleep 1
-    log "Shutdown complete."
+
+    log "INFO" "Shutdown complete."
     exit 0
 }
-trap cleanup SIGTERM SIGINT
+
+trap cleanup SIGTERM SIGINT EXIT
 
 handle_sighup() {
-    log "SIGHUP received — reloading configuration via Rust generator (as root)..."
-    generate_configs
+    info "SIGHUP received — reloading configuration via Rust generator..."
 
-    # Fix perms again after regeneration (sssd.conf must stay root:root 0600).
-    chown root:root /etc/sssd/sssd.conf 2>/dev/null || true
-    chmod 600 /etc/sssd/sssd.conf 2>/dev/null || true
-    chown root:root /etc/krb5.conf 2>/dev/null || true
-    chmod 644 /etc/krb5.conf 2>/dev/null || true
-    # Ganesha config and exports are owned by root (everything runs as root in v0.5+)
-    chown -R root:root /etc/ganesha 2>/dev/null || true
-    chmod -R a+rX /etc/ganesha 2>/dev/null || true
+    "$CONFIG_BIN" generate --config "$NFS_CONFIG" || {
+        error "Rust config generator failed during SIGHUP reload"
+        return 1
+    }
 
-    # Ganesha can usually be reloaded via its own mechanism or a TERM that
-    # the supervisor will turn into a restart.
-    /usr/local/bin/ganesha-ctl reload 2>/dev/null || pkill -HUP ganesha.nfsd 2>/dev/null || true
+    fix_derived_permissions
 
-    # SSSD config changes (bind DN, TLS settings, uri, etc.) generally require
-    # a full restart of the daemon. We do a controlled stop + start here.
-    # This is safe because we are still the root supervisor.
+    # Ask Ganesha to pick up new exports (via our helper or direct signal)
+    if [ -x "$GANESHA_CTL" ]; then
+        "$GANESHA_CTL" reload 2>/dev/null || pkill -HUP ganesha.nfsd 2>/dev/null || true
+    else
+        pkill -HUP ganesha.nfsd 2>/dev/null || true
+    fi
+
+    # SSSD almost always needs a full restart when its config changes.
     pkill -TERM sssd 2>/dev/null || true
     sleep 1
     sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} 2>/dev/null &
-    log "    SSSD restarted to pick up any config changes."
+    SSSD_PID=$!
+    info "SSSD restarted after config change"
 }
+
 trap 'handle_sighup' SIGHUP
 
 # -----------------------------------------------------------------------------
-# Main — now with guided first-run experience
+# Main supervisor
 # -----------------------------------------------------------------------------
 main() {
-    log "=== Starting nfs-klldap-host (v0.5 guided setup) ==="
+    info "=== Starting nfs-klldap-host (self-contained) ==="
 
-    # Hostname guidance is now based on --uts=host (the new standard).
-    # With --uts=host the container sees the real host hostname; the Rust
-    # `nfs-klldap-startup` TUI shows the recommended keytab principal.
-    # entrypoint.sh remains a thin launcher.
+    preflight_checks
 
-    ensure_config_binary
-
-    # ------------------------------------------------------------------
-    # NEW: The heavy guided first-run TUI and reachability logic now lives
-    # in the Rust binary `nfs-klldap-startup`. It runs as root (we are
-    # still root here) and presents a clean 4-step status until everything
-    # is ready.
-    # ------------------------------------------------------------------
+    # Ensure we have a config file (the startup binary will guide the user if not)
     if [ ! -f "$NFS_CONFIG" ]; then
-        "$CONFIG_BIN" init --config "$NFS_CONFIG" || die "Failed to create default config"
+        info "No config file found at $NFS_CONFIG — running first-time initialization"
+        "$CONFIG_BIN" init --config "$NFS_CONFIG" || die "Failed to initialize default config"
     fi
 
-    # This blocks (with nice TUI output) until the 4 steps are satisfied.
-    /usr/local/bin/nfs-klldap-startup run || die "Startup checks failed"
+    # Run the guided first-run experience + reachability checks.
+    # This blocks (with nice TUI) until the environment is ready.
+    "$STARTUP_BIN" run || die "Startup checks failed"
 
-    generate_configs
+    # Generate derived configs (sssd.conf, krb5.conf, ganesha exports)
+    info "Generating derived configuration from $NFS_CONFIG"
+    "$CONFIG_BIN" generate --config "$NFS_CONFIG" || \
+        die "Initial config generation failed — check $NFS_CONFIG"
 
-    # Note: Runtime permission/keytab/hostname diagnostics are now handled
-    # inside the Rust startup binary (see `nfs-klldap-startup check` or the
-    # end of the `run` guided flow). The old shell functions have been retired.
+    fix_derived_permissions
 
-    # -----------------------------------------------------------------------------
-    # Permission model (standard root for all services)
-    # -----------------------------------------------------------------------------
-    # - /etc/sssd/sssd.conf MUST be root:root 0600.
-    # - All services (sssd, ganesha.nfsd, watcher, WebUI) run as root.
-    # - The root entrypoint shell stays as pid 1 for SIGHUP handling + orchestration.
-    # -----------------------------------------------------------------------------
+    # --- Start core services (order matters) ---
 
-    # Force correct ownership for the main SSSD config (non-negotiable).
-    chown root:root /etc/sssd/sssd.conf 2>/dev/null || true
-    chmod 600 /etc/sssd/sssd.conf 2>/dev/null || true
-
-    # krb5.conf is public config; root-owned 0644 is fine and expected.
-    chown root:root /etc/krb5.conf 2>/dev/null || true
-    chmod 644 /etc/krb5.conf 2>/dev/null || true
-
-    # Ganesha config/exports are generated world-readable.
-    chmod -R a+rX /etc/ganesha 2>/dev/null || true
-
-    # Start SSSD as root (standard for the service on Red Hat systems).
-    log "[1/3] Starting SSSD..."
+    # 1. SSSD (provides NSS for POSIX identity from LLDAP)
+    info "Starting SSSD..."
+    # Do not fully silence stderr here — early SSSD errors (config, permissions, etc.)
+    # are valuable in the primary container logs for quick diagnosis.
     sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} &
     SSSD_PID=$!
 
-    log "    Waiting for SSSD NSS responder..."
-    for i in {1..60}; do
+    info "Waiting for SSSD NSS responder..."
+    for _ in {1..60}; do
         if [ -S /var/lib/sss/pipes/nss ]; then
-            log "    SSSD ready."
+            info "SSSD ready"
             break
         fi
         sleep 0.3
     done
 
     if [ ! -S /var/lib/sss/pipes/nss ]; then
-        die "SSSD NSS pipe did not appear. Check bind credentials and LLDAP connectivity."
+        die "SSSD NSS pipe did not appear. Check LLDAP connectivity and bind credentials."
     fi
 
-    # No pipe permission hacks needed — everything runs as root.
+    # 2. Config watcher (signals this pid 1 on changes) — critical for auto-reload
+    info "Starting config watcher..."
+    "$WATCHER_BIN" "$NFS_CONFIG" &
+    WATCHER_PID=$!
 
-    # Start config watcher (as root). It signals pid 1 on changes.
-    if [ -x /usr/local/bin/nfs-klldap-conf-watcher ]; then
-        /usr/local/bin/nfs-klldap-conf-watcher "$NFS_CONFIG" &
-        WATCHER_PID=$!
-        log "    Config watcher started (auto-reload on changes)."
-    fi
-
-    # Start Ganesha as root.
-    log "[2/3] Starting NFS-Ganesha..."
+    # 3. Ganesha (the actual NFS server)
+    info "Starting NFS-Ganesha..."
+    # Allow early Ganesha startup errors (bad config, missing exports dir, etc.)
+    # to appear in the main container logs. The long-term log is still in /var/log/ganesha.log.
     ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
     GANESHA_PID=$!
 
-    # -------------------------------------------------------------------------
-    # In-container WebUI (always runs on port 9630) - started last because it
-    # depends on SSSD (for LLDAP identity) and Ganesha being operational.
-    # -------------------------------------------------------------------------
-    log "Preparing WebUI TLS certificates..."
-    # Run the cert helper. It prints diagnostic messages to stderr (which will appear in container logs)
-    # and ONLY the two VAR=value lines to stdout on success.
-    WEBUI_CERT_OUTPUT=$(/usr/local/bin/webui-certs) || true
+    # 4. WebUI (started last — it needs SSSD + Ganesha operational for some features)
+    # The webui-certs helper now only handles discovery of *custom* user-provided certs.
+    # Self-signed generation (if needed) is performed inside the Rust binary via
+    # ensure_webui_tls_certs() for better robustness and test coverage.
+    info "Preparing WebUI TLS certificates..."
+    local WEBUI_CERT_OUTPUT=""
+    # Capture stdout (the VAR= lines) and stderr (diagnostic messages) separately.
+    # We do NOT use eval on the output for safety.
+    WEBUI_CERT_OUTPUT=$("$WEBUI_CERTS_BIN" 2>&1) || true
 
-    if [ -n "$WEBUI_CERT_OUTPUT" ]; then
-        eval "$WEBUI_CERT_OUTPUT"
-    fi
+    # Parse only the two expected variables safely (no eval, no shell injection risk).
+    WEBUI_TLS_CERT=""
+    WEBUI_TLS_KEY=""
+    while IFS= read -r line; do
+        case "$line" in
+            WEBUI_TLS_CERT=*) WEBUI_TLS_CERT="${line#WEBUI_TLS_CERT=}" ;;
+            WEBUI_TLS_KEY=*)  WEBUI_TLS_KEY="${line#WEBUI_TLS_KEY=}" ;;
+            *)                info "    $line" ;;   # diagnostics from the cert script
+        esac
+    done <<< "$WEBUI_CERT_OUTPUT"
 
-    if [[ -x /usr/local/bin/nfs-klldap-ui && -n "${WEBUI_TLS_CERT:-}" && -n "${WEBUI_TLS_KEY:-}" && -f "$WEBUI_TLS_CERT" && -f "$WEBUI_TLS_KEY" ]]; then
-        log "[3/3] WebUI Starting on 0.0.0.0:9630 (HTTPS)..."
+    # Export so they are visible to the child process launch below
+    export WEBUI_TLS_CERT WEBUI_TLS_KEY
+
+
+    # We require the two env vars to be set (the script above always outputs them).
+    # We no longer require the files to exist on disk here — the Rust binary
+    # will call ensure_webui_tls_certs() which generates self-signed certs
+    # into those paths if they are missing.
+    if [[ -x "$UI_BIN" && -n "$WEBUI_TLS_CERT" && -n "$WEBUI_TLS_KEY" ]]; then
+        info "Starting WebUI on 0.0.0.0:9630 (HTTPS)..."
         NFS_KLLDAP_CONF="$NFS_CONFIG" \
         WEBUI_TLS_CERT="$WEBUI_TLS_CERT" \
         WEBUI_TLS_KEY="$WEBUI_TLS_KEY" \
-        /usr/local/bin/nfs-klldap-ui --config "$NFS_CONFIG" \
-            >/var/log/webui.log 2>&1 &
+        "$UI_BIN" --config "$NFS_CONFIG" \
+            > >(tee -a /var/log/webui.log) 2>&1 &
         WEBUI_PID=$!
-        log "    WebUI started (logs: /var/log/webui.log)"
-    else
-        log "WARNING: Could not start WebUI (binary or valid certificates missing)"
-        # Log the cert script output for debugging
-        if [[ -n "$WEBUI_CERT_OUTPUT" ]]; then
-            echo "$WEBUI_CERT_OUTPUT" | while read -r line; do log "    $line"; done
+
+        # Give the WebUI a moment to either bind successfully or fail hard
+        # (e.g. TLS cert problem, config load failure). If it dies quickly,
+        # surface the last lines of its log into the main container output
+        # for immediate diagnosis instead of a silent generic failure.
+        sleep 1.5
+        if ! kill -0 "$WEBUI_PID" 2>/dev/null; then
+            warn "WebUI process exited quickly — last log lines:"
+            tail -n 30 /var/log/webui.log 2>/dev/null || true
         fi
+    else
+        warn "WebUI will not start (failed to obtain TLS certificate paths)"
     fi
 
-    log "All services launched (as root). Supervisor remains as root for signal handling."
 
-    # Wait for children. If any die the script exits and the container will
-    # be restarted by the policy (unless-stopped etc.).
+    info "All services launched. Supervisor (this process) remains as pid 1 for signal handling."
+    info "Container is ready."
+
+    # Wait for any child to exit. When one dies we exit, letting the container
+    # runtime apply its restart policy. This is the desired behavior for
+    # "unless-stopped", "on-failure", etc.
     wait
 }
 
-main
+main "$@"

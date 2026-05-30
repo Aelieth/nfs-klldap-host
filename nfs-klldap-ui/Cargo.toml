@@ -1,0 +1,53 @@
+[package]
+name = "nfs-klldap-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-container WebUI (Axum + HTMX) for nfs-klldap-host — edits central TOML and applies live permissions inside the container on port 9630"
+
+# Provide a user-friendly binary name for the WebUI (runs inside the container).
+[[bin]]
+name = "nfs-klldap-ui"
+path = "src/main.rs"
+
+[dependencies]
+# --- Shared with nfs-klldap-config (centralized in workspace) -----------------
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+# --- Core async runtime + HTTP client ----------------------------------------
+tokio = { version = "1.52.3", features = ["full"] }
+reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
+
+# --- TOML handling (comment-preserving edits for the central config) ---------
+toml_edit = "0.22"
+
+# --- Internal workspace crate ------------------------------------------------
+nfs-klldap-config = { path = "../nfs-klldap-config" }
+
+# --- Web framework (Axum + HTMX via Askama) ----------------------------------
+axum = { version = "0.7", features = ["macros"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+# rustls with explicit provider (required for tls-rustls in recent versions)
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+tower-http = { version = "0.5", features = ["fs", "trace"] }
+askama = { version = "0.12", features = ["with-axum"] }
+askama_axum = "0.4"
+
+# --- Local authentication (cookie sessions + sudo) ---------------------------
+cookie = { version = "0.18", features = ["private"] }
+rand = "0.8"
+libc = "0.2"
+bcrypt = "0.15"   # for the localhost simple admin password sidecar (0600)
+rcgen = { version = "0.14.8", features = ["pem"] }
+rustls-pemfile = "2.2.0"
+thiserror = "2.0.18"
+time = { version = "0.3.47", features = ["macros"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { version = "0.4", features = ["util"] }  # for ServiceExt in handler tests
+urlencoding = "2"

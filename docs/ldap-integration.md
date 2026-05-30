@@ -142,7 +142,7 @@ This gives nice `ls` output (names instead of numbers) and improves some applica
 
 - Current templates: `container/templates/`
 - `ganesha-ctl` (file-based reload helper): `container/scripts/`
-- Management tool source: `management/`
+- WebUI source: `nfs-klldap-ui/`
 - LLDAP documentation (POSIX attributes + GraphQL)
 
 ---

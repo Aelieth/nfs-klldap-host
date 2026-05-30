@@ -5,12 +5,14 @@
 //! - Share Permissions (/): browse real-time FS trees under shares and apply
 //!   POSIX owner/group/mode changes directly + live KLLDAP lookups.
 //!
-//! This binary now runs **inside** the `nfs-klldap-host` container on port 9630.
-//! The container (using the bundled `nfs-klldap-config` binary) auto-derives
-//! sssd.conf, krb5.conf, and all Ganesha EXPORT fragments from the same file.
-//! No separate host-side management process is required; the WebUI runs inside the container on port 9630.
+//! Runs inside the container on port 9630 (HTTPS). All services (including this
+//! WebUI) run as root and perform direct chown/chmod on bind-mounted paths.
+//!
+//! TLS certificates are ensured at startup via `crate::certs::ensure_webui_tls_certs`
+//! (self-signed generation happens in pure Rust using rcgen when needed).
 
 mod auth;
+mod certs;
 mod config;
 mod fs;
 mod llap;
@@ -27,7 +29,7 @@ async fn main() {
     // This must happen before any TLS code runs.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    println!("=== nfs-klldap-ui (in-container WebUI) — v0.5 central TOML ===\n");
+    println!("=== nfs-klldap-ui (in-container WebUI) ===\n");
 
     // Support --config /path or NFS_KLLDAP_CONF env (the shared volume with the container)
     let mut config_path: Option<PathBuf> = std::env::var("NFS_KLLDAP_CONF").ok().map(PathBuf::from);
@@ -112,28 +114,67 @@ async fn main() {
 
     let app = crate::web::router(state);
 
+    // -------------------------------------------------------------------------
+    // TLS certificate handling (moved much of the previous shell logic into Rust)
+    // -------------------------------------------------------------------------
+    // The container launcher (entrypoint + webui-certs script) normally provides
+    // WEBUI_TLS_CERT and WEBUI_TLS_KEY. If they are present we use those paths.
+    // If the files are missing or the vars are absent (dev mode), we ensure
+    // self-signed certificates exist using pure Rust (rcgen).
+    let (tls_cert_path, tls_key_path) = if let (Some(c), Some(k)) = (
+        std::env::var("WEBUI_TLS_CERT").ok(),
+        std::env::var("WEBUI_TLS_KEY").ok(),
+    ) {
+        (std::path::PathBuf::from(c), std::path::PathBuf::from(k))
+    } else {
+        // Development / standalone fallback location
+        let dir = std::path::PathBuf::from("webui-certs");
+        (dir.join("webui.crt"), dir.join("webui.key"))
+    };
+
+    // Determine a reasonable hostname for self-signed SANs if we need to generate.
+    let cert_hostname = config
+        .server
+        .hostname
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_string())
+        });
+
+    let tls_paths = crate::certs::ensure_webui_tls_certs(
+        &tls_cert_path,
+        &tls_key_path,
+        &cert_hostname,
+    )
+    .expect("failed to ensure WebUI TLS certificates");
+
+    let cert = tls_paths.cert.to_string_lossy().into_owned();
+    let key = tls_paths.key.to_string_lossy().into_owned();
+
     // Default bind for in-container operation (accessible from host and network)
     let addr = std::env::var("WEBUI_BIND")
         .unwrap_or_else(|_| "0.0.0.0:9630".to_string());
 
-    let tls_cert = std::env::var("WEBUI_TLS_CERT").ok();
-    let tls_key  = std::env::var("WEBUI_TLS_KEY").ok();
+    println!("\nListening on https://{addr} (TLS enabled)");
+    println!("Certificate: {}", cert);
 
-    if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
-        println!("\nListening on https://{addr} (TLS enabled)");
-        println!("Certificate: {}", cert);
+    let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("FATAL: Failed to load TLS certificate and key:");
+            eprintln!("  cert: {cert}");
+            eprintln!("  key : {key}");
+            eprintln!("  error: {e}");
+            eprintln!("The WebUI cannot start without valid TLS material.");
+            std::process::exit(1);
+        }
+    };
 
-        let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
-            .await
-            .expect("failed to load TLS certificate and key");
-
-        axum_server::bind_rustls(addr.parse().expect("invalid bind address"), config)
-            .serve(app.into_make_service())
-            .await
-            .unwrap();
-    } else {
-        println!("\nListening on http://{addr} (no TLS configured)");
-        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-        axum::serve(listener, app).await.unwrap();
-    }
+    axum_server::bind_rustls(addr.parse().expect("invalid bind address"), config)
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
 }
+
+

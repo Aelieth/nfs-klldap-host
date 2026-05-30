@@ -114,8 +114,12 @@ async fn main() {
     ));
 
     // LLDAP client (GraphQL + POSIX). Derive URL from the central conf when possible.
+    // We pass the exact POSIX attribute names the admin declared in [sssd] so the
+    // client only ever requests those (this is the primary defense against LLDAP
+    // emitting "Ignoring unrecognized user/group attribute" spam for krb*, shadow*, etc.).
     let lldap_url = crate::config::derive_lldap_url(&config);
-    let mut lldap = crate::llap::LldapClient::new(&lldap_url);
+    let posix_attrs = nfs_klldap_config::resolve_posix_attribute_mapping(&config.sssd);
+    let mut lldap = crate::llap::LldapClient::new_with_attributes(&lldap_url, posix_attrs);
 
     // Real credentials from the same nfs-klldap.conf (sssd section) with env override support.
     // Interactive prompt is intentionally avoided for daemon/container use cases.
@@ -129,18 +133,46 @@ async fn main() {
              User/group searches and permission lookups will be non-functional."
         );
     }
+
+    // Note: This authenticate() performs a simple-login REST call. Inside LLDAP
+    // this typically results in a bind as the service account. The very first
+    // bind for that DN can cause LLDAP to load the user's full entry from its
+    // backend and emit one burst of "Ignoring unrecognized user attribute"
+    // warnings for any non-POSIX attributes (krb*, accountexpires, etc.) that
+    // exist on the account. This is the main remaining source of the single
+    // startup burst (the other early bind was the guided startup probe).
+    //
+    // After this point the client only performs narrow GraphQL fetches using
+    // the exact attributes from resolve_posix_attribute_mapping (same set
+    // emitted into sssd.conf as ldap_user_attributes etc.).
     if let Err(e) = lldap.authenticate(&lldap_user, &lldap_pass).await {
         eprintln!(
             "Warning: Could not authenticate to KLLDAP at startup: {}",
             e
         );
     }
+
+    // Immediately perform one narrow, mapping-respecting self-lookup on the
+    // service account itself. This guarantees that the very first post-auth
+    // operation the WebUI performs is a "narrow SSSD-style" query (only the
+    // admin-declared POSIX attributes), matching the behavior of all later
+    // handlers and of SSSD.
+    if lldap_pass.trim().len() > 0
+        && lldap_pass != "CHANGE_THIS_TO_A_STRONG_SECRET"
+        && lldap_pass != "SET_ME"
+    {
+        let _ = lldap.resolve_user(&lldap_user).await;
+    }
+
     let lldap = Arc::new(Mutex::new(lldap));
 
     // Hybrid auth manager (localhost simple-pw sidecar + LLDAP + admin group).
     // The sidecar lives next to the central config file.
     let admin_group = config.management.webui_admin_group.clone();
     let auth = Arc::new(crate::auth::AuthManager::new(&config_path, admin_group));
+
+    let keytab_status_message =
+        crate::web::compute_keytab_status_message(&keytab_host, &keytab_realm);
 
     let state = crate::web::AppState {
         fs,
@@ -150,6 +182,7 @@ async fn main() {
         config_path: config_path.clone(),
         keytab_hostname: keytab_host,
         keytab_realm,
+        keytab_status_message,
     };
 
     let app = crate::web::router(state);

@@ -6,7 +6,7 @@
         <label>Owner User<br>
             <input type="text" name="owner_user" id="owner_user"
                    hx-get="/users/search"
-                   hx-trigger="input changed delay:250ms"
+                   hx-trigger="input changed delay:250ms [value.length > 1]"
                    hx-target="#user-suggestions"
                    hx-swap="innerHTML"
                    placeholder="Type to search LLDAP users...">
@@ -18,7 +18,7 @@
         <label>Owner Group<br>
             <input type="text" name="owner_group" id="owner_group"
                    hx-get="/groups/search"
-                   hx-trigger="input changed delay:250ms"
+                   hx-trigger="input changed delay:250ms [value.length > 1]"
                    hx-target="#group-suggestions"
                    hx-swap="innerHTML"
                    placeholder="Type to search LLDAP groups...">

@@ -42,8 +42,9 @@ mod validate;
 // Public API (stable surface for binaries + nfs-klldap-ui)
 // =============================================================================
 pub use config::{
-    GaneshaSection, GenerationPaths, KerberosSection, ManagementSection, NfsKlldapConfig,
-    ServerSection, Share, SssdSection, StorageSection,
+    resolve_posix_attribute_mapping, GaneshaSection, GenerationPaths, KerberosSection,
+    ManagementSection, NfsKlldapConfig, PosixAttributeMapping, ServerSection, Share, SssdSection,
+    StorageSection,
 };
 pub use error::ConfigError;
 

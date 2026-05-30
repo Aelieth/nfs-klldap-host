@@ -77,18 +77,17 @@
         </div>
     {% endif %}
 
-    {# Compact keytab principal reminder (populated from AppState at startup for consistency with container logs) #}
+    {# Keytab status banner — shows whether the actual keytab on disk matches the expected principal #}
     <div style="background:#fff8e1; border:1px solid #f0c36b; padding:4px 10px; margin-bottom:0.75rem; border-radius:4px; font-size:0.9em; color:#664e04;">
-        <strong>Keytab principal:</strong>
-        <code style="background:#fff; padding:1px 4px; border-radius:2px;">nfs/{{ keytab_hostname }}@{{ keytab_realm }}</code>
-        <span style="margin-left:6px;">— container hostname must match exactly (see <a href="/settings">Settings</a>)</span>
+        <strong>{{ keytab_status_message }}</strong>
     </div>
 
+    {% if let Some(_) = current_user %}
     <nav style="margin-bottom:1rem; border-bottom:1px solid #ddd; padding-bottom:6px;">
         <a href="/settings" style="margin-right:1rem; font-weight:600;">System Settings</a>
         <a href="/" style="margin-right:1rem;">Share Permissions</a>
-        <span style="color:#999;">(edits the same nfs-klldap.conf the container uses)</span>
     </nav>
+    {% endif %}
 
     {% block content %}{% endblock %}
 </body>

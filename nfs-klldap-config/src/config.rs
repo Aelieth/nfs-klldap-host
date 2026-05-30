@@ -133,6 +133,116 @@ pub struct SssdSection {
     pub krb5_store_password_if_offline: Option<bool>,
 }
 
+/// Resolved POSIX attribute names used for both SSSD generation and targeted
+/// LLDAP GraphQL queries by the management WebUI.
+///
+/// All values come from the admin's input in `[sssd]` (with the same documented
+/// defaults the generator uses). This ensures the WebUI only ever asks LLDAP
+/// for the exact attributes the rest of the system is configured to use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PosixAttributeMapping {
+    pub user_object_class: String,
+    pub group_object_class: String,
+    pub user_name: String,
+    pub user_uid_number: String,
+    pub user_gid_number: String,
+    pub user_home_directory: String,
+    pub user_shell: String,
+    pub group_name: String,
+    pub group_gid_number: String,
+    pub group_member: String,
+}
+
+/// Resolve the POSIX attribute names the system should use, based on admin
+/// configuration in the `[sssd]` section (user overrides always win).
+///
+/// This is the single source of truth for "which attributes matter for POSIX"
+/// and is shared between the SSSD config generator and the WebUI's LLDAP client.
+pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapping {
+    let user_obj = sssd
+        .ldap_user_object_class
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "posixAccount".to_string());
+
+    let group_obj = sssd
+        .ldap_group_object_class
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "posixGroup".to_string());
+
+    let u_name = sssd
+        .ldap_user_name
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "uid".to_string());
+
+    let u_uid = sssd
+        .ldap_user_uid_number
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "uidNumber".to_string());
+
+    let u_gid = sssd
+        .ldap_user_gid_number
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "gidNumber".to_string());
+
+    let u_home = sssd
+        .ldap_user_home_directory
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "homeDirectory".to_string());
+
+    let u_shell = sssd
+        .ldap_user_shell
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "loginShell".to_string());
+
+    let g_name = sssd
+        .ldap_group_name
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "cn".to_string());
+
+    let g_gid = sssd
+        .ldap_group_gid_number
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "gidNumber".to_string());
+
+    let g_member = sssd
+        .ldap_group_member
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "memberUid".to_string());
+
+    PosixAttributeMapping {
+        user_object_class: user_obj,
+        group_object_class: group_obj,
+        user_name: u_name,
+        user_uid_number: u_uid,
+        user_gid_number: u_gid,
+        user_home_directory: u_home,
+        user_shell: u_shell,
+        group_name: g_name,
+        group_gid_number: g_gid,
+        group_member: g_member,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct KerberosSection {
     pub realm: Option<String>,

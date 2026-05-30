@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use nfs_klldap_config::{
     derive_realm_from_uri, extract_host_from_uri, get_consistent_hostname, is_persistent_config,
-    suggested_nfs_hostname, ConfigError, NfsKlldapConfig,
+    resolve_posix_attribute_mapping, suggested_nfs_hostname, ConfigError, NfsKlldapConfig,
 };
 
 fn main() {
@@ -187,12 +187,54 @@ fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
 }
 
 /// Attempts LDAP bind and returns rich error information for the user.
+///
+/// This now performs a *narrow* search using exactly the same attribute names
+/// that will later be used by SSSD (via the generated ldap_user_attributes /
+/// ldap_*_map settings) and by the WebUI's LLDAP client. This keeps the early
+/// "initial handshake" probe consistent with the "only the SSSD-defined
+/// attributes" principle and minimizes the chance of triggering LLDAP's
+/// "unrecognized user attribute" warnings during container startup.
 fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     let uri = &cfg.ldap_uri;
     let dn = &cfg.sssd.ldap_default_bind_dn;
     let pw = &cfg.sssd.ldap_default_authtok;
 
     let is_ldaps = uri.starts_with("ldaps://");
+
+    // Resolve the same POSIX attribute mapping that SSSD and the WebUI will use.
+    // Even a very early/partial config still produces sensible defaults
+    // (uidNumber, gidNumber, homeDirectory, loginShell, etc.).
+    let mapping = resolve_posix_attribute_mapping(&cfg.sssd);
+
+    // Build an explicit, narrow attribute list for this probe.
+    // We request the core identity attributes for the bind DN itself (a base
+    // search on its own entry) plus objectClass. This is deliberately the same
+    // set of names the rest of the system will use.
+    let mut attrs: Vec<&str> = vec![
+        &mapping.user_name,
+        &mapping.user_uid_number,
+        &mapping.user_gid_number,
+        &mapping.user_home_directory,
+        &mapping.user_shell,
+        "objectClass",
+    ];
+    if let Some(f) = cfg
+        .sssd
+        .ldap_user_fullname
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+    {
+        let f = f.trim();
+        if !attrs.iter().any(|a| a.eq_ignore_ascii_case(f)) {
+            attrs.push(f);
+        }
+    }
+    // Dedup while preserving order (simple and sufficient here).
+    let mut seen = std::collections::HashSet::new();
+    let attr_list: Vec<&str> = attrs
+        .into_iter()
+        .filter(|a| seen.insert(*a))
+        .collect();
 
     let mut cmd = Command::new("timeout");
     cmd.args(["10", "ldapsearch"]).args([
@@ -205,10 +247,15 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
         "-s",
         "base",
         "-b",
-        "",
+        dn, // Search the bind DN's own entry (narrow, like future SSSD lookups)
         "-o",
         "nettimeout=5",
     ]);
+
+    // Append the narrow attribute list.
+    for a in &attr_list {
+        cmd.arg(a);
+    }
 
     // Auto TLS handling based on URI scheme
     if is_ldaps {

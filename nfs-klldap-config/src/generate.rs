@@ -6,7 +6,9 @@
 use std::fs;
 use std::path::Path;
 
-use crate::{ConfigError, GenerationPaths, NfsKlldapConfig};
+use crate::{
+    config::resolve_posix_attribute_mapping, ConfigError, GenerationPaths, NfsKlldapConfig,
+};
 
 // The two small pure helpers (moved in micro-step 1)
 pub(crate) fn sanitize_name(s: &str) -> String {
@@ -141,63 +143,43 @@ fn build_ldap_domain_options(
 ) -> String {
     let s = &cfg.sssd;
 
-    // --- POSIX attribute mappings (user overrides always win) ---
-    let user_obj = s
-        .ldap_user_object_class
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "posixAccount".to_string());
-    let group_obj = s
-        .ldap_group_object_class
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "posixGroup".to_string());
+    // Use the single source of truth for POSIX attribute names (same as what
+    // the WebUI LLDAP client will request). User overrides in the TOML win.
+    let mapping = resolve_posix_attribute_mapping(s);
 
-    let u_name = s
-        .ldap_user_name
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "uid".to_string());
-    let u_uid = s
-        .ldap_user_uid_number
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "uidNumber".to_string());
-    let u_gid = s
-        .ldap_user_gid_number
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "gidNumber".to_string());
-    let u_home = s
-        .ldap_user_home_directory
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "homeDirectory".to_string());
-    let u_shell = s
-        .ldap_user_shell
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "loginShell".to_string());
-
-    let g_name = s
-        .ldap_group_name
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "cn".to_string());
-    let g_gid = s
-        .ldap_group_gid_number
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "gidNumber".to_string());
+    // Explicit attribute lists for SSSD searches (derived from the same [sssd]
+    // mappings). This prevents SSSD from requesting its broad internal defaults
+    // (krb*, shadow*, accountexpires, authorizedservice, gecos, nsaccountlock,
+    // passkey, etc.) which LLDAP does not recognize on users/groups and logs
+    // WARN spam for on every search. Only the admin-declared POSIX attributes
+    // (plus objectClass) are requested. memberUid (group member) is never placed
+    // in the user list.
+    let user_attr_list = {
+        let mut a = vec![
+            mapping.user_name.as_str(),
+            mapping.user_uid_number.as_str(),
+            mapping.user_gid_number.as_str(),
+            mapping.user_home_directory.as_str(),
+            mapping.user_shell.as_str(),
+            "objectClass",
+        ];
+        if let Some(f) = s.ldap_user_fullname.as_ref().filter(|v| !v.trim().is_empty()) {
+            let f = f.trim();
+            if !a.iter().any(|x| x.eq_ignore_ascii_case(f)) {
+                a.push(f);
+            }
+        }
+        a.join(",")
+    };
+    let group_attr_list = {
+        let a = vec![
+            mapping.group_name.as_str(),
+            mapping.group_gid_number.as_str(),
+            mapping.group_member.as_str(),
+            "objectClass",
+        ];
+        a.join(",")
+    };
 
     // enumerate default = true because this project benefits from a warm cache
     let enumerate = if s.enumerate.unwrap_or(true) {
@@ -220,19 +202,24 @@ ldap_group_object_class = {group_obj}
 ldap_group_name = {g_name}
 ldap_group_gid_number = {g_gid}
 
+ldap_user_attributes = {user_attrs}
+ldap_group_attributes = {group_attrs}
+
 enumerate = {enumerate}
 access_provider = {access}"#,
         user_base = user_base,
-        user_obj = user_obj,
-        u_name = u_name,
-        u_uid = u_uid,
-        u_gid = u_gid,
-        u_home = u_home,
-        u_shell = u_shell,
+        user_obj = mapping.user_object_class,
+        u_name = mapping.user_name,
+        u_uid = mapping.user_uid_number,
+        u_gid = mapping.user_gid_number,
+        u_home = mapping.user_home_directory,
+        u_shell = mapping.user_shell,
         group_base = group_base,
-        group_obj = group_obj,
-        g_name = g_name,
-        g_gid = g_gid,
+        group_obj = mapping.group_object_class,
+        g_name = mapping.group_name,
+        g_gid = mapping.group_gid_number,
+        user_attrs = user_attr_list,
+        group_attrs = group_attr_list,
         enumerate = enumerate,
         access = s
             .access_provider

@@ -20,6 +20,113 @@ use tokio::sync::Mutex;
 
 use crate::{auth::AuthManager, config::Config, fs::FsManager, llap::LldapClient};
 
+/// Returns a user-friendly message describing whether the on-disk keytab
+/// contains the expected `nfs/<host>@REALM` principal.
+///
+/// This version supports keytabs containing multiple principals for the same
+/// host (e.g. both the short hostname and the FQDN, as is recommended).
+/// It finds the exact matching line(s) for the derived hostname.
+pub(crate) fn compute_keytab_status_message(expected_host: &str, expected_realm: &str) -> String {
+    let expected = format!("nfs/{}@{}", expected_host, expected_realm);
+
+    match read_keytab_nfs_principals() {
+        Ok(principals) => {
+            // Find all principals in the keytab that correspond to our expected host.
+            // This supports both short name and FQDN variants (e.g. "myserver" and "myserver.example.com").
+            let matching: Vec<&String> = principals
+                .iter()
+                .filter(|p| principal_host_matches(p, expected_host, expected_realm))
+                .collect();
+
+            if !matching.is_empty() {
+                let actual = matching
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("Keytab principal: {} principal matches.", actual)
+            } else {
+                let found = if principals.is_empty() {
+                    "none found".to_string()
+                } else {
+                    principals.join(", ")
+                };
+                format!(
+                    "Keytab principal: {} principal does not match expected {}",
+                    found, expected
+                )
+            }
+        }
+        Err(err) => {
+            format!(
+                "Keytab principal: {} (unable to read keytab: {})",
+                expected, err
+            )
+        }
+    }
+}
+
+/// Returns true if the given principal from the keytab matches our expected host.
+///
+/// Matches exact principal, or allows short hostname <-> FQDN variants
+/// (e.g. "nfs/myserver@REALM" matches when we expect "myserver.example.com").
+fn principal_host_matches(principal: &str, expected_host: &str, expected_realm: &str) -> bool {
+    // Must be an nfs principal for the right realm
+    let Some(rest) = principal.strip_prefix("nfs/") else {
+        return false;
+    };
+
+    let Some((host_part, realm_part)) = rest.split_once('@') else {
+        return false;
+    };
+
+    if !realm_part.eq_ignore_ascii_case(expected_realm) {
+        return false;
+    }
+
+    let p = host_part.to_lowercase();
+    let e = expected_host.to_lowercase();
+
+    if p == e {
+        return true;
+    }
+
+    // Support short name vs FQDN (and vice versa)
+    let p_short = p.split('.').next().unwrap_or(&p);
+    let e_short = e.split('.').next().unwrap_or(&e);
+
+    p_short == e_short
+}
+
+/// Best-effort extraction of NFS principals from /etc/krb5.keytab using `klist`.
+/// Returns an empty vec if the keytab does not exist or cannot be read.
+fn read_keytab_nfs_principals() -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("klist")
+        .args(["-k", "-t", "/etc/krb5.keytab"])
+        .output()
+        .map_err(|e| format!("klist not available: {}", e))?;
+
+    if !output.status.success() {
+        // No keytab or permission issue — treat as "no principals found"
+        return Ok(vec![]);
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut found = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        // Typical output line: "   2 01/01/70 00:00:00 nfs/hostname@REALM"
+        if let Some(last_token) = trimmed.split_whitespace().last() {
+            if last_token.starts_with("nfs/") && last_token.contains('@') {
+                found.push(last_token.to_string());
+            }
+        }
+    }
+
+    Ok(found)
+}
+
 // === State ===
 
 #[derive(Clone)]
@@ -38,6 +145,9 @@ pub struct AppState {
     pub keytab_hostname: String,
     /// Kerberos realm for the NFS principal (derived/validated at startup, same as krb5.conf generator).
     pub keytab_realm: String,
+    /// Human-readable status about whether the on-disk /etc/krb5.keytab actually contains
+    /// the expected NFS service principal. Computed once at startup.
+    pub keytab_status_message: String,
 }
 
 // === Public routes (no auth) ===
@@ -51,9 +161,7 @@ struct LoginTemplate {
     /// The form should offer to set the initial "localhost" password.
     first_run: bool,
     admin_group: String,
-    /// Keytab principal info (always available, even on public login page).
-    keytab_hostname: String,
-    keytab_realm: String,
+    keytab_status_message: String,
 }
 
 pub async fn login_page(State(state): State<AppState>) -> impl IntoResponse {
@@ -66,8 +174,7 @@ pub async fn login_page(State(state): State<AppState>) -> impl IntoResponse {
             current_user: None,
             first_run,
             admin_group,
-            keytab_hostname: state.keytab_hostname.clone(),
-            keytab_realm: state.keytab_realm.clone(),
+            keytab_status_message: state.keytab_status_message.clone(),
         }
         .render()
         .unwrap(),
@@ -104,11 +211,14 @@ pub async fn login(
         if !verify_ok {
             Err("Invalid username or password (LLDAP)".to_string())
         } else {
-            // 2. Check admin group membership (service account does the query).
-            // Only members of the admin group are allowed to log into the WebUI.
+            // 2. Check admin group membership by authenticating as the user themselves.
+            // The long-lived service account (from sssd bind DN) usually lacks rights
+            // to read the `groups` relation on other users via GraphQL. Using the
+            // end-user's own short-lived token for a self-check works reliably.
             let is_admin = {
-                let mut l = state.lldap.lock().await;
-                l.user_is_in_group(username, state.auth.admin_group()).await
+                let l = state.lldap.lock().await;
+                l.user_is_in_group_with_creds(username, password, state.auth.admin_group())
+                    .await
             };
 
             if !is_admin {
@@ -148,8 +258,7 @@ pub async fn login(
                 current_user: None,
                 first_run,
                 admin_group,
-                keytab_hostname: state.keytab_hostname.clone(),
-                keytab_realm: state.keytab_realm.clone(),
+                keytab_status_message: state.keytab_status_message.clone(),
             }
             .render()
             .unwrap();
@@ -174,8 +283,7 @@ pub async fn setup_password(
             current_user: None,
             first_run: false,
             admin_group: state.auth.admin_group().to_string(),
-            keytab_hostname: state.keytab_hostname.clone(),
-            keytab_realm: state.keytab_realm.clone(),
+            keytab_status_message: state.keytab_status_message.clone(),
         }
         .render()
         .unwrap();
@@ -189,8 +297,7 @@ pub async fn setup_password(
             current_user: None,
             first_run: true,
             admin_group: state.auth.admin_group().to_string(),
-            keytab_hostname: state.keytab_hostname.clone(),
-            keytab_realm: state.keytab_realm.clone(),
+            keytab_status_message: state.keytab_status_message.clone(),
         }
         .render()
         .unwrap();
@@ -219,8 +326,7 @@ pub async fn setup_password(
                 current_user: None,
                 first_run: true,
                 admin_group: state.auth.admin_group().to_string(),
-                keytab_hostname: state.keytab_hostname.clone(),
-                keytab_realm: state.keytab_realm.clone(),
+                keytab_status_message: state.keytab_status_message.clone(),
             }
             .render()
             .unwrap();
@@ -282,8 +388,7 @@ pub async fn require_auth(
 struct IndexTemplate {
     shares: Vec<crate::config::Share>,
     current_user: Option<String>,
-    keytab_hostname: String,
-    keytab_realm: String,
+    keytab_status_message: String,
 }
 
 #[derive(Template)]
@@ -323,9 +428,7 @@ struct SettingsTemplate {
     /// Comes from [kerberos] realm (or auto-derived from ldap_uri during config load/validation).
     /// This is the exact value written into krb5.conf by the generator.
     effective_realm: String,
-    /// For the top banner (same values as AppState at startup time).
-    keytab_hostname: String,
-    keytab_realm: String,
+    keytab_status_message: String,
 }
 
 // === Handlers ===
@@ -339,8 +442,7 @@ pub async fn index(
     let tpl = IndexTemplate {
         shares: state.config.shares.clone(),
         current_user: Some(user.0),
-        keytab_hostname: state.keytab_hostname.clone(),
-        keytab_realm: state.keytab_realm.clone(),
+        keytab_status_message: state.keytab_status_message.clone(),
     };
 
     Ok(Html(tpl.render().unwrap()))
@@ -617,8 +719,7 @@ pub async fn settings_page(
         message: None,
         effective_hostname: state.keytab_hostname.clone(),
         effective_realm: state.keytab_realm.clone(),
-        keytab_hostname: state.keytab_hostname.clone(),
-        keytab_realm: state.keytab_realm.clone(),
+        keytab_status_message: state.keytab_status_message.clone(),
     };
     Ok(Html(tpl.render().unwrap()))
 }
@@ -711,8 +812,7 @@ pub async fn settings_save_raw(
         message: Some("Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into()),
         effective_hostname: state.keytab_hostname.clone(),
         effective_realm: state.keytab_realm.clone(),
-        keytab_hostname: state.keytab_hostname.clone(),
-        keytab_realm: state.keytab_realm.clone(),
+        keytab_status_message: state.keytab_status_message.clone(),
     };
     Ok(Html(tpl.render().unwrap()))
 }
@@ -843,8 +943,7 @@ pub async fn settings_save_structured(
             message: Some(msg),
             effective_hostname: state.keytab_hostname.clone(),
             effective_realm: state.keytab_realm.clone(),
-            keytab_hostname: state.keytab_hostname.clone(),
-            keytab_realm: state.keytab_realm.clone(),
+            keytab_status_message: state.keytab_status_message.clone(),
         };
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -955,8 +1054,7 @@ pub async fn settings_save_structured(
             message: Some(format!("Failed to write: {}", e)),
             effective_hostname: state.keytab_hostname.clone(),
             effective_realm: state.keytab_realm.clone(),
-            keytab_hostname: state.keytab_hostname.clone(),
-            keytab_realm: state.keytab_realm.clone(),
+            keytab_status_message: state.keytab_status_message.clone(),
         };
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -969,8 +1067,7 @@ pub async fn settings_save_structured(
             message: Some(format!("Rename failed: {}", e)),
             effective_hostname: state.keytab_hostname.clone(),
             effective_realm: state.keytab_realm.clone(),
-            keytab_hostname: state.keytab_hostname.clone(),
-            keytab_realm: state.keytab_realm.clone(),
+            keytab_status_message: state.keytab_status_message.clone(),
         };
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -993,8 +1090,7 @@ pub async fn settings_save_structured(
         ),
         effective_hostname: state.keytab_hostname.clone(),
         effective_realm: state.keytab_realm.clone(),
-        keytab_hostname: state.keytab_hostname.clone(),
-        keytab_realm: state.keytab_realm.clone(),
+        keytab_status_message: state.keytab_status_message.clone(),
     };
     Ok(Html(tpl.render().unwrap()))
 }
@@ -1111,7 +1207,9 @@ pub async fn reload_nfs_client(
         return Html(msg);
     }
 
-    let mut new_client = crate::llap::LldapClient::new(&url);
+    // Use the exact POSIX attribute names from the freshly loaded config (admin input).
+    let posix_attrs = nfs_klldap_config::resolve_posix_attribute_mapping(&fresh.sssd);
+    let mut new_client = crate::llap::LldapClient::new_with_attributes(&url, posix_attrs);
 
     match new_client.authenticate(&user, &pass).await {
         Ok(()) => {
@@ -1210,7 +1308,22 @@ mod tests {
         ));
 
         // Dummy LLDAP client (settings handlers don't use it)
-        let lldap = Arc::new(Mutex::new(LldapClient::new("http://localhost:9999")));
+        let default_mapping = nfs_klldap_config::PosixAttributeMapping {
+            user_object_class: "posixAccount".to_string(),
+            group_object_class: "posixGroup".to_string(),
+            user_name: "uid".to_string(),
+            user_uid_number: "uidNumber".to_string(),
+            user_gid_number: "gidNumber".to_string(),
+            user_home_directory: "homeDirectory".to_string(),
+            user_shell: "loginShell".to_string(),
+            group_name: "cn".to_string(),
+            group_gid_number: "gidNumber".to_string(),
+            group_member: "memberUid".to_string(),
+        };
+        let lldap = Arc::new(Mutex::new(LldapClient::new_with_attributes(
+            "http://localhost:9999",
+            default_mapping,
+        )));
 
         let auth = Arc::new(AuthManager::new(&config_path, None));
 
@@ -1222,6 +1335,8 @@ mod tests {
             config_path,
             keytab_hostname: "test-host".to_string(),
             keytab_realm: "EXAMPLE.COM".to_string(),
+            keytab_status_message: "Keytab principal: nfs/test-host@EXAMPLE.COM principal matches."
+                .to_string(),
         };
 
         (state, tmp)

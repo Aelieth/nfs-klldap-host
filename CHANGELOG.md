@@ -1,4 +1,15 @@
-## Unreleased
+## v0.6.2
+
+### WebUI Login Screen, UX & Safety (Major Polish + Bugfixes)
+
+- Completely reworked the login screen visuals:
+  - Removed the long-winded paragraphs explaining `localhost` vs LLDAP admin login flows.
+  - The always-visible keytab guidance banner at the top of every page (including the unauthenticated login screen) is now short and useful: it displays the exact principal (`nfs/<hostname>@<REALM>`) that must be present in the mounted keytab.
+- Fixed inconsistent hostname reporting for the keytab principal: the WebUI now uses the exact same two-tier consistent hostname value (and explicit `[server] hostname` override) computed at container startup. The banner and Settings page are now guaranteed to match the loud reminder printed by the entrypoint / `nfs-klldap-startup`.
+- Fixed logout: the header "Logout" link performed a GET to `/logout`, but the route only accepted POST → 405 Method Not Allowed. The route now accepts both GET and POST.
+- **Security fix**: LLDAP authentication now strictly enforces membership in the `webui_admin_group` (default `lldap_admin`). Previously, *any* user with valid LLDAP credentials could obtain a privileged WebUI session. Non-admin users are now rejected at login with a clear error message.
+- Safety hardening: all `unsafe` code (`libc::chown` calls for direct permission application inside the container) has been moved into a dedicated `nfs-klldap-ui/src/ffi.rs` module guarded by `#![allow(unsafe_code)]`. A crate-level `#![deny(unsafe_code)]` was added so the safety boundary is enforced by the compiler. The safe wrappers in `ffi.rs` also use proper `CString` handling.
+- Full verification pass: `cargo fmt -- --check`, `cargo check --workspace`, `cargo +nightly clippy --workspace -- -D warnings`, `cargo test --workspace`, and `cargo audit` all clean.
 
 ### LLDAP / KLLDAP WebUI Client (nfs-klldap-ui)
 
@@ -93,3 +104,9 @@ This is a major release focused on correctness, simplicity, and Red Hat compatib
 - Step progress in the guided TUI now correctly marks completed steps with `[√]`.
 - Documentation (READMEs, architecture docs, compose examples) updated for the new
   startup flow and hostname convention.
+
+---
+
+## Unreleased
+
+(Changes for the next release go here.)

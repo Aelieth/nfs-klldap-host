@@ -10,6 +10,7 @@
 //! The management tool runs unprivileged and only needs read access to users/groups
 //! (SSSD in the NFS container handles the actual POSIX directory permissions).
 
+use nfs_klldap_config::PosixAttributeMapping;
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::Instant;
@@ -49,6 +50,12 @@ pub struct LldapClient {
     /// Used by the WebUI to detect stale credentials after the operator edits
     /// sssd.ldap_default_bind_* or management.lldap_graphql_url.
     last_auth_time: Option<Instant>,
+
+    /// The exact POSIX attribute names the admin declared in `[sssd]` of nfs-klldap.conf.
+    /// The client must only ever request these attributes (plus id/displayName) from LLDAP.
+    /// This is the key mechanism to avoid pulling hundreds of unrelated attributes
+    /// (krb*, shadow*, userAccountControl, etc.) that trigger log spam on the LLDAP side.
+    posix_attributes: PosixAttributeMapping,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -74,43 +81,6 @@ struct GraphQLResponse<T> {
     data: T,
 }
 
-#[derive(Deserialize)]
-struct UserResponse {
-    user: Option<RawUser>,
-}
-
-#[derive(Deserialize)]
-struct UsersResponse {
-    users: Vec<RawUser>,
-}
-
-#[derive(Deserialize)]
-struct RawUser {
-    id: String,
-    #[serde(rename = "displayName")]
-    display_name: Option<String>,
-    attributes: Vec<Attribute>,
-}
-
-#[derive(Deserialize)]
-struct Attribute {
-    name: String,
-    value: Vec<String>, // LLDAP returns arrays even for single values
-}
-
-#[derive(Deserialize)]
-struct GroupsResponse {
-    groups: Vec<RawGroup>,
-}
-
-#[derive(Deserialize)]
-struct RawGroup {
-    id: String,
-    #[serde(rename = "displayName")]
-    display_name: Option<String>,
-    attributes: Vec<Attribute>,
-}
-
 /// Derive the LLDAP / KLLDAP simple-login REST endpoint from whatever GraphQL URL
 /// was provided (explicit override or our derived one).
 /// Handles common shapes: .../api/graphql , .../graphql , or a bare base URL.
@@ -127,7 +97,10 @@ fn derive_login_url(graphql_url: &str) -> String {
 }
 
 impl LldapClient {
-    pub fn new(graphql_url: &str) -> Self {
+    /// Create a client that will only ever request the exact POSIX attributes
+    /// the administrator declared in their `[sssd]` section (passed in via the mapping).
+    /// This is the preferred (and now only) constructor from the WebUI.
+    pub fn new_with_attributes(graphql_url: &str, posix_attributes: PosixAttributeMapping) -> Self {
         let login_url = derive_login_url(graphql_url);
         Self {
             client: Client::new(),
@@ -137,6 +110,7 @@ impl LldapClient {
             username: None,
             password: None,
             last_auth_time: None,
+            posix_attributes,
         }
     }
 
@@ -284,60 +258,81 @@ impl LldapClient {
     }
 
     /// Resolve a user name to (uidNumber, display name).
+    ///
+    /// Only requests the single specific attribute declared by the admin in
+    /// [sssd] ldap_user_uid_number. No other attributes are ever queried.
     pub async fn resolve_user(&mut self, name: &str) -> Option<(i32, String)> {
-        let query = r#"
-            query($userId: String!) {
-                user(userId: $userId) {
+        let uid_attr = self.posix_attributes.user_uid_number.clone();
+        let alias = uid_attr.replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
+
+        // Request ONLY the exact POSIX attribute the admin configured.
+        let query = format!(
+            r#"
+            query($userId: String!) {{
+                user(userId: $userId) {{
                     id
                     displayName
-                    attributes {
-                        name
+                    {alias}: attribute(name: "{attr}") {{
                         value
-                    }
-                }
-            }
-        "#;
+                    }}
+                }}
+            }}
+            "#,
+            alias = alias,
+            attr = uid_attr
+        );
 
         let variables = serde_json::json!({ "userId": name });
 
-        let data: UserResponse = self.run_query(query, Some(variables)).await.ok()?;
+        let data: serde_json::Value = self.run_query(&query, Some(variables)).await.ok()?;
 
-        let user = data.user?;
-        let display = user.display_name.unwrap_or_else(|| user.id.clone());
+        let user = data.get("user")?;
+        let display = user
+            .get("displayName")
+            .and_then(|v| v.as_str())
+            .unwrap_or(name)
+            .to_string();
 
-        // Parse uidNumber from attributes (KLLDAP / LLDAP returns them here)
         let uid = user
-            .attributes
-            .iter()
-            .find(|a| a.name == "uidNumber")
-            .and_then(|a| a.value.first())
-            .and_then(|v| v.parse::<i32>().ok());
+            .get(&uid_attr)
+            .or_else(|| user.get(&alias))
+            .and_then(|a| a.get("value"))
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<i32>().ok());
 
         uid.map(|u| (u, display))
     }
 
     /// Resolve a group name to (gidNumber, display name)
+    ///
+    /// Only requests the single specific attribute declared by the admin in
+    /// [sssd] ldap_group_gid_number. No other attributes are ever queried.
     pub async fn resolve_group(&mut self, name: &str) -> Option<(i32, String)> {
-        let query = r#"
-            query($groupId: String!) {
-                group(groupId: $groupId) {
+        let gid_attr = self.posix_attributes.group_gid_number.clone();
+        let alias = gid_attr.replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
+
+        let query = format!(
+            r#"
+            query($groupId: String!) {{
+                group(groupId: $groupId) {{
                     id
                     displayName
-                    attributes {
-                        name
+                    {alias}: attribute(name: "{attr}") {{
                         value
-                    }
-                }
-            }
-        "#;
+                    }}
+                }}
+            }}
+            "#,
+            alias = alias,
+            attr = gid_attr
+        );
 
         let variables = serde_json::json!({ "groupId": name });
 
-        // Note: The exact group query name may vary slightly in forks.
-        // This is the common pattern.
-        let data: serde_json::Value = self.run_query(query, Some(variables)).await.ok()?;
+        let data: serde_json::Value = self.run_query(&query, Some(variables)).await.ok()?;
 
-        // Flexible parsing
         let group = data.get("group")?;
         let display = group
             .get("displayName")
@@ -346,12 +341,8 @@ impl LldapClient {
             .to_string();
 
         let gid = group
-            .get("attributes")
-            .and_then(|attrs| attrs.as_array())
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|a| a.get("name").and_then(|n| n.as_str()) == Some("gidNumber"))
-            })
+            .get(&gid_attr)
+            .or_else(|| group.get(&alias))
             .and_then(|a| a.get("value"))
             .and_then(|v| v.as_array())
             .and_then(|arr| arr.first())
@@ -362,95 +353,177 @@ impl LldapClient {
     }
 
     /// List users (with optional filter). Returns POSIX-aware results.
+    ///
+    /// This version uses the server-side `users(where: RequestFilter)` resolver
+    /// when a search term is provided, instead of fetching the entire directory
+    /// and filtering client-side. This significantly reduces load and attribute
+    /// processing on the LLDAP side.
     pub async fn list_users(&mut self, filter: Option<&str>) -> Vec<User> {
-        let query = r#"
-            query {
-                users {
-                    id
-                    displayName
-                    attributes {
-                        name
-                        value
-                    }
-                }
-            }
-        "#;
+        let uid_attr = self.posix_attributes.user_uid_number.clone();
+        let alias = uid_attr.replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
 
-        let data: UsersResponse = match self.run_query(query, None).await {
+        let (query, variables) = if let Some(f) = filter {
+            let q = format!(
+                r#"
+                query($where: RequestFilter) {{
+                    users(where: $where) {{
+                        id
+                        displayName
+                        {alias}: attribute(name: "{attr}") {{
+                            value
+                        }}
+                    }}
+                }}
+                "#,
+                alias = alias,
+                attr = uid_attr
+            );
+
+            let vars = serde_json::json!({
+                "where": {
+                    "or": [
+                        { "id": { "contains": f } },
+                        { "displayName": { "contains": f } }
+                    ]
+                }
+            });
+
+            (q, Some(vars))
+        } else {
+            let q = format!(
+                r#"
+                query {{
+                    users {{
+                        id
+                        displayName
+                        {alias}: attribute(name: "{attr}") {{
+                            value
+                        }}
+                    }}
+                }}
+                "#,
+                alias = alias,
+                attr = uid_attr
+            );
+            (q, None)
+        };
+
+        let data: serde_json::Value = match self.run_query(&query, variables).await {
             Ok(d) => d,
             Err(_) => return vec![],
         };
 
-        data.users
-            .into_iter()
-            .filter(|u| {
-                filter.is_none_or(|f| {
-                    u.id.to_lowercase().contains(&f.to_lowercase())
-                        || u.display_name
-                            .as_ref()
-                            .is_some_and(|d| d.to_lowercase().contains(&f.to_lowercase()))
-                })
-            })
-            .map(|raw| {
-                let uid = raw
-                    .attributes
-                    .iter()
-                    .find(|a| a.name == "uidNumber")
-                    .and_then(|a| a.value.first())
-                    .and_then(|v| v.parse::<i32>().ok());
+        let users = data.get("users").and_then(|u| u.as_array()).cloned().unwrap_or_default();
 
-                User {
-                    id: raw.id,
-                    display_name: raw.display_name,
+        users
+            .into_iter()
+            .filter_map(|u| {
+                let id = u.get("id")?.as_str()?.to_string();
+                let display = u.get("displayName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&id)
+                    .to_string();
+
+                let uid = u.get(&alias)
+                    .or_else(|| u.get(&uid_attr))
+                    .and_then(|a| a.get("value"))
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<i32>().ok());
+
+                Some(User {
+                    id,
+                    display_name: Some(display),
                     uid_number: uid,
-                }
+                })
             })
             .collect()
     }
 
     /// List groups (with optional filter).
+    ///
+    /// Uses server-side filtering via the GraphQL `groups` / `groups(where:)` capability
+    /// when a search term is provided.
     pub async fn list_groups(&mut self, filter: Option<&str>) -> Vec<Group> {
-        let query = r#"
-            query {
-                groups {
-                    id
-                    displayName
-                    attributes {
-                        name
-                        value
-                    }
-                }
-            }
-        "#;
+        let gid_attr = self.posix_attributes.group_gid_number.clone();
+        let alias = gid_attr.replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
 
-        let data: GroupsResponse = match self.run_query(query, None).await {
+        let (query, variables) = if let Some(f) = filter {
+            let q = format!(
+                r#"
+                query($where: RequestFilter) {{
+                    groups(where: $where) {{
+                        id
+                        displayName
+                        {alias}: attribute(name: "{attr}") {{
+                            value
+                        }}
+                    }}
+                }}
+                "#,
+                alias = alias,
+                attr = gid_attr
+            );
+
+            let vars = serde_json::json!({
+                "where": {
+                    "or": [
+                        { "id": { "contains": f } },
+                        { "displayName": { "contains": f } }
+                    ]
+                }
+            });
+
+            (q, Some(vars))
+        } else {
+            let q = format!(
+                r#"
+                query {{
+                    groups {{
+                        id
+                        displayName
+                        {alias}: attribute(name: "{attr}") {{
+                            value
+                        }}
+                    }}
+                }}
+                "#,
+                alias = alias,
+                attr = gid_attr
+            );
+            (q, None)
+        };
+
+        let data: serde_json::Value = match self.run_query(&query, variables).await {
             Ok(d) => d,
             Err(_) => return vec![],
         };
 
-        data.groups
-            .into_iter()
-            .filter(|g| {
-                filter.is_none_or(|f| {
-                    g.id.to_lowercase().contains(&f.to_lowercase())
-                        || g.display_name
-                            .as_ref()
-                            .is_some_and(|d| d.to_lowercase().contains(&f.to_lowercase()))
-                })
-            })
-            .map(|raw| {
-                let gid = raw
-                    .attributes
-                    .iter()
-                    .find(|a| a.name == "gidNumber")
-                    .and_then(|a| a.value.first())
-                    .and_then(|v| v.parse::<i32>().ok());
+        let groups = data.get("groups").and_then(|g| g.as_array()).cloned().unwrap_or_default();
 
-                Group {
-                    id: raw.id,
-                    display_name: raw.display_name,
+        groups
+            .into_iter()
+            .filter_map(|g| {
+                let id = g.get("id")?.as_str()?.to_string();
+                let display = g.get("displayName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&id)
+                    .to_string();
+
+                let gid = g.get(&alias)
+                    .or_else(|| g.get(&gid_attr))
+                    .and_then(|a| a.get("value"))
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<i32>().ok());
+
+                Some(Group {
+                    id,
+                    display_name: Some(display),
                     gid_number: gid,
-                }
+                })
             })
             .collect()
     }
@@ -484,6 +557,10 @@ impl LldapClient {
 
     /// Returns true if the given LLDAP username is a member of the named group.
     /// Uses the service account credentials (must be already authenticated).
+    ///
+    /// Prefer `user_is_in_group_with_creds` for login flows (the service account
+    /// typically cannot read the `groups` relation on arbitrary users).
+    #[allow(dead_code)]
     pub async fn user_is_in_group(&mut self, username: &str, group_name: &str) -> bool {
         // Preferred: ask for the user's groups directly.
         let query = r#"
@@ -511,13 +588,97 @@ impl LldapClient {
             .unwrap_or_default();
 
         for g in groups {
-            if g.get("id").and_then(|v| v.as_str()) == Some(group_name) {
+            let id = g.get("id").and_then(|v| v.as_str());
+            let display = g.get("displayName").and_then(|v| v.as_str());
+            if id == Some(group_name) || display == Some(group_name) {
                 return true;
             }
         }
 
         // Fallback: some LLDAP schemas put groups under attributes or have different shape.
         // As a last resort we can list all groups and check members, but the above is the common case.
+        false
+    }
+
+    /// One-shot membership check performed by authenticating *as the target user*
+    /// (via the simple-login REST endpoint) and then asking GraphQL for *that
+    /// user's own* groups using their fresh short-lived token.
+    ///
+    /// This is the correct approach for the WebUI login flow. The long-lived
+    /// service account (sssd.ldap_default_bind_dn) typically only has rights to
+    /// read POSIX attributes for NSS, not the `groups` relation on arbitrary
+    /// users. Querying as the user themselves works because users can see their
+    /// own group memberships.
+    pub async fn user_is_in_group_with_creds(
+        &self,
+        username: &str,
+        password: &str,
+        group_name: &str,
+    ) -> bool {
+        // Obtain a short-lived token for *this user* only. Does not affect the
+        // long-lived service token stored on self.
+        let token = match self._simple_login(username, password).await {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+
+        let query = r#"
+            query($userId: String!) {
+                user(userId: $userId) {
+                    groups {
+                        id
+                        displayName
+                    }
+                }
+            }
+        "#;
+        let variables = serde_json::json!({ "userId": username });
+        let body = serde_json::json!({ "query": query, "variables": variables });
+
+        let resp = match self
+            .client
+            .post(&self.graphql_url)
+            .header(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {}", token),
+            )
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+
+        if !resp.status().is_success() {
+            return false;
+        }
+
+        let envelope: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+
+        // Support both the normal GraphQL envelope { data: { user: ... } }
+        // and the (unlikely) case where we got the inner data directly.
+        let user_obj = envelope
+            .get("data")
+            .and_then(|d| d.get("user"))
+            .or_else(|| envelope.get("user"));
+
+        let groups = user_obj
+            .and_then(|u| u.get("groups"))
+            .and_then(|g| g.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        for g in groups {
+            let id = g.get("id").and_then(|v| v.as_str());
+            let display = g.get("displayName").and_then(|v| v.as_str());
+            if id == Some(group_name) || display == Some(group_name) {
+                return true;
+            }
+        }
         false
     }
 }

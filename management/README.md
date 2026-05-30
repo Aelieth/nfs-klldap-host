@@ -1,41 +1,29 @@
 # Host Management UI (Rust)
 
-`nfs-klldap-ui` — the host-side web interface (Axum + HTMX) for `nfs-klldap-host`.
+`nfs-klldap-ui` — the WebUI (Axum + HTMX) that now runs **inside** the `nfs-klldap-host` container on port 9630.
 
 It directly edits the shared `nfs-klldap.conf` (the single source of truth) and provides:
 
-- **System Settings** page — edit the central TOML (raw editor with full comment preservation + basic structured view)
-- **Share Permissions** page — real-time directory trees under your shares + live KLLDAP user/group search + recursive POSIX owner/group/mode changes performed by the container (requested via `docker exec` from the UI)
+- **System Settings** (`/settings`) — edit the central TOML
+- **Share Permissions** (`/`) — real-time directory trees + live KLLDAP search + recursive `chown`/`chmod` performed **directly** inside the container
 
 ## Building & Running
 
-Use the top-level Makefile for the recommended build story (including cross-compilation):
+The WebUI is now built into the container image and starts automatically on port **9630**.
+
+If you want to build the binary for development or testing:
 
 ```bash
 make build                 # native release
-make dist                  # cross-compiled binaries in ../dist/
-```
-
-You can still build directly:
-
-```bash
 cargo build --release --bin nfs-klldap-ui
 ```
 
-Run the UI:
-
-```bash
-./target/release/nfs-klldap-ui --config /path/to/shared/nfs-klldap.conf
-# or after `make dist`:
-# ./dist/nfs-klldap-ui-amd64 --config ...
-```
-
-The path must point at the same volume/directory the container mounts at `/config`.
+In normal use you do **not** run the binary on the host. It runs inside the container.
 
 ## Key Modules (still active)
 
 - `llap.rs` — KLLDAP GraphQL client (POSIX uidNumber/gidNumber extraction)
-- `fs.rs` — Real-time tree walking + permission application via `docker exec` into the container
+- `fs.rs` — Real-time tree walking + direct permission application inside the container
 - `config.rs` — Thin adapter over the shared `nfs-klldap-config` crate + save helpers
 - `web.rs` + templates/ — The two-page HTMX UI
 
@@ -45,9 +33,7 @@ The old `policy.rs`, `ganesha.rs`, and `exports.rs` have been removed (generatio
 
 **Never run the UI as root in production.**
 
-The management UI runs unprivileged. It asks the running NFS container (via docker exec) to perform chown/chmod on the bind-mounted export paths.
-
-The UI validates paths against the shares declared in `nfs-klldap.conf` and then asks the running container (via `docker exec`) to perform the actual `chown`/`chmod`.
+The WebUI runs inside the container as root alongside the other services. It performs `chown`/`chmod` directly on the bind-mounted paths (no `docker exec` needed in normal operation).
 
 ## Testing
 

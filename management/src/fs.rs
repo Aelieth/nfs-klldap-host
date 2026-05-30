@@ -1,19 +1,13 @@
-//! Real-time filesystem operations for the management tool.
+//! Real-time filesystem operations for the management tool (runs inside the container).
 //!
 //! All state comes from the live filesystem (no database).
 //! - Directory tree is built on demand by walking the configured base paths.
-//! - Permission changes (chown/chmod) are performed by the running container
-//!   via `docker exec $CONTAINER chown ... && chmod ...` on the bind-mounted paths.
-//!   The host tool stays unprivileged.
-//! - Recursive option is supported exactly as the user described.
-//!
-//! Security: The tool itself should run as a low-privilege user.
-//! Validation happens in the host UI; the actual mutations use the container's capabilities.
+//! - Permission changes (`chown`/`chmod`) are performed directly inside the container.
+//! - Recursive option is supported.
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone)]
 pub struct DirectoryNode {
@@ -85,10 +79,7 @@ impl FsManager {
     /// Apply owner + group + permissions to a directory (and optionally recursive).
     /// This is the core action the visual GUI will call on "save and apply".
     ///
-    /// All mutations are performed by the running container via `docker exec`
-    /// (or equivalent). The container has the bind mounts and the necessary
-    /// capabilities. The host-side management tool never needs a local
-    /// privileged binary.
+    /// All mutations are performed directly inside the container as root.
     pub fn apply_permissions(
         &self,
         path: &Path,
@@ -109,31 +100,16 @@ impl FsManager {
             return Err("Refusing mode with setuid/setgid/sticky bits".into());
         }
 
-        let container_name = self
-            .config
-            .management
-            .ganesha_container_name
-            .clone()
-            .unwrap_or_else(|| "nfs-klldap".to_string());
+        let target_path = self.host_path_to_container_path(path)?;
 
-        let container_path = self.host_path_to_container_path(path)?;
-
-        // Ask the container to perform the permission change.
-        // The UI runs `docker exec $CONTAINER chown -R ... && chmod -R ...` (when recursive).
-        self.perform_container_chown_chmod(
-            &container_name,
-            &container_path,
-            owner_uid,
-            group_gid,
-            mode,
-            recursive,
-        )?;
+        // Perform chown + chmod directly (we run inside the container as root).
+        self.apply_direct(&target_path, owner_uid, group_gid, mode, recursive)?;
 
         Ok(())
     }
 
-    /// Map a host-side path (from the UI / config shares) to the equivalent
-    /// path as seen inside the container.
+    /// Map a host_path from the config (what the user configured on the host)
+    /// to the corresponding path visible inside the container.
     fn host_path_to_container_path(&self, host_path: &Path) -> Result<PathBuf, String> {
         let root = self.config.storage.container_root.trim_end_matches('/');
 
@@ -155,45 +131,62 @@ impl FsManager {
         ))
     }
 
-    /// Ask the running container (via `docker exec`) to perform chown + chmod
-    /// on the given container-internal path. This is the mechanism the host UI
-    /// uses to change ownership/permissions on the bind-mounted export data.
-    fn perform_container_chown_chmod(
+    /// Apply chown + chmod directly using libc + std (we are root inside the container).
+    fn apply_direct(
         &self,
-        container: &str,
-        container_path: &Path,
+        path: &Path,
         uid: u32,
         gid: u32,
         mode: u32,
         recursive: bool,
     ) -> Result<(), String> {
-        let rec = if recursive { " -R" } else { "" };
-
-        // Build a single command the UI effectively runs:
-        //   docker exec $CONTAINER sh -c 'chown -R uid:gid /path && chmod -R mode /path'
-        let cmd = format!(
-            "chown{rec} {uid}:{gid} {path} && chmod{rec} {mode:o} {path}",
-            rec = rec,
-            uid = uid,
-            gid = gid,
-            mode = mode,
-            path = container_path.display()
-        );
-
-        let output = Command::new("docker")
-            .args(["exec", container, "sh", "-c", &cmd])
-            .output()
-            .map_err(|e| format!("failed to run docker exec for chown/chmod: {}", e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "docker exec chown/chmod failed inside container '{}': {}",
-                container,
-                stderr.trim()
-            ));
+        if recursive {
+            self.apply_recursive(path, uid, gid, mode)
+                .map_err(|e| format!("recursive chown/chmod failed: {}", e))?;
+        } else {
+            let res = unsafe {
+                libc::chown(
+                    path.as_os_str().as_encoded_bytes().as_ptr() as *const libc::c_char,
+                    uid,
+                    gid,
+                )
+            };
+            if res != 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            let perms = std::fs::Permissions::from_mode(mode);
+            std::fs::set_permissions(path, perms)
+                .map_err(|e| e.to_string())?;
         }
+        Ok(())
+    }
 
+    fn apply_recursive(
+        &self,
+        path: &Path,
+        uid: u32,
+        gid: u32,
+        mode: u32,
+    ) -> std::io::Result<()> {
+        let res = unsafe {
+            libc::chown(
+                path.as_os_str().as_encoded_bytes().as_ptr() as *const libc::c_char,
+                uid,
+                gid,
+            )
+        };
+        if res != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let perms = std::fs::Permissions::from_mode(mode);
+        std::fs::set_permissions(path, perms)?;
+
+        if path.is_dir() {
+            for entry in std::fs::read_dir(path)? {
+                let entry = entry?;
+                self.apply_recursive(&entry.path(), uid, gid, mode)?;
+            }
+        }
         Ok(())
     }
 

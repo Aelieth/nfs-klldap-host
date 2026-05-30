@@ -416,4 +416,96 @@ impl LldapClient {
             })
             .collect()
     }
+
+    /// Verify that a regular (non-service) LLDAP user can authenticate.
+    /// Uses the login mutation but does **not** replace our service token.
+    /// Returns Ok(()) on success. This is used by the WebUI login flow.
+    pub async fn verify_user_credentials(&mut self, username: &str, password: &str) -> Result<(), LldapError> {
+        // We intentionally do not call self.authenticate() because that would
+        // replace the service-account JWT we use for searches.
+        let query = r#"
+            mutation($username: String!, $password: String!) {
+                login(username: $username, password: $password)
+            }
+        "#;
+
+        let variables = serde_json::json!({
+            "username": username,
+            "password": password
+        });
+
+        let body = serde_json::json!({
+            "query": query,
+            "variables": variables
+        });
+
+        let response = self
+            .client
+            .post(&self.graphql_url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LldapError::Network(e.to_string()))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(LldapError::Auth(format!("login failed: {} - {}", status, text)));
+        }
+
+        let graphql_resp: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| LldapError::Parse(e.to_string()))?;
+
+        if graphql_resp.get("errors").is_some() {
+            return Err(LldapError::Auth("invalid username or password".into()));
+        }
+
+        // If we got a data.login string, success.
+        if graphql_resp["data"]["login"].is_string() {
+            Ok(())
+        } else {
+            Err(LldapError::Auth("unexpected login response".into()))
+        }
+    }
+
+    /// Returns true if the given LLDAP username is a member of the named group.
+    /// Uses the service account credentials (must be already authenticated).
+    pub async fn user_is_in_group(&mut self, username: &str, group_name: &str) -> bool {
+        // Preferred: ask for the user's groups directly.
+        let query = r#"
+            query($userId: String!) {
+                user(userId: $userId) {
+                    groups {
+                        id
+                    }
+                }
+            }
+        "#;
+
+        let variables = serde_json::json!({ "userId": username });
+
+        let data: serde_json::Value = match self.run_query(query, Some(variables)).await {
+            Ok(d) => d,
+            Err(_) => return false,
+        };
+
+        let groups = data
+            .get("user")
+            .and_then(|u| u.get("groups"))
+            .and_then(|g| g.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        for g in groups {
+            if g.get("id").and_then(|v| v.as_str()) == Some(group_name) {
+                return true;
+            }
+        }
+
+        // Fallback: some LLDAP schemas put groups under attributes or have different shape.
+        // As a last resort we can list all groups and check members, but the above is the common case.
+        false
+    }
 }

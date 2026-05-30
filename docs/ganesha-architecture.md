@@ -28,7 +28,7 @@ Host (no kernel NFS modules required anywhere)
 ├── secrets/krb5.keytab            (nfs/<hostname>@REALM, mode 600)
 └── management/ (Rust web UI)      (Axum + HTMX)
     ├── Talks to LLDAP (GraphQL) for live user/group → uid/gid
-    ├── Requests recursive chown/chmod on exported data via `docker exec` into the container
+    ├── Requests recursive chown/chmod (performed directly inside the container)
     ├── Writes native Ganesha EXPORT {} fragments
     └── Speaks directly to Ganesha via: docker exec <name> ganesha-ctl ...
 
@@ -41,18 +41,18 @@ Container (AlmaLinux 10)
 
 The management tool (host) and container work together with a **single source of truth** (`nfs-klldap.conf`):
 
-- One TOML file edited by the host `nfs-klldap-ui` (or by hand).
+- One TOML file edited by the WebUI (running inside the container) or by hand.
 - The Rust generator inside the container produces all derived configs.
 - Permission changes (chown/chmod) on exported data are performed by the container itself when requested by the host management UI.
 
-## Key Technical Choices (v0.3+)
+## Key Technical Choices (v0.5+)
 
 - **No kernel NFS** anywhere.
 - **Central `nfs-klldap.conf`** (TOML) is the *only* file users normally edit.
 - **Rust generator** (`nfs-klldap-config`) is the single place that understands the schema and produces `sssd.conf`, `krb5.conf`, and Ganesha `EXPORT` fragments.
 - **No host-side exports.d or templates bind mount** in the normal deployment model (everything is generated from the single `nfs-klldap.conf`).
 - **Self-contained reload**: container watches the config file (or reacts to SIGHUP) and regenerates + reloads Ganesha.
-- **Strong separation**: host UI never runs privileged code directly. It validates paths and then asks the container (via `docker exec`) to perform `chown`/`chmod` on the bind-mounted data using the container's capabilities.
+- The WebUI runs inside the container as root and performs `chown`/`chmod` directly on the bind-mounted data.
 
 See the root `TESTING.md` for current test coverage of `FsManager` path validation and the web handlers.
 
@@ -78,7 +78,7 @@ volumes:
   - /media/SSD-01/project-alpha:/export/project-alpha:rw
   - /media/SSD-01/backups:/export/backups:rw
 
-  # Single source of truth (shared with host-side nfs-klldap-ui)
+  # Single source of truth (edited by the in-container WebUI or by hand)
   - ./config:/config:rw
 
   - ./secrets/krb5.keytab:/etc/krb5.keytab:ro

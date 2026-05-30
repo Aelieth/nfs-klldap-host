@@ -1,13 +1,14 @@
-//! nfs-klldap-ui — Host-side management tool (Axum + HTMX).
+//! nfs-klldap-ui — In-container WebUI (Axum + HTMX).
 //!
 //! Two-page web UI for the central `nfs-klldap.conf` (the single source of truth):
 //! - System Settings (/settings): edit the TOML (raw editor + basic structured)
 //! - Share Permissions (/): browse real-time FS trees under shares and apply
-//!   POSIX owner/group/mode changes requested via the container (docker exec) + live KLLDAP lookups.
+//!   POSIX owner/group/mode changes directly + live KLLDAP lookups.
 //!
+//! This binary now runs **inside** the `nfs-klldap-host` container on port 9630.
 //! The container (using the bundled `nfs-klldap-config` binary) auto-derives
 //! sssd.conf, krb5.conf, and all Ganesha EXPORT fragments from the same file.
-//! No templates, no host-side exports.d bind mount in the normal model.
+//! No separate host-side management process is required; the WebUI runs inside the container on port 9630.
 
 mod auth;
 mod config;
@@ -22,7 +23,11 @@ use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() {
-    println!("=== nfs-klldap-ui (host management tool) — v0.23 central TOML ===\n");
+    // Install rustls crypto provider early (required when using axum-server + tls-rustls)
+    // This must happen before any TLS code runs.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    println!("=== nfs-klldap-ui (in-container WebUI) — v0.5 central TOML ===\n");
 
     // Support --config /path or NFS_KLLDAP_CONF env (the shared volume with the container)
     let mut config_path: Option<PathBuf> = std::env::var("NFS_KLLDAP_CONF").ok().map(PathBuf::from);
@@ -92,8 +97,10 @@ async fn main() {
     }
     let lldap = Arc::new(Mutex::new(lldap));
 
-    // Local sudo-capable auth manager (root or wheel/sudo users only)
-    let auth = Arc::new(crate::auth::AuthManager::new());
+    // Hybrid auth manager (localhost simple-pw sidecar + LLDAP + admin group).
+    // The sidecar lives next to the central config file.
+    let admin_group = config.management.webui_admin_group.clone();
+    let auth = Arc::new(crate::auth::AuthManager::new(&config_path, admin_group));
 
     let state = crate::web::AppState {
         fs,
@@ -105,11 +112,28 @@ async fn main() {
 
     let app = crate::web::router(state);
 
-    let addr = "127.0.0.1:3000";
-    println!("\nListening on http://{addr}");
-    println!("Open this URL for the two-page UI (System Settings + Share Permissions).");
-    println!("Point the UI at the same nfs-klldap.conf volume the container uses.");
+    // Default bind for in-container operation (accessible from host and network)
+    let addr = std::env::var("WEBUI_BIND")
+        .unwrap_or_else(|_| "0.0.0.0:9630".to_string());
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let tls_cert = std::env::var("WEBUI_TLS_CERT").ok();
+    let tls_key  = std::env::var("WEBUI_TLS_KEY").ok();
+
+    if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
+        println!("\nListening on https://{addr} (TLS enabled)");
+        println!("Certificate: {}", cert);
+
+        let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
+            .await
+            .expect("failed to load TLS certificate and key");
+
+        axum_server::bind_rustls(addr.parse().expect("invalid bind address"), config)
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+    } else {
+        println!("\nListening on http://{addr} (no TLS configured)");
+        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+        axum::serve(listener, app).await.unwrap();
+    }
 }

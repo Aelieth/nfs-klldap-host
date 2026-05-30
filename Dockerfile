@@ -54,6 +54,7 @@ RUN cargo install cargo-chef --locked
 FROM chef AS planner
 
 COPY --chown=nfs:nfs management/nfs-klldap-config /build/nfs-klldap-config
+COPY --chown=nfs:nfs management /build/management
 WORKDIR /build/nfs-klldap-config
 
 RUN cargo chef prepare --recipe-path recipe.json
@@ -69,10 +70,11 @@ WORKDIR /build/nfs-klldap-config
 # Cook dependencies (cached layer)
 RUN cargo chef cook --release --recipe-path recipe.json
 
-# Copy full source and build both binaries
+# Copy full source
 COPY --chown=nfs:nfs management/nfs-klldap-config /build/nfs-klldap-config
+COPY --chown=nfs:nfs management /build/management
 
-# Build BOTH binaries for the target architecture
+# Build binaries for the target architecture
 RUN set -eux && \
     case "$(uname -m)" in \
         x86_64)  TARGET="x86_64-unknown-linux-gnu" ;; \
@@ -80,16 +82,23 @@ RUN set -eux && \
         *)       echo "Unsupported architecture: $(uname -m)" && exit 1 ;; \
     esac && \
     echo "=== Building for target $TARGET ===" && \
-    rm -rf target && \
-    cargo build --release \
+    # Build the small container binaries
+    (cd /build/nfs-klldap-config && \
+     rm -rf target && \
+     cargo build --release \
         --bin nfs-klldap-config \
         --bin nfs-klldap-startup \
         --target "$TARGET" && \
-    cp "target/$TARGET/release/nfs-klldap-config" /output/ && \
-    cp "target/$TARGET/release/nfs-klldap-startup" /output/ && \
+     cp "target/$TARGET/release/nfs-klldap-config" /output/ && \
+     cp "target/$TARGET/release/nfs-klldap-startup" /output/) && \
+    # Build the WebUI binary (runs inside the container on port 9630)
+    (cd /build/management && \
+     rm -rf target && \
+     cargo build --release --bin nfs-klldap-ui --target "$TARGET" && \
+     cp "target/$TARGET/release/nfs-klldap-ui" /output/) && \
     echo "=== Verifying built binaries ===" && \
-    ls -l /output/nfs-klldap-config /output/nfs-klldap-startup && \
-    strip /output/nfs-klldap-config /output/nfs-klldap-startup || true
+    ls -l /output/ && \
+    strip /output/nfs-klldap-config /output/nfs-klldap-startup /output/nfs-klldap-ui || true
 
 # -----------------------------------------------------------------------------
 # Stage 4: Final runtime image (AlmaLinux 10-minimal + Ganesha + SSSD + etc.)
@@ -97,7 +106,7 @@ RUN set -eux && \
 FROM quay.io/almalinuxorg/10-minimal
 
 LABEL maintainer="Aelieth"
-LABEL description="AlmaLinux 10 NFS-Ganesha (user-space NFSv4) server with KLLDAP/SSSD POSIX UID/GID mapping. v0.23+ central TOML + bundled Rust generator."
+LABEL description="AlmaLinux 10 NFS-Ganesha (user-space NFSv4) server with KLLDAP/SSSD POSIX UID/GID mapping. v0.5+ central TOML + in-container WebUI."
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 # -----------------------------------------------------------------------------
@@ -131,19 +140,13 @@ RUN microdnf install -y --assumeyes epel-release && \
         libcap \
         ca-certificates \
         sudo \
+        hostname \
+        openssl \
     && microdnf clean all
 
 # -----------------------------------------------------------------------------
-# Service user + directories
+# Directories (runtime model is root-only for all services)
 # -----------------------------------------------------------------------------
-RUN groupadd -r keytab && \
-    useradd -r -U -s /sbin/nologin -d /nonexistent -c "nfs-klldap service user" -G keytab nfs && \
-    # Defensive: ensure sssd group exists (package usually creates it) and add the
-    # unprivileged nfs user to it. This helps with SSSD responder sockets/pipes
-    # that are often created with group sssd and tight perms.
-    groupadd -r sssd 2>/dev/null || true && \
-    usermod -aG sssd nfs 2>/dev/null || true
-
 RUN mkdir -p \
     /etc/ganesha \
     /etc/ganesha/exports.d \
@@ -152,6 +155,7 @@ RUN mkdir -p \
     /var/lib/sss \
     /var/run/ganesha \
     /var/run/sssd \
+    /var/run/webui-certs \
     /container/scripts \
     /output
 
@@ -161,7 +165,8 @@ RUN mkdir -p \
 COPY --from=builder /output/ /output/
 RUN cp /output/nfs-klldap-config /usr/local/bin/ && \
     cp /output/nfs-klldap-startup /usr/local/bin/ && \
-    chmod +x /usr/local/bin/nfs-klldap-config /usr/local/bin/nfs-klldap-startup && \
+    cp /output/nfs-klldap-ui /usr/local/bin/ && \
+    chmod +x /usr/local/bin/nfs-klldap-config /usr/local/bin/nfs-klldap-startup /usr/local/bin/nfs-klldap-ui && \
     rm -rf /output && \
     echo "=== Installed Rust binaries ===" && \
     ls -l /usr/local/bin/nfs-klldap-*
@@ -171,54 +176,20 @@ RUN cp /output/nfs-klldap-config /usr/local/bin/ && \
 # -----------------------------------------------------------------------------
 COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl
 COPY container/scripts/nfs-klldap-conf-watcher /usr/local/bin/nfs-klldap-conf-watcher
+COPY container/scripts/webui-certs /usr/local/bin/webui-certs
 COPY container/healthcheck.sh /container/healthcheck.sh
-COPY container/sudoers.d/nfs /container/sudoers.d/nfs.example
-RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /container/healthcheck.sh && \
-    chmod 644 /container/sudoers.d/nfs.example || true
+RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /usr/local/bin/webui-certs /container/healthcheck.sh
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # -----------------------------------------------------------------------------
-# gosu for privilege dropping
+# Permissions (standard root model - no gosu, no dedicated nfs user)
 # -----------------------------------------------------------------------------
-ENV GOSU_VERSION=1.17
-RUN arch="$(uname -m)" && \
-    case "${arch}" in \
-        x86_64)  gosuArch='amd64' ;; \
-        aarch64) gosuArch='arm64' ;; \
-        *)       echo >&2 "error: unsupported architecture: '${arch}'"; exit 1 ;; \
-    esac && \
-    curl -fsSL -o /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/${GOSU_VERSION}/gosu-${gosuArch}" && \
-    chmod +x /usr/local/bin/gosu && \
-    gosu --version
-
-# -----------------------------------------------------------------------------
-# Permissions + capabilities
-# -----------------------------------------------------------------------------
-RUN chown -R nfs:nfs \
-        /var/log/ganesha \
-        /var/lib/sss \
-        /var/run/ganesha \
-        /var/run/sssd \
-        /etc/ganesha \
-        /etc/ganesha/exports.d \
-        /container \
-        /container/sudoers.d && \
-    # /etc/sssd is primarily managed as root:root 0600 for the main config
-    # (SSSD's access_check_file is strict about owner == 0). The generator
-    # (run as root via supervisor) will create the file with correct ownership.
-    # We still ensure the directory exists and is traversable.
-    chown root:root /etc/sssd && \
+RUN chown root:root /etc/sssd && \
     chmod 755 /etc/sssd && \
-    # ganesha exports fragments are written by the (root) generator or watcher
-    # path; make the directory writable by the nfs user so either path works
-    # and ganesha (running as nfs) can read them.
-    chown -R nfs:nfs /etc/ganesha/exports.d && \
     chmod 775 /etc/ganesha/exports.d && \
-    chmod 755 /container /container/scripts && \
-    chmod 755 /container/sudoers.d || true && \
-    setcap cap_net_bind_service+ep /usr/bin/ganesha.nfsd 2>/dev/null || true
+    chmod 755 /container /container/scripts
 
 # -----------------------------------------------------------------------------
 # Healthcheck & runtime
@@ -228,5 +199,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=25s --retries=3 \
 
 EXPOSE 2049/tcp 2049/udp 111/tcp 111/udp
 
-# Run as root so entrypoint can do setup, then drop to nfs user via gosu
+# Run as root (all services, including the WebUI on 9630, run as root per Red Hat conventions)
 ENTRYPOINT ["/entrypoint.sh"]

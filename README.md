@@ -10,12 +10,12 @@ Designed for hosts that cannot (or do not want to) run the kernel NFS stack.
 
 Plug this container into any Linux host (even one without kernel NFS modules) and it becomes a fully functional, authoritative Kerberized NFSv4 server.
 
-**The architecture (v0.3)** uses a single source of truth:
+**The architecture (v0.5)** uses a single source of truth:
 
 - One `nfs-klldap.conf` (TOML) file
 - A small, type-safe Rust binary (`nfs-klldap-config`) bundled in the container that auto-derives and generates everything else
-- Host-side management UI that edits the shared config volume directly
-- Container performs chown/chmod on exported data when requested by the UI via `docker exec`
+- WebUI that runs **inside** the container on port 9630 (HTTPS, self-signed or user-provided certs) and edits the shared config volume directly
+- WebUI performs chown/chmod **directly** on bind-mounted paths (no docker-exec, no host helper)
 
 This gives you **maximum simplicity with full power** — minimal volumes, no templates, no DBUS, no kernel NFS on the host, and automatic reloads when you change the config.
 
@@ -25,9 +25,9 @@ This gives you **maximum simplicity with full power** — minimal volumes, no te
 
 - Deliver a complete Kerberized NFSv4 service from inside a container with almost zero host configuration
 - Use KLLDAP (LLDAP + Kerberos in one) as the single source of truth for both POSIX attributes and Kerberos
-- Make share and permission management visual and trivial through a host-side web UI
+- Make share and permission management visual and trivial through the in-container WebUI
 - Support per-share security settings (`krb5p` / `krb5i`) and complex multi-share environments
-- Keep the container itself unprivileged (using targeted capabilities) while still allowing the host UI to request chown/chmod on exported data via `docker exec`
+- Run all services as root inside the container (matching Red Hat expectations for sssd/kerberos). The WebUI (also root) performs direct chown/chmod on bind-mounted data using libc.
 - Enable future one-command deployment from a KLLDAP server
 
 ---
@@ -42,7 +42,7 @@ This system is built around **one simple idea**:
 ### Why This Design?
 
 - **Simplicity**: No templates, no multiple config files, no manual sssd.conf editing.
-- **Safety**: The container stays unprivileged. Permission changes (`chown`/`chmod`) are requested by the host web UI and executed inside the container via `docker exec`.
+- **Safety**: The container runs as root (standard for the appliance). Permission changes (`chown`/`chmod`) are performed directly by the in-container WebUI on the bind-mounted paths.
 - **Correctness**: `host_path` (real location on your host) is separated from the container path Ganesha actually serves. This allows the web UI to manage real host permissions while Ganesha only sees bind-mounted paths.
 - **Flexibility**: You control bind mounts. The config just tells the system *where* the data lives on the host.
 
@@ -54,7 +54,7 @@ This system is built around **one simple idea**:
    - `/etc/krb5.conf`
    - Ganesha export fragments
 3. **Ganesha + SSSD** automatically reload
-4. **Web UI** (on the host) can request `chown`/`chmod` on the real `host_path` directories via the container's privileged helper
+4. **Web UI** (inside the container on 9630) performs `chown`/`chmod` directly on the bind-mounted `host_path` directories (root inside the container)
 
 ### Key Concepts
 
@@ -65,7 +65,7 @@ This system is built around **one simple idea**:
 | `export_path`    | Path NFS clients see (defaults to `/<name>`)                               | NFS clients + Ganesha        |
 | `container_root` | Base inside container (default `/export`)                                  | Ganesha only                 |
 
-This separation is what allows powerful host-side management while keeping the container simple and secure.
+This design keeps powerful management capabilities while the container remains a self-contained appliance.
 
 ---
 
@@ -74,10 +74,10 @@ This separation is what allows powerful host-side management while keeping the c
 A `Makefile` provides the complete build story for both host tools and container images.
 
 ```bash
-# Native release build of the host management UI
+# Native release build (the WebUI binary that ends up inside the container image)
 make build
 
-# Cross-compile host tools for amd64 + arm64 (produces binaries in dist/)
+# Cross-compile for amd64 + arm64 (the resulting binaries are only used for the container image)
 make dist
 
 # Build the container image locally
@@ -91,7 +91,7 @@ See `make help` for all targets.
 
 
 
-See [management/examples/sudoers.example](management/examples/sudoers.example) for recommended sudoers configuration.
+(The old host-side sudo model and sudoers.d fragments have been removed in v0.5 — everything runs as root inside the container.)
 
 See [TESTING.md](TESTING.md) and the root `Makefile` for details.
 
@@ -115,13 +115,51 @@ docker run -d \
 
 **First run** automatically generates a safe, heavily-commented `nfs-klldap.conf` for you to customize.
 
-See [docs/run/README.md](docs/run/README.md) for practical examples (including the non-root `nfs` user, required capabilities, realm enforcement, and docker-compose patterns).
+See [docs/run/README.md](docs/run/README.md) for practical examples (root execution model, required capabilities, port 9630 WebUI access, realm enforcement, and docker-compose patterns).
 
 ---
 
 **Two pages:**
 - **System Settings** (`/settings`) — edit the central TOML (raw editor + structured form)
-- **Share Permissions** (`/`) — real-time filesystem tree browser + live KLLDAP user/group search + recursive `chown`/`chmod` performed by the container (via `docker exec` from the UI)
+- **Share Permissions** (`/`) — real-time filesystem tree browser + live KLLDAP user/group search + recursive `chown`/`chmod` performed directly inside the container
+
+---
+
+## Accessing the Management WebUI
+
+The WebUI runs **inside** the container (it is no longer a separate host-side process).
+
+### How It Starts
+The container's `entrypoint.sh` automatically starts the WebUI after the configuration has been generated and validated. It is launched alongside SSSD and Ganesha.
+
+### Port and Access
+- **Port**: `9630` (HTTPS)
+- From the Docker host: `https://localhost:9630`
+- From other machines on the same network: `https://<hostname-or-ip>:9630`
+
+You must publish the port when starting the container:
+
+```bash
+-p 9630:9630
+```
+
+Or in docker-compose:
+
+```yaml
+ports:
+  - "9630:9630"
+```
+
+### TLS / Certificates
+- By default, the container generates a self-signed certificate at startup (valid for 10 years).
+- To use your own certificate, place the files in the **same directory** as `nfs-klldap.conf`:
+  - `webui.crt` + `webui.key`, **or**
+  - `tls.crt` + `tls.key`
+
+The certificate helper script (`webui-certs`) runs early in the entrypoint and makes the chosen certificate available to the WebUI.
+
+### Authentication
+See the [docs/run/README.md](docs/run/README.md) section on the WebUI for current login options (local `localhost` password or LLDAP accounts).
 
 ---
 
@@ -209,7 +247,7 @@ nfs-klldap-host/
 │   ├── nfs-klldap-config/             # Bundled in container:
 │   │   ├── src/bin/nfs_klldap_startup.rs  # Guided first-run TUI + diagnostics
 │   │   └── src/lib.rs                     # TOML loader + generator + derivation helpers
-│   └── src/                           # Host UI (Axum + HTMX)
+│   └── src/                           # WebUI (Axum + HTMX) — runs inside the container on port 9630
 ├── nfs-klldap.conf                    # Single source of truth (user-editable TOML)
 └── README.md
 ```
@@ -224,7 +262,7 @@ nfs-klldap-host/
 ## Important Notes
 
 - Host filesystem numeric ownership must match the `uidNumber`/`gidNumber` values in KLLDAP for users and groups that should own the data.
-- The management UI exists precisely to make keeping permissions in sync easy and visual.
+- The in-container WebUI (https://<host>:9630) exists precisely to make keeping permissions in sync easy and visual.
 - The container hostname should match the instance part of the NFS principal in your keytab.
 
 ---

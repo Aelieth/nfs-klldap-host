@@ -1,6 +1,6 @@
 [package]
 name = "nfs-klldap-config"
-version = "0.23.0"
+version = "0.5.0"
 edition = "2021"
 description = "Tiny type-safe TOML config loader + generator for nfs-klldap-host (bundled in container)"
 license = "MIT OR Apache-2.0"

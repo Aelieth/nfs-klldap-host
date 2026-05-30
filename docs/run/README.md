@@ -1,6 +1,6 @@
 # Running nfs-klldap-host (Practical Examples)
 
-This document focuses on day-to-day container invocation after the v0.3+ central TOML changes, including the non-root hardening (the `nfs` user).
+This document focuses on day-to-day container invocation after the v0.5 central TOML + in-container WebUI changes. The container runs all services (including the WebUI on port 9630) as root for simplicity and compatibility with Red Hat service expectations.
 
 ## Quick Start (docker run)
 
@@ -64,7 +64,7 @@ services:
     uts: host
 
     # Do NOT set "user: nfs" here — the entrypoint needs root for setup and will
-    # use gosu to drop to the unprivileged user for the actual daemons.
+    # The container runs services as root (standard model).
     # cap_add, volumes, etc. as before
 
     # hostname: myhost-nfs   # Only set if you want the container to use a different name
@@ -95,27 +95,22 @@ If you want the container to present a completely different hostname, simply pas
 
 Using both at the same time will attempt to change the hostname in the shared UTS namespace, which affects the Docker host itself. Only do this if you really intend to change the host's hostname. In normal use, prefer `--uts=host` by itself (no `--hostname` flag) and let the TUI tell you the correct principal to put in the keytab.
 
-## Privilege Model (Root for Setup + SSSD, Unprivileged for Ganesha + Watcher)
+## Execution Model (All Services as Root)
 
-The container uses a carefully tuned split-privilege model:
+The container runs **all services as root** inside the container (SSSD, Ganesha, config watcher, and the WebUI on port 9630). This matches upstream Red Hat package expectations for sssd and Kerberos components and eliminates the fragile permission workarounds required by the previous non-root attempt.
 
-- The entrypoint shell runs as **root** and stays as pid 1 for the life of the container. This is required so it can:
-  - Run the Rust generator (which must produce `/etc/sssd/sssd.conf` as **root:root 0600** — SSSD's `access_check_file()` strictly enforces this and rejects any other owner, even 0600 files owned by another user).
-  - Start **sssd** itself as root (standard for SSSD; it creates responder pipes/sockets with tight permissions).
-  - Handle SIGHUP for privileged regeneration + daemon restarts.
-  - Perform the post-start fixups that let the unprivileged user talk to SSSD's NSS responder.
+- The entrypoint shell runs as **root** and stays as pid 1. This is required to:
+  - Run the Rust generator (must produce `/etc/sssd/sssd.conf` as **root:root 0600** — SSSD's `access_check_file()` strictly enforces this).
+  - Start **sssd** (and all other daemons) as root.
+  - Handle SIGHUP for privileged regeneration and orchestrated restarts.
 
-- **ganesha.nfsd** and the **config watcher** run as the unprivileged `nfs` user (via `gosu`). This is the important security boundary for VFS access to user data and for the inotify watcher.
+- No gosu, no dedicated `nfs` service user, and no post-start pipe permission hacks are needed (all services run as root).
 
-- After sssd starts we explicitly relax the permissions on its responder pipes (`/var/lib/sss/pipes`) so that `getent`/`id` and Ganesha (running as `nfs`) can still perform UID/GID mapping via the NSS module.
-
-You should generally **not** pass `--user nfs` (or `user: "nfs"` in compose) — doing so would prevent the root supervisor from doing the required privileged steps (especially writing a root-owned sssd.conf).
-
-If you need a fully unprivileged container for some other reason, the only viable path is to start the whole thing as root (`--user root`) and accept that sssd + generator run privileged (still the safest practical choice for this workload).
+You should **not** pass `--user` (or `user:` in compose) unless you have a very specific reason; doing so would prevent the root supervisor from performing required privileged steps.
 
 ### Recommended capabilities
 
-Even though the daemons run as the `nfs` user, the following capabilities are still very useful (and recommended) at the `docker run` / compose level:
+The following capabilities remain useful at the `docker run` / compose level for VFS operations and the WebUI's direct `chown`/`chmod` on bind-mounted data:
 
 ```yaml
 # docker-compose excerpt
@@ -143,66 +138,38 @@ sudo chmod g+r /path/to/your/krb5.keytab
 
 The entrypoint (and Rust diagnostics) print exact remediation commands. After the root-owned generate step the entrypoint now does an automatic `chown nfs:nfs + chmod 600` on `sssd.conf` (the main historical source of "Permission denied" at SSSD start when running daemons as the unprivileged user).
 
-### Alternative (largely superseded): Narrow sudoers inside the image
+### Keytab handling (now simple)
 
-> **Note:** With the current design (entrypoint runs as root and uses `gosu` to drop to the `nfs` user for daemons), the need for an internal sudoers fragment is greatly reduced. The section below is kept for historical/compatibility reasons.
+With all services running as root inside the container, a standard root-owned 0600 keytab mounted at `/etc/krb5.keytab:ro` (with `:Z` recommended on SELinux hosts) is directly usable by Ganesha. No special group membership or host-side `chgrp` steps are required.
 
-Some environments or older Ganesha VFS behavior work more reliably when the daemons themselves run with real uid 0. For these cases we provide a **very narrow, auditable sudoers fragment**:
+The legacy `./scripts/fix-keytab-perms.sh` is deprecated.
 
-- Location in the repo: `container/sudoers.d/nfs`
-- It only allows the `nfs` user to:
-  - Start `ganesha.nfsd` and `sssd` with the exact argument lists the entrypoint uses.
-  - Send the precise `pkill -TERM/-HUP` signals the supervisor and watcher send.
-  - Perform a one-time safe copy of the keytab into `/tmp` (so a root-only RO mount still works).
+## Management WebUI (Port 9630)
 
-To use this mode:
+The WebUI runs inside the container and starts automatically from `entrypoint.sh`.
 
-1. In a derived Dockerfile or via a sidecar init container:
-   ```dockerfile
-   RUN dnf install -y sudo
-   COPY container/sudoers.d/nfs /etc/sudoers.d/nfs
-   RUN chmod 440 /etc/sudoers.d/nfs && chown root:root /etc/sudoers.d/nfs
-   ```
-2. Modify (or extend) the entrypoint to prefix daemon starts and the targeted pkills with `sudo -n --` when not already root.
+- **Port**: 9630 (HTTPS)
+- **How it starts**: `entrypoint.sh` runs the `webui-certs` helper early, then launches `nfs-klldap-ui`.
+- **TLS**:
+  - A self-signed certificate is generated at container startup by default.
+  - Provide your own by placing `webui.crt` + `webui.key` (or `tls.crt` + `tls.key`) in the same directory as `nfs-klldap.conf`.
+- **Access**:
+  - From the Docker host: `https://localhost:9630`
+  - From the network: `https://<host>:9630` (after publishing the port with `-p 9630:9630`)
 
-This pattern is deliberately "one unprivileged supervisor + five extremely specific sudo rules."
+See the root [README.md](../README.md) for the recommended access section.
 
-### Keytab handling (the #1 non-root gotcha)
+## Volume Permissions (config + data)
 
-The image now:
-- Creates a `keytab` system group and adds the `nfs` user to it.
-- Runs an early `check_runtime_permissions()` that prints the exact host-side `chgrp` + `chmod` (or `group_add`) command if `/etc/krb5.keytab` is present but unreadable.
-
-For even less friction, use the helper script:
-
-```bash
-./scripts/fix-keytab-perms.sh /path/on/host/to/krb5.keytab
-```
-
-It automatically detects the correct GID from the image and applies the right permissions on the host file.
-
-You should almost never have to debug "Kerberos not working" blindly anymore.
-
-### Running the entire container as root
-
-You can still force the whole container (including entrypoint) to run as root with `--user root` (or `user: "root"` in compose). This is occasionally useful for debugging permission issues or in very restrictive environments where even the gosu drop causes problems. It is not the recommended default.
-
-## Host-Side Volume Permissions (config + data)
-
-The `nfs` user inside the container is a high system UID/GID created at image build time. For volumes the container must write to:
-
-- The shared config dir (`/config`) must be writable by the container user (or a shared group).
-- The data exports (`/export/*`) are a different concern: their numeric owners must match the `uidNumber`/`gidNumber` values stored in LLDAP for the users/groups that should own the files over NFS. This is independent of the container runtime user.
-
-The new proactive permission checks in the entrypoint will loudly tell you (with exact commands) if a critical directory is not writable.
+Because the container runs as root, `/config` and runtime directories are straightforward to write to from inside. For exported data, the numeric `uidNumber`/`gidNumber` on the host must match LLDAP (independent of the container user). The in-container WebUI performs `chown`/`chmod` directly.
 
 ## Healthcheck and Watcher Behavior
 
-The healthcheck (`/container/healthcheck.sh`) and the config watcher (`nfs-klldap-conf-watcher`) continue to function under the non-root user. The watcher PID is now correctly tracked for clean shutdown (see entrypoint.sh).
+Both continue to function normally (now under the root model).
 
 ## Troubleshooting Permission Issues at Startup
 
-The entrypoint (running as root) runs `check_runtime_permissions()` very early and prints prominent, copy-pasteable remediation for common problems (keytab readability and unwritable runtime directories). The actual daemons then run as the `nfs` user via `gosu`.
+The Rust diagnostics (`nfs-klldap-startup`) and entrypoint print remediation early.
 
 ```bash
 # Watch the startup logs — the diagnostics are emitted here before daemons start
@@ -226,7 +193,7 @@ docker run ... --user root ...
 # or in compose: user: "root"
 ```
 
-This disables the normal `gosu` privilege drop for the daemons.
+This is the normal and recommended mode (no gosu drops are performed).
 
 ## Related Hardening Items (Already Applied)
 

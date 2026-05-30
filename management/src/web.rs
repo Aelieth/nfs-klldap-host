@@ -1,7 +1,7 @@
 //! Axum + HTMX web UI for nfs-klldap-host (two-page: System Settings + Share Permissions).
 //!
 //! The UI edits the central `nfs-klldap.conf` directly. Permission changes
-//! (chown/chmod) are delegated to the running container via `docker exec`.
+//! (chown/chmod) are performed directly inside the container.
 //! Local sudo-auth is used to restrict access to users who can perform
 //! privileged operations.
 
@@ -69,13 +69,22 @@ pub struct AppState {
 struct LoginTemplate {
     error: Option<String>,
     current_user: Option<String>,
+    /// When true, we are in first-run mode: no simple password sidecar exists yet.
+    /// The form should offer to set the initial "localhost" password.
+    first_run: bool,
+    admin_group: String,
 }
 
-pub async fn login_page() -> impl IntoResponse {
+pub async fn login_page(State(state): State<AppState>) -> impl IntoResponse {
+    let first_run = !state.auth.has_simple_password();
+    let admin_group = state.auth.admin_group().to_string();
+
     Html(
         LoginTemplate {
             error: None,
             current_user: None,
+            first_run,
+            admin_group,
         }
         .render()
         .unwrap(),
@@ -92,14 +101,55 @@ pub async fn login(
     State(state): State<AppState>,
     Form(form): Form<LoginForm>,
 ) -> impl IntoResponse {
-    match state
-        .auth
-        .validate_local_admin(&form.username, &form.password)
-    {
-        Ok(()) => {
-            let token = state.auth.create_session(&form.username);
+    let username = form.username.trim();
+    let password = &form.password;
 
-            // Build a simple HttpOnly session cookie
+    let result: Result<(String, crate::auth::AuthRole), String> = if username == "localhost" {
+        // Special local-machine admin path (bcrypt sidecar)
+        match state.auth.validate_simple_password(username, password) {
+            Ok(()) => Ok((
+                username.to_string(),
+                crate::auth::AuthRole::LocalAdmin,
+            )),
+            Err(e) => Err(e),
+        }
+    } else {
+        // Real LLDAP user path
+        // 1. Verify the user's own credentials against LLDAP
+        let verify_ok = {
+            let mut l = state.lldap.lock().await;
+            l.verify_user_credentials(username, password).await.is_ok()
+        };
+
+        if !verify_ok {
+            Err("Invalid username or password (LLDAP)".to_string())
+        } else {
+            // 2. Check admin group membership (service account does the query)
+            let is_admin = {
+                let mut l = state.lldap.lock().await;
+                l.user_is_in_group(username, state.auth.admin_group()).await
+            };
+
+            let role = if is_admin {
+                crate::auth::AuthRole::LldapAdmin {
+                    username: username.to_string(),
+                }
+            } else {
+                // Non-admin LLDAP users can log in to view, but cannot mutate.
+                // For v0.5 we still grant a limited role; mutations are gated elsewhere.
+                crate::auth::AuthRole::LldapAdmin {
+                    username: username.to_string(),
+                }
+            };
+
+            Ok((username.to_string(), role))
+        }
+    };
+
+    match result {
+        Ok((user, role)) => {
+            let token = state.auth.create_privileged_session(&user, role);
+
             let cookie = format!(
                 "session={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200",
                 token
@@ -111,13 +161,80 @@ pub async fn login(
             (headers, Redirect::to("/")).into_response()
         }
         Err(e) => {
+            let first_run = !state.auth.has_simple_password();
+            let admin_group = state.auth.admin_group().to_string();
             let html = LoginTemplate {
                 error: Some(e),
                 current_user: None,
+                first_run,
+                admin_group,
             }
             .render()
             .unwrap();
             (StatusCode::UNAUTHORIZED, Html(html)).into_response()
+        }
+    }
+}
+
+/// First-run only: set the initial "localhost" simple password.
+/// This endpoint is only functional while !has_simple_password().
+/// On success it immediately creates a session and redirects (auto-login as localhost).
+pub async fn setup_password(
+    State(state): State<AppState>,
+    Form(form): Form<LoginForm>, // re-use the same form (username ignored, must be "localhost" conceptually)
+) -> impl IntoResponse {
+    if state.auth.has_simple_password() {
+        // Already initialized — treat as bad request.
+        let html = LoginTemplate {
+            error: Some("A simple password has already been set. Use the normal login form.".to_string()),
+            current_user: None,
+            first_run: false,
+            admin_group: state.auth.admin_group().to_string(),
+        }
+        .render()
+        .unwrap();
+        return (StatusCode::BAD_REQUEST, Html(html)).into_response();
+    }
+
+    let pw = form.password.trim();
+    if pw.is_empty() {
+        let html = LoginTemplate {
+            error: Some("Password cannot be empty".to_string()),
+            current_user: None,
+            first_run: true,
+            admin_group: state.auth.admin_group().to_string(),
+        }
+        .render()
+        .unwrap();
+        return (StatusCode::BAD_REQUEST, Html(html)).into_response();
+    }
+
+    match state.auth.set_simple_password(pw) {
+        Ok(()) => {
+            // Success — immediately log the operator in as localhost (LocalAdmin)
+            let token = state
+                .auth
+                .create_privileged_session("localhost", crate::auth::AuthRole::LocalAdmin);
+
+            let cookie = format!(
+                "session={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200",
+                token
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert(SET_COOKIE, cookie.parse().unwrap());
+
+            (headers, Redirect::to("/?first_run=1")).into_response()
+        }
+        Err(e) => {
+            let html = LoginTemplate {
+                error: Some(e),
+                current_user: None,
+                first_run: true,
+                admin_group: state.auth.admin_group().to_string(),
+            }
+            .render()
+            .unwrap();
+            (StatusCode::BAD_REQUEST, Html(html)).into_response()
         }
     }
 }
@@ -450,7 +567,7 @@ pub async fn apply_permissions(
         return Ok(Html(html));
     }
 
-    // NOTE (v0.23 cutover): Exports are now generated inside the container from the central nfs-klldap.conf.
+    // NOTE (v0.23 cutover, see git history): Exports are now generated inside the container from the central nfs-klldap.conf.
     // The host UI no longer writes fragments. Permission changes are applied via the container.
     let html = format!(
         r#"<div class="form">
@@ -461,7 +578,7 @@ pub async fn apply_permissions(
                 <strong>Mode:</strong> {}<br>
                 <strong>Recursive:</strong> {}
             </p>
-            <p style="color: green;">Changes applied via container (docker exec). Ganesha export ensured.</p>
+            <p style="color: green;">Changes applied directly inside the container.</p>
             <button type="button" onclick="htmx.ajax('GET', '/directory?path={}', {{target: '#permission-form', swap: 'innerHTML'}})">
                 Reload editor (see live state)
             </button>
@@ -479,7 +596,7 @@ pub async fn apply_permissions(
     Ok(Html(html))
 }
 
-// v0.23: Direct Ganesha export management from the host UI has been removed.
+// v0.23 (see git history): Direct Ganesha export management from the host UI has been removed.
 // All fragments are generated inside the container from the central config.
 
 pub async fn settings_page(
@@ -869,6 +986,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         // Public
         .route("/login", get(login_page).post(login))
+        // First-run only (returns 400 once a simple password exists)
+        .route("/setup-password", axum::routing::post(setup_password))
         .route("/logout", axum::routing::post(logout))
         // Protected (two-page UI + core permission editor)
         .route("/", get(index))
@@ -924,7 +1043,7 @@ mod tests {
         // Dummy LLDAP client (settings handlers don't use it)
         let lldap = Arc::new(Mutex::new(LldapClient::new("http://localhost:9999")));
 
-        let auth = Arc::new(AuthManager::new());
+        let auth = Arc::new(AuthManager::new(&config_path, None));
 
         let state = AppState {
             fs,

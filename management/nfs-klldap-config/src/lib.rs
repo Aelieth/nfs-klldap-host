@@ -1,4 +1,4 @@
-//! nfs-klldap-config — Tiny, type-safe TOML loader + generator for nfs-klldap-host (v0.23+).
+//! nfs-klldap-config — Tiny, type-safe TOML loader + generator for nfs-klldap-host (v0.5+).
 //!
 //! This crate is the *only* place that understands nfs-klldap.conf.
 //! It is bundled as a small static-friendly binary inside the container.
@@ -170,6 +170,9 @@ pub struct ManagementSection {
     pub helper_path: Option<PathBuf>,
     pub use_sudo: Option<bool>,
     pub ganesha_container_name: Option<String>,
+    /// Group whose members (plus the special "localhost" simple-password user) are allowed
+    /// to make changes via the WebUI. Defaults to "lldap_admin".
+    pub webui_admin_group: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -472,7 +475,7 @@ impl NfsKlldapConfig {
         )
     }
 
-    /// Returns the list of host-side paths declared in shares (used by host UI for validation before asking the container to perform chown/chmod).
+    /// Returns the list of host_path values declared in shares (used for validation before performing direct chown/chmod inside the container).
     pub fn host_paths(&self) -> Vec<PathBuf> {
         self.shares.iter().map(|s| s.host_path.clone()).collect()
     }
@@ -624,9 +627,11 @@ ldap_default_authtok = "CHANGE_THIS_TO_A_STRONG_SECRET"
 default_security = "krb5p"   # krb5p (recommended) | krb5i | krb5
 
 [management]
-# Host-side UI settings (change only if needed)
+# WebUI settings (in-container on port 9630)
 # lldap_graphql_url = "https://kllap.example.com:6360/api/graphql"
-# ganesha_container_name = "nfs-klldap"   # used when the UI asks the container to perform chown/chmod on exported data
+# ganesha_container_name = "nfs-klldap"   # (legacy, no longer used — WebUI performs FS ops directly)
+# webui_admin_group = "lldap_admin"       # LLDAP group whose members can modify shares/settings from any machine
+#                                         # (plus the special immutable "localhost" user via simple sidecar password)
 
 # =============================================================================
 # Shares — add as many as you need. Names must be unique.

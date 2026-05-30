@@ -24,36 +24,18 @@ services:
     # You can also publish ports explicitly if you prefer.
     network_mode: host
 
-    # Ganesha (VFS FSAL) + SSSD + port 2049 binding.
-    # These are the *minimal* recommended capabilities for smooth non-root operation
-    # (the container defaults to the unprivileged "nfs" user).
-    # SYS_ADMIN is still broad; if your runtime allows dropping it while keeping
-    # the others, test carefully — many VFS FSAL operations need it today.
-    # Minimal capabilities needed for the container to:
-    # - run Ganesha VFS + bind to port 2049
-    # - perform chown/chmod on the bind-mounted export data (requested by the host UI)
+    # Ganesha + SSSD + in-container WebUI (port 9630).
+    # These capabilities support VFS and direct chown/chmod from the WebUI.
     cap_add:
       - CHOWN
       - FOWNER
       - DAC_OVERRIDE
-      - DAC_READ_SEARCH     # frequently needed by Ganesha VFS FSAL
-      - NET_BIND_SERVICE    # for 2049
-      # - SYS_RESOURCE      # sometimes helpful for large numbers of exports
+      - DAC_READ_SEARCH
+      - NET_BIND_SERVICE
 
-    # Optional but recommended for some environments:
-    # privileged: true
-
-    # Recommended: share the Docker host's UTS namespace so the container
-    # sees the real hostname of the machine (e.g. myhost.example.com).
-    # The TUI will then tell you the exact principal to put in the keytab
-    # using the -nfs insertion (myhost-nfs.example.com).
     uts: host
 
-    # hostname: myhost-nfs   # Only set if you want the container to use a different name (bypasses the inherited hostname)
-
-    # Do not set "user: nfs" at the service level. The entrypoint runs as root
-    # to perform setup (config generation, etc.) and then uses gosu to drop to
-    # the unprivileged nfs user for sssd / ganesha / watcher.
+    # No "user:" override — root execution is the model.
 
     volumes:
       # ---------------------------------------------------------------------
@@ -65,7 +47,7 @@ services:
 
       # ---------------------------------------------------------------------
       # The single source of truth (shared with the host UI)
-      # The host-side `nfs-klldap-ui` edits this file directly.
+      # The in-container WebUI (on port 9630) edits this file directly.
       # The container's Rust generator watches it (or reacts to SIGHUP) and
       # regenerates sssd.conf / krb5.conf / Ganesha fragments.
       # ---------------------------------------------------------------------
@@ -82,7 +64,7 @@ services:
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 
       # No templates/ or ganesha-exports.d bind mounts are needed in the
-      # standard v0.23+ flow — everything is derived from nfs-klldap.conf.
+      # v0.5+ flow — everything is derived from nfs-klldap.conf.
 
     environment:
       # No mandatory variables. Everything is driven by templates + files.
@@ -102,25 +84,19 @@ services:
     # It verifies: ganesha.nfsd process + listening on 2049 + basic responsiveness.
 
 # =============================================================================
-# Notes for the host-side tools
+# Notes
 #
-# Build everything with the top-level Makefile:
+# Build with:
+#     make build
+#     make docker-multi
 #
-#     make build                 # native
-#     make dist                  # cross-compiled amd64 + arm64 binaries in ./dist/
-#     make docker-multi          # multi-platform container image
+# The WebUI now runs **inside** the container on port 9630 (HTTPS by default).
+# Access it at https://your-host:9630
 #
-# Then run the UI from the host:
-#     ./dist/nfs-klldap-ui-amd64 --config ./config/nfs-klldap.conf     # (or the arm64 variant)
+# It has two pages:
+#     /settings → edit nfs-klldap.conf
+#     /         → Share Permissions (direct chown/chmod + live LLDAP)
 #
-# The UI has two pages:
-#     /settings   → edit the central TOML (raw editor recommended for comments)
-#     /           → Share Permissions (tree browser + live KLLDAP + helper for chown/chmod)
-#
-# After editing shares or settings in the UI, the container will pick up the
-# change (via its config watcher or `docker kill -s HUP <container>`).
-#
-# The host-side management UI asks the running container (via docker exec) to
-# perform any required chown/chmod operations on the bind-mounted data.
-# No host-side privileged helper binary is required. The container performs chown/chmod.
+# The container's watcher automatically picks up config changes.
 # =============================================================================
+

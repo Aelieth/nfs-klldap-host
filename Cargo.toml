@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "management",
+    "management/nfs-klldap-config",
+]
+resolver = "2"
+
+# =============================================================================
+# nfs-klldap-host Cargo Workspace
+# =============================================================================
+#
+# This root workspace exists purely for build hygiene and developer experience.
+#
+# Why two crates under management/?
+#   - management/          → The main WebUI binary (nfs-klldap-ui) that runs
+#                            inside the container on port 9630 (HTTPS).
+#                            Depends on nfs-klldap-config for TOML handling.
+#   - management/nfs-klldap-config/
+#                          → Tiny, no-std-ish library + two binaries:
+#                            * nfs-klldap-config   (the generator used by entrypoint)
+#                            * nfs-klldap-startup  (guided first-run + diagnostics)
+#
+# Historical note: the "management" directory name and its Cargo package name
+# are retained for minimal diff while we completed the in-container WebUI
+# refactor (v0.5). The root workspace now makes the following work from the
+# repository root exactly as documented in the Makefile:
+#
+#     make test
+#     make clippy
+#
+# Both commands (and their `cargo ... --workspace` equivalents) now succeed.
+#
+# There is intentionally no [package] at the root — this is a pure workspace
+# definition. All actual packages live in their subdirectories.
+# =============================================================================

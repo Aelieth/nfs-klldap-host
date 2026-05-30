@@ -14,7 +14,7 @@
 #   ./scripts/fix-keytab-perms.sh /path/to/your/krb5.keytab
 #
 # Or with a custom image:
-#   IMAGE=ghcr.io/aelieth/nfs-klldap-host:v0.3 ./scripts/fix-keytab-perms.sh ./secrets/krb5.keytab
+#   IMAGE=ghcr.io/aelieth/nfs-klldap-host:v0.5 ./scripts/fix-keytab-perms.sh ./secrets/krb5.keytab
 #
 # After running this, you can mount the keytab read-only and the
 # container will be able to read it without running as root.

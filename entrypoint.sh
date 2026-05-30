@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-# entrypoint.sh - Modern Ganesha + KLLDAP entrypoint (v0.3+)
+# entrypoint.sh - Modern Ganesha + KLLDAP entrypoint (v0.5+)
 #
 # This container is a self-contained Kerberized NFSv4 server using NFS-Ganesha.
 # It is designed for hosts that cannot or will not run the kernel NFS stack.
 #
-# v0.3+ changes:
+# v0.5 changes:
 #   - Single source of truth: nfs-klldap.conf (TOML)
 #   - First-run guided setup with smart waiting loop (no more "edit and restart" dance)
 #   - Everything starts with ldap_uri (must be a DNS name — IP addresses rejected)
@@ -27,12 +27,6 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
-# Run a command as the unprivileged 'nfs' user (gosu is installed in the image).
-# Used for long-running daemons after root-only setup is complete.
-run_as_nfs() {
-    gosu nfs "$@"
-}
-
 die() {
     log "FATAL: $*"
     exit 1
@@ -43,7 +37,7 @@ die() {
 # realm derivation display, hostname suggestions, and permission/keytab diagnostics
 # have been moved into the Rust binary `nfs-klldap-startup`.
 #
-# The shell is now a minimal launcher + daemon supervisor using gosu.
+# The shell is now a minimal launcher + daemon supervisor (all services run as root).
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
@@ -51,7 +45,7 @@ die() {
 # and runtime diagnostics (including hostname/keytab guidance based on --uts=host)
 # now live in the Rust binary `nfs-klldap-startup`.
 #
-# Only thin orchestration + gosu daemon startup remains in this shell script.
+# Only thin orchestration + daemon startup remains in this shell script.
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
@@ -85,6 +79,9 @@ cleanup() {
     else
         pkill -TERM nfs-klldap-conf-watcher 2>/dev/null || true
     fi
+    if [ -n "$WEBUI_PID" ]; then
+        kill -TERM "$WEBUI_PID" 2>/dev/null || true
+    fi
     sleep 1
     log "Shutdown complete."
     exit 0
@@ -100,7 +97,8 @@ handle_sighup() {
     chmod 600 /etc/sssd/sssd.conf 2>/dev/null || true
     chown root:root /etc/krb5.conf 2>/dev/null || true
     chmod 644 /etc/krb5.conf 2>/dev/null || true
-    chown -R nfs:nfs /etc/ganesha 2>/dev/null || true
+    # Ganesha config and exports are owned by root (everything runs as root in v0.5+)
+    chown -R root:root /etc/ganesha 2>/dev/null || true
     chmod -R a+rX /etc/ganesha 2>/dev/null || true
 
     # Ganesha can usually be reloaded via its own mechanism or a TERM that
@@ -121,7 +119,7 @@ trap 'handle_sighup' SIGHUP
 # Main — now with guided first-run experience
 # -----------------------------------------------------------------------------
 main() {
-    log "=== Starting nfs-klldap-host (v0.3+ guided setup) ==="
+    log "=== Starting nfs-klldap-host (v0.5 guided setup) ==="
 
     # Hostname guidance is now based on --uts=host (the new standard).
     # With --uts=host the container sees the real host hostname; the Rust
@@ -150,24 +148,11 @@ main() {
     # end of the `run` guided flow). The old shell functions have been retired.
 
     # -----------------------------------------------------------------------------
-    # Permission model (carefully tuned for both SSSD requirements and the
-    # project's unprivileged ganesha goal)
+    # Permission model (standard root for all services)
     # -----------------------------------------------------------------------------
-    # - /etc/sssd/sssd.conf MUST be root:root 0600. SSSD's internal
-    #   access_check_file() explicitly rejects any other owner (even if the
-    #   running user could read it via kernel perms). This is why we can no
-    #   longer chown it to the 'nfs' user.
-    # - sssd itself therefore runs as root (standard and required for its
-    #   own config + pipe creation behavior).
-    # - ganesha.nfsd and the config watcher run unprivileged as the 'nfs' user
-    #   (via gosu). This is the important containment boundary for VFS access
-    #   to user data.
-    # - The root entrypoint shell stays as pid 1 (no final exec) so it can
-    #   continue to handle SIGHUP, perform privileged regenerate, fix perms,
-    #   and orchestrate child restarts. This gives us "permissions across the
-    #   board" without needing sudo for the normal reload path.
-    # - After sssd starts we fix up the responder pipes so the unprivileged
-    #   'nfs' user (ganesha, getent, etc.) can still perform NSS lookups.
+    # - /etc/sssd/sssd.conf MUST be root:root 0600.
+    # - All services (sssd, ganesha.nfsd, watcher, WebUI) run as root.
+    # - The root entrypoint shell stays as pid 1 for SIGHUP handling + orchestration.
     # -----------------------------------------------------------------------------
 
     # Force correct ownership for the main SSSD config (non-negotiable).
@@ -178,14 +163,10 @@ main() {
     chown root:root /etc/krb5.conf 2>/dev/null || true
     chmod 644 /etc/krb5.conf 2>/dev/null || true
 
-    # Ganesha fragments and main config need to be readable by the nfs user
-    # (ganesha runs as nfs). The directory is already prepared in the image.
-    chown -R nfs:nfs /etc/ganesha 2>/dev/null || true
+    # Ganesha config/exports are generated world-readable.
     chmod -R a+rX /etc/ganesha 2>/dev/null || true
 
-    # Start SSSD as root (required by its strict config ownership validator and
-    # how it creates responder sockets/pipes). This is the one daemon we run
-    # privileged; everything else that touches user data stays as 'nfs'.
+    # Start SSSD as root (standard for the service on Red Hat systems).
     log "[1/3] Starting SSSD..."
     sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} &
     SSSD_PID=$!
@@ -203,40 +184,51 @@ main() {
         die "SSSD NSS pipe did not appear. Check bind credentials and LLDAP connectivity."
     fi
 
-    # -----------------------------------------------------------------------------
-    # Make SSSD responder pipes usable by the unprivileged 'nfs' user.
-    # Even when sssd runs as root it often creates /var/lib/sss/pipes with
-    # tight ownership (root or sssd group). Ganesha (as nfs) and tools like
-    # getent/id need to talk to the NSS responder for UID/GID mapping.
-    # We make the pipes directory group-readable by the nfs user (who is
-    # a member of the sssd group when the image was built correctly).
-    # -----------------------------------------------------------------------------
-    log "    Fixing SSSD responder pipe permissions for unprivileged NSS access..."
-    chown -R root:sssd /var/lib/sss/pipes 2>/dev/null || true
-    chmod -R 0770 /var/lib/sss/pipes 2>/dev/null || true
-    # Also ensure the broader cache area is traversable (some mc caches etc.)
-    find /var/lib/sss -type d -exec chmod g+rx {} + 2>/dev/null || true
-    chown -R root:nfs /var/lib/sss/mc /var/lib/sss/pubconf 2>/dev/null || true
+    # No pipe permission hacks needed — everything runs as root.
 
-    # Start config watcher (as the unprivileged nfs user).
-    # The watcher now signals the root supervisor (pid 1) on changes instead of
-    # calling the generator directly. This guarantees that regeneration of
-    # sssd.conf always happens with root privileges → correct ownership.
+    # Start config watcher (as root). It signals pid 1 on changes.
     if [ -x /usr/local/bin/nfs-klldap-conf-watcher ]; then
-        run_as_nfs /usr/local/bin/nfs-klldap-conf-watcher "$NFS_CONFIG" &
+        /usr/local/bin/nfs-klldap-conf-watcher "$NFS_CONFIG" &
         WATCHER_PID=$!
         log "    Config watcher started (auto-reload on changes)."
     fi
 
-    # Start Ganesha as the unprivileged nfs user (the important containment
-    # boundary). We do NOT exec here — the root shell must remain as pid 1
-    # so SIGHUP continues to work for privileged regeneration and so we can
-    # reap children cleanly.
+    # Start Ganesha as root.
     log "[2/3] Starting NFS-Ganesha..."
-    run_as_nfs ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
     GANESHA_PID=$!
 
-    log "All services launched. Supervisor (this shell) remains as root for signal handling and privileged regen."
+    # -------------------------------------------------------------------------
+    # In-container WebUI (always runs on port 9630) - started last because it
+    # depends on SSSD (for LLDAP identity) and Ganesha being operational.
+    # -------------------------------------------------------------------------
+    log "Preparing WebUI TLS certificates..."
+    # Run the cert helper. It prints diagnostic messages to stderr (which will appear in container logs)
+    # and ONLY the two VAR=value lines to stdout on success.
+    WEBUI_CERT_OUTPUT=$(/usr/local/bin/webui-certs) || true
+
+    if [ -n "$WEBUI_CERT_OUTPUT" ]; then
+        eval "$WEBUI_CERT_OUTPUT"
+    fi
+
+    if [[ -x /usr/local/bin/nfs-klldap-ui && -n "${WEBUI_TLS_CERT:-}" && -n "${WEBUI_TLS_KEY:-}" && -f "$WEBUI_TLS_CERT" && -f "$WEBUI_TLS_KEY" ]]; then
+        log "[3/3] WebUI Starting on 0.0.0.0:9630 (HTTPS)..."
+        NFS_KLLDAP_CONF="$NFS_CONFIG" \
+        WEBUI_TLS_CERT="$WEBUI_TLS_CERT" \
+        WEBUI_TLS_KEY="$WEBUI_TLS_KEY" \
+        /usr/local/bin/nfs-klldap-ui --config "$NFS_CONFIG" \
+            >/var/log/webui.log 2>&1 &
+        WEBUI_PID=$!
+        log "    WebUI started (logs: /var/log/webui.log)"
+    else
+        log "WARNING: Could not start WebUI (binary or valid certificates missing)"
+        # Log the cert script output for debugging
+        if [[ -n "$WEBUI_CERT_OUTPUT" ]]; then
+            echo "$WEBUI_CERT_OUTPUT" | while read -r line; do log "    $line"; done
+        fi
+    fi
+
+    log "All services launched (as root). Supervisor remains as root for signal handling."
 
     # Wait for children. If any die the script exits and the container will
     # be restarted by the policy (unless-stopped etc.).

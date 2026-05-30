@@ -4,7 +4,7 @@
 #
 # This Makefile provides a coherent build story for:
 #   - Host-side tools (run on the machine that will run the NFS container):
-#       * nfs-klldap-ui  (management web UI — performs chown/chmod by asking the container)
+#       * nfs-klldap-ui  (WebUI — now runs inside the container on port 9630)
 #   - The container image (multi-architecture)
 #
 # Supported host tool targets:
@@ -123,8 +123,8 @@ dist: build-cross
 	@echo "Distribution ready:"
 	@ls -l $(DIST_DIR)/
 	@echo ""
-	@echo "The only host-side binary is nfs-klldap-ui (the management web UI)."
-	@echo "It asks the running container to perform any required chown/chmod on exported data."
+	@echo "nfs-klldap-ui is now built into the container image (runs on port 9630 inside, HTTPS)."
+	@echo "It performs chown/chmod directly on bind-mounted paths (root model, no docker-exec)."
 
 # -----------------------------------------------------------------------------
 # Container Image
@@ -156,7 +156,7 @@ test:
 
 .PHONY: clippy
 clippy:
-	$(CARGO) +nightly clippy --all-targets --all-features -- -D warnings
+	$(CARGO) +nightly clippy --workspace --all-targets --all-features -- -D warnings
 
 .PHONY: clean
 clean:

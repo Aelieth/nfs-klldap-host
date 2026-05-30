@@ -9,7 +9,7 @@ This document describes the testing strategy, current coverage, and how to run t
 - **Document hard-to-test areas** explicitly (privileged operations delegated to the container, live LLDAP).
 - Permission changes are performed inside the container after host-side validation in the web handlers and `FsManager`.
 
-## Current State (as of v0.3)
+## Current State (as of v0.5)
 
 | Crate / Area                  | Test Coverage                          | Notes |
 |-------------------------------|----------------------------------------|-------|

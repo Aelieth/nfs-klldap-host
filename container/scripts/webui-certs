@@ -1,0 +1,81 @@
+#!/bin/bash
+#
+# webui-certs - Prepare TLS certificates for the in-container WebUI on port 9630.
+#
+# Behavior:
+#   1. Looks for custom certificates in the same directory as nfs-klldap.conf:
+#        - webui.crt + webui.key   OR
+#        - tls.crt + tls.key
+#   2. If found, symlinks them into /var/run/webui-certs/
+#   3. If not found, generates a self-signed certificate valid for 10 years.
+#
+# The generated or provided certificates are used by the WebUI via
+# WEBUI_TLS_CERT and WEBUI_TLS_KEY environment variables.
+#
+set -euo pipefail
+
+CERT_DIR="/var/run/webui-certs"
+CONFIG_DIR="${NFS_CONFIG_DIR:-/config}"
+
+mkdir -p "$CERT_DIR"
+
+CUSTOM_CERT=""
+CUSTOM_KEY=""
+
+# Check for custom certificates (support two common naming conventions)
+for prefix in webui tls; do
+    crt="${CONFIG_DIR}/${prefix}.crt"
+    key="${CONFIG_DIR}/${prefix}.key"
+    if [[ -f "$crt" && -f "$key" ]]; then
+        CUSTOM_CERT="$crt"
+        CUSTOM_KEY="$key"
+        break
+    fi
+done
+
+if [[ -n "$CUSTOM_CERT" ]]; then
+    echo "[webui-certs] Using custom certificates from ${CONFIG_DIR}" >&2
+    ln -sf "$CUSTOM_CERT" "$CERT_DIR/webui.crt" || true
+    ln -sf "$CUSTOM_KEY" "$CERT_DIR/webui.key" || true
+    chmod 600 "$CERT_DIR/webui.key" || true
+else
+    echo "[webui-certs] No custom certificates found in ${CONFIG_DIR}. Generating self-signed certificate..." >&2
+
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo "[webui-certs] ERROR: 'openssl' command not found in the container." >&2
+        echo "[webui-certs] The 'openssl' package must be installed in the image for automatic self-signed certificate generation." >&2
+        echo "[webui-certs] Either install the package or provide custom certificates (webui.crt + webui.key) in the config directory." >&2
+        exit 1
+    fi
+
+    # Robust hostname detection for minimal containers (no 'hostname' package required)
+    HOSTNAME=$(hostname -f 2>/dev/null || \
+               cat /proc/sys/kernel/hostname 2>/dev/null || \
+               cat /etc/hostname 2>/dev/null || \
+               echo "localhost")
+
+    # Try to generate certificate. Capture any error.
+    if ! openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+            -keyout "$CERT_DIR/webui.key" \
+            -out "$CERT_DIR/webui.crt" \
+            -subj "/CN=${HOSTNAME}" \
+            -addext "subjectAltName=DNS:${HOSTNAME},DNS:localhost,IP:127.0.0.1" \
+            2>&1; then
+        echo "[webui-certs] ERROR: Failed to generate self-signed certificate with openssl" >&2
+        exit 1
+    fi
+
+    chmod 600 "$CERT_DIR/webui.key" || true
+    chmod 644 "$CERT_DIR/webui.crt" || true
+
+    echo "[webui-certs] Self-signed certificate generated for ${HOSTNAME}" >&2
+fi
+
+# Only output the variables if the certificate files actually exist
+if [[ -f "$CERT_DIR/webui.crt" && -f "$CERT_DIR/webui.key" ]]; then
+    echo "WEBUI_TLS_CERT=${CERT_DIR}/webui.crt"
+    echo "WEBUI_TLS_KEY=${CERT_DIR}/webui.key"
+else
+    echo "[webui-certs] ERROR: Certificate files were not created" >&2
+    exit 1
+fi

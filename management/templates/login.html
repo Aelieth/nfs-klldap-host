@@ -1,16 +1,49 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h2>Login</h2>
+<h2>{% if first_run %}First-run setup{% else %}Login{% endif %}</h2>
+
+{% if first_run %}
+<p style="max-width: 620px; color:#333; background:#fff3cd; padding: 0.75rem 1rem; border-left: 4px solid #ffc107;">
+    <strong>Welcome.</strong> No local admin password has been set yet.<br>
+    Create the initial password for the special <code>localhost</code> account.
+    This gives you (and anyone with the password) the ability to manage shares on <em>this machine</em>.
+</p>
+
+<form method="post" action="/setup-password" style="max-width: 420px; margin-top: 1rem;">
+    <div style="margin-bottom: 0.75rem;">
+        <label>Username (fixed)<br>
+            <input type="text" value="localhost" disabled
+                   style="width: 100%; padding: 8px; background:#f5f5f5;">
+        </label>
+        <input type="hidden" name="username" value="localhost">
+    </div>
+    <div style="margin-bottom: 0.75rem;">
+        <label>Choose a strong password (min 8 chars)<br>
+            <input type="password" name="password" required autocomplete="new-password"
+                   style="width: 100%; padding: 8px;">
+        </label>
+    </div>
+    <button type="submit" style="padding: 10px 20px; background:#28a745; color:white; border:none;">
+        Set password &amp; log in as localhost
+    </button>
+</form>
+
+<p style="margin-top: 1.5rem; font-size: 0.9em; color:#555;">
+    After this one-time step you (or anyone with the password) can log in as <code>localhost</code>.<br>
+    Members of the <code>{{ admin_group }}</code> group in LLDAP can also log in from any machine and manage this host remotely.
+</p>
+
+{% else %}
 <p style="max-width: 520px; color:#555;">
-    This management UI is restricted to users who can perform privileged operations
-    (root or accounts allowed to <code>sudo</code> / in the <code>wheel</code> group) on this machine.
+    Log in as <code>localhost</code> (local machine admin) using the simple password you set,<br>
+    or as any user who is a member of the <code>{{ admin_group }}</code> group in LLDAP (network admin).
 </p>
 
 <form method="post" action="/login" style="max-width: 420px; margin-top: 1rem;">
     <div style="margin-bottom: 0.75rem;">
         <label>Username<br>
-            <input type="text" name="username" required autocomplete="username"
+            <input type="text" name="username" required autocomplete="username" placeholder="localhost or your-ldap-user"
                    style="width: 100%; padding: 8px;">
         </label>
     </div>
@@ -23,11 +56,14 @@
     <button type="submit" style="padding: 10px 20px;">Log in</button>
 </form>
 
-{% if let Some(err) = error %}
-    <p style="color:#c00; margin-top: 1rem;">{{ err }}</p>
+<p style="margin-top: 1.5rem; font-size: 0.9em; color:#555;">
+    <code>localhost</code> + the sidecar password → local admin (this machine only).<br>
+    Any other username → checked against LLDAP + membership in <code>{{ admin_group }}</code>.
+</p>
 {% endif %}
 
-<p style="margin-top: 2rem; font-size: 0.9em; color:#666;">
-    The password is only used for a one-time <code>sudo</code> test and is never stored.
-</p>
+{% if let Some(err) = error %}
+    <p style="color:#c00; margin-top: 1rem; font-weight: 600;">{{ err }}</p>
+{% endif %}
+
 {% endblock %}

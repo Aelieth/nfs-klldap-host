@@ -10,7 +10,7 @@
 //!
 //! It is designed to run as root (as the entrypoint does during setup) so it
 //! has full access to the host bind mounts and can write generated configs
-//! into /etc/* before we gosu drop to the unprivileged `nfs` user for the
+//! into /etc/* (the generator must run as root to produce sssd.conf as root:root 0600).
 //! actual daemons.
 //!
 //! Long term this will replace almost all of the fragile grep|cut|tr|sed
@@ -129,7 +129,7 @@ enum LdapReachability {
 fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
     let port: u16 = uri
         .split(':')
-        .last()
+        .next_back()
         .and_then(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok())
         .unwrap_or(636);
 
@@ -427,7 +427,7 @@ fn print_current_step_guidance(current: &StartupStep) {
                 let host = extract_host_from_uri(&val);
                 let port: u16 = val
                     .split(':')
-                    .last()
+                    .next_back()
                     .and_then(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok())
                     .unwrap_or(636);
 
@@ -681,7 +681,7 @@ fn print_runtime_diagnostics() {
                 println!("             [ACTION REQUIRED] {} is not writable by current user", d);
                 println!("                    Fix on host (or add --user root temporarily for debugging):");
                 println!("                      # Determine the runtime 'nfs' UID inside the image:");
-                println!("                      NFS_UID=$(docker run --rm --entrypoint id {} -u nfs 2>/dev/null | tr -cd 0-9)", "$d");
+                println!("                      NFS_UID=$(docker run --rm --entrypoint id $d -u nfs 2>/dev/null | tr -cd 0-9)");
                 println!("                      sudo chown -R $NFS_UID:$NFS_UID {}   # (use the real container nfs uid)", d);
             }
         }

@@ -28,7 +28,7 @@ pub fn load_config_from(path: &Path) -> Result<Config, String> {
         .map_err(|e| format!("Failed to load {}: {}", path.display(), e))
 }
 
-/// Return the list of host-side paths the UI is allowed to manage (from the shares).
+/// Return the list of host_path values the WebUI is allowed to manage (from the shares).
 pub fn all_managed_roots(cfg: &Config) -> Vec<PathBuf> {
     cfg.shares.iter().map(|s| s.host_path.clone()).collect()
 }

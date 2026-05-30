@@ -1,102 +1,174 @@
-//! Minimal local-machine admin authentication.
+//! Hybrid authentication for the in-container WebUI (v0.5+).
 //!
-//! Goal: Only people who can actually do privileged operations on *this host*
-//! (root or users who can `sudo` / are in the wheel group) may use the management UI.
+//! Auth model (exactly as specified):
+//! 1. Special immutable username "localhost" + bcrypt-hashed sidecar file
+//!    next to nfs-klldap.conf (named `webui-password`, mode 0600).
+//!    This user is the local machine admin — can create/manage shares on *this* host.
+//! 2. Any other username → real LLDAP login (GraphQL) + membership in the
+//!    configured `webui_admin_group` (default "lldap_admin").
+//!    These users are network admins and can modify shares/settings on any machine.
 //!
-//! Design (easy + matches the rest of the project):
-//! - Login form: username + password.
-//! - Validation: attempt a non-destructive `sudo -S` test as that user.
-//!   This respects the real sudoers policy (wheel group + any custom rules).
-//! - On success: issue a random opaque session token.
-//! - Store the token server-side (in-memory map with expiry).
-//! - Set a HttpOnly session cookie.
-//! - All sensitive routes require a valid session.
+//! No sudo, no wheel, no host-side delegation. The container runs as root for
+//! the services it owns; the WebUI performs direct FS operations via libc::chown.
 //!
-//! The web server itself does **not** need to run as root.
-//! Passwords only live in memory during the login POST.
+//! First-run: when the simple password sidecar does not exist, a special
+//! setup form is shown that lets the operator set the initial "localhost" password.
 
+use bcrypt::{hash, verify, DEFAULT_COST};
 use rand::Rng;
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 const SESSION_TTL: Duration = Duration::from_secs(12 * 3600); // 12 hours
+const SIMPLE_PW_FILENAME: &str = "webui-password";
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthRole {
+    /// Logged in via the special "localhost" + simple sidecar password.
+    /// This user can manage shares on the local machine only.
+    LocalAdmin,
+    /// Real LLDAP user who is a member of the webui_admin_group.
+    /// Can manage shares/settings on any machine (network admin).
+    LldapAdmin { username: String },
+}
+
+#[derive(Clone, Debug)]
 pub struct Session {
     pub username: String,
+    pub role: AuthRole,
     pub created: Instant,
+}
+
+impl Session {
+    #[allow(dead_code)]
+    pub fn is_privileged(&self) -> bool {
+        matches!(self.role, AuthRole::LocalAdmin | AuthRole::LldapAdmin { .. })
+    }
 }
 
 pub struct AuthManager {
     /// token -> session
     sessions: RwLock<HashMap<String, Session>>,
+    /// Absolute path to the simple password sidecar (next to nfs-klldap.conf)
+    simple_pw_path: PathBuf,
+    /// Effective admin group name (from [management] webui_admin_group)
+    admin_group: String,
 }
 
 impl AuthManager {
-    pub fn new() -> Self {
+    #[allow(dead_code)]
+    /// Create a new manager.
+    /// `config_path` is the path to nfs-klldap.conf; the sidecar lives beside it.
+    /// `admin_group` comes from the loaded config (falls back to "lldap_admin").
+    pub fn new(config_path: impl AsRef<Path>, admin_group: Option<String>) -> Self {
+        let config_path = config_path.as_ref();
+        let simple_pw_path = config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(SIMPLE_PW_FILENAME);
+
         Self {
             sessions: RwLock::new(HashMap::new()),
+            simple_pw_path,
+            admin_group: admin_group.unwrap_or_else(|| "lldap_admin".to_string()),
         }
     }
 
-    /// Attempt to authenticate a local user as someone who can do real sudo.
-    /// Returns Ok(()) on success.
-    pub fn validate_local_admin(&self, username: &str, password: &str) -> Result<(), String> {
-        // Fast path: root is always allowed (no password check needed for the concept,
-        // but we still do the sudo dance for consistency).
-        if username == "root" {
-            return self.try_sudo_test("root", password);
-        }
-
-        // Check if the user is in wheel (or root). This is a quick filter.
-        // We still do the real sudo test below because that is authoritative.
-        if !user_can_sudo(username) {
-            return Err(format!(
-                "User '{}' is not root and not in the wheel (or sudo) group on this machine.",
-                username
-            ));
-        }
-
-        self.try_sudo_test(username, password)
+    pub fn admin_group(&self) -> &str {
+        &self.admin_group
     }
 
-    fn try_sudo_test(&self, username: &str, password: &str) -> Result<(), String> {
-        // Run:   echo "$password" | timeout 8 sudo -S -u "$username" /bin/true
-        // If exit 0 → the user successfully authenticated to sudo.
-        let mut child = Command::new("timeout")
-            .args(["8", "sudo", "-S", "-u", username, "/bin/true"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("failed to spawn sudo test: {}", e))?;
+    #[allow(dead_code)]
+    pub fn simple_pw_path(&self) -> &Path {
+        &self.simple_pw_path
+    }
 
-        // Write password to stdin (followed by newline)
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            let _ = writeln!(stdin, "{}", password);
+    // ---------------------------------------------------------------------
+    // Simple password (localhost) handling
+    // ---------------------------------------------------------------------
+
+    /// Returns true if a simple password sidecar already exists (first-run is over).
+    pub fn has_simple_password(&self) -> bool {
+        self.simple_pw_path.exists()
+    }
+
+    /// Set (or overwrite) the simple "localhost" password.
+    /// The file is written with mode 0600 and contains a bcrypt hash.
+    /// This is the only way the initial local admin password is ever stored.
+    pub fn set_simple_password(&self, password: &str) -> Result<(), String> {
+        if password.trim().is_empty() {
+            return Err("Password cannot be empty".to_string());
+        }
+        if password.len() < 8 {
+            return Err("Password must be at least 8 characters".to_string());
         }
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("failed to wait for sudo test: {}", e))?;
+        let hash = hash(password, DEFAULT_COST)
+            .map_err(|e| format!("failed to hash password: {}", e))?;
 
-        if output.status.success() {
+        // Ensure parent directory exists (usually /config or the dir containing the .conf)
+        if let Some(parent) = self.simple_pw_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        // Write atomically-ish: create + write + set perms.
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.simple_pw_path)
+            .map_err(|e| format!("failed to open {}: {}", self.simple_pw_path.display(), e))?;
+
+        // Set 0600 before writing the secret (best effort on Unix).
+        let mut perms = file.metadata()
+            .map_err(|e| format!("metadata: {}", e))?
+            .permissions();
+        perms.set_mode(0o600);
+        let _ = file.set_permissions(perms);
+
+        file.write_all(hash.as_bytes())
+            .map_err(|e| format!("write failed: {}", e))?;
+        file.write_all(b"\n")
+            .map_err(|e| format!("write failed: {}", e))?;
+        file.sync_all().ok();
+
+        Ok(())
+    }
+
+    /// Validate the special "localhost" user against the bcrypt sidecar.
+    /// All other usernames must go through the LLDAP path.
+    pub fn validate_simple_password(&self, username: &str, password: &str) -> Result<(), String> {
+        if username != "localhost" {
+            return Err("Only the special 'localhost' user can use the simple password path".to_string());
+        }
+        if !self.has_simple_password() {
+            return Err("No simple password has been set yet. Use the first-run setup form.".to_string());
+        }
+
+        let stored = fs::read_to_string(&self.simple_pw_path)
+            .map_err(|e| format!("failed to read simple password file: {}", e))?
+            .trim()
+            .to_string();
+
+        if verify(password, &stored).unwrap_or(false) {
             Ok(())
         } else {
-            let _stderr = String::from_utf8_lossy(&output.stderr);
-            // Common sudo failure messages are intentionally vague for security.
-            Err(format!(
-                "sudo authentication failed for user '{}'.",
-                username
-            ))
+            Err("Invalid password for 'localhost'".to_string())
         }
     }
 
-    /// Create a new session for the user.
-    pub fn create_session(&self, username: &str) -> String {
+    // ---------------------------------------------------------------------
+    // Session management (used after either auth path succeeds)
+    // ---------------------------------------------------------------------
+
+    /// Create a privileged session. The caller has already performed the
+    /// appropriate authentication (simple pw for localhost, or LLDAP+group for others).
+    pub fn create_privileged_session(&self, username: &str, role: AuthRole) -> String {
         let token: String = (0..32)
             .map(|_| {
                 let c = rand::thread_rng().gen_range(0..62);
@@ -110,20 +182,34 @@ impl AuthManager {
 
         let session = Session {
             username: username.to_string(),
+            role,
             created: Instant::now(),
         };
 
         let mut map = self.sessions.write().unwrap();
         map.insert(token.clone(), session);
 
-        // Opportunistic cleanup of expired sessions
+        // Opportunistic cleanup
         let now = Instant::now();
         map.retain(|_, s| now.duration_since(s.created) < SESSION_TTL);
 
         token
     }
 
-    /// Validate a token. Returns the username if valid and not expired.
+    /// Legacy-friendly wrapper: creates a LocalAdmin session for "localhost".
+    #[allow(dead_code)]
+    pub fn create_session(&self, username: &str) -> String {
+        // Treat unknown callers as LocalAdmin for backward compatibility during transition.
+        // Real LLDAP sessions should go through create_privileged_session with the correct role.
+        let role = if username == "localhost" {
+            AuthRole::LocalAdmin
+        } else {
+            AuthRole::LldapAdmin { username: username.to_string() }
+        };
+        self.create_privileged_session(username, role)
+    }
+
+    /// Validate token → username (for require_auth compatibility).
     pub fn validate(&self, token: &str) -> Option<String> {
         let mut map = self.sessions.write().unwrap();
         if let Some(session) = map.get(token) {
@@ -136,22 +222,32 @@ impl AuthManager {
         None
     }
 
+    /// Return the full role for a valid session (used for privilege gating).
+    #[allow(dead_code)]
+    pub fn validate_with_role(&self, token: &str) -> Option<AuthRole> {
+        let mut map = self.sessions.write().unwrap();
+        if let Some(session) = map.get(token) {
+            if Instant::now().duration_since(session.created) < SESSION_TTL {
+                return Some(session.role.clone());
+            } else {
+                map.remove(token);
+            }
+        }
+        None
+    }
+
     pub fn logout(&self, token: &str) {
         let mut map = self.sessions.write().unwrap();
         map.remove(token);
     }
-}
 
-fn user_can_sudo(username: &str) -> bool {
-    // Check if user is in wheel (RHEL/Alma) or sudo (Debian/Ubuntu) group.
-    // This is a fast pre-check. The real sudo -S test is authoritative.
-    if let Ok(output) = Command::new("id").args(["-Gn", username]).output() {
-        let groups = String::from_utf8_lossy(&output.stdout).to_lowercase();
-        if groups.contains("wheel") || groups.contains("sudo") || groups.contains("admin") {
-            return true;
+    /// Quick check: does this token belong to a privileged user?
+    #[allow(dead_code)]
+    pub fn is_privileged(&self, token: &str) -> bool {
+        if let Some(role) = self.validate_with_role(token) {
+            matches!(role, AuthRole::LocalAdmin | AuthRole::LldapAdmin { .. })
+        } else {
+            false
         }
     }
-
-    // Fallback: root is always ok
-    username == "root"
 }

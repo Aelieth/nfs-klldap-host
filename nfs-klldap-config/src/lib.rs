@@ -28,6 +28,7 @@ mod uri;
 mod hostname;
 mod persist;
 mod validate;
+mod generate;
 
 // =============================================================================
 // Public API re-exports (the stable contract for binaries + nfs-klldap-ui)
@@ -608,7 +609,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
     }
 
     for (i, share) in cfg.shares.iter().enumerate() {
-        let export_id = derive_export_id(&share.name, 1000 + (i as u16 * 10));
+        let export_id = crate::generate::derive_export_id(&share.name, 1000 + (i as u16 * 10));
         let path = cfg.container_path_for(share);
         let default_pseudo = format!("/{}", share.name);
         let pseudo = share.export_path.as_deref().unwrap_or(&default_pseudo);
@@ -637,7 +638,7 @@ EXPORT {{
             share.name, export_id, path, pseudo, access, sec, squash
         );
 
-        let filename = format!("{:02}-{}.conf", i + 10, sanitize_name(&share.name));
+        let filename = format!("{:02}-{}.conf", i + 10, crate::generate::sanitize_name(&share.name));
         fs::write(exports_dir.join(filename), block.as_bytes())?;
     }
 
@@ -645,26 +646,6 @@ EXPORT {{
 }
 
 
-
-fn sanitize_name(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
-
-fn derive_export_id(name: &str, base: u16) -> u16 {
-    let mut h: u32 = 0x811c9dc5;
-    for b in name.as_bytes() {
-        h = h.wrapping_mul(16777619) ^ (*b as u32);
-    }
-    base + (h % 55000) as u16
-}
 
 #[cfg(test)]
 mod tests {
@@ -830,24 +811,6 @@ mod tests {
         assert!(roots
             .iter()
             .any(|p| p.to_string_lossy().contains("backups")));
-    }
-
-    #[test]
-    fn sanitize_name_replaces_invalid_chars() {
-        assert_eq!(sanitize_name("my share!"), "my-share-");
-        assert_eq!(sanitize_name("data_01"), "data_01");
-        assert_eq!(sanitize_name("foo@bar#baz"), "foo-bar-baz");
-    }
-
-    #[test]
-    fn derive_export_id_is_deterministic() {
-        let id1 = derive_export_id("movies", 1000);
-        let id2 = derive_export_id("movies", 1000);
-        assert_eq!(id1, id2);
-        assert_ne!(
-            derive_export_id("movies", 1000),
-            derive_export_id("data", 1000)
-        );
     }
 
     #[test]

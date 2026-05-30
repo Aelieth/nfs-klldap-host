@@ -79,7 +79,7 @@ impl NfsKlldapConfig {
         // Enforce DNS name (not IP) for ldap_uri. Forward + reverse DNS is mandatory
         // for the NFS service principal (keytab) and Kerberos GSSAPI operation.
         let host = crate::extract_host_from_uri(&self.ldap_uri);
-        if host_is_ip(&host) {
+        if crate::uri::host_is_ip(&host) {
             return Err(ConfigError::Validation(
                 "LDAP IP addresses are not supported, DNS resolution is required for operation."
                     .into(),
@@ -214,7 +214,7 @@ impl NfsKlldapConfig {
     /// The container must be started with --hostname matching the keytab principal.
     pub fn effective_hostname(&self) -> String {
         self.server.hostname.clone().unwrap_or_else(|| {
-            crate::hostname::get()
+            crate::hostname::internal::get()
                 .map(|h| h.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| "nfs-host".to_string())
         })
@@ -243,12 +243,4 @@ impl NfsKlldapConfig {
     }
 }
 
-/// Returns true if the host portion (from ldap_uri) is a literal IP address (v4 or v6).
-/// Used to reject IP-based ldap_uri (DNS forward+reverse required for Kerberos NFS principals).
-fn host_is_ip(host: &str) -> bool {
-    let h = host
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(host);
-    h.parse::<std::net::IpAddr>().is_ok()
-}
+

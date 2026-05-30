@@ -24,6 +24,8 @@
 // =============================================================================
 mod config;
 mod error;
+mod uri;
+mod hostname;
 
 // =============================================================================
 // Public API re-exports (the stable contract for binaries + nfs-klldap-ui)
@@ -33,6 +35,9 @@ pub use config::{
     ServerSection, Share, StorageSection, SssdSection,
 };
 pub use error::ConfigError;
+
+pub use hostname::{looks_like_docker_default_hostname, suggested_nfs_hostname};
+pub use uri::{derive_realm_from_uri, extract_host_from_uri};
 
 // =============================================================================
 // Imports needed by the remaining facade / coordination code
@@ -114,20 +119,6 @@ pub fn load_host_paths_only(path: &Path) -> Result<Vec<PathBuf>, ConfigError> {
         .filter_map(|s| s.host_path)
         .filter(|p| !p.as_os_str().is_empty())
         .collect())
-}
-
-/// Attempt to derive a Kerberos realm from an ldap/ldaps URI.
-/// Used by both the generator and the guided startup TUI for display purposes.
-/// Example: ldaps://kllap.example.com:6360 → "EXAMPLE.COM"
-pub fn derive_realm_from_uri(uri: &str) -> Option<String> {
-    // ldaps://kllap.example.com:6360 → EXAMPLE.COM
-    // ldaps://sub.host.example.co.uk:636 → EXAMPLE.CO.UK (current behavior)
-    let host = extract_host_from_uri(uri);
-    if host.is_empty() {
-        return None;
-    }
-    let domain = host.split_once('.').map(|(_, d)| d).unwrap_or(&host);
-    Some(domain.to_uppercase())
 }
 
 /// Generate the first-run safe, heavily commented template.
@@ -704,77 +695,7 @@ EXPORT {{
     Ok(())
 }
 
-/// Extract the host portion from an ldap/ldaps URI.
-/// Public so the startup binary (and future slimmed-down shell) can use the
-/// same robust logic instead of fragile sed/grep.
-pub fn extract_host_from_uri(uri: &str) -> String {
-    let after = uri.split("://").nth(1).unwrap_or(uri);
-    // IPv6 literal: ldaps://[2001:db8::1]:636  or ldaps://[::1]/...
-    if let Some(rest) = after.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
-            return rest[..end].to_string();
-        }
-    }
-    after
-        .split([':', '/'])
-        .next()
-        .unwrap_or("localhost")
-        .to_string()
-}
 
-/// Compute the recommended container hostname for Kerberized NFS.
-///
-/// The container hostname must match the `nfs/<hostname>@REALM` principal in the keytab.
-/// Because Docker's `--hostname` is used for both the system hostname and Kerberos
-/// principal derivation, we need a stable, DNS-resolvable name.
-///
-/// Recommended convention: take the host's short name and insert "-nfs" before the
-/// first dot (or append if there is no dot).
-///
-/// Examples:
-/// - "aurora.satomlin.com" → "aurora-nfs.satomlin.com"
-/// - "myserver"            → "myserver-nfs"
-/// - "foo.bar.baz.co.uk"   → "foo-nfs.bar.baz.co.uk"
-///
-/// This is the value users should pass to `--hostname` (or compose `hostname:`).
-pub fn suggested_nfs_hostname(host: &str) -> String {
-    let h = host.trim();
-    if h.is_empty() || h == "." {
-        return "nfs-server".to_string();
-    }
-    // Remove any leading/trailing dots for safety
-    let h = h.trim_matches('.');
-    if h.is_empty() {
-        return "nfs-server".to_string();
-    }
-    if let Some((first, rest)) = h.split_once('.') {
-        if first.is_empty() {
-            // Should not happen after trim, but be defensive
-            format!("{}-nfs", h)
-        } else {
-            format!("{}-nfs.{}", first, rest)
-        }
-    } else {
-        // No dot: simple hostname, just append
-        format!("{}-nfs", h)
-    }
-}
-
-/// Returns true if the string looks like a Docker auto-assigned default hostname
-/// (the short container ID). These are 8-20 lowercase hex digits with no dot.
-/// When we see one, we know the user did not pass --hostname and we should
-/// (historical note — hostname handling is now based on --uts=host)
-pub fn looks_like_docker_default_hostname(h: &str) -> bool {
-    let h = h.trim();
-    if h.contains('.') {
-        return false;
-    }
-    let len = h.len();
-    if !(8..=20).contains(&len) {
-        return false;
-    }
-    h.chars().all(|c| c.is_ascii_hexdigit())
-}
 
 fn sanitize_name(s: &str) -> String {
     s.chars()
@@ -794,24 +715,6 @@ fn derive_export_id(name: &str, base: u16) -> u16 {
         h = h.wrapping_mul(16777619) ^ (*b as u32);
     }
     base + (h % 55000) as u16
-}
-
-// Small hostname helper (no extra deps)
-mod hostname {
-    pub fn get() -> Result<std::ffi::OsString, std::io::Error> {
-        // Simple /proc/sys/kernel/hostname or env fallback
-        if let Ok(h) = std::env::var("HOSTNAME") {
-            return Ok(h.into());
-        }
-        let p = "/proc/sys/kernel/hostname";
-        if let Ok(s) = std::fs::read_to_string(p) {
-            return Ok(s.trim().to_string().into());
-        }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "cannot determine hostname",
-        ))
-    }
 }
 
 #[cfg(test)]

@@ -64,8 +64,14 @@ async fn main() {
     }
 
     // Startup banner: make the keytab hostname requirement impossible to miss
-    let keytab_host = config.server.hostname.clone().filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| std::env::var("HOSTNAME").unwrap_or_else(|_| "your-container-hostname".into()));
+    let keytab_host = config
+        .server
+        .hostname
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("HOSTNAME").unwrap_or_else(|_| "your-container-hostname".into())
+        });
     println!("\nKeytab reminder: your krb5.keytab must contain  nfs/{keytab_host}@YOUR.REALM");
     println!("(Set [server] hostname in nfs-klldap.conf or pass --hostname to the container.)");
 
@@ -138,23 +144,17 @@ async fn main() {
         .hostname
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_string())
-        });
+        .unwrap_or_else(|| std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_string()));
 
-    let tls_paths = crate::certs::ensure_webui_tls_certs(
-        &tls_cert_path,
-        &tls_key_path,
-        &cert_hostname,
-    )
-    .expect("failed to ensure WebUI TLS certificates");
+    let tls_paths =
+        crate::certs::ensure_webui_tls_certs(&tls_cert_path, &tls_key_path, &cert_hostname)
+            .expect("failed to ensure WebUI TLS certificates");
 
     let cert = tls_paths.cert.to_string_lossy().into_owned();
     let key = tls_paths.key.to_string_lossy().into_owned();
 
     // Default bind for in-container operation (accessible from host and network)
-    let addr = std::env::var("WEBUI_BIND")
-        .unwrap_or_else(|_| "0.0.0.0:9630".to_string());
+    let addr = std::env::var("WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
 
     println!("\nListening on https://{addr} (TLS enabled)");
     println!("Certificate: {}", cert);
@@ -176,5 +176,3 @@ async fn main() {
         .await
         .unwrap();
 }
-
-

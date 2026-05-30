@@ -47,7 +47,10 @@ pub struct Session {
 impl Session {
     #[allow(dead_code)]
     pub fn is_privileged(&self) -> bool {
-        matches!(self.role, AuthRole::LocalAdmin | AuthRole::LldapAdmin { .. })
+        matches!(
+            self.role,
+            AuthRole::LocalAdmin | AuthRole::LldapAdmin { .. }
+        )
     }
 }
 
@@ -108,8 +111,8 @@ impl AuthManager {
             return Err("Password must be at least 8 characters".to_string());
         }
 
-        let hash = hash(password, DEFAULT_COST)
-            .map_err(|e| format!("failed to hash password: {}", e))?;
+        let hash =
+            hash(password, DEFAULT_COST).map_err(|e| format!("failed to hash password: {}", e))?;
 
         // Ensure parent directory exists (usually /config or the dir containing the .conf)
         if let Some(parent) = self.simple_pw_path.parent() {
@@ -125,7 +128,8 @@ impl AuthManager {
             .map_err(|e| format!("failed to open {}: {}", self.simple_pw_path.display(), e))?;
 
         // Set 0600 before writing the secret (best effort on Unix).
-        let mut perms = file.metadata()
+        let mut perms = file
+            .metadata()
             .map_err(|e| format!("metadata: {}", e))?
             .permissions();
         perms.set_mode(0o600);
@@ -144,10 +148,14 @@ impl AuthManager {
     /// All other usernames must go through the LLDAP path.
     pub fn validate_simple_password(&self, username: &str, password: &str) -> Result<(), String> {
         if username != "localhost" {
-            return Err("Only the special 'localhost' user can use the simple password path".to_string());
+            return Err(
+                "Only the special 'localhost' user can use the simple password path".to_string(),
+            );
         }
         if !self.has_simple_password() {
-            return Err("No simple password has been set yet. Use the first-run setup form.".to_string());
+            return Err(
+                "No simple password has been set yet. Use the first-run setup form.".to_string(),
+            );
         }
 
         let stored = fs::read_to_string(&self.simple_pw_path)
@@ -204,7 +212,9 @@ impl AuthManager {
         let role = if username == "localhost" {
             AuthRole::LocalAdmin
         } else {
-            AuthRole::LldapAdmin { username: username.to_string() }
+            AuthRole::LldapAdmin {
+                username: username.to_string(),
+            }
         };
         self.create_privileged_session(username, role)
     }

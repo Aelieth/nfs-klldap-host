@@ -115,7 +115,9 @@ impl FsManager {
 
         for share in &self.config.shares {
             if host_path.starts_with(&share.host_path) {
-                let rel = host_path.strip_prefix(&share.host_path).unwrap_or(Path::new(""));
+                let rel = host_path
+                    .strip_prefix(&share.host_path)
+                    .unwrap_or(Path::new(""));
                 let mut cpath = PathBuf::from(root);
                 cpath.push(&share.name);
                 if !rel.as_os_str().is_empty() {
@@ -155,19 +157,12 @@ impl FsManager {
                 return Err(std::io::Error::last_os_error().to_string());
             }
             let perms = std::fs::Permissions::from_mode(mode);
-            std::fs::set_permissions(path, perms)
-                .map_err(|e| e.to_string())?;
+            std::fs::set_permissions(path, perms).map_err(|e| e.to_string())?;
         }
         Ok(())
     }
 
-    fn apply_recursive(
-        &self,
-        path: &Path,
-        uid: u32,
-        gid: u32,
-        mode: u32,
-    ) -> std::io::Result<()> {
+    fn apply_recursive(&self, path: &Path, uid: u32, gid: u32, mode: u32) -> std::io::Result<()> {
         let res = unsafe {
             libc::chown(
                 path.as_os_str().as_encoded_bytes().as_ptr() as *const libc::c_char,

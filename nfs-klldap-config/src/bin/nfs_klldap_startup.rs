@@ -24,8 +24,8 @@ use std::thread;
 use std::time::Duration;
 
 use nfs_klldap_config::{
-    derive_realm_from_uri, extract_host_from_uri, is_persistent_config,
-    suggested_nfs_hostname, NfsKlldapConfig, ConfigError,
+    derive_realm_from_uri, extract_host_from_uri, is_persistent_config, suggested_nfs_hostname,
+    ConfigError, NfsKlldapConfig,
 };
 
 fn main() {
@@ -131,7 +131,11 @@ fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
     let port: u16 = uri
         .split(':')
         .next_back()
-        .and_then(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok())
+        .and_then(|s| {
+            s.trim_end_matches(|c: char| !c.is_ascii_digit())
+                .parse()
+                .ok()
+        })
         .unwrap_or(636);
 
     // DNS resolution test (very important to distinguish from port issues)
@@ -140,7 +144,11 @@ fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
         if !out.status.success() {
             let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
             return LdapReachability::DnsFailure {
-                detail: if msg.is_empty() { "Host not found in DNS".to_string() } else { msg },
+                detail: if msg.is_empty() {
+                    "Host not found in DNS".to_string()
+                } else {
+                    msg
+                },
             };
         }
     }
@@ -172,11 +180,9 @@ fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
                 }
             }
         }
-        Err(e) => {
-            LdapReachability::Unreachable {
-                detail: format!("Failed to execute timeout/nc: {}", e),
-            }
-        }
+        Err(e) => LdapReachability::Unreachable {
+            detail: format!("Failed to execute timeout/nc: {}", e),
+        },
     }
 }
 
@@ -189,15 +195,20 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     let is_ldaps = uri.starts_with("ldaps://");
 
     let mut cmd = Command::new("timeout");
-    cmd.args(["10", "ldapsearch"])
-        .args([
-            "-H", uri,
-            "-D", dn,
-            "-w", pw,
-            "-s", "base",
-            "-b", "",
-            "-o", "nettimeout=5",
-        ]);
+    cmd.args(["10", "ldapsearch"]).args([
+        "-H",
+        uri,
+        "-D",
+        dn,
+        "-w",
+        pw,
+        "-s",
+        "base",
+        "-b",
+        "",
+        "-o",
+        "nettimeout=5",
+    ]);
 
     // Auto TLS handling based on URI scheme
     if is_ldaps {
@@ -220,7 +231,11 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
 
         let friendly = if raw.contains("Invalid credentials") || raw.contains("(49)") {
             format!("BIND FAILED: Invalid credentials (error 49).\n             → Double-check ldap_default_bind_dn and ldap_default_authtok.\n             Raw ldapsearch output: {}", raw)
-        } else if raw.contains("Can't contact LDAP server") || raw.contains("(-1)") || raw.contains("TLS") || raw.contains("certificate") {
+        } else if raw.contains("Can't contact LDAP server")
+            || raw.contains("(-1)")
+            || raw.contains("TLS")
+            || raw.contains("certificate")
+        {
             format!("BIND FAILED: Cannot contact LDAP server or TLS/certificate issue.\n             → Common causes: wrong port, self-signed cert (we set LDAPTLS_REQCERT=never for ldaps), or firewall.\n             Raw: {}", raw)
         } else {
             format!("BIND FAILED:\n             {}", raw)
@@ -264,7 +279,9 @@ fn run_guided_startup(config_path: &Path) -> Result<(), ConfigError> {
             return Ok(());
         }
 
-        println!("\n[WAITING] Edit the config file — the container will auto-continue when ready.\n");
+        println!(
+            "\n[WAITING] Edit the config file — the container will auto-continue when ready.\n"
+        );
         thread::sleep(Duration::from_secs(8));
         print!("\x1b[2J\x1b[H"); // Clear for next iteration (simple TUI refresh)
     }
@@ -297,7 +314,10 @@ fn print_header(config_path: &Path) {
     println!("║  nfs-klldap-host — FIRST RUN SETUP (Step-by-Step)  [Rust guided mode]        ║");
     println!("╠══════════════════════════════════════════════════════════════════════════════╣");
     println!("║  Container hostname: {:<55} ║", hostname);
-    println!("║  Keytab must contain: nfs/{:<50} ║", format!("{}@{}", recommended_principal, realm_display));
+    println!(
+        "║  Keytab must contain: nfs/{:<50} ║",
+        format!("{}@{}", recommended_principal, realm_display)
+    );
     println!("║                                                                              ║");
     println!("║  Standard: Use --uts=host (container sees the real host hostname).           ║");
     println!("║  The name above is what your keytab principal should be.                     ║");
@@ -319,11 +339,15 @@ fn attempt_realm_for_display(config_path: &Path) -> Option<String> {
         if let Some(rest) = t.strip_prefix("ldap_uri") {
             // Accept optional whitespace, =, and optional quotes
             if let Some(eq_pos) = rest.find('=') {
-                let val = rest[eq_pos + 1..].trim().trim_matches(|c| c == '"' || c == '\'');
+                let val = rest[eq_pos + 1..]
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'');
                 if !val.is_empty() && (val.starts_with("ldap://") || val.starts_with("ldaps://")) {
                     if let Some(r) = derive_realm_from_uri(val) {
                         // Never surface the placeholder as a success
-                        if !r.eq_ignore_ascii_case("EXAMPLE.COM") && !r.eq_ignore_ascii_case("EXAMPLE") {
+                        if !r.eq_ignore_ascii_case("EXAMPLE.COM")
+                            && !r.eq_ignore_ascii_case("EXAMPLE")
+                        {
                             return Some(r);
                         }
                     }
@@ -336,10 +360,26 @@ fn attempt_realm_for_display(config_path: &Path) -> Option<String> {
 
 fn print_step_status(current: &StartupStep) {
     let steps = [
-        (StartupStep::WaitForPersistentVolume, "STEP 1/4", "Mount a persistent config volume (REQUIRED)"),
-        (StartupStep::SetLdapUri,             "STEP 2/4", "Set ldap_uri in nfs-klldap.conf (DNS name only)"),
-        (StartupStep::AddBindCredentials,     "STEP 3/4", "Add LLDAP bind credentials in [sssd] section"),
-        (StartupStep::AddShares,              "STEP 4/4", "Add at least one [[shares]] section"),
+        (
+            StartupStep::WaitForPersistentVolume,
+            "STEP 1/4",
+            "Mount a persistent config volume (REQUIRED)",
+        ),
+        (
+            StartupStep::SetLdapUri,
+            "STEP 2/4",
+            "Set ldap_uri in nfs-klldap.conf (DNS name only)",
+        ),
+        (
+            StartupStep::AddBindCredentials,
+            "STEP 3/4",
+            "Add LLDAP bind credentials in [sssd] section",
+        ),
+        (
+            StartupStep::AddShares,
+            "STEP 4/4",
+            "Add at least one [[shares]] section",
+        ),
     ];
 
     for (step, label, desc) in &steps {
@@ -367,7 +407,10 @@ fn is_step_complete(step: &StartupStep, current: &StartupStep) -> bool {
     }
     match (step, current) {
         // Step 1 is complete once we are past it
-        (StartupStep::WaitForPersistentVolume, StartupStep::SetLdapUri | StartupStep::AddBindCredentials | StartupStep::AddShares) => true,
+        (
+            StartupStep::WaitForPersistentVolume,
+            StartupStep::SetLdapUri | StartupStep::AddBindCredentials | StartupStep::AddShares,
+        ) => true,
         // Step 2 is complete once we are past it
         (StartupStep::SetLdapUri, StartupStep::AddBindCredentials | StartupStep::AddShares) => true,
         // Step 3 is complete once we are past it
@@ -403,7 +446,9 @@ fn print_current_step_guidance(current: &StartupStep) {
                     if t.starts_with("ldap_uri") {
                         if let Some(eq) = t.find('=') {
                             let val = t[eq + 1..].trim().trim_matches(|c| c == '"' || c == '\'');
-                            if !val.is_empty() && (val.starts_with("ldap://") || val.starts_with("ldaps://")) {
+                            if !val.is_empty()
+                                && (val.starts_with("ldap://") || val.starts_with("ldaps://"))
+                            {
                                 println!("             {}", t);
                                 current_val = Some(val.to_string());
                             }
@@ -429,10 +474,17 @@ fn print_current_step_guidance(current: &StartupStep) {
                 let port: u16 = val
                     .split(':')
                     .next_back()
-                    .and_then(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok())
+                    .and_then(|s| {
+                        s.trim_end_matches(|c: char| !c.is_ascii_digit())
+                            .parse()
+                            .ok()
+                    })
                     .unwrap_or(636);
 
-                println!("             [TROUBLESHOOTING] Testing reachability of {}:{}", host, port);
+                println!(
+                    "             [TROUBLESHOOTING] Testing reachability of {}:{}",
+                    host, port
+                );
 
                 match check_ldap_reachability(&host, &val) {
                     LdapReachability::DnsFailure { detail, .. } => {
@@ -440,8 +492,12 @@ fn print_current_step_guidance(current: &StartupStep) {
                         println!("                Could not resolve hostname '{}'", host);
                         println!("                Detail: {}", detail);
                         println!("                → Common fixes:");
-                        println!("                  - Check spelling / DNS records on the Docker host");
-                        println!("                  - Container may need --network=host or --dns=...");
+                        println!(
+                            "                  - Check spelling / DNS records on the Docker host"
+                        );
+                        println!(
+                            "                  - Container may need --network=host or --dns=..."
+                        );
                         println!("                  - Test from host: getent hosts {}", host);
                     }
                     LdapReachability::Unreachable { detail, .. } => {
@@ -449,8 +505,13 @@ fn print_current_step_guidance(current: &StartupStep) {
                         println!("                Detail: {}", detail);
                         println!("                → Common fixes:");
                         println!("                  - Is the port correct? (ldaps usually 636, ldap usually 389)");
-                        println!("                  - Firewall / SELinux blocking from Docker host?");
-                        println!("                  - Try from the Docker host:  nc -zv {} {}", host, port);
+                        println!(
+                            "                  - Firewall / SELinux blocking from Docker host?"
+                        );
+                        println!(
+                            "                  - Try from the Docker host:  nc -zv {} {}",
+                            host, port
+                        );
                     }
                     LdapReachability::Reachable => {
                         println!("             ✓ Basic TCP reachability OK (DNS + port open)");
@@ -525,17 +586,33 @@ fn print_current_step_guidance(current: &StartupStep) {
                             let container_path = cfg.container_path_for(share);
                             let host_p = &share.host_path;
 
-                            println!("             Share: {}  →  host: {}  |  container: {}",
-                                share.name, host_p.display(), container_path);
+                            println!(
+                                "             Share: {}  →  host: {}  |  container: {}",
+                                share.name,
+                                host_p.display(),
+                                container_path
+                            );
 
                             if !host_p.is_absolute() {
-                                println!("             ❌ host_path must be absolute (start with /)");
+                                println!(
+                                    "             ❌ host_path must be absolute (start with /)"
+                                );
                             } else if Path::new(&container_path).exists() {
-                                println!("             ✓ Data visible inside container at {}", container_path);
+                                println!(
+                                    "             ✓ Data visible inside container at {}",
+                                    container_path
+                                );
                             } else {
-                                println!("             ⚠ Data NOT visible inside container at {}", container_path);
+                                println!(
+                                    "             ⚠ Data NOT visible inside container at {}",
+                                    container_path
+                                );
                                 println!("                → Add this bind mount when starting the container:");
-                                println!("                  -v {}:{}", host_p.display(), container_path);
+                                println!(
+                                    "                  -v {}:{}",
+                                    host_p.display(),
+                                    container_path
+                                );
                             }
                         }
                     }
@@ -581,7 +658,9 @@ fn compute_current_step(config_path: &Path) -> StartupStep {
     }
 
     // Step 3: Bind credentials present and working?
-    if cfg.sssd.ldap_default_bind_dn.trim().is_empty() || cfg.sssd.ldap_default_authtok.trim().is_empty() {
+    if cfg.sssd.ldap_default_bind_dn.trim().is_empty()
+        || cfg.sssd.ldap_default_authtok.trim().is_empty()
+    {
         return StartupStep::AddBindCredentials;
     }
 
@@ -617,8 +696,6 @@ fn compute_current_step(config_path: &Path) -> StartupStep {
 // -----------------------------------------------------------------------------
 // (Rich diagnostics are defined earlier in the file)
 // -----------------------------------------------------------------------------
-
-
 
 /// One-shot diagnostics (useful for `nfs-klldap-startup check` and for the
 /// future when we want to expose health info).
@@ -660,7 +737,10 @@ fn print_runtime_diagnostics() {
         }
         println!("             [OK] keytab is readable by current user (root during setup)");
     } else {
-        println!("             (no keytab at {} — Kerberos NFS will not work until provided)", kt);
+        println!(
+            "             (no keytab at {} — Kerberos NFS will not work until provided)",
+            kt
+        );
     }
 
     // Writable runtime dirs test (same dirs as the old shell logic)
@@ -679,9 +759,14 @@ fn print_runtime_diagnostics() {
             if std::fs::File::create(&test_file).is_ok() {
                 let _ = std::fs::remove_file(&test_file);
             } else {
-                println!("             [ACTION REQUIRED] {} is not writable by current user", d);
+                println!(
+                    "             [ACTION REQUIRED] {} is not writable by current user",
+                    d
+                );
                 println!("                    Fix on host (or add --user root temporarily for debugging):");
-                println!("                      # Determine the runtime 'nfs' UID inside the image:");
+                println!(
+                    "                      # Determine the runtime 'nfs' UID inside the image:"
+                );
                 println!("                      NFS_UID=$(docker run --rm --entrypoint id $d -u nfs 2>/dev/null | tr -cd 0-9)");
                 println!("                      sudo chown -R $NFS_UID:$NFS_UID {}   # (use the real container nfs uid)", d);
             }
@@ -743,16 +828,31 @@ fn print_keytab_hostname_alignment() {
     let kt_str = kt_hosts.join(" ");
 
     if kt_hosts.iter().any(|h| h == &current_host) {
-        println!("             (hostname and keytab: aligned)   hostname={}   keytab={}", current_host, kt_str);
+        println!(
+            "             (hostname and keytab: aligned)   hostname={}   keytab={}",
+            current_host, kt_str
+        );
     } else {
         let suggested = suggested_nfs_hostname(&current_host);
         println!("             WARNING: (hostname and keytab: mismatch! change hostname or recreate keytab)");
-        println!("                      Container hostname : {}", current_host);
+        println!(
+            "                      Container hostname : {}",
+            current_host
+        );
         if suggested != current_host {
-            println!("                      Recommended hostname for this host: {}", suggested);
-            println!("                      (Use --hostname {} when starting the container)", suggested);
+            println!(
+                "                      Recommended hostname for this host: {}",
+                suggested
+            );
+            println!(
+                "                      (Use --hostname {} when starting the container)",
+                suggested
+            );
         }
-        println!("                      nfs/ principals in keytab : {}", kt_str);
+        println!(
+            "                      nfs/ principals in keytab : {}",
+            kt_str
+        );
         println!("                      Services will continue to start.");
         println!("                      See the web UI (System Settings page) for current status and remediation steps.");
     }

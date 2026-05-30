@@ -107,10 +107,7 @@ pub async fn login(
     let result: Result<(String, crate::auth::AuthRole), String> = if username == "localhost" {
         // Special local-machine admin path (bcrypt sidecar)
         match state.auth.validate_simple_password(username, password) {
-            Ok(()) => Ok((
-                username.to_string(),
-                crate::auth::AuthRole::LocalAdmin,
-            )),
+            Ok(()) => Ok((username.to_string(), crate::auth::AuthRole::LocalAdmin)),
             Err(e) => Err(e),
         }
     } else {
@@ -186,7 +183,9 @@ pub async fn setup_password(
     if state.auth.has_simple_password() {
         // Already initialized — treat as bad request.
         let html = LoginTemplate {
-            error: Some("A simple password has already been set. Use the normal login form.".to_string()),
+            error: Some(
+                "A simple password has already been set. Use the normal login form.".to_string(),
+            ),
             current_user: None,
             first_run: false,
             admin_group: state.auth.admin_group().to_string(),
@@ -640,7 +639,7 @@ pub(crate) struct StructuredSettingsForm {
     sssd_bind_dn: Option<String>,
     sssd_bind_pw: Option<String>,
     sssd_port: Option<u16>,
-    sssd_search_base: Option<String>,   // main ldap_search_base override
+    sssd_search_base: Option<String>, // main ldap_search_base override
     sssd_user_base: Option<String>,
     sssd_group_base: Option<String>,
     // TLS options for ldap/ldaps flexibility (insecure vs secure, self-signed etc.)

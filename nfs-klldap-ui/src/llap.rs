@@ -420,7 +420,11 @@ impl LldapClient {
     /// Verify that a regular (non-service) LLDAP user can authenticate.
     /// Uses the login mutation but does **not** replace our service token.
     /// Returns Ok(()) on success. This is used by the WebUI login flow.
-    pub async fn verify_user_credentials(&mut self, username: &str, password: &str) -> Result<(), LldapError> {
+    pub async fn verify_user_credentials(
+        &mut self,
+        username: &str,
+        password: &str,
+    ) -> Result<(), LldapError> {
         // We intentionally do not call self.authenticate() because that would
         // replace the service-account JWT we use for searches.
         let query = r#"
@@ -450,7 +454,10 @@ impl LldapClient {
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
-            return Err(LldapError::Auth(format!("login failed: {} - {}", status, text)));
+            return Err(LldapError::Auth(format!(
+                "login failed: {} - {}",
+                status, text
+            )));
         }
 
         let graphql_resp: serde_json::Value = response

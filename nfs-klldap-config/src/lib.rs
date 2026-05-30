@@ -353,7 +353,10 @@ impl NfsKlldapConfig {
         // and auto-derivation could not produce one (e.g. IP-based ldap_uri).
         {
             let r = self.kerberos.realm.as_deref().unwrap_or("").trim();
-            if r.is_empty() || r.eq_ignore_ascii_case("EXAMPLE.COM") || r.eq_ignore_ascii_case("EXAMPLE") {
+            if r.is_empty()
+                || r.eq_ignore_ascii_case("EXAMPLE.COM")
+                || r.eq_ignore_ascii_case("EXAMPLE")
+            {
                 return Err(ConfigError::Validation(
                     "kerberos.realm is required (auto-derivation from ldap_uri failed or produced a placeholder).\n\
                      Set [kerberos] realm = \"YOUR.REALM\" in nfs-klldap.conf, or provide NFS_REALM env var.\n\
@@ -372,7 +375,10 @@ impl NfsKlldapConfig {
         }
 
         // Auto search bases — derive from the actual realm (no more stale example.com defaults)
-        let base_dn = format!("dc={}", self.effective_realm().to_lowercase().replace('.', ",dc="));
+        let base_dn = format!(
+            "dc={}",
+            self.effective_realm().to_lowercase().replace('.', ",dc=")
+        );
         if self.sssd.ldap_user_search_base.is_none() {
             self.sssd.ldap_user_search_base = Some(format!("ou=people,{}", base_dn));
         }
@@ -774,7 +780,12 @@ cache_credentials = true
 
     // Rich LLDAP + POSIX attribute mappings + production safety flags.
     // The helper now also handles hybrid Kerberos authentication when requested.
-    content.push_str(&build_ldap_domain_options(cfg, user_base, group_base, is_plain_ldap));
+    content.push_str(&build_ldap_domain_options(
+        cfg,
+        user_base,
+        group_base,
+        is_plain_ldap,
+    ));
 
     fs::write(out, content.as_bytes())?;
     #[cfg(unix)]
@@ -790,26 +801,80 @@ cache_credentials = true
 /// This is the main "broad spectrum" helper. It aims to generate something
 /// very close to real-world proven LLDAP + Kerberos + Ganesha configurations
 /// (both plain ldap:// and ldaps:// variants).
-fn build_ldap_domain_options(cfg: &NfsKlldapConfig, user_base: &str, group_base: &str, is_plain_ldap: bool) -> String {
+fn build_ldap_domain_options(
+    cfg: &NfsKlldapConfig,
+    user_base: &str,
+    group_base: &str,
+    is_plain_ldap: bool,
+) -> String {
     let s = &cfg.sssd;
 
     // --- POSIX attribute mappings (user overrides always win) ---
-    let user_obj   = s.ldap_user_object_class.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "posixAccount".to_string());
-    let group_obj  = s.ldap_group_object_class.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "posixGroup".to_string());
+    let user_obj = s
+        .ldap_user_object_class
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "posixAccount".to_string());
+    let group_obj = s
+        .ldap_group_object_class
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "posixGroup".to_string());
 
-    let u_name     = s.ldap_user_name.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "uid".to_string());
-    let u_uid      = s.ldap_user_uid_number.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "uidNumber".to_string());
-    let u_gid      = s.ldap_user_gid_number.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "gidNumber".to_string());
-    let u_home     = s.ldap_user_home_directory.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "homeDirectory".to_string());
-    let u_shell    = s.ldap_user_shell.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "loginShell".to_string());
+    let u_name = s
+        .ldap_user_name
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "uid".to_string());
+    let u_uid = s
+        .ldap_user_uid_number
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "uidNumber".to_string());
+    let u_gid = s
+        .ldap_user_gid_number
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "gidNumber".to_string());
+    let u_home = s
+        .ldap_user_home_directory
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "homeDirectory".to_string());
+    let u_shell = s
+        .ldap_user_shell
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "loginShell".to_string());
 
-    let g_name     = s.ldap_group_name.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "cn".to_string());
-    let g_gid      = s.ldap_group_gid_number.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| "gidNumber".to_string());
+    let g_name = s
+        .ldap_group_name
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "cn".to_string());
+    let g_gid = s
+        .ldap_group_gid_number
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "gidNumber".to_string());
 
     // enumerate default = true because this project (Ganesha + permission helper + getent usage)
     // benefits from a warm cache in typical homelab/small environments.
     // Users with larger directories or different operational needs can set enumerate = false.
-    let enumerate = if s.enumerate.unwrap_or(true) { "true" } else { "false" };
+    let enumerate = if s.enumerate.unwrap_or(true) {
+        "true"
+    } else {
+        "false"
+    };
 
     let mut out = format!(
         r#"ldap_user_search_base = {user_base}
@@ -831,8 +896,17 @@ use_fully_qualified_names = {fq}
 "#,
         user_base = user_base,
         group_base = group_base,
-        access = s.access_provider.as_ref().filter(|v| !v.trim().is_empty()).map(|s| s.trim()).unwrap_or("permit"),
-        fq = if s.use_fully_qualified_names.unwrap_or(false) { "true" } else { "false" },
+        access = s
+            .access_provider
+            .as_ref()
+            .filter(|v| !v.trim().is_empty())
+            .map(|s| s.trim())
+            .unwrap_or("permit"),
+        fq = if s.use_fully_qualified_names.unwrap_or(false) {
+            "true"
+        } else {
+            "false"
+        },
     );
 
     // ldap_schema (very useful with modern LLDAP)
@@ -842,7 +916,10 @@ use_fully_qualified_names = {fq}
 
     // ldap_id_mapping (usually false when LLDAP provides real numbers)
     if let Some(idmap) = s.ldap_id_mapping {
-        out.push_str(&format!("ldap_id_mapping = {}\n", if idmap { "true" } else { "false" }));
+        out.push_str(&format!(
+            "ldap_id_mapping = {}\n",
+            if idmap { "true" } else { "false" }
+        ));
     }
 
     // === TLS / safety flags (auto-switches based on ldap vs ldaps) ===
@@ -858,22 +935,31 @@ use_fully_qualified_names = {fq}
     if is_plain_ldap {
         // === Plain LDAP (insecure) profile ===
         // Emit strong safety/acknowledgement flags by default.
-        if s.ldap_auth_disable_tls_never_use_in_production.unwrap_or(true) {
+        if s.ldap_auth_disable_tls_never_use_in_production
+            .unwrap_or(true)
+        {
             out.push_str("ldap_auth_disable_tls_never_use_in_production = true\n");
         }
 
-        let reqcert = s.ldap_tls_reqcert.as_ref()
+        let reqcert = s
+            .ldap_tls_reqcert
+            .as_ref()
             .filter(|v| !v.trim().is_empty())
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|| "never".to_string());
         out.push_str(&format!("ldap_tls_reqcert = {}\n", reqcert));
 
         let use_start = s.ldap_id_use_start_tls.unwrap_or(false);
-        out.push_str(&format!("ldap_id_use_start_tls = {}\n", if use_start { "true" } else { "false" }));
+        out.push_str(&format!(
+            "ldap_id_use_start_tls = {}\n",
+            if use_start { "true" } else { "false" }
+        ));
     } else {
         // === LDAPS (secure) profile ===
         // Default to stricter validation ("demand") unless user overrides.
-        let reqcert = s.ldap_tls_reqcert.as_ref()
+        let reqcert = s
+            .ldap_tls_reqcert
+            .as_ref()
             .filter(|v| !v.trim().is_empty())
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|| "demand".to_string());
@@ -889,15 +975,24 @@ use_fully_qualified_names = {fq}
     // This matches real production usage of LLDAP + Kerberized NFS (LDAP for identity, Kerberos for auth).
     let auth = s.auth_provider.as_ref().map(|s| s.trim()).unwrap_or("ldap");
     if auth.eq_ignore_ascii_case("krb5") {
-        let chpass = s.chpass_provider.as_ref().filter(|v| !v.trim().is_empty())
+        let chpass = s
+            .chpass_provider
+            .as_ref()
+            .filter(|v| !v.trim().is_empty())
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|| "krb5".to_string());
 
-        let kdc_host = s.krb5_server.as_ref().filter(|v| !v.trim().is_empty())
+        let kdc_host = s
+            .krb5_server
+            .as_ref()
+            .filter(|v| !v.trim().is_empty())
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|| extract_host_from_uri(&cfg.ldap_uri));
 
-        let kpasswd = s.krb5_kpasswd.as_ref().filter(|v| !v.trim().is_empty())
+        let kpasswd = s
+            .krb5_kpasswd
+            .as_ref()
+            .filter(|v| !v.trim().is_empty())
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|| kdc_host.clone());
 
@@ -914,10 +1009,16 @@ krb5_kpasswd = {kpasswd}
 
         // Extra Kerberos tuning from real ldaps production configs
         if let Some(v) = s.krb5_validate {
-            out.push_str(&format!("krb5_validate = {}\n", if v { "true" } else { "false" }));
+            out.push_str(&format!(
+                "krb5_validate = {}\n",
+                if v { "true" } else { "false" }
+            ));
         }
         if let Some(v) = s.krb5_store_password_if_offline {
-            out.push_str(&format!("krb5_store_password_if_offline = {}\n", if v { "true" } else { "false" }));
+            out.push_str(&format!(
+                "krb5_store_password_if_offline = {}\n",
+                if v { "true" } else { "false" }
+            ));
         }
     }
 
@@ -1253,7 +1354,10 @@ mod tests {
 
         let krb = fs::read_to_string(&paths.krb5_conf).unwrap();
         assert!(krb.contains("default_realm = TEST"));
-        assert!(krb.contains("rdns = false"), "krb5.conf should include rdns=false for improved Kerberos reverse-DNS tolerance");
+        assert!(
+            krb.contains("rdns = false"),
+            "krb5.conf should include rdns=false for improved Kerberos reverse-DNS tolerance"
+        );
 
         let main = fs::read_to_string(&paths.ganesha_conf).unwrap();
         assert!(main.contains("%include"));
@@ -1353,7 +1457,9 @@ mod tests {
         // Explicit placeholder in config must be rejected (core user complaint)
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://kllap.example.com:6360".into(),
-            kerberos: KerberosSection { realm: Some("EXAMPLE.COM".into()) },
+            kerberos: KerberosSection {
+                realm: Some("EXAMPLE.COM".into()),
+            },
             sssd: SssdSection {
                 ldap_default_bind_dn: "uid=a,ou=people,dc=x,dc=com".into(),
                 ldap_default_authtok: "s".into(),
@@ -1456,7 +1562,9 @@ mod tests {
         let err = c.validate_and_derive().unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("LDAP IP addresses are not supported, DNS resolution is required for operation."),
+            msg.contains(
+                "LDAP IP addresses are not supported, DNS resolution is required for operation."
+            ),
             "unexpected error: {}",
             msg
         );
@@ -1464,7 +1572,9 @@ mod tests {
         // IPv6 (with brackets in URI)
         let mut c6 = make_minimal("ldaps://[2001:db8::1]:6360");
         let err6 = c6.validate_and_derive().unwrap_err();
-        assert!(err6.to_string().contains("LDAP IP addresses are not supported"));
+        assert!(err6
+            .to_string()
+            .contains("LDAP IP addresses are not supported"));
 
         // Also bare IPv6 without port etc.
         let mut c6b = make_minimal("ldap://[::1]");

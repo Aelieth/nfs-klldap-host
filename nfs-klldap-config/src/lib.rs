@@ -26,6 +26,8 @@ mod config;
 mod error;
 mod uri;
 mod hostname;
+mod persist;
+mod validate;
 
 // =============================================================================
 // Public API re-exports (the stable contract for binaries + nfs-klldap-ui)
@@ -37,89 +39,32 @@ pub use config::{
 pub use error::ConfigError;
 
 pub use hostname::{looks_like_docker_default_hostname, suggested_nfs_hostname};
+pub use persist::{is_persistent_config, load_host_paths_only};
 pub use uri::{derive_realm_from_uri, extract_host_from_uri};
+
+// =============================================================================
+// Stable public orchestration / generation entry points
+//
+// These four functions are the primary public API called by:
+//   - src/main.rs (the generator CLI)
+//   - src/bin/nfs_klldap_startup.rs (guided startup + diagnostics)
+//   - nfs-klldap-ui (via NfsKlldapConfig::load + helpers)
+//
+// They are currently defined directly in this facade during the modularization
+// (Phases 0-3 complete). They will be moved to their logical modules and
+// re-exported here in later phases (persist.rs in Phase 4, generate.rs in
+// Phase 5). This comment + the per-function notes below make the intent
+// explicit so the surface cannot be accidentally dropped.
+//
+// See the approved modularization plan for details.
+// =============================================================================
 
 // =============================================================================
 // Imports needed by the remaining facade / coordination code
 // =============================================================================
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-// Temporary: only needed for the inline SharesOnly/RawShare helper structs
-// inside load_host_paths_only (will be moved to persist.rs in Phase 4).
-use serde::Deserialize;
-
-mod validate;
-
-
-/// Returns true if the given config path is on a persistent volume (i.e. a real
-/// host bind mount) rather than living inside the container's own filesystem layer.
-///
-/// This is used for the guided first-run experience: we refuse to do meaningful
-/// work until the user has mounted a real volume at /config (or wherever
-/// NFS_CONFIG points).
-#[cfg(unix)]
-pub fn is_persistent_config(path: &Path) -> bool {
-    if !path.exists() {
-        return false;
-    }
-
-    use std::os::unix::fs::MetadataExt;
-
-    let config_meta = match std::fs::metadata(path) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    let root_meta = match std::fs::metadata("/") {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-
-    // Different device IDs => the file lives on a different mount (i.e. host volume)
-    config_meta.dev() != root_meta.dev()
-}
-
-#[cfg(not(unix))]
-pub fn is_persistent_config(_path: &Path) -> bool {
-    // On non-Unix we conservatively say "assume it's persistent" so the
-    // guided flow doesn't block forever in weird environments.
-    true
-}
-
-/// Load only the [[shares]] host_path entries from a config file.
-///
-/// This is intentionally tolerant of missing credentials / incomplete config
-/// so the privileged permission helper can still enforce its allow-list even
-/// if the rest of the TOML is in a transitional state. Only well-formed
-/// absolute host_path values are returned.
-pub fn load_host_paths_only(path: &Path) -> Result<Vec<PathBuf>, ConfigError> {
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-    let contents = fs::read_to_string(path).map_err(ConfigError::Io)?;
-
-    #[derive(Deserialize)]
-    struct SharesOnly {
-        #[serde(default)]
-        shares: Vec<RawShare>,
-    }
-    #[derive(Deserialize)]
-    struct RawShare {
-        host_path: Option<PathBuf>,
-    }
-
-    let partial: SharesOnly = toml::from_str(&contents).map_err(|e| ConfigError::Parse {
-        path: path.display().to_string(),
-        msg: e.to_string(),
-    })?;
-
-    Ok(partial
-        .shares
-        .into_iter()
-        .filter_map(|s| s.host_path)
-        .filter(|p| !p.as_os_str().is_empty())
-        .collect())
-}
 
 /// Generate the first-run safe, heavily commented template.
 /// Never overwrites an existing file.
@@ -228,6 +173,8 @@ default_security = "krb5p"   # krb5p (recommended) | krb5i | krb5
     .to_string()
 }
 
+// Stable public orchestration entry point.
+// (Will be re-exported from generate.rs after Phase 5 extraction.)
 /// Write the default template only if the file does not exist.
 /// Returns true if a file was created.
 pub fn write_default_config_if_missing(path: &Path) -> Result<bool, ConfigError> {
@@ -248,6 +195,8 @@ pub fn write_default_config_if_missing(path: &Path) -> Result<bool, ConfigError>
     Ok(true)
 }
 
+// Stable public orchestration entry point.
+// (Will be re-exported from generate.rs after Phase 5 extraction.)
 /// Full generation driver. Call this from entrypoint / watcher / UI save hooks.
 pub fn generate_all(cfg: &NfsKlldapConfig, paths: &GenerationPaths) -> Result<(), ConfigError> {
     fs::create_dir_all(&paths.exports_dir)?;

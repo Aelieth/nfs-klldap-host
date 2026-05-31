@@ -1,3 +1,35 @@
+## Unreleased / next patch
+
+### WebUI Share Permissions Tree Browser (Bugfix + Robustness)
+
+- **Fixed**: The directory tree browser on the Share Permissions page (`/`) now works correctly when the WebUI runs inside the container (the supported model). Previously, share cards could appear after login but clicking them (or the initial auto-load) showed no directories. Root cause: `FsManager::build_tree` (and `directory_form`) operated directly on raw `host_path` values from the config. These are *host-side* identities; inside the container the data is only visible under `storage.container_root` + share `name` via the bind mounts. The translation (`host_path_to_container_path`) already existed and was used for `apply_permissions` writes — it is now also used for all read/browse operations (`build_tree`). Logical (host-namespace) paths are preserved for the UI layer, `is_allowed` checks, and round-tripping in HTMX requests.
+- The new behavior exactly matches the contract already used by the startup TUI diagnostics, Ganesha export generation, and the documented volume examples.
+- Added a new unit test that specifically exercises the host vs. container path separation for `build_tree` (previously all tree tests ran in an environment where host_path == real FS path).
+- **Cheap robustness wins** (as requested):
+  - All dynamic paths in the tree UI (share cards, lazy subdir nodes, initial load, error back-buttons) now go through `data-*` attributes + `encodeURIComponent` before being used in URLs or `htmx.ajax` calls. Raw host paths (which can legally contain spaces or special characters) are never interpolated into HTML attributes or JS string literals.
+  - Removed the conflicting duplicate HTMX declarative triggers (`hx-get` + `onclick`) on share cards.
+  - Extended the existing delegated click handler in `base.html` (the robust pattern already used for permission forms) to also handle lazy expansion of subdirectory trees.
+  - When a path is allowed by config but not visible inside the container (the previous "nothing shows" symptom), the tree area and permission form now show a clear diagnostic message with guidance modeled on the startup TUI output ("check your bind mounts / suggested `-v` line").
+  - Added a small honest staleness note on the Share Permissions page: the list of shares + allowed roots is loaded at container startup (editing shares in Settings still requires a restart for the list to reflect, which is the current architectural reality and matches how bind mounts themselves usually change).
+- All 17 tests in `nfs-klldap-ui` pass, `cargo clippy` clean for the changes, no behavior change for the write/apply path or for correct existing mounts.
+
+### Major Refactor: Complete cutover from GraphQL to standardized LDAP for WebUI login and permission editor
+
+- **Big simplification**: The in-container WebUI (`nfs-klldap-ui`) no longer uses GraphQL (or the `/auth/simple/login` REST endpoint) for login of real KLLDAP admins or for the live permission editor (user/group search typeahead, `resolve_user`/`resolve_group`, and apply).
+- The permission client has been rewritten as a pure LDAP client (`LdapClient` in the newly renamed `ldap.rs`, previously `llap.rs` / `LldapClient`).
+  - Uses exactly the same `ldap_uri` + `[sssd]` bind credentials (`ldap_default_bind_dn` / `authtok` or `NFS_KLLDAP_LLDAP_*` env overrides) + attribute mappings that SSSD uses.
+  - All searches use `Scope::Subtree` from the effective user/group search bases (new shared helper `effective_ldap_search_bases` in `nfs-klldap-config`) so users and groups placed in child OUs are correctly discovered.
+  - `verify_user_credentials` now performs a service-account DN lookup followed by a temporary simple bind as the target user (standard, secure RFC pattern).
+  - Admin group membership checks during login are now done with the service account via a group search on the mapped `group_member` attribute (e.g. `memberUid`). The previous "authenticate as the end-user then query their groups via GraphQL" workaround is gone.
+- Removed the `reqwest` dependency from `nfs-klldap-ui` entirely.
+- Clean renames for clarity:
+  - Module: `llap.rs` → `ldap.rs`
+  - Types: `LldapClient` → `LdapClient`, `LldapError` → `LdapError`
+  - Constructor now takes `ldap_uri`, effective search bases, `PosixAttributeMapping`, and TLS policy flags derived from the `[sssd]` section.
+- Updated reload/status UI, error messages, comments, and call sites throughout.
+- `cargo check`, `cargo test --workspace`, and `cargo clippy -D warnings` all clean.
+- This aligns the WebUI permission/login paths with the rest of the system (SSSD + the existing `ldapsearch` probe in `nfs-klldap-startup`).
+
 ## v0.6.2
 
 ### WebUI Login Screen, UX & Safety (Major Polish + Bugfixes)

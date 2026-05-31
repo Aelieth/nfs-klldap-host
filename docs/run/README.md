@@ -180,7 +180,7 @@ The WebUI runs inside the container and starts automatically from `entrypoint.sh
 - **Access**:
   - From the Docker host: `https://localhost:9630`
   - From the network: `https://<host>:9630` (after publishing the port with `-p 9630:9630`)
-- On `/settings`: shows current LLDAP service identity + "Reload NFS client" (re-authenticates the permission client after editing `sssd.ldap_default_*` or `management.lldap_graphql_url`).
+- On `/settings`: shows current LDAP service identity + "Reload NFS client" (re-binds the permission client after editing `sssd.ldap_default_*` or `ldap_uri`).
 
 See the root [README.md](../README.md) for the recommended access section.
 

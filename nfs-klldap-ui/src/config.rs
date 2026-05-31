@@ -33,32 +33,15 @@ pub fn all_managed_roots(cfg: &Config) -> Vec<PathBuf> {
     cfg.shares.iter().map(|s| s.host_path.clone()).collect()
 }
 
-/// Derive a reasonable LLDAP GraphQL URL from ldap_uri if the management section doesn't have one.
+/// Return (username, password) for the long-lived service LDAP bind used by
+/// the permission client (LdapClient).
 ///
-/// LLDAP (and KLLDAP forks) serve the management UI + GraphQL API on a *different* port
-/// than the LDAP service itself (default LDAP ports 3890/6360 vs management 17170).
-/// We always derive http on the standard LLDAP management port unless the user provides
-/// an explicit override (for TLS terminators, custom ports, or reverse-proxy setups).
-pub fn derive_lldap_url(cfg: &Config) -> String {
-    if let Some(u) = &cfg.management.lldap_graphql_url {
-        return u.clone();
-    }
-    // Use the shared robust host extractor (handles IPv6 literals etc.)
-    let host = nfs_klldap_config::extract_host_from_uri(&cfg.ldap_uri);
-    // Standard LLDAP: management/GraphQL on 17170 (plain http by default).
-    // Set [management] lldap_graphql_url explicitly if you use https, 17171, or a proxy path.
-    format!("http://{}:17170/api/graphql", host)
-}
-
-/// Return (username, password) for authenticating the LLDAP GraphQL client.
+/// Env vars NFS_KLLDAP_LLDAP_USER and NFS_KLLDAP_LLDAP_PW take precedence.
+/// Falls back to parsing a short username from sssd.ldap_default_bind_dn.
 ///
-/// Env vars NFS_KLLDAP_LLDAP_USER and NFS_KLLDAP_LLDAP_PW take precedence
-/// (useful when the SSSD bind DN user differs from the account used for login,
-/// or for injecting secrets in containerized deployments without editing the TOML).
-///
-/// Falls back to parsing a short username from sssd.ldap_default_bind_dn
-/// (uid=foo,... or cn=foo,...) and using the corresponding authtok from the same file.
-pub fn lldap_login_creds(cfg: &Config) -> (String, String) {
+/// Env vars NFS_KLLDAP_LLDAP_USER and NFS_KLLDAP_LLDAP_PW take precedence.
+/// Falls back to parsing a short username from sssd.ldap_default_bind_dn.
+pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
     if let (Ok(user), Ok(pass)) = (
         std::env::var("NFS_KLLDAP_LLDAP_USER"),
         std::env::var("NFS_KLLDAP_LLDAP_PW"),
@@ -147,45 +130,29 @@ mod tests {
     }
 
     #[test]
-    fn derive_lldap_url_uses_management_section_when_present() {
-        let mut cfg = base_config();
-        cfg.management.lldap_graphql_url = Some("https://custom:8443/graphql".into());
-        assert_eq!(derive_lldap_url(&cfg), "https://custom:8443/graphql");
-    }
-
-    #[test]
-    fn derive_lldap_url_falls_back_to_ldap_uri() {
+    fn ldap_service_creds_parses_uid_from_dn() {
         let cfg = base_config();
-        let url = derive_lldap_url(&cfg);
-        assert!(url.contains("kllap.example.com"));
-        assert!(url.contains(":17170")); // LLDAP management port, not the LDAP port from ldap_uri
-        assert!(url.ends_with("/api/graphql"));
-    }
-
-    #[test]
-    fn lldap_login_creds_parses_uid_from_dn() {
-        let cfg = base_config();
-        let (user, pass) = lldap_login_creds(&cfg);
+        let (user, pass) = ldap_service_creds(&cfg);
         assert_eq!(user, "admin");
         assert_eq!(pass, "sekret");
     }
 
     #[test]
-    fn lldap_login_creds_prefers_env_vars() {
+    fn ldap_service_creds_prefers_env_vars() {
         let _g1 = EnvGuard::set("NFS_KLLDAP_LLDAP_USER", "svc-account");
         let _g2 = EnvGuard::set("NFS_KLLDAP_LLDAP_PW", "env-secret");
 
         let cfg = base_config();
-        let (user, pass) = lldap_login_creds(&cfg);
+        let (user, pass) = ldap_service_creds(&cfg);
         assert_eq!(user, "svc-account");
         assert_eq!(pass, "env-secret");
     }
 
     #[test]
-    fn lldap_login_creds_falls_back_to_admin_on_malformed_dn() {
+    fn ldap_service_creds_falls_back_to_admin_on_malformed_dn() {
         let mut cfg = base_config();
         cfg.sssd.ldap_default_bind_dn = "cn=weird,dc=example".into();
-        let (user, _) = lldap_login_creds(&cfg);
+        let (user, _) = ldap_service_creds(&cfg);
         assert_eq!(user, "weird");
     }
 }

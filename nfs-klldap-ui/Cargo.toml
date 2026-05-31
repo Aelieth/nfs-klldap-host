@@ -18,9 +18,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 
-# --- Core async runtime + HTTP client ----------------------------------------
+# --- Core async runtime ------------------------------------------------------
 tokio = { version = "1.52.3", features = ["full"] }
-reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
 
 # --- TOML handling (comment-preserving edits for the central config) ---------
 toml_edit = "0.22"
@@ -30,9 +29,10 @@ nfs-klldap-config = { path = "../nfs-klldap-config" }
 
 # --- Web framework (Axum + HTMX via Askama) ----------------------------------
 axum = { version = "0.7", features = ["macros"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
-# rustls with explicit provider (required for tls-rustls in recent versions)
+# rustls with explicit provider
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+tokio-rustls = "0.26"
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
 tower-http = { version = "0.5", features = ["fs", "trace"] }
 askama = { version = "0.12", features = ["with-axum"] }
 askama_axum = "0.4"
@@ -43,9 +43,18 @@ rand = "0.8"
 libc = "0.2"
 bcrypt = "0.15"   # for the localhost simple admin password sidecar (0600)
 rcgen = { version = "0.14.8", features = ["pem"] }
-rustls-pemfile = "2.2.0"
+pem = "3.0"
+# Used to inspect existing certificates for required extensions (serverAuth EKU)
+# so we can transparently regenerate weak/old self-signed certs on startup.
+x509-parser = "0.16"
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["macros"] }
+
+# --- LDAP client for KLLDAP (replaces prior GraphQL path for login + perms) ---
+# Matches the ldap3 + rustls-ring usage in the KLLDAP/lldap-with-kerberos fork
+# (sync API wrapped via spawn_blocking for our tokio runtime; low resource, full compat).
+# tls-rustls-ring for consistency with our rustls "ring" server config (no openssl).
+ldap3 = { version = "0.11", default-features = false, features = ["sync", "tls-rustls", "ring"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

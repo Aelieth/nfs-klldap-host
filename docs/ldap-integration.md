@@ -37,8 +37,10 @@ Your LLDAP instance must store POSIX attributes on users and groups.
 4. Fill in `uidNumber`, `gidNumber`, `homeDirectory`, `loginShell`.
 5. Do the same for the group (add `posixGroup` + `gidNumber`).
 
-**Via GraphQL / scripts:**
-See the LLDAP documentation for bulk creation. The attribute names above are the standard ones.
+**Via the KLLDAP management UI (GraphQL) or scripts:**
+See the KLLDAP/LLDAP documentation for bulk creation via the management interface or scripts. The attribute names above are the standard ones.
+
+**Note:** The in-container WebUI permission editor and login no longer use GraphQL — they use standardized LDAP searches and binds against the same configuration as SSSD.
 
 **Important:** The numeric `uidNumber`/`gidNumber` values you assign here **must** match the ownership on the host filesystem for the exported shares.
 
@@ -143,7 +145,7 @@ This gives nice `ls` output (names instead of numbers) and improves some applica
 - Current templates: `container/templates/`
 - `ganesha-ctl` (file-based reload helper): `container/scripts/`
 - WebUI source: `nfs-klldap-ui/`
-- LLDAP documentation (POSIX attributes + GraphQL)
+- KLLDAP/LLDAP documentation (POSIX attributes + management UI / GraphQL for user creation)
 
 ---
 

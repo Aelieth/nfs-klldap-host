@@ -52,21 +52,7 @@ fn write_sssd_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| format!("dc={}", realm.to_lowercase().replace('.', ",dc=")));
 
-    let default_user_base = format!("ou=people,{}", search_base);
-    let default_group_base = format!("ou=groups,{}", search_base);
-
-    let user_base = cfg
-        .sssd
-        .ldap_user_search_base
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or(&default_user_base);
-    let group_base = cfg
-        .sssd
-        .ldap_group_search_base
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or(&default_group_base);
+    let (user_base, group_base) = crate::config::effective_ldap_search_bases(&cfg.sssd, &realm);
 
     let domain_name = cfg
         .sssd
@@ -116,8 +102,8 @@ cache_credentials = true
     // The helper now also handles hybrid Kerberos authentication when requested.
     content.push_str(&build_ldap_domain_options(
         cfg,
-        user_base,
-        group_base,
+        &user_base,
+        &group_base,
         is_plain_ldap,
     ));
 
@@ -136,7 +122,7 @@ cache_credentials = true
 ///
 /// The attribute mapping lists (user_attr_list / group_attr_list) are kept
 /// because they are the single source of truth shared with the WebUI
-/// LldapClient (so GraphQL queries stay narrow). They are also useful as
+/// LdapClient (so GraphQL queries stay narrow). They are also useful as
 /// human-readable documentation of the intended minimal set.
 ///
 /// Real reduction of the "usual set" SSSD requests (shadow*, krb*, gecos,
@@ -157,7 +143,7 @@ fn build_ldap_domain_options(
 
     // These lists are the single source of truth for the *intended* minimal
     // attribute set (derived from the same [sssd] mappings used by the WebUI
-    // LldapClient). They are emitted below as comments for documentation.
+    // LdapClient). They are emitted below as comments for documentation.
     //
     // They do NOT restrict SSSD (ldap_user_extra_attrs only adds to the
     // hardcoded set). Real control is via the minimizers + schema/provider
@@ -180,7 +166,7 @@ fn build_ldap_domain_options(
         a.join(",")
     };
     let group_attr_list = {
-        let a = vec![
+        let a = [
             mapping.group_name.as_str(),
             mapping.group_gid_number.as_str(),
             mapping.group_member.as_str(),
@@ -253,7 +239,7 @@ access_provider = {access}"#,
     );
 
     // Document the intended narrow set (derived from your [sssd] mappings).
-    // These are the names the WebUI GraphQL client actually requests.
+    // These are the names the WebUI LDAP permission client (and SSSD) actually use.
     // SSSD will still send its broader internal set; the minimizers below
     // + schema/provider choices are what reduce the real wire traffic.
     out.push_str(&format!(

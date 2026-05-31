@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::{auth::AuthManager, config::Config, fs::FsManager, llap::LldapClient};
+use crate::{auth::AuthManager, config::Config, fs::FsManager, ldap::LdapClient};
 
 /// Returns a user-friendly message describing whether the on-disk keytab
 /// contains the expected `nfs/<host>@REALM` principal.
@@ -132,7 +132,7 @@ fn read_keytab_nfs_principals() -> Result<Vec<String>, String> {
 #[derive(Clone)]
 pub struct AppState {
     pub fs: Arc<FsManager>,
-    pub lldap: Arc<Mutex<LldapClient>>,
+    pub lldap: Arc<Mutex<LdapClient>>,
     pub config: Arc<Config>,
     pub auth: Arc<AuthManager>,
     /// Absolute path to the nfs-klldap.conf file being edited (same one the container uses).
@@ -194,51 +194,48 @@ pub async fn login(
     let username = form.username.trim();
     let password = &form.password;
 
-    let result: Result<(String, crate::auth::AuthRole), String> = if username == "localhost" {
+    let result: Result<String, String> = if username == "localhost" {
         // Special local-machine admin path (bcrypt sidecar)
         match state.auth.validate_simple_password(username, password) {
-            Ok(()) => Ok((username.to_string(), crate::auth::AuthRole::LocalAdmin)),
+            Ok(()) => Ok(username.to_string()),
             Err(e) => Err(e),
         }
     } else {
         // Real LLDAP user path
         // 1. Verify the user's own credentials against LLDAP
         let verify_ok = {
-            let mut l = state.lldap.lock().await;
+            let l = state.lldap.lock().await;
             l.verify_user_credentials(username, password).await.is_ok()
         };
 
         if !verify_ok {
-            Err("Invalid username or password (LLDAP)".to_string())
+            Err("Invalid username or password (LDAP)".to_string())
         } else {
-            // 2. Check admin group membership by authenticating as the user themselves.
-            // The long-lived service account (from sssd bind DN) usually lacks rights
-            // to read the `groups` relation on other users via GraphQL. Using the
-            // end-user's own short-lived token for a self-check works reliably.
+            // 2. Check admin group membership using the service account.
+            // After the GraphQL → LDAP cutover, the long-lived service bind
+            // (same credentials as SSSD) has the rights to search groups by the
+            // mapped group_member attribute (e.g. memberUid). No need to re-bind
+            // as the end user.
             let is_admin = {
                 let l = state.lldap.lock().await;
-                l.user_is_in_group_with_creds(username, password, state.auth.admin_group())
-                    .await
+                l.user_is_member_of_group(username, state.auth.admin_group()).await
             };
 
             if !is_admin {
                 Err(format!(
-                    "Access denied: '{}' is not a member of the '{}' group in LLDAP.",
+                    "Access denied: '{}' is not a member of the '{}' group.",
                     username,
                     state.auth.admin_group()
                 ))
             } else {
-                let role = crate::auth::AuthRole::LldapAdmin {
-                    username: username.to_string(),
-                };
-                Ok((username.to_string(), role))
+                Ok(username.to_string())
             }
         }
     };
 
     match result {
-        Ok((user, role)) => {
-            let token = state.auth.create_privileged_session(&user, role);
+        Ok(user) => {
+            let token = state.auth.create_privileged_session(&user);
 
             let cookie = format!(
                 "session={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200",
@@ -309,7 +306,7 @@ pub async fn setup_password(
             // Success — immediately log the operator in as localhost (LocalAdmin)
             let token = state
                 .auth
-                .create_privileged_session("localhost", crate::auth::AuthRole::LocalAdmin);
+                .create_privileged_session("localhost");
 
             let cookie = format!(
                 "session={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200",
@@ -397,6 +394,17 @@ struct TreeFragmentTemplate {
     children: Vec<DirNode>,
 }
 
+/// Renders a share root (or any directory) as the top clickable row in the tree,
+/// with its direct children inside it. This lets users manage permissions on the
+/// share root directory itself (important when a share contains only one logical
+/// top-level directory of items).
+#[derive(Template)]
+#[template(path = "tree_root.html")]
+struct TreeRootTemplate {
+    root: DirNode,
+    children: Vec<DirNode>,
+}
+
 #[derive(Debug, Clone)]
 pub struct DirNode {
     pub path: String,
@@ -458,26 +466,58 @@ pub async fn tree_fragment(
 
     let path = std::path::Path::new(&params.path);
 
-    let children = if let Some(node) = state.fs.build_tree(path) {
-        node.children
+    if let Some(node) = state.fs.build_tree(path) {
+        let children: Vec<DirNode> = node
+            .children
             .into_iter()
             .map(|c| DirNode {
                 path: c.path.to_string_lossy().to_string(),
                 name: c.name,
             })
-            .collect()
-    } else {
-        vec![]
-    };
+            .collect();
 
-    let tpl = TreeFragmentTemplate { children };
+        let is_root_request = params.root.is_some();
 
-    Ok(Html(tpl.render().unwrap()))
+        if is_root_request {
+            // Render the requested path as a top-level clickable "root" row in the tree.
+            // This makes the share root itself (e.g. the "images" directory) directly
+            // manageable for owners + permissions via LLDAP-backed form.
+            let root = DirNode {
+                path: node.path.to_string_lossy().to_string(),
+                name: node.name,
+            };
+            let tpl = TreeRootTemplate { root, children };
+            return Ok(Html(tpl.render().unwrap()));
+        } else {
+            let tpl = TreeFragmentTemplate { children };
+            return Ok(Html(tpl.render().unwrap()));
+        }
+    }
+
+    // Helpful diagnostic (the previous silent empty list was the main user complaint).
+    // We deliberately do not leak the internal container path in most cases.
+    let safe_path = params.path.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let msg = format!(
+        r#"<div style="color:#b00; padding:0.5em; border:1px solid #fcc; background:#fff5f5; border-radius:4px;">
+            <strong>Cannot display directory tree.</strong><br>
+            <code>{}</code> is allowed by your config but is not visible inside the container
+            (check bind mounts / <code>storage.container_root</code> and the startup diagnostics
+            for the suggested <code>-v HOST:CONTAINER</code> line).
+        </div>"#,
+        safe_path
+    );
+    Ok(Html(msg))
 }
 
 #[derive(Deserialize)]
 pub(crate) struct TreeParams {
     path: String,
+    /// When present (e.g. root=true or just root), render the requested path itself
+    /// as a top-level clickable root row (with its direct children under it).
+    /// Used for the initial share load so the share root directory is always a
+    /// visible, manageable row in the tree for setting owners/permissions.
+    #[serde(default)]
+    root: Option<String>,
 }
 
 /// Returns the permission editor form for a directory (HTMX)
@@ -493,7 +533,9 @@ pub async fn directory_form(
     let current_state_html = if let Some(node) = state.fs.build_tree(std::path::Path::new(&path)) {
         let owner = node.owner.unwrap_or(0);
         let group = node.group.unwrap_or(0);
-        let mode = node.mode;
+        // Mask off file type bits (e.g. 0o40755 from stat → 755). Directories commonly
+        // arrive with the S_IFDIR bit set in st_mode.
+        let mode = node.mode & 0o7777;
 
         format!(
             r#"<div class="current-state">
@@ -505,8 +547,15 @@ pub async fn directory_form(
             owner, group, mode
         )
     } else {
-        "<div class=\"current-state\"><em>Unable to read current state from filesystem</em></div>"
-            .to_string()
+        let safe = path.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        format!(
+            r#"<div class="current-state" style="color:#b00;">
+                <strong>Cannot read current state.</strong><br>
+                <code>{}</code> is allowed in config but not visible inside the container.
+                Check your bind mounts (see startup diagnostics).
+            </div>"#,
+            safe
+        )
     };
 
     let form = PermissionForm {
@@ -533,16 +582,21 @@ pub async fn search_users(
         return Html("<div class=\"suggestion\">Unauthorized</div>".to_string());
     }
 
-    let mut lldap = state.lldap.lock().await;
+    let lldap = state.lldap.lock().await;
     let users = lldap.list_users(params.q.as_deref()).await;
 
     let mut html = String::new();
     for user in users.into_iter().take(12) {
         let uid = user.uid_number.unwrap_or(0);
         let name = user.display_name.unwrap_or(user.id.clone());
+
+        // Use data attributes + proper escaping to avoid htmx:syntax:error and XSS issues
+        // that raw onclick interpolation was causing.
+        let safe_id = user.id.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+        let safe_name = name.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
         html.push_str(&format!(
-            "<div class=\"suggestion\" onclick=\"selectUser('{}', {})\">{}</div>",
-            user.id, uid, name
+            r#"<div class="suggestion" data-user-id="{}" data-uid="{}">{}</div>"#,
+            safe_id, uid, safe_name
         ));
     }
     if html.is_empty() {
@@ -560,16 +614,20 @@ pub async fn search_groups(
         return Html("<div class=\"suggestion\">Unauthorized</div>".to_string());
     }
 
-    let mut lldap = state.lldap.lock().await;
+    let lldap = state.lldap.lock().await;
     let groups = lldap.list_groups(params.q.as_deref()).await;
 
     let mut html = String::new();
     for group in groups.into_iter().take(12) {
         let gid = group.gid_number.unwrap_or(0);
         let name = group.display_name.unwrap_or(group.id.clone());
+
+        // Use data attributes + proper escaping (same safety fix as user search).
+        let safe_id = group.id.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+        let safe_name = name.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
         html.push_str(&format!(
-            "<div class=\"suggestion\" onclick=\"selectGroup('{}', {})\">{}</div>",
-            group.id, gid, name
+            r#"<div class="suggestion" data-group-id="{}" data-gid="{}">{}</div>"#,
+            safe_id, gid, safe_name
         ));
     }
     if html.is_empty() {
@@ -603,6 +661,274 @@ struct ShareFormRow {
     security: Option<String>,
 }
 
+/// Collects [[shares]] from the flattened indexed form fields submitted by the
+/// structured settings editor (share_name_0, share_host_0, share_export_0, ...).
+/// Returns only well-formed, non-empty shares (name + host_path required).
+/// Order is deterministic by numeric suffix; gaps are tolerated.
+fn collect_shares_from_structured_form(
+    extra: &std::collections::HashMap<String, String>,
+) -> Vec<nfs_klldap_config::Share> {
+    let mut share_rows: Vec<ShareFormRow> = vec![];
+    for (k, v) in extra {
+        if let Some(suffix) = k.strip_prefix("share_name_") {
+            if let Ok(idx) = suffix.parse::<usize>() {
+                let name = v.trim().to_string();
+                let host = extra
+                    .get(&format!("share_host_{}", idx))
+                    .cloned()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if name.is_empty() || host.is_empty() {
+                    continue;
+                }
+                let export_path = extra
+                    .get(&format!("share_export_{}", idx))
+                    .cloned()
+                    .filter(|s| !s.trim().is_empty())
+                    .or_else(|| Some(format!("/{}", name)));
+                let security = extra
+                    .get(&format!("share_security_{}", idx))
+                    .cloned()
+                    .filter(|s| !s.trim().is_empty());
+                share_rows.push(ShareFormRow {
+                    idx,
+                    name,
+                    host,
+                    export_path,
+                    security,
+                });
+            }
+        }
+    }
+    share_rows.sort_by_key(|r| r.idx);
+
+    share_rows
+        .into_iter()
+        .map(|r| nfs_klldap_config::Share {
+            name: r.name,
+            host_path: PathBuf::from(r.host),
+            export_path: r.export_path,
+            security: r.security,
+            rw: Some(true),
+            squash: Some("no_root_squash".to_string()),
+        })
+        .collect()
+}
+
+/// Applies fields present in the submitted structured settings form onto a
+/// loaded NfsKlldapConfig. This is the "logical model" mutation used for
+/// validation before the comment-preserving toml_edit write pass.
+fn apply_structured_form_to_config(
+    form: &StructuredSettingsForm,
+    cfg: &mut nfs_klldap_config::NfsKlldapConfig,
+) {
+    if let Some(v) = form.ldap_uri.clone() {
+        cfg.ldap_uri = v;
+    }
+    if let Some(v) = form.storage_container_root.clone() {
+        cfg.storage.container_root = v;
+    }
+    if let Some(v) = form.server_hostname.clone() {
+        cfg.server.hostname = Some(v);
+    }
+
+    if let Some(v) = form.sssd_bind_dn.clone() {
+        cfg.sssd.ldap_default_bind_dn = v;
+    }
+    if let Some(v) = form.sssd_bind_pw.clone() {
+        cfg.sssd.ldap_default_authtok = v;
+    }
+    if let Some(v) = form.sssd_port {
+        cfg.sssd.port = Some(v);
+    }
+    if let Some(v) = form.sssd_search_base.clone() {
+        cfg.sssd.ldap_search_base = if v.trim().is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = form.sssd_user_base.clone() {
+        cfg.sssd.ldap_user_search_base = if v.trim().is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = form.sssd_group_base.clone() {
+        cfg.sssd.ldap_group_search_base = if v.trim().is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = form.sssd_ldap_tls_reqcert.clone() {
+        cfg.sssd.ldap_tls_reqcert = if v.trim().is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = form.sssd_ldap_tls_cacert.clone() {
+        cfg.sssd.ldap_tls_cacert = if v.trim().is_empty() { None } else { Some(v) };
+    }
+    cfg.sssd.ldap_id_use_start_tls = form.sssd_ldap_id_use_start_tls;
+    cfg.sssd.enumerate = form.sssd_enumerate;
+
+    if let Some(v) = form.kerberos_realm.clone() {
+        cfg.kerberos.realm = Some(v);
+    }
+    if let Some(v) = form.ganesha_default_security.clone() {
+        cfg.ganesha.default_security = v;
+    }
+}
+
+/// Small helper to reduce boilerplate when returning validation/write errors
+/// from the structured settings form handler.
+fn make_settings_error_template(
+    current_user: Option<String>,
+    raw_toml: String,
+    config_path: impl AsRef<std::path::Path>,
+    message: String,
+    keytab_hostname: String,
+    keytab_realm: String,
+    keytab_status_message: String,
+) -> SettingsTemplate {
+    SettingsTemplate {
+        current_user,
+        raw_toml,
+        config_path: config_path.as_ref().display().to_string(),
+        message: Some(message),
+        effective_hostname: keytab_hostname,
+        effective_realm: keytab_realm,
+        keytab_status_message,
+    }
+}
+
+/// Performs an atomic-ish write of config content:
+/// 1. Writes to a `.conf.saving` sibling temp file.
+/// 2. Renames it over the target path.
+/// 3. Sets 0600 permissions on Unix.
+///
+/// Returns a user-friendly error string on failure (suitable for UI messages).
+/// This consolidates the write logic used by both raw and structured save paths.
+fn atomic_write_config(path: &std::path::Path, content: &str) -> Result<(), String> {
+    let tmp = path.with_extension("conf.saving");
+    std::fs::write(&tmp, content.as_bytes())
+        .map_err(|e| format!("Write failed: {}", e))?;
+
+    std::fs::rename(&tmp, path)
+        .map_err(|e| format!("Rename failed: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    Ok(())
+}
+
+/// Helper for success responses after a settings save (raw or structured).
+/// Keeps the two success sites in sync for the common fields.
+fn make_settings_success_template(
+    current_user: Option<String>,
+    raw_toml: String,
+    config_path: impl AsRef<std::path::Path>,
+    message: String,
+    keytab_hostname: String,
+    keytab_realm: String,
+    keytab_status_message: String,
+) -> SettingsTemplate {
+    SettingsTemplate {
+        current_user,
+        raw_toml,
+        config_path: config_path.as_ref().display().to_string(),
+        message: Some(message),
+        effective_hostname: keytab_hostname,
+        effective_realm: keytab_realm,
+        keytab_status_message,
+    }
+}
+
+/// Applies the submitted structured form fields into a toml_edit::DocumentMut.
+/// This preserves comments, whitespace, and untouched keys from the original file
+/// (the key advantage over the logical-model path).
+fn apply_structured_form_to_toml_doc(
+    form: &StructuredSettingsForm,
+    doc: &mut toml_edit::DocumentMut,
+    new_shares: &[nfs_klldap_config::Share],
+) {
+    if let Some(v) = &form.ldap_uri {
+        doc["ldap_uri"] = toml_edit::value(v.clone());
+    }
+
+    if let Some(v) = &form.storage_container_root {
+        let item = doc.entry("storage").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            tbl["container_root"] = toml_edit::value(v.clone());
+        }
+    }
+    if let Some(v) = &form.server_hostname {
+        let item = doc.entry("server").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            tbl["hostname"] = toml_edit::value(v.clone());
+        }
+    }
+
+    if let Some(v) = &form.sssd_bind_dn {
+        let item = doc.entry("sssd").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            tbl["ldap_default_bind_dn"] = toml_edit::value(v.clone());
+        }
+    }
+    if let Some(v) = &form.sssd_bind_pw {
+        let item = doc.entry("sssd").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            tbl["ldap_default_authtok"] = toml_edit::value(v.clone());
+        }
+    }
+    if let Some(v) = form.sssd_port {
+        let item = doc.entry("sssd").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            tbl["port"] = toml_edit::value(v as i64);
+        }
+    }
+    if let Some(v) = &form.sssd_user_base {
+        let item = doc.entry("sssd").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            tbl["ldap_user_search_base"] = toml_edit::value(v.clone());
+        }
+    }
+    if let Some(v) = &form.sssd_group_base {
+        let item = doc.entry("sssd").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            tbl["ldap_group_search_base"] = toml_edit::value(v.clone());
+        }
+    }
+
+    if let Some(v) = &form.kerberos_realm {
+        let item = doc.entry("kerberos").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            tbl["realm"] = toml_edit::value(v.clone());
+        }
+    }
+    if let Some(v) = &form.ganesha_default_security {
+        let item = doc.entry("ganesha").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            tbl["default_security"] = toml_edit::value(v.clone());
+        }
+    }
+
+    // Shares: submitted rows are authoritative. Wholesale replacement of [[shares]].
+    // Per-share comments from the on-disk file are dropped on purpose.
+    if !new_shares.is_empty() {
+        let mut shares = toml_edit::ArrayOfTables::new();
+        for s in new_shares {
+            let mut t = toml_edit::Table::new();
+            t["name"] = toml_edit::value(s.name.clone());
+            t["host_path"] = toml_edit::value(s.host_path.display().to_string());
+            if let Some(ep) = &s.export_path {
+                t["export_path"] = toml_edit::value(ep.clone());
+            }
+            if let Some(sec) = &s.security {
+                t["security"] = toml_edit::value(sec.clone());
+            }
+            t["rw"] = toml_edit::value(s.rw.unwrap_or(true));
+            if let Some(sq) = &s.squash {
+                t["squash"] = toml_edit::value(sq.clone());
+            }
+            shares.push(t);
+        }
+        doc["shares"] = toml_edit::Item::ArrayOfTables(shares);
+    }
+}
+
 /// Handler for the permission form submission.
 pub async fn apply_permissions(
     State(state): State<AppState>,
@@ -611,7 +937,7 @@ pub async fn apply_permissions(
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(State(state.clone()), headers).await?;
 
-    let mut lldap = state.lldap.lock().await;
+    let lldap = state.lldap.lock().await;
 
     // Resolve owner user from LLDAP
     let owner_uid = match lldap.resolve_user(&form.owner_user).await {
@@ -621,7 +947,7 @@ pub async fn apply_permissions(
                 r#"<div class="form">
                     <h3>Error applying permissions for <code>{}</code></h3>
                     <p style="color: red;">Could not find user <strong>{}</strong> in LLDAP.</p>
-                    <button type="button" onclick="htmx.ajax('GET', '/directory?path={}', {{target: '#permission-form', swap: 'innerHTML'}})">
+                    <button type="button" onclick="htmx.ajax('GET', '/directory?path=' + encodeURIComponent('{}'), {{target: '#permission-form', swap: 'innerHTML'}})">
                         Back to editor
                     </button>
                 </div>"#,
@@ -638,7 +964,7 @@ pub async fn apply_permissions(
                 r#"<div class="form">
                     <h3>Error applying permissions for <code>{}</code></h3>
                     <p style="color: red;">Could not find group <strong>{}</strong> in LLDAP.</p>
-                    <button type="button" onclick="htmx.ajax('GET', '/directory?path={}', {{target: '#permission-form', swap: 'innerHTML'}})">
+                    <button type="button" onclick="htmx.ajax('GET', '/directory?path=' + encodeURIComponent('{}'), {{target: '#permission-form', swap: 'innerHTML'}})">
                         Back to editor
                     </button>
                 </div>"#,
@@ -661,7 +987,7 @@ pub async fn apply_permissions(
             r#"<div class="form">
                 <h3>Error applying permissions</h3>
                 <p style="color: red;">{}</p>
-                <button type="button" onclick="htmx.ajax('GET', '/directory?path={}', {{target: '#permission-form', swap: 'innerHTML'}})">
+                <button type="button" onclick="htmx.ajax('GET', '/directory?path=' + encodeURIComponent('{}'), {{target: '#permission-form', swap: 'innerHTML'}})">
                     Back to editor
                 </button>
             </div>"#,
@@ -682,7 +1008,7 @@ pub async fn apply_permissions(
                 <strong>Recursive:</strong> {}
             </p>
             <p style="color: green;">Changes applied directly inside the container.</p>
-            <button type="button" onclick="htmx.ajax('GET', '/directory?path={}', {{target: '#permission-form', swap: 'innerHTML'}})">
+            <button type="button" onclick="htmx.ajax('GET', '/directory?path=' + encodeURIComponent('{}'), {{target: '#permission-form', swap: 'innerHTML'}})">
                 Reload editor (see live state)
             </button>
         </div>"#,
@@ -788,32 +1114,22 @@ pub async fn settings_save_raw(
         return Ok(Html(format!("<p style='color:#c00'>{}</p>", msg)));
     }
 
-    // Atomic-ish write
-    let tmp = state.config_path.with_extension("conf.saving");
-    if let Err(e) = std::fs::write(&tmp, form.raw_content.as_bytes()) {
-        return Ok(Html(format!(
-            "<p style='color:#c00'>Write failed: {}</p>",
-            e
-        )));
-    }
-    if let Err(e) = std::fs::rename(&tmp, &state.config_path) {
-        return Ok(Html(format!(
-            "<p style='color:#c00'>Rename failed: {}</p>",
-            e
-        )));
+    // Atomic write using the shared helper (handles temp + rename + 0600).
+    if let Err(msg) = atomic_write_config(&state.config_path, &form.raw_content) {
+        return Ok(Html(format!("<p style='color:#c00'>{}</p>", msg)));
     }
 
     // Re-read for the response
     let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
-    let tpl = SettingsTemplate {
-        current_user: Some(user.0),
+    let tpl = make_settings_success_template(
+        Some(user.0),
         raw_toml,
-        config_path: state.config_path.display().to_string(),
-        message: Some("Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into()),
-        effective_hostname: state.keytab_hostname.clone(),
-        effective_realm: state.keytab_realm.clone(),
-        keytab_status_message: state.keytab_status_message.clone(),
-    };
+        &state.config_path,
+        "Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into(),
+        state.keytab_hostname.clone(),
+        state.keytab_realm.clone(),
+        state.keytab_status_message.clone(),
+    );
     Ok(Html(tpl.render().unwrap()))
 }
 
@@ -828,123 +1144,29 @@ pub async fn settings_save_structured(
     // Load current config as base (so we don't lose fields not in the form)
     let mut cfg = nfs_klldap_config::NfsKlldapConfig::load(&state.config_path).unwrap_or_default();
 
-    // Apply top-level changes from form (clone so the form remains available for the
-    // subsequent comment-preserving toml_edit patching pass below).
-    if let Some(v) = form.ldap_uri.clone() {
-        cfg.ldap_uri = v;
-    }
-    if let Some(v) = form.storage_container_root.clone() {
-        cfg.storage.container_root = v;
-    }
-    if let Some(v) = form.server_hostname.clone() {
-        cfg.server.hostname = Some(v);
-    }
+    // Apply form fields to the logical model (for validation + later use).
+    // The comment-preserving write pass below re-applies a subset using toml_edit.
+    apply_structured_form_to_config(&form, &mut cfg);
 
-    if let Some(v) = form.sssd_bind_dn.clone() {
-        cfg.sssd.ldap_default_bind_dn = v;
-    }
-    if let Some(v) = form.sssd_bind_pw.clone() {
-        cfg.sssd.ldap_default_authtok = v;
-    }
-    if let Some(v) = form.sssd_port {
-        cfg.sssd.port = Some(v);
-    }
-    if let Some(v) = form.sssd_search_base.clone() {
-        cfg.sssd.ldap_search_base = if v.trim().is_empty() { None } else { Some(v) };
-    }
-    if let Some(v) = form.sssd_user_base.clone() {
-        cfg.sssd.ldap_user_search_base = if v.trim().is_empty() { None } else { Some(v) };
-    }
-    if let Some(v) = form.sssd_group_base.clone() {
-        cfg.sssd.ldap_group_search_base = if v.trim().is_empty() { None } else { Some(v) };
-    }
-    if let Some(v) = form.sssd_ldap_tls_reqcert.clone() {
-        cfg.sssd.ldap_tls_reqcert = if v.trim().is_empty() { None } else { Some(v) };
-    }
-    if let Some(v) = form.sssd_ldap_tls_cacert.clone() {
-        cfg.sssd.ldap_tls_cacert = if v.trim().is_empty() { None } else { Some(v) };
-    }
-    cfg.sssd.ldap_id_use_start_tls = form.sssd_ldap_id_use_start_tls;
-    cfg.sssd.enumerate = form.sssd_enumerate;
-
-    if let Some(v) = form.kerberos_realm.clone() {
-        cfg.kerberos.realm = Some(v);
-    }
-    if let Some(v) = form.ganesha_default_security.clone() {
-        cfg.ganesha.default_security = v;
-    }
-
-    // Collect shares from indexed form fields.
-    // Client now uses a clean sequential counter (see settings.html). We gather any
-    // share_name_* keys, parse their numeric suffix, sort, and build rows.
-    // Gaps are tolerated naturally; order is by the numeric suffix for determinism.
-    let mut share_rows: Vec<ShareFormRow> = vec![];
-    for (k, v) in &form.extra {
-        if let Some(suffix) = k.strip_prefix("share_name_") {
-            if let Ok(idx) = suffix.parse::<usize>() {
-                let name = v.trim().to_string();
-                let host = form
-                    .extra
-                    .get(&format!("share_host_{}", idx))
-                    .cloned()
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                if name.is_empty() || host.is_empty() {
-                    continue;
-                }
-                let export_path = form
-                    .extra
-                    .get(&format!("share_export_{}", idx))
-                    .cloned()
-                    .filter(|s| !s.trim().is_empty())
-                    .or_else(|| Some(format!("/{}", name)));
-                let security = form
-                    .extra
-                    .get(&format!("share_security_{}", idx))
-                    .cloned()
-                    .filter(|s| !s.trim().is_empty());
-                share_rows.push(ShareFormRow {
-                    idx,
-                    name,
-                    host,
-                    export_path,
-                    security,
-                });
-            }
-        }
-    }
-    share_rows.sort_by_key(|r| r.idx);
-
-    let new_shares: Vec<nfs_klldap_config::Share> = share_rows
-        .into_iter()
-        .map(|r| nfs_klldap_config::Share {
-            name: r.name,
-            host_path: PathBuf::from(r.host),
-            export_path: r.export_path,
-            security: r.security,
-            rw: Some(true),
-            squash: Some("no_root_squash".to_string()),
-        })
-        .collect();
-
+    // Collect shares (already extracted).
+    let new_shares = collect_shares_from_structured_form(&form.extra);
     if !new_shares.is_empty() {
-        cfg.shares = new_shares.clone();
+        cfg.shares = new_shares.clone(); // clone only for the logical model; toml pass uses the original vec
     }
 
     // Validate the logical model first (authoritative structs win for semantics)
     if let Err(e) = cfg.validate_and_derive() {
         let msg = format!("Validation error: {}", e);
         let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
-        let tpl = SettingsTemplate {
-            current_user: Some(user.0.clone()),
+        let tpl = make_settings_error_template(
+            Some(user.0.clone()),
             raw_toml,
-            config_path: state.config_path.display().to_string(),
-            message: Some(msg),
-            effective_hostname: state.keytab_hostname.clone(),
-            effective_realm: state.keytab_realm.clone(),
-            keytab_status_message: state.keytab_status_message.clone(),
-        };
+            &state.config_path,
+            msg,
+            state.keytab_hostname.clone(),
+            state.keytab_realm.clone(),
+            state.keytab_status_message.clone(),
+        );
         return Ok(Html(tpl.render().unwrap()));
     }
 
@@ -956,148 +1178,42 @@ pub async fn settings_save_structured(
         .parse::<toml_edit::DocumentMut>()
         .unwrap_or_default();
 
-    // Apply only fields present in the submitted form (preserve everything else + its comments).
-    if let Some(v) = &form.ldap_uri {
-        doc["ldap_uri"] = toml_edit::value(v.clone());
-    }
+    // Apply the form using the dedicated patching helper (preserves comments etc.).
+    apply_structured_form_to_toml_doc(&form, &mut doc, &new_shares);
 
-    if let Some(v) = &form.storage_container_root {
-        let item = doc.entry("storage").or_insert(toml_edit::table());
-        if let Some(tbl) = item.as_table_mut() {
-            tbl["container_root"] = toml_edit::value(v.clone());
-        }
-    }
-    if let Some(v) = &form.server_hostname {
-        let item = doc.entry("server").or_insert(toml_edit::table());
-        if let Some(tbl) = item.as_table_mut() {
-            tbl["hostname"] = toml_edit::value(v.clone());
-        }
-    }
-
-    if let Some(v) = &form.sssd_bind_dn {
-        let item = doc.entry("sssd").or_insert(toml_edit::table());
-        if let Some(tbl) = item.as_table_mut() {
-            tbl["ldap_default_bind_dn"] = toml_edit::value(v.clone());
-        }
-    }
-    if let Some(v) = &form.sssd_bind_pw {
-        let item = doc.entry("sssd").or_insert(toml_edit::table());
-        if let Some(tbl) = item.as_table_mut() {
-            tbl["ldap_default_authtok"] = toml_edit::value(v.clone());
-        }
-    }
-    if let Some(v) = form.sssd_port {
-        let item = doc.entry("sssd").or_insert(toml_edit::table());
-        if let Some(tbl) = item.as_table_mut() {
-            tbl["port"] = toml_edit::value(v as i64);
-        }
-    }
-    if let Some(v) = &form.sssd_user_base {
-        let item = doc.entry("sssd").or_insert(toml_edit::table());
-        if let Some(tbl) = item.as_table_mut() {
-            tbl["ldap_user_search_base"] = toml_edit::value(v.clone());
-        }
-    }
-    if let Some(v) = &form.sssd_group_base {
-        let item = doc.entry("sssd").or_insert(toml_edit::table());
-        if let Some(tbl) = item.as_table_mut() {
-            tbl["ldap_group_search_base"] = toml_edit::value(v.clone());
-        }
-    }
-
-    if let Some(v) = &form.kerberos_realm {
-        let item = doc.entry("kerberos").or_insert(toml_edit::table());
-        if let Some(tbl) = item.as_table_mut() {
-            tbl["realm"] = toml_edit::value(v.clone());
-        }
-    }
-    if let Some(v) = &form.ganesha_default_security {
-        let item = doc.entry("ganesha").or_insert(toml_edit::table());
-        if let Some(tbl) = item.as_table_mut() {
-            tbl["default_security"] = toml_edit::value(v.clone());
-        }
-    }
-
-    // Shares: the submitted rows are authoritative. Replace the [[shares]] array-of-tables
-    // wholesale. Per-share comments from the old file are intentionally dropped (use Raw
-    // editor when you need to preserve elaborate comments next to individual shares).
-    if !new_shares.is_empty() {
-        let mut shares = toml_edit::ArrayOfTables::new();
-        for s in &new_shares {
-            let mut t = toml_edit::Table::new();
-            t["name"] = toml_edit::value(s.name.clone());
-            t["host_path"] = toml_edit::value(s.host_path.display().to_string());
-            if let Some(ep) = &s.export_path {
-                t["export_path"] = toml_edit::value(ep.clone());
-            }
-            if let Some(sec) = &s.security {
-                t["security"] = toml_edit::value(sec.clone());
-            }
-            t["rw"] = toml_edit::value(s.rw.unwrap_or(true));
-            if let Some(sq) = &s.squash {
-                t["squash"] = toml_edit::value(sq.clone());
-            }
-            shares.push(t);
-        }
-        doc["shares"] = toml_edit::Item::ArrayOfTables(shares);
-    }
-
-    // Atomic write of the (mostly) comment-preserved document.
+    // Atomic write using the shared helper (handles temp + rename + 0600).
     let text = doc.to_string();
-    let tmp = state.config_path.with_extension("conf.saving");
-    if let Err(e) = std::fs::write(&tmp, text.as_bytes()) {
+    if let Err(msg) = atomic_write_config(&state.config_path, &text) {
         let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
-        let tpl = SettingsTemplate {
-            current_user: Some(user.0.clone()),
+        let tpl = make_settings_error_template(
+            Some(user.0.clone()),
             raw_toml,
-            config_path: state.config_path.display().to_string(),
-            message: Some(format!("Failed to write: {}", e)),
-            effective_hostname: state.keytab_hostname.clone(),
-            effective_realm: state.keytab_realm.clone(),
-            keytab_status_message: state.keytab_status_message.clone(),
-        };
+            &state.config_path,
+            msg,
+            state.keytab_hostname.clone(),
+            state.keytab_realm.clone(),
+            state.keytab_status_message.clone(),
+        );
         return Ok(Html(tpl.render().unwrap()));
-    }
-    if let Err(e) = std::fs::rename(&tmp, &state.config_path) {
-        let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
-        let tpl = SettingsTemplate {
-            current_user: Some(user.0.clone()),
-            raw_toml,
-            config_path: state.config_path.display().to_string(),
-            message: Some(format!("Rename failed: {}", e)),
-            effective_hostname: state.keytab_hostname.clone(),
-            effective_realm: state.keytab_realm.clone(),
-            keytab_status_message: state.keytab_status_message.clone(),
-        };
-        return Ok(Html(tpl.render().unwrap()));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ =
-            std::fs::set_permissions(&state.config_path, std::fs::Permissions::from_mode(0o600));
     }
 
     // Success - re-render the page with a success message (keeps types simple)
     let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
-    let tpl = SettingsTemplate {
-        current_user: None,
-
+    let tpl = make_settings_success_template(
+        None,
         raw_toml,
-        config_path: state.config_path.display().to_string(),
-        message: Some(
-            "Structured settings saved. Container will regenerate configs shortly.".into(),
-        ),
-        effective_hostname: state.keytab_hostname.clone(),
-        effective_realm: state.keytab_realm.clone(),
-        keytab_status_message: state.keytab_status_message.clone(),
-    };
+        &state.config_path,
+        "Structured settings saved. Container will regenerate configs shortly.".into(),
+        state.keytab_hostname.clone(),
+        state.keytab_realm.clone(),
+        state.keytab_status_message.clone(),
+    );
     Ok(Html(tpl.render().unwrap()))
 }
 
 // === NFS / LLDAP client reload & status (for bind credential changes) ===
 
-/// Small HTMX fragment: shows the current identity of the LLDAP client used for
+/// Small HTMX fragment: shows the current identity of the LDAP client used for
 /// NFS permission management (name → uid/gid resolution) plus a reload button.
 /// Highlights when the on-disk credentials (sssd.ldap_default_* or env overrides)
 /// have changed since the client was last authenticated.
@@ -1112,11 +1228,11 @@ pub async fn lldap_status(State(state): State<AppState>, headers: HeaderMap) -> 
     let auth_as = client.authenticated_as().unwrap_or("(none)");
     let last_auth = client.last_auth_time();
 
-    // Load the *current* on-disk config so we can detect edits to bind DN/PW or lldap_graphql_url
+    // Load the *current* on-disk config so we can detect edits to bind DN/PW or ldap_uri
     let disk_cfg = crate::config::load_config_from(&state.config_path).ok();
     let (disk_user, _disk_pass) = disk_cfg
         .as_ref()
-        .map(crate::config::lldap_login_creds)
+        .map(crate::config::ldap_service_creds)
         .unwrap_or_else(|| ("(unknown)".to_string(), String::new()));
 
     let username_differs = disk_user != auth_as;
@@ -1155,23 +1271,24 @@ pub async fn lldap_status(State(state): State<AppState>, headers: HeaderMap) -> 
     html.push_str(&format!("Last connected: {}<br>", last_str));
     html.push_str(&notice_html);
     if !username_differs {
-        html.push_str("<span style='font-size:0.8em;color:#666;'>Reload always reads the latest bind credentials and GraphQL URL from disk/env.</span><br>");
+        html.push_str("<span style='font-size:0.8em;color:#666;'>Reload always reads the latest bind credentials + ldap_uri from disk/env.</span><br>");
     }
     html.push_str(
         "<button type='button' hx-post='/settings/reload-nfs-client' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:8px; padding:4px 10px; cursor:pointer;'>Reload NFS client</button>"
     );
     html.push_str(
-        " <span style='font-size:0.8em; color:#555; margin-left:6px;'>(re-reads sssd.ldap_default_bind_* + management.lldap_graphql_url and re-authenticates)</span>"
+        " <span style='font-size:0.8em; color:#555; margin-left:6px;'>(re-reads sssd.ldap_default_bind_* + ldap_uri and re-binds)</span>"
     );
     html.push_str("</div>");
 
     Html(html)
 }
 
-/// Lightweight "reload NFS client": re-creates the LldapClient using whatever
-/// credentials are currently in the on-disk nfs-klldap.conf (or the NFS_KLLDAP_LLDAP_* env
-/// overrides) and swaps it into the running AppState. Focused on keeping NFS
-/// permission management (name → numeric IDs) in sync after editing bind creds.
+/// Lightweight "reload NFS client": re-creates the LdapClient using whatever
+/// credentials + ldap_uri are currently in the on-disk nfs-klldap.conf (or the
+/// NFS_KLLDAP_LLDAP_* env overrides) and swaps it into the running AppState.
+/// Focused on keeping NFS permission management (name → numeric IDs) in sync
+/// after editing bind creds or the LDAP server address.
 pub async fn reload_nfs_client(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1196,8 +1313,7 @@ pub async fn reload_nfs_client(
         }
     };
 
-    let url = crate::config::derive_lldap_url(&fresh);
-    let (user, pass) = crate::config::lldap_login_creds(&fresh);
+    let (user, pass) = crate::config::ldap_service_creds(&fresh);
 
     if pass.trim().is_empty() || pass == "SET_ME" || pass == "CHANGE_THIS_TO_A_STRONG_SECRET" {
         let mut msg = String::from("<div id='nfs-client-status' style='background:#fff3cd;border:1px solid #ffc107;padding:8px;'>");
@@ -1207,9 +1323,26 @@ pub async fn reload_nfs_client(
         return Html(msg);
     }
 
-    // Use the exact POSIX attribute names from the freshly loaded config (admin input).
+    // Use the exact POSIX attribute names + search bases from the freshly loaded config.
     let posix_attrs = nfs_klldap_config::resolve_posix_attribute_mapping(&fresh.sssd);
-    let mut new_client = crate::llap::LldapClient::new_with_attributes(&url, posix_attrs);
+    let realm = fresh.effective_realm();
+    let (user_base, group_base) =
+        nfs_klldap_config::effective_ldap_search_bases(&fresh.sssd, &realm);
+    let no_tls_verify = fresh
+        .sssd
+        .ldap_tls_reqcert
+        .as_deref()
+        .map(|v| v.eq_ignore_ascii_case("never"))
+        .unwrap_or(false);
+    let start_tls = fresh.sssd.ldap_id_use_start_tls.unwrap_or(false);
+    let mut new_client = crate::ldap::LdapClient::new_with_attributes(
+        &fresh.ldap_uri,
+        &user_base,
+        &group_base,
+        posix_attrs,
+        no_tls_verify,
+        start_tls,
+    );
 
     match new_client.authenticate(&user, &pass).await {
         Ok(()) => {
@@ -1320,9 +1453,13 @@ mod tests {
             group_gid_number: "gidNumber".to_string(),
             group_member: "memberUid".to_string(),
         };
-        let lldap = Arc::new(Mutex::new(LldapClient::new_with_attributes(
-            "http://localhost:9999",
+        let lldap = Arc::new(Mutex::new(LdapClient::new_with_attributes(
+            "ldaps://localhost:6360",
+            "ou=people,dc=test,dc=com",
+            "ou=groups,dc=test,dc=com",
             default_mapping,
+            true,  // no_tls_verify for test dummy
+            false,
         )));
 
         let auth = Arc::new(AuthManager::new(&config_path, None));
@@ -1353,7 +1490,7 @@ mod tests {
         let (state, _tmp) = make_test_state_with_temp_config();
         let auth = state.auth.clone();
         // Use the real privileged session creator (same path the login handlers use)
-        let token = auth.create_privileged_session("testadmin", crate::auth::AuthRole::LocalAdmin);
+        let token = auth.create_privileged_session("testadmin");
 
         let app = router(state);
 
@@ -1384,7 +1521,7 @@ ldap_default_authtok = "sekret"
         let (state, _tmp) = make_test_state_with_temp_config();
         let auth = state.auth.clone();
         // Use the real privileged session creator (same path the login handlers use)
-        let token = auth.create_privileged_session("testadmin", crate::auth::AuthRole::LocalAdmin);
+        let token = auth.create_privileged_session("testadmin");
 
         let app = router(state);
 

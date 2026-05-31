@@ -4,7 +4,7 @@
 //! 1. Special immutable username "localhost" + bcrypt-hashed sidecar file
 //!    next to nfs-klldap.conf (named `webui-password`, mode 0600).
 //!    This user is the local machine admin — can create/manage shares on *this* host.
-//! 2. Any other username → real LLDAP login (GraphQL) + membership in the
+//! 2. Any other username → real KLLDAP/LDAP login + membership in the
 //!    configured `webui_admin_group` (default "lldap_admin").
 //!    These users are network admins and can modify shares/settings on any machine.
 //!
@@ -27,31 +27,10 @@ use std::time::{Duration, Instant};
 const SESSION_TTL: Duration = Duration::from_secs(12 * 3600); // 12 hours
 const SIMPLE_PW_FILENAME: &str = "webui-password";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AuthRole {
-    /// Logged in via the special "localhost" + simple sidecar password.
-    /// This user can manage shares on the local machine only.
-    LocalAdmin,
-    /// Real LLDAP user who is a member of the webui_admin_group.
-    /// Can manage shares/settings on any machine (network admin).
-    LldapAdmin { username: String },
-}
-
 #[derive(Clone, Debug)]
 pub struct Session {
     pub username: String,
-    pub role: AuthRole,
     pub created: Instant,
-}
-
-impl Session {
-    #[allow(dead_code)]
-    pub fn is_privileged(&self) -> bool {
-        matches!(
-            self.role,
-            AuthRole::LocalAdmin | AuthRole::LldapAdmin { .. }
-        )
-    }
 }
 
 pub struct AuthManager {
@@ -64,7 +43,6 @@ pub struct AuthManager {
 }
 
 impl AuthManager {
-    #[allow(dead_code)]
     /// Create a new manager.
     /// `config_path` is the path to nfs-klldap.conf; the sidecar lives beside it.
     /// `admin_group` comes from the loaded config (falls back to "lldap_admin").
@@ -84,11 +62,6 @@ impl AuthManager {
 
     pub fn admin_group(&self) -> &str {
         &self.admin_group
-    }
-
-    #[allow(dead_code)]
-    pub fn simple_pw_path(&self) -> &Path {
-        &self.simple_pw_path
     }
 
     // ---------------------------------------------------------------------
@@ -176,7 +149,7 @@ impl AuthManager {
 
     /// Create a privileged session. The caller has already performed the
     /// appropriate authentication (simple pw for localhost, or LLDAP+group for others).
-    pub fn create_privileged_session(&self, username: &str, role: AuthRole) -> String {
+    pub fn create_privileged_session(&self, username: &str) -> String {
         let token: String = (0..32)
             .map(|_| {
                 let c = rand::thread_rng().gen_range(0..62);
@@ -190,7 +163,6 @@ impl AuthManager {
 
         let session = Session {
             username: username.to_string(),
-            role,
             created: Instant::now(),
         };
 
@@ -202,21 +174,6 @@ impl AuthManager {
         map.retain(|_, s| now.duration_since(s.created) < SESSION_TTL);
 
         token
-    }
-
-    /// Legacy-friendly wrapper: creates a LocalAdmin session for "localhost".
-    #[allow(dead_code)]
-    pub fn create_session(&self, username: &str) -> String {
-        // Treat unknown callers as LocalAdmin for backward compatibility during transition.
-        // Real LLDAP sessions should go through create_privileged_session with the correct role.
-        let role = if username == "localhost" {
-            AuthRole::LocalAdmin
-        } else {
-            AuthRole::LldapAdmin {
-                username: username.to_string(),
-            }
-        };
-        self.create_privileged_session(username, role)
     }
 
     /// Validate token → username (for require_auth compatibility).
@@ -232,32 +189,8 @@ impl AuthManager {
         None
     }
 
-    /// Return the full role for a valid session (used for privilege gating).
-    #[allow(dead_code)]
-    pub fn validate_with_role(&self, token: &str) -> Option<AuthRole> {
-        let mut map = self.sessions.write().unwrap();
-        if let Some(session) = map.get(token) {
-            if Instant::now().duration_since(session.created) < SESSION_TTL {
-                return Some(session.role.clone());
-            } else {
-                map.remove(token);
-            }
-        }
-        None
-    }
-
     pub fn logout(&self, token: &str) {
         let mut map = self.sessions.write().unwrap();
         map.remove(token);
-    }
-
-    /// Quick check: does this token belong to a privileged user?
-    #[allow(dead_code)]
-    pub fn is_privileged(&self, token: &str) -> bool {
-        if let Some(role) = self.validate_with_role(token) {
-            matches!(role, AuthRole::LocalAdmin | AuthRole::LldapAdmin { .. })
-        } else {
-            false
-        }
     }
 }

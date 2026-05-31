@@ -21,38 +21,50 @@ pub struct DirectoryNode {
 
 pub struct FsManager {
     pub config: crate::config::Config,
-    /// Path to the central nfs-klldap.conf. Previously used to communicate with a
-    /// Retained for potential future use with container-exec flows.
-    #[allow(dead_code)]
-    config_path: Option<PathBuf>,
 }
 
 impl FsManager {
     /// Construct with explicit config path.
-    pub fn new_with_path(config: crate::config::Config, config_path: PathBuf) -> Self {
-        Self {
-            config,
-            config_path: Some(config_path),
-        }
+    pub fn new_with_path(config: crate::config::Config, _config_path: PathBuf) -> Self {
+        Self { config }
     }
 
     /// Build a tree view of managed directories (real-time from FS).
-    /// This powers the "drop-down tree menu system" the user described.
+    ///
+    /// The `root` parameter (and all `DirectoryNode.path` values returned) are
+    /// *logical* paths in the host_path namespace from nfs-klldap.conf (the
+    /// values admins configure and see in the UI, used for allow-listing).
+    ///
+    /// Translation to the actual container-visible path (under
+    /// `storage.container_root` + share.name) happens only at the syscall
+    /// boundary so that `fs::metadata`/`read_dir` work inside the container
+    /// under the documented bind-mount model. This matches the contract
+    /// already used by `apply_permissions`.
     pub fn build_tree(&self, root: &Path) -> Option<DirectoryNode> {
-        if !self.is_allowed(root) {
+        // Normalize early so trailing slashes don't break matching or child synthesis.
+        let normalized = self.normalize_for_matching(root);
+
+        if !self.is_allowed(&normalized) {
             return None;
         }
 
-        let meta = fs::metadata(root).ok()?;
-        let mode = meta.permissions().mode();
+        let real_root = match self.host_path_to_container_path(&normalized) {
+            Ok(p) => p,
+            Err(_) => return None,
+        };
+
+        let meta = fs::metadata(&real_root).ok()?;
+        // Store only the permission bits (mask off file type like S_IFDIR).
+        // This prevents "40755" style output in the UI.
+        let mode = meta.permissions().mode() & 0o7777;
         let owner = Some(meta.uid());
         let group = Some(meta.gid());
 
         let mut node = DirectoryNode {
-            path: root.to_path_buf(),
-            name: root
+            path: normalized.clone(),
+            name: normalized
                 .file_name()
-                .unwrap_or_default()
+                .unwrap_or_else(|| normalized.as_os_str())
                 .to_string_lossy()
                 .into_owned(),
             owner,
@@ -61,12 +73,16 @@ impl FsManager {
             children: vec![],
         };
 
-        // Recursively build children (directories only, as per user request)
-        if let Ok(entries) = fs::read_dir(root) {
+        // Recursively build children (directories only). We read from the real
+        // container path but synthesize child paths in the logical (host)
+        // namespace so that subsequent HTMX calls and is_allowed checks
+        // continue to work against the configured shares.
+        if let Ok(entries) = fs::read_dir(&real_root) {
             for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    if let Some(child) = self.build_tree(&path) {
+                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    let child_name = entry.file_name();
+                    let logical_child = normalized.join(&child_name);
+                    if let Some(child) = self.build_tree(&logical_child) {
                         node.children.push(child);
                     }
                 }
@@ -88,7 +104,8 @@ impl FsManager {
         mode: u32,
         recursive: bool,
     ) -> Result<(), String> {
-        if !self.is_allowed(path) {
+        let normalized = self.normalize_for_matching(path);
+        if !self.is_allowed(&normalized) {
             return Err("Path is outside allowed managed roots".into());
         }
 
@@ -100,7 +117,7 @@ impl FsManager {
             return Err("Refusing mode with setuid/setgid/sticky bits".into());
         }
 
-        let target_path = self.host_path_to_container_path(path)?;
+        let target_path = self.host_path_to_container_path(&normalized)?;
 
         // Perform chown + chmod directly (we run inside the container as root).
         self.apply_direct(&target_path, owner_uid, group_gid, mode, recursive)?;
@@ -108,17 +125,24 @@ impl FsManager {
         Ok(())
     }
 
-    /// Map a host_path from the config (what the user configured on the host)
-    /// to the corresponding path visible inside the container.
-    fn host_path_to_container_path(&self, host_path: &Path) -> Result<PathBuf, String> {
-        let root = self.config.storage.container_root.trim_end_matches('/');
+    /// Map a logical (host-namespace) path from the config / UI to the
+    /// corresponding real path visible inside the container under
+    /// `storage.container_root` + the matching share's `name`.
+    ///
+    /// This is the single place that knows the bind-mount contract. It is used
+    /// for both write operations (`apply_permissions`) and read operations
+    /// (`build_tree` for the live directory browser).
+    pub(crate) fn host_path_to_container_path(&self, host_path: &Path) -> Result<PathBuf, String> {
+        let normalized = self.normalize_for_matching(host_path);
+        let container_root = self.config.storage.container_root.trim_end_matches('/');
 
         for share in &self.config.shares {
-            if host_path.starts_with(&share.host_path) {
-                let rel = host_path
-                    .strip_prefix(&share.host_path)
+            let share_normalized = self.normalize_for_matching(&share.host_path);
+            if normalized.starts_with(&share_normalized) {
+                let rel = normalized
+                    .strip_prefix(&share_normalized)
                     .unwrap_or(Path::new(""));
-                let mut cpath = PathBuf::from(root);
+                let mut cpath = PathBuf::from(container_root);
                 cpath.push(&share.name);
                 if !rel.as_os_str().is_empty() {
                     cpath.push(rel);
@@ -169,10 +193,23 @@ impl FsManager {
     }
 
     pub(crate) fn is_allowed(&self, path: &Path) -> bool {
+        let normalized = self.normalize_for_matching(path);
         // New central config: allowed = the host_path of every declared share
         crate::config::all_managed_roots(&self.config)
             .iter()
-            .any(|root| path.starts_with(root))
+            .any(|root| normalized.starts_with(self.normalize_for_matching(root)))
+    }
+
+    /// Normalize a path for prefix matching: strip trailing slashes.
+    /// This prevents issues when the UI (or config) has "/some/share/" vs "/some/share".
+    fn normalize_for_matching(&self, p: &Path) -> PathBuf {
+        let s = p.to_string_lossy();
+        let trimmed = s.trim_end_matches('/');
+        if trimmed.is_empty() {
+            PathBuf::from("/")
+        } else {
+            PathBuf::from(trimmed)
+        }
     }
 }
 
@@ -192,6 +229,28 @@ mod tests {
                     ..Default::default()
                 })
                 .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Helper that creates a config exercising the host_path → container translation.
+    /// The real on-disk tree lives at `container_root`/`share_name`.
+    /// Calls to build_tree use the `host_path` (logical) and must return nodes
+    /// whose .path values stay in the logical host namespace.
+    fn make_test_config_with_container_mapping(
+        host_path: &str,
+        container_root: &str,
+        share_name: &str,
+    ) -> crate::config::Config {
+        crate::config::Config {
+            storage: nfs_klldap_config::StorageSection {
+                container_root: container_root.to_string(),
+            },
+            shares: vec![nfs_klldap_config::Share {
+                name: share_name.to_string(),
+                host_path: PathBuf::from(host_path),
+                ..Default::default()
+            }],
             ..Default::default()
         }
     }
@@ -233,11 +292,16 @@ mod tests {
 
     #[test]
     fn build_tree_walks_only_directories_and_respects_shares() {
+        // This test now exercises the real host_path → container translation
+        // that the WebUI tree browser relies on inside the container.
         let tmp = TempDir::new().unwrap();
-        let allowed_root = tmp.path().join("allowed");
-        std::fs::create_dir_all(&allowed_root).unwrap();
 
-        // Create a realistic tree
+        // Real tree lives under container_root + share.name (simulating the bind mount
+        // layout /export/mydata that the container actually sees).
+        let container_root = tmp.path().join("container-root");
+        let real_share_dir = container_root.join("mydata");
+        std::fs::create_dir_all(&real_share_dir).unwrap();
+
         let tree = [
             "movies/",
             "movies/action/",
@@ -246,39 +310,60 @@ mod tests {
             "backups/",
             "backups/2024/",
         ];
-        create_temp_tree(&allowed_root, &tree).unwrap();
+        create_temp_tree(&real_share_dir, &tree).unwrap();
 
-        let cfg = make_test_config_with_shares(&[allowed_root.to_str().unwrap()]);
+        // Logical host_path (what the admin puts in nfs-klldap.conf and sees in the UI)
+        // is completely different from the container-visible location.
+        let logical_host_path = "/host/media/mydata";
+        let cfg = make_test_config_with_container_mapping(
+            logical_host_path,
+            container_root.to_str().unwrap(),
+            "mydata",
+        );
         let fs = FsManager::new_with_path(cfg, PathBuf::from("/tmp/dummy.conf"));
 
-        // Root should be visible
+        // We ask for the logical root; build_tree must translate internally to the real dir.
         let root_node = fs
-            .build_tree(&allowed_root)
-            .expect("root should be allowed");
-        assert_eq!(root_node.name, "allowed");
+            .build_tree(Path::new(logical_host_path))
+            .expect("root should be allowed and visible via translation");
+
+        // Returned node uses the logical path + its basename for display
+        assert_eq!(root_node.path, Path::new(logical_host_path));
+        assert_eq!(root_node.name, "mydata");
         assert_eq!(root_node.children.len(), 2); // movies + backups
 
-        // Check one child
+        // Children must also be reported with logical paths (host namespace) so the UI
+        // can send them back in subsequent /tree and /directory requests.
         let movies = root_node
             .children
             .iter()
             .find(|c| c.name == "movies")
             .expect("movies dir should exist");
-        assert_eq!(movies.children.len(), 2); // action + drama
+        assert_eq!(movies.children.len(), 2);
         assert!(movies.children.iter().any(|c| c.name == "action"));
+        assert!(movies.path.starts_with(logical_host_path));
     }
 
     #[test]
     fn build_tree_skips_files_and_only_includes_dirs() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        std::fs::write(root.join("file.txt"), "data").unwrap();
-        std::fs::create_dir_all(root.join("subdir")).unwrap();
+        let real_root = tmp.path();
+        std::fs::write(real_root.join("file.txt"), "data").unwrap();
+        std::fs::create_dir_all(real_root.join("subdir")).unwrap();
 
-        let cfg = make_test_config_with_shares(&[root.to_str().unwrap()]);
+        // Make the translation land on the real_root we created:
+        // container_root = real_root, share.name = "" (push of empty does nothing harmful here
+        // because we only read the root itself in this test).
+        let mut cfg = make_test_config_with_shares(&[real_root.to_str().unwrap()]);
+        cfg.storage.container_root = real_root.to_string_lossy().into_owned();
+        // Force the single share's name to empty so container_root + name == real_root
+        cfg.shares[0].name.clear();
+
         let fs = FsManager::new_with_path(cfg, PathBuf::from("/tmp/dummy.conf"));
 
-        let node = fs.build_tree(root).unwrap();
+        let node = fs
+            .build_tree(real_root)
+            .expect("root should resolve (translation is identity in this setup)");
         assert_eq!(node.children.len(), 1);
         assert_eq!(node.children[0].name, "subdir");
     }

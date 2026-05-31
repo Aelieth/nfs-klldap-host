@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 
 use rcgen::{CertificateParams, DistinguishedName, DnType};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::ServerConfig;
 use thiserror::Error;
+use x509_parser::extensions::ParsedExtension;
+use x509_parser::prelude::*;
 
 /// Errors that can occur while ensuring or loading WebUI TLS material.
 #[derive(Debug, Error)]
@@ -40,29 +43,53 @@ pub struct TlsPaths {
 
 /// Ensure that valid certificate and key files exist at the given paths.
 ///
-/// - If both files already exist and are readable, they are returned as-is.
-/// - Otherwise, a fresh self-signed certificate is generated (using the
-///   provided hostname for the CN and SANs) and written to the locations.
+/// - If both files already exist, are readable, **and** (when `regenerate_weak_certs`
+///   is true) contain the `serverAuth` Extended Key Usage, they are returned as-is.
+/// - Otherwise (missing, unreadable, or weak), a fresh self-signed certificate is
+///   generated using the provided hostname and written to the locations.
 ///
-/// This is safe to call on every startup. Generation only happens when needed.
+/// When `regenerate_weak_certs` is true (the normal in-container auto-cert case),
+/// old/weak self-signed certificates are transparently replaced on startup.
+/// This makes TLS dependency updates (rustls, rcgen, etc.) completely hands-off.
+///
+/// User-provided certificates (when `WEBUI_TLS_CERT`/`WEBUI_TLS_KEY` are set)
+/// should normally be called with `regenerate_weak_certs = false` so we never
+/// overwrite operator-managed material.
 pub fn ensure_webui_tls_certs(
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,
     hostname: &str,
+    regenerate_weak_certs: bool,
 ) -> Result<TlsPaths, CertError> {
     let cert_path = cert_path.as_ref().to_path_buf();
     let key_path = key_path.as_ref().to_path_buf();
 
     // Fast path: both files already exist
     if cert_path.exists() && key_path.exists() {
-        // Basic sanity: try to load them
-        if load_cert_and_key(&cert_path, &key_path).is_ok() {
-            return Ok(TlsPaths {
-                cert: cert_path,
-                key: key_path,
-            });
+        match load_cert_and_key(&cert_path, &key_path) {
+            Ok((certs, _key)) => {
+                let is_strong = certs
+                    .first()
+                    .map(certificate_has_server_auth)
+                    .unwrap_or(false);
+
+                if !regenerate_weak_certs || is_strong {
+                    return Ok(TlsPaths {
+                        cert: cert_path,
+                        key: key_path,
+                    });
+                }
+
+                // Weak certificate detected (missing serverAuth EKU).
+                // This usually happens after a rustls/rcgen update.
+                // Delete the old files so we fall through and regenerate transparently.
+                let _ = std::fs::remove_file(&cert_path);
+                let _ = std::fs::remove_file(&key_path);
+            }
+            Err(_) => {
+                // Corrupt/unreadable → fall through and regenerate
+            }
         }
-        // If loading fails, we fall through and regenerate.
     }
 
     // Generate a new self-signed certificate
@@ -104,10 +131,22 @@ fn generate_self_signed(hostname: &str) -> Result<(String, String), CertError> {
     dn.push(DnType::CommonName, hostname);
     params.distinguished_name = dn;
 
+    // Explicit key usages are required for modern TLS clients (especially after
+    // rustls 0.23+ and stricter browser/OS validation) to accept the certificate
+    // as a valid server certificate. Missing these commonly causes the client to
+    // send "fatal alert: CertificateUnknown" during the handshake.
+    params.key_usages = vec![
+        rcgen::KeyUsagePurpose::DigitalSignature,
+        rcgen::KeyUsagePurpose::KeyEncipherment,
+    ];
+    params.extended_key_usages = vec![
+        rcgen::ExtendedKeyUsagePurpose::ServerAuth,
+    ];
+
     // Validity period: now until ~10 years in the future
-    let now = time::OffsetDateTime::now_utc();
+    let now = ::time::OffsetDateTime::now_utc();
     params.not_before = now;
-    params.not_after = now + time::Duration::days(3650);
+    params.not_after = now + ::time::Duration::days(3650);
 
     let key_pair = rcgen::KeyPair::generate()?;
     let cert = params.self_signed(&key_pair)?;
@@ -120,6 +159,8 @@ fn generate_self_signed(hostname: &str) -> Result<(String, String), CertError> {
 
 /// Load a certificate and private key from PEM files on disk.
 /// Returns the raw DER forms suitable for rustls.
+///
+/// Uses the `pem` crate instead of the unmaintained `rustls-pemfile`.
 pub fn load_cert_and_key(
     cert_path: &Path,
     key_path: &Path,
@@ -127,19 +168,71 @@ pub fn load_cert_and_key(
     let cert_pem = std::fs::read_to_string(cert_path)?;
     let key_pem = std::fs::read_to_string(key_path)?;
 
-    let certs = rustls_pemfile::certs(&mut cert_pem.as_bytes())
-        .collect::<Result<Vec<_>, _>>()
+    let certs = ::pem::parse_many(&cert_pem)
+        .map_err(|e| CertError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?
+        .into_iter()
+        .filter(|p| p.tag() == "CERTIFICATE")
+        .map(|p| CertificateDer::from(p.into_contents()))
+        .collect::<Vec<_>>();
+
+    let key_pem_parsed = ::pem::parse(&key_pem)
         .map_err(|e| CertError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
 
-    let key = rustls_pemfile::private_key(&mut key_pem.as_bytes())
-        .map_err(|e| CertError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?
-        .ok_or(CertError::Pem)?;
+    let key = match key_pem_parsed.tag() {
+        "PRIVATE KEY" => PrivateKeyDer::Pkcs8(key_pem_parsed.into_contents().into()),
+        "RSA PRIVATE KEY" => PrivateKeyDer::Pkcs1(key_pem_parsed.into_contents().into()),
+        "EC PRIVATE KEY" => PrivateKeyDer::Sec1(key_pem_parsed.into_contents().into()),
+        _ => return Err(CertError::Pem),
+    };
 
     if certs.is_empty() {
         return Err(CertError::Invalid);
     }
 
     Ok((certs, key))
+}
+
+/// Load certificate and key from disk and build a `rustls::ServerConfig`.
+///
+/// This is the preferred way to get a ready-to-use TLS config for the WebUI
+/// server after we removed the `axum-server` dependency.
+pub fn load_rustls_server_config(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<ServerConfig, CertError> {
+    let (certs, key) = load_cert_and_key(cert_path, key_path)?;
+
+    let mut config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|_| CertError::Invalid)?;
+
+    // Enable ALPN for HTTP/1.1 and HTTP/2
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    Ok(config)
+}
+
+/// Returns true if the given certificate contains the `serverAuth`
+/// Extended Key Usage (required for modern TLS clients to accept it
+/// as a valid server certificate).
+///
+/// This is used to auto-detect "weak" self-signed certificates that were
+/// generated before we started emitting proper key usages / EKU.
+fn certificate_has_server_auth(cert_der: &CertificateDer) -> bool {
+    let Ok((_, cert)) = X509Certificate::from_der(cert_der.as_ref()) else {
+        return false;
+    };
+
+    for ext in cert.extensions() {
+        // OID for extendedKeyUsage
+        if ext.oid.to_id_string() == "2.5.29.37" {
+            if let ParsedExtension::ExtendedKeyUsage(eku) = ext.parsed_extension() {
+                return eku.server_auth;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -153,7 +246,7 @@ mod tests {
         let cert_path = dir.path().join("webui.crt");
         let key_path = dir.path().join("webui.key");
 
-        let paths = ensure_webui_tls_certs(&cert_path, &key_path, "test-host.example.com").unwrap();
+        let paths = ensure_webui_tls_certs(&cert_path, &key_path, "test-host.example.com", true).unwrap();
 
         assert!(paths.cert.exists());
         assert!(paths.key.exists());
@@ -170,10 +263,10 @@ mod tests {
         let key_path = dir.path().join("webui.key");
 
         // First call generates
-        let first = ensure_webui_tls_certs(&cert_path, &key_path, "host1").unwrap();
+        let first = ensure_webui_tls_certs(&cert_path, &key_path, "host1", true).unwrap();
 
         // Second call with same paths should reuse (no regeneration)
-        let second = ensure_webui_tls_certs(&cert_path, &key_path, "host2").unwrap();
+        let second = ensure_webui_tls_certs(&cert_path, &key_path, "host2", true).unwrap();
 
         assert_eq!(first.cert, second.cert);
         assert_eq!(first.key, second.key);

@@ -11,6 +11,12 @@
         .dir { cursor: pointer; }
         .dir:hover { background: #f0f0f0; }
         .form { margin-top: 1rem; padding: 1rem; border: 1px solid #ccc; }
+
+        /* Make the search suggestion dropdowns position correctly relative to their inputs */
+        label {
+            position: relative;
+            display: block;
+        }
         .suggestion {
             padding: 4px 8px;
             cursor: pointer;
@@ -18,6 +24,20 @@
         }
         .suggestion:hover {
             background: #f8f8f8;
+        }
+
+        /* Basic dropdown styling for LLDAP user/group search results inside the permission form */
+        .suggestions {
+            position: absolute;
+            background: #fff;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+            max-height: 220px;
+            overflow-y: auto;
+            z-index: 100;
+            min-width: 220px;
+            margin-top: 2px;
         }
         .current-state {
             background: #f9f9f9;
@@ -50,21 +70,99 @@
             if (suggestions) suggestions.innerHTML = '';
         }
 
-        // Load permission form when clicking any .dir in the tree (delegated)
-        document.body.addEventListener('click', function(evt) {
-            const dir = evt.target.closest('.dir');
-            if (dir) {
+        // Helper to attach delegated .dir handlers (tree expansion + permission form with LLDAP owner/group search).
+        // Wrapped in DOMContentLoaded for reliable attachment even when script runs from <head>.
+        function attachDirClickHandlers() {
+            // Delegated handlers for .dir clicks in the tree:
+            // - First click on a tree node expands its children (lazy /tree load)
+            // - Always shows/updates the permission form for that directory (current state from FS + live LLDAP searches)
+            document.body.addEventListener('click', function(evt) {
+                const dir = evt.target.closest('.dir');
+                if (!dir) return;
+
                 const path = dir.dataset.path;
-                if (path) {
-                    htmx.ajax('GET', '/directory?path=' + encodeURIComponent(path), {
-                        target: '#permission-form',
-                        swap: 'innerHTML'
-                    });
-                    const panel = document.getElementById('permission-form');
-                    if (panel) panel.style.display = 'block';
+                if (!path) return;
+
+                // Toggle expand/collapse for directory tree nodes + always update permission form.
+                // When collapsing a node we do a "strong collapse": we also force-close
+                // all descendant directories underneath it (arrows back to ▶, children hidden,
+                // loaded state cleared). This gives clean "collapse up the tree" behavior.
+                const childrenDiv = dir.nextElementSibling;
+                if (childrenDiv && childrenDiv.classList.contains('children')) {
+                    const hasContent = childrenDiv.innerHTML.trim().length > 0;
+                    const isVisible = childrenDiv.style.display !== 'none';
+
+                    if (hasContent && isVisible) {
+                        // Collapse this node
+                        childrenDiv.style.display = 'none';
+                        dir.textContent = dir.textContent.replace('▼', '▶');
+
+                        // Strong subtree collapse: close every descendant .dir under this node
+                        const descendantDirs = childrenDiv.querySelectorAll('.dir');
+                        descendantDirs.forEach(descDir => {
+                            const descChildren = descDir.nextElementSibling;
+                            if (descChildren && descChildren.classList.contains('children')) {
+                                descChildren.style.display = 'none';
+                                // Clear loaded state so it will fresh-load on next expand
+                                delete descChildren.dataset.loaded;
+                                descDir.textContent = descDir.textContent.replace('▼', '▶');
+                            }
+                        });
+                    } else {
+                        // Expand (show or load)
+                        childrenDiv.style.display = '';
+                        if (!childrenDiv.dataset.loaded || !hasContent) {
+                            htmx.ajax('GET', '/tree?path=' + encodeURIComponent(path), {
+                                target: childrenDiv,
+                                swap: 'innerHTML'
+                            });
+                            childrenDiv.dataset.loaded = 'true';
+                        }
+                        dir.textContent = dir.textContent.replace('▶', '▼');
+                    }
                 }
-            }
-        });
+
+                // Always populate the permission editor form (current owners/mode from FS via the container view,
+                // plus live LLDAP user/group search for choosing new owner/group).
+                htmx.ajax('GET', '/directory?path=' + encodeURIComponent(path), {
+                    target: '#permission-form',
+                    swap: 'innerHTML'
+                });
+                const panel = document.getElementById('permission-form');
+                if (panel) panel.style.display = 'block';
+            });
+
+            // Delegated handler for LLDAP user/group search suggestions in the permission editor.
+            // This replaces the previous unsafe inline onclick= attributes and prevents
+            // htmx:syntax:error when names contain quotes or other special characters.
+            document.body.addEventListener('click', function(evt) {
+                const suggestion = evt.target.closest('.suggestion');
+                if (!suggestion) return;
+
+                const userId = suggestion.dataset.userId;
+                if (userId) {
+                    const uid = parseInt(suggestion.dataset.uid || '0', 10);
+                    if (typeof selectUser === 'function') {
+                        selectUser(userId, uid);
+                    }
+                    return;
+                }
+
+                const groupId = suggestion.dataset.groupId;
+                if (groupId) {
+                    const gid = parseInt(suggestion.dataset.gid || '0', 10);
+                    if (typeof selectGroup === 'function') {
+                        selectGroup(groupId, gid);
+                    }
+                }
+            });
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', attachDirClickHandlers);
+        } else {
+            attachDirClickHandlers();
+        }
     </script>
 </head>
 <body>

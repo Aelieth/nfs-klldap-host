@@ -19,7 +19,7 @@ mod certs;
 mod config;
 mod ffi;
 mod fs;
-mod llap;
+mod ldap;
 
 mod web;
 
@@ -48,7 +48,7 @@ use nfs_klldap_config::get_consistent_hostname;
 
 #[tokio::main]
 async fn main() {
-    // Install rustls crypto provider early (required when using axum-server + tls-rustls)
+    // Install rustls crypto provider early.
     // This must happen before any TLS code runs.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -113,17 +113,33 @@ async fn main() {
         config_path.clone(),
     ));
 
-    // LLDAP client (GraphQL + POSIX). Derive URL from the central conf when possible.
-    // We pass the exact POSIX attribute names the admin declared in [sssd] so the
-    // client only ever requests those (this is the primary defense against LLDAP
-    // emitting "Ignoring unrecognized user/group attribute" spam for krb*, shadow*, etc.).
-    let lldap_url = crate::config::derive_lldap_url(&config);
+    // LDAP client (standard RFC searches + simple bind).
+    // Uses exactly the same ldap_uri + [sssd] bind credentials + attribute
+    // mappings as SSSD. All searches use Subtree scope so child OUs are found.
     let posix_attrs = nfs_klldap_config::resolve_posix_attribute_mapping(&config.sssd);
-    let mut lldap = crate::llap::LldapClient::new_with_attributes(&lldap_url, posix_attrs);
+    let realm = config.effective_realm();
+    let (user_base, group_base) =
+        nfs_klldap_config::effective_ldap_search_bases(&config.sssd, &realm);
+    // TLS policy from sssd section (common "never" for lab self-signed KLLDAP).
+    let no_tls_verify = config
+        .sssd
+        .ldap_tls_reqcert
+        .as_deref()
+        .map(|v| v.eq_ignore_ascii_case("never"))
+        .unwrap_or(false);
+    let start_tls = config.sssd.ldap_id_use_start_tls.unwrap_or(false);
+    let mut lldap = crate::ldap::LdapClient::new_with_attributes(
+        &config.ldap_uri,
+        &user_base,
+        &group_base,
+        posix_attrs,
+        no_tls_verify,
+        start_tls,
+    );
 
     // Real credentials from the same nfs-klldap.conf (sssd section) with env override support.
     // Interactive prompt is intentionally avoided for daemon/container use cases.
-    let (lldap_user, lldap_pass) = crate::config::lldap_login_creds(&config);
+    let (lldap_user, lldap_pass) = crate::config::ldap_service_creds(&config);
     if lldap_pass.trim().is_empty()
         || lldap_pass == "CHANGE_THIS_TO_A_STRONG_SECRET"
         || lldap_pass == "SET_ME"
@@ -134,17 +150,17 @@ async fn main() {
         );
     }
 
-    // Note: This authenticate() performs a simple-login REST call. Inside LLDAP
-    // this typically results in a bind as the service account. The very first
-    // bind for that DN can cause LLDAP to load the user's full entry from its
-    // backend and emit one burst of "Ignoring unrecognized user attribute"
-    // warnings for any non-POSIX attributes (krb*, accountexpires, etc.) that
-    // exist on the account. This is the main remaining source of the single
-    // startup burst (the other early bind was the guided startup probe).
+    // Note: This authenticate() performs an LDAP simple bind as the service
+    // account (using sssd.ldap_default_bind_* or NFS_KLLDAP_LLDAP_*). The very
+    // first bind for that DN can cause KLLDAP to load the user's full entry
+    // and emit a one-time burst of "Ignoring unrecognized user attribute"
+    // warnings for non-POSIX attributes (krb*, etc.). This is the main source
+    // of the single startup burst (the other early bind was the guided
+    // startup ldapsearch probe).
     //
-    // After this point the client only performs narrow GraphQL fetches using
-    // the exact attributes from resolve_posix_attribute_mapping (same set
-    // emitted into sssd.conf as ldap_user_attributes etc.).
+    // After this point the client only performs narrow LDAP searches using
+    // exactly the attributes from resolve_posix_attribute_mapping (the same
+    // set emitted into sssd.conf).
     if let Err(e) = lldap.authenticate(&lldap_user, &lldap_pass).await {
         eprintln!(
             "Warning: Could not authenticate to KLLDAP at startup: {}",
@@ -157,7 +173,7 @@ async fn main() {
     // operation the WebUI performs is a "narrow SSSD-style" query (only the
     // admin-declared POSIX attributes), matching the behavior of all later
     // handlers and of SSSD.
-    if lldap_pass.trim().len() > 0
+    if !lldap_pass.trim().is_empty()
         && lldap_pass != "CHANGE_THIS_TO_A_STRONG_SECRET"
         && lldap_pass != "SET_ME"
     {
@@ -218,33 +234,69 @@ async fn main() {
         resolve_runtime_hostname_for_banner()
     };
 
-    let tls_paths =
-        crate::certs::ensure_webui_tls_certs(&tls_cert_path, &tls_key_path, &cert_hostname)
-            .expect("failed to ensure WebUI TLS certificates");
+    // When the container launcher provided explicit certs via WEBUI_TLS_CERT/KEY,
+    // we never auto-regenerate (even if they look "weak"). For the normal
+    // auto-generated self-signed case we *do* want transparent regeneration of
+    // old/weak certs after TLS dependency updates.
+    let regenerate_weak_certs = std::env::var("WEBUI_TLS_CERT").is_err();
+
+    let tls_paths = crate::certs::ensure_webui_tls_certs(
+        &tls_cert_path,
+        &tls_key_path,
+        &cert_hostname,
+        regenerate_weak_certs,
+    )
+    .expect("failed to ensure WebUI TLS certificates");
 
     let cert = tls_paths.cert.to_string_lossy().into_owned();
-    let key = tls_paths.key.to_string_lossy().into_owned();
 
     // Default bind for in-container operation (accessible from host and network)
     let addr = std::env::var("WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
 
-    println!("\nListening on https://{addr} (TLS enabled)");
+    // Build rustls ServerConfig from the certificate and key we ensured exist on disk.
+    let tls_config = crate::certs::load_rustls_server_config(&tls_paths.cert, &tls_paths.key)
+        .expect("failed to load TLS certificate and key into rustls config");
+
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config));
+    let listener = tokio::net::TcpListener::bind(&addr).await.expect("failed to bind WebUI address");
+
+    println!("Listening on https://{addr} (TLS enabled)");
     println!("Certificate: {}", cert);
 
-    let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("FATAL: Failed to load TLS certificate and key:");
-            eprintln!("  cert: {cert}");
-            eprintln!("  key : {key}");
-            eprintln!("  error: {e}");
-            eprintln!("The WebUI cannot start without valid TLS material.");
-            std::process::exit(1);
-        }
-    };
+    loop {
+        let (stream, _remote_addr) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("Failed to accept connection: {e}");
+                continue;
+            }
+        };
 
-    axum_server::bind_rustls(addr.parse().expect("invalid bind address"), config)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+        let acceptor = acceptor.clone();
+        let app = app.clone();
+
+        tokio::spawn(async move {
+            let tls_stream = match acceptor.accept(stream).await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("TLS handshake failed: {e}");
+                    return;
+                }
+            };
+
+            let io = hyper_util::rt::TokioIo::new(tls_stream);
+            let hyper_service = hyper_util::service::TowerToHyperService::new(app);
+
+            if let Err(e) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                .serve_connection(io, hyper_service)
+                .await
+            {
+                // Connection errors are common and usually harmless
+                let msg = e.to_string();
+                if !msg.contains("connection closed") && !msg.contains("broken pipe") {
+                    eprintln!("server error: {e}");
+                }
+            }
+        });
+    }
 }

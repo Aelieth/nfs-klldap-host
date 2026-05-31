@@ -17,7 +17,7 @@ This document describes the testing strategy, current coverage, and how to run t
 | `nfs-klldap-ui`               | Good for critical pure logic           | `config.rs` helpers, `FsManager` (with real temp dirs), Axum handlers for settings save. |
 | Web handlers (`web.rs`)       | Targeted (settings flows)              | Uses `tower::ServiceExt` against real router + realistic `AppState`. |
 | Auth (`auth.rs`)              | Partial                                | Session management well covered. |
-| LLDAP client (`llap.rs`)      | Pure helpers only                      | `derive_lldap_url`, `lldap_login_creds`, `derive_login_url`. Live server auth + queries intentionally not unit-tested. |
+| LDAP client (`ldap.rs`)       | Pure helpers only                      | `ldap_service_creds` (service LDAP bind creds). Live server auth + queries intentionally not unit-tested. |
 | Container scripts & entrypoint| None (shell)                           | Best exercised via Docker / compose runs. |
 
 ## Running Tests
@@ -35,7 +35,7 @@ make clippy
 
 ### 1. Pure Configuration & Helper Logic (`nfs-klldap-ui/src/config.rs`)
 
-Functions like `lldap_login_creds`, `derive_lldap_url`, and `all_managed_roots` are excellent for unit tests.
+Functions like `ldap_service_creds`, `derive_lldap_url`, and `all_managed_roots` are excellent for unit tests.
 
 Example (add under `#[cfg(test)] mod tests`):
 
@@ -57,7 +57,7 @@ fn lldap_creds_parses_dn_and_prefers_env() {
 The primary path is now fully inside the container: the WebUI validates requests (`FsManager::is_allowed`, refusal of uid 0 / dangerous modes) and then performs `chown`/`chmod` directly on the bind-mounted host paths using libc (running as root).
 
 Relevant testable pieces (in `nfs-klldap-ui`):
-- Host path → container path translation
+- Host path → container path translation (exercised by both `apply_permissions` writes and `build_tree` / the live directory tree browser in the WebUI)
 - Recursive vs non-recursive command construction
 - Safety checks before applying changes
 
@@ -105,7 +105,7 @@ For these areas we rely on:
 
 ## Currently Well-Tested Behaviors (with links to tests)
 
-- **LLDAP credential extraction** (`lldap_login_creds`): DN parsing (`uid=`, `cn=`), environment variable override, graceful fallback. See `nfs-klldap-ui/src/config.rs` tests.
+- **LDAP service credential extraction** (`ldap_service_creds`): DN parsing (`uid=`, `cn=`), environment variable override, graceful fallback. See `nfs-klldap-ui/src/config.rs` tests.
 - **URL derivation** for the LLDAP client (`derive_lldap_url`, `derive_login_url`).
 - **NFS client reload** (`lldap_status` + `reload_nfs_client` handlers + credential drift detection in `web.rs`).
 - **Allow-list root computation** (`all_managed_roots` + `is_allowed` in `FsManager`).

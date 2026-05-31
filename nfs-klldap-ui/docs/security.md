@@ -14,6 +14,7 @@ Running the UI binary directly on the host as root is not recommended for normal
 2. It performs allow-list validation against the current `[[shares]]` `host_path` entries in `nfs-klldap.conf`.
 3. It refuses uid/gid 0 and modes containing setuid/setgid/sticky bits.
 4. It maps the host path to the equivalent path inside the container (using each share's `name` + `storage.container_root`).
+   The same mapping is used when the live directory tree browser (`build_tree`) reads the filesystem so that browsing and permission editing see the same data.
 5. It performs the change directly inside the container.
 
 Because the container already runs with the capabilities required for Ganesha VFS and has the bind mounts, it can safely mutate ownership and permissions on the exported trees.

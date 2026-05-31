@@ -243,6 +243,42 @@ pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapp
     }
 }
 
+/// Compute the effective user and group LDAP search bases from [sssd] overrides
+/// (or fall back to the standard ou=people/ou=groups under the main search_base
+/// or a realm-derived dc=... base). This logic is shared by the SSSD generator,
+/// the WebUI's LDAP permission client (for subtree searches that discover users
+/// in child OUs), and startup diagnostics.
+///
+/// KLLDAP supports placing users/groups in a single level of child OUs under
+/// the primary ou=people / ou=groups; using Subtree scope from these bases
+/// ensures list/resolve operations find them without requiring a higher base.
+pub fn effective_ldap_search_bases(sssd: &SssdSection, realm: &str) -> (String, String) {
+    let search_base = sssd
+        .ldap_search_base
+        .clone()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| format!("dc={}", realm.to_lowercase().replace('.', ",dc=")));
+
+    let default_user_base = format!("ou=people,{}", search_base);
+    let default_group_base = format!("ou=groups,{}", search_base);
+
+    let user_base = sssd
+        .ldap_user_search_base
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(&default_user_base)
+        .to_string();
+
+    let group_base = sssd
+        .ldap_group_search_base
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(&default_group_base)
+        .to_string();
+
+    (user_base, group_base)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct KerberosSection {
     pub realm: Option<String>,
@@ -272,7 +308,11 @@ pub struct ManagementSection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Share {
     pub name: String,
-    /// Full absolute path on the *Docker host* (used by host UI; container performs chown/chmod on the bind mount)
+    /// Full absolute path on the *Docker host* (the "real" location the admin sees and configures).
+    /// This is the value used by the WebUI for the allow-list, the share cards, and the
+    /// directory tree browser. Inside the container the data is visible under
+    /// `storage.container_root` + this share's `name` (the bind mount contract).
+    /// The WebUI translates at the syscall boundary only; Ganesha exports use the container view.
     pub host_path: PathBuf,
     /// Optional explicit NFS pseudo path. Defaults to "/" + name (short + clean)
     pub export_path: Option<String>,

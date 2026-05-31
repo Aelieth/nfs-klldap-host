@@ -1,0 +1,29 @@
+{# Renders a directory as the top-level "root" row in the tree view.
+   Used for the initial load of a share so the share root itself is a visible,
+   clickable item for permission management (owners + mode from LLDAP + FS).
+#}
+<ul class="tree">
+  <li>
+    <span class="dir root-dir"
+          data-path="{{ root.path }}"
+          style="cursor: pointer; user-select: none; font-weight: 600;">
+      ▶ {{ root.name }}
+    </span>
+    <div class="children" style="margin-left: 1.5em;" data-loaded="true">
+      {# Direct children of the root (pre-rendered for the initial view).
+         data-loaded prevents the delegated click handler from doing a redundant fetch. #}
+      <ul class="tree">
+      {% for child in children %}
+        <li>
+          <span class="dir"
+                data-path="{{ child.path }}"
+                style="cursor: pointer; user-select: none;">
+            ▶ {{ child.name }}
+          </span>
+          <div class="children" style="margin-left: 1.5em;"></div>
+        </li>
+      {% endfor %}
+      </ul>
+    </div>
+  </li>
+</ul>

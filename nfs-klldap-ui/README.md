@@ -22,7 +22,7 @@ In normal use you do **not** run the binary on the host. It runs inside the cont
 
 ## Key Modules
 
-- `llap.rs` — LLDAP/KLLDAP client (REST `/auth/simple/login` for auth, GraphQL `/api/graphql` for queries; POSIX uid/gid extraction)
+- `ldap.rs` — LDAP client (standard searches + simple bind using sssd creds; POSIX uid/gid extraction)
 - `fs.rs` — Real-time tree walking + direct permission application inside the container
 - `config.rs` — Thin adapter over the shared `nfs-klldap-config` crate + save helpers
 - `web.rs` + templates/ — The two-page HTMX UI (includes `/settings/lldap-status` + `/settings/reload-nfs-client` for hot-reloading the service client after bind credential changes)

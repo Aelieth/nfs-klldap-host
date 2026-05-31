@@ -4,6 +4,9 @@
 <h2>Share Permissions</h2>
 <p>Click a share to browse its directory tree under the <strong>host_path</strong>. Click any subfolder to change POSIX owner/group/mode (live KLLDAP lookup + recursive apply via the container).</p>
 <p style="font-size:0.9em; color:#555;">Use <a href="/settings">System Settings</a> to manage the shares and other config in nfs-klldap.conf.</p>
+<p style="font-size:0.8em; color:#777; margin-top:-0.4em;">
+    Shares list and allowed roots are loaded at container startup. After adding or editing shares, restart the container for the list to update.
+</p>
 
 {% if shares.len() > 0 %}
     <div class="shares-list" style="margin-bottom: 1.5rem;">
@@ -11,10 +14,10 @@
             {% set ep = share.export_path.as_deref().unwrap_or(share.name.as_str()) %}
             <div class="share-card"
                  style="border: 1px solid #ddd; padding: 10px 14px; margin-bottom: 8px; border-radius: 6px; cursor: pointer; background: #fafafa;"
-                 hx-get="/tree?path={{ share.host_path.display() }}"
-                 hx-target="#tree-root"
-                 hx-swap="innerHTML"
-                 onclick="selectShare('{{ share.name }}', '/{{ ep }}', '{{ share.host_path.display() }}')">
+                 data-name="{{ share.name }}"
+                 data-export-path="/{{ ep }}"
+                 data-host-path="{{ share.host_path.display() }}"
+                 onclick="selectShareFromCard(this)">
                 <strong>{{ share.name }}</strong><br>
                 <small style="color:#555;">NFS path: <code>/{{ ep }}</code> &nbsp;•&nbsp; Host: <code>{{ share.host_path.display() }}</code></small>
             </div>
@@ -29,10 +32,7 @@
 
 <h3 id="current-share-title" style="margin-top: 0.5rem;">Directory tree</h3>
 
-<div id="tree-root"
-     hx-get="/tree?path={% if shares.len() > 0 %}{{ shares[0].host_path.display() }}{% else %}/media{% endif %}"
-     hx-trigger="load"
-     hx-swap="innerHTML">
+<div id="tree-root">
     Loading tree...
 </div>
 
@@ -48,12 +48,48 @@
         document.getElementById('current-share-title').innerHTML =
             'Directory tree for share <strong>' + name + '</strong> <small>(NFS: ' + exportPath + ')</small>';
 
-        // Load the tree for this share's root
-        htmx.ajax('GET', '/tree?path=' + encodeURIComponent(hostPath), {
+        // Load the share *root* as the top clickable row (so you can manage its owners/permissions
+        // directly via the LLDAP-backed form), with its direct children visible underneath.
+        htmx.ajax('GET', '/tree?path=' + encodeURIComponent(hostPath) + '&root=true', {
             target: '#tree-root',
             swap: 'innerHTML'
         });
+
+        // Immediately open the permission management form for the share root itself.
+        // This is the key "manage directories" experience: current owners/mode from the live
+        // filesystem (inside the container), plus live search against LLDAP for choosing
+        // new owner user/group, then apply chown/chmod (recursive supported).
+        htmx.ajax('GET', '/directory?path=' + encodeURIComponent(hostPath), {
+            target: '#permission-form',
+            swap: 'innerHTML'
+        });
+        const panel = document.getElementById('permission-form');
+        if (panel) panel.style.display = 'block';
     }
+
+    // Click handler for share cards (reads data-* attributes so paths with spaces/special
+    // chars are never interpolated raw into attributes or JS string literals).
+    function selectShareFromCard(card) {
+        const name = card.dataset.name || '';
+        const exportPath = card.dataset.exportPath || '';
+        const hostPath = card.dataset.hostPath || '';
+        if (hostPath) {
+            selectShare(name, exportPath, hostPath);
+        }
+    }
+
+    // Initial load of the first share (if any) using the safe encode path.
+    // This replaces the old server-rendered hx-get on #tree-root which could not safely
+    // contain arbitrary host_path values.
+    document.addEventListener('DOMContentLoaded', function () {
+        const firstCard = document.querySelector('.share-card');
+        if (firstCard && firstCard.dataset.hostPath) {
+            selectShareFromCard(firstCard);
+        } else {
+            const root = document.getElementById('tree-root');
+            if (root) root.innerHTML = '<em>No shares configured — add some in System Settings.</em>';
+        }
+    });
 
     // Delegated click handler for .dir lives in base.html to avoid duplicate registration.
 </script>

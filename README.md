@@ -60,7 +60,7 @@ This system is built around **one simple idea**:
 
 | Concept          | What It Is                                                                 | Who Uses It                  |
 |------------------|----------------------------------------------------------------------------|------------------------------|
-| `host_path`      | Real absolute path on your Docker **host**                                 | Web UI + permission helper   |
+| `host_path`      | Real absolute path on your Docker **host** (the identity shown in the WebUI tree browser and used for allow-listing). The container sees the data under `container_root` + share `name`. | Web UI (tree + permissions)  |
 | Bind mount (`-v`)| Makes host data visible inside the container at `/export/{name}`           | You (when starting container)|
 | `export_path`    | Path NFS clients see (defaults to `/<name>`)                               | NFS clients + Ganesha        |
 | `container_root` | Base inside container (default `/export`)                                  | Ganesha only                 |
@@ -195,8 +195,8 @@ flowchart TB
         AUTH["Hybrid Auth\n- localhost + bcrypt sidecar (webui-password 0600)\n- LLDAP user + webui_admin_group membership"]
         ROUTER["Router\n/login, /setup-password (first-run)\n/, /settings (protected)\n/tree, /directory, /apply (HTMX)\n/users/search, /groups/search\n/settings/save*, /settings/lldap-status, /settings/reload-nfs-client"]
         FSM["FsManager (real FS walks + libc chown/chmod)"]
-        LLAP["LldapClient (GraphQL + /auth/simple/login)"]
-        STATE["AppState (Arc<FsManager>, Mutex<LldapClient>, Arc<Config>, Arc<AuthManager>)"]
+        LDAP["LdapClient (standard LDAP searches + simple bind)"]
+        STATE["AppState (Arc<FsManager>, Mutex<LdapClient>, Arc<Config>, Arc<AuthManager>)"]
     end
 
     subgraph Config Change Path
@@ -247,14 +247,14 @@ flowchart TB
    - Renders list of shares from the loaded `Config`.
    - HTMX lazy-loads directory trees via `GET /tree?path=...` (only directories, `FsManager::build_tree`).
    - Clicking a directory fires `GET /directory?path=...` which renders the live `stat()` owner/gid/mode form (`permission_form.html`).
-   - Live search boxes do `GET /users/search?q=...` and `/groups/search` against the `LldapClient` (GraphQL).
+   - Live search boxes do `GET /users/search?q=...` and `/groups/search` against the `LdapClient` (LDAP).
    - Submit posts to `/apply` → resolves names to uid/gid via LLDAP again (defense in depth) → `FsManager::apply_permissions` (allow-list check, refuse uid/gid 0 and setuid bits) → direct `libc::chown` + `set_permissions` on the bind-mounted path inside the container.
 
 2. **System Settings** (`/settings`)
    - Raw TOML editor (`/settings/save-raw`) — does best-effort validation via the shared `nfs_klldap_config` crate before atomic write.
    - Structured form (`/settings/save`) — comment-preserving edit using `toml_edit`, also validates via `cfg.validate_and_derive()`.
    - Live fragment `GET /settings/lldap-status` shows the current service-account identity of the permission client + staleness warning when bind DN/PW changed on disk.
-   - `POST /settings/reload-nfs-client` rebuilds the `LldapClient` from current on-disk/env values and swaps it into `AppState`.
+   - `POST /settings/reload-nfs-client` rebuilds the `LdapClient` from current on-disk/env values and swaps it into `AppState`.
 
 #### TLS / SSL Specifics (Why "Refuses to Connect" Usually Happens)
 

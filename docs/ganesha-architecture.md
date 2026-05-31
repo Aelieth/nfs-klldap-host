@@ -27,7 +27,7 @@ Host (no kernel NFS modules required anywhere)
 ├── nfs-klldap.conf                (single source of truth TOML — edited via UI or by hand)
 ├── secrets/krb5.keytab            (nfs/<hostname>@REALM, mode 600)
 └── nfs-klldap-ui/ (Rust web UI)   (Axum + HTMX)
-    ├── Talks to LLDAP (GraphQL) for live user/group → uid/gid
+    ├── Talks to KLLDAP/LLDAP via standard LDAP (Subtree searches + simple bind using sssd creds) for live user/group → uid/gid
     ├── Requests recursive chown/chmod (performed directly inside the container)
     ├── Writes native Ganesha EXPORT {} fragments
     └── Speaks directly to Ganesha via: docker exec <name> ganesha-ctl ...

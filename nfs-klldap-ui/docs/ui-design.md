@@ -63,9 +63,9 @@ When you want the tool to be directly accessible without a reverse proxy, we can
 ## Data Flow Summary (UI → Backend)
 
 1. User selects directory in tree → HTMX request → backend returns current owner/group/mode + rendered form.
-2. User searches for a user/group → HTMX → `llap.resolve_user` or `list_users` → returns JSON with id + uidNumber.
+2. User searches for a user/group → HTMX → `ldap.resolve_user` or `list_users` (now via standard LDAP Subtree searches) → returns JSON with id + uidNumber.
 3. User clicks Save → POST with desired owner/group/mode/recursive → backend:
-   - Calls LLDAP again to confirm IDs (defense in depth).
+   - Calls the LDAP permission client to confirm IDs (defense in depth).
    - Performs chown/chmod directly inside the container (only on allowed share paths).
    - The container (via its watcher or SIGHUP) picks up any share/config changes and regenerates Ganesha exports.
 4. UI shows success + refreshed current state from filesystem.

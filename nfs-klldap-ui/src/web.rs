@@ -1342,22 +1342,17 @@ pub async fn reload_nfs_client(
         return Html(msg);
     }
 
-    // Use the exact POSIX attribute names + search bases from the freshly loaded config.
     let posix_attrs = nfs_klldap_config::resolve_posix_attribute_mapping(&fresh.sssd);
     let realm = fresh.effective_realm();
     let (user_base, group_base) =
         nfs_klldap_config::effective_ldap_search_bases(&fresh.sssd, &realm);
-    // Mirror the improved TLS policy logic from main.rs so reloads behave the same.
-    let explicit_reqcert = fresh.sssd.ldap_tls_reqcert.as_deref();
-    let has_custom_ca = fresh.sssd.ldap_tls_cacert.as_deref().is_some_and(|s| !s.trim().is_empty());
-    let no_tls_verify = if has_custom_ca {
-        explicit_reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
-    } else if fresh.ldap_uri.starts_with("ldaps://") {
-        explicit_reqcert.is_none_or(|v| v.eq_ignore_ascii_case("never"))
-    } else {
-        explicit_reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
-    };
-    let start_tls = fresh.sssd.ldap_id_use_start_tls.unwrap_or(false);
+
+    let (no_tls_verify, start_tls) = nfs_klldap_config::ldap_tls_policy(
+        &fresh.ldap_uri,
+        fresh.sssd.ldap_tls_reqcert.as_deref(),
+        fresh.sssd.ldap_tls_cacert.as_deref(),
+        fresh.sssd.ldap_id_use_start_tls,
+    );
     let cacert = fresh.sssd.ldap_tls_cacert.clone();
     let mut new_client = crate::ldap::LdapClient::new_with_attributes(
         &fresh.ldap_uri,

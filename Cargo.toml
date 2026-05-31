@@ -13,24 +13,7 @@ license = "MIT"
 repository = "https://github.com/aelieth/nfs-klldap-host"
 
 [workspace.dependencies]
-# =============================================================================
-# Central registry for *all* dependency versions in this workspace.
-#
-# Goal: single source of truth so versions are bumped in exactly one place,
-#       preventing skew and duplication of version strings across member crates.
-#
-# Usage in members:
-#   foo = { workspace = true }                    # plain
-#   foo = { workspace = true, features = ["x"] }  # extend features
-#   foo = { workspace = true, default-features = false, features = ["bar"] }
-#
-# The two member crates have very different profiles:
-#   - nfs-klldap-config  → tiny, no heavy async/crypto/web stack (by design)
-#   - nfs-klldap-ui      → full web UI + LDAPS client + TLS cert handling
-#
-# We still register every crate here for maintainability. The config crate
-# simply does not list most of them in its [dependencies].
-# =============================================================================
+# Central registry for dependency versions (single source of truth).
 
 # --- Core shared (used by both crates today) ---------------------------------
 serde = { version = "1.0", features = ["derive"] }
@@ -59,17 +42,10 @@ askama = { version = "0.12" }
 askama_axum = "0.4"
 hyper-util = { version = "0.1" }
 
-# --- TLS configuration -------------------------------------------------------
-# The WebUI serves HTTPS directly on 9630 using axum-server + rustls.
-# Outbound LDAPS / StartTLS to KLLDAP uses the ldap3 client (see below).
-# Prefers rustls to match the reliable TLS stack used by the axum-server WebUI
-# and the old working client. Self-signed setups are supported.
+# --- TLS (HTTPS listener + outbound LDAPS via ldap3) -------------------------
+rustls-native-certs = "0.8"
 
 # --- LDAP client -------------------------------------------------------------
-# Outbound LDAPS / StartTLS client to KLLDAP. Uses rustls exclusively
-# (tls-rustls-ring) for compatibility with the WebUI's own TLS stack and
-# reliable operation against self-signed KLLDAP. Supports ldap_tls_reqcert=never
-# or custom CA bundles via ldap_tls_cacert.
 ldap3 = { version = "0.12", default-features = false }
 
 # --- Local auth sidecar + misc -----------------------------------------------
@@ -77,17 +53,4 @@ cookie = "0.18"
 sha2 = "0.10"
 subtle = "2.6"
 
-# =============================================================================
-# Workspace notes
-# =============================================================================
-# Primary crates (both ship inside the nfs-klldap-host container):
-#   - nfs-klldap-ui        (the WebUI on 9630)
-#   - nfs-klldap-config    (tiny generator + guided startup binary)
-#
-# Workspace metadata lives in [workspace.package].
-# All dependency versions live in [workspace.dependencies] (see above).
-# Member crates inherit with `{ workspace = true }` (plus features when needed).
-#
-# The config crate is intentionally minimal and does not pull most of the
-# async/web/TLS crates registered here.
-# =============================================================================
+# Primary crates: nfs-klldap-ui (WebUI on 9630) + nfs-klldap-config (generator + startup).

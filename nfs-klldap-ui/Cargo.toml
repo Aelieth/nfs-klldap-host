@@ -18,9 +18,6 @@ serde = { workspace = true }
 toml = { workspace = true }
 
 # --- Core async runtime ------------------------------------------------------
-# Deliberately slimmed: we only need multi-thread runtime + TcpListener + basic
-# sync primitives + spawn_blocking (for the sync ldap3 calls).
-# (hyper-util was removed as a direct dep after audit — axum/axum-server pull what they need.)
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }
 
 # --- TOML handling (comment-preserving edits for the central config) ---------
@@ -31,9 +28,6 @@ nfs-klldap-config = { path = "../nfs-klldap-config" }
 
 # --- Web framework (Axum + HTMX via Askama) ----------------------------------
 axum = { workspace = true, features = ["macros"] }
-# tls-rustls feature on axum-server pulls rustls; we force ring-only provider below
-# via our direct rustls dep + default-features=false to avoid pulling the heavy
-# aws-lc-rs alternative provider (binary size win + single crypto impl).
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rustls-pemfile = "2.2"
@@ -41,14 +35,10 @@ rcgen = { version = "0.14", features = ["pem"] }
 askama = { workspace = true, features = ["with-axum"] }
 askama_axum = { workspace = true }
 
-# --- Local authentication (cookie sessions + sudo) ---------------------------
-# Simple (non-encrypted) cookies only. The "private" feature was deliberately
-# omitted to avoid pulling an unrelated AEAD/AES-GCM stack.
+# --- Local authentication ----------------------------------------------------
 cookie = { workspace = true }
 rand = { workspace = true }
 libc = { workspace = true }
-# Lightweight iterated-SHA256 sidecar (replaces the historical bcrypt implementation).
-# See root Cargo.toml for rationale. The 0600 file + container boundary is the real protection.
 sha2 = { workspace = true }
 subtle = { workspace = true }
 
@@ -56,15 +46,8 @@ thiserror = { workspace = true }
 time = { workspace = true }  # only for rcgen::CertificateParams not_before/after (OffsetDateTime) in cert generation
 
 # --- LDAP client for KLLDAP --------------------------------------------------
-# Uses rustls (ring) exclusively for LDAPS / StartTLS outbound.
-# Matches the WebUI listener stack. Configured via [sssd] tls options
-# (ldap_tls_reqcert=never for self-signed or ldap_tls_cacert for proper verify).
 ldap3 = { workspace = true, features = ["sync", "tls-rustls-ring"] }
-
-# webpki-roots gives us the standard set of public CAs for the normal verify
-# path in build_conn_settings (identical to what reqwest rustls-tls does).
-# The dangerous NoServerVerification path is used only when ldap_tls_reqcert=never.
-webpki-roots = "0.26"
+rustls-native-certs = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

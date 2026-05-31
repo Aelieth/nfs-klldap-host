@@ -109,46 +109,22 @@ async fn main() {
         config_path.clone(),
     ));
 
-    // LDAP client (standard RFC searches + simple bind).
-    // Uses exactly the same ldap_uri + [sssd] bind credentials + attribute
-    // mappings as SSSD. All searches use Subtree scope so child OUs are found.
-    //
-    // Outbound TLS: rustls ring (identical configuration to the proven reqwest
-    // era). Service bind identity is always the full DN (proper handling).
     let posix_attrs = nfs_klldap_config::resolve_posix_attribute_mapping(&config.sssd);
     let realm = config.effective_realm();
     let (user_base, group_base) =
         nfs_klldap_config::effective_ldap_search_bases(&config.sssd, &realm);
-    // TLS policy from sssd section.
-    // For ldaps:// (the common KLLDAP case with self-signed certs) we default to
-    // no verification unless the admin explicitly sets ldap_tls_reqcert to something
-    // other than "never" *or* provides a custom CA via ldap_tls_cacert.
-    // This matches the behavior of the guided startup probes (ldapsearch with
-    // LDAPTLS_REQCERT=never) and prevents the "tls handshake eof" noise on the
-    // KLLDAP side that occurs when the rustls client performs a strict public-CA
-    // verify against a self-signed server certificate.
-    let explicit_reqcert = config.sssd.ldap_tls_reqcert.as_deref();
-    let has_custom_ca = config.sssd.ldap_tls_cacert.as_deref().is_some_and(|s| !s.trim().is_empty());
-    let no_tls_verify = if has_custom_ca {
-        // When a custom CA bundle is provided we let the normal verify path use it
-        // (see LdapClient::build_conn_settings). Only force "never" if reqcert=never.
-        explicit_reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
-    } else if config.ldap_uri.starts_with("ldaps://") {
-        // Homelab / internal KLLDAP default: trust the server we were pointed at.
-        // Operator can still force verification by setting ldap_tls_reqcert=demand
-        // (or "try" / "allow") *and* supplying ldap_tls_cacert.
-        explicit_reqcert.is_none_or(|v| v.eq_ignore_ascii_case("never"))
-    } else {
-        explicit_reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
-    };
-    let start_tls = config.sssd.ldap_id_use_start_tls.unwrap_or(false);
 
-    // Surface the outbound LDAP TLS policy early (helps operators understand
-    // why they see or don't see KLLDAP-side handshake noise during UI startup probes).
+    let (no_tls_verify, start_tls) = nfs_klldap_config::ldap_tls_policy(
+        &config.ldap_uri,
+        config.sssd.ldap_tls_reqcert.as_deref(),
+        config.sssd.ldap_tls_cacert.as_deref(),
+        config.sssd.ldap_id_use_start_tls,
+    );
+
     if no_tls_verify {
-        println!("Outbound LDAPS/StartTLS: verification DISABLED (ldap_tls_reqcert=never or ldaps:// default for self-signed KLLDAP)");
+        println!("Outbound LDAPS/StartTLS: verification DISABLED");
     } else {
-        println!("Outbound LDAPS/StartTLS: verification ENABLED (will use webpki-roots or ldap_tls_cacert if provided)");
+        println!("Outbound LDAPS/StartTLS: verification ENABLED");
     }
 
     let cacert = config.sssd.ldap_tls_cacert.clone();

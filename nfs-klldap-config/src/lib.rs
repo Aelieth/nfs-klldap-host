@@ -1,34 +1,5 @@
-//! nfs-klldap-config — Type-safe TOML loader + generator for nfs-klldap-host.
-//!
-//! This crate is the single source of truth for `nfs-klldap.conf`.
-//! It handles parsing, validation, smart auto-derivation, and generation of
-//! derived configs (sssd.conf, krb5.conf, Ganesha exports).
-//!
-//! ## Public API
-//!
-//! Only the items re-exported below are part of the stable public surface.
-//! The internal module layout is **not** part of the semver contract.
-//!
-//! ## Internal Module Layout
-//!
-//! - `config`   — Data model (`NfsKlldapConfig`, sections, `Share`, `GenerationPaths`)
-//! - `error`    — `ConfigError`
-//! - `validate` — Loading, validation, and derivation (`validate_and_derive`, `effective_*`)
-//! - `persist`  — Volume detection + tolerant partial share loading
-//! - `uri`      — URI helpers (`extract_host_from_uri`, `derive_realm_from_uri`)
-//! - `hostname` — Hostname suggestion + **two-tier consistent retrieval**
-//!   (primary `hostname` command + /proc confirmation). This is now the
-//!   production contract used by startup TUI, WebUI, and diagnostics.
-//! - `template` — First-run safe default template + write-if-missing
-//! - `generate` — Full generation of sssd/krb5/ganesha configs
-//!
-//! Note: The container must be started with `--uts=host` (recommended) or
-//! an explicit `--hostname` so that the two sources agree on a stable name
-//! that matches the nfs/ principal in your keytab.
+//! nfs-klldap-config: TOML loader, validation, derivation, and generation for nfs-klldap.conf.
 
-// =============================================================================
-// Internal modules (private — only re-exports below are public API)
-// =============================================================================
 mod config;
 mod error;
 mod generate;
@@ -38,9 +9,6 @@ mod template;
 mod uri;
 mod validate;
 
-// =============================================================================
-// Public API (stable surface for binaries + nfs-klldap-ui)
-// =============================================================================
 pub use config::{
     effective_ldap_search_bases, resolve_posix_attribute_mapping, GaneshaSection, GenerationPaths,
     KerberosSection, ManagementSection, NfsKlldapConfig, PosixAttributeMapping, ServerSection,
@@ -59,9 +27,24 @@ pub use persist::{is_persistent_config, load_host_paths_only};
 pub use template::{generate_default_template, write_default_config_if_missing};
 pub use uri::{derive_realm_from_uri, extract_host_from_uri};
 
-// =============================================================================
-// Imports needed by the facade / coordination layer
-// =============================================================================
+/// Returns (no_tls_verify, start_tls) from the central [sssd] TLS knobs + ldap_uri scheme.
+/// Single source of truth so main.rs and the WebUI reload handler stay in sync.
+pub fn ldap_tls_policy(
+    ldap_uri: &str,
+    reqcert: Option<&str>,
+    cacert: Option<&str>,
+    id_use_start_tls: Option<bool>,
+) -> (bool, bool) {
+    let has_custom = cacert.is_some_and(|s| !s.trim().is_empty());
+    let no_verify = if has_custom {
+        reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
+    } else if ldap_uri.starts_with("ldaps://") {
+        reqcert.is_none_or(|v| v.eq_ignore_ascii_case("never"))
+    } else {
+        reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
+    };
+    (no_verify, id_use_start_tls.unwrap_or(false))
+}
 
 #[cfg(test)]
 mod tests {

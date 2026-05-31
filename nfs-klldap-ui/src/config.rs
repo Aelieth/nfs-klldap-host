@@ -33,19 +33,8 @@ pub fn all_managed_roots(cfg: &Config) -> Vec<PathBuf> {
     cfg.shares.iter().map(|s| s.host_path.clone()).collect()
 }
 
-/// Return (bind_identity, password) for the long-lived service LDAP bind used by
-/// the permission client (LdapClient).
-///
-/// The first element MUST be a full DN (e.g. "uid=admin,ou=people,dc=...") or
-/// another identity string that the remote LDAP server accepts as the bind name
-/// for simple_bind. This is the only value that produces reliable connections
-/// and avoids the "server dropping connections" / auth errors seen when only a
-/// bare uid was passed.
-///
-/// Env vars NFS_KLLDAP_LLDAP_USER and NFS_KLLDAP_LLDAP_PW take precedence and
-/// are passed verbatim (operator may supply a full DN here for remote hosts).
-/// Falls back to sssd.ldap_default_bind_dn verbatim (the correct full DN in all
-/// normal configs and examples).
+/// Returns (bind identity, password). Prefers NFS_KLLDAP_LLDAP_* env, falls back
+/// to sssd.ldap_default_bind_dn + authtok. Full DN (or verbatim identity) required.
 pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
     if let (Ok(user), Ok(pass)) = (
         std::env::var("NFS_KLLDAP_LLDAP_USER"),
@@ -66,11 +55,8 @@ pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
     (bind_identity, password)
 }
 
-/// Given a service bind identity (full DN preferred, or bare uid/cn), extract
-/// only the short value portion for use in name-based filters such as the
-/// one-time startup probe that calls resolve_user to exercise the exact
-/// PosixAttributeMapping. Never used for simple_bind — binds always use the
-/// full identity string returned by ldap_service_creds.
+/// Extract short name (uid value) from a bind DN/identity for filter probes only.
+/// Binds always use the full string returned by ldap_service_creds.
 pub fn short_name_for_service_probe(bind_identity: &str) -> String {
     if bind_identity.contains('=') && bind_identity.contains(',') {
         bind_identity
@@ -203,8 +189,7 @@ mod tests {
         let mut cfg = base_config();
         cfg.sssd.ldap_default_bind_dn = "cn=weird,dc=example".into();
         let (bind_id, _) = ldap_service_creds(&cfg);
-        // Still verbatim; the server will reject a truly bad DN at bind time,
-        // which is the correct observable error (instead of silently using "weird").
+        // Verbatim; server rejects bad DN at bind time (correct error vs silent rewrite).
         assert_eq!(bind_id, "cn=weird,dc=example");
     }
 }

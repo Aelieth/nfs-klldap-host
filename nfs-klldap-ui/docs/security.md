@@ -4,7 +4,7 @@ The management tool has significant power: it can change ownership and permissio
 
 ## Core Principle
 
-The WebUI runs inside the container as root (the supported model) and performs `chown`/`chmod` directly on the bind-mounted data using the capabilities and mounts provided to the container.
+The WebUI runs inside the container as root (the supported model) and performs `chown`/`chmod` directly on the bind-mounted data using FFI/libc calls (see `src/ffi.rs`). No special Docker capabilities (CHOWN/FOWNER/DAC_*) are required for this path because the process is root.
 
 Running the UI binary directly on the host as root is not recommended for normal operation.
 
@@ -17,9 +17,9 @@ Running the UI binary directly on the host as root is not recommended for normal
    The same mapping is used when the live directory tree browser (`build_tree`) reads the filesystem so that browsing and permission editing see the same data.
 5. It performs the change directly inside the container.
 
-Because the container already runs with the capabilities required for Ganesha VFS and has the bind mounts, it can safely mutate ownership and permissions on the exported trees.
+Because the WebUI and generator run as root inside the container (with the bind mounts present), direct FFI chown/chmod on the exported trees works without additional capabilities.
 
-No special host permissions (beyond access to the container's volumes) are required for normal operation.
+No special host permissions or --cap-add for chown are required beyond the bind-mounted volumes (the container runs the relevant processes as root).
 
 ## Optional: Running the UI outside the container (Advanced / Legacy)
 

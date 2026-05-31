@@ -16,14 +16,9 @@ services:
     network_mode: host
 
     # Ganesha + SSSD + in-container WebUI (port 9630).
-    # These capabilities support VFS and direct chown/chmod from the WebUI.
-    cap_add:
-      - CHOWN
-      - FOWNER
-      - DAC_OVERRIDE
-      - DAC_READ_SEARCH
-      - NET_BIND_SERVICE
-
+    # The WebUI performs chown/chmod directly as root using FFI/libc (see nfs-klldap-ui/src/ffi.rs).
+    # No cap_add for CHOWN/FOWNER/DAC_* is required for the permission editor in the normal root model.
+    # NET_BIND_SERVICE is only needed when dropping root privileges.
     uts: host
 
     # No "user:" override — root execution is the model.
@@ -75,5 +70,6 @@ services:
     # It verifies: ganesha.nfsd process + listening on 2049 + basic responsiveness.
 
 # WebUI: https://host:9630 (settings + permissions tree).
-# See docs/run/README.md and root README for capabilities, uts: host, and TLS termination.
+# See docs/run/README.md and root README for uts: host and TLS termination.
+# chown/chmod uses direct FFI as root — no --cap-add CHOWN etc. required.
 

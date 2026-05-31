@@ -33,7 +33,7 @@ volumes:
   - ./krb5.keytab:/etc/krb5.keytab:ro
 ```
 
-Capabilities: CHOWN FOWNER DAC_OVERRIDE DAC_READ_SEARCH NET_BIND_SERVICE.
+The WebUI performs chown/chmod as root via FFI/libc (`nfs-klldap-ui/src/ffi.rs`). No CHOWN/FOWNER/DAC_* capabilities are required for the permission path under the documented root model.
 
 ## Health
 

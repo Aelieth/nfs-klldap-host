@@ -8,7 +8,6 @@ All services run as root inside the container (standard for sssd/kerberos applia
 docker run -d \
   --name nfs \
   --uts=host \
-  --cap-add CHOWN FOWNER DAC_OVERRIDE DAC_READ_SEARCH NET_BIND_SERVICE \
   -p 2049:2049 -p 2049:2049/udp -p 9630:9630 \
   -v /host/config:/config \
   -v /media/data:/export \
@@ -16,11 +15,13 @@ docker run -d \
   ghcr.io/aelieth/nfs-klldap-host:latest
 ```
 
+**Capabilities note**: The WebUI performs `chown`/`chmod` directly as root using FFI/libc calls (`nfs-klldap-ui/src/ffi.rs`). No `--cap-add CHOWN/FOWNER/DAC_*` are required for the permission editor under the documented root execution model. `NET_BIND_SERVICE` is only relevant if you later drop root privileges.
+
 `--uts=host` lets the container see the real Docker host hostname → TUI prints the exact `nfs/<host>-nfs@REALM` principal you need.
 
 ## docker-compose
 
-See [examples/docker-compose.yml](../examples/docker-compose.yml). Use `uts: host`, the listed capabilities, and the three volumes (data, config, keytab).
+See [examples/docker-compose.yml](../examples/docker-compose.yml). The example uses `uts: host`. The three volumes (data, config, keytab) are the only ones normally required. Capabilities are not needed for the FFI-based chown/chmod path when running as root.
 
 ## Realm & ldap_uri Hardening
 

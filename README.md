@@ -39,7 +39,6 @@ The in-container WebUI (port 9630) and the watcher give you live editing + autom
 docker run -d \
   --name nfs-klldap \
   --uts=host \
-  --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE --cap-add DAC_READ_SEARCH --cap-add NET_BIND_SERVICE \
   -p 2049:2049/tcp -p 2049:2049/udp \
   -p 9630:9630/tcp \
   -v /path/to/config:/config \
@@ -50,7 +49,9 @@ docker run -d \
 
 First run writes a default `nfs-klldap.conf`. Edit it (or use the WebUI at https://host:9630). The watcher + entrypoint handle regeneration and reload.
 
-See [docs/run/README.md](docs/run/README.md) for compose examples, capabilities, and TLS notes.
+**Capabilities**: chown/chmod in the permission editor is performed as root via direct libc calls in the FFI layer (see `nfs-klldap-ui/src/ffi.rs`). No `--cap-add` for CHOWN/FOWNER/DAC_* is required in the normal root model.
+
+See [docs/run/README.md](docs/run/README.md) for compose examples and TLS notes.
 
 ## Configuration
 

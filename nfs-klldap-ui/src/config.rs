@@ -52,21 +52,6 @@ pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
     (bind_identity, password)
 }
 
-/// Extract short name (uid value) from a bind DN/identity for filter probes only.
-/// Binds always use the full string returned by ldap_service_creds.
-pub fn short_name_for_service_probe(bind_identity: &str) -> String {
-    if bind_identity.contains('=') && bind_identity.contains(',') {
-        bind_identity
-            .split(',')
-            .next()
-            .and_then(|rdn| rdn.split_once('=').map(|(_, v)| v.trim().to_string()))
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| bind_identity.trim().to_string())
-    } else {
-        bind_identity.trim().to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

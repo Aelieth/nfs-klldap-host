@@ -507,6 +507,8 @@ impl LdapClient {
     }
 
     async fn user_is_member_of(&self, username: &str, group_name: &str) -> bool {
+        // Separate pure lookups. Final test filter uses only memberOf (no uid).
+        // Avoids mixing user_name with group references in one filter.
         let g_name = self.posix_attributes.group_name.clone();
         let g_obj = self.posix_attributes.group_object_class.clone();
 
@@ -516,6 +518,7 @@ impl LdapClient {
             g_name,
             Self::escape_filter_value(group_name)
         );
+
         let g_entries = self
             .ldap_search_entries(&self.group_base, &g_filter, vec!["1.1".into()])
             .await;
@@ -525,21 +528,21 @@ impl LdapClient {
             _ => return false,
         };
 
-        let u_name = self.posix_attributes.user_name.clone();
-        let u_obj = self.posix_attributes.user_object_class.clone();
+        let user_dn = match self.resolve_user_dn(username).await {
+            Some(dn) => dn,
+            None => return false,
+        };
 
-        let u_filter = format!(
-            "(&(objectClass={})({}={})(memberOf={}))",
-            u_obj,
-            u_name,
-            Self::escape_filter_value(username),
+        let test_filter = format!(
+            "(&(objectClass={})(memberOf={}))",
+            self.posix_attributes.user_object_class,
             Self::escape_filter_value(&group_dn)
         );
 
-        let u_entries = self
-            .ldap_search_entries(&self.user_base, &u_filter, vec!["1.1".into()])
+        let test_entries = self
+            .ldap_search_entries(&self.user_base, &test_filter, vec!["1.1".into()])
             .await;
 
-        !u_entries.is_empty()
+        test_entries.iter().any(|e| e.dn.eq_ignore_ascii_case(&user_dn))
     }
 }

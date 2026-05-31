@@ -155,21 +155,13 @@ async fn main() {
         );
     }
 
-    // First bind may emit one-time "unrecognized attr" noise on KLLDAP for non-POSIX fields.
-    // All subsequent searches use only the PosixAttributeMapping (same as SSSD).
     if let Err(e) = lldap.authenticate(&lldap_user, &lldap_pass).await {
         eprintln!("Warning: KLLDAP auth failed at startup: {}", e);
     }
 
-    // Prime the client with a narrow POSIX-only self-lookup (SSSD-style query).
-    if !lldap_pass.trim().is_empty()
-        && lldap_pass != "CHANGE_THIS_TO_A_STRONG_SECRET"
-        && lldap_pass != "SET_ME"
-    {
-        let probe_name = crate::config::short_name_for_service_probe(&lldap_user);
-        let _ = lldap.resolve_user(&probe_name).await;
-        let _ = lldap.resolve_user_dn(&probe_name).await;
-    }
+    // Do not extract the RDN value from the bind DN and search using user_name
+    // (e.g. uid). This produced filters containing "uid" that triggered KLLDAP
+    // warnings when strict ignored_*_attributes are in use.
 
     let lldap = Arc::new(Mutex::new(lldap));
 

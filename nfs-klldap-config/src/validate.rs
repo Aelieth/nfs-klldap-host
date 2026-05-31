@@ -1,8 +1,7 @@
-//! Validation, auto-derivation, and effective-value helpers.
+//! Validation + auto-derivation for NfsKlldapConfig.
 //!
-//! This module owns `normalize_blank` and all inherent methods on
-//! `NfsKlldapConfig` related to loading, validation, and deriving
-//! values that were not explicitly provided by the user.
+//! Enforces: DNS-only ldap_uri, required realm (no EXAMPLE.COM), unique share names,
+//! bind creds, security enum, derives ports/search-bases/realm.
 
 use std::collections::HashSet;
 use std::path::PathBuf;

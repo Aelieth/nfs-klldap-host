@@ -1,9 +1,7 @@
-//! Axum + HTMX web UI for nfs-klldap-host (two-page: System Settings + Share Permissions).
-//!
-//! The UI edits the central `nfs-klldap.conf` directly. Permission changes
-//! (chown/chmod) are performed directly inside the container.
-//! Local sudo-auth is used to restrict access to users who can perform
-//! privileged operations.
+//! Axum handlers + templates for the two-page in-container UI.
+//! / = permissions tree + live LLDAP search + apply (direct root chown/chmod).
+//! /settings = raw/structured TOML edit + LLDAP status/reload.
+//! All FS mutations go through FsManager (allow-list + safety checks).
 
 use askama::Template;
 use axum::{
@@ -1043,9 +1041,6 @@ pub async fn apply_permissions(
 
     Ok(Html(html))
 }
-
-// v0.23 (see git history): Direct Ganesha export management from the host UI has been removed.
-// All fragments are generated inside the container from the central config.
 
 pub async fn settings_page(
     State(state): State<AppState>,

@@ -1,7 +1,5 @@
-//! LDAP client (ldap3 + rustls-ring).
-//! Shares ldap_uri + [sssd] creds + PosixAttributeMapping with SSSD.
-//! Fresh connection per operation (sync ldap3 + spawn_blocking).
-//! Full DN (or verbatim identity) required for all simple_bind calls.
+//! LdapClient (ldap3 + rustls). Shares uri/creds/PosixAttributeMapping with SSSD.
+//! Fresh conn per op. All binds use full DN/verbatim identity from sssd section (or env override).
 
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
 use nfs_klldap_config::PosixAttributeMapping;

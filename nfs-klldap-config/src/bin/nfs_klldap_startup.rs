@@ -1,21 +1,13 @@
-//! nfs-klldap-startup — Container startup / guided setup binary (Rust).
+//! nfs-klldap-startup — Guided first-run TUI + reachability diagnostics (runs as root).
 //!
-//! This binary owns the "bring the container online" experience:
-//! - The 4-step guided first-run TUI / state machine (previously in entrypoint.sh)
-//! - Reachability tests (LDAP port, bind, DNS, share paths)
-//! - Persistent volume detection
-//! - Best-effort realm derivation for the banner (from ldap_uri)
-//! - Hostname suggestion using the recommended insertion pattern
-//!   (host.example.com → host-nfs.example.com, not host.example.com-nfs)
+//! 4-step state machine that blocks until:
+//!   1. Persistent /config volume
+//!   2. ldap_uri (DNS name) reachable
+//!   3. Bind credentials work
+//!   4. At least one valid share host_path
 //!
-//! It is designed to run as root (as the entrypoint does during setup) so it
-//! has full access to the host bind mounts and can write generated configs
-//! into /etc/* (the generator must run as root to produce sssd.conf as root:root 0600).
-//! actual daemons.
-//!
-//! This binary is the primary owner of guided first-run, reachability
-//! diagnostics, and startup orchestration. The entrypoint remains a thin
-//! pid-1 supervisor.
+//! Emits the required `nfs/<host>@REALM` principal banner using the two-tier
+//! hostname contract. Entry point remains a thin pid-1 supervisor.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -80,24 +72,9 @@ Hostname (new standard):
     );
 }
 
-// -----------------------------------------------------------------------------
-// Hostname handling (new standard: --uts=host)
-//
-// The recommended docker/podman command now includes --uts=host.
-// This makes the container share the Docker host's UTS namespace, so the
-// hostname visible inside the container is the real hostname of the machine
-// running Docker.
-//
-// The TUI simply reads this hostname and uses suggested_nfs_hostname() to
-// compute the recommended Kerberos principal (insertion of "-nfs" before the
-// first dot).
-//
-// Explicit --hostname on the docker command line is supported as an override.
-// -----------------------------------------------------------------------------
-
-// -----------------------------------------------------------------------------
-// Rich diagnostic helpers for the guided TUI — crucial troubleshooting feedback
-// -----------------------------------------------------------------------------
+// Hostname contract: --uts=host (preferred) or explicit --hostname.
+// Uses get_consistent_hostname() (hostname + /proc/sys/kernel/hostname must agree).
+// suggested_nfs_hostname() inserts "-nfs" before first dot for the service principal.
 
 /// Enhanced persistent volume check + writability test.
 /// Gives the user immediate, actionable feedback instead of mysterious later failures.
@@ -289,9 +266,7 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Original is_persistent_config remains below for the helper used by the UI
-// -----------------------------------------------------------------------------
+// is_persistent_config (and tolerant load helpers) below are used by both the TUI and the WebUI.
 
 /// The main guided startup loop. This is the Rust replacement for the big
 /// wait_for_valid_config + print_current_step_guidance dance in entrypoint.sh.
@@ -750,9 +725,7 @@ fn compute_current_step(config_path: &Path) -> StartupStep {
     StartupStep::Ready
 }
 
-// -----------------------------------------------------------------------------
-// (Rich diagnostics are defined earlier in the file)
-// -----------------------------------------------------------------------------
+
 
 /// One-shot diagnostics (useful for `nfs-klldap-startup check` and for the
 /// future when we want to expose health info).

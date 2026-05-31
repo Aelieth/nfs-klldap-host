@@ -1,31 +1,9 @@
-//! Hostname derivation and detection helpers.
+//! Two-tier hostname contract (production invariant).
 //!
-//! ## Two-tier consistent retrieval (the production contract)
-//!
-//! `get_consistent_hostname()` is the single source of truth for "what hostname
-//! does this container actually have right now?"
-//!
-//! It uses two independent sources that **must** agree:
-//! 1. Primary: the `hostname` command (what operators see, what appears in klist / keytab principals).
-//! 2. Secondary confirmation: direct read of `/proc/sys/kernel/hostname` (the kernel UTS view).
-//!
-//! If the two sources disagree (or either fails), you get a rich `HostnameInconsistency`
-//! that names the exact values from both sources, detects Docker default container IDs,
-//! and gives precise remediation (`--uts=host` vs explicit `--hostname` + `[server] hostname`).
-//!
-//! This guarantees that whether you use `--uts=host` or `--hostname` on the container,
-//! the value that reaches the keytab reminder, cert SANs, TUI, WebUI settings page,
-//! and alignment diagnostics is the same confirmed name.
-//!
-//! All early startup banners (nfs-klldap-startup, nfs-klldap-ui) and the settings UI
-//! now go through this path so a mismatch is impossible to miss.
-//!
-//! The old best-effort helpers (`internal::get`) remain only for backward compat
-//! with `effective_hostname()`. New code should prefer the consistent API.
-
-// =============================================================================
-// Existing pure helpers (kept unchanged — widely used and well tested)
-// =============================================================================
+//! get_consistent_hostname() requires `hostname` command == /proc/sys/kernel/hostname.
+//! Mismatch (common with raw Docker IDs) produces a loud diagnostic naming both values
+//! + remediation. All banners, certs, and keytab guidance go through this path.
+//! suggested_nfs_hostname() inserts "-nfs" before the first dot.
 
 /// Compute the recommended container hostname for Kerberized NFS.
 ///

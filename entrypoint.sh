@@ -1,50 +1,17 @@
 #!/bin/bash
-#
-# entrypoint.sh — Thin supervisor / launcher for the self-contained
-# nfs-klldap-host container (Ganesha + SSSD + Kerberos + in-container WebUI).
-#
-# Design invariants (do not break these):
-#   - This script runs as root (pid 1) and stays as pid 1 for the life of the
-#     container so it can receive SIGHUP from the config watcher and orchestrate
-#     privileged actions (especially writing sssd.conf as root:root 0600).
-#   - All heavy "bring the container up" logic (guided first-run, reachability,
-#     diagnostics) lives in the Rust binary `nfs-klldap-startup`.
-#   - All config generation lives in `nfs-klldap-config`.
-#   - This shell only does: preflight, launch daemons, permission hygiene,
-#     signal-based reload orchestration, and clean shutdown.
-#
-# Future direction:
-#   Longer term, the service supervision + WebUI cert + daemon lifecycle
-#   portion can be moved into `nfs-klldap-startup supervise` (or a dedicated
-#   small Rust supervisor) so this script becomes even thinner (or disappears).
-#
-# Environment variables (all overridable):
-#   NFS_CONFIG=/config/nfs-klldap.conf
-#   SSSD_CONF=/etc/sssd/sssd.conf
-#   KRB5_CONF=/etc/krb5.conf
-#   GANESHA_CONF=/etc/ganesha/ganesha.conf
-#   EXPORTS_DIR=/etc/ganesha/exports.d
-#   LOG_FORMAT=text|json          (default: text)
-#   SSSD_DEBUG_LEVEL=...
-#   WATCHER_DEBOUNCE_SECONDS=2
-#
-# Required executables (checked in preflight):
-#   /usr/local/bin/{nfs-klldap-config,nfs-klldap-startup,nfs-klldap-ui,
-#                   nfs-klldap-conf-watcher,ganesha-ctl}
-#   /container/healthcheck.sh
-#
+# entrypoint.sh — pid-1 supervisor (root). Receives SIGHUP from watcher.
+# Heavy logic in Rust: nfs-klldap-startup (TUI + reachability), nfs-klldap-config (generate).
+# This file: preflight, daemon lifecycle, privileged permission fixup (0600 sssd.conf), SIGHUP reload orchestration.
 set -euo pipefail
 
-# -----------------------------------------------------------------------------
-# Paths (all configurable via environment for flexibility in testing/CI)
-# -----------------------------------------------------------------------------
+# Paths (override for CI/test)
 NFS_CONFIG="${NFS_CONFIG:-/config/nfs-klldap.conf}"
 SSSD_CONF="${SSSD_CONF:-/etc/sssd/sssd.conf}"
 KRB5_CONF="${KRB5_CONF:-/etc/krb5.conf}"
 GANESHA_CONF="${GANESHA_CONF:-/etc/ganesha/ganesha.conf}"
 EXPORTS_DIR="${EXPORTS_DIR:-/etc/ganesha/exports.d}"
 
-# Binaries and helpers (override only if you really know what you're doing)
+# Binaries (override only if you know what you are doing)
 CONFIG_BIN="${CONFIG_BIN:-/usr/local/bin/nfs-klldap-config}"
 STARTUP_BIN="${STARTUP_BIN:-/usr/local/bin/nfs-klldap-startup}"
 UI_BIN="${UI_BIN:-/usr/local/bin/nfs-klldap-ui}"
@@ -58,9 +25,7 @@ HEALTHCHECK="${HEALTHCHECK:-/container/healthcheck.sh}"
 # Logging
 LOG_FORMAT="${LOG_FORMAT:-text}"   # text | json
 
-# -----------------------------------------------------------------------------
-# Logging helpers (consistent, optionally structured)
-# -----------------------------------------------------------------------------
+# Logging (text or json)
 _log_ts() {
     date -u '+%Y-%m-%dT%H:%M:%S.%3NZ'
 }
@@ -91,9 +56,7 @@ die() {
     exit 1
 }
 
-# -----------------------------------------------------------------------------
-# Permission hygiene — single source of truth (eliminates duplication)
-# -----------------------------------------------------------------------------
+# Permission hygiene (root:root 0600 for sssd.conf is mandatory)
 fix_derived_permissions() {
     # sssd.conf is extremely picky about ownership (root:root 0600).
     chown root:root "$SSSD_CONF" 2>/dev/null || true
@@ -114,9 +77,7 @@ fix_derived_permissions() {
     fi
 }
 
-# -----------------------------------------------------------------------------
-# Preflight — fail fast with clear messages before we start anything heavy
-# -----------------------------------------------------------------------------
+# Preflight (fail fast)
 preflight_checks() {
     local missing=0
 
@@ -145,9 +106,7 @@ preflight_checks() {
     info "Preflight checks passed"
 }
 
-# -----------------------------------------------------------------------------
-# Signal handling (pid 1 supervisor responsibilities)
-# -----------------------------------------------------------------------------
+# Signal handling (pid 1)
 WATCHER_PID=""
 SSSD_PID=""
 GANESHA_PID=""
@@ -205,9 +164,7 @@ handle_sighup() {
 
 trap 'handle_sighup' SIGHUP
 
-# -----------------------------------------------------------------------------
-# Main supervisor
-# -----------------------------------------------------------------------------
+# Main supervisor loop
 main() {
     info "=== Starting nfs-klldap-host (self-contained) ==="
 

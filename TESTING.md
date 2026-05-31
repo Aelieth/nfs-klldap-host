@@ -1,35 +1,26 @@
-# Testing nfs-klldap-host
+# Testing
 
-This document describes the testing strategy, current coverage, and how to run tests. It is maintained alongside the code — writing or expanding tests is the primary way new behavior is documented.
+`cargo test --workspace` (or `make test` + `make clippy`).
 
-## Philosophy
+## Strategy
 
-- **Prefer pure unit tests** for logic that does not touch the filesystem, network, or external processes.
-- **Use realistic integration tests** (with `tempfile`, in-memory servers, etc.) where they provide high value without excessive fragility.
-- **Document hard-to-test areas** explicitly (privileged operations delegated to the container, live LLDAP).
-- Permission changes are performed inside the container after host-side validation in the web handlers and `FsManager`.
+- Pure unit tests preferred for derivation, validation, hostname, credential helpers, allow-lists.
+- `tempfile` trees for `FsManager` (build_tree, is_allowed, host↔container translation).
+- `tower::ServiceExt` oneshot tests for the real Axum router (settings, apply, auth).
+- Container/watcher/healthcheck exercised via compose (not unit-testable).
 
-## Current State
+## Well-Tested Areas
 
-| Crate / Area                  | Test Coverage                          | Notes |
-|-------------------------------|----------------------------------------|-------|
-| `nfs-klldap-config` (lib + binaries) | Good + actively expanded        | Core validation, generation, `load_host_paths_only`, helper functions. |
-| `nfs-klldap-ui`               | Good for critical pure logic           | `config.rs` helpers, `FsManager` (with real temp dirs), Axum handlers for settings save. |
-| Web handlers (`web.rs`)       | Targeted (settings flows)              | Uses `tower::ServiceExt` against real router + realistic `AppState`. |
-| Auth (`auth.rs`)              | Partial                                | Session management well covered. |
-| LDAP client (`ldap.rs`)       | Pure helpers only                      | `ldap_service_creds` (service LDAP bind creds). Live server auth + queries intentionally not unit-tested. |
-| Container scripts & entrypoint| None (shell)                           | Best exercised via Docker / compose runs. |
+- Config: validate_and_derive (realm, IP rejection, duplicate shares, security enum), generate output, load_host_paths_only, two-tier hostname contract + suggested_nfs_hostname.
+- UI config: ldap_service_creds (full DN, env override).
+- FsManager + web handlers: path mapping, safety refusals (uid 0, setid), tree building, settings save/apply.
+- Auth sessions.
 
-## Running Tests
+## Hard Areas (Intentionally Not Unit-Tested)
 
-```bash
-# From a fresh clone
-cargo test --workspace
+Live LLDAP binds, recursive chown on real bind mounts, full entrypoint + watcher orchestration.
 
-# With the Makefile (also runs clippy targets)
-make test
-make clippy
-```
+When a new test forces clarification of behavior, update the relevant docs (code comments, README, arch docs) in the same change.
 
 ## Recommended Testing Patterns
 

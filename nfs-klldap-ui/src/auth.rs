@@ -1,18 +1,6 @@
-//! Hybrid authentication for the in-container WebUI (v0.5+).
-//!
-//! Auth model (exactly as specified):
-//! 1. Special immutable username "localhost" + bcrypt-hashed sidecar file
-//!    next to nfs-klldap.conf (named `webui-password`, mode 0600).
-//!    This user is the local machine admin — can create/manage shares on *this* host.
-//! 2. Any other username → real KLLDAP/LDAP login + membership in the
-//!    configured `webui_admin_group` (default "lldap_admin").
-//!    These users are network admins and can modify shares/settings on any machine.
-//!
-//! No sudo, no wheel, no host-side delegation. The container runs as root for
-//! the services it owns; the WebUI performs direct FS operations via libc::chown.
-//!
-//! First-run: when the simple password sidecar does not exist, a special
-//! setup form is shown that lets the operator set the initial "localhost" password.
+//! Hybrid auth: "localhost" (bcrypt sidecar webui-password, 0600) + LLDAP users in webui_admin_group.
+//! "localhost" is local-only admin for this host. LLDAP users are cross-host admins.
+//! No sudo. Direct root FS ops from the UI. Sidecar lives next to nfs-klldap.conf.
 
 use rand::Rng;
 use sha2::{Digest, Sha256};

@@ -1,17 +1,6 @@
-//! Recommended ignored attributes for KLLDAP servers.
-//!
-//! When using SSSD (and especially AD-style directory sync tools) against
-//! KLLDAP, clients request a very large number of attributes that a minimal
-//! KLLDAP instance will never have (shadow*, krb*, userAccountControl,
-//! nsAccountLock, gecos, etc.).
-//!
-//! KLLDAP supports `ignored_user_attributes` and `ignored_group_attributes`
-//! precisely to suppress the resulting warning spam without affecting real
-//! POSIX attribute handling.
-//!
-//! This module provides the curated list derived from real production logs
-//! (SSSD + dirsync-type clients) so the generator can emit ready-to-use
-//! recommendations.
+//! Curated ignore lists for KLLDAP + SSSD (and dirsync clients).
+//! Emitted into generated sssd.conf when kllldap_ignored_attributes = true (default).
+//! See docs/ldap-integration.md for server-side application.
 
 /// Attributes commonly requested by SSSD, dirsync tools, and AD-compat clients
 /// on *user* entries that KLLDAP does not (and should not need to) provide.
@@ -68,48 +57,15 @@ pub fn get_kllldap_ignored_attributes_toml() -> (String, String) {
     (format!("[{}]", user_list), format!("[{}]", group_list))
 }
 
-/// Returns a complete, copy-paste ready comment block for the end of
-/// a generated sssd.conf (or as a standalone helper file).
+/// Emitted block (when enabled). Keep short — full explanation lives in docs.
 pub fn get_kllldap_ignored_attributes_comment_block() -> String {
     let (users, groups) = get_kllldap_ignored_attributes_toml();
-
     format!(
-        r#"# =============================================================================
-# KLLDAP SERVER-SIDE IGNORED ATTRIBUTES (recommended)
-# =============================================================================
-# SSSD and many directory synchronization tools (AD-style "dirsync", etc.)
-# request dozens of attributes that a minimal KLLDAP instance will never
-# have. This produces a flood of "Ignoring unrecognized ... attribute"
-# warnings on the KLLDAP side.
-#
-# KLLDAP supports server-side ignore lists exactly for this situation.
-# Copy the two lines below into your KLLDAP server configuration
-# (typically under the [ldap] or root section in lldap.toml or equivalent).
-#
-# For group membership with KLLDAP + rfc2307bis, we strongly recommend
-# using "member" (or "uniqueMember") instead of the legacy "memberUid".
-# The generator now defaults ldap_group_member accordingly when this
-# KLLDAP mode is active.
-#
-# Special note for dedicated service accounts used as the SSSD bind DN
-# (e.g. uid=dirsync,ou=sync,dc=... while normal users live under ou=people):
-# These accounts frequently trigger the worst attribute spam because SSSD
-# performs many internal operations against them. The ignores below + the
-# generator's switch to "member" for groups are the primary defense against
-# the spam → TLS hard-close → mangled base DN symptoms.
-#
-# See docs/ldap-integration.md for full instructions.
-#
-# To stop the generator from emitting this block, set in your nfs-klldap.conf:
-#     [sssd]
-#     kllldap_ignored_attributes = false
-# =============================================================================
-# Copy these two lines into your KLLDAP server config (lldap.toml or equivalent):
+        r#"# KLLDAP server-side ignores (copy into lldap.toml [ldap] or root):
 ignored_user_attributes = {users}
 ignored_group_attributes = {groups}
-#
-# Also consider in your KLLDAP config (if not already set):
-# ldap_group_member = "member"     # or "uniqueMember"
+# Recommended with rfc2307bis: ldap_group_member = "member"
+# Disable emission: [sssd] kllldap_ignored_attributes = false
 "#,
         users = users, groups = groups
     )
@@ -139,7 +95,6 @@ mod tests {
     fn comment_block_contains_guidance() {
         let block = get_kllldap_ignored_attributes_comment_block();
         assert!(block.contains("kllldap_ignored_attributes = false"));
-        assert!(block.contains("docs/ldap-integration.md"));
         assert!(block.contains("member")); // group membership recommendation
     }
 }

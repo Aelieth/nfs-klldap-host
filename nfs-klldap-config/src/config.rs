@@ -1,8 +1,7 @@
-//! Data model for nfs-klldap.conf and derived generation paths.
+//! Data model for nfs-klldap.conf (single source of truth).
 //!
-//! This module contains only the pure data structures with their serde
-//! and Default implementations. All behavior (validation, derivation,
-//! generation) lives in other modules.
+//! Validation, derivation and generation live in validate.rs / generate.rs.
+//! Shared with the in-container WebUI via the re-exported types.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

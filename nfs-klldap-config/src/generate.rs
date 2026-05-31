@@ -1,7 +1,6 @@
-//! Generation of sssd.conf, krb5.conf, and Ganesha EXPORT fragments.
+//! Generate sssd.conf, krb5.conf, ganesha.conf + per-share EXPORT fragments.
 //!
-//! This module owns the "produce derived configs from NfsKlldapConfig" logic.
-//! Extracted during Phase 5 of the modularization.
+//! Called by entrypoint on start, by watcher on SIGHUP, and by WebUI on save.
 
 use std::fs;
 use std::path::Path;
@@ -33,10 +32,7 @@ pub(crate) fn derive_export_id(name: &str, base: u16) -> u16 {
     base + (h % 55000) as u16
 }
 
-// (dead helper removed after dependency + code audit — the call site that emitted
-// the "custom service account outside user tree" diagnostic was never re-wired
-// after the generate refactor. The diagnostic block in generate_all still exists
-// but is currently unreachable via this heuristic.)
+
 
 /// Full generation driver. Call this from entrypoint / watcher / UI save hooks.
 pub fn generate_all(cfg: &NfsKlldapConfig, paths: &GenerationPaths) -> Result<(), ConfigError> {

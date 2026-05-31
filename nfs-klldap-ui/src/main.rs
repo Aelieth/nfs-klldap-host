@@ -1,15 +1,8 @@
-//! nfs-klldap-ui — In-container WebUI (Axum + HTMX).
+//! In-container WebUI (Axum + HTMX + rustls) on 9630.
 //!
-//! Two-page web UI for the central `nfs-klldap.conf` (the single source of truth):
-//! - System Settings (/settings): edit the TOML (raw editor + basic structured)
-//! - Share Permissions (/): browse real-time FS trees under shares and apply
-//!   POSIX owner/group/mode changes directly + live KLLDAP lookups.
-//!
-//! Runs inside the container on port 9630 (HTTPS via axum-server + rustls).
-//! All services (including this WebUI) run as root and perform direct
-//! chown/chmod on bind-mounted paths.
-//!
-//! The WebUI serves HTTPS directly. Self-signed certificates are supported.
+//! Edits the single nfs-klldap.conf. Performs direct chown/chmod (root) on
+//! bind-mounted host_path trees via FsManager. Two pages: / (permissions tree)
+//! and /settings (raw + structured TOML + LLDAP client reload).
 
 // Enforce that all unsafe code is confined to the ffi module.
 #![deny(unsafe_code)]
@@ -153,39 +146,19 @@ async fn main() {
         );
     }
 
-    // Note: This authenticate() performs an LDAP simple bind as the service
-    // account (using the full DN from sssd.ldap_default_bind_dn or the env var).
-    // The very first bind for that DN can cause KLLDAP to load the user's full
-    // entry and emit a one-time burst of "Ignoring unrecognized user attribute"
-    // warnings for non-POSIX attributes (krb*, etc.). This is the main source
-    // of the single startup burst (the other early bind was the guided
-    // startup ldapsearch probe).
-    //
-    // After this point the client only performs narrow LDAP searches using
-    // exactly the attributes from resolve_posix_attribute_mapping (the same
-    // set emitted into sssd.conf).
+    // First bind may emit one-time "unrecognized attr" noise on KLLDAP for non-POSIX fields.
+    // All subsequent searches use only the PosixAttributeMapping (same as SSSD).
     if let Err(e) = lldap.authenticate(&lldap_user, &lldap_pass).await {
-        eprintln!(
-            "Warning: Could not authenticate to KLLDAP at startup: {}",
-            e
-        );
+        eprintln!("Warning: KLLDAP auth failed at startup: {}", e);
     }
 
-    // Immediately perform one narrow, mapping-respecting self-lookup on the
-    // service account itself. This guarantees that the very first post-auth
-    // operation the WebUI performs is a "narrow SSSD-style" query (only the
-    // admin-declared POSIX attributes), matching the behavior of all later
-    // handlers and of SSSD.
-    //
-    // We derive only the short name portion for the *filter* here; the bind
-    // itself (done inside authenticate) always used the full DN/identity.
+    // Prime the client with a narrow POSIX-only self-lookup (SSSD-style query).
     if !lldap_pass.trim().is_empty()
         && lldap_pass != "CHANGE_THIS_TO_A_STRONG_SECRET"
         && lldap_pass != "SET_ME"
     {
         let probe_name = crate::config::short_name_for_service_probe(&lldap_user);
         let _ = lldap.resolve_user(&probe_name).await;
-        // Also exercise the explicit full-DN resolver (proper DN handling path).
         let _ = lldap.resolve_user_dn(&probe_name).await;
     }
 
@@ -223,9 +196,7 @@ async fn main() {
         resolve_runtime_hostname_for_banner()
     };
 
-    // -------------------------------------------------------------------------
-    // HTTPS server (axum-server + rustls)
-    // -------------------------------------------------------------------------
+    // HTTPS (axum-server + rustls). Self-signed via rcgen unless WEBUI_TLS_* provided.
     let addr = std::env::var("WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
 
     // Use a stable absolute path inside the container (created in Dockerfile).

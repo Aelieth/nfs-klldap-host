@@ -1,9 +1,7 @@
-//! Real-time filesystem operations for the management tool (runs inside the container).
+//! FsManager: host_path (logical) ↔ container_path (bind mount) translation + direct chown/chmod.
 //!
-//! All state comes from the live filesystem (no database).
-//! - Directory tree is built on demand by walking the configured base paths.
-//! - Permission changes (`chown`/`chmod`) are performed directly inside the container.
-//! - Recursive option is supported.
+//! is_allowed uses shares from nfs-klldap.conf. apply_permissions refuses uid/gid 0 and set*id bits.
+//! build_tree returns logical paths so the UI tree + HTMX stay in host namespace.
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -29,17 +27,8 @@ impl FsManager {
         Self { config }
     }
 
-    /// Build a tree view of managed directories (real-time from FS).
-    ///
-    /// The `root` parameter (and all `DirectoryNode.path` values returned) are
-    /// *logical* paths in the host_path namespace from nfs-klldap.conf (the
-    /// values admins configure and see in the UI, used for allow-listing).
-    ///
-    /// Translation to the actual container-visible path (under
-    /// `storage.container_root` + share.name) happens only at the syscall
-    /// boundary so that `fs::metadata`/`read_dir` work inside the container
-    /// under the documented bind-mount model. This matches the contract
-    /// already used by `apply_permissions`.
+    /// Build tree using logical host_path namespace (for UI + is_allowed).
+    /// Translation to real container path occurs only at the syscall boundary.
     pub fn build_tree(&self, root: &Path) -> Option<DirectoryNode> {
         // Normalize early so trailing slashes don't break matching or child synthesis.
         let normalized = self.normalize_for_matching(root);
@@ -125,13 +114,8 @@ impl FsManager {
         Ok(())
     }
 
-    /// Map a logical (host-namespace) path from the config / UI to the
-    /// corresponding real path visible inside the container under
-    /// `storage.container_root` + the matching share's `name`.
-    ///
-    /// This is the single place that knows the bind-mount contract. It is used
-    /// for both write operations (`apply_permissions`) and read operations
-    /// (`build_tree` for the live directory browser).
+    /// host_path (from config/UI) → real path under container_root + share.name.
+    /// The single bind-mount contract used by both apply_permissions and build_tree.
     pub(crate) fn host_path_to_container_path(&self, host_path: &Path) -> Result<PathBuf, String> {
         let normalized = self.normalize_for_matching(host_path);
         let container_root = self.config.storage.container_root.trim_end_matches('/');
@@ -157,10 +141,7 @@ impl FsManager {
         ))
     }
 
-    /// Apply chown + chmod directly (we are root inside the container).
-    ///
-    /// All actual syscalls are performed via the safe wrappers in `crate::ffi`.
-    /// This function and the entire rest of the crate contain zero `unsafe` code.
+    /// Direct chown/chmod as root. All syscalls via ffi (zero unsafe outside that module).
     fn apply_direct(
         &self,
         path: &Path,

@@ -1,8 +1,5 @@
-//! Adapter + host-UI helpers around the single source-of-truth `nfs-klldap.conf`.
-//!
-//! Real structs + validation + generation live in the tiny `nfs-klldap-config` crate
-//! (also bundled inside the container). This module only adds the bits the host UI needs
-//! (path/env loading, root derivation, LLDAP URL + credential helpers).
+//! Thin adapter around nfs_klldap_config::NfsKlldapConfig for the WebUI.
+//! Adds env overrides for creds, all_managed_roots, and short-name probe helper.
 
 use std::path::{Path, PathBuf};
 

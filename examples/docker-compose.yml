@@ -1,15 +1,6 @@
-# =============================================================================
-# Example docker-compose.yml for alma_nfs-kerb (Ganesha / user-space NFS ONLY)
-#
-# This is the recommended (and now only supported) configuration.
-#
-# The container itself is the complete Kerberized NFSv4 server using
-# NFS-Ganesha (user-space) + SSSD for LLDAP POSIX UID/GID mapping.
-#
-# The host does NOT need kernel NFS modules (nfs, nfsd, rpcsec_gss_krb5).
-# This makes it suitable for ZimaOS, TrueNAS SCALE, minimal appliances,
-# or any Linux machine that can't or won't run a full NFS stack.
-# =============================================================================
+# Recommended compose for nfs-klldap-host (Ganesha only).
+# Single source of truth: nfs-klldap.conf. In-container root WebUI on 9630.
+# No kernel NFS modules required on the host.
 version: "3.8"
 
 services:
@@ -83,21 +74,6 @@ services:
     # The healthcheck is defined in the Dockerfile and uses container/healthcheck.sh
     # It verifies: ganesha.nfsd process + listening on 2049 + basic responsiveness.
 
-# =============================================================================
-# Notes
-#
-# Build with:
-#     make build
-#     make docker-multi
-#
-# The WebUI now runs **inside** the container on port 9630 (HTTPS via axum-server + rustls).
-# Access it at http://your-host:9630
-# For TLS, terminate at a reverse proxy in front of the container (see docs/run/README.md).
-#
-# It has two pages:
-#     /settings → edit nfs-klldap.conf
-#     /         → Share Permissions (direct chown/chmod + live LLDAP)
-#
-# The container's watcher automatically picks up config changes.
-# =============================================================================
+# WebUI: https://host:9630 (settings + permissions tree).
+# See docs/run/README.md and root README for capabilities, uts: host, and TLS termination.
 

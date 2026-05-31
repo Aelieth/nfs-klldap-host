@@ -1,4 +1,7 @@
-//! nfs-klldap-config: TOML loader, validation, derivation, and generation for nfs-klldap.conf.
+//! nfs-klldap-config: single source of truth TOML → sssd/krb5/ganesha generation.
+//!
+//! Public API: NfsKlldapConfig (validate+derive), generate_all, hostname helpers,
+//! ignored_attributes, load_host_paths_only (for WebUI allow-list).
 
 mod config;
 mod error;

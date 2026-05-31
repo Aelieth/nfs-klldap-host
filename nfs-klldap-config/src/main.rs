@@ -1,9 +1,5 @@
-//! nfs-klldap-config — CLI entrypoint for the container-bundled generator.
-//!
-//! Subcommands:
-//!   init      - write safe default template if config missing
-//!   generate  - parse + derive + write sssd/krb5/ganesha fragments
-//!   validate  - load + check only (useful from UI or scripts)
+//! nfs-klldap-config CLI. Subcommands: init | generate | validate.
+//! generate drives the watcher + WebUI save path (root execution required for 0600 files).
 
 use std::env;
 use std::path::{Path, PathBuf};

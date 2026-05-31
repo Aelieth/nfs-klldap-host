@@ -1,14 +1,14 @@
 //! LdapClient (ldap3 + rustls). Shares uri/creds/PosixAttributeMapping with SSSD.
-//! Fresh conn per op. All binds use full DN/verbatim identity from sssd section (or env override).
-//!
-//! TLS: We rely on ldap3's tls-rustls-ring support for ldaps:// and StartTLS.
-//! The application installs the ring CryptoProvider very early in main() (before
-//! the first LdapClient operations) to avoid intermittent "tls handshake eof"
-//! errors against strict rustls servers such as KLLDAP.
+//! Fresh conn per op (short-lived + explicit unbind for KLLDAP/rustls TLS compatibility).
+//! Identity cache (10m) + search cache (30s) + memberOf fast-path on verify.
+//! See clear_cache / cache_stats_summary.
 
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
 use nfs_klldap_config::PosixAttributeMapping;
-use std::time::Instant;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub enum LdapError {
@@ -45,6 +45,19 @@ pub struct LdapClient {
     posix_attributes: PosixAttributeMapping,
     no_tls_verify: bool,
     start_tls: bool,
+
+    // Caches use std::sync::Mutex so LdapClient remains Sync (required for Axum handlers
+    // that hold &LdapClient across await points via the outer tokio::sync::MutexGuard).
+    user_cache: Mutex<HashMap<String, CachedUser>>,
+    group_cache: Mutex<HashMap<String, CachedGroup>>,
+    recent_user_searches: Mutex<HashMap<String, CachedSearch>>,
+    recent_group_searches: Mutex<HashMap<String, CachedSearch>>,
+    last_verified_memberofs: Mutex<Option<(String, Vec<String>, Instant)>>,
+    admin_group_dn: Mutex<Option<String>>,
+    cache_hits: AtomicU64,
+    cache_misses: AtomicU64,
+    cache_clears: AtomicU64,
+    last_cache_clear: Mutex<Option<Instant>>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +74,51 @@ pub struct Group {
     pub dn: String,
     pub display_name: Option<String>,
     pub gid_number: Option<i32>,
+}
+
+// ---------------------------------------------------------------------
+// Simple in-memory TTL caches (zero-dep) to eliminate repeated binds/searches.
+// Identity (name → uid/gid/DN) : 10 min
+// Recent filter searches (autocomplete) : 30 s
+// All access is behind the caller's Arc<Mutex<LdapClient>> so no extra locking.
+// ---------------------------------------------------------------------
+
+const IDENTITY_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const SEARCH_CACHE_TTL: Duration = Duration::from_secs(30);
+const MAX_RECENT_SEARCHES: usize = 8;
+
+#[derive(Debug, Clone)]
+struct CachedUser {
+    uid_number: Option<i32>,
+    display_name: String,
+    dn: String,
+    fetched_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct CachedGroup {
+    gid_number: Option<i32>,
+    display_name: String,
+    dn: String,
+    fetched_at: Instant,
+}
+
+/// Lightweight stats for the settings UI (visible cache effectiveness).
+#[derive(Debug, Clone, Default)]
+pub struct LdapCacheStats {
+    pub user_entries: usize,
+    pub group_entries: usize,
+    pub recent_search_entries: usize,
+    pub hits: u64,
+    pub misses: u64,
+    pub clears: u64,
+    pub last_cleared_ago_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedSearch {
+    results: Vec<(String, Option<i32>, String)>, // (id, numeric, display) — small and serializable enough
+    fetched_at: Instant,
 }
 
 impl LdapClient {
@@ -85,6 +143,17 @@ impl LdapClient {
             posix_attributes,
             no_tls_verify,
             start_tls,
+            // caches start empty
+            user_cache: Mutex::new(HashMap::new()),
+            group_cache: Mutex::new(HashMap::new()),
+            recent_user_searches: Mutex::new(HashMap::new()),
+            recent_group_searches: Mutex::new(HashMap::new()),
+            last_verified_memberofs: Mutex::new(None),
+            admin_group_dn: Mutex::new(None),
+            cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
+            cache_clears: AtomicU64::new(0),
+            last_cache_clear: Mutex::new(None),
         }
     }
 
@@ -103,6 +172,156 @@ impl LdapClient {
         // Short-lived connections + explicit unbind() are intentional for
         // compatibility with strict rustls LDAPS servers like KLLDAP.
         s
+    }
+
+    // -----------------------------------------------------------------
+    // Cache helpers (private). All callers must have already done evict.
+    // -----------------------------------------------------------------
+
+    fn evict_expired(&self) {
+        let now = Instant::now();
+
+        self.user_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
+        self.group_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
+
+        self.recent_user_searches.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < SEARCH_CACHE_TTL);
+        self.recent_group_searches.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < SEARCH_CACHE_TTL);
+
+        let mut mem = self.last_verified_memberofs.lock().unwrap();
+        if let Some((_, _, t)) = mem.as_ref() {
+            if now.duration_since(*t) >= Duration::from_secs(120) {
+                *mem = None;
+            }
+        }
+    }
+
+    fn cache_get_user(&self, name: &str) -> Option<CachedUser> {
+        self.evict_expired();
+        if let Some(hit) = self.user_cache.lock().unwrap().get(name).cloned() {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            return Some(hit);
+        }
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+
+    fn cache_put_user(&self, name: &str, u: &User) {
+        self.user_cache.lock().unwrap().insert(
+            name.to_string(),
+            CachedUser {
+                uid_number: u.uid_number,
+                display_name: u.display_name.clone().unwrap_or_else(|| u.id.clone()),
+                dn: u.dn.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+
+    fn cache_get_group(&self, name: &str) -> Option<CachedGroup> {
+        self.evict_expired();
+        if let Some(hit) = self.group_cache.lock().unwrap().get(name).cloned() {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            return Some(hit);
+        }
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+
+    fn cache_put_group(&self, name: &str, g: &Group) {
+        self.group_cache.lock().unwrap().insert(
+            name.to_string(),
+            CachedGroup {
+                gid_number: g.gid_number,
+                display_name: g.display_name.clone().unwrap_or_else(|| g.id.clone()),
+                dn: g.dn.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+
+    fn cache_put_search(&self, key: &str, is_user: bool, items: &[(String, Option<i32>, String)]) {
+        let entry = CachedSearch {
+            results: items.to_vec(),
+            fetched_at: Instant::now(),
+        };
+        if is_user {
+            let mut map = self.recent_user_searches.lock().unwrap();
+            map.insert(key.to_string(), entry);
+            if map.len() > MAX_RECENT_SEARCHES {
+                if let Some(oldest) = map.keys().next().cloned() {
+                    map.remove(&oldest);
+                }
+            }
+        } else {
+            let mut map = self.recent_group_searches.lock().unwrap();
+            map.insert(key.to_string(), entry);
+            if map.len() > MAX_RECENT_SEARCHES {
+                if let Some(oldest) = map.keys().next().cloned() {
+                    map.remove(&oldest);
+                }
+            }
+        }
+    }
+
+    fn cache_get_search(&self, key: &str, is_user: bool) -> Option<Vec<(String, Option<i32>, String)>> {
+        self.evict_expired();
+        let map = if is_user { self.recent_user_searches.lock().unwrap() } else { self.recent_group_searches.lock().unwrap() };
+        if let Some(hit) = map.get(key) {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            return Some(hit.results.clone());
+        }
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+
+    pub fn clear_cache(&self) {
+        self.user_cache.lock().unwrap().clear();
+        self.group_cache.lock().unwrap().clear();
+        self.recent_user_searches.lock().unwrap().clear();
+        self.recent_group_searches.lock().unwrap().clear();
+        *self.last_verified_memberofs.lock().unwrap() = None;
+        *self.admin_group_dn.lock().unwrap() = None;
+        self.cache_clears.fetch_add(1, Ordering::Relaxed);
+        *self.last_cache_clear.lock().unwrap() = Some(Instant::now());
+    }
+
+    pub fn cache_stats_summary(&self) -> LdapCacheStats {
+        let last_ago = self.last_cache_clear.lock().unwrap().map(|t| Instant::now().duration_since(t).as_secs());
+        LdapCacheStats {
+            user_entries: self.user_cache.lock().unwrap().len(),
+            group_entries: self.group_cache.lock().unwrap().len(),
+            recent_search_entries: self.recent_user_searches.lock().unwrap().len() + self.recent_group_searches.lock().unwrap().len(),
+            hits: self.cache_hits.load(Ordering::Relaxed),
+            misses: self.cache_misses.load(Ordering::Relaxed),
+            clears: self.cache_clears.load(Ordering::Relaxed),
+            last_cleared_ago_secs: last_ago,
+        }
+    }
+
+    fn record_verified_memberofs(&self, username: &str, memberofs: Vec<String>) {
+        *self.last_verified_memberofs.lock().unwrap() = Some((username.to_string(), memberofs, Instant::now()));
+    }
+
+    fn has_recent_memberof(&self, username: &str, group_dn: &str) -> bool {
+        if let Some((u, list, _)) = &*self.last_verified_memberofs.lock().unwrap() {
+            if u.eq_ignore_ascii_case(username) {
+                return list.iter().any(|m| m.eq_ignore_ascii_case(group_dn));
+            }
+        }
+        false
+    }
+
+    async fn resolve_admin_group_dn(&self, admin_group_name: &str) -> Option<String> {
+        if let Some(dn) = &*self.admin_group_dn.lock().unwrap() {
+            return Some(dn.clone());
+        }
+        if let Some((_, _)) = self.resolve_group(admin_group_name).await {
+            if let Some(cached) = self.group_cache.lock().unwrap().get(admin_group_name) {
+                *self.admin_group_dn.lock().unwrap() = Some(cached.dn.clone());
+                return Some(cached.dn.clone());
+            }
+        }
+        None
     }
 
     async fn get_or_bind_service(&mut self) -> Result<(), LdapError> {
@@ -255,12 +474,19 @@ impl LdapClient {
     pub async fn authenticate(&mut self, username: &str, password: &str) -> Result<(), LdapError> {
         self.username = Some(username.to_string());
         self.password = Some(password.to_string());
-        self.service_conn = None; // force fresh
+        self.service_conn = None;
+        self.clear_cache();
         self.get_or_bind_service().await?;
         Ok(())
     }
 
     pub async fn resolve_user(&self, name: &str) -> Option<(i32, String)> {
+        if let Some(hit) = self.cache_get_user(name) {
+            if let Some(uid) = hit.uid_number {
+                return Some((uid, hit.display_name.clone()));
+            }
+        }
+
         let uid_attr = self.posix_attributes.user_uid_number.clone();
         let name_attr = self.posix_attributes.user_name.clone();
         let obj = self.posix_attributes.user_object_class.clone();
@@ -290,6 +516,13 @@ impl LdapClient {
 
             if let Some(uid_str) = Self::extract_first_attr(&se, &uid_attr) {
                 if let Ok(u) = uid_str.parse::<i32>() {
+                    let user = User {
+                        id: name.to_string(),
+                        dn: se.dn.clone(),
+                        display_name: Some(display.clone()),
+                        uid_number: Some(u),
+                    };
+                    self.cache_put_user(name, &user);
                     return Some((u, display));
                 }
             }
@@ -298,6 +531,10 @@ impl LdapClient {
     }
 
     pub async fn resolve_user_dn(&self, name: &str) -> Option<String> {
+        if let Some(hit) = self.cache_get_user(name) {
+            return Some(hit.dn);
+        }
+
         let name_attr = self.posix_attributes.user_name.clone();
         let obj = self.posix_attributes.user_object_class.clone();
 
@@ -319,6 +556,12 @@ impl LdapClient {
     // list/resolve (Subtree + shared PosixAttributeMapping)
 
     pub async fn resolve_group(&self, name: &str) -> Option<(i32, String)> {
+        if let Some(hit) = self.cache_get_group(name) {
+            if let Some(gid) = hit.gid_number {
+                return Some((gid, hit.display_name.clone()));
+            }
+        }
+
         let gid_attr = self.posix_attributes.group_gid_number.clone();
         let name_attr = self.posix_attributes.group_name.clone();
         let obj = self.posix_attributes.group_object_class.clone();
@@ -341,11 +584,17 @@ impl LdapClient {
             .await;
 
         for se in entries {
-            // groups use their name attr (usually cn) as display
             let display = Self::extract_display_name(&se, &name_attr, name);
 
             if let Some(gid_str) = Self::extract_first_attr(&se, &gid_attr) {
                 if let Ok(g) = gid_str.parse::<i32>() {
+                    let group = Group {
+                        id: name.to_string(),
+                        dn: se.dn.clone(),
+                        display_name: Some(display.clone()),
+                        gid_number: Some(g),
+                    };
+                    self.cache_put_group(name, &group);
                     return Some((g, display));
                 }
             }
@@ -354,12 +603,24 @@ impl LdapClient {
     }
 
     pub async fn list_users(&self, filter: Option<&str>) -> Vec<User> {
+        let q = filter.unwrap_or("").trim();
+        let cache_key = if q.is_empty() { "__all__".to_string() } else { q.to_string() };
+
+        if let Some(cached) = self.cache_get_search(&cache_key, true) {
+            return cached.into_iter().map(|(id, uid, display)| User {
+                id,
+                dn: String::new(), // DN not needed for list UI
+                display_name: Some(display),
+                uid_number: uid,
+            }).collect();
+        }
+
         let uid_attr = self.posix_attributes.user_uid_number.clone();
         let name_attr = self.posix_attributes.user_name.clone();
         let obj = self.posix_attributes.user_object_class.clone();
 
-        let ldap_filter = if let Some(f) = filter.filter(|s| !s.trim().is_empty()) {
-            let esc = Self::escape_filter_value(f);
+        let ldap_filter = if !q.is_empty() {
+            let esc = Self::escape_filter_value(q);
             let full = self.posix_attributes.user_full_name.clone();
             format!(
                 "(&(objectClass={})(|({}=*{}*)(cn=*{}*)(displayName=*{}*)({}=*{}*)))",
@@ -383,36 +644,50 @@ impl LdapClient {
             .await;
 
         let full_attr = self.posix_attributes.user_full_name.clone();
-        #[allow(clippy::unnecessary_filter_map)]
         let users: Vec<User> = entries
             .into_iter()
-            .filter_map(|se| {
+            .map(|se| {
                 let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
                 let display = Self::extract_display_name(&se, &full_attr, &id);
-                let uid =
-                    Self::extract_first_attr(&se, &uid_attr).and_then(|s| s.parse::<i32>().ok());
-
-                Some(User {
-                    id,
-                    dn: se.dn,                    // Full DN for proper binds
-                    display_name: Some(display),
-                    uid_number: uid,
-                })
+                let uid = Self::extract_first_attr(&se, &uid_attr).and_then(|s| s.parse::<i32>().ok());
+                User { id, dn: se.dn, display_name: Some(display.clone()), uid_number: uid }
             })
             .take(20)
             .collect();
 
         let _ = users.first().map(|u| u.dn.len());
+
+        // populate short-lived search cache (store minimal tuples)
+        let cache_items: Vec<(String, Option<i32>, String)> = users.iter().map(|u| (u.id.clone(), u.uid_number, u.display_name.clone().unwrap_or_default())).collect();
+        self.cache_put_search(&cache_key, true, &cache_items);
+
+        // also populate individual identity cache entries for future resolve_ hits
+        for u in &users {
+            self.cache_put_user(&u.id, u);
+        }
+
         users
     }
 
     pub async fn list_groups(&self, filter: Option<&str>) -> Vec<Group> {
+        let q = filter.unwrap_or("").trim();
+        let cache_key = if q.is_empty() { "__all__".to_string() } else { q.to_string() };
+
+        if let Some(cached) = self.cache_get_search(&cache_key, false) {
+            return cached.into_iter().map(|(id, gid, display)| Group {
+                id,
+                dn: String::new(),
+                display_name: Some(display),
+                gid_number: gid,
+            }).collect();
+        }
+
         let gid_attr = self.posix_attributes.group_gid_number.clone();
         let name_attr = self.posix_attributes.group_name.clone();
         let obj = self.posix_attributes.group_object_class.clone();
 
-        let ldap_filter = if let Some(f) = filter.filter(|s| !s.trim().is_empty()) {
-            let esc = Self::escape_filter_value(f);
+        let ldap_filter = if !q.is_empty() {
+            let esc = Self::escape_filter_value(q);
             format!(
                 "(&(objectClass={})(|({}=*{}*)(cn=*{}*)(displayName=*{}*)))",
                 obj, name_attr, esc, esc, esc
@@ -432,27 +707,26 @@ impl LdapClient {
             .ldap_search_entries(&self.group_base, &ldap_filter, attrs)
             .await;
 
-        #[allow(clippy::unnecessary_filter_map)]
         let groups: Vec<Group> = entries
             .into_iter()
-            .filter_map(|se| {
+            .map(|se| {
                 let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
-                // For groups the primary name attr (cn) doubles as display
                 let display = Self::extract_display_name(&se, &name_attr, &id);
-                let gid =
-                    Self::extract_first_attr(&se, &gid_attr).and_then(|s| s.parse::<i32>().ok());
-
-                Some(Group {
-                    id,
-                    dn: se.dn,                    // Full DN for proper operations
-                    display_name: Some(display),
-                    gid_number: gid,
-                })
+                let gid = Self::extract_first_attr(&se, &gid_attr).and_then(|s| s.parse::<i32>().ok());
+                Group { id, dn: se.dn, display_name: Some(display.clone()), gid_number: gid }
             })
             .take(20)
             .collect();
 
         let _ = groups.first().map(|g| g.dn.len());
+
+        let cache_items: Vec<(String, Option<i32>, String)> = groups.iter().map(|g| (g.id.clone(), g.gid_number, g.display_name.clone().unwrap_or_default())).collect();
+        self.cache_put_search(&cache_key, false, &cache_items);
+
+        for g in &groups {
+            self.cache_put_group(&g.id, g);
+        }
+
         groups
     }
 
@@ -470,14 +744,18 @@ impl LdapClient {
             name_attr,
             Self::escape_filter_value(username)
         );
-        let lookup_attrs: Vec<String> = vec![name_attr.clone()]; // dn is always returned
+        let lookup_attrs: Vec<String> = vec![name_attr.clone(), "memberOf".into()];
 
         let entries = self
             .ldap_search_entries(&self.user_base, &user_filter, lookup_attrs)
             .await;
 
-        let user_dn = match entries.into_iter().next() {
-            Some(se) => se.dn,
+        let (user_dn, memberofs) = match entries.into_iter().next() {
+            Some(se) => {
+                let dn = se.dn;
+                let m = se.attrs.get("memberOf").cloned().or_else(|| se.attrs.get("memberof").cloned()).unwrap_or_default();
+                (dn, m)
+            }
             None => {
                 return Err(LdapError::Auth(
                     "user not found or service account lacks permission to search".into(),
@@ -486,6 +764,7 @@ impl LdapClient {
         };
 
         if self.try_simple_bind(&user_dn, password).await {
+            self.record_verified_memberofs(username, memberofs);
             Ok(())
         } else {
             Err(LdapError::Auth(
@@ -507,8 +786,13 @@ impl LdapClient {
     }
 
     async fn user_is_member_of(&self, username: &str, group_name: &str) -> bool {
-        // Separate pure lookups. Final test filter uses only memberOf (no uid).
-        // Avoids mixing user_name with group references in one filter.
+        // Fast path: if we just verified this exact user, use the memberOf list we already fetched.
+        if let Some(admin_dn) = self.resolve_admin_group_dn(group_name).await {
+            if self.has_recent_memberof(username, &admin_dn) {
+                return true;
+            }
+        }
+
         let g_name = self.posix_attributes.group_name.clone();
         let g_obj = self.posix_attributes.group_object_class.clone();
 
@@ -527,6 +811,11 @@ impl LdapClient {
             Some(e) if !e.dn.is_empty() => e.dn,
             _ => return false,
         };
+
+        // After we have the group DN, the recent verify data may still help for this group.
+        if self.has_recent_memberof(username, &group_dn) {
+            return true;
+        }
 
         let user_dn = match self.resolve_user_dn(username).await {
             Some(dn) => dn,

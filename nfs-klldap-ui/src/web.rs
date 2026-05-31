@@ -593,8 +593,6 @@ pub async fn search_users(
         let uid = user.uid_number.unwrap_or(0);
         let name = user.display_name.unwrap_or(user.id.clone());
 
-        // Use data attributes + proper escaping to avoid htmx:syntax:error and XSS issues
-        // that raw onclick interpolation was causing.
         let safe_id = user
             .id
             .replace('&', "&amp;")
@@ -605,9 +603,10 @@ pub async fn search_users(
             .replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;");
+        // onclick sets hidden uid + visible input (prep for embedded numeric ID fast path)
         html.push_str(&format!(
-            r#"<div class="suggestion" data-user-id="{}" data-uid="{}">{}</div>"#,
-            safe_id, uid, safe_name
+            r#"<div class="suggestion" data-user-id="{}" data-uid="{}" onclick="this.closest('form').querySelector('#owner_user').value='{}';this.closest('form').querySelector('#owner_user_uid').value='{}';this.parentNode.innerHTML='';">{}</div>"#,
+            safe_id, uid, safe_name, uid, safe_name
         ));
     }
     if html.is_empty() {
@@ -633,7 +632,6 @@ pub async fn search_groups(
         let gid = group.gid_number.unwrap_or(0);
         let name = group.display_name.unwrap_or(group.id.clone());
 
-        // Use data attributes + proper escaping (same safety fix as user search).
         let safe_id = group
             .id
             .replace('&', "&amp;")
@@ -645,8 +643,8 @@ pub async fn search_groups(
             .replace('<', "&lt;")
             .replace('>', "&gt;");
         html.push_str(&format!(
-            r#"<div class="suggestion" data-group-id="{}" data-gid="{}">{}</div>"#,
-            safe_id, gid, safe_name
+            r#"<div class="suggestion" data-group-id="{}" data-gid="{}" onclick="this.closest('form').querySelector('#owner_group').value='{}';this.closest('form').querySelector('#owner_group_gid').value='{}';this.parentNode.innerHTML='';">{}</div>"#,
+            safe_id, gid, safe_name, gid, safe_name
         ));
     }
     if html.is_empty() {
@@ -668,6 +666,11 @@ pub(crate) struct ApplyForm {
     mode: String,
     #[serde(default)]
     recursive: bool,
+    // Embedded numeric IDs from suggestion clicks (preferred when present to avoid extra LDAP resolves)
+    #[serde(default)]
+    owner_user_uid: Option<u32>,
+    #[serde(default)]
+    owner_group_gid: Option<u32>,
 }
 
 /// Internal row representation for the share editor form (avoids huge tuple type).
@@ -956,38 +959,47 @@ pub async fn apply_permissions(
 
     let lldap = state.lldap.lock().await;
 
-    // Resolve owner user from LLDAP
-    let owner_uid = match lldap.resolve_user(&form.owner_user).await {
-        Some((uid, _)) => uid as u32,
-        None => {
-            let html = format!(
-                r#"<div class="form">
-                    <h3>Error applying permissions for <code>{}</code></h3>
-                    <p style="color: red;">Could not find user <strong>{}</strong> in LLDAP.</p>
-                    <button type="button" onclick="htmx.ajax('GET', '/directory?path=' + encodeURIComponent('{}'), {{target: '#permission-form', swap: 'innerHTML'}})">
-                        Back to editor
-                    </button>
-                </div>"#,
-                form.path, form.owner_user, form.path
-            );
-            return Ok(Html(html));
+    // Prefer embedded numeric IDs from suggestion clicks (avoids 2 LDAP ops).
+    // Fall back to name resolve when not present (manual entry or direct POST).
+    let owner_uid = if let Some(uid) = form.owner_user_uid {
+        uid
+    } else {
+        match lldap.resolve_user(&form.owner_user).await {
+            Some((uid, _)) => uid as u32,
+            None => {
+                let html = format!(
+                    r#"<div class="form">
+                        <h3>Error applying permissions for <code>{}</code></h3>
+                        <p style="color: red;">Could not find user <strong>{}</strong> in LLDAP.</p>
+                        <button type="button" onclick="htmx.ajax('GET', '/directory?path=' + encodeURIComponent('{}'), {{target: '#permission-form', swap: 'innerHTML'}})">
+                            Back to editor
+                        </button>
+                    </div>"#,
+                    form.path, form.owner_user, form.path
+                );
+                return Ok(Html(html));
+            }
         }
     };
 
-    let group_gid = match lldap.resolve_group(&form.owner_group).await {
-        Some((gid, _)) => gid as u32,
-        None => {
-            let html = format!(
-                r#"<div class="form">
-                    <h3>Error applying permissions for <code>{}</code></h3>
-                    <p style="color: red;">Could not find group <strong>{}</strong> in LLDAP.</p>
-                    <button type="button" onclick="htmx.ajax('GET', '/directory?path=' + encodeURIComponent('{}'), {{target: '#permission-form', swap: 'innerHTML'}})">
-                        Back to editor
-                    </button>
-                </div>"#,
-                form.path, form.owner_group, form.path
-            );
-            return Ok(Html(html));
+    let group_gid = if let Some(gid) = form.owner_group_gid {
+        gid
+    } else {
+        match lldap.resolve_group(&form.owner_group).await {
+            Some((gid, _)) => gid as u32,
+            None => {
+                let html = format!(
+                    r#"<div class="form">
+                        <h3>Error applying permissions for <code>{}</code></h3>
+                        <p style="color: red;">Could not find group <strong>{}</strong> in LLDAP.</p>
+                        <button type="button" onclick="htmx.ajax('GET', '/directory?path=' + encodeURIComponent('{}'), {{target: '#permission-form', swap: 'innerHTML'}})">
+                            Back to editor
+                        </button>
+                    </div>"#,
+                    form.path, form.owner_group, form.path
+                );
+                return Ok(Html(html));
+            }
         }
     };
 
@@ -1292,6 +1304,24 @@ pub async fn lldap_status(State(state): State<AppState>, headers: HeaderMap) -> 
     html.push_str(
         " <span style='font-size:0.8em; color:#555; margin-left:6px;'>(re-reads sssd.ldap_default_bind_* + ldap_uri and re-binds)</span>"
     );
+
+    // Clear identity cache button (per plan: only in settings status fragment)
+    html.push_str(
+        r#"<button type='button' hx-post='/settings/clear-ldap-cache' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:8px; margin-left:8px; padding:4px 10px; cursor:pointer;'>Clear identity cache</button>"#
+    );
+    html.push_str(r#" <span style='font-size:0.8em;color:#555'>(10m user/group cache + 30s search cache)</span>"#);
+
+    // Cache stats line
+    let stats = client.cache_stats_summary();
+    let hit_rate = if stats.hits + stats.misses > 0 {
+        (stats.hits as f64 * 100.0 / (stats.hits + stats.misses) as f64) as u32
+    } else { 0 };
+    let last_cleared = stats.last_cleared_ago_secs.map(|s| format!(" • last cleared {}s ago", s)).unwrap_or_default();
+    html.push_str(&format!(
+        r#"<div style='font-size:0.75em;color:#666;margin-top:6px;'>Cache: {} users, {} groups, {} searches • {}% hit ({} hits / {} misses) • clears: {}{}</div>"#,
+        stats.user_entries, stats.group_entries, stats.recent_search_entries, hit_rate, stats.hits, stats.misses, stats.clears, last_cleared
+    ));
+
     html.push_str("</div>");
 
     Html(html)
@@ -1385,6 +1415,29 @@ pub async fn reload_nfs_client(
     }
 }
 
+pub async fn clear_ldap_cache(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if require_auth(State(state.clone()), headers).await.is_err() {
+        return Html(
+            "<div id='nfs-client-status' style='color:#c00'>Unauthorized</div>".to_string(),
+        );
+    }
+
+    {
+        let client = state.lldap.lock().await;
+        client.clear_cache();
+    }
+
+    let mut ok = String::from("<div id='nfs-client-status' style='background:#d4edda;border:1px solid #28a745;padding:8px;border-radius:3px;'>");
+    ok.push_str("<strong>LDAP identity cache cleared.</strong><br>");
+    ok.push_str("<span style='font-size:0.8em'>Next lookups will hit KLLDAP (10m TTL restarts after first fetch).</span><br>");
+    ok.push_str("<button type='button' hx-get='/settings/lldap-status' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:4px;'>Show status</button>");
+    ok.push_str("</div>");
+    Html(ok)
+}
+
 // === Router ===
 
 pub fn router(state: AppState) -> Router {
@@ -1409,6 +1462,7 @@ pub fn router(state: AppState) -> Router {
         // (notified when bind credentials in nfs-klldap.conf change)
         .route("/settings/lldap-status", get(lldap_status))
         .route("/settings/reload-nfs-client", post(reload_nfs_client))
+        .route("/settings/clear-ldap-cache", post(clear_ldap_cache))
         .with_state(state)
 }
 

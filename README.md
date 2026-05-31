@@ -69,7 +69,7 @@ The generator derives ports, search bases, sssd.conf, krb5.conf, and Ganesha fra
 ## WebUI (9630)
 
 - `/` — Live FS tree browser (under shares) + KLLDAP user/group search + direct recursive chown/chmod.
-- `/settings` — Raw + structured TOML editor + current LLDAP bind identity + "Reload NFS client".
+- `/settings` — Raw + structured TOML editor + current LLDAP bind identity + "Reload NFS client" + "Clear identity cache" (10 min user/group + 30 s search cache; stats shown).
 
 Auth: "localhost" (sidecar bcrypt file next to config) or any LLDAP user in `webui_admin_group` (default `lldap_admin`).
 

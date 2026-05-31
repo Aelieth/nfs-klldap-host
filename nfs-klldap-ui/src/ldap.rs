@@ -104,21 +104,38 @@ impl LdapClient {
         // Verify path: let ldap3 use its native-certs default unless a custom
         // CA bundle is supplied (layered on top of native roots).
         if let Some(ref path) = self.ldap_tls_cacert {
-            if let Ok(ca_pem) = std::fs::read_to_string(path) {
-                let native = rustls_native_certs::load_native_certs();
-                let mut root_store = RootCertStore::empty();
-                for c in native.certs {
-                    let _ = root_store.add(c);
+            match std::fs::read_to_string(path) {
+                Ok(ca_pem) => {
+                    let native = rustls_native_certs::load_native_certs();
+                    let mut root_store = RootCertStore::empty();
+                    for c in native.certs {
+                        let _ = root_store.add(c);
+                    }
+                    let mut cursor = std::io::Cursor::new(ca_pem.as_bytes());
+                    for cert in rustls_pemfile::certs(&mut cursor).flatten() {
+                        let _ = root_store.add(cert);
+                    }
+                    if !root_store.is_empty() {
+                        let cfg = ClientConfig::builder()
+                            .with_root_certificates(root_store)
+                            .with_no_client_auth();
+                        s = s.set_config(Arc::new(cfg));
+                    } else {
+                        eprintln!(
+                            "WARNING: ldap_tls_cacert={} produced no usable certificates (native + custom). \
+                             LDAPS verification may fail and cause handshake aborts (visible as 'tls handshake eof' on the server).",
+                            path
+                        );
+                    }
                 }
-                let mut cursor = std::io::Cursor::new(ca_pem.as_bytes());
-                for cert in rustls_pemfile::certs(&mut cursor).flatten() {
-                    let _ = root_store.add(cert);
-                }
-                if !root_store.is_empty() {
-                    let cfg = ClientConfig::builder()
-                        .with_root_certificates(root_store)
-                        .with_no_client_auth();
-                    s = s.set_config(Arc::new(cfg));
+                Err(e) => {
+                    eprintln!(
+                        "WARNING: ldap_tls_cacert={} is configured but unreadable ({}). \
+                         Outbound LDAPS will either fall back to native roots (may cause verify failures) \
+                         or succeed only if no_tls_verify/reqcert=never. This is a common source of \
+                         WebUI 'connection closed' symptoms and server-side LDAPS handshake errors.",
+                        path, e
+                    );
                 }
             }
         }
@@ -166,20 +183,31 @@ impl LdapClient {
                     let mut ldap = LdapConn::with_settings(settings, &uri)
                         .map_err(|e| format!("connect: {}", e))?;
 
-                    ldap.simple_bind(&u, &p)
-                        .map_err(|e| format!("bind: {}", e))?
-                        .success()
-                        .map_err(|e| format!("bind success: {:?}", e))?;
+                    // Always attempt unbind() for any successfully connected LDAPS/TLS
+                    // session (even on later bind/search failure). This sends an UnbindRequest
+                    // and allows the rustls layer to perform a clean close_notify shutdown.
+                    // Dropping without it is a common source of "[LDAPS] Service Error: tls
+                    // handshake eof" / "peer closed without close_notify" noise on strict
+                    // rustls-based servers (klldap, etc.) from both this client and external
+                    // tools.
+                    let op_result = (|| -> Result<Vec<SearchEntry>, String> {
+                        ldap.simple_bind(&u, &p)
+                            .map_err(|e| format!("bind: {}", e))?
+                            .success()
+                            .map_err(|e| format!("bind success: {:?}", e))?;
 
-                    let (rs, _res) = ldap
-                        .search(&base, Scope::Subtree, &filter, attrs)
-                        .map_err(|e| format!("search: {}", e))?
-                        .success()
-                        .map_err(|e| format!("search success: {:?}", e))?;
+                        let (rs, _res) = ldap
+                            .search(&base, Scope::Subtree, &filter, attrs)
+                            .map_err(|e| format!("search: {}", e))?
+                            .success()
+                            .map_err(|e| format!("search success: {:?}", e))?;
 
-                    let entries: Vec<SearchEntry> = rs.into_iter().map(SearchEntry::construct).collect();
+                        let entries: Vec<SearchEntry> = rs.into_iter().map(SearchEntry::construct).collect();
+                        Ok(entries)
+                    })();
+
                     let _ = ldap.unbind();
-                    Ok::<_, String>(entries)
+                    op_result
                 }
             })
             .await;
@@ -257,9 +285,14 @@ impl LdapClient {
 
         tokio::task::spawn_blocking(move || {
             let mut ldap = LdapConn::with_settings(settings, &uri).ok()?;
-            ldap.simple_bind(&dn, &pw).ok()?.success().ok()?;
+
+            // Always attempt unbind() after a successful TCP+TLS connection (even if the
+            // bind itself is rejected, e.g. wrong password or bare DN). Prevents the abrupt
+            // socket drop that surfaces as "tls handshake eof" / no-close_notify errors on
+            // the LDAPS server.
+            let bind_ok = ldap.simple_bind(&dn, &pw).ok().and_then(|r| r.success().ok()).is_some();
             let _ = ldap.unbind();
-            Some(())
+            if bind_ok { Some(()) } else { None }
         })
         .await
         .is_ok()

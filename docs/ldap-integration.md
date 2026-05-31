@@ -187,33 +187,8 @@ ls -l /mnt/test
 - Host filesystem ownership does not match the `uidNumber`/`gidNumber` values in LLDAP.
 - SELinux / AppArmor on the host is interfering with the bind mounts.
 
-**SSSD cannot contact LLDAP**
-- TLS/certificate problems (set `ldap_tls_reqcert = "never"` under [sssd] in nfs-klldap.conf for self-signed LLDAP certs).
-- Firewall, bind credentials, or wrong `ldap_uri`.
-- Run the container with `SSSD_DEBUG_LEVEL=7` and look at the logs.
-
 **Direct management (ganesha-ctl) not working**
 - (Historical) The host DBUS socket is not mounted into the container. This is no longer required or used. The container is fully self-contained.
-
-**Massive "Ignoring unrecognized attribute" spam + TLS "peer closed without close_notify" + later searches with bare username as base DN (e.g. `dn: "dirsync"`)**
-
-This exact symptom cluster almost always happens when:
-
-- You use a dedicated service account (e.g. `uid=dirsync,ou=sync,...`) as `ldap_default_bind_dn` for SSSD.
-- `enumerate = true` (explicitly enabled; the generator now defaults to `false`).
-- The account lives in a custom OU outside `ou=people`/`ou=groups`.
-- No server-side `ignored_*_attributes` are configured on KLLDAP.
-
-SSSD (especially with enumeration) does very broad attribute requests. KLLDAP logs a warning for every unknown attribute on every result. The noise + volume causes the client to hard-close LDAPS connections without proper TLS shutdown. Later internal operations in SSSD can then send searches with just the short username as the `baseObject`, producing the `Invalid DN syntax ... dn: "dirsync"` errors.
-
-**Fix (in order of impact):**
-
-1. Rebuild the container with current code (the `kllldap_ignored_attributes` feature is now on by default).
-2. Apply the recommended `ignored_user_attributes` / `ignored_group_attributes` block that now appears at the bottom of the generated `sssd.conf` into your KLLDAP server config.
-3. The generator now also defaults `ldap_group_member = member` (instead of `memberUid`) when the above toggle is active.
-4. Consider setting `enumerate = false` (or only enable it temporarily while warming caches) if the service account is doing heavy work.
-
-After applying the ignores on the KLLDAP side, the spam disappears, connections stabilize, and the mangled-DN searches stop occurring. The generator now also emits a prominent diagnostic comment block in `sssd.conf` when it detects a bind DN outside the normal user tree.
 
 ## 5. Client-side Considerations
 

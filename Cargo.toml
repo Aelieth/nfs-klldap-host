@@ -19,8 +19,6 @@ repository = "https://github.com/aelieth/nfs-klldap-host"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 tempfile = "3"
-# NOTE: serde_json was removed after a full audit (zero actual uses anywhere in the tree).
-#       hyper-util was also removed from direct UI deps (axum + axum-server provide it).
 
 # --- Small cross-cutting utilities -------------------------------------------
 thiserror = "2.0"

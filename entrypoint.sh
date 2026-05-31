@@ -30,7 +30,7 @@
 #
 # Required executables (checked in preflight):
 #   /usr/local/bin/{nfs-klldap-config,nfs-klldap-startup,nfs-klldap-ui,
-#                   nfs-klldap-conf-watcher,ganesha-ctl,webui-certs}
+#                   nfs-klldap-conf-watcher,ganesha-ctl}
 #   /container/healthcheck.sh
 #
 set -euo pipefail
@@ -50,7 +50,9 @@ STARTUP_BIN="${STARTUP_BIN:-/usr/local/bin/nfs-klldap-startup}"
 UI_BIN="${UI_BIN:-/usr/local/bin/nfs-klldap-ui}"
 WATCHER_BIN="${WATCHER_BIN:-/usr/local/bin/nfs-klldap-conf-watcher}"
 GANESHA_CTL="${GANESHA_CTL:-/usr/local/bin/ganesha-ctl}"
-WEBUI_CERTS_BIN="${WEBUI_CERTS_BIN:-/usr/local/bin/webui-certs}"
+# WebUI TLS certs are now handled internally by nfs-klldap-ui (rcgen self-signed
+# or user-provided via WEBUI_TLS_*). The certs live under
+# /var/lib/nfs-klldap/webui-certs inside the container.
 HEALTHCHECK="${HEALTHCHECK:-/container/healthcheck.sh}"
 
 # Logging
@@ -118,7 +120,7 @@ fix_derived_permissions() {
 preflight_checks() {
     local missing=0
 
-    for bin in "$CONFIG_BIN" "$STARTUP_BIN" "$UI_BIN" "$WATCHER_BIN" "$GANESHA_CTL" "$WEBUI_CERTS_BIN"; do
+    for bin in "$CONFIG_BIN" "$STARTUP_BIN" "$UI_BIN" "$WATCHER_BIN" "$GANESHA_CTL"; do
         if [ ! -x "$bin" ]; then
             error "Required binary missing or not executable: $bin"
             missing=1
@@ -263,54 +265,19 @@ main() {
     GANESHA_PID=$!
 
     # 4. WebUI (started last — it needs SSSD + Ganesha operational for some features)
-    # The webui-certs helper now only handles discovery of *custom* user-provided certs.
-    # Self-signed generation (if needed) is performed inside the Rust binary via
-    # ensure_webui_tls_certs() for better robustness and test coverage.
-    info "Preparing WebUI TLS certificates..."
-    local WEBUI_CERT_OUTPUT=""
-    # Capture stdout (the VAR= lines) and stderr (diagnostic messages) separately.
-    # We do NOT use eval on the output for safety.
-    WEBUI_CERT_OUTPUT=$("$WEBUI_CERTS_BIN" 2>&1) || true
+    #
+    # Plain HTTP by design. Reverse proxy (Caddy, nginx, Traefik, etc.) in front
+    # of the container if you need TLS at the network edge.
+    info "Starting WebUI on 0.0.0.0:9630 (HTTPS via axum-server)..."
+    NFS_KLLDAP_CONF="$NFS_CONFIG" \
+    "$UI_BIN" --config "$NFS_CONFIG" \
+        > >(tee -a /var/log/webui.log) 2>&1 &
+    WEBUI_PID=$!
 
-    # Parse only the two expected variables safely (no eval, no shell injection risk).
-    WEBUI_TLS_CERT=""
-    WEBUI_TLS_KEY=""
-    while IFS= read -r line; do
-        case "$line" in
-            WEBUI_TLS_CERT=*) WEBUI_TLS_CERT="${line#WEBUI_TLS_CERT=}" ;;
-            WEBUI_TLS_KEY=*)  WEBUI_TLS_KEY="${line#WEBUI_TLS_KEY=}" ;;
-            *)                info "    $line" ;;   # diagnostics from the cert script
-        esac
-    done <<< "$WEBUI_CERT_OUTPUT"
-
-    # Export so they are visible to the child process launch below
-    export WEBUI_TLS_CERT WEBUI_TLS_KEY
-
-
-    # We require the two env vars to be set (the script above always outputs them).
-    # We no longer require the files to exist on disk here — the Rust binary
-    # will call ensure_webui_tls_certs() which generates self-signed certs
-    # into those paths if they are missing.
-    if [[ -x "$UI_BIN" && -n "$WEBUI_TLS_CERT" && -n "$WEBUI_TLS_KEY" ]]; then
-        info "Starting WebUI on 0.0.0.0:9630 (HTTPS)..."
-        NFS_KLLDAP_CONF="$NFS_CONFIG" \
-        WEBUI_TLS_CERT="$WEBUI_TLS_CERT" \
-        WEBUI_TLS_KEY="$WEBUI_TLS_KEY" \
-        "$UI_BIN" --config "$NFS_CONFIG" \
-            > >(tee -a /var/log/webui.log) 2>&1 &
-        WEBUI_PID=$!
-
-        # Give the WebUI a moment to either bind successfully or fail hard
-        # (e.g. TLS cert problem, config load failure). If it dies quickly,
-        # surface the last lines of its log into the main container output
-        # for immediate diagnosis instead of a silent generic failure.
-        sleep 1.5
-        if ! kill -0 "$WEBUI_PID" 2>/dev/null; then
-            warn "WebUI process exited quickly — last log lines:"
-            tail -n 30 /var/log/webui.log 2>/dev/null || true
-        fi
-    else
-        warn "WebUI will not start (failed to obtain TLS certificate paths)"
+    sleep 1.5
+    if ! kill -0 "$WEBUI_PID" 2>/dev/null; then
+        warn "WebUI process exited quickly — last log lines:"
+        tail -n 30 /var/log/webui.log 2>/dev/null || true
     fi
 
 

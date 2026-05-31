@@ -5,11 +5,11 @@
 //! - Share Permissions (/): browse real-time FS trees under shares and apply
 //!   POSIX owner/group/mode changes directly + live KLLDAP lookups.
 //!
-//! Runs inside the container on port 9630 (HTTPS). All services (including this
-//! WebUI) run as root and perform direct chown/chmod on bind-mounted paths.
+//! Runs inside the container on port 9630 (HTTPS via axum-server + rustls).
+//! All services (including this WebUI) run as root and perform direct
+//! chown/chmod on bind-mounted paths.
 //!
-//! TLS certificates are ensured at startup via `crate::certs::ensure_webui_tls_certs`
-//! (self-signed generation happens in pure Rust using rcgen when needed).
+//! The WebUI serves HTTPS directly. Self-signed certificates are supported.
 
 // Enforce that all unsafe code is confined to the ffi module.
 #![deny(unsafe_code)]
@@ -48,10 +48,6 @@ use nfs_klldap_config::get_consistent_hostname;
 
 #[tokio::main]
 async fn main() {
-    // Install rustls crypto provider early.
-    // This must happen before any TLS code runs.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
     println!("=== nfs-klldap-ui (in-container WebUI) ===\n");
 
     // Support --config /path or NFS_KLLDAP_CONF env (the shared volume with the container)
@@ -116,18 +112,46 @@ async fn main() {
     // LDAP client (standard RFC searches + simple bind).
     // Uses exactly the same ldap_uri + [sssd] bind credentials + attribute
     // mappings as SSSD. All searches use Subtree scope so child OUs are found.
+    //
+    // Outbound TLS: rustls ring (identical configuration to the proven reqwest
+    // era). Service bind identity is always the full DN (proper handling).
     let posix_attrs = nfs_klldap_config::resolve_posix_attribute_mapping(&config.sssd);
     let realm = config.effective_realm();
     let (user_base, group_base) =
         nfs_klldap_config::effective_ldap_search_bases(&config.sssd, &realm);
-    // TLS policy from sssd section (common "never" for lab self-signed KLLDAP).
-    let no_tls_verify = config
-        .sssd
-        .ldap_tls_reqcert
-        .as_deref()
-        .map(|v| v.eq_ignore_ascii_case("never"))
-        .unwrap_or(false);
+    // TLS policy from sssd section.
+    // For ldaps:// (the common KLLDAP case with self-signed certs) we default to
+    // no verification unless the admin explicitly sets ldap_tls_reqcert to something
+    // other than "never" *or* provides a custom CA via ldap_tls_cacert.
+    // This matches the behavior of the guided startup probes (ldapsearch with
+    // LDAPTLS_REQCERT=never) and prevents the "tls handshake eof" noise on the
+    // KLLDAP side that occurs when the rustls client performs a strict public-CA
+    // verify against a self-signed server certificate.
+    let explicit_reqcert = config.sssd.ldap_tls_reqcert.as_deref();
+    let has_custom_ca = config.sssd.ldap_tls_cacert.as_deref().is_some_and(|s| !s.trim().is_empty());
+    let no_tls_verify = if has_custom_ca {
+        // When a custom CA bundle is provided we let the normal verify path use it
+        // (see LdapClient::build_conn_settings). Only force "never" if reqcert=never.
+        explicit_reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
+    } else if config.ldap_uri.starts_with("ldaps://") {
+        // Homelab / internal KLLDAP default: trust the server we were pointed at.
+        // Operator can still force verification by setting ldap_tls_reqcert=demand
+        // (or "try" / "allow") *and* supplying ldap_tls_cacert.
+        explicit_reqcert.is_none_or(|v| v.eq_ignore_ascii_case("never"))
+    } else {
+        explicit_reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
+    };
     let start_tls = config.sssd.ldap_id_use_start_tls.unwrap_or(false);
+
+    // Surface the outbound LDAP TLS policy early (helps operators understand
+    // why they see or don't see KLLDAP-side handshake noise during UI startup probes).
+    if no_tls_verify {
+        println!("Outbound LDAPS/StartTLS: verification DISABLED (ldap_tls_reqcert=never or ldaps:// default for self-signed KLLDAP)");
+    } else {
+        println!("Outbound LDAPS/StartTLS: verification ENABLED (will use webpki-roots or ldap_tls_cacert if provided)");
+    }
+
+    let cacert = config.sssd.ldap_tls_cacert.clone();
     let mut lldap = crate::ldap::LdapClient::new_with_attributes(
         &config.ldap_uri,
         &user_base,
@@ -135,9 +159,12 @@ async fn main() {
         posix_attrs,
         no_tls_verify,
         start_tls,
+        cacert,
     );
 
     // Real credentials from the same nfs-klldap.conf (sssd section) with env override support.
+    // The first element is the full bind DN (or verbatim identity). Bare uids are
+    // deliberately never produced here — they cause connection drops on LDAPS.
     // Interactive prompt is intentionally avoided for daemon/container use cases.
     let (lldap_user, lldap_pass) = crate::config::ldap_service_creds(&config);
     if lldap_pass.trim().is_empty()
@@ -151,9 +178,9 @@ async fn main() {
     }
 
     // Note: This authenticate() performs an LDAP simple bind as the service
-    // account (using sssd.ldap_default_bind_* or NFS_KLLDAP_LLDAP_*). The very
-    // first bind for that DN can cause KLLDAP to load the user's full entry
-    // and emit a one-time burst of "Ignoring unrecognized user attribute"
+    // account (using the full DN from sssd.ldap_default_bind_dn or the env var).
+    // The very first bind for that DN can cause KLLDAP to load the user's full
+    // entry and emit a one-time burst of "Ignoring unrecognized user attribute"
     // warnings for non-POSIX attributes (krb*, etc.). This is the main source
     // of the single startup burst (the other early bind was the guided
     // startup ldapsearch probe).
@@ -173,11 +200,17 @@ async fn main() {
     // operation the WebUI performs is a "narrow SSSD-style" query (only the
     // admin-declared POSIX attributes), matching the behavior of all later
     // handlers and of SSSD.
+    //
+    // We derive only the short name portion for the *filter* here; the bind
+    // itself (done inside authenticate) always used the full DN/identity.
     if !lldap_pass.trim().is_empty()
         && lldap_pass != "CHANGE_THIS_TO_A_STRONG_SECRET"
         && lldap_pass != "SET_ME"
     {
-        let _ = lldap.resolve_user(&lldap_user).await;
+        let probe_name = crate::config::short_name_for_service_probe(&lldap_user);
+        let _ = lldap.resolve_user(&probe_name).await;
+        // Also exercise the explicit full-DN resolver (proper DN handling path).
+        let _ = lldap.resolve_user_dn(&probe_name).await;
     }
 
     let lldap = Arc::new(Mutex::new(lldap));
@@ -203,27 +236,7 @@ async fn main() {
 
     let app = crate::web::router(state);
 
-    // -------------------------------------------------------------------------
-    // TLS certificate handling (moved much of the previous shell logic into Rust)
-    // -------------------------------------------------------------------------
-    // The container launcher (entrypoint + webui-certs script) normally provides
-    // WEBUI_TLS_CERT and WEBUI_TLS_KEY. If they are present we use those paths.
-    // If the files are missing or the vars are absent (dev mode), we ensure
-    // self-signed certificates exist using pure Rust (rcgen).
-    let (tls_cert_path, tls_key_path) = if let (Some(c), Some(k)) = (
-        std::env::var("WEBUI_TLS_CERT").ok(),
-        std::env::var("WEBUI_TLS_KEY").ok(),
-    ) {
-        (std::path::PathBuf::from(c), std::path::PathBuf::from(k))
-    } else {
-        // Development / standalone fallback location
-        let dir = std::path::PathBuf::from("webui-certs");
-        (dir.join("webui.crt"), dir.join("webui.key"))
-    };
-
-    // Determine a reasonable hostname for self-signed SANs if we need to generate.
-    // Prefer the same two-tier confirmed value used for the keytab banner so that
-    // the cert and the keytab reminder can never silently disagree.
+    // Determine hostname for self-signed certificate SANs (same logic as keytab)
     let cert_hostname = if let Some(h) = &config.server.hostname {
         if !h.trim().is_empty() {
             h.trim().to_string()
@@ -234,69 +247,43 @@ async fn main() {
         resolve_runtime_hostname_for_banner()
     };
 
-    // When the container launcher provided explicit certs via WEBUI_TLS_CERT/KEY,
-    // we never auto-regenerate (even if they look "weak"). For the normal
-    // auto-generated self-signed case we *do* want transparent regeneration of
-    // old/weak certs after TLS dependency updates.
-    let regenerate_weak_certs = std::env::var("WEBUI_TLS_CERT").is_err();
+    // -------------------------------------------------------------------------
+    // HTTPS server (axum-server + rustls)
+    // -------------------------------------------------------------------------
+    let addr = std::env::var("WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
 
+    // Use a stable absolute path inside the container (created in Dockerfile).
+    // This avoids polluting / and works under root-only execution model.
+    // Full paths can still be overridden via WEBUI_TLS_CERT / WEBUI_TLS_KEY.
     let tls_paths = crate::certs::ensure_webui_tls_certs(
-        &tls_cert_path,
-        &tls_key_path,
+        "/var/lib/nfs-klldap/webui-certs/webui.crt",
+        "/var/lib/nfs-klldap/webui-certs/webui.key",
         &cert_hostname,
-        regenerate_weak_certs,
     )
     .expect("failed to ensure WebUI TLS certificates");
 
-    let cert = tls_paths.cert.to_string_lossy().into_owned();
+    println!("\nListening on https://{addr} (TLS enabled via axum-server)");
+    println!("Certificate: {}", tls_paths.cert.display());
 
-    // Default bind for in-container operation (accessible from host and network)
-    let addr = std::env::var("WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
+    let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(
+        &tls_paths.cert,
+        &tls_paths.key,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("FATAL: Failed to load TLS certificate and key:");
+            eprintln!("  cert: {}", tls_paths.cert.display());
+            eprintln!("  key : {}", tls_paths.key.display());
+            eprintln!("  error: {e}");
+            eprintln!("The WebUI cannot start without valid TLS material.");
+            std::process::exit(1);
+        }
+    };
 
-    // Build rustls ServerConfig from the certificate and key we ensured exist on disk.
-    let tls_config = crate::certs::load_rustls_server_config(&tls_paths.cert, &tls_paths.key)
-        .expect("failed to load TLS certificate and key into rustls config");
-
-    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config));
-    let listener = tokio::net::TcpListener::bind(&addr).await.expect("failed to bind WebUI address");
-
-    println!("Listening on https://{addr} (TLS enabled)");
-    println!("Certificate: {}", cert);
-
-    loop {
-        let (stream, _remote_addr) = match listener.accept().await {
-            Ok(pair) => pair,
-            Err(e) => {
-                eprintln!("Failed to accept connection: {e}");
-                continue;
-            }
-        };
-
-        let acceptor = acceptor.clone();
-        let app = app.clone();
-
-        tokio::spawn(async move {
-            let tls_stream = match acceptor.accept(stream).await {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("TLS handshake failed: {e}");
-                    return;
-                }
-            };
-
-            let io = hyper_util::rt::TokioIo::new(tls_stream);
-            let hyper_service = hyper_util::service::TowerToHyperService::new(app);
-
-            if let Err(e) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-                .serve_connection(io, hyper_service)
-                .await
-            {
-                // Connection errors are common and usually harmless
-                let msg = e.to_string();
-                if !msg.contains("connection closed") && !msg.contains("broken pipe") {
-                    eprintln!("server error: {e}");
-                }
-            }
-        });
-    }
+    axum_server::bind_rustls(addr.parse().expect("invalid bind address"), config)
+        .serve(app.into_make_service())
+        .await
+        .expect("WebUI HTTPS server failed");
 }

@@ -13,6 +13,12 @@
 FROM quay.io/almalinuxorg/10-minimal AS chef
 
 # Install build dependencies
+#
+# Notes on crypto / TLS related packages:
+# - openssl-devel: Required for openldap-clients (ldapsearch LDAPS/STARTTLS probes
+#   in nfs-klldap-startup) and general tooling. The Rust UI uses rustls (ring) for
+#   both its own HTTPS listener (axum-server) and outbound LDAPS (ldap3 tls-rustls-ring).
+# - clang + llvm: Not needed (pure-rust TLS stack for the WebUI and LDAP client).
 RUN microdnf install -y --assumeyes \
         shadow-utils \
         pkgconf \
@@ -23,8 +29,6 @@ RUN microdnf install -y --assumeyes \
         curl \
         gzip \
         krb5-devel \
-        clang \
-        llvm \
     && microdnf clean all
 
 # Create service user early (non-root builds are cleaner)
@@ -117,7 +121,7 @@ RUN set -euxo pipefail && \
 FROM quay.io/almalinuxorg/10-minimal
 
 LABEL maintainer="Aelieth"
-LABEL description="AlmaLinux 10 NFS-Ganesha (user-space NFSv4) server with KLLDAP/SSSD POSIX UID/GID mapping. v0.5+ central TOML + in-container WebUI."
+LABEL description="AlmaLinux 10 NFS-Ganesha (user-space NFSv4) server with KLLDAP/SSSD POSIX UID/GID mapping. v0.6+ central TOML + in-container WebUI (HTTPS, rustls ldap3 client)."
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 # -----------------------------------------------------------------------------
@@ -152,6 +156,10 @@ RUN microdnf install -y --assumeyes epel-release && \
         ca-certificates \
         sudo \
         hostname \
+        # openssl: Provides the CLI + libraries used by openldap-clients (ldapsearch
+        # LDAPS/StartTLS probes in the startup binary), SSSD ldap module, and general
+        # debugging (openssl s_client, etc.). The Rust code itself only needs the
+        # libraries at build time via openssl-devel (see builder stage).
         openssl \
     && microdnf clean all
 
@@ -166,7 +174,7 @@ RUN mkdir -p \
     /var/lib/sss \
     /var/run/ganesha \
     /var/run/sssd \
-    /var/run/webui-certs \
+    /var/lib/nfs-klldap/webui-certs \
     /container/scripts \
     /output
 
@@ -187,9 +195,8 @@ RUN cp /output/nfs-klldap-config /usr/local/bin/ && \
 # -----------------------------------------------------------------------------
 COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl
 COPY container/scripts/nfs-klldap-conf-watcher /usr/local/bin/nfs-klldap-conf-watcher
-COPY container/scripts/webui-certs /usr/local/bin/webui-certs
 COPY container/healthcheck.sh /container/healthcheck.sh
-RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /usr/local/bin/webui-certs /container/healthcheck.sh
+RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /container/healthcheck.sh
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

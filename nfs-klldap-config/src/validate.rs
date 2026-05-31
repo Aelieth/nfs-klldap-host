@@ -66,6 +66,9 @@ impl NfsKlldapConfig {
             normalize_blank(&mut s.ldap_group_gid_number);
             normalize_blank(&mut s.ldap_group_member);
 
+            // kllldap_ignored_attributes is Option<bool> — default handled in generator
+            // (we still want to allow explicit false in the TOML)
+
             // New advanced fields
             normalize_blank(&mut s.domain);
             normalize_blank(&mut s.auth_provider);

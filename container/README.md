@@ -13,10 +13,10 @@ These scripts are intentionally thin. All complex logic (config generation, guid
 - Everything runs as root inside the container (standard for Red Hat-style appliances).
 - The entrypoint (`/entrypoint.sh`) acts as pid 1 and a lightweight supervisor.
 - These helpers exist only to:
-  - Prepare runtime TLS material
-  - Provide convenient operator tooling
+  - Provide convenient operator tooling (ganesha-ctl, conf-watcher)
   - Implement reliable file watching + signaling back to pid 1
   - Satisfy Docker/Podman healthcheck requirements
+  (WebUI TLS material is now generated inside nfs-klldap-ui via rcgen / loaded from env)
 
 No scripts perform host-side operations or use `sudo`. All privileged work happens inside the container on bind-mounted paths.
 
@@ -29,7 +29,7 @@ Docker/Podman `HEALTHCHECK` command (see `Dockerfile`).
 **Checks performed on every interval:**
 - `ganesha.nfsd` process is running and listening on TCP 2049
 - SSSD NSS pipe exists (`/var/lib/sss/pipes/nss`) — proves LLDAP identity mapping is active
-- WebUI is listening on TCP 9630 (HTTPS)
+- WebUI is listening on TCP 9630 (HTTPS via axum-server + rustls)
 
 The check is deliberately fast and has no external dependencies beyond what is already in the image (`ss`/`netstat`/`timeout` fallbacks).
 
@@ -65,25 +65,12 @@ It falls back to direct generation only if it cannot signal pid 1 (highly unusua
 
 ### `scripts/webui-certs`
 
-Helps prepare TLS material for the in-container WebUI (port 9630).
-
-Primary responsibility (now focused):
-- Discover user-provided certificates (`webui.crt`/`webui.key` or `tls.crt`/`tls.key`) next to `nfs-klldap.conf`.
-- Symlink them into the standard location `/var/run/webui-certs/`.
-- Output the two environment variables the WebUI binary expects.
-
-Self-signed certificate generation (when no custom certs are supplied) has moved entirely into the Rust binary (`nfs-klldap-ui`) using the pure-Rust `rcgen` crate.
-
-See:
-- `nfs-klldap-ui/src/certs.rs` — `ensure_webui_tls_certs()`
-- The Rust binary now guarantees valid TLS material exists before it starts listening on 9630.
-
-This significantly reduces shell surface area for a security-critical path and makes the logic unit-testable.
+The WebUI serves HTTPS directly on port 9630 using axum-server + rustls (self-signed or provided certs via WEBUI_TLS_* env vars). No separate certificate preparation script is required.
 
 ## Environment Variables Commonly Used by These Scripts
 
 - `NFS_CONFIG` — path to the central TOML (default `/config/nfs-klldap.conf`)
-- `NFS_CONFIG_DIR` — directory containing the TOML (used by `webui-certs`)
+- `NFS_CONFIG_DIR` — directory containing the TOML (used by some helpers)
 - `WATCHER_DEBOUNCE_SECONDS` — debounce interval for the config watcher
 
 ## Runtime Locations (inside the container)
@@ -93,11 +80,10 @@ This significantly reduces shell surface area for a security-critical path and m
 | `/container/healthcheck.sh`               | Docker HEALTHCHECK                   |
 | `/usr/local/bin/ganesha-ctl`              | Operator tooling                     |
 | `/usr/local/bin/nfs-klldap-conf-watcher`  | Auto-reload on config change         |
-| `/usr/local/bin/webui-certs`              | WebUI TLS preparation                |
-| `/var/run/webui-certs/`                   | Runtime TLS material for the WebUI   |
+| webui-certs (optional)                    | Used only if you want to pre-provision certs |
 
 All scripts are installed with `+x` during the Docker build (see `Dockerfile`).
 
 ## Future Direction
 
-As more logic moves into the Rust binaries, some of these small shell helpers may be absorbed (especially certificate handling and parts of the watcher). For now they remain small, auditable, and easy to reason about in a pid-1 context.
+As more logic moves into the Rust binaries, some of these small shell helpers may be absorbed. For now they remain small, auditable, and easy to reason about in a pid-1 context.

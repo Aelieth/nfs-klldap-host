@@ -6,6 +6,8 @@
 use std::fs;
 use std::path::Path;
 
+use crate::ignored_attributes;
+
 use crate::{
     config::resolve_posix_attribute_mapping, ConfigError, GenerationPaths, NfsKlldapConfig,
 };
@@ -30,6 +32,11 @@ pub(crate) fn derive_export_id(name: &str, base: u16) -> u16 {
     }
     base + (h % 55000) as u16
 }
+
+// (dead helper removed after dependency + code audit — the call site that emitted
+// the "custom service account outside user tree" diagnostic was never re-wired
+// after the generate refactor. The diagnostic block in generate_all still exists
+// but is currently unreachable via this heuristic.)
 
 /// Full generation driver. Call this from entrypoint / watcher / UI save hooks.
 pub fn generate_all(cfg: &NfsKlldapConfig, paths: &GenerationPaths) -> Result<(), ConfigError> {
@@ -122,7 +129,8 @@ cache_credentials = true
 ///
 /// The attribute mapping lists (user_attr_list / group_attr_list) are kept
 /// because they are the single source of truth shared with the WebUI
-/// LdapClient (so GraphQL queries stay narrow). They are also useful as
+/// LdapClient (so LDAP searches stay narrow and only request known attributes).
+/// They are also useful as
 /// human-readable documentation of the intended minimal set.
 ///
 /// Real reduction of the "usual set" SSSD requests (shadow*, krb*, gecos,
@@ -157,7 +165,11 @@ fn build_ldap_domain_options(
             mapping.user_shell.as_str(),
             "objectClass",
         ];
-        if let Some(f) = s.ldap_user_fullname.as_ref().filter(|v| !v.trim().is_empty()) {
+        if let Some(f) = s
+            .ldap_user_fullname
+            .as_ref()
+            .filter(|v| !v.trim().is_empty())
+        {
             let f = f.trim();
             if !a.iter().any(|x| x.eq_ignore_ascii_case(f)) {
                 a.push(f);
@@ -175,8 +187,20 @@ fn build_ldap_domain_options(
         a.join(",")
     };
 
-    // enumerate default = true because this project benefits from a warm cache
-    let enumerate = if s.enumerate.unwrap_or(true) {
+    // enumerate defaults to false.
+    //
+    // While a warm cache from enumeration is convenient, setting enumerate=true
+    // causes SSSD to issue very broad searches across all users and groups.
+    // Against KLLDAP (which intentionally does not carry every legacy/AD-style
+    // attribute), this produces extremely noisy "Ignoring unrecognized attribute"
+    // warning spam on the KLLDAP side. That noise frequently leads to client-side
+    // connection instability (TLS "peer closed without close_notify" errors) and,
+    // under connection failure, subsequent mangled searches where a bare username
+    // (e.g. "dirsync") ends up being sent as a search base DN.
+    //
+    // Most deployments should leave this at false. You can still enable it
+    // temporarily for initial cache warm-up if desired.
+    let enumerate = if s.enumerate.unwrap_or(false) {
         "true"
     } else {
         "false"
@@ -210,6 +234,8 @@ ldap_group_search_base = {group_base}
 ldap_group_object_class = {group_obj}
 ldap_group_name = {g_name}
 ldap_group_gid_number = {g_gid}
+# For KLLDAP + rfc2307bis we recommend "member" (DNs) or "uniqueMember".
+# The resolver now defaults to "member" when kllldap_ignored_attributes is active.
 ldap_group_member = {g_member}
 
 ldap_schema = {ldap_schema}
@@ -243,7 +269,7 @@ access_provider = {access}"#,
     // SSSD will still send its broader internal set; the minimizers below
     // + schema/provider choices are what reduce the real wire traffic.
     out.push_str(&format!(
-        "\n# Intended minimal attribute set (informational; derived from your [sssd] mappings)\n# ldap_user_extra_attrs only adds — it does not restrict.\n# Real reduction comes from ldap_pwd_policy, ldap_id_mapping, ldap_schema, etc. below.\n#ldap_user_attributes = {}\n#ldap_group_attributes = {}",
+        "\n# Intended minimal attribute set (informational; derived from your [sssd] mappings)\n# ldap_user_extra_attrs only adds — it does not restrict.\n# Real reduction comes from ldap_pwd_policy, ldap_id_mapping, ldap_schema, etc. below.\n# For KLLDAP we now default ldap_group_member to 'member' (when kllldap_ignored_attributes is active).\n#ldap_user_attributes = {}\n#ldap_group_attributes = {}",
         user_attr_list, group_attr_list
     ));
 
@@ -314,6 +340,16 @@ access_provider = {access}"#,
             .unwrap_or(true)
     {
         out.push_str("\nldap_auth_disable_tls_never_use_in_production = true");
+    }
+
+    // KLLDAP ignored attributes recommendation (active by default)
+    // Single toggle in nfs-klldap.conf controls this. When enabled we emit
+    // one clear activation line + comment + ready-to-paste lists for the
+    // KLLDAP server side.
+    let emit_ignores = s.kllldap_ignored_attributes.unwrap_or(true);
+    if emit_ignores {
+        out.push_str("\n\n");
+        out.push_str(&ignored_attributes::get_kllldap_ignored_attributes_comment_block());
     }
 
     out

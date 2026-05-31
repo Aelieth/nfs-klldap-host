@@ -92,12 +92,28 @@ pub struct SssdSection {
     // Group attribute mappings
     pub ldap_group_name: Option<String>,
     pub ldap_group_gid_number: Option<String>,
+    /// Attribute used to list group members.
+    /// For modern KLLDAP + rfc2307bis setups the recommended value is "member"
+    /// (or "uniqueMember"). The resolver will default to "member" when
+    /// kllldap_ignored_attributes is active (the default), and "memberUid" only
+    /// when that feature is explicitly disabled.
     pub ldap_group_member: Option<String>,
 
     // === Advanced / production knobs from real deployments ===
     /// Name of the SSSD domain section. Defaults to "default".
     /// Setting this to "lldap" produces [domain/lldap] which some people prefer.
     pub domain: Option<String>,
+
+    /// When true (the default), the config generator emits a recommended block
+    /// of `ignored_user_attributes` / `ignored_group_attributes` that you can
+    /// copy into your KLLDAP server configuration. This dramatically reduces
+    /// the "Ignoring unrecognized ... attribute" warning spam from SSSD and
+    /// AD-style sync tools.
+    ///
+    /// Set to false only if you are intentionally managing the ignore lists
+    /// yourself on the KLLDAP side or do not want the recommendations.
+    /// See docs/ldap-integration.md for details.
+    pub kllldap_ignored_attributes: Option<bool>,
 
     /// Authentication provider. Common values: "ldap" or "krb5".
     /// For Kerberized NFS environments, many people prefer auth_provider = krb5
@@ -134,7 +150,7 @@ pub struct SssdSection {
 }
 
 /// Resolved POSIX attribute names used for both SSSD generation and targeted
-/// LLDAP GraphQL queries by the management WebUI.
+/// LDAP searches by the management WebUI (and by SSSD itself).
 ///
 /// All values come from the admin's input in `[sssd]` (with the same documented
 /// defaults the generator uses). This ensures the WebUI only ever asks LLDAP
@@ -148,8 +164,13 @@ pub struct PosixAttributeMapping {
     pub user_gid_number: String,
     pub user_home_directory: String,
     pub user_shell: String,
+    /// Attribute used for display / gecos / full name in listings and UI (e.g. displayName, cn).
+    /// Shared so WebUI LDAP client requests the same display attr SSSD is configured for.
+    pub user_full_name: String,
     pub group_name: String,
     pub group_gid_number: String,
+    /// The attribute used for group membership (e.g. "member", "uniqueMember", or "memberUid").
+    /// See the resolver logic and docs for KLLDAP recommendations.
     pub group_member: String,
 }
 
@@ -208,6 +229,13 @@ pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapp
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "loginShell".to_string());
 
+    let u_full = sssd
+        .ldap_user_fullname
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "displayName".to_string());
+
     let g_name = sssd
         .ldap_group_name
         .as_ref()
@@ -222,12 +250,26 @@ pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapp
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "gidNumber".to_string());
 
+    // For KLLDAP (when using the recommended ignored attributes feature, which
+    // is active by default), we prefer the modern "member" attribute (DNs) over
+    // the legacy "memberUid" (which KLLDAP does not synthesize by default).
+    // This works excellently with ldap_schema = rfc2307bis.
+    // Users can still force the old behavior by setting ldap_group_member explicitly
+    // or by disabling kllldap_ignored_attributes.
+    let kllldap_mode = sssd.kllldap_ignored_attributes.unwrap_or(true);
+
     let g_member = sssd
         .ldap_group_member
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "memberUid".to_string());
+        .unwrap_or_else(|| {
+            if kllldap_mode {
+                "member".to_string()
+            } else {
+                "memberUid".to_string()
+            }
+        });
 
     PosixAttributeMapping {
         user_object_class: user_obj,
@@ -237,6 +279,7 @@ pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapp
         user_gid_number: u_gid,
         user_home_directory: u_home,
         user_shell: u_shell,
+        user_full_name: u_full,
         group_name: g_name,
         group_gid_number: g_gid,
         group_member: g_member,

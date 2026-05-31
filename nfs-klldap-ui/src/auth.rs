@@ -14,8 +14,8 @@
 //! First-run: when the simple password sidecar does not exist, a special
 //! setup form is shown that lets the operator set the initial "localhost" password.
 
-use bcrypt::{hash, verify, DEFAULT_COST};
 use rand::Rng;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -23,6 +23,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
+use subtle::ConstantTimeEq;
 
 const SESSION_TTL: Duration = Duration::from_secs(12 * 3600); // 12 hours
 const SIMPLE_PW_FILENAME: &str = "webui-password";
@@ -74,8 +75,8 @@ impl AuthManager {
     }
 
     /// Set (or overwrite) the simple "localhost" password.
-    /// The file is written with mode 0600 and contains a bcrypt hash.
-    /// This is the only way the initial local admin password is ever stored.
+    /// The file is written with mode 0600 and contains a lightweight iterated
+    /// SHA-256 hash (salt:hashhex). See Cargo.toml for rationale vs. bcrypt.
     pub fn set_simple_password(&self, password: &str) -> Result<(), String> {
         if password.trim().is_empty() {
             return Err("Password cannot be empty".to_string());
@@ -84,8 +85,13 @@ impl AuthManager {
             return Err("Password must be at least 8 characters".to_string());
         }
 
-        let hash =
-            hash(password, DEFAULT_COST).map_err(|e| format!("failed to hash password: {}", e))?;
+        // 16 bytes of salt
+        let mut salt = [0u8; 16];
+        rand::thread_rng().fill(&mut salt);
+
+        let hash = hash_password(&salt, password.as_bytes());
+
+        let line = format!("{}:{}\n", hex_encode(&salt), hex_encode(&hash));
 
         // Ensure parent directory exists (usually /config or the dir containing the .conf)
         if let Some(parent) = self.simple_pw_path.parent() {
@@ -108,16 +114,14 @@ impl AuthManager {
         perms.set_mode(0o600);
         let _ = file.set_permissions(perms);
 
-        file.write_all(hash.as_bytes())
-            .map_err(|e| format!("write failed: {}", e))?;
-        file.write_all(b"\n")
+        file.write_all(line.as_bytes())
             .map_err(|e| format!("write failed: {}", e))?;
         file.sync_all().ok();
 
         Ok(())
     }
 
-    /// Validate the special "localhost" user against the bcrypt sidecar.
+    /// Validate the special "localhost" user against the lightweight sidecar.
     /// All other usernames must go through the LLDAP path.
     pub fn validate_simple_password(&self, username: &str, password: &str) -> Result<(), String> {
         if username != "localhost" {
@@ -136,7 +140,19 @@ impl AuthManager {
             .trim()
             .to_string();
 
-        if verify(password, &stored).unwrap_or(false) {
+        let (salt_hex, hash_hex) = stored
+            .split_once(':')
+            .ok_or_else(|| "corrupt simple password file (bad format)".to_string())?;
+
+        let salt = hex_decode(salt_hex)
+            .ok_or_else(|| "corrupt simple password file (bad salt)".to_string())?;
+        let expected_hash = hex_decode(hash_hex)
+            .ok_or_else(|| "corrupt simple password file (bad hash)".to_string())?;
+
+        let computed = hash_password(&salt, password.as_bytes());
+
+        // Constant-time comparison to avoid leaking timing information.
+        if computed.ct_eq(&expected_hash).into() {
             Ok(())
         } else {
             Err("Invalid password for 'localhost'".to_string())
@@ -192,5 +208,57 @@ impl AuthManager {
     pub fn logout(&self, token: &str) {
         let mut map = self.sessions.write().unwrap();
         map.remove(token);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Lightweight iterated SHA-256 password hashing for the local sidecar.
+// Not intended to be a high-security KDF for internet-facing use — the
+// actual protection here is the 0600 file + container/root boundary.
+// -----------------------------------------------------------------------------
+
+const PW_HASH_ITERATIONS: u32 = 100_000;
+
+/// Compute salt || pw iterated with SHA-256.
+fn hash_password(salt: &[u8], pw: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(salt);
+    hasher.update(pw);
+
+    let mut current = hasher.finalize();
+
+    for _ in 1..PW_HASH_ITERATIONS {
+        let mut h = Sha256::new();
+        h.update(current);
+        current = h.finalize();
+    }
+
+    current.into()
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let b = s.as_bytes();
+    for i in (0..b.len()).step_by(2) {
+        let hi = from_hex_digit(b[i])?;
+        let lo = from_hex_digit(b[i + 1])?;
+        out.push((hi << 4) | lo);
+    }
+    Some(out)
+}
+
+fn from_hex_digit(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(10 + c - b'a'),
+        b'A'..=b'F' => Some(10 + c - b'A'),
+        _ => None,
     }
 }

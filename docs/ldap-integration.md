@@ -37,7 +37,7 @@ Your LLDAP instance must store POSIX attributes on users and groups.
 4. Fill in `uidNumber`, `gidNumber`, `homeDirectory`, `loginShell`.
 5. Do the same for the group (add `posixGroup` + `gidNumber`).
 
-**Via the KLLDAP management UI (GraphQL) or scripts:**
+**Via the KLLDAP management UI or scripts:**
 See the KLLDAP/LLDAP documentation for bulk creation via the management interface or scripts. The attribute names above are the standard ones.
 
 **Note:** The in-container WebUI permission editor and login no longer use GraphQL — they use standardized LDAP searches and binds against the same configuration as SSSD.
@@ -81,7 +81,76 @@ ldap_group_search_base = "ou=groups,dc=example,dc=com"
 
 The generator emits the standard ldap_* search bases + bind credentials. For advanced POSIX attribute mapping or custom objectClasses you can still drop a fully custom `/etc/sssd/sssd.conf` (advanced users only; the watcher will overwrite on next nfs-klldap.conf change unless you disable it).
 
-Enable enumeration during initial bring-up by adding `enumerate = true` under `[domain/default]` via a raw edit if the minimal generator output needs it for your LLDAP data.
+The generator now defaults to `enumerate = false`. Enable enumeration by adding `enumerate = true` under `[domain/default]` (via a raw edit or the UI) if you want a warm cache for `getent` / `id` lookups. Be aware that with KLLDAP this can generate significant attribute request volume.
+
+### Stopping KLLDAP "unrecognized attribute" warning spam (SSSD + sync tools)
+
+SSSD (and especially AD-style directory sync tools) request a very large number of attributes (`userAccountControl`, `shadow*`, `krb*`, `nsAccountLock`, `gecos`, `authorizedService`, `login*`, `passkey`, etc.) that a minimal KLLDAP instance will never have. This produces a constant flood of:
+
+```
+WARN  Ignoring unrecognized user attribute: accountexpires. Add to "ignored_user_attributes".
+WARN  Ignoring unrecognized group attribute: memberuid. Add to "ignored_group_attributes".
+```
+
+**KLLDAP has a built-in solution**: `ignored_user_attributes` and `ignored_group_attributes` in its own server configuration.
+
+By default, `nfs-klldap-config` now emits a ready-to-copy block at the end of the generated `sssd.conf` (and the full recommended lists) when you run generation.
+
+In your `nfs-klldap.conf`:
+
+```toml
+[sssd]
+# ... your other settings ...
+
+# Emit recommended ignored_*_attributes lists for your KLLDAP server
+# (dramatically reduces warning spam from SSSD and dirsync-style tools).
+# See below for how to apply the lists on the KLLDAP side.
+kllldap_ignored_attributes = true   # default
+```
+
+To disable the emitted recommendations entirely (you manage the KLLDAP ignore lists yourself):
+
+```toml
+[sssd]
+kllldap_ignored_attributes = false
+```
+
+The generator will then omit the block.
+
+**Applying the lists on the KLLDAP side**
+
+Copy the two lines from the generated `sssd.conf` (look for the big "KLLDAP SERVER-SIDE IGNORED ATTRIBUTES" comment block) into your KLLDAP server configuration file (usually `lldap.toml` or the equivalent in the kerberos fork, under the `[ldap]` or root section).
+
+Example (from a real production run):
+
+```toml
+ignored_user_attributes = ["accountexpires", "authorizedservice", "gecos", "host", "krblastpwdchange", ...]
+ignored_group_attributes = ["memberuid", "userpassword"]
+```
+
+Restart KLLDAP after changing its config. The spam should disappear almost completely while real POSIX attributes (`uidNumber`, `gidNumber`, `member`/`uniqueMember`, etc.) continue to work normally.
+
+This feature was added specifically because the combination of SSSD + various sync clients against KLLDAP is extremely noisy by default.
+
+### Group membership attribute recommendation for KLLDAP
+
+When using KLLDAP with `ldap_schema = rfc2307bis` (the default emitted by the generator), the modern and cleanest approach is to use the `member` (or `uniqueMember`) attribute for group membership.
+
+KLLDAP already populates these attributes with proper DNs for every group member. The legacy `memberUid` approach requires either custom attributes or extra work on the KLLDAP side and produces warnings.
+
+**What the generator now does by default:**
+
+- When `kllldap_ignored_attributes = true` (the default), `ldap_group_member` resolves to `"member"`.
+- When you explicitly set `kllldap_ignored_attributes = false`, it falls back to the old `"memberUid"` default for compatibility with non-KLLDAP or legacy setups.
+
+You can always override it explicitly:
+
+```toml
+[sssd]
+ldap_group_member = "uniqueMember"   # or "member" or "memberUid"
+```
+
+This change, combined with the ignored attributes feature, eliminates the most common sources of "unrecognized group attribute" warnings (`memberuid` and `userpassword` on groups) when talking to KLLDAP.
 
 ## 3. Verification Commands (inside the running container)
 
@@ -126,6 +195,26 @@ ls -l /mnt/test
 **Direct management (ganesha-ctl) not working**
 - (Historical) The host DBUS socket is not mounted into the container. This is no longer required or used. The container is fully self-contained.
 
+**Massive "Ignoring unrecognized attribute" spam + TLS "peer closed without close_notify" + later searches with bare username as base DN (e.g. `dn: "dirsync"`)**
+
+This exact symptom cluster almost always happens when:
+
+- You use a dedicated service account (e.g. `uid=dirsync,ou=sync,...`) as `ldap_default_bind_dn` for SSSD.
+- `enumerate = true` (explicitly enabled; the generator now defaults to `false`).
+- The account lives in a custom OU outside `ou=people`/`ou=groups`.
+- No server-side `ignored_*_attributes` are configured on KLLDAP.
+
+SSSD (especially with enumeration) does very broad attribute requests. KLLDAP logs a warning for every unknown attribute on every result. The noise + volume causes the client to hard-close LDAPS connections without proper TLS shutdown. Later internal operations in SSSD can then send searches with just the short username as the `baseObject`, producing the `Invalid DN syntax ... dn: "dirsync"` errors.
+
+**Fix (in order of impact):**
+
+1. Rebuild the container with current code (the `kllldap_ignored_attributes` feature is now on by default).
+2. Apply the recommended `ignored_user_attributes` / `ignored_group_attributes` block that now appears at the bottom of the generated `sssd.conf` into your KLLDAP server config.
+3. The generator now also defaults `ldap_group_member = member` (instead of `memberUid`) when the above toggle is active.
+4. Consider setting `enumerate = false` (or only enable it temporarily while warming caches) if the service account is doing heavy work.
+
+After applying the ignores on the KLLDAP side, the spam disappears, connections stabilize, and the mangled-DN searches stop occurring. The generator now also emits a prominent diagnostic comment block in `sssd.conf` when it detects a bind DN outside the normal user tree.
+
 ## 5. Client-side Considerations
 
 Even though the server does authoritative mapping, clients benefit from running `rpc.idmapd` with a matching `Domain` in `/etc/idmapd.conf` and `Method = sss` (or `nsswitch`).
@@ -145,7 +234,7 @@ This gives nice `ls` output (names instead of numbers) and improves some applica
 - Current templates: `container/templates/`
 - `ganesha-ctl` (file-based reload helper): `container/scripts/`
 - WebUI source: `nfs-klldap-ui/`
-- KLLDAP/LLDAP documentation (POSIX attributes + management UI / GraphQL for user creation)
+- KLLDAP/LLDAP documentation (POSIX attributes + management UI for user creation)
 
 ---
 

@@ -33,45 +33,66 @@ pub fn all_managed_roots(cfg: &Config) -> Vec<PathBuf> {
     cfg.shares.iter().map(|s| s.host_path.clone()).collect()
 }
 
-/// Return (username, password) for the long-lived service LDAP bind used by
+/// Return (bind_identity, password) for the long-lived service LDAP bind used by
 /// the permission client (LdapClient).
 ///
-/// Env vars NFS_KLLDAP_LLDAP_USER and NFS_KLLDAP_LLDAP_PW take precedence.
-/// Falls back to parsing a short username from sssd.ldap_default_bind_dn.
+/// The first element MUST be a full DN (e.g. "uid=admin,ou=people,dc=...") or
+/// another identity string that the remote LDAP server accepts as the bind name
+/// for simple_bind. This is the only value that produces reliable connections
+/// and avoids the "server dropping connections" / auth errors seen when only a
+/// bare uid was passed.
 ///
-/// Env vars NFS_KLLDAP_LLDAP_USER and NFS_KLLDAP_LLDAP_PW take precedence.
-/// Falls back to parsing a short username from sssd.ldap_default_bind_dn.
+/// Env vars NFS_KLLDAP_LLDAP_USER and NFS_KLLDAP_LLDAP_PW take precedence and
+/// are passed verbatim (operator may supply a full DN here for remote hosts).
+/// Falls back to sssd.ldap_default_bind_dn verbatim (the correct full DN in all
+/// normal configs and examples).
 pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
     if let (Ok(user), Ok(pass)) = (
         std::env::var("NFS_KLLDAP_LLDAP_USER"),
         std::env::var("NFS_KLLDAP_LLDAP_PW"),
     ) {
         if !user.trim().is_empty() && !pass.trim().is_empty() {
+            // Verbatim: full DN or acceptable bind name is the operator's responsibility.
             return (user.trim().to_string(), pass);
         }
     }
 
-    // Parse short name from bind DN (common case: uid=admin,ou=people,...)
-    let dn = &cfg.sssd.ldap_default_bind_dn;
-    let username = dn
-        .split(',')
-        .next()
-        .and_then(|rdn| {
-            rdn.strip_prefix("uid=")
-                .or_else(|| rdn.strip_prefix("cn="))
-                .or_else(|| rdn.strip_prefix("CN="))
-                .map(|s| s.to_string())
-        })
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "admin".to_string());
-
+    // Use the bind DN from config *verbatim*. ldap_default_bind_dn is already the
+    // full distinguished name in every real deployment and in the documented
+    // examples. Passing anything less (bare uid) causes bind failures or
+    // connection drops on KLLDAP and other strict LDAPS servers.
+    let bind_identity = cfg.sssd.ldap_default_bind_dn.clone();
     let password = cfg.sssd.ldap_default_authtok.clone();
-    (username, password)
+    (bind_identity, password)
+}
+
+/// Given a service bind identity (full DN preferred, or bare uid/cn), extract
+/// only the short value portion for use in name-based filters such as the
+/// one-time startup probe that calls resolve_user to exercise the exact
+/// PosixAttributeMapping. Never used for simple_bind — binds always use the
+/// full identity string returned by ldap_service_creds.
+pub fn short_name_for_service_probe(bind_identity: &str) -> String {
+    if bind_identity.contains('=') && bind_identity.contains(',') {
+        bind_identity
+            .split(',')
+            .next()
+            .and_then(|rdn| rdn.split_once('=').map(|(_, v)| v.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| bind_identity.trim().to_string())
+    } else {
+        bind_identity.trim().to_string()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serializes all tests that touch the NFS_KLLDAP_LLDAP_* env vars.
+    /// Without this, parallel test execution (default under cargo) causes
+    /// the global process environment to produce flaky results between the
+    /// "prefers env" test and the "cfg path" tests.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// RAII guard to safely manipulate environment variables in tests without
     /// polluting other tests (especially important under `cargo test --workspace`).
@@ -84,6 +105,15 @@ mod tests {
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
             std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        /// Remove the var for the duration of the guard (restores previous value
+        /// or absence on drop). Used by tests that must not see override env vars
+        /// even if other concurrent tests are manipulating them.
+        fn clear(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
             Self { key, previous }
         }
     }
@@ -130,15 +160,27 @@ mod tests {
     }
 
     #[test]
-    fn ldap_service_creds_parses_uid_from_dn() {
+    fn ldap_service_creds_returns_full_bind_dn() {
+        // Serialize vs other env-manipulating tests (see ENV_LOCK).
+        let _serial = ENV_LOCK.lock().unwrap();
+
+        // Force a clean env so parallel tests that set the LLDAP_* overrides
+        // cannot affect this result.
+        let _c1 = EnvGuard::clear("NFS_KLLDAP_LLDAP_USER");
+        let _c2 = EnvGuard::clear("NFS_KLLDAP_LLDAP_PW");
+
         let cfg = base_config();
-        let (user, pass) = ldap_service_creds(&cfg);
-        assert_eq!(user, "admin");
+        let (bind_id, pass) = ldap_service_creds(&cfg);
+        // Must return the full DN verbatim for proper simple_bind (not a stripped uid).
+        assert_eq!(bind_id, "uid=admin,ou=people,dc=example,dc=com");
         assert_eq!(pass, "sekret");
     }
 
     #[test]
     fn ldap_service_creds_prefers_env_vars() {
+        // Serialize vs other env-manipulating tests (see ENV_LOCK).
+        let _serial = ENV_LOCK.lock().unwrap();
+
         let _g1 = EnvGuard::set("NFS_KLLDAP_LLDAP_USER", "svc-account");
         let _g2 = EnvGuard::set("NFS_KLLDAP_LLDAP_PW", "env-secret");
 
@@ -149,10 +191,20 @@ mod tests {
     }
 
     #[test]
-    fn ldap_service_creds_falls_back_to_admin_on_malformed_dn() {
+    fn ldap_service_creds_returns_malformed_bind_dn_verbatim() {
+        // Serialize vs other env-manipulating tests (see ENV_LOCK).
+        let _serial = ENV_LOCK.lock().unwrap();
+
+        // Force a clean env so parallel tests that set the LLDAP_* overrides
+        // cannot affect the cfg-path result.
+        let _c1 = EnvGuard::clear("NFS_KLLDAP_LLDAP_USER");
+        let _c2 = EnvGuard::clear("NFS_KLLDAP_LLDAP_PW");
+
         let mut cfg = base_config();
         cfg.sssd.ldap_default_bind_dn = "cn=weird,dc=example".into();
-        let (user, _) = ldap_service_creds(&cfg);
-        assert_eq!(user, "weird");
+        let (bind_id, _) = ldap_service_creds(&cfg);
+        // Still verbatim; the server will reject a truly bad DN at bind time,
+        // which is the correct observable error (instead of silently using "weird").
+        assert_eq!(bind_id, "cn=weird,dc=example");
     }
 }

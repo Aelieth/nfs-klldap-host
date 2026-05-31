@@ -123,7 +123,7 @@ dist: build-cross
 	@echo "Distribution ready:"
 	@ls -l $(DIST_DIR)/
 	@echo ""
-	@echo "nfs-klldap-ui is now built into the container image (runs on port 9630 inside, HTTPS)."
+	@echo "nfs-klldap-ui is now built into the container image (runs on port 9630 inside, HTTPS via axum-server)."
 	@echo "It performs chown/chmod directly on bind-mounted paths (root model, no docker-exec)."
 
 # -----------------------------------------------------------------------------

@@ -15,48 +15,58 @@ path = "src/main.rs"
 [dependencies]
 # --- Shared with nfs-klldap-config (centralized in workspace) -----------------
 serde = { workspace = true }
-serde_json = { workspace = true }
 toml = { workspace = true }
 
 # --- Core async runtime ------------------------------------------------------
-tokio = { version = "1.52.3", features = ["full"] }
+# Deliberately slimmed: we only need multi-thread runtime + TcpListener + basic
+# sync primitives + spawn_blocking (for the sync ldap3 calls).
+# (hyper-util was removed as a direct dep after audit — axum/axum-server pull what they need.)
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }
 
 # --- TOML handling (comment-preserving edits for the central config) ---------
-toml_edit = "0.22"
+toml_edit = { workspace = true }
 
 # --- Internal workspace crate ------------------------------------------------
 nfs-klldap-config = { path = "../nfs-klldap-config" }
 
 # --- Web framework (Axum + HTMX via Askama) ----------------------------------
-axum = { version = "0.7", features = ["macros"] }
-# rustls with explicit provider
+axum = { workspace = true, features = ["macros"] }
+# tls-rustls feature on axum-server pulls rustls; we force ring-only provider below
+# via our direct rustls dep + default-features=false to avoid pulling the heavy
+# aws-lc-rs alternative provider (binary size win + single crypto impl).
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-tokio-rustls = "0.26"
-hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
-tower-http = { version = "0.5", features = ["fs", "trace"] }
-askama = { version = "0.12", features = ["with-axum"] }
-askama_axum = "0.4"
+rustls-pemfile = "2.2"
+rcgen = { version = "0.14", features = ["pem"] }
+askama = { workspace = true, features = ["with-axum"] }
+askama_axum = { workspace = true }
 
 # --- Local authentication (cookie sessions + sudo) ---------------------------
-cookie = { version = "0.18", features = ["private"] }
-rand = "0.8"
-libc = "0.2"
-bcrypt = "0.15"   # for the localhost simple admin password sidecar (0600)
-rcgen = { version = "0.14.8", features = ["pem"] }
-pem = "3.0"
-# Used to inspect existing certificates for required extensions (serverAuth EKU)
-# so we can transparently regenerate weak/old self-signed certs on startup.
-x509-parser = "0.16"
-thiserror = "2.0.18"
-time = { version = "0.3.47", features = ["macros"] }
+# Simple (non-encrypted) cookies only. The "private" feature was deliberately
+# omitted to avoid pulling an unrelated AEAD/AES-GCM stack.
+cookie = { workspace = true }
+rand = { workspace = true }
+libc = { workspace = true }
+# Lightweight iterated-SHA256 sidecar (replaces the historical bcrypt implementation).
+# See root Cargo.toml for rationale. The 0600 file + container boundary is the real protection.
+sha2 = { workspace = true }
+subtle = { workspace = true }
 
-# --- LDAP client for KLLDAP (replaces prior GraphQL path for login + perms) ---
-# Matches the ldap3 + rustls-ring usage in the KLLDAP/lldap-with-kerberos fork
-# (sync API wrapped via spawn_blocking for our tokio runtime; low resource, full compat).
-# tls-rustls-ring for consistency with our rustls "ring" server config (no openssl).
-ldap3 = { version = "0.11", default-features = false, features = ["sync", "tls-rustls", "ring"] }
+thiserror = { workspace = true }
+time = { workspace = true }  # only for rcgen::CertificateParams not_before/after (OffsetDateTime) in cert generation
+
+# --- LDAP client for KLLDAP --------------------------------------------------
+# Uses rustls (ring) exclusively for LDAPS / StartTLS outbound.
+# Matches the WebUI listener stack. Configured via [sssd] tls options
+# (ldap_tls_reqcert=never for self-signed or ldap_tls_cacert for proper verify).
+ldap3 = { workspace = true, features = ["sync", "tls-rustls-ring"] }
+
+# webpki-roots gives us the standard set of public CAs for the normal verify
+# path in build_conn_settings (identical to what reqwest rustls-tls does).
+# The dangerous NoServerVerification path is used only when ldap_tls_reqcert=never.
+webpki-roots = "0.26"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tower = { version = "0.4", features = ["util"] }  # for ServiceExt in handler tests
-urlencoding = "2"
+tower = { workspace = true, features = ["util"] }  # ServiceExt::oneshot in handler tests
+urlencoding = { workspace = true }

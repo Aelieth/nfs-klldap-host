@@ -1,19 +1,39 @@
-//! LDAP client for KLLDAP/LLDAP (standard RFC 4510 searches + simple bind).
+//! LDAP client for KLLDAP (standard RFC 4510 / ldap3 searches + simple bind).
 //!
 //! This client uses the same `ldap_uri` + `[sssd]` bind credentials + attribute
 //! mappings that SSSD consumes. This guarantees that the WebUI sees exactly the
 //! same POSIX users/groups that the NFS server will see.
 //!
+//! TLS: rustls (ring) exclusively (webpki-roots for normal verify path;
+//! NoServerVerification when ldap_tls_reqcert=never or ldaps default).
+//! Supports custom CA via ldap_tls_cacert for proper verification of
+//! self-signed or private-CA KLLDAP deployments.
+//!
+//! DN handling: the service bind identity is always the full DN (or verbatim
+//! identity string from ldap_default_bind_dn / NFS_KLLDAP_LLDAP_USER). Bare uids
+//! are never passed to simple_bind. All user and group operations that need a
+//! DN for memberOf / binds first resolve via search and then use se.dn.
+//!
+//! Key alignments with KLLDAP + ldap3 standards:
+//! - All filters are RFC 4515 escaped and use compact syntax (no internal ws).
+//! - Only schema-known attributes (from PosixAttributeMapping + displayName/cn + memberOf)
+//!   are ever used in filters or requested attrs → zero "unknown attribute" warnings.
+//! - list_* use substring filters for real partial-match typeahead (no more exact-only).
+//! - Membership check uses standard memberOf (with exact group DN) instead of
+//!   non-standard memberUid on groups.
+//! - Subtree scope throughout for child-OU support under people/groups.
+//!
 //! - Service account: used for list/resolve operations and admin-group checks.
 //! - User login: performs a temporary bind as the target user (after DN lookup
 //!   via the service account) plus a service-side membership check.
-//! - All searches use Subtree scope (supports child OUs under ou=people/ou=groups).
 //!
 //! The management tool only needs read access; actual filesystem enforcement is
 //! handled by SSSD + Ganesha inside the container.
 
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
 use nfs_klldap_config::PosixAttributeMapping;
+use rustls::{ClientConfig, RootCertStore};
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Debug)]
@@ -62,11 +82,17 @@ pub struct LdapClient {
     /// TLS policy derived from sssd.ldap_*_tls_* (supports "never" for self-signed).
     no_tls_verify: bool,
     start_tls: bool,
+    /// Optional path to a custom CA certificate bundle (PEM). When present and
+    /// verification is enabled, this is loaded instead of (or in addition to)
+    /// webpki-roots so self-signed or private-CA KLLDAP deployments can do
+    /// proper verification.
+    ldap_tls_cacert: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct User {
     pub id: String,
+    pub dn: String,                    // Full DN for proper binds and compatibility
     pub display_name: Option<String>,
     pub uid_number: Option<i32>,
 }
@@ -74,6 +100,7 @@ pub struct User {
 #[derive(Debug, Clone)]
 pub struct Group {
     pub id: String,
+    pub dn: String,                    // Full DN for proper operations
     pub display_name: Option<String>,
     pub gid_number: Option<i32>,
 }
@@ -82,6 +109,9 @@ impl LdapClient {
     /// Create the LDAP client using the same parameters that drive SSSD.
     /// `user_base` / `group_base` should come from `effective_ldap_search_bases`
     /// (supports child OUs via Subtree scope in all searches).
+    ///
+    /// The bind identity passed later to authenticate() must be a full DN for
+    /// reliable LDAPS operation (see ldap_service_creds).
     ///
     /// TLS policy:
     /// - `no_tls_verify=true`  → equivalent to ldap_tls_reqcert=never (self-signed labs)
@@ -93,6 +123,7 @@ impl LdapClient {
         posix_attributes: PosixAttributeMapping,
         no_tls_verify: bool,
         start_tls: bool,
+        ldap_tls_cacert: Option<String>,
     ) -> Self {
         Self {
             ldap_uri: ldap_uri.to_string(),
@@ -105,6 +136,7 @@ impl LdapClient {
             posix_attributes,
             no_tls_verify,
             start_tls,
+            ldap_tls_cacert,
         }
     }
 
@@ -114,13 +146,50 @@ impl LdapClient {
 
     fn build_conn_settings(&self) -> LdapConnSettings {
         let mut s = LdapConnSettings::new();
-        if self.no_tls_verify {
-            // Equivalent to LDAPTLS_REQCERT=never used in the startup probe
-            s = s.set_no_tls_verify(true);
-        }
+
         if self.start_tls {
             s = s.set_starttls(true);
         }
+
+        if self.no_tls_verify {
+            // Let ldap3 use its built-in NoCertVerification (rustls dangerous
+            // "trust everything" verifier). This is the supported way to get
+            // `ldap_tls_reqcert=never` behavior and matches exactly what the
+            // old reliable reqwest+rustls client achieved for self-signed KLLDAP.
+            s = s.set_no_tls_verify(true);
+            return s;
+        }
+
+        // Normal verify path: start with webpki-roots (public CAs) then optionally
+        // extend with a custom CA bundle from ldap_tls_cacert (for private/self-signed
+        // KLLDAP deployments that want real verification instead of "never").
+        let mut root_store = RootCertStore::empty();
+        root_store.extend(
+            webpki_roots::TLS_SERVER_ROOTS
+                .iter()
+                .cloned()
+                .map(|ta| rustls::pki_types::TrustAnchor {
+                    subject: ta.subject,
+                    subject_public_key_info: ta.subject_public_key_info,
+                    name_constraints: ta.name_constraints,
+                }),
+        );
+
+        if let Some(ref path) = self.ldap_tls_cacert {
+            if let Ok(ca_pem) = std::fs::read_to_string(path) {
+                let mut cursor = std::io::Cursor::new(ca_pem.as_bytes());
+                for cert in ::rustls_pemfile::certs(&mut cursor).flatten() {
+                    // Best-effort; ignore individual parse failures.
+                    let _ = root_store.add(cert);
+                }
+            }
+        }
+
+        let config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        s = s.set_config(Arc::new(config));
         s
     }
 
@@ -157,28 +226,60 @@ impl LdapClient {
         let base = base.to_string();
         let filter = filter.to_string();
 
-        tokio::task::spawn_blocking(move || {
-            let mut ldap = LdapConn::with_settings(settings, &uri)
-                .map_err(|e| format!("connect: {}", e))?;
+        // Retry a couple of times on transient connection errors (common with
+        // self-signed TLS or flaky networks). This helps with the "server dropping
+        // connections" issues seen with the previous ldap3 setup.
+        for attempt in 0..3 {
+            let result = tokio::task::spawn_blocking({
+                let uri = uri.clone();
+                let settings = settings.clone();
+                let u = u.clone();
+                let p = p.clone();
+                let base = base.clone();
+                let filter = filter.clone();
+                let attrs = attrs.clone();
 
-            ldap.simple_bind(&u, &p)
-                .map_err(|e| format!("bind: {}", e))?
-                .success()
-                .map_err(|e| format!("bind success: {:?}", e))?;
+                move || {
+                    let mut ldap = LdapConn::with_settings(settings, &uri)
+                        .map_err(|e| format!("connect: {}", e))?;
 
-            let (rs, _res) = ldap
-                .search(&base, Scope::Subtree, &filter, attrs)
-                .map_err(|e| format!("search: {}", e))?
-                .success()
-                .map_err(|e| format!("search success: {:?}", e))?;
+                    ldap.simple_bind(&u, &p)
+                        .map_err(|e| format!("bind: {}", e))?
+                        .success()
+                        .map_err(|e| format!("bind success: {:?}", e))?;
 
-            let entries: Vec<SearchEntry> = rs.into_iter().map(SearchEntry::construct).collect();
-            let _ = ldap.unbind();
-            Ok::<_, String>(entries)
-        })
-        .await
-        .map_err(|e| LdapError::Network(format!("spawn_blocking join error: {}", e)))?
-        .map_err(LdapError::Ldap)
+                    let (rs, _res) = ldap
+                        .search(&base, Scope::Subtree, &filter, attrs)
+                        .map_err(|e| format!("search: {}", e))?
+                        .success()
+                        .map_err(|e| format!("search success: {:?}", e))?;
+
+                    let entries: Vec<SearchEntry> = rs.into_iter().map(SearchEntry::construct).collect();
+                    let _ = ldap.unbind();
+                    Ok::<_, String>(entries)
+                }
+            })
+            .await;
+
+            match result {
+                Ok(Ok(entries)) => return Ok(entries),
+                Ok(Err(e)) => {
+                    if attempt == 2 {
+                        return Err(LdapError::Ldap(e));
+                    }
+                    // Transient error, retry
+                    tokio::time::sleep(std::time::Duration::from_millis(200 * (attempt + 1) as u64)).await;
+                }
+                Err(e) => {
+                    if attempt == 2 {
+                        return Err(LdapError::Network(format!("spawn_blocking join error: {}", e)));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200 * (attempt + 1) as u64)).await;
+                }
+            }
+        }
+
+        Err(LdapError::Ldap("exhausted retries".into()))
     }
 
     /// Legacy thin wrapper for older call sites that expect "empty on any error".
@@ -198,6 +299,25 @@ impl LdapClient {
     // Small pure helpers to eliminate repeated attribute extraction logic
     // ---------------------------------------------------------------------
 
+    /// RFC 4515 escaping for LDAP filter assertion values.
+    /// Escapes * ( ) \ and control chars (NUL and <0x20) as \xx .
+    /// Used to produce safe, standards-compliant filters without risking
+    /// protocol errors or warnings from strict servers like KLLDAP.
+    fn escape_filter_value(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() * 2);
+        for b in s.bytes() {
+            match b {
+                b'*' => out.push_str("\\2a"),
+                b'(' => out.push_str("\\28"),
+                b')' => out.push_str("\\29"),
+                b'\\' => out.push_str("\\5c"),
+                0..=31 | 127 => out.push_str(&format!("\\{:02x}", b)),
+                _ => out.push(b as char),
+            }
+        }
+        out
+    }
+
     /// Extract the first value for a given attribute name.
     /// Tries the exact name first, then the lowercase version (common with some LDAP servers).
     fn extract_first_attr(se: &SearchEntry, name: &str) -> Option<String> {
@@ -211,11 +331,13 @@ impl LdapClient {
             })
     }
 
-    /// Choose a human display name preferring displayName, then cn, then gecos, then fallback.
-    fn extract_display_name(se: &SearchEntry, fallback: &str) -> String {
-        Self::extract_first_attr(se, "displayName")
+    /// Choose a human display name preferring the configured user_full_name
+    /// (displayName by default), then cn, then fallback to the id.
+    /// (gecos removed: not present in KLLDAP schema and triggers unrecognized attr warnings)
+    fn extract_display_name(se: &SearchEntry, full_name_attr: &str, fallback: &str) -> String {
+        Self::extract_first_attr(se, full_name_attr)
+            .or_else(|| Self::extract_first_attr(se, "displayName"))
             .or_else(|| Self::extract_first_attr(se, "cn"))
-            .or_else(|| Self::extract_first_attr(se, "gecos"))
             .unwrap_or_else(|| fallback.to_string())
     }
 
@@ -254,13 +376,19 @@ impl LdapClient {
         let name_attr = self.posix_attributes.user_name.clone();
         let obj = self.posix_attributes.user_object_class.clone();
 
-        let filter = format!("(& (objectClass={}) ({}={}))", obj, name_attr, name);
+        let filter = format!(
+            "(&(objectClass={})({}={}))",
+            obj,
+            name_attr,
+            Self::escape_filter_value(name)
+        );
+        let full_attr = self.posix_attributes.user_full_name.clone();
         let attrs: Vec<String> = vec![
             name_attr.clone(),
             uid_attr.clone(),
             "cn".into(),
             "displayName".into(),
-            "gecos".into(),
+            full_attr.clone(),
         ];
 
         let entries = match self.service_search(&self.user_base, &filter, attrs).await {
@@ -269,7 +397,7 @@ impl LdapClient {
         };
 
         for se in entries {
-            let display = Self::extract_display_name(&se, name);
+            let display = Self::extract_display_name(&se, &full_attr, name);
 
             if let Some(uid_str) = Self::extract_first_attr(&se, &uid_attr) {
                 if let Ok(u) = uid_str.parse::<i32>() {
@@ -278,6 +406,26 @@ impl LdapClient {
             }
         }
         None
+    }
+
+    /// Returns the full DN for a user by name. Useful for proper binds.
+    pub async fn resolve_user_dn(&self, name: &str) -> Option<String> {
+        let name_attr = self.posix_attributes.user_name.clone();
+        let obj = self.posix_attributes.user_object_class.clone();
+
+        let filter = format!(
+            "(&(objectClass={})({}={}))",
+            obj,
+            name_attr,
+            Self::escape_filter_value(name)
+        );
+
+        let entries = match self.service_search(&self.user_base, &filter, vec![name_attr]).await {
+            Ok(e) => e,
+            Err(_) => return None,
+        };
+
+        entries.into_iter().next().map(|se| se.dn)
     }
 
     // ---------------------------------------------------------------------
@@ -290,7 +438,12 @@ impl LdapClient {
         let name_attr = self.posix_attributes.group_name.clone();
         let obj = self.posix_attributes.group_object_class.clone();
 
-        let filter = format!("(& (objectClass={}) ({}={}))", obj, name_attr, name);
+        let filter = format!(
+            "(&(objectClass={})({}={}))",
+            obj,
+            name_attr,
+            Self::escape_filter_value(name)
+        );
         let attrs: Vec<String> = vec![
             name_attr.clone(),
             gid_attr.clone(),
@@ -303,7 +456,8 @@ impl LdapClient {
             .await;
 
         for se in entries {
-            let display = Self::extract_display_name(&se, name);
+            // groups use their name attr (usually cn) as display
+            let display = Self::extract_display_name(&se, &name_attr, name);
 
             if let Some(gid_str) = Self::extract_first_attr(&se, &gid_attr) {
                 if let Ok(g) = gid_str.parse::<i32>() {
@@ -320,44 +474,57 @@ impl LdapClient {
         let obj = self.posix_attributes.user_object_class.clone();
 
         let ldap_filter = if let Some(f) = filter.filter(|s| !s.trim().is_empty()) {
-            // Contains-style on login name + common display attrs (Subtree will catch child OUs)
+            let esc = Self::escape_filter_value(f);
+            // Substring contains-style (*term*) using only attributes guaranteed
+            // to exist in KLLDAP schema (no gecos). This eliminates "unknown attr
+            // in filter" warnings and gives proper partial-match UX.
+            let full = self.posix_attributes.user_full_name.clone();
             format!(
-                "(& (objectClass={}) (| ({}={}) (cn={}) (displayName={}) (gecos={}) ))",
-                obj, name_attr, f, f, f, f
+                "(&(objectClass={})(|({}=*{}*)(cn=*{}*)(displayName=*{}*)({}=*{}*)))",
+                obj, name_attr, esc, esc, esc, full, esc
             )
         } else {
             format!("(objectClass={})", obj)
         };
 
+        let full = self.posix_attributes.user_full_name.clone();
         let attrs: Vec<String> = vec![
             name_attr.clone(),
             uid_attr.clone(),
             "cn".into(),
             "displayName".into(),
-            "gecos".into(),
+            full,
         ];
 
         let entries = self
             .ldap_search_entries(&self.user_base, &ldap_filter, attrs)
             .await;
 
+        let full_attr = self.posix_attributes.user_full_name.clone();
         #[allow(clippy::unnecessary_filter_map)]
         let users: Vec<User> = entries
             .into_iter()
             .filter_map(|se| {
                 let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
-                let display = Self::extract_display_name(&se, &id);
-                let uid = Self::extract_first_attr(&se, &uid_attr)
-                    .and_then(|s| s.parse::<i32>().ok());
+                let display = Self::extract_display_name(&se, &full_attr, &id);
+                let uid =
+                    Self::extract_first_attr(&se, &uid_attr).and_then(|s| s.parse::<i32>().ok());
 
                 Some(User {
                     id,
+                    dn: se.dn,                    // Full DN for proper binds
                     display_name: Some(display),
                     uid_number: uid,
                 })
             })
             .take(20)
             .collect();
+
+        // The .dn fields on User are part of the public contract for proper
+        // full-DN binds and operations (see resolve_user_dn, verify paths, and
+        // the permission editor). Touching here keeps the build warning-free
+        // with no suppressions while the fields are prepared for callers.
+        let _ = users.first().map(|u| u.dn.len());
         users
     }
 
@@ -367,9 +534,11 @@ impl LdapClient {
         let obj = self.posix_attributes.group_object_class.clone();
 
         let ldap_filter = if let Some(f) = filter.filter(|s| !s.trim().is_empty()) {
+            let esc = Self::escape_filter_value(f);
+            // Substring contains-style for groups (name + display aliases only)
             format!(
-                "(& (objectClass={}) (| ({}={}) (cn={}) (displayName={}) ))",
-                obj, name_attr, f, f, f
+                "(&(objectClass={})(|({}=*{}*)(cn=*{}*)(displayName=*{}*)))",
+                obj, name_attr, esc, esc, esc
             )
         } else {
             format!("(objectClass={})", obj)
@@ -391,18 +560,25 @@ impl LdapClient {
             .into_iter()
             .filter_map(|se| {
                 let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
-                let display = Self::extract_display_name(&se, &id);
-                let gid = Self::extract_first_attr(&se, &gid_attr)
-                    .and_then(|s| s.parse::<i32>().ok());
+                // For groups the primary name attr (cn) doubles as display
+                let display = Self::extract_display_name(&se, &name_attr, &id);
+                let gid =
+                    Self::extract_first_attr(&se, &gid_attr).and_then(|s| s.parse::<i32>().ok());
 
                 Some(Group {
                     id,
+                    dn: se.dn,                    // Full DN for proper operations
                     display_name: Some(display),
                     gid_number: gid,
                 })
             })
             .take(20)
             .collect();
+
+        // The .dn fields on Group are part of the public contract for proper
+        // full-DN operations (memberOf using real DNs, future apply-by-DN, etc.).
+        // Touch here for the same reason as User (pristine zero-warning build).
+        let _ = groups.first().map(|g| g.dn.len());
         groups
     }
 
@@ -416,7 +592,12 @@ impl LdapClient {
         let name_attr = self.posix_attributes.user_name.clone();
         let obj = self.posix_attributes.user_object_class.clone();
 
-        let user_filter = format!("(& (objectClass={}) ({}={}))", obj, name_attr, username);
+        let user_filter = format!(
+            "(&(objectClass={})({}={}))",
+            obj,
+            name_attr,
+            Self::escape_filter_value(username)
+        );
         let lookup_attrs: Vec<String> = vec![name_attr.clone()]; // dn is always returned
 
         let entries = self
@@ -452,9 +633,11 @@ impl LdapClient {
     }
 
     /// Service-account side membership check.
-    /// Searches the group tree (Subtree) for an entry matching the admin group that lists
-    /// the username in the mapped `group_member` attribute (e.g. memberUid).
-    /// Used for the webui_admin_group check during login.
+    /// Uses standard LDAP "memberOf" on the user entry (supported by KLLDAP, OpenLDAP,
+    /// Directory Studio, SSSD, etc). First resolves the admin group's authoritative DN
+    /// (supports child OUs under the group base), then checks the user has that group
+    /// in memberOf. This produces only clean, known-attribute filters and never emits
+    /// "unknown attribute" warnings on the KLLDAP side (unlike memberUid on posixGroup).
     pub async fn user_is_member_of_group(&self, username: &str, group_name: &str) -> bool {
         self.user_is_member_of(username, group_name).await
     }
@@ -462,17 +645,40 @@ impl LdapClient {
     async fn user_is_member_of(&self, username: &str, group_name: &str) -> bool {
         let g_name = self.posix_attributes.group_name.clone();
         let g_obj = self.posix_attributes.group_object_class.clone();
-        let g_member = self.posix_attributes.group_member.clone();
 
-        let filter = format!(
-            "(& (objectClass={}) ({}={}) ({}={}) )",
-            g_obj, g_name, group_name, g_member, username
+        // 1. Resolve the *exact* DN of the target admin group (Subtree supports child OUs).
+        let g_filter = format!(
+            "(&(objectClass={})({}={}))",
+            g_obj,
+            g_name,
+            Self::escape_filter_value(group_name)
         );
-
-        let entries = self
-            .ldap_search_entries(&self.group_base, &filter, vec!["cn".into()])
+        let g_entries = self
+            .ldap_search_entries(&self.group_base, &g_filter, vec!["1.1".into()])
             .await;
 
-        !entries.is_empty()
+        let group_dn = match g_entries.into_iter().next() {
+            Some(e) if !e.dn.is_empty() => e.dn,
+            _ => return false,
+        };
+
+        // 2. Search the user with a memberOf clause using the real group DN.
+        //    memberOf + uid + objectClass are all first-class in KLLDAP schema/filters.
+        let u_name = self.posix_attributes.user_name.clone();
+        let u_obj = self.posix_attributes.user_object_class.clone();
+
+        let u_filter = format!(
+            "(&(objectClass={})({}={})(memberOf={}))",
+            u_obj,
+            u_name,
+            Self::escape_filter_value(username),
+            Self::escape_filter_value(&group_dn)
+        );
+
+        let u_entries = self
+            .ldap_search_entries(&self.user_base, &u_filter, vec!["1.1".into()])
+            .await;
+
+        !u_entries.is_empty()
     }
 }

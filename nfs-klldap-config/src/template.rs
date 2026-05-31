@@ -62,6 +62,13 @@ ldap_default_authtok = "CHANGE_THIS_TO_A_STRONG_SECRET"
 #   ldap_id_mapping = false
 #   enumerate = false          # conservative setting used in some production ldaps configs
 #   access_provider = "permit"
+#
+# If you use a dedicated service account for the SSSD bind (e.g. uid=dirsync,ou=sync,...),
+# keep kllldap_ignored_attributes = true (the default). The generator will emit
+# both the recommended server-side ignore lists for KLLDAP *and* extra diagnostics
+# in the generated sssd.conf. This pattern + enumerate=true is the most common
+# cause of attribute spam, TLS abrupt closes, and later "mangled" base DNs containing
+# just the short username.
 
 # [kerberos]
 # realm = "KRB.EXAMPLE.COM"  # REQUIRED if auto-derivation from ldap_uri host domain fails

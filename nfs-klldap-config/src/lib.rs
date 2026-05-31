@@ -46,6 +46,8 @@ pub use config::{
     KerberosSection, ManagementSection, NfsKlldapConfig, PosixAttributeMapping, ServerSection,
     Share, SssdSection, StorageSection,
 };
+
+pub mod ignored_attributes;
 pub use error::ConfigError;
 
 pub use generate::generate_all;
@@ -65,6 +67,11 @@ pub use uri::{derive_realm_from_uri, extract_host_from_uri};
 mod tests {
     use super::*;
     use std::fs;
+
+    /// Serializes all tests that mutate process environment variables (NFS_REALM, REALM, etc.).
+    /// Without this, parallel test execution under `cargo test --workspace` causes
+    /// flaky failures because one test's env mutation leaks into another.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// RAII guard to safely set an environment variable for the duration of a test
     /// and restore the previous value (or remove it) when the test ends.
@@ -229,6 +236,9 @@ mod tests {
 
     #[test]
     fn realm_is_required_no_silent_example() {
+        // Serialize against other env-mutating tests (critical under cargo test --workspace)
+        let _env = ENV_LOCK.lock().unwrap();
+
         // Prevent pollution from parallel tests in the workspace
         let _g1 = EnvGuard::remove("NFS_REALM");
         let _g2 = EnvGuard::remove("REALM");
@@ -264,6 +274,9 @@ mod tests {
 
     #[test]
     fn realm_from_env_works() {
+        // Serialize against other env-mutating tests (critical under cargo test --workspace)
+        let _env = ENV_LOCK.lock().unwrap();
+
         // Use guard to prevent pollution of parallel tests in the workspace
         let _guard = EnvGuard::set("NFS_REALM", "ENV.REALM");
 
@@ -287,6 +300,9 @@ mod tests {
 
     #[test]
     fn display_realm_returns_real_value_after_validation_and_placeholder_otherwise() {
+        // Serialize against other env-mutating tests (critical under cargo test --workspace)
+        let _env = ENV_LOCK.lock().unwrap();
+
         // Prevent env var pollution from other tests (NFS_REALM / REALM affect derivation)
         let _g1 = EnvGuard::remove("NFS_REALM");
         let _g2 = EnvGuard::remove("REALM");
@@ -355,6 +371,9 @@ mod tests {
 
     #[test]
     fn ldap_uri_ip_rejected_with_exact_message() {
+        // Serialize against other env-mutating tests (critical under cargo test --workspace)
+        let _env = ENV_LOCK.lock().unwrap();
+
         std::env::remove_var("NFS_REALM");
         std::env::remove_var("REALM");
 

@@ -1,6 +1,6 @@
 # Running nfs-klldap-host (Practical Examples)
 
-This document focuses on day-to-day container invocation after the v0.5 central TOML + in-container WebUI changes. The container runs all services (including the WebUI on port 9630) as root for simplicity and compatibility with Red Hat service expectations.
+This document focuses on day-to-day container invocation after the v0.6 central TOML + in-container WebUI (HTTPS via axum-server + rustls, outbound LDAPS via ldap3+rustls) changes. The container runs all services (including the WebUI on port 9630) as root for simplicity and compatibility with Red Hat service expectations.
 
 ## Quick Start (docker run)
 
@@ -172,14 +172,12 @@ chown root:root /tmp/krb5.keytab
 
 The WebUI runs inside the container and starts automatically from `entrypoint.sh`.
 
-- **Port**: 9630 (HTTPS)
-- **How it starts**: `entrypoint.sh` runs the `webui-certs` helper early (for custom cert discovery), then launches `nfs-klldap-ui`.
-- **TLS**:
-  - A self-signed certificate is generated at container startup by default (handled inside the Rust binary using `rcgen`).
-  - Provide your own by placing `webui.crt` + `webui.key` (or `tls.crt` + `tls.key`) in the same directory as `nfs-klldap.conf`. The helper script will make them available.
+- **Port**: 9630 (HTTPS via axum-server + rustls)
 - **Access**:
-  - From the Docker host: `https://localhost:9630`
-  - From the network: `https://<host>:9630` (after publishing the port with `-p 9630:9630`)
+  - From the Docker host: `http://localhost:9630`
+  - From the network: `http://<host>:9630` (after publishing the port with `-p 9630:9630`)
+
+**TLS**: The WebUI serves HTTPS directly on 9630 using axum-server + rustls. Self-signed certificates are generated automatically when no external certs are provided via the WEBUI_TLS_CERT / WEBUI_TLS_KEY environment variables.
 - On `/settings`: shows current LDAP service identity + "Reload NFS client" (re-binds the permission client after editing `sssd.ldap_default_*` or `ldap_uri`).
 
 See the root [README.md](../README.md) for the recommended access section.

@@ -90,8 +90,9 @@ services:
 #     make build
 #     make docker-multi
 #
-# The WebUI now runs **inside** the container on port 9630 (HTTPS by default).
-# Access it at https://your-host:9630
+# The WebUI now runs **inside** the container on port 9630 (HTTPS via axum-server + rustls).
+# Access it at http://your-host:9630
+# For TLS, terminate at a reverse proxy in front of the container (see docs/run/README.md).
 #
 # It has two pages:
 #     /settings → edit nfs-klldap.conf

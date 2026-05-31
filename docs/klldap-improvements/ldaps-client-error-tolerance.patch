@@ -1,0 +1,77 @@
+# Proposed improvements for lldap-with-kerberos to reduce noisy [LDAPS] ERROR logs
+# from misbehaving clients (dirsync tools, Keycloak sync, ldapsearch with bare names, etc.)
+# that send invalid DNs or close connections without proper TLS close_notify.
+#
+# These are common with external sync tools and do not indicate a problem with KLLDAP itself.
+# The changes make the server more tolerant in logging while remaining strict on protocol.
+
+--- a/crates/ldap/src/dn.rs
++++ b/crates/ldap/src/dn.rs
+@@ -280,6 +280,15 @@ pub fn parse_distinguished_name(dn: &str) -> LdapResult<Vec<(String, String)>> {
+     result
+ }
+ 
++/// Returns true if the string looks like it might be a bare uid/cn (common mistake
++/// in sync tool configs) rather than a full DN.
++pub fn looks_like_bare_name(dn: &str) -> bool {
++    !dn.contains('=') && !dn.contains(',') && !dn.trim().is_empty()
++}
++
++pub fn parse_distinguished_name_or_bare(dn: &str) -> LdapResult<Vec<(String, String)>> {
++    if looks_like_bare_name(dn) {
++        // Return a synthetic single RDN so callers that only care about the value can proceed.
++        // The bind/search layers decide whether to accept it.
++        return Ok(vec![("uid".to_string(), dn.to_string())]);
++    }
++    parse_distinguished_name(dn)
++}
+
+--- a/crates/ldap/src/password.rs
++++ b/crates/ldap/src/password.rs
+@@ -30,7 +30,11 @@ pub(crate) async fn do_bind(
+         });
+     }
+     let user_id = match get_user_id_from_distinguished_name(
+-        &request.dn.to_ascii_lowercase(),
++        // Be tolerant of tools that send just "dirsync" or "keycloaksync" as the bind DN
++        // (very common misconfiguration in Keycloak, dirsync utilities, etc.).
++        // Fall back to treating the whole string as the uid if it doesn't look like a DN.
++        if crate::dn::looks_like_bare_name(&request.dn) { &request.dn } else { &request.dn.to_ascii_lowercase() },
+         &ldap_info.base_dn,
+         &ldap_info.base_dn_str,
+     ) {
+
+--- a/server/src/ldap_server.rs
++++ b/server/src/ldap_server.rs
+@@ -140,12 +140,25 @@ async fn handle_ldap_stream<Stream, Backend>(
+     debug!("LDAP session start: {}", session_uuid);
+ 
+     while let Some(msg) = requests.next().await {
+-        if !handle_ldap_message(msg, &mut resp, &mut session)
+-            .await
+-            .context("while handling incoming messages")?
+-        {
+-            break;
+-        }
++        match handle_ldap_message(msg, &mut resp, &mut session).await {
++            Ok(continue_session) => {
++                if !continue_session {
++                    break;
++                }
++            }
++            Err(e) => {
++                let err_str = format!("{:#}", e);
++                if err_str.contains("close_notify") || err_str.contains("unexpected eof") || err_str.contains("peer closed") {
++                    // Common with misbehaving clients (dirsync, keycloak sync, old ldapsearch, etc.).
++                    // They send garbage (bare "dirsync" as DN), get an error, then drop the TCP/TLS
++                    // connection without a proper close_notify. This is not a server bug.
++                    debug!("LDAPS client closed connection abruptly (no close_notify). This is normal for some sync tools. session={}", session_uuid);
++                } else {
++                    error!("while handling incoming messages: {}", e);
++                }
++                break;
++            }
++        }
+     }
+ 
+     debug!("LDAP session end: {}", session_uuid);

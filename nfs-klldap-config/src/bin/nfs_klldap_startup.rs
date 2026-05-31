@@ -231,10 +231,7 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     }
     // Dedup while preserving order (simple and sufficient here).
     let mut seen = std::collections::HashSet::new();
-    let attr_list: Vec<&str> = attrs
-        .into_iter()
-        .filter(|a| seen.insert(*a))
-        .collect();
+    let attr_list: Vec<&str> = attrs.into_iter().filter(|a| seen.insert(*a)).collect();
 
     let mut cmd = Command::new("timeout");
     cmd.args(["10", "ldapsearch"]).args([

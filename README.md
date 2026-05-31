@@ -140,9 +140,11 @@ The WebUI runs **inside** the container (it is no longer a separate host-side pr
 The container's `entrypoint.sh` automatically starts the WebUI after the configuration has been generated and validated. It is launched alongside SSSD and Ganesha.
 
 ### Port and Access
-- **Port**: `9630` (HTTPS)
-- From the Docker host: `https://localhost:9630`
-- From other machines on the same network: `https://<hostname-or-ip>:9630`
+- **Port**: `9630` (HTTPS via axum-server + rustls)
+- From the Docker host: `http://localhost:9630`
+- From other machines on the same network: `http://<hostname-or-ip>:9630`
+
+**TLS**: The WebUI serves HTTPS directly on 9630 using axum-server + rustls (self-signed generation supported). See `docs/run/README.md` for details.
 
 If not using `--uts=host` you must publish the port when starting the container:
 
@@ -151,20 +153,17 @@ If not using `--uts=host` you must publish the port when starting the container:
   -p 2049:2049/tcp -p 2049:2049/udp \
 ```
 
-### TLS / Certificates
-- By default, the container generates a self-signed certificate at startup (valid for 10 years) using pure Rust (`rcgen` inside the WebUI binary).
-- To use your own certificate, place the files in the **same directory** as `nfs-klldap.conf`:
-  - `webui.crt` + `webui.key`, **or**
-  - `tls.crt` + `tls.key`
+### TLS
+The WebUI serves HTTPS directly (axum-server + rustls). Self-signed certificate generation is included via rcgen when no external certs are provided via WEBUI_TLS_* environment variables.
 
-The small helper script `webui-certs` (run early by the entrypoint) discovers user-provided certificates and makes them available. Self-signed generation, when needed, is handled inside the Rust binary for better reliability and test coverage. See `container/README.md` and `nfs-klldap-ui/src/certs.rs`.
+If you need TLS when exposing the WebUI, terminate it at a reverse proxy in front of the container. See `docs/run/README.md` for guidance and examples.
 
 ### Authentication
 See the [docs/run/README.md](docs/run/README.md) section on the WebUI for current login options (local `localhost` password or LLDAP accounts).
 
 ### Detailed WebUI Architecture, Startup Flow & Access Model
 
-The WebUI (`nfs-klldap-ui`) is a self-contained Axum + HTMX + Askama application compiled into the container image. It **always** speaks HTTPS (no plain HTTP code path exists). It is the only way most operators interact with the single source-of-truth `nfs-klldap.conf`.
+The WebUI (`nfs-klldap-ui`) is a self-contained Axum + HTMX + Askama application compiled into the container image. It speaks plain HTTP (port 9630). TLS termination (if needed at the network edge) is performed by a reverse proxy in front of the container. It is the only way most operators interact with the single source-of-truth `nfs-klldap.conf`.
 
 #### High-Level Startup & Lifecycle Flow
 
@@ -184,15 +183,11 @@ flowchart TB
     end
 
     subgraph WebUI Launch
-        CERTS["webui-certs script\n(discover custom certs or prepare /var/run/webui-certs/)"]
-        UI["nfs-klldap-ui\n(Rust binary)"]
-        RUSTLS["rustls::crypto::ring::install_default()"]
-        CERTENSURE["ensure_webui_tls_certs()\n(rcgen self-signed OR use provided)"]
-        BIND["axum_server::bind_rustls(0.0.0.0:9630)"]
+        UI["nfs-klldap-ui\n(Rust binary, HTTPS via axum-server)"]
     end
 
     subgraph Runtime
-        AUTH["Hybrid Auth\n- localhost + bcrypt sidecar (webui-password 0600)\n- LLDAP user + webui_admin_group membership"]
+        AUTH["Hybrid Auth\n- localhost + iterated-SHA256 sidecar (webui-password 0600)\n- LLDAP user + webui_admin_group membership"]
         ROUTER["Router\n/login, /setup-password (first-run)\n/, /settings (protected)\n/tree, /directory, /apply (HTMX)\n/users/search, /groups/search\n/settings/save*, /settings/lldap-status, /settings/reload-nfs-client"]
         FSM["FsManager (real FS walks + libc chown/chmod)"]
         LDAP["LdapClient (standard LDAP searches + simple bind)"]
@@ -215,29 +210,27 @@ flowchart TB
     EP --> PRE --> START --> GEN1 --> SSSD
     GEN1 --> WATCH
     GEN1 --> GANESHA
-    GANESHA --> CERTS --> UI
-    UI --> RUSTLS --> CERTENSURE --> BIND
-
-    BIND --> STATE
+    GANESHA --> UI
+    UI --> STATE
     STATE --> ROUTER
     ROUTER --> AUTH
     ROUTER --> FSM
-    ROUTER --> LLAP
+    ROUTER --> LDAP
 
     EDIT --> INO --> SIGHUP --> GEN2 --> RELOAD
     HEALTH -. polls .-> GANESHA
     HEALTH -. polls .-> SSSD
-    HEALTH -. polls .-> BIND
+    HEALTH -. polls .-> UI
 
     classDef rust fill:#f4d,stroke:#333
     classDef shell fill:#9cf,stroke:#333
-    class UI,FSM,LLAP,STATE,RUSTLS,CERTENSURE,ROUTER,GEN1,GEN2 rust
-    class EP,CERTS,WATCH,START,SSHD,HEALTH,LOGS shell
+    class UI,FSM,LDAP,STATE,ROUTER,GEN1,GEN2 rust
+    class EP,WATCH,START,SSHD,HEALTH,LOGS shell
 ```
 
 **Key invariants shown above:**
 - All services (including WebUI) run as root inside the container.
-- The WebUI binary itself is responsible for self-signed certificate generation using `rcgen` when no user certs are present (see `nfs-klldap-ui/src/certs.rs:48`).
+- The WebUI serves HTTPS directly (self-signed cert generation via rcgen when needed).
 - Config changes flow through the watcher → SIGHUP → privileged regeneration in the pid-1 entrypoint (this is how `sssd.conf` always gets `root:root 0600`).
 - The healthcheck (Docker/Podman) will mark the container unhealthy if the WebUI is not listening on 9630.
 
@@ -256,17 +249,15 @@ flowchart TB
    - Live fragment `GET /settings/lldap-status` shows the current service-account identity of the permission client + staleness warning when bind DN/PW changed on disk.
    - `POST /settings/reload-nfs-client` rebuilds the `LdapClient` from current on-disk/env values and swaps it into `AppState`.
 
-#### TLS / SSL Specifics (Why "Refuses to Connect" Usually Happens)
+#### Connection / Reachability Specifics
 
-- The listener is **exclusively** `axum_server::bind_rustls`. There is no HTTP fallback.
-- Certificate material is guaranteed by `ensure_webui_tls_certs()` before `bind_rustls` is called. If loading fails after generation, the process does `eprintln!("FATAL...")` + `exit(1)`.
+- The listener is HTTPS via `axum_server::bind_rustls`.
 - The entrypoint captures quick deaths and tails `/var/log/webui.log`.
 - **Most common causes of "connection refused" on 9630** (in order):
   1. Port not published (`-p 9630:9630` missing when not using `network_mode: host` or `uts: host` + host networking).
   2. Container never reached the WebUI launch step (startup TUI still waiting, or `nfs-klldap-startup` failed).
-  3. WebUI crashed on TLS material (check `docker logs` + inside-container `/var/log/webui.log`).
+  3. WebUI crashed for another reason (check `docker logs` + inside-container `/var/log/webui.log`).
   4. Firewall / SELinux on the Docker host blocking the published port.
-  5. Using an IP or hostname in the browser URL that does not appear in the certificate SANs (self-signed cert only contains the two-tier consistent hostname + `localhost` + `127.0.0.1`).
 
 **Diagnosis commands:**
 ```bash
@@ -408,7 +399,7 @@ nfs-klldap-host/
 ## Important Notes
 
 - Host filesystem numeric ownership must match the `uidNumber`/`gidNumber` values in KLLDAP for users and groups that should own the data.
-- The in-container WebUI (https://<host>:9630) exists precisely to make keeping permissions in sync easy and visual.
+- The in-container WebUI (http://<host>:9630) exists precisely to make keeping permissions in sync easy and visual.
 - The container hostname should match the instance part of the NFS principal in your keytab.
 
 ---

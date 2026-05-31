@@ -195,7 +195,7 @@ pub async fn login(
     let password = &form.password;
 
     let result: Result<String, String> = if username == "localhost" {
-        // Special local-machine admin path (bcrypt sidecar)
+        // Special local-machine admin path (iterated-SHA256 sidecar)
         match state.auth.validate_simple_password(username, password) {
             Ok(()) => Ok(username.to_string()),
             Err(e) => Err(e),
@@ -212,13 +212,13 @@ pub async fn login(
             Err("Invalid username or password (LDAP)".to_string())
         } else {
             // 2. Check admin group membership using the service account.
-            // After the GraphQL → LDAP cutover, the long-lived service bind
-            // (same credentials as SSSD) has the rights to search groups by the
-            // mapped group_member attribute (e.g. memberUid). No need to re-bind
-            // as the end user.
+            // The long-lived service bind performs the membership check using
+            // the modern memberOf attribute on the user entry (standard and clean
+            // for KLLDAP). No need to re-bind as the end user.
             let is_admin = {
                 let l = state.lldap.lock().await;
-                l.user_is_member_of_group(username, state.auth.admin_group()).await
+                l.user_is_member_of_group(username, state.auth.admin_group())
+                    .await
             };
 
             if !is_admin {
@@ -304,9 +304,7 @@ pub async fn setup_password(
     match state.auth.set_simple_password(pw) {
         Ok(()) => {
             // Success — immediately log the operator in as localhost (LocalAdmin)
-            let token = state
-                .auth
-                .create_privileged_session("localhost");
+            let token = state.auth.create_privileged_session("localhost");
 
             let cookie = format!(
                 "session={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200",
@@ -496,7 +494,11 @@ pub async fn tree_fragment(
 
     // Helpful diagnostic (the previous silent empty list was the main user complaint).
     // We deliberately do not leak the internal container path in most cases.
-    let safe_path = params.path.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let safe_path = params
+        .path
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
     let msg = format!(
         r#"<div style="color:#b00; padding:0.5em; border:1px solid #fcc; background:#fff5f5; border-radius:4px;">
             <strong>Cannot display directory tree.</strong><br>
@@ -547,7 +549,10 @@ pub async fn directory_form(
             owner, group, mode
         )
     } else {
-        let safe = path.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let safe = path
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
         format!(
             r#"<div class="current-state" style="color:#b00;">
                 <strong>Cannot read current state.</strong><br>
@@ -592,8 +597,16 @@ pub async fn search_users(
 
         // Use data attributes + proper escaping to avoid htmx:syntax:error and XSS issues
         // that raw onclick interpolation was causing.
-        let safe_id = user.id.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
-        let safe_name = name.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let safe_id = user
+            .id
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;");
+        let safe_name = name
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
         html.push_str(&format!(
             r#"<div class="suggestion" data-user-id="{}" data-uid="{}">{}</div>"#,
             safe_id, uid, safe_name
@@ -623,8 +636,16 @@ pub async fn search_groups(
         let name = group.display_name.unwrap_or(group.id.clone());
 
         // Use data attributes + proper escaping (same safety fix as user search).
-        let safe_id = group.id.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
-        let safe_name = name.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let safe_id = group
+            .id
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;");
+        let safe_name = name
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
         html.push_str(&format!(
             r#"<div class="suggestion" data-group-id="{}" data-gid="{}">{}</div>"#,
             safe_id, gid, safe_name
@@ -799,11 +820,9 @@ fn make_settings_error_template(
 /// This consolidates the write logic used by both raw and structured save paths.
 fn atomic_write_config(path: &std::path::Path, content: &str) -> Result<(), String> {
     let tmp = path.with_extension("conf.saving");
-    std::fs::write(&tmp, content.as_bytes())
-        .map_err(|e| format!("Write failed: {}", e))?;
+    std::fs::write(&tmp, content.as_bytes()).map_err(|e| format!("Write failed: {}", e))?;
 
-    std::fs::rename(&tmp, path)
-        .map_err(|e| format!("Rename failed: {}", e))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("Rename failed: {}", e))?;
 
     #[cfg(unix)]
     {
@@ -1328,13 +1347,18 @@ pub async fn reload_nfs_client(
     let realm = fresh.effective_realm();
     let (user_base, group_base) =
         nfs_klldap_config::effective_ldap_search_bases(&fresh.sssd, &realm);
-    let no_tls_verify = fresh
-        .sssd
-        .ldap_tls_reqcert
-        .as_deref()
-        .map(|v| v.eq_ignore_ascii_case("never"))
-        .unwrap_or(false);
+    // Mirror the improved TLS policy logic from main.rs so reloads behave the same.
+    let explicit_reqcert = fresh.sssd.ldap_tls_reqcert.as_deref();
+    let has_custom_ca = fresh.sssd.ldap_tls_cacert.as_deref().is_some_and(|s| !s.trim().is_empty());
+    let no_tls_verify = if has_custom_ca {
+        explicit_reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
+    } else if fresh.ldap_uri.starts_with("ldaps://") {
+        explicit_reqcert.is_none_or(|v| v.eq_ignore_ascii_case("never"))
+    } else {
+        explicit_reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
+    };
     let start_tls = fresh.sssd.ldap_id_use_start_tls.unwrap_or(false);
+    let cacert = fresh.sssd.ldap_tls_cacert.clone();
     let mut new_client = crate::ldap::LdapClient::new_with_attributes(
         &fresh.ldap_uri,
         &user_base,
@@ -1342,6 +1366,7 @@ pub async fn reload_nfs_client(
         posix_attrs,
         no_tls_verify,
         start_tls,
+        cacert,
     );
 
     match new_client.authenticate(&user, &pass).await {
@@ -1449,17 +1474,19 @@ mod tests {
             user_gid_number: "gidNumber".to_string(),
             user_home_directory: "homeDirectory".to_string(),
             user_shell: "loginShell".to_string(),
+            user_full_name: "displayName".to_string(),
             group_name: "cn".to_string(),
             group_gid_number: "gidNumber".to_string(),
-            group_member: "memberUid".to_string(),
+            group_member: "member".to_string(),
         };
         let lldap = Arc::new(Mutex::new(LdapClient::new_with_attributes(
             "ldaps://localhost:6360",
             "ou=people,dc=test,dc=com",
             "ou=groups,dc=test,dc=com",
             default_mapping,
-            true,  // no_tls_verify for test dummy
+            true, // no_tls_verify for test dummy
             false,
+            None,
         )));
 
         let auth = Arc::new(AuthManager::new(&config_path, None));

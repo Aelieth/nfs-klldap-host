@@ -6,47 +6,88 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["Aelieth"]
 license = "MIT"
 repository = "https://github.com/aelieth/nfs-klldap-host"
 
 [workspace.dependencies]
-# Shared dependencies (and dev-dependencies) used by both workspace members.
-# This centralizes version management and makes it easy to keep the two crates
-# in sync. Use `foo = { workspace = true }` (or with extra features) in member
-# manifests.
+# =============================================================================
+# Central registry for *all* dependency versions in this workspace.
+#
+# Goal: single source of truth so versions are bumped in exactly one place,
+#       preventing skew and duplication of version strings across member crates.
+#
+# Usage in members:
+#   foo = { workspace = true }                    # plain
+#   foo = { workspace = true, features = ["x"] }  # extend features
+#   foo = { workspace = true, default-features = false, features = ["bar"] }
+#
+# The two member crates have very different profiles:
+#   - nfs-klldap-config  → tiny, no heavy async/crypto/web stack (by design)
+#   - nfs-klldap-ui      → full web UI + LDAPS client + TLS cert handling
+#
+# We still register every crate here for maintainability. The config crate
+# simply does not list most of them in its [dependencies].
+# =============================================================================
+
+# --- Core shared (used by both crates today) ---------------------------------
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 toml = "0.8"
 tempfile = "3"
+# NOTE: serde_json was removed after a full audit (zero actual uses anywhere in the tree).
+#       hyper-util was also removed from direct UI deps (axum + axum-server provide it).
+
+# --- Small cross-cutting utilities -------------------------------------------
+thiserror = "2.0"
+time = { version = "0.3" }  # kept for rcgen cert validity dates in the UI (and transitively via cookie/rcgen)
+rand = "0.8"
+libc = "0.2"
+urlencoding = "2"
+tower = { version = "0.4" }   # only used in dev-deps for tests today
+
+# --- TOML editing (comment-preserving raw editor in the WebUI) ---------------
+toml_edit = "0.22"
+
+# --- Async runtime -----------------------------------------------------------
+tokio = { version = "1.52" }
+
+# --- Web framework + templating ----------------------------------------------
+axum = { version = "0.7" }
+askama = { version = "0.12" }
+askama_axum = "0.4"
+hyper-util = { version = "0.1" }
+
+# --- TLS configuration -------------------------------------------------------
+# The WebUI serves HTTPS directly on 9630 using axum-server + rustls.
+# Outbound LDAPS / StartTLS to KLLDAP uses the ldap3 client (see below).
+# Prefers rustls to match the reliable TLS stack used by the axum-server WebUI
+# and the old working client. Self-signed setups are supported.
+
+# --- LDAP client -------------------------------------------------------------
+# Outbound LDAPS / StartTLS client to KLLDAP. Uses rustls exclusively
+# (tls-rustls-ring) for compatibility with the WebUI's own TLS stack and
+# reliable operation against self-signed KLLDAP. Supports ldap_tls_reqcert=never
+# or custom CA bundles via ldap_tls_cacert.
+ldap3 = { version = "0.12", default-features = false }
+
+# --- Local auth sidecar + misc -----------------------------------------------
+cookie = "0.18"
+sha2 = "0.10"
+subtle = "2.6"
 
 # =============================================================================
-# nfs-klldap-host Cargo Workspace
+# Workspace notes
 # =============================================================================
-#
 # Primary crates (both ship inside the nfs-klldap-host container):
+#   - nfs-klldap-ui        (the WebUI on 9630)
+#   - nfs-klldap-config    (tiny generator + guided startup binary)
 #
-#   nfs-klldap-ui/         → The in-container WebUI (Axum + HTMX) on port 9630.
-#                            Binary: nfs-klldap-ui
-#                            Depends on nfs-klldap-config for TOML handling.
+# Workspace metadata lives in [workspace.package].
+# All dependency versions live in [workspace.dependencies] (see above).
+# Member crates inherit with `{ workspace = true }` (plus features when needed).
 #
-#   nfs-klldap-config/     → Tiny, focused library + two binaries:
-#                            * nfs-klldap-config   (generator used by entrypoint + watcher)
-#                            * nfs-klldap-startup  (guided first-run + diagnostics)
-#
-# Workspace-level metadata (version, edition, authors, license, repository)
-# is defined once in [workspace.package] and inherited via `version.workspace = true`.
-#
-# Shared dependency versions are centralized in [workspace.dependencies].
-# Member crates reference them with `foo = { workspace = true }`.
-# This is the modern, recommended pattern for multi-crate workspaces.
-#
-# Root workspace commands (as used by Makefile):
-#     cargo build --workspace
-#     cargo test --workspace
-#     cargo clippy --workspace ...
-#
-# There is no [package] at the root — this is a pure workspace definition.
+# The config crate is intentionally minimal and does not pull most of the
+# async/web/TLS crates registered here.
 # =============================================================================

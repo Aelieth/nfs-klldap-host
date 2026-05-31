@@ -1,52 +1,28 @@
-//! Two-tier hostname contract (production invariant).
-//!
-//! get_consistent_hostname() requires `hostname` command == /proc/sys/kernel/hostname.
-//! Mismatch (common with raw Docker IDs) produces a loud diagnostic naming both values
-//! + remediation. All banners, certs, and keytab guidance go through this path.
-//! suggested_nfs_hostname() inserts "-nfs" before the first dot.
+//! Two-tier hostname: `hostname(1)` output must exactly match /proc/sys/kernel/hostname.
+//! Mismatch produces a rich diagnostic. All keytab banners and cert SANs use this path.
 
-/// Compute the recommended container hostname for Kerberized NFS.
-///
-/// The container hostname must match the `nfs/<hostname>@REALM` principal in the keytab.
-/// Because Docker's `--hostname` is used for both the system hostname and Kerberos
-/// principal derivation, we need a stable, DNS-resolvable name.
-///
-/// Recommended convention: take the host's short name and insert "-nfs" before the
-/// first dot (or append if there is no dot).
-///
-/// Examples:
-/// - "aurora.testdomain.com" → "aurora-nfs.testdomain.com"
-/// - "myserver"            → "myserver-nfs"
-/// - "foo.bar.baz.co.uk"   → "foo-nfs.bar.baz.co.uk"
-///
-/// This is the value users should pass to `--hostname` (or compose `hostname:`).
+/// Returns the recommended NFS container hostname: insert "-nfs" before the first dot.
 pub fn suggested_nfs_hostname(host: &str) -> String {
     let h = host.trim();
     if h.is_empty() || h == "." {
         return "nfs-server".to_string();
     }
-    // Remove any leading/trailing dots for safety
     let h = h.trim_matches('.');
     if h.is_empty() {
         return "nfs-server".to_string();
     }
     if let Some((first, rest)) = h.split_once('.') {
         if first.is_empty() {
-            // Should not happen after trim, but be defensive
             format!("{}-nfs", h)
         } else {
             format!("{}-nfs.{}", first, rest)
         }
     } else {
-        // No dot: simple hostname, just append
         format!("{}-nfs", h)
     }
 }
 
-/// Returns true if the string looks like a Docker auto-assigned default hostname
-/// (the short container ID). These are 8-20 lowercase hex digits with no dot.
-/// When we see one, we know the user did not pass --hostname and we should
-/// (historical note — hostname handling is now based on --uts=host)
+/// Returns true for 8-20 hex digits with no dot (typical Docker short container ID).
 pub fn looks_like_docker_default_hostname(h: &str) -> bool {
     let h = h.trim();
     if h.contains('.') {
@@ -59,53 +35,33 @@ pub fn looks_like_docker_default_hostname(h: &str) -> bool {
     h.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-// =============================================================================
-// Two-tier consistent hostname retrieval (new production-grade core)
-// =============================================================================
-
 use std::process::Command;
 
-/// Provenance of a hostname observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HostnameSource {
-    /// Primary source: output of the `hostname` command (what the operator sees
-    /// when they type `hostname`, what appears in Kerberos principals).
     Command,
-    /// Secondary confirmation: direct read of the kernel's
-    /// /proc/sys/kernel/hostname (the true UTS namespace view).
     ProcSysKernel,
 }
 
-/// One observation from a single source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostnameObservation {
     pub value: String,
     pub source: HostnameSource,
 }
 
-/// Successful result of two-tier confirmation.
-/// Both sources agreed on this value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsistentHostname {
-    /// The confirmed hostname (identical from both sources after normalization).
     pub hostname: String,
     pub primary: HostnameObservation,
     pub secondary: HostnameObservation,
 }
 
-/// Rich, actionable error returned when the two sources disagree or cannot be read.
-/// This is the mechanism that makes "hostname reporting one thing, resolution another"
-/// impossible to miss in production.
 #[derive(Debug, Clone)]
 pub struct HostnameInconsistency {
     pub primary: Option<HostnameObservation>,
     pub secondary: Option<HostnameObservation>,
-    /// Human explanation of what went wrong.
     pub reason: String,
-    /// Exact steps the operator should take.
     pub remediation: String,
-    /// True when one (or both) of the observed values looks like a Docker
-    /// auto-generated short container ID (the classic `d81b4e782f65` case).
     pub detected_docker_default: bool,
 }
 
@@ -150,14 +106,11 @@ impl std::fmt::Display for HostnameInconsistency {
 
 impl std::error::Error for HostnameInconsistency {}
 
-/// Normalization used for comparison (same rules as suggested_nfs_hostname
-/// uses for safety). We require *exact* byte match after this normalization.
 fn normalize_for_comparison(h: &str) -> String {
     h.trim().trim_matches('.').to_string()
 }
 
-/// Pure, fully testable core of the two-tier check.
-/// Callers (including tests) can feed any two strings.
+/// Pure core of the two-tier check. Both inputs must match after normalization.
 pub(crate) fn confirm_consistent_hostname(
     primary_raw: &str,
     secondary_raw: &str,
@@ -222,11 +175,8 @@ now report the identical name in the startup TUI and WebUI logs.";
     Ok(primary)
 }
 
-/// Production entry point.
-/// Executes the real primary (`hostname` command) and secondary (/proc) sources,
-/// then requires them to agree via the pure checker.
+/// Returns hostname after requiring `hostname(1)` output == /proc/sys/kernel/hostname exactly.
 pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsistency> {
-    // Primary: the `hostname` command (must be present in the image — Dockerfile installs it)
     let primary = match Command::new("hostname").output() {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         Ok(out) => {
@@ -261,7 +211,6 @@ pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsist
         }
     };
 
-    // Secondary: direct kernel view (extremely reliable inside the UTS namespace)
     let secondary = match std::fs::read_to_string("/proc/sys/kernel/hostname") {
         Ok(s) => s.trim().to_string(),
         Err(e) => {
@@ -295,9 +244,7 @@ pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsist
     })
 }
 
-/// Test-only deterministic constructor.
-/// Lets us prove every consistency / inconsistency case in pure unit tests
-/// without touching the real system.
+/// Test-only constructor (feeds synthetic values to the pure checker).
 #[cfg(test)]
 pub fn get_consistent_hostname_from_values(
     primary: &str,
@@ -318,12 +265,6 @@ pub fn get_consistent_hostname_from_values(
     })
 }
 
-// =============================================================================
-// Legacy internal helper (kept only for effective_hostname backward compat)
-// =============================================================================
-
-// Small hostname helper (no extra deps)
-// Used by effective_hostname() in validate.rs
 pub(crate) mod internal {
     pub fn get() -> Result<std::ffi::OsString, std::io::Error> {
         // Simple /proc/sys/kernel/hostname or env fallback
@@ -341,9 +282,7 @@ pub(crate) mod internal {
     }
 }
 
-// =============================================================================
-// Comprehensive pure unit tests for the two-tier contract
-// =============================================================================
+
 
 #[cfg(test)]
 mod tests {

@@ -1,35 +1,5 @@
-# =============================================================================
-# nfs-klldap-host — Production Build System
-# =============================================================================
-#
-# This Makefile provides a coherent build story for:
-#   - Host-side tools (run on the machine that will run the NFS container):
-#       * nfs-klldap-ui  (WebUI — now runs inside the container on port 9630)
-#   - The container image (multi-architecture)
-#
-# Supported host tool targets:
-#   - Native build for your current machine
-#   - Cross-compilation for linux/amd64 and linux/arm64 (glibc)
-#
-# Container images:
-#   - Single-arch local build
-#   - Multi-platform build (linux/amd64/v2 + linux/arm64) via Docker Buildx
-#
-# Usage examples:
-#   make help
-#   make build                    # native release binaries
-#   make dist                     # cross-built binaries in ./dist/
-#   make docker                   # local image
-#   make docker-multi             # multi-arch (pushes by default)
-#
-# Prerequisites for cross-compilation of host tools:
-#   rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
-#
-# For the most reliable glibc cross-compilation, consider:
-#   cargo install cargo-zigbuild
-#   (then set CARGO=cargo-zigbuild)
-#
-# =============================================================================
+# Build targets for host tools and container image.
+# See `make help` for usage.
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
@@ -65,29 +35,16 @@ BUILD_DIR := target
 # -----------------------------------------------------------------------------
 .PHONY: help
 help:
-	@echo "nfs-klldap-host build system"
+	@echo "nfs-klldap-host"
 	@echo ""
-	@echo "Host tools (run on your NFS server / management machine):"
-	@echo "  make build                 Build release binaries for current host"
-	@echo "  make build-cross           Cross-compile for amd64 + arm64 (requires rust targets)"
-	@echo "  make dist                  Cross-compile + place nicely named binaries in $(DIST_DIR)/"
+	@echo "  make build          native ui binary"
+	@echo "  make build-cross    cross for amd64+arm64"
+	@echo "  make dist           cross + dist/ artifacts"
+	@echo "  make docker         local image"
+	@echo "  make docker-multi   multi-arch (buildx, --push by default)"
+	@echo "  make test / clippy / clean"
 	@echo ""
-	@echo "Container image:"
-	@echo "  make docker                Build local image (current arch)"
-	@echo "  make docker-multi          Multi-platform build (amd64/v2 + arm64) via buildx"
-	@echo "                             (uses --push by default; override with DOCKER_PUSH=false)"
-	@echo ""
-	@echo "Development:"
-	@echo "  make test                  Run tests"
-	@echo "  make clippy                Strict clippy (as used in CI)"
-	@echo "  make clean"
-	@echo ""
-	@echo ""
-	@echo "Variables:"
-	@echo "  VERSION=...                Override version tag"
-	@echo "  IMAGE_NAME=...             Override base image name"
-	@echo "  REGISTRY=...               Override registry"
-	@echo "  DOCKER_PUSH=false          Build multi-arch locally without pushing"
+	@echo "Variables: VERSION= IMAGE_NAME= REGISTRY= DOCKER_PUSH=false"
 
 # -----------------------------------------------------------------------------
 # Host Tools
@@ -122,9 +79,6 @@ dist: build-cross
 	@echo ""
 	@echo "Distribution ready:"
 	@ls -l $(DIST_DIR)/
-	@echo ""
-	@echo "nfs-klldap-ui is now built into the container image (runs on port 9630 inside, HTTPS via axum-server)."
-	@echo "It performs chown/chmod directly on bind-mounted paths (root model, no docker-exec)."
 
 # -----------------------------------------------------------------------------
 # Container Image

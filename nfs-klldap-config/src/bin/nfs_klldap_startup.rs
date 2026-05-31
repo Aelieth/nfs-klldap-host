@@ -268,8 +268,7 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
 
 // is_persistent_config (and tolerant load helpers) below are used by both the TUI and the WebUI.
 
-/// The main guided startup loop. This is the Rust replacement for the big
-/// wait_for_valid_config + print_current_step_guidance dance in entrypoint.sh.
+/// Guided first-run loop (4 steps: volume, ldap_uri, bind creds, shares).
 ///
 /// The 4 steps are:
 ///   1. Persistent volume at $NFS_CONFIG (different device from container root)
@@ -322,7 +321,7 @@ fn print_header(config_path: &Path) {
         Ok(c) => (c.hostname, " (confirmed by `hostname` + /proc)".to_string()),
         Err(e) => {
             // Print the full rich diagnostic immediately — this is the moment
-            // the "hostname one thing, resolution another" problem becomes impossible to miss.
+            // Hostname mismatch is now visible.
             eprintln!("\n{}", e);
             // Still allow the TUI to continue (operator may need to edit config first),
             // but use a clear placeholder so the rest of the banner is still useful.

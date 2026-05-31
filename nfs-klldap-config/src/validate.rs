@@ -1,29 +1,21 @@
-//! Validation + auto-derivation for NfsKlldapConfig.
-//!
-//! Enforces: DNS-only ldap_uri, required realm (no EXAMPLE.COM), unique share names,
-//! bind creds, security enum, derives ports/search-bases/realm.
+//! Validation and auto-derivation for NfsKlldapConfig (DNS ldap_uri, realm, shares, etc.).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::{ConfigError, NfsKlldapConfig, Share};
 
-/// Treat a present but blank/whitespace-only Option<String> as absent.
-/// This is the central rule so that "defined with a real value in nfs-klldap.conf"
-/// always wins over auto-derived values and our LLDAP defaults.
 fn normalize_blank(field: &mut Option<String>) {
     if let Some(v) = field {
         if v.trim().is_empty() {
             *field = None;
         } else {
-            // Also trim in place so we don't emit leading/trailing spaces later
             *field = Some(v.trim().to_string());
         }
     }
 }
 
 impl NfsKlldapConfig {
-    /// Load from file + full validation + auto-derive
     pub fn load(path: &std::path::Path) -> Result<Self, ConfigError> {
         let contents = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
 
@@ -36,7 +28,6 @@ impl NfsKlldapConfig {
         Ok(cfg)
     }
 
-    /// Validate required fields + enforce uniqueness + auto-derive everything possible
     pub fn validate_and_derive(&mut self) -> Result<(), ConfigError> {
         if self.ldap_uri.trim().is_empty() {
             return Err(ConfigError::Validation("ldap_uri is required".into()));
@@ -218,12 +209,7 @@ impl NfsKlldapConfig {
         Ok(())
     }
 
-    /// Hostname to use (server.hostname override, or best-effort container hostname).
-    ///
-    /// Modern callers that need a *guaranteed* consistent value (hostname command
-    /// + /proc must agree) should use `get_consistent_hostname()` from the
-    ///   `hostname` module instead. This method is kept for backward compatibility
-    ///   (CLI dry-run output, etc.).
+    /// Hostname from [server] or best-effort container value (prefer get_consistent_hostname for production).
     pub fn effective_hostname(&self) -> String {
         self.server.hostname.clone().unwrap_or_else(|| {
             crate::hostname::internal::get()
@@ -232,23 +218,14 @@ impl NfsKlldapConfig {
         })
     }
 
-    /// Realm (guaranteed to be a real value after successful validate_and_derive)
     pub fn effective_realm(&self) -> String {
         self.kerberos
             .realm
             .clone()
-            .expect("effective_realm called on config that did not pass validation (no EXAMPLE.COM fallback)")
+            .expect("effective_realm called on config that did not pass validation")
     }
 
-    /// Returns a realm string safe for use in keytab principal banners and UI display.
-    ///
-    /// - After a successful `NfsKlldapConfig::load` (which runs validation), this will
-    ///   return the real derived/override realm (never EXAMPLE.COM).
-    /// - In early/TUI or fallback cases where we only have a partial config, it returns
-    ///   a clear placeholder so the UI can still render useful guidance.
-    ///
-    /// This is the value that should appear after the @ in `nfs/<host>@<realm>` reminders.
-    /// It is derived from the same logic that populates `krb5.conf` (see generate.rs).
+    /// Realm for banners (real after validation; placeholder otherwise).
     pub fn display_realm(&self) -> String {
         self.kerberos
             .realm
@@ -263,7 +240,6 @@ impl NfsKlldapConfig {
             .unwrap_or_else(|| "YOUR.REALM".to_string())
     }
 
-    /// Derived container path for a share (used in Ganesha Path=)
     pub fn container_path_for(&self, share: &Share) -> String {
         format!(
             "{}/{}",
@@ -272,7 +248,6 @@ impl NfsKlldapConfig {
         )
     }
 
-    /// Returns the list of host_path values declared in shares (used for validation before performing direct chown/chmod inside the container).
     pub fn host_paths(&self) -> Vec<PathBuf> {
         self.shares.iter().map(|s| s.host_path.clone()).collect()
     }

@@ -1,10 +1,4 @@
-//! FsManager: host_path (logical) ↔ container_path (bind mount) translation + direct chown/chmod.
-//!
-//! All actual privileged host mutations (chown/chmod on bind-mounted paths) are performed
-//! via the `privileged` module so the security boundary remains obvious.
-//!
-//! is_allowed uses shares from nfs-klldap.conf. apply_permissions refuses uid/gid 0 and set*id bits.
-//! build_tree returns logical paths so the UI tree + HTMX stay in host namespace.
+//! FsManager: host_path (logical) ↔ container_path translation + permission application.
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};

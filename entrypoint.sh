@@ -1,7 +1,5 @@
 #!/bin/bash
-# entrypoint.sh — pid-1 supervisor (root). Receives SIGHUP from watcher.
-# Heavy logic in Rust: nfs-klldap-startup (TUI + reachability), nfs-klldap-config (generate).
-# This file: preflight, daemon lifecycle, privileged permission fixup (0600 sssd.conf), SIGHUP reload orchestration.
+# pid-1 supervisor. Heavy logic lives in the Rust binaries (nfs-klldap-startup + nfs-klldap-config).
 set -euo pipefail
 
 # Paths (override for CI/test)

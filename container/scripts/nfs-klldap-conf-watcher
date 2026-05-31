@@ -1,18 +1,6 @@
 #!/bin/bash
-#
-# nfs-klldap-conf-watcher - Watches the central nfs-klldap.conf and triggers
-# privileged regeneration of derived configs (sssd.conf, krb5.conf, ganesha
-# exports) plus daemon reloads.
-#
-# See container/README.md for the overall container script model.
-#
-# The watcher runs as root and signals the root supervisor (pid 1)
-# so that /etc/sssd/sssd.conf is always written with the
-# root:root 0600 ownership that modern SSSD strictly requires.
-#
-# This is the recommended way to get automatic reload when the host UI (or
-# an admin) edits the single source-of-truth config file.
-#
+# Watches nfs-klldap.conf and SIGHUPs pid 1 to trigger regeneration + reload.
+# See container/README.md.
 # Usage:
 #   nfs-klldap-conf-watcher [path-to-config]
 #

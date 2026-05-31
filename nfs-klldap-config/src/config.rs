@@ -1,7 +1,4 @@
-//! Data model for nfs-klldap.conf (single source of truth).
-//!
-//! Validation, derivation and generation live in validate.rs / generate.rs.
-//! Shared with the in-container WebUI via the re-exported types.
+//! Data model for nfs-klldap.conf. Validation/derivation/generation in validate.rs + generate.rs.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -60,13 +57,7 @@ pub struct SssdSection {
     /// When unset, it is derived from the Kerberos realm (recommended).
     pub ldap_search_base: Option<String>,
 
-    // TLS / connection security options (for both ldaps:// and plain ldap:// + STARTTLS).
-    // These are emitted verbatim into the generated [domain/default] section.
-    // Common values for self-signed LLDAP:
-    //   ldap_tls_reqcert = "never"
-    // For insecure ldap:// with opportunistic STARTTLS upgrade:
-    //   ldap_id_use_start_tls = true
-    //   ldap_tls_reqcert = "never"
+    /// TLS options emitted verbatim into generated sssd.conf.
     pub ldap_tls_reqcert: Option<String>,
     pub ldap_tls_cacert: Option<String>,
     pub ldap_id_use_start_tls: Option<bool>,
@@ -91,69 +82,23 @@ pub struct SssdSection {
     // Group attribute mappings
     pub ldap_group_name: Option<String>,
     pub ldap_group_gid_number: Option<String>,
-    /// Attribute used to list group members.
-    /// For modern KLLDAP + rfc2307bis setups the recommended value is "member"
-    /// (or "uniqueMember"). The resolver will default to "member" when
-    /// kllldap_ignored_attributes is active (the default), and "memberUid" only
-    /// when that feature is explicitly disabled.
     pub ldap_group_member: Option<String>,
 
-    // === Advanced / production knobs from real deployments ===
-    /// Name of the SSSD domain section. Defaults to "default".
-    /// Setting this to "lldap" produces [domain/lldap] which some people prefer.
     pub domain: Option<String>,
-
-    /// When true (the default), the config generator emits a recommended block
-    /// of `ignored_user_attributes` / `ignored_group_attributes` that you can
-    /// copy into your KLLDAP server configuration. This dramatically reduces
-    /// the "Ignoring unrecognized ... attribute" warning spam from SSSD and
-    /// AD-style sync tools.
-    ///
-    /// Set to false only if you are intentionally managing the ignore lists
-    /// yourself on the KLLDAP side or do not want the recommendations.
-    /// See docs/ldap-integration.md for details.
     pub kllldap_ignored_attributes: Option<bool>,
-
-    /// Authentication provider. Common values: "ldap" or "krb5".
-    /// For Kerberized NFS environments, many people prefer auth_provider = krb5
-    /// while still using LDAP for POSIX identity (uidNumber/gidNumber etc.).
     pub auth_provider: Option<String>,
-
-    /// chpass_provider when using Kerberos auth (usually also "krb5").
     pub chpass_provider: Option<String>,
-
-    /// LDAP schema. Common with modern LLDAP + POSIX: "rfc2307bis".
     pub ldap_schema: Option<String>,
-
-    /// Explicitly disable ID mapping (recommended when LLDAP provides real uidNumber/gidNumber).
     pub ldap_id_mapping: Option<bool>,
-
-    /// Very important safety flag when using plain ldap:// (non-TLS).
-    /// The generator will automatically set this to true for ldap:// URIs unless overridden.
     pub ldap_auth_disable_tls_never_use_in_production: Option<bool>,
-
-    /// Access control. "permit" is common and simple for trusted internal setups.
     pub access_provider: Option<String>,
-
-    /// Whether to use fully qualified names (user@REALM). Usually false for homelab/small setups.
     pub use_fully_qualified_names: Option<bool>,
-
-    /// Optional explicit Kerberos settings for the domain (when auth_provider = krb5).
-    /// If not set, they are derived from ldap_uri host + the effective realm.
     pub krb5_server: Option<String>,
     pub krb5_kpasswd: Option<String>,
-
-    // Additional Kerberos tuning seen in real ldaps production configs
     pub krb5_validate: Option<bool>,
     pub krb5_store_password_if_offline: Option<bool>,
 }
 
-/// Resolved POSIX attribute names used for both SSSD generation and targeted
-/// LDAP searches by the management WebUI (and by SSSD itself).
-///
-/// All values come from the admin's input in `[sssd]` (with the same documented
-/// defaults the generator uses). This ensures the WebUI only ever asks LLDAP
-/// for the exact attributes the rest of the system is configured to use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PosixAttributeMapping {
     pub user_object_class: String,
@@ -163,21 +108,13 @@ pub struct PosixAttributeMapping {
     pub user_gid_number: String,
     pub user_home_directory: String,
     pub user_shell: String,
-    /// Attribute used for display / gecos / full name in listings and UI (e.g. displayName, cn).
-    /// Shared so WebUI LDAP client requests the same display attr SSSD is configured for.
     pub user_full_name: String,
     pub group_name: String,
     pub group_gid_number: String,
-    /// The attribute used for group membership (e.g. "member", "uniqueMember", or "memberUid").
-    /// See the resolver logic and docs for KLLDAP recommendations.
     pub group_member: String,
 }
 
-/// Resolve the POSIX attribute names the system should use, based on admin
-/// configuration in the `[sssd]` section (user overrides always win).
-///
-/// This is the single source of truth for "which attributes matter for POSIX"
-/// and is shared between the SSSD config generator and the WebUI's LLDAP client.
+/// Resolves POSIX attribute names from [sssd] overrides (or built-in defaults).
 pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapping {
     let user_obj = sssd
         .ldap_user_object_class
@@ -285,15 +222,7 @@ pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapp
     }
 }
 
-/// Compute the effective user and group LDAP search bases from [sssd] overrides
-/// (or fall back to the standard ou=people/ou=groups under the main search_base
-/// or a realm-derived dc=... base). This logic is shared by the SSSD generator,
-/// the WebUI's LDAP permission client (for subtree searches that discover users
-/// in child OUs), and startup diagnostics.
-///
-/// KLLDAP supports placing users/groups in a single level of child OUs under
-/// the primary ou=people / ou=groups; using Subtree scope from these bases
-/// ensures list/resolve operations find them without requiring a higher base.
+/// Effective user/group search bases (Subtree) from [sssd] overrides or realm-derived defaults.
 pub fn effective_ldap_search_bases(sssd: &SssdSection, realm: &str) -> (String, String) {
     let search_base = sssd
         .ldap_search_base
@@ -342,21 +271,16 @@ pub struct ManagementSection {
     pub helper_path: Option<PathBuf>,
     pub use_sudo: Option<bool>,
     pub ganesha_container_name: Option<String>,
-    /// Group whose members (plus the special "localhost" simple-password user) are allowed
-    /// to make changes via the WebUI. Defaults to "lldap_admin".
     pub webui_admin_group: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Share {
     pub name: String,
-    /// Full absolute path on the *Docker host* (the "real" location the admin sees and configures).
-    /// This is the value used by the WebUI for the allow-list, the share cards, and the
-    /// directory tree browser. Inside the container the data is visible under
-    /// `storage.container_root` + this share's `name` (the bind mount contract).
-    /// The WebUI translates at the syscall boundary only; Ganesha exports use the container view.
+    /// Absolute path on the Docker host (used for UI allow-list and direct chown/chmod).
+    /// Container view is `storage.container_root` + name.
     pub host_path: PathBuf,
-    /// Optional explicit NFS pseudo path. Defaults to "/" + name (short + clean)
+    /// Optional explicit NFS pseudo path. Defaults to "/" + name.
     pub export_path: Option<String>,
     pub security: Option<String>,
     pub rw: Option<bool>,
@@ -376,7 +300,7 @@ impl Default for Share {
     }
 }
 
-/// Paths the generator will write to (container view)
+/// Output paths for generated configuration (container namespace).
 #[derive(Debug, Clone)]
 pub struct GenerationPaths {
     pub sssd_conf: PathBuf,

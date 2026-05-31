@@ -20,7 +20,7 @@
 
 Live LLDAP binds, recursive chown on real bind mounts, full entrypoint + watcher orchestration.
 
-When a new test forces clarification of behavior, update the relevant docs (code comments, README, arch docs) in the same change.
+
 
 ## Recommended Testing Patterns
 

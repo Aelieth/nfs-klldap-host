@@ -13,43 +13,31 @@ license = "MIT"
 repository = "https://github.com/aelieth/nfs-klldap-host"
 
 [workspace.dependencies]
-# Central registry for dependency versions (single source of truth).
-
-# --- Core shared (used by both crates today) ---------------------------------
+# Core
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 tempfile = "3"
 
-# --- Small cross-cutting utilities -------------------------------------------
+# Cross-cutting
 thiserror = "2.0"
-time = { version = "0.3" }  # kept for rcgen cert validity dates in the UI (and transitively via cookie/rcgen)
+time = { version = "0.3" }
 rand = "0.8"
 urlencoding = "2"
-tower = { version = "0.4" }   # only used in dev-deps for tests today
+tower = { version = "0.4" }
 
-# --- TOML editing (comment-preserving raw editor in the WebUI) ---------------
 toml_edit = "0.22"
 
-# --- Async runtime -----------------------------------------------------------
+# Async / web
 tokio = { version = "1.52" }
-
-# --- Web framework + templating ----------------------------------------------
 axum = { version = "0.7" }
 askama = { version = "0.12" }
 askama_axum = "0.4"
 
-# --- TLS control (explicit CryptoProvider install for reliable LDAPS with strict
-#     rustls servers like KLLDAP, plus axum-server HTTPS). We keep this direct
-#     so we can call install_default() very early, before the first outbound
-#     LDAPS connections from LdapClient (which happen before axum-server starts).
+# TLS + LDAP (ring for early CryptoProvider + reliable LDAPS)
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-
-# --- LDAP client -------------------------------------------------------------
 ldap3 = { version = "0.12", default-features = false }
 
-# --- Local auth sidecar + misc -----------------------------------------------
+# Local auth
 cookie = "0.18"
 sha2 = "0.10"
 subtle = "2.6"
-
-# Primary crates: nfs-klldap-ui (WebUI on 9630) + nfs-klldap-config (generator + startup).

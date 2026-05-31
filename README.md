@@ -4,7 +4,7 @@ AlmaLinux 10 container providing a complete Kerberized NFSv4 server (NFS-Ganesha
 
 Designed for hosts without (or that prefer not to use) kernel NFS modules.
 
-## Architecture (single source of truth)
+## Architecture
 
 ```
 nfs-klldap.conf (TOML, edited by WebUI or hand)
@@ -22,16 +22,7 @@ entrypoint (pid 1) → restart/reload daemons
         └── nfs-klldap-ui (9630, HTTPS, root) ──direct──> chown/chmod on bind-mounted host_path trees
 ```
 
-**Core contracts**
-- One TOML file only. No templates, no DBUS, no host-side generation.
-- `host_path` (UI/allow-list/real ownership on Docker host) ↔ container path (`$container_root/$name`) is translated only at the syscall boundary inside the container.
-- All services (Ganesha, SSSD, WebUI) run as root inside the container.
-- WebUI performs `libc::chown`/`chmod` directly on bind mounts (no docker-exec, no host helper).
-- Two-tier hostname: `get_consistent_hostname()` requires `hostname` == `/proc/sys/kernel/hostname`. Mismatches are loud.
-- `ldap_uri` must be a DNS name (IP rejected). Realm is strictly required (no silent EXAMPLE.COM).
-- Ganesha only (kernel NFS path removed).
-
-The in-container WebUI (port 9630) and the watcher give you live editing + automatic reloads.
+One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. `--uts=host` + keytab with the correct `nfs/<host>@REALM` principal are required.
 
 ## Quick Start
 
@@ -49,7 +40,7 @@ docker run -d \
 
 First run writes a default `nfs-klldap.conf`. Edit it (or use the WebUI at https://host:9630). The watcher + entrypoint handle regeneration and reload.
 
-**Capabilities**: chown/chmod in the permission editor is performed as root on bind-mounted host paths via the `privileged` module (see `nfs-klldap-ui/src/privileged.rs`). Safe std APIs are used; no raw `libc` or extra `--cap-add` for CHOWN/FOWNER/DAC_* is required in the normal root model.
+
 
 See [docs/run/README.md](docs/run/README.md) for compose examples and TLS notes.
 

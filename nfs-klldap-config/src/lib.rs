@@ -1,7 +1,4 @@
-//! nfs-klldap-config: single source of truth TOML → sssd/krb5/ganesha generation.
-//!
-//! Public API: NfsKlldapConfig (validate+derive), generate_all, hostname helpers,
-//! ignored_attributes, load_host_paths_only (for WebUI allow-list).
+//! nfs-klldap-config: TOML validation, derivation, and generation of sssd.conf, krb5.conf, ganesha exports.
 
 mod config;
 mod error;
@@ -30,8 +27,7 @@ pub use persist::{is_persistent_config, load_host_paths_only};
 pub use template::{generate_default_template, write_default_config_if_missing};
 pub use uri::{derive_realm_from_uri, extract_host_from_uri};
 
-/// Returns (no_tls_verify, start_tls) from the central [sssd] TLS knobs + ldap_uri scheme.
-/// Single source of truth so main.rs and the WebUI reload handler stay in sync.
+/// Returns (no_tls_verify, start_tls) derived from [sssd] TLS fields and ldap_uri scheme.
 pub fn ldap_tls_policy(
     ldap_uri: &str,
     reqcert: Option<&str>,
@@ -54,14 +50,10 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Serializes all tests that mutate process environment variables (NFS_REALM, REALM, etc.).
-    /// Without this, parallel test execution under `cargo test --workspace` causes
-    /// flaky failures because one test's env mutation leaks into another.
+    /// Serializes env-mutating tests under `cargo test --workspace`.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// RAII guard to safely set an environment variable for the duration of a test
-    /// and restore the previous value (or remove it) when the test ends.
-    /// This prevents test pollution when running with --workspace (parallel tests).
+    /// RAII guard restoring previous env var value on drop.
     struct EnvGuard {
         key: &'static str,
         previous: Option<String>,
@@ -157,10 +149,8 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(exports.len(), 2);
-        // one fragment should mention krb5i for the second share
         let frag =
             fs::read_to_string(paths.exports_dir.join("11-data.conf")).unwrap_or_else(|_| {
-                // fallback find
                 let mut s = String::new();
                 for e in fs::read_dir(&paths.exports_dir).unwrap() {
                     let p = e.unwrap().path();
@@ -200,7 +190,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("partial.conf");
 
-        // Write a config that is intentionally missing bind credentials (should still work for helper)
+        // Partial config (missing bind creds) — load_host_paths_only must still succeed.
         let partial = r#"
             ldap_uri = "ldaps://kllap.test:6360"
             [[shares]]
@@ -222,14 +212,9 @@ mod tests {
 
     #[test]
     fn realm_is_required_no_silent_example() {
-        // Serialize against other env-mutating tests (critical under cargo test --workspace)
         let _env = ENV_LOCK.lock().unwrap();
-
-        // Prevent pollution from parallel tests in the workspace
         let _g1 = EnvGuard::remove("NFS_REALM");
         let _g2 = EnvGuard::remove("REALM");
-
-        // Explicit placeholder in config must be rejected (core user complaint)
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://kllap.example.com:6360".into(),
             kerberos: KerberosSection {
@@ -252,7 +237,7 @@ mod tests {
         assert!(msg.contains("kerberos.realm is required"));
         assert!(msg.contains("NFS_REALM"));
 
-        // Explicit good realm passes
+        // Good realm passes.
         c.kerberos.realm = Some("MY.REALM".into());
         assert!(c.validate_and_derive().is_ok());
         assert_eq!(c.effective_realm(), "MY.REALM");
@@ -260,14 +245,11 @@ mod tests {
 
     #[test]
     fn realm_from_env_works() {
-        // Serialize against other env-mutating tests (critical under cargo test --workspace)
         let _env = ENV_LOCK.lock().unwrap();
-
-        // Use guard to prevent pollution of parallel tests in the workspace
         let _guard = EnvGuard::set("NFS_REALM", "ENV.REALM");
 
         let mut c = NfsKlldapConfig {
-            ldap_uri: "ldaps://kllap.test:6360".into(), // would derive "TEST" without env
+            ldap_uri: "ldaps://kllap.test:6360".into(),
             sssd: SssdSection {
                 ldap_default_bind_dn: "uid=a,ou=people,dc=x,dc=com".into(),
                 ldap_default_authtok: "s".into(),
@@ -286,15 +268,9 @@ mod tests {
 
     #[test]
     fn display_realm_returns_real_value_after_validation_and_placeholder_otherwise() {
-        // Serialize against other env-mutating tests (critical under cargo test --workspace)
         let _env = ENV_LOCK.lock().unwrap();
-
-        // Prevent env var pollution from other tests (NFS_REALM / REALM affect derivation)
         let _g1 = EnvGuard::remove("NFS_REALM");
         let _g2 = EnvGuard::remove("REALM");
-
-        // After successful load/validate with good ldap_uri, display_realm must match effective_realm
-        // and what the generator will write into krb5.conf.
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://ldap.testdomain.com:6360".into(),
             sssd: SssdSection {
@@ -313,15 +289,13 @@ mod tests {
         assert_eq!(c.effective_realm(), "TESTDOMAIN.COM");
         assert_eq!(c.display_realm(), "TESTDOMAIN.COM");
 
-        // When no good realm is present (pre-validation or broken config), we get the placeholder
         let mut broken = NfsKlldapConfig {
-            ldap_uri: "ldaps://192.168.1.5:6360".into(), // IP → no derivation
+            ldap_uri: "ldaps://192.168.1.5:6360".into(),
             ..Default::default()
         };
-        // display_realm is safe even before validation
         assert_eq!(broken.display_realm(), "YOUR.REALM");
 
-        // Explicit EXAMPLE is treated as missing for display
+        // EXAMPLE.COM treated as missing for display.
         broken.kerberos.realm = Some("EXAMPLE.COM".into());
         assert_eq!(broken.display_realm(), "YOUR.REALM");
     }
@@ -332,9 +306,7 @@ mod tests {
         c.sssd.ldap_tls_reqcert = Some("never".into());
         c.sssd.ldap_id_use_start_tls = Some(true);
         c.sssd.ldap_tls_cacert = Some("/etc/pki/ca.crt".into());
-        // Force a non-ldaps uri so STARTTLS makes sense in the test
         c.ldap_uri = "ldap://kllap.test:389".into();
-        // Re-derive (port etc.) — validate will also set search bases
         let _ = c.validate_and_derive();
 
         let tmp = tempfile::tempdir().unwrap();
@@ -348,18 +320,14 @@ mod tests {
 
         let sssd = fs::read_to_string(&paths.sssd_conf).unwrap();
         assert!(sssd.contains("ldap_tls_reqcert = never"));
-        // We accept both casings; the generator now prefers lowercase to match real production examples.
         assert!(sssd.to_lowercase().contains("ldap_id_use_start_tls = true"));
         assert!(sssd.contains("ldap_tls_cacert = /etc/pki/ca.crt"));
-        // Should still have the core ldap_uri from the (overridden) config
         assert!(sssd.contains("ldap_uri = ldap://kllap.test:389"));
     }
 
     #[test]
     fn ldap_uri_ip_rejected_with_exact_message() {
-        // Serialize against other env-mutating tests (critical under cargo test --workspace)
         let _env = ENV_LOCK.lock().unwrap();
-
         std::env::remove_var("NFS_REALM");
         std::env::remove_var("REALM");
 
@@ -403,9 +371,7 @@ mod tests {
         let mut c6b = make_minimal("ldap://[::1]");
         assert!(c6b.validate_and_derive().is_err());
 
-        // Hostname is allowed (validation proceeds to other required fields)
         let mut ch = make_minimal("ldaps://kllap.example.com:6360");
-        // Will fail on realm (no EXAMPLE), but NOT on the IP check
         let hmsg = ch.validate_and_derive().unwrap_err().to_string();
         assert!(!hmsg.contains("IP addresses are not supported"));
         assert!(hmsg.contains("kerberos.realm is required"));
@@ -413,24 +379,10 @@ mod tests {
 
     #[test]
     fn suggested_nfs_hostname_inserts_before_first_dot() {
-        // Primary use case from the bug report
-        assert_eq!(
-            suggested_nfs_hostname("aurora.testdomain.com"),
-            "aurora-nfs.testdomain.com"
-        );
-        // Multi-label
-        assert_eq!(
-            suggested_nfs_hostname("foo.bar.baz.co.uk"),
-            "foo-nfs.bar.baz.co.uk"
-        );
-        // No dot → append
+        assert_eq!(suggested_nfs_hostname("aurora.testdomain.com"), "aurora-nfs.testdomain.com");
+        assert_eq!(suggested_nfs_hostname("foo.bar.baz.co.uk"), "foo-nfs.bar.baz.co.uk");
         assert_eq!(suggested_nfs_hostname("myserver"), "myserver-nfs");
-        // Already has -nfs (idempotent-ish, we still transform the first label)
-        assert_eq!(
-            suggested_nfs_hostname("aurora-nfs.testdomain.com"),
-            "aurora-nfs-nfs.testdomain.com"
-        );
-        // Empty / degenerate
+        assert_eq!(suggested_nfs_hostname("aurora-nfs.testdomain.com"), "aurora-nfs-nfs.testdomain.com");
         assert_eq!(suggested_nfs_hostname(""), "nfs-server");
         assert_eq!(suggested_nfs_hostname("."), "nfs-server");
         assert_eq!(suggested_nfs_hostname(".."), "nfs-server");
@@ -443,7 +395,7 @@ mod tests {
         assert!(looks_like_docker_default_hostname("0123456789abcdef"));
         assert!(!looks_like_docker_default_hostname("myhost.example.com"));
         assert!(!looks_like_docker_default_hostname("myhost"));
-        assert!(!looks_like_docker_default_hostname("abc")); // too short
+        assert!(!looks_like_docker_default_hostname("abc"));
         assert!(!looks_like_docker_default_hostname("3c896c1c2e24-nfs"));
     }
 

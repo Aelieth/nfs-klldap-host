@@ -23,7 +23,7 @@ fn resolve_runtime_hostname_for_banner() -> String {
         Ok(c) => c.hostname,
         Err(e) => {
             // This is the exact path that used to silently print the wrong Docker ID.
-            // Now it is impossible to miss.
+
             eprintln!("\n{}", e);
             eprintln!("WARNING: Using best-effort fallback for keytab reminder because the two hostname sources disagreed.");
             // Best-effort fallback so the UI can still start (the operator can still edit config)
@@ -86,7 +86,7 @@ async fn main() {
         println!("  - {} → {} (host: {})", s.name, ep, s.host_path.display());
     }
 
-    // Startup banner: make the keytab hostname requirement impossible to miss.
+    // Startup banner: keytab hostname requirement.
     // NEW: Use the two-tier consistent value (hostname command + /proc). Both sources
     // must agree, otherwise we emit the full rich diagnostic before the normal reminder.
     let keytab_host = if let Some(h) = &config.server.hostname {

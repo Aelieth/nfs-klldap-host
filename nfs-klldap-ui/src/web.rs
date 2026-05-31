@@ -1013,8 +1013,7 @@ pub async fn apply_permissions(
         return Ok(Html(html));
     }
 
-    // NOTE (v0.23 cutover, see git history): Exports are now generated inside the container from the central nfs-klldap.conf.
-    // The host UI no longer writes fragments. Permission changes are applied via the container.
+
     let html = format!(
         r#"<div class="form">
             <h3>Successfully applied permissions for <code>{}</code></h3>

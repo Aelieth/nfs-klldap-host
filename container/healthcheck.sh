@@ -1,22 +1,5 @@
 #!/bin/bash
-#
-# Docker HEALTHCHECK for the self-contained nfs-klldap-host container.
-#
-# See container/README.md for the overall container script model.
-#
-# This script verifies that the core services inside the container are
-# operational. It is intentionally lightweight and fast.
-#
-# Success criteria (all must pass):
-#   - ganesha.nfsd process is running and listening on TCP 2049
-#   - SSSD NSS pipe exists (POSIX identity from LLDAP is available)
-#   - WebUI is listening on TCP 9630 (HTTPS management interface)
-#
-# Failure modes print a clear reason so `docker inspect` or `podman healthcheck`
-# output is useful for operators.
-#
-# Deeper checks (active NFS clients, Kerberos ticket validation, specific
-# export contents, LLDAP reachability) belong in external monitoring systems.
+# Docker HEALTHCHECK: ganesha.nfsd + 2049 + SSSD NSS + WebUI 9630. See container/README.md.
 #
 set -euo pipefail
 

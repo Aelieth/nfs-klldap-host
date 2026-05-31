@@ -1,18 +1,6 @@
 #!/bin/bash
-#
-# ganesha-ctl - DBUS-free management helper for NFS-Ganesha (self-contained mode).
-#
-# See container/README.md for the overall container script model.
-#
-# This script is the supported way to inspect and manage exports from inside
-# the container (or via `docker exec` / `podman exec` from the host).
-#
-# Because we no longer rely on DBUS (required for locked-down environments
-# such as ZimaOS where the host DBUS socket cannot be mounted), the old
-# org.ganesha.nfsd.exportmgr calls are gone.
-#
-# Instead:
-#   - The source of truth is the directory /etc/ganesha/exports.d/
+# DBUS-free helper for Ganesha (show-exports / reload via inotify + SIGHUP).
+# See container/README.md.
 #   - Any *.conf file containing one or more EXPORT {} blocks is loaded
 #   - Changes to exports.d/ (or SIGHUP / ganesha-ctl reload) cause the
 #     entrypoint to restart ganesha.nfsd so the new config is picked up.

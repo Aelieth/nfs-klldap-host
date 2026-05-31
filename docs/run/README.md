@@ -1,23 +1,8 @@
-# Running the Container (Practical)
+# Running
 
-All services run as root inside the container (standard for sssd/kerberos appliances). The WebUI (9630) and generator also run as root so they can write `sssd.conf` with correct ownership and perform direct chown/chmod on bind mounts.
+All services run as root inside the container. Recommended: `--uts=host`, keytab with correct principal, bind mounts for config + data.
 
-## Recommended docker run
-
-```bash
-docker run -d \
-  --name nfs \
-  --uts=host \
-  -p 2049:2049 -p 2049:2049/udp -p 9630:9630 \
-  -v /host/config:/config \
-  -v /media/data:/export \
-  -v /secure/krb5.keytab:/etc/krb5.keytab:ro \
-  ghcr.io/aelieth/nfs-klldap-host:latest
-```
-
-**Capabilities note**: The WebUI performs `chown`/`chmod` directly as root on bind-mounted host paths via the `privileged` module (see `nfs-klldap-ui/src/privileged.rs`). Safe std APIs are used; no `--cap-add CHOWN/FOWNER/DAC_*` are required under the documented root model. `NET_BIND_SERVICE` is only relevant if you later drop root privileges.
-
-`--uts=host` lets the container see the real Docker host hostname → TUI prints the exact `nfs/<host>-nfs@REALM` principal you need.
+See root README for the docker run example.
 
 ## docker-compose
 

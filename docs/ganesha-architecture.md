@@ -1,17 +1,6 @@
-# Architecture: Ganesha + Single TOML + In-Container Root WebUI
+# Architecture
 
-This is the only supported model.
-
-## Model
-
-- **nfs-klldap.conf** (TOML) is the sole editable source of truth.
-- `nfs-klldap-config` (Rust) validates, derives (realm, ports, search bases, etc.), and emits:
-  - `sssd.conf` (root:root 0600)
-  - `krb5.conf`
-  - `ganesha.conf` + per-share `exports.d/*.conf`
-- `entrypoint.sh` (pid 1) + inotify watcher (SIGHUP) drive regeneration + daemon reload.
-- `nfs-klldap-ui` (9630, axum + rustls, runs as root) edits the TOML and performs direct `chown`/`chmod` (via libc) on bind-mounted `host_path` trees.
-- Ganesha (FSAL_VFS) + SSSD (LLDAP POSIX) provide the NFSv4 service. No kernel NFS modules required on the host.
+Single TOML (`nfs-klldap.conf`) is the source of truth. `nfs-klldap-config` validates + generates sssd.conf, krb5.conf, ganesha exports. `entrypoint.sh` + watcher drive reloads. `nfs-klldap-ui` (9630) edits the TOML and performs direct chown/chmod on bind mounts as root. Ganesha + SSSD (LLDAP POSIX) serve NFSv4. No kernel NFS on the host.
 
 ## Key Contracts
 
@@ -33,10 +22,4 @@ volumes:
   - ./krb5.keytab:/etc/krb5.keytab:ro
 ```
 
-The WebUI performs chown/chmod as root on bind-mounted host paths via the `privileged` module (see `nfs-klldap-ui/src/privileged.rs`). Safe standard library APIs are used; no CHOWN/FOWNER/DAC_* capabilities are required under the documented root model.
-
-## Health
-
-`container/healthcheck.sh` checks ganesha.nfsd + 2049 + WebUI on 9630 + SSSD NSS pipe.
-
-See [README.md](../README.md) for the quick diagram and contracts. See TESTING.md for FsManager + handler test coverage.
+See container/healthcheck.sh for service checks. See TESTING.md for test coverage.

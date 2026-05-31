@@ -1,6 +1,4 @@
-//! Generate sssd.conf, krb5.conf, ganesha.conf + per-share EXPORT fragments.
-//!
-//! Called by entrypoint on start, by watcher on SIGHUP, and by WebUI on save.
+//! Generate sssd.conf, krb5.conf, ganesha.conf and per-share exports.
 
 use std::fs;
 use std::path::Path;
@@ -11,7 +9,7 @@ use crate::{
     config::resolve_posix_attribute_mapping, ConfigError, GenerationPaths, NfsKlldapConfig,
 };
 
-// The two small pure helpers (moved in micro-step 1)
+
 pub(crate) fn sanitize_name(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -34,7 +32,6 @@ pub(crate) fn derive_export_id(name: &str, base: u16) -> u16 {
 
 
 
-/// Full generation driver. Call this from entrypoint / watcher / UI save hooks.
 pub fn generate_all(cfg: &NfsKlldapConfig, paths: &GenerationPaths) -> Result<(), ConfigError> {
     fs::create_dir_all(&paths.exports_dir)?;
 
@@ -101,8 +98,6 @@ cache_credentials = true
         bind_pw = cfg.sssd.ldap_default_authtok,
     );
 
-    // Rich LLDAP + POSIX attribute mappings + production safety flags.
-    // The helper now also handles hybrid Kerberos authentication when requested.
     content.push_str(&build_ldap_domain_options(
         cfg,
         &user_base,
@@ -119,20 +114,6 @@ cache_credentials = true
     Ok(())
 }
 
-/// Builds the rich body of the [domain/xxx] section.
-///
-/// This is the main helper for producing a practical sssd.conf for LLDAP.
-///
-/// The attribute mapping lists (user_attr_list / group_attr_list) are kept
-/// because they are the single source of truth shared with the WebUI
-/// LdapClient (so LDAP searches stay narrow and only request known attributes).
-/// They are also useful as
-/// human-readable documentation of the intended minimal set.
-///
-/// Real reduction of the "usual set" SSSD requests (shadow*, krb*, gecos,
-/// nsAccountLock, authorizedService, login*, userAccountControl, etc.) comes
-/// from the minimizers we always emit: ldap_pwd_policy=none, ldap_id_mapping=false,
-/// ldap_schema=rfc2307bis (overridable), and sensible krb5 provider settings.
 fn build_ldap_domain_options(
     cfg: &NfsKlldapConfig,
     user_base: &str,
@@ -141,17 +122,7 @@ fn build_ldap_domain_options(
 ) -> String {
     let s = &cfg.sssd;
 
-    // Use the single source of truth for POSIX attribute names (same as what
-    // the WebUI LLDAP client will request). User overrides in the TOML win.
     let mapping = resolve_posix_attribute_mapping(s);
-
-    // These lists are the single source of truth for the *intended* minimal
-    // attribute set (derived from the same [sssd] mappings used by the WebUI
-    // LdapClient). They are emitted below as comments for documentation.
-    //
-    // They do NOT restrict SSSD (ldap_user_extra_attrs only adds to the
-    // hardcoded set). Real control is via the minimizers + schema/provider
-    // settings that follow.
     let user_attr_list = {
         let mut a = vec![
             mapping.user_name.as_str(),
@@ -183,18 +154,6 @@ fn build_ldap_domain_options(
         a.join(",")
     };
 
-    // enumerate defaults to false.
-    //
-    // While a warm cache from enumeration is convenient, setting enumerate=true
-    // causes SSSD to issue very broad searches across all users and groups.
-    // Against KLLDAP (which intentionally does not carry every legacy/AD-style
-    // attribute), this produces extremely noisy "Ignoring unrecognized attribute"
-    // warning spam on the KLLDAP side. That noise can lead to client-side
-    // connection instability and, under failure, subsequent mangled searches
-    // where a bare username ends up being sent as a search base DN.
-    //
-    // Most deployments should leave this at false. You can still enable it
-    // temporarily for initial cache warm-up if desired.
     let enumerate = if s.enumerate.unwrap_or(false) {
         "true"
     } else {
@@ -259,10 +218,7 @@ access_provider = {access}"#,
             .unwrap_or("permit"),
     );
 
-    // Document the intended narrow set (derived from your [sssd] mappings).
-    // These are the names the WebUI LDAP permission client (and SSSD) actually use.
-    // SSSD will still send its broader internal set; the minimizers below
-    // + schema/provider choices are what reduce the real wire traffic.
+
     out.push_str(&format!(
         "\n# Intended minimal attribute set (informational; derived from your [sssd] mappings)\n# ldap_user_extra_attrs only adds — it does not restrict.\n# Real reduction comes from ldap_pwd_policy, ldap_id_mapping, ldap_schema, etc. below.\n# For KLLDAP we now default ldap_group_member to 'member' (when kllldap_ignored_attributes is active).\n#ldap_user_attributes = {}\n#ldap_group_attributes = {}",
         user_attr_list, group_attr_list
@@ -337,10 +293,7 @@ access_provider = {access}"#,
         out.push_str("\nldap_auth_disable_tls_never_use_in_production = true");
     }
 
-    // KLLDAP ignored attributes recommendation (active by default)
-    // Single toggle in nfs-klldap.conf controls this. When enabled we emit
-    // one clear activation line + comment + ready-to-paste lists for the
-    // KLLDAP server side.
+
     let emit_ignores = s.kllldap_ignored_attributes.unwrap_or(true);
     if emit_ignores {
         out.push_str("\n\n");

@@ -4,15 +4,14 @@
 //! bind-mounted host_path trees via FsManager. Two pages: / (permissions tree)
 //! and /settings (raw + structured TOML + LLDAP client reload).
 
-// Enforce that all unsafe code is confined to the ffi module.
 #![deny(unsafe_code)]
 
 mod auth;
 mod certs;
 mod config;
-mod ffi;
 mod fs;
 mod ldap;
+mod privileged;
 
 mod web;
 
@@ -42,6 +41,18 @@ use nfs_klldap_config::get_consistent_hostname;
 #[tokio::main]
 async fn main() {
     println!("=== nfs-klldap-ui (in-container WebUI) ===\n");
+
+    // Install the ring CryptoProvider *very early*, before any TLS code runs.
+    //
+    // This is required for reliable LDAPS handshakes against strict rustls-based
+    // servers such as KLLDAP (lldap). The first real outbound LDAPS connections
+    // (service account bind + probes) happen during LdapClient initialization,
+    // which occurs *before* axum-server starts.
+    //
+    // Without an early explicit install, some short-lived connections can fail
+    // the TLS handshake, manifesting as "[LDAPS] Service Error: tls handshake eof"
+    // on the KLLDAP side. We tolerate a second install (the `let _ =`).
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Support --config /path or NFS_KLLDAP_CONF env (the shared volume with the container)
     let mut config_path: Option<PathBuf> = std::env::var("NFS_KLLDAP_CONF").ok().map(PathBuf::from);
@@ -120,7 +131,6 @@ async fn main() {
         println!("Outbound LDAPS/StartTLS: verification ENABLED");
     }
 
-    let cacert = config.sssd.ldap_tls_cacert.clone();
     let mut lldap = crate::ldap::LdapClient::new_with_attributes(
         &config.ldap_uri,
         &user_base,
@@ -128,7 +138,6 @@ async fn main() {
         posix_attrs,
         no_tls_verify,
         start_tls,
-        cacert,
     );
 
     // Real credentials from the same nfs-klldap.conf (sssd section) with env override support.

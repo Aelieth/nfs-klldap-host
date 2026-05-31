@@ -24,7 +24,6 @@ tempfile = "3"
 thiserror = "2.0"
 time = { version = "0.3" }  # kept for rcgen cert validity dates in the UI (and transitively via cookie/rcgen)
 rand = "0.8"
-libc = "0.2"
 urlencoding = "2"
 tower = { version = "0.4" }   # only used in dev-deps for tests today
 
@@ -38,10 +37,12 @@ tokio = { version = "1.52" }
 axum = { version = "0.7" }
 askama = { version = "0.12" }
 askama_axum = "0.4"
-hyper-util = { version = "0.1" }
 
-# --- TLS (HTTPS listener + outbound LDAPS via ldap3) -------------------------
-rustls-native-certs = "0.8"
+# --- TLS control (explicit CryptoProvider install for reliable LDAPS with strict
+#     rustls servers like KLLDAP, plus axum-server HTTPS). We keep this direct
+#     so we can call install_default() very early, before the first outbound
+#     LDAPS connections from LdapClient (which happen before axum-server starts).
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # --- LDAP client -------------------------------------------------------------
 ldap3 = { version = "0.12", default-features = false }

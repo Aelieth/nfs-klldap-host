@@ -15,7 +15,7 @@ docker run -d \
   ghcr.io/aelieth/nfs-klldap-host:latest
 ```
 
-**Capabilities note**: The WebUI performs `chown`/`chmod` directly as root using FFI/libc calls (`nfs-klldap-ui/src/ffi.rs`). No `--cap-add CHOWN/FOWNER/DAC_*` are required for the permission editor under the documented root execution model. `NET_BIND_SERVICE` is only relevant if you later drop root privileges.
+**Capabilities note**: The WebUI performs `chown`/`chmod` directly as root on bind-mounted host paths via the `privileged` module (see `nfs-klldap-ui/src/privileged.rs`). Safe std APIs are used; no `--cap-add CHOWN/FOWNER/DAC_*` are required under the documented root model. `NET_BIND_SERVICE` is only relevant if you later drop root privileges.
 
 `--uts=host` lets the container see the real Docker host hostname → TUI prints the exact `nfs/<host>-nfs@REALM` principal you need.
 

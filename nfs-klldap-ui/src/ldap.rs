@@ -1,10 +1,13 @@
 //! LdapClient (ldap3 + rustls). Shares uri/creds/PosixAttributeMapping with SSSD.
 //! Fresh conn per op. All binds use full DN/verbatim identity from sssd section (or env override).
+//!
+//! TLS: We rely on ldap3's tls-rustls-ring support for ldaps:// and StartTLS.
+//! The application installs the ring CryptoProvider very early in main() (before
+//! the first LdapClient operations) to avoid intermittent "tls handshake eof"
+//! errors against strict rustls servers such as KLLDAP.
 
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
 use nfs_klldap_config::PosixAttributeMapping;
-use rustls::{ClientConfig, RootCertStore};
-use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Debug)]
@@ -42,7 +45,6 @@ pub struct LdapClient {
     posix_attributes: PosixAttributeMapping,
     no_tls_verify: bool,
     start_tls: bool,
-    ldap_tls_cacert: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +73,6 @@ impl LdapClient {
         posix_attributes: PosixAttributeMapping,
         no_tls_verify: bool,
         start_tls: bool,
-        ldap_tls_cacert: Option<String>,
     ) -> Self {
         Self {
             ldap_uri: ldap_uri.to_string(),
@@ -84,7 +85,6 @@ impl LdapClient {
             posix_attributes,
             no_tls_verify,
             start_tls,
-            ldap_tls_cacert,
         }
     }
 
@@ -97,46 +97,11 @@ impl LdapClient {
         }
         if self.no_tls_verify {
             s = s.set_no_tls_verify(true);
-            return s;
         }
-        // Verify path: let ldap3 use its native-certs default unless a custom
-        // CA bundle is supplied (layered on top of native roots).
-        if let Some(ref path) = self.ldap_tls_cacert {
-            match std::fs::read_to_string(path) {
-                Ok(ca_pem) => {
-                    let native = rustls_native_certs::load_native_certs();
-                    let mut root_store = RootCertStore::empty();
-                    for c in native.certs {
-                        let _ = root_store.add(c);
-                    }
-                    let mut cursor = std::io::Cursor::new(ca_pem.as_bytes());
-                    for cert in rustls_pemfile::certs(&mut cursor).flatten() {
-                        let _ = root_store.add(cert);
-                    }
-                    if !root_store.is_empty() {
-                        let cfg = ClientConfig::builder()
-                            .with_root_certificates(root_store)
-                            .with_no_client_auth();
-                        s = s.set_config(Arc::new(cfg));
-                    } else {
-                        eprintln!(
-                            "WARNING: ldap_tls_cacert={} produced no usable certificates (native + custom). \
-                             LDAPS verification may fail and cause handshake aborts (visible as 'tls handshake eof' on the server).",
-                            path
-                        );
-                    }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "WARNING: ldap_tls_cacert={} is configured but unreadable ({}). \
-                         Outbound LDAPS will either fall back to native roots (may cause verify failures) \
-                         or succeed only if no_tls_verify/reqcert=never. This is a common source of \
-                         WebUI 'connection closed' symptoms and server-side LDAPS handshake errors.",
-                        path, e
-                    );
-                }
-            }
-        }
+        // TLS provider is installed early at application startup (see main.rs).
+        // ldap3 handles the rest (roots, config, close_notify on unbind, etc.).
+        // Short-lived connections + explicit unbind() are intentional for
+        // compatibility with strict rustls LDAPS servers like KLLDAP.
         s
     }
 
@@ -181,13 +146,7 @@ impl LdapClient {
                     let mut ldap = LdapConn::with_settings(settings, &uri)
                         .map_err(|e| format!("connect: {}", e))?;
 
-                    // Always attempt unbind() for any successfully connected LDAPS/TLS
-                    // session (even on later bind/search failure). This sends an UnbindRequest
-                    // and allows the rustls layer to perform a clean close_notify shutdown.
-                    // Dropping without it is a common source of "[LDAPS] Service Error: tls
-                    // handshake eof" / "peer closed without close_notify" noise on strict
-                    // rustls-based servers (klldap, etc.) from both this client and external
-                    // tools.
+                    // Best-effort clean TLS shutdown via UnbindRequest + unbind.
                     let op_result = (|| -> Result<Vec<SearchEntry>, String> {
                         ldap.simple_bind(&u, &p)
                             .map_err(|e| format!("bind: {}", e))?
@@ -284,10 +243,7 @@ impl LdapClient {
         tokio::task::spawn_blocking(move || {
             let mut ldap = LdapConn::with_settings(settings, &uri).ok()?;
 
-            // Always attempt unbind() after a successful TCP+TLS connection (even if the
-            // bind itself is rejected, e.g. wrong password or bare DN). Prevents the abrupt
-            // socket drop that surfaces as "tls handshake eof" / no-close_notify errors on
-            // the LDAPS server.
+            // Best-effort clean TLS shutdown via unbind even on bind rejection.
             let bind_ok = ldap.simple_bind(&dn, &pw).ok().and_then(|r| r.success().ok()).is_some();
             let _ = ldap.unbind();
             if bind_ok { Some(()) } else { None }

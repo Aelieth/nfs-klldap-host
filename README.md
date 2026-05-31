@@ -49,7 +49,7 @@ docker run -d \
 
 First run writes a default `nfs-klldap.conf`. Edit it (or use the WebUI at https://host:9630). The watcher + entrypoint handle regeneration and reload.
 
-**Capabilities**: chown/chmod in the permission editor is performed as root via direct libc calls in the FFI layer (see `nfs-klldap-ui/src/ffi.rs`). No `--cap-add` for CHOWN/FOWNER/DAC_* is required in the normal root model.
+**Capabilities**: chown/chmod in the permission editor is performed as root on bind-mounted host paths via the `privileged` module (see `nfs-klldap-ui/src/privileged.rs`). Safe std APIs are used; no raw `libc` or extra `--cap-add` for CHOWN/FOWNER/DAC_* is required in the normal root model.
 
 See [docs/run/README.md](docs/run/README.md) for compose examples and TLS notes.
 

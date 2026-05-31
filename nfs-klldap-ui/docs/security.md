@@ -4,7 +4,7 @@ The management tool has significant power: it can change ownership and permissio
 
 ## Core Principle
 
-The WebUI runs inside the container as root (the supported model) and performs `chown`/`chmod` directly on the bind-mounted data using FFI/libc calls (see `src/ffi.rs`). No special Docker capabilities (CHOWN/FOWNER/DAC_*) are required for this path because the process is root.
+The WebUI runs inside the container as root (the supported model) and performs `chown`/`chmod` directly on the bind-mounted data via the `privileged` module (see `src/privileged.rs`). Safe standard library APIs are used (no raw `libc`). No special Docker capabilities (CHOWN/FOWNER/DAC_*) are required because the process runs as root.
 
 Running the UI binary directly on the host as root is not recommended for normal operation.
 

@@ -1348,7 +1348,6 @@ pub async fn reload_nfs_client(
         fresh.sssd.ldap_tls_cacert.as_deref(),
         fresh.sssd.ldap_id_use_start_tls,
     );
-    let cacert = fresh.sssd.ldap_tls_cacert.clone();
     let mut new_client = crate::ldap::LdapClient::new_with_attributes(
         &fresh.ldap_uri,
         &user_base,
@@ -1356,7 +1355,6 @@ pub async fn reload_nfs_client(
         posix_attrs,
         no_tls_verify,
         start_tls,
-        cacert,
     );
 
     match new_client.authenticate(&user, &pass).await {
@@ -1476,7 +1474,6 @@ mod tests {
             default_mapping,
             true, // no_tls_verify for test dummy
             false,
-            None,
         )));
 
         let auth = Arc::new(AuthManager::new(&config_path, None));

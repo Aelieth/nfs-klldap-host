@@ -33,7 +33,7 @@ volumes:
   - ./krb5.keytab:/etc/krb5.keytab:ro
 ```
 
-The WebUI performs chown/chmod as root via FFI/libc (`nfs-klldap-ui/src/ffi.rs`). No CHOWN/FOWNER/DAC_* capabilities are required for the permission path under the documented root model.
+The WebUI performs chown/chmod as root on bind-mounted host paths via the `privileged` module (see `nfs-klldap-ui/src/privileged.rs`). Safe standard library APIs are used; no CHOWN/FOWNER/DAC_* capabilities are required under the documented root model.
 
 ## Health
 

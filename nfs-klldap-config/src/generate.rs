@@ -189,10 +189,9 @@ fn build_ldap_domain_options(
     // causes SSSD to issue very broad searches across all users and groups.
     // Against KLLDAP (which intentionally does not carry every legacy/AD-style
     // attribute), this produces extremely noisy "Ignoring unrecognized attribute"
-    // warning spam on the KLLDAP side. That noise frequently leads to client-side
-    // connection instability (TLS "peer closed without close_notify" errors) and,
-    // under connection failure, subsequent mangled searches where a bare username
-    // (e.g. "dirsync") ends up being sent as a search base DN.
+    // warning spam on the KLLDAP side. That noise can lead to client-side
+    // connection instability and, under failure, subsequent mangled searches
+    // where a bare username ends up being sent as a search base DN.
     //
     // Most deployments should leave this at false. You can still enable it
     // temporarily for initial cache warm-up if desired.

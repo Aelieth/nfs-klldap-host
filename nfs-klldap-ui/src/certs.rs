@@ -9,7 +9,6 @@
 use std::path::{Path, PathBuf};
 
 use rcgen::{CertificateParams, DistinguishedName, DnType};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use thiserror::Error;
 
 /// Errors that can occur while ensuring or loading WebUI TLS material.
@@ -20,12 +19,6 @@ pub enum CertError {
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-
-    #[error("failed to parse PEM certificate or key")]
-    Pem,
-
-    #[error("invalid or incomplete certificate material")]
-    Invalid,
 }
 
 /// Paths to the certificate and private key files.
@@ -53,7 +46,7 @@ pub fn ensure_webui_tls_certs(
     ) {
         let cert = PathBuf::from(cert);
         let key = PathBuf::from(key);
-        if cert.exists() && key.exists() && load_cert_and_key(&cert, &key).is_ok() {
+        if cert.exists() && key.exists() && pem_files_are_parsable(&cert, &key) {
             return Ok(TlsPaths { cert, key });
         }
         // Fall through to provided paths / generation if external ones are missing/invalid
@@ -62,7 +55,7 @@ pub fn ensure_webui_tls_certs(
     let cert_path = cert_path.as_ref().to_path_buf();
     let key_path = key_path.as_ref().to_path_buf();
 
-    if cert_path.exists() && key_path.exists() && load_cert_and_key(&cert_path, &key_path).is_ok() {
+    if cert_path.exists() && key_path.exists() && pem_files_are_parsable(&cert_path, &key_path) {
         return Ok(TlsPaths {
             cert: cert_path,
             key: key_path,
@@ -114,25 +107,25 @@ fn generate_self_signed(hostname: &str) -> Result<(String, String), CertError> {
     Ok((cert.pem(), key_pair.serialize_pem()))
 }
 
-/// Load cert + key from PEM files into rustls DER types.
-pub fn load_cert_and_key(
-    cert_path: &Path,
-    key_path: &Path,
-) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), CertError> {
-    let cert_pem = std::fs::read_to_string(cert_path)?;
-    let key_pem = std::fs::read_to_string(key_path)?;
+/// Cheap validation: can we at least parse the PEM files as cert(s) + private key?
+/// (Actual serving is done by axum-server which does its own robust loading.)
+fn pem_files_are_parsable(cert_path: &Path, key_path: &Path) -> bool {
+    let Ok(cert_pem) = std::fs::read_to_string(cert_path) else {
+        return false;
+    };
+    let Ok(key_pem) = std::fs::read_to_string(key_path) else {
+        return false;
+    };
 
-    let certs = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+    let certs_ok = rustls_pemfile::certs(&mut cert_pem.as_bytes())
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| CertError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+        .map(|c| !c.is_empty())
+        .unwrap_or(false);
 
-    let key = rustls_pemfile::private_key(&mut key_pem.as_bytes())
-        .map_err(|e| CertError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?
-        .ok_or(CertError::Pem)?;
+    let key_ok = rustls_pemfile::private_key(&mut key_pem.as_bytes())
+        .ok()
+        .flatten()
+        .is_some();
 
-    if certs.is_empty() {
-        return Err(CertError::Invalid);
-    }
-
-    Ok((certs, key))
+    certs_ok && key_ok
 }

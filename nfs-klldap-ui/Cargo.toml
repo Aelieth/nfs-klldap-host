@@ -29,7 +29,7 @@ nfs-klldap-config = { path = "../nfs-klldap-config" }
 # --- Web framework (Axum + HTMX via Askama) ----------------------------------
 axum = { workspace = true, features = ["macros"] }
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls"] }
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls = { workspace = true }
 rustls-pemfile = "2.2"
 rcgen = { version = "0.14", features = ["pem"] }
 askama = { workspace = true, features = ["with-axum"] }
@@ -38,7 +38,6 @@ askama_axum = { workspace = true }
 # --- Local authentication ----------------------------------------------------
 cookie = { workspace = true }
 rand = { workspace = true }
-libc = { workspace = true }
 sha2 = { workspace = true }
 subtle = { workspace = true }
 
@@ -47,7 +46,6 @@ time = { workspace = true }  # only for rcgen::CertificateParams not_before/afte
 
 # --- LDAP client for KLLDAP --------------------------------------------------
 ldap3 = { workspace = true, features = ["sync", "tls-rustls-ring"] }
-rustls-native-certs = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

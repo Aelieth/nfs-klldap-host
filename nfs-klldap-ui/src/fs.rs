@@ -1,5 +1,8 @@
 //! FsManager: host_path (logical) ↔ container_path (bind mount) translation + direct chown/chmod.
 //!
+//! All actual privileged host mutations (chown/chmod on bind-mounted paths) are performed
+//! via the `privileged` module so the security boundary remains obvious.
+//!
 //! is_allowed uses shares from nfs-klldap.conf. apply_permissions refuses uid/gid 0 and set*id bits.
 //! build_tree returns logical paths so the UI tree + HTMX stay in host namespace.
 
@@ -28,7 +31,8 @@ impl FsManager {
     }
 
     /// Build tree using logical host_path namespace (for UI + is_allowed).
-    /// Translation to real container path occurs only at the syscall boundary.
+    /// Translation to real container path occurs only at the privileged operation boundary
+    /// (see `privileged.rs`).
     pub fn build_tree(&self, root: &Path) -> Option<DirectoryNode> {
         // Normalize early so trailing slashes don't break matching or child synthesis.
         let normalized = self.normalize_for_matching(root);
@@ -141,7 +145,10 @@ impl FsManager {
         ))
     }
 
-    /// Direct chown/chmod as root. All syscalls via ffi (zero unsafe outside that module).
+    /// Direct chown/chmod as root on host bind mounts.
+    ///
+    /// All privileged host-mutating operations are routed through `privileged`.
+    /// See `privileged.rs` for rationale and security boundary.
     fn apply_direct(
         &self,
         path: &Path,
@@ -154,15 +161,15 @@ impl FsManager {
             self.apply_recursive(path, uid, gid, mode)
                 .map_err(|e| format!("recursive chown/chmod failed: {}", e))?;
         } else {
-            crate::ffi::chown(path, uid, gid).map_err(|e| e.to_string())?;
-            crate::ffi::chmod(path, mode).map_err(|e| e.to_string())?;
+            crate::privileged::chown(path, uid, gid).map_err(|e| e.to_string())?;
+            crate::privileged::chmod(path, mode).map_err(|e| e.to_string())?;
         }
         Ok(())
     }
 
     fn apply_recursive(&self, path: &Path, uid: u32, gid: u32, mode: u32) -> std::io::Result<()> {
-        crate::ffi::chown(path, uid, gid)?;
-        crate::ffi::chmod(path, mode)?;
+        crate::privileged::chown(path, uid, gid)?;
+        crate::privileged::chmod(path, mode)?;
 
         if path.is_dir() {
             for entry in std::fs::read_dir(path)? {

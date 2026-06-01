@@ -108,10 +108,11 @@ mod tests {
     use axum::{
         body::Body,
         http::{
-            header::{COOKIE, SET_COOKIE},
+            header::{COOKIE, LOCATION, SET_COOKIE},
             Request, StatusCode,
         },
     };
+    use cookie::Cookie;
     use std::sync::Arc;
     use tempfile::TempDir;
     use tower::ServiceExt; // for `oneshot`
@@ -339,7 +340,38 @@ ldap_default_authtok = "sekret"
             .to_string();
         assert!(!login_token.is_empty());
 
-        // === Phase 4: Use the session to access a protected route ===
+        // === Phase 3b (NEW): Follow the *actual* login redirect using the real Set-Cookie ===
+        // This is the critical missing coverage for the original bug: "login handler returns 303 + cookie,
+        // but the subsequent GET to the Location (with the cookie the browser would have received) was
+        // never exercised." Manual add_session_cookie bypass hid exactly the symptom (Secure, Max-Age,
+        // SameSite propagation, require_auth on the real redirect target).
+        let login_location = resp
+            .headers()
+            .get(LOCATION)
+            .expect("successful login must return a Location header")
+            .to_str()
+            .expect("Location must be valid UTF-8");
+
+        // Parse the *exact* Set-Cookie the login handler emitted (not our manual string).
+        // This exercises build_session_cookie end-to-end with the browser-like roundtrip.
+        let parsed = Cookie::parse(login_set_cookie)
+            .expect("login must emit a parseable Set-Cookie header");
+        let real_cookie_header = format!("{}={}", parsed.name(), parsed.value());
+
+        let follow_req = Request::builder()
+            .method("GET")
+            .uri(login_location)
+            .header(COOKIE, &real_cookie_header)
+            .body(Body::empty())
+            .unwrap();
+        let follow_resp = app.clone().oneshot(follow_req).await.unwrap();
+        assert_eq!(
+            follow_resp.status(),
+            StatusCode::OK,
+            "following the login redirect with the real emitted cookie must reach the protected page (not redirect back to /login)"
+        );
+
+        // === Phase 4: Use the session to access a protected route (existing manual path kept for coverage) ===
         let protected_req = Request::builder()
             .method("GET")
             .uri("/settings")

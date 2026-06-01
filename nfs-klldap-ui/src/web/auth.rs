@@ -16,7 +16,7 @@
 
 use askama::Template;
 use axum::{
-    extract::{Form, State},
+    extract::{Form, Query, State},
     http::{header::SET_COOKIE, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect},
 };
@@ -44,14 +44,34 @@ pub(crate) struct LoginForm {
     pub password: String,
 }
 
+/// Optional query params for the login page (used to surface auth failure reasons
+/// after a require_auth redirect).
+#[derive(Deserialize, Default)]
+pub(crate) struct LoginQuery {
+    /// When present (e.g. "session" or "required"), login_page renders a friendly
+    /// message so the user is not left wondering why they were sent back to the form.
+    error: Option<String>,
+}
+
 /// GET /login — renders the form (or first-run variant).
-pub async fn login_page(State(state): State<super::AppState>) -> impl IntoResponse {
+/// Supports ?error=... from require_auth redirects so failures are visible.
+pub async fn login_page(
+    State(state): State<super::AppState>,
+    Query(q): Query<LoginQuery>,
+) -> impl IntoResponse {
     let first_run = !state.auth.has_simple_password();
     let admin_group = state.auth.admin_group().to_string();
 
+    let error = q.error.map(|e| match e.as_str() {
+        "session" | "required" | "auth" => {
+            "Your session has expired or you are not logged in. Please sign in again.".to_string()
+        }
+        other => format!("Authentication required: {}", other),
+    });
+
     Html(
         LoginTemplate {
-            error: None,
+            error,
             current_user: None,
             first_run,
             admin_group,
@@ -210,7 +230,9 @@ pub async fn logout(State(state): State<super::AppState>, headers: HeaderMap) ->
 /// Policy chosen for long-term viability:
 /// - SameSite=Lax (works reliably with our POST→303→GET login flow)
 /// - HttpOnly + Path=/ + 12h Max-Age
-/// - Secure when we can reasonably detect TLS (always in this container or behind terminating proxy)
+/// - Secure=true by default (correct for the rustls listener). Can be relaxed via
+///   WEBUI_COOKIE_SECURE=false for local dev, direct IP access, or certain
+///   reverse-proxy setups where the browser sees a non-https origin.
 fn build_session_cookie(token: &str) -> String {
     // 12 hours in seconds (matches previous Max-Age and SESSION_TTL intent).
     let max_age = cookie::time::Duration::seconds(12 * 3600);
@@ -220,7 +242,7 @@ fn build_session_cookie(token: &str) -> String {
         .same_site(SameSite::Lax)
         .path("/")
         .max_age(max_age)
-        .secure(true) // Safe: UI is always served via rustls or a TLS-terminating reverse proxy
+        .secure(cookie_secure())
         .to_string()
 }
 
@@ -231,8 +253,21 @@ fn build_clear_session_cookie() -> String {
         .same_site(SameSite::Lax)
         .path("/")
         .max_age(cookie::time::Duration::seconds(0))
-        .secure(true)
+        .secure(cookie_secure())
         .to_string()
+}
+
+/// Returns whether session cookies should be marked Secure.
+/// Defaults to true (correct for the always-rustls UI listener).
+/// Set WEBUI_COOKIE_SECURE=false (or 0/false/off/no) to relax for
+/// local development or proxy scenarios where the browser origin is not https.
+fn cookie_secure() -> bool {
+    std::env::var("WEBUI_COOKIE_SECURE")
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "off" || v == "no")
+        })
+        .unwrap_or(true)
 }
 
 /// Robust-ish extraction of the session token from a Cookie header value.
@@ -278,5 +313,6 @@ pub async fn require_auth(
             }
         }
     }
-    Err(Redirect::to("/login"))
+    // Surface a visible reason on the login page instead of a completely silent bounce.
+    Err(Redirect::to("/login?error=session"))
 }

@@ -19,8 +19,8 @@
         <input type="hidden" name="username" value="localhost">
     </div>
     <div style="margin-bottom: 0.75rem;">
-        <label>Choose a strong password (min 8 chars)<br>
-            <input type="password" name="password" required autocomplete="new-password"
+        <label for="setup-password">Choose a strong password (min 8 chars)<br>
+            <input id="setup-password" type="password" name="password" required autocomplete="new-password"
                    style="width: 100%; padding: 8px;">
         </label>
     </div>
@@ -37,14 +37,14 @@
 {% else %}
 <form method="post" action="/login" style="max-width: 420px; margin-top: 1rem;">
     <div style="margin-bottom: 0.75rem;">
-        <label>Username<br>
-            <input type="text" name="username" required autocomplete="username" placeholder="localhost or your-ldap-user"
+        <label for="login-username">Username<br>
+            <input id="login-username" type="text" name="username" required autocomplete="username" placeholder="localhost or your-ldap-user"
                    style="width: 100%; padding: 8px;">
         </label>
     </div>
     <div style="margin-bottom: 0.75rem;">
-        <label>Password<br>
-            <input type="password" name="password" required autocomplete="current-password"
+        <label for="login-password">Password<br>
+            <input id="login-password" type="password" name="password" required autocomplete="current-password"
                    style="width: 100%; padding: 8px;">
         </label>
     </div>

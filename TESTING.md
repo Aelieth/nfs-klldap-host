@@ -67,6 +67,8 @@ use tower::ServiceExt; // for `oneshot`
 let response = app.oneshot(request).await.unwrap();
 ```
 
+**Auth / login flows**: The primary integration test (`full_localhost_first_run_login_session_and_protected_route_flow` in `nfs-klldap-ui/src/web/mod.rs`) now follows real 303 redirects and round-trips the *exact* `Set-Cookie` value emitted by the handlers (parsed via the `cookie` crate) into the subsequent GET. This pattern catches "successful POST but cookie never reaches the redirect target" bugs (Secure flag, SameSite, Max-Age, extraction, etc.). Extend it or add focused helpers when touching `require_auth`, cookie builders, or login handlers.
+
 ### 5. Config Library (`nfs-klldap-config`)
 
 Continue expanding here for:
@@ -98,10 +100,10 @@ For these areas we rely on:
 
 - **LDAP service credential extraction** (`ldap_service_creds`): DN parsing (`uid=`, `cn=`), environment variable override, graceful fallback. See `nfs-klldap-ui/src/config.rs` tests.
 - **URL derivation** for the LLDAP client (`derive_lldap_url`, `derive_login_url`).
-- **NFS client reload** (`lldap_status` + `reload_nfs_client` handlers + credential drift detection in `web.rs`).
+- **NFS client reload** (`lldap_status` + `reload_nfs_client` handlers + credential drift detection in `web/` layer).
 - **Allow-list root computation** (`all_managed_roots` + `is_allowed` in `FsManager`).
 - **FsManager** (`is_allowed`, `build_tree`, host→container path mapping): Tested with real temporary directory trees. See `nfs-klldap-ui/src/fs.rs` tests.
-- **Axum handlers** (settings save raw + structured + permission apply): Tested using `tower::ServiceExt::oneshot` against the real router. See `nfs-klldap-ui/src/web.rs` tests.
+- **Axum handlers** (settings save raw + structured + permission apply): Tested using `tower::ServiceExt::oneshot` against the real router. See `nfs-klldap-ui/src/web/mod.rs` tests (WebUI router).
 - **Partial config loading** (`load_host_paths_only`) — used for the WebUI share allow-list.
 - **Name sanitization** and deterministic export ID generation in the generator.
 - **Safety checks** before delegating to the container (root UID/GID refusal, high-bit mode refusal).

@@ -4,7 +4,7 @@ Current implementation: Axum + HTMX + server-rendered templates (no separate fro
 
 Auth: localhost sidecar (next to config) or LLDAP users in webui_admin_group.
 
-See src/web.rs and templates/ for the handlers and forms.
+See `src/web/` (mod.rs + focused submodules) and `templates/` for the handlers and forms.
 
 When you want the tool to be directly accessible without a reverse proxy, we can add a minimal login layer.
 

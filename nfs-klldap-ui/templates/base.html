@@ -193,6 +193,15 @@
             color: var(--text);
         }
 
+        /* Status box shown after permission apply (below the tree) */
+        .apply-status {
+            max-width: 720px;
+        }
+        .apply-status-content strong {
+            color: var(--accent);
+            font-weight: 600;
+        }
+
         /* Share cards and general cards */
         .share-card {
             background: var(--bg-alt);
@@ -375,9 +384,10 @@
                 if (childrenDiv && childrenDiv.classList.contains('children')) {
                     const hasContent = childrenDiv.innerHTML.trim().length > 0;
 
-                    // Force expansion on first activation (more logical UX)
+                    // Force expansion on first activation. Uses the cheap 1-level
+                    // /fs/children endpoint (no full recursive walk on every expand).
                     if (!hasContent || childrenDiv.dataset.loaded !== 'true') {
-                        htmx.ajax('GET', '/tree?path=' + encodeURIComponent(path), {
+                        htmx.ajax('GET', '/fs/children?path=' + encodeURIComponent(path), {
                             target: childrenDiv,
                             swap: 'innerHTML'
                         });
@@ -428,7 +438,7 @@
             });
 
             // === Robust suggestion dropdown handling (fixes "does not close after selecting or focus away") ===
-            // Works for both legacy ids and the dynamic editor fields (#user-suggestions-edit etc. or name-based).
+            // Supports the dynamic editor fields via name selectors (and legacy id fallbacks if present).
             document.body.addEventListener('click', function(evt) {
                 const suggestion = evt.target.closest('.suggestion');
                 if (!suggestion) return;

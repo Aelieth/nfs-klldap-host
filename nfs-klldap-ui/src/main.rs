@@ -107,11 +107,8 @@ async fn main() {
     println!("\nKeytab reminder: your krb5.keytab must contain  nfs/{keytab_host}@{keytab_realm}");
     println!("(Set [server] hostname in nfs-klldap.conf or pass --hostname to the container.)");
 
-    // Filesystem manager (real-time, no DB) — now driven by central shares
-    let fs = Arc::new(crate::fs::FsManager::new_with_path(
-        (*config).clone(),
-        config_path.clone(),
-    ));
+    // Filesystem manager (real-time, no DB) — driven by central shares config.
+    let fs = Arc::new(crate::fs::FsManager::new((*config).clone()));
 
     let posix_attrs = nfs_klldap_config::resolve_posix_attribute_mapping(&config.sssd);
     let realm = config.effective_realm();

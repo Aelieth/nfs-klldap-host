@@ -73,6 +73,16 @@ The generator derives ports, search bases, sssd.conf, krb5.conf, and Ganesha fra
 
 Auth: "localhost" (sidecar bcrypt file next to config) or any LLDAP user in `webui_admin_group` (default `lldap_admin`).
 
+### Security Contracts for Directory Permission Changes
+
+All owner/group/mode changes performed by the WebUI go through `FsManager` + `privileged` (inside the container as root) on bind-mounted `host_path` trees.
+
+- **Symlink policy**: The recursive engine (WalkDir) **never recurses into symlinks** (`follow_links(false)` + `filter_entry`). `chown`/`chmod` calls follow symlinks for the entries that are mutated (standard std behavior, matching historical `chown(2)`). Symlink inodes themselves are skipped by default. This prevents accidental escape from the declared `host_path` trees (a previous risk with the old `Path::is_dir()` recursion).
+- **UID/GID are numeric only on disk**: The engine and WebUI always write raw `u32` values (sourced from LLDAP `uidNumber`/`gidNumber` or direct numeric entry in the editor). Friendly names are resolved only for display.
+- **Bind-mount UID namespace assumption**: The container must run as real root with the data directories bind-mounted such that the numeric UIDs written *inside* the container are exactly the IDs visible on the Docker host filesystem. `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts will cause the on-disk owners to be wrong from the host/NFS client perspective.
+
+These contracts are also documented in source comments in `nfs-klldap-ui/src/fs.rs` and `privileged.rs`.
+
 ## Prerequisites
 
 - Kerberos time sync.

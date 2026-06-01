@@ -50,6 +50,9 @@ ldap3 = { workspace = true, features = ["sync", "tls-rustls-ring"] }
 # Small, zero-dep URL encoding (already a dev-dep; promoted for safe path interpolation in error fragments)
 urlencoding = { workspace = true }
 
+# Filesystem tree walking for safe, policy-driven recursive permission application (follow_links control + filter_entry)
+walkdir = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tower = { workspace = true, features = ["util"] }  # ServiceExt::oneshot in handler tests

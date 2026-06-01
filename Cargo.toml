@@ -24,6 +24,7 @@ time = { version = "0.3" }
 rand = "0.8"
 urlencoding = "2"
 tower = { version = "0.4" }
+walkdir = "2"
 
 toml_edit = "0.22"
 

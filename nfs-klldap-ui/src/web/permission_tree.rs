@@ -6,8 +6,7 @@
 //!
 //! Extracted from the old monolithic web.rs (2026 refactor) for maintainability.
 //! The corresponding templates are:
-//!   index.html, tree_fragment.html, tree_root.html, dir_meta.html, dir_editor.html,
-//!   (legacy) permission_form.html
+//!   index.html, tree_fragment.html, tree_root.html, dir_meta.html, dir_editor.html
 //!
 //! All handlers here use the improved `require_auth(&state, &headers)` from the auth module
 //! (no more State clones per protected route).
@@ -52,13 +51,6 @@ struct TreeRootTemplate {
 pub(crate) struct DirNode {
     pub path: String,
     pub name: String,
-}
-
-#[derive(Template)]
-#[template(path = "permission_form.html")]
-struct PermissionForm {
-    path: String,
-    current_state_html: String,
 }
 
 // New inline fragments (the current UX model).
@@ -106,11 +98,6 @@ pub(crate) struct SearchParams {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct DirParams {
-    path: String,
-}
-
-#[derive(Deserialize)]
 pub(crate) struct ApplyForm {
     path: String,
     owner_user: String,
@@ -118,10 +105,13 @@ pub(crate) struct ApplyForm {
     mode: String,
     #[serde(default)]
     recursive: bool,
+    // Strings (not Option<u32>) because the dir-editor form always includes the hidden
+    // fields (often with empty value="" or "0"). Empty must deserialize cleanly; we parse
+    // leniently below. This prevents 422 "cannot parse integer from empty string".
     #[serde(default)]
-    owner_user_uid: Option<u32>,
+    owner_user_uid: String,
     #[serde(default)]
-    owner_group_gid: Option<u32>,
+    owner_group_gid: String,
 }
 
 // === Handlers ===
@@ -195,54 +185,33 @@ pub(crate) async fn tree_fragment(
     Ok(Html(msg))
 }
 
-/// Returns the permission editor form for a directory (HTMX) — legacy route kept during transition.
-pub(crate) async fn directory_form(
+/// 1-level children endpoint for lazy FS tree loading (HTMX on expand).
+/// Only O(1) cost; reuses the same TreeFragmentTemplate shape.
+pub(crate) async fn fs_children(
     State(state): State<AppState>,
-    Query(params): Query<DirParams>,
+    Query(params): Query<TreeParams>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
 
-    let path = params.path;
+    let path = std::path::Path::new(&params.path);
 
-    let current_state_html = if let Some(node) = state.fs.build_tree(std::path::Path::new(&path)) {
-        let owner = node.owner.unwrap_or(0);
-        let group = node.group.unwrap_or(0);
-        let mode = node.mode & 0o7777;
+    let children: Vec<DirNode> = state
+        .fs
+        .list_children(path)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| DirNode {
+            path: c.path.to_string_lossy().to_string(),
+            name: c.name,
+        })
+        .collect();
 
-        format!(
-            r#"<div class="current-state">
-            <strong>Current on disk</strong><br>
-            <span class="state-label">Owner UID:</span> <code>{}</code><br>
-            <span class="state-label">Group GID:</span> <code>{}</code><br>
-            <span class="state-label">Mode:</span> <code>{:o}</code> <span class="mode-hint">(rwxrwxrwx)</span>
-            </div>"#,
-            owner, group, mode
-        )
-    } else {
-        let safe = path
-            .replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;");
-        format!(
-            r#"<div class="current-state" style="color:#b00;">
-                <strong>Cannot read current state.</strong><br>
-                <code>{}</code> is allowed in config but not visible inside the container.
-                Check your bind mounts (see startup diagnostics).
-            </div>"#,
-            safe
-        )
-    };
-
-    let form = PermissionForm {
-        path: path.clone(),
-        current_state_html,
-    };
-
-    Ok(Html(form.render().unwrap()))
+    let tpl = TreeFragmentTemplate { children };
+    Ok(Html(tpl.render().unwrap()))
 }
 
-// === New inline tree meta / editor handlers ===
+// === Inline tree meta / editor handlers ===
 
 pub(crate) async fn dir_meta(
     State(state): State<AppState>,
@@ -404,16 +373,22 @@ pub(crate) async fn apply_permissions(
     let mut group_gid: u32 = 0;
     let mut needs_lock = false;
 
-    if let Some(uid) = form.owner_user_uid.filter(|&x| x > 0) {
-        owner_uid = uid;
+    // Hidden fields arrive as strings (may be "", "0", or a valid number string).
+    // We only trust a positive (>0) integer from the hidden; 0 or empty means "not provided by search".
+    if let Ok(n) = form.owner_user_uid.trim().parse::<u32>() {
+        if n > 0 {
+            owner_uid = n;
+        }
     } else if let Ok(n) = form.owner_user.trim().parse::<u32>() {
         owner_uid = n;
     } else if !form.owner_user.trim().is_empty() {
         needs_lock = true;
     }
 
-    if let Some(gid) = form.owner_group_gid.filter(|&x| x > 0) {
-        group_gid = gid;
+    if let Ok(n) = form.owner_group_gid.trim().parse::<u32>() {
+        if n > 0 {
+            group_gid = n;
+        }
     } else if let Ok(n) = form.owner_group.trim().parse::<u32>() {
         group_gid = n;
     } else if !form.owner_group.trim().is_empty() {
@@ -461,25 +436,85 @@ pub(crate) async fn apply_permissions(
 
     let mode = u32::from_str_radix(&form.mode, 8).unwrap_or(0o770);
 
-    if let Err(e) = state.fs.apply_permissions(
+    let apply_result = match state.fs.apply_permissions(
         std::path::Path::new(&form.path),
         owner_uid,
         group_gid,
         mode,
         form.recursive,
     ) {
-        let html = format!(
-            r#"<div style="font-size:0.82em; color:#900; padding:3px 4px; border:1px solid #fcc; background:#fff5f5;">
-                Apply failed: {} 
-                <button type="button" hx-get="/dir-editor?path={}" hx-target="closest .dir-meta" hx-swap="innerHTML">Retry</button>
-            </div>"#,
-            e,
-            urlencoding::encode(&form.path)
-        );
-        return Ok(Html(html));
+        Ok(r) => r,
+        Err(e) => {
+            let html = format!(
+                r#"<div style="font-size:0.82em; color:#900; padding:3px 4px; border:1px solid #fcc; background:#fff5f5;">
+                    Apply failed: {} 
+                    <button type="button" hx-get="/dir-editor?path={}" hx-target="closest .dir-meta" hx-swap="innerHTML">Retry</button>
+                </div>"#,
+                e,
+                urlencoding::encode(&form.path)
+            );
+            return Ok(Html(html));
+        }
+    };
+
+    // Fire-and-forget background cache invalidation hook
+    {
+        let fs = state.fs.clone();
+        let p = form.path.clone();
+        tokio::spawn(async move {
+            fs.invalidate_path(std::path::Path::new(&p));
+        });
     }
 
-    // Success → return fresh compact meta (HTMX swaps it in; editor exits automatically via htmx:afterSwap listener in base.html)
+    // Build a human-readable command summary (less verbose)
+    let recursive_flag = if form.recursive { " -R" } else { "" };
+    let cmd = format!(
+        "chown {uid}:{gid}{r} {path}\nchmod {mode:o}{r} {path}",
+        uid = owner_uid,
+        gid = group_gid,
+        r = recursive_flag,
+        path = form.path,
+        mode = mode
+    );
+
+    // Build rich result text (more verbose)
+    let mut result_text = format!(
+        "Result: {} changed, {} skipped, {} errors",
+        apply_result.changed, apply_result.skipped, apply_result.errors.len()
+    );
+
+    if !apply_result.errors.is_empty() {
+        result_text.push_str("\n\nErrors:\n");
+        for (p, msg) in apply_result.errors.iter().take(5) {
+            result_text.push_str(&format!("  {} — {}\n", p.display(), msg));
+        }
+        if apply_result.errors.len() > 5 {
+            result_text.push_str(&format!("  ... and {} more\n", apply_result.errors.len() - 5));
+        }
+    }
+
+    if apply_result.skipped > 0 {
+        result_text.push_str("\n(skipped entries were typically symlinks — never followed for safety)");
+    }
+
+    // Build the status box content (will be swapped oob into #apply-status)
+    let status_html = format!(
+        r#"<div id="apply-status" hx-swap-oob="true" class="apply-status" style="display:block; margin-top:1.25rem;">
+    <div style="font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">Last Apply</div>
+    <div class="apply-status-content"
+         style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
+<strong>Command</strong>
+{cmd}
+
+<strong>Result</strong>
+{result_text}
+    </div>
+</div>"#,
+        cmd = cmd,
+        result_text = result_text
+    );
+
+    // Success → return fresh compact meta (for the clicked dir) + oob status box
     let (owner_display, group_display, mode_octal) = {
         let l = state.lldap.lock().await;
         let od = if let Some((nm, _)) = l.resolve_user_by_uid(owner_uid as i32).await {
@@ -499,5 +534,7 @@ pub(crate) async fn apply_permissions(
         group_display,
         mode_octal,
     };
-    Ok(Html(meta.render().unwrap()))
+
+    let meta_html = meta.render().unwrap();
+    Ok(Html(format!("{}\n{}", meta_html, status_html)))
 }

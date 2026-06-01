@@ -40,8 +40,10 @@ fn lldap_creds_parses_dn_and_prefers_env() {
 ### 2. Filesystem Manager (`nfs-klldap-ui/src/fs.rs`)
 
 - Construct `FsManager` with a known `Config` containing specific shares.
-- Use `tempfile::tempdir()` to create real directory trees for `build_tree` tests.
-- Test `is_allowed` behavior in isolation.
+- Use `tempfile::tempdir()` to create real directory trees for `build_tree`, `list_children`, `host_path_to_container_path`, and `is_allowed` tests.
+- Create symlinks inside the temp tree with `std::os::unix::fs::symlink` to exercise the "never descend" policy and `ApplyResult` skipped counts (via `dry_run` or the real engine).
+- The new `ApplyResult { changed, errors, skipped }` type is the preferred return for any mutation test.
+- Integration-style numeric verification (chown to the test process's own uid/gid then stat on the "host" side of the simulated bind mount) lives in the same `#[cfg(test)]` module and runs as a normal (non-root) user. Mark root-requiring variants `#[ignore]`.
 
 ### 3. In-Container Permission Logic
 
@@ -102,7 +104,7 @@ For these areas we rely on:
 - **URL derivation** for the LLDAP client (`derive_lldap_url`, `derive_login_url`).
 - **NFS client reload** (`lldap_status` + `reload_nfs_client` handlers + credential drift detection in `web/` layer).
 - **Allow-list root computation** (`all_managed_roots` + `is_allowed` in `FsManager`).
-- **FsManager** (`is_allowed`, `build_tree`, host→container path mapping): Tested with real temporary directory trees. See `nfs-klldap-ui/src/fs.rs` tests.
+- **FsManager** (`is_allowed`, `host_path_to_container_path`, `list_children`, `build_tree`, WalkDir-based apply with symlink policy + ApplyResult, host→container path mapping): Tested with real temporary directory trees (including symlinks created via `std::os::unix::fs::symlink`). See `nfs-klldap-ui/src/fs.rs` tests. The integration-style numeric verification test (self-uid variant) runs without root and proves the full translation + mutation + stat roundtrip.
 - **Axum handlers** (settings save raw + structured + permission apply): Tested using `tower::ServiceExt::oneshot` against the real router. See `nfs-klldap-ui/src/web/mod.rs` tests (WebUI router).
 - **Partial config loading** (`load_host_paths_only`) — used for the WebUI share allow-list.
 - **Name sanitization** and deterministic export ID generation in the generator.

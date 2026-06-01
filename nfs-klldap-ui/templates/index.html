@@ -2,7 +2,6 @@
 
 {% block content %}
 <h2>Share Permissions</h2>
-<p>Click a share to browse its directory tree under the <strong>host_path</strong>. Click any subfolder to change POSIX owner/group/mode (live KLLDAP lookup + recursive apply via the container).</p>
 <p style="font-size:0.8em; color:#777; margin-top:-0.4em;">
     Shares list and allowed roots are loaded at container startup. After adding or editing shares, restart the container for the list to update.
 </p>
@@ -35,6 +34,16 @@
     Loading tree...
 </div>
 
+<!-- Apply status box: shows the last permission change command(s) and detailed results.
+     Populated via hx-swap-oob from the /apply POST response. -->
+<div id="apply-status" class="apply-status" style="margin-top: 1.25rem; display: none;">
+    <div style="font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">Last Apply</div>
+    <div id="apply-status-content" class="apply-status-content"
+         style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.3;">
+        <!-- Filled by HTMX oob swap from apply handler -->
+    </div>
+</div>
+
 <!-- Old separate permission panel removed by the inline tree meta refactor.
      Ownership/permissions + Edit now appear directly under the selected directory row. -->
 
@@ -45,6 +54,10 @@
         currentShareName = name;
         document.getElementById('current-share-title').innerHTML =
             'Directory tree for share <strong>' + name + '</strong> <small>(NFS: ' + exportPath + ')</small>';
+
+        // Clear previous apply status when switching shares (keeps the UI clean)
+        const statusBox = document.getElementById('apply-status');
+        if (statusBox) statusBox.style.display = 'none';
 
         // Load the share *root* as the top clickable row, with its direct children visible underneath.
         // On completion, auto-select the root dir so the user immediately sees the inline

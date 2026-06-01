@@ -57,16 +57,31 @@
         }
 
         /* === New tree meta + edit mode styles (inline permissions refactor) === */
+        /* Highlighted selection for the "active" directory (the one with Edit button).
+           Multiple meta rows can stay visible for viewing, but only one dir is highlighted. */
         .dir.selected {
-            font-weight: 700;
-            background: #e3f2fd;
-            padding: 1px 4px;
+            font-weight: 600;
+            background: #d0e8ff;
+            border-left: 3px solid #2b7de9;
+            padding: 2px 4px 2px 3px;
+            margin-left: -2px;
             border-radius: 2px;
+            box-shadow: 0 1px 2px rgba(43, 125, 233, 0.15);
         }
         .dir-meta {
             margin-left: 1.6em;
         }
         .dir-meta[style*="display:none"] { display: none !important; }
+
+        /* Only the currently highlighted/selected directory's meta row shows the Edit button.
+           All other visible meta rows (from clicking multiple dirs) show just the ownership info. */
+        .dir-meta .edit-btn {
+            display: none !important;
+        }
+        .dir.selected + .dir-meta .edit-btn,
+        .dir.selected ~ .dir-meta .edit-btn {   /* fallback for any minor DOM variation */
+            display: inline-block !important;
+        }
         .tree-editing .dir:not(.selected) {
             opacity: 0.6;
             pointer-events: none;
@@ -81,6 +96,35 @@
             border-radius: 3px;
         }
         .suggestions { max-height: 320px; } /* room for 25 items + scroll */
+
+        /* Compact, aesthetically pleasing permissions meta row (shortened width) */
+        .dir-meta-inner {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            font-size: 0.81em;
+            color: #333;
+            margin: 3px 0 5px 0.1em;
+            max-width: 480px;           /* shortened for better aesthetics */
+            background: #f8fbff;
+            border: 1px solid #d6e4f5;
+            border-radius: 4px;
+            padding: 3px 8px 3px 6px;
+        }
+        .dir-meta-inner .perm-info {
+            line-height: 1.25;
+        }
+        .dir-meta-inner .edit-btn {
+            font-size: 0.73em;
+            padding: 1px 7px;
+            margin-left: 2px;
+            cursor: pointer;
+            border: 1px solid #4a90e2;
+            background: #f0f7ff;
+            border-radius: 3px;
+            white-space: nowrap;
+        }
     </style>
     <script>
         function selectUser(name, uid) {
@@ -193,45 +237,63 @@
                 }
                 const childrenDiv = sib;
 
-                // Selection: bold + load (or reuse cached) meta directly under this dir
+                // Selection + expansion logic.
+                //
+                // Behavior:
+                // - Clicking a directory that is NOT the current selection:
+                //     → Selects/highlights it, **forces expansion** of its subtree,
+                //       and shows its permissions meta.
+                // - Clicking the *same* directory again (the current primary selected one):
+                //     → Collapses it (if open), deselects it, and hides its permissions meta.
+                //
+                // Multiple meta rows can remain visible for viewing other directories,
+                // but only one dir is ever the "primary selected" one (highlighted + has the Edit button).
+                const isAlreadySelected = dir.classList.contains('selected');
+                const li = dir.closest('li');
+                const thisMeta = li ? li.querySelector(':scope > .dir-meta') : null;
+
+                if (isAlreadySelected) {
+                    // This is the currently active/selected directory.
+                    // Treat this click as "close everything for this dir".
+                    if (childrenDiv && childrenDiv.classList.contains('children')) {
+                        const isVisible = childrenDiv.style.display !== 'none';
+                        if (isVisible) {
+                            childrenDiv.style.display = 'none';
+                            dir.textContent = dir.textContent.replace('▼', '▶');
+                        }
+                    }
+                    if (thisMeta) {
+                        thisMeta.style.display = 'none';
+                    }
+                    dir.classList.remove('selected');
+                    return;
+                }
+
+                // Activation of a new directory: always force expand + select + show meta
                 document.querySelectorAll('.dir.selected').forEach(d => d.classList.remove('selected'));
                 dir.classList.add('selected');
 
                 if (childrenDiv && childrenDiv.classList.contains('children')) {
                     const hasContent = childrenDiv.innerHTML.trim().length > 0;
-                    const isVisible = childrenDiv.style.display !== 'none';
 
-                    if (hasContent && isVisible) {
-                        childrenDiv.style.display = 'none';
-                        dir.textContent = dir.textContent.replace('▼', '▶');
-
-                        const descendantDirs = childrenDiv.querySelectorAll('.dir');
-                        descendantDirs.forEach(descDir => {
-                            let dSib = descDir.nextElementSibling;
-                            while (dSib && !dSib.classList.contains('children')) dSib = dSib.nextElementSibling;
-                            const descChildren = dSib;
-                            if (descChildren && descChildren.classList.contains('children')) {
-                                descChildren.style.display = 'none';
-                                delete descChildren.dataset.loaded;
-                                descDir.textContent = descDir.textContent.replace('▼', '▶');
-                            }
+                    // Force expansion on first activation (more logical UX)
+                    if (!hasContent || childrenDiv.dataset.loaded !== 'true') {
+                        htmx.ajax('GET', '/tree?path=' + encodeURIComponent(path), {
+                            target: childrenDiv,
+                            swap: 'innerHTML'
                         });
-                    } else {
-                        childrenDiv.style.display = '';
-                        if (!childrenDiv.dataset.loaded || !hasContent) {
-                            htmx.ajax('GET', '/tree?path=' + encodeURIComponent(path), {
-                                target: childrenDiv,
-                                swap: 'innerHTML'
-                            });
-                            childrenDiv.dataset.loaded = 'true';
-                        }
-                        dir.textContent = dir.textContent.replace('▶', '▼');
+                        childrenDiv.dataset.loaded = 'true';
                     }
+                    childrenDiv.style.display = '';           // ensure it is visible / expanded
+                    dir.textContent = dir.textContent.replace('▶', '▼');
                 }
 
-                // Show meta (Owner/Group/Perms + Edit) directly under the dir using the stable placeholder
-                const li = dir.closest('li');
-                let meta = li ? li.querySelector(':scope > .dir-meta') : null;
+                // Show / refresh meta for the newly selected dir (the one that now has the highlight + Edit button)
+                // (the li and thisMeta were already resolved above for the toggle check)
+                let meta = thisMeta;
+                if (!meta && li) {
+                    meta = li.querySelector(':scope > .dir-meta');
+                }
                 if (meta) {
                     meta.style.display = '';
                     meta.dataset.path = path;
@@ -244,7 +306,6 @@
                             target: meta,
                             swap: 'innerHTML'
                         }).then(() => {
-                            // After first load, snapshot for the 5min cache
                             putCachedMeta(path, meta.innerHTML);
                         });
                     }
@@ -267,9 +328,68 @@
                 }
             });
 
-            // Robust suggestion handler (already updated earlier in this file for Phase 1)
-            // (kept here for reference; the real listener was inserted in the previous edit)
-            // ... (the click + click-outside listeners from Phase 1 remain above)
+            // === Robust suggestion dropdown handling (fixes "does not close after selecting or focus away") ===
+            // Works for both legacy ids and the dynamic editor fields (#user-suggestions-edit etc. or name-based).
+            document.body.addEventListener('click', function(evt) {
+                const suggestion = evt.target.closest('.suggestion');
+                if (!suggestion) return;
+
+                // Find the nearest suggestions container and the form/meta that owns the inputs
+                const suggBox = suggestion.closest('.suggestions');
+                const container = suggestion.closest('form, .dir-meta, .dir-editor') || document;
+
+                const userId = suggestion.dataset.userId;
+                if (userId) {
+                    const uid = parseInt(suggestion.dataset.uid || '0', 10);
+                    const nameInput = container.querySelector('input[name="owner_user"], #owner_user');
+                    const uidInput  = container.querySelector('input[name="owner_user_uid"], #owner_user_uid');
+                    if (nameInput) nameInput.value = userId;
+                    if (uidInput)  uidInput.value = String(uid || '');
+                    if (suggBox) suggBox.innerHTML = '';
+                    return;
+                }
+
+                const groupId = suggestion.dataset.groupId;
+                if (groupId) {
+                    const gid = parseInt(suggestion.dataset.gid || '0', 10);
+                    const nameInput = container.querySelector('input[name="owner_group"], #owner_group');
+                    const gidInput  = container.querySelector('input[name="owner_group_gid"], #owner_group_gid');
+                    if (nameInput) nameInput.value = groupId;
+                    if (gidInput)  gidInput.value = String(gid || '');
+                    if (suggBox) suggBox.innerHTML = '';
+                }
+            });
+
+            // Global outside-click dismiss for any open suggestion boxes (capture phase for reliability)
+            document.addEventListener('click', function(evt) {
+                const t = evt.target;
+                if (t.closest('.suggestions') ||
+                    t.closest('input[name="owner_user"], input[name="owner_group"], #owner_user, #owner_group')) {
+                    return; // clicked inside a suggestions box or one of its trigger inputs
+                }
+                document.querySelectorAll('.suggestions').forEach(el => {
+                    if (el.innerHTML.trim()) el.innerHTML = '';
+                });
+            }, true);
+
+            // When an editor is inserted, attach blur handlers to its search inputs so the dropdown
+            // closes when the user tabs away or clicks elsewhere (focusout is more reliable than blur for this).
+            // This augments the global outside-click above.
+            document.body.addEventListener('focusout', function(evt) {
+                const input = evt.target;
+                if (!input || !input.matches('input[name="owner_user"], input[name="owner_group"]')) return;
+
+                // Small delay so that a click on a .suggestion still works (click fires after focusout)
+                setTimeout(() => {
+                    const container = input.closest('form, .dir-meta, .dir-editor') || document;
+                    const active = container.querySelector(':focus');
+                    // If focus didn't move to another suggestion trigger or the box itself, clear
+                    if (!active || !active.closest('.suggestions')) {
+                        const box = container.querySelector('.suggestions');
+                        if (box) box.innerHTML = '';
+                    }
+                }, 120);
+            });
         }
 
         if (document.readyState === 'loading') {

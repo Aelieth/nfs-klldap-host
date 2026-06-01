@@ -47,6 +47,9 @@ time = { workspace = true }  # only for rcgen::CertificateParams not_before/afte
 # --- LDAP client for KLLDAP --------------------------------------------------
 ldap3 = { workspace = true, features = ["sync", "tls-rustls-ring"] }
 
+# Small, zero-dep URL encoding (already a dev-dep; promoted for safe path interpolation in error fragments)
+urlencoding = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tower = { workspace = true, features = ["util"] }  # ServiceExt::oneshot in handler tests

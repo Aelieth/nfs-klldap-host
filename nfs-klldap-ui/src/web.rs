@@ -611,10 +611,8 @@ pub async fn dir_meta(
 
     let path = params.path;
 
-    let (owner_display, group_display, mode_octal) = if let Some(node) = state.fs.build_tree(std::path::Path::new(&path)) {
-        let owner = node.owner.unwrap_or(0);
-        let group = node.group.unwrap_or(0);
-        let mode = node.mode & 0o7777;
+    let (owner_display, group_display, mode_octal) = if let Some((owner, group, mode)) = state.fs.get_dir_meta(std::path::Path::new(&path)) {
+        // Use the cheap non-recursive stat instead of full build_tree (big win for deep trees)
 
         // Try reverse cache + LDAP (non-chatty: 10m TTL, populated by prior searches/lists).
         let l = state.lldap.lock().await;
@@ -666,10 +664,8 @@ pub async fn dir_editor(
 
     let path = params.path;
 
-    let (owner_value, group_value, mode_value) = if let Some(node) = state.fs.build_tree(std::path::Path::new(&path)) {
-        let owner = node.owner.unwrap_or(0);
-        let group = node.group.unwrap_or(0);
-        let mode = node.mode & 0o7777;
+    let (owner_value, group_value, mode_value) = if let Some((owner, group, mode)) = state.fs.get_dir_meta(std::path::Path::new(&path)) {
+        // Cheap non-recursive stat (avoids full subtree walk just for the editor form)
         (owner.to_string(), group.to_string(), format!("{:o}", mode))
     } else {
         ("1000".into(), "1000".into(), "755".into())
@@ -1122,9 +1118,10 @@ pub async fn apply_permissions(
                     let html = format!(
                         r#"<div style="font-size:0.85em; color:#900; padding:4px; border:1px solid #fcc;">
                             Could not find user <strong>{}</strong> in LLDAP (or invalid number).
-                            <button type="button" onclick="if (this.closest('.dir-meta')) htmx.ajax('GET','/dir-editor?path='+encodeURIComponent('{}'),{{target:this.closest('.dir-meta'),swap:'innerHTML'}})">Retry</button>
+                            <button type="button" hx-get="/dir-editor?path={}" hx-target="closest .dir-meta" hx-swap="innerHTML">Retry</button>
                         </div>"#,
-                        form.owner_user, form.path
+                        form.owner_user,
+                        urlencoding::encode(&form.path)
                     );
                     return Ok(Html(html));
                 }
@@ -1137,9 +1134,10 @@ pub async fn apply_permissions(
                     let html = format!(
                         r#"<div style="font-size:0.85em; color:#900; padding:4px; border:1px solid #fcc;">
                             Could not find group <strong>{}</strong> in LLDAP (or invalid number).
-                            <button type="button" onclick="if (this.closest('.dir-meta')) htmx.ajax('GET','/dir-editor?path='+encodeURIComponent('{}'),{{target:this.closest('.dir-meta'),swap:'innerHTML'}})">Retry</button>
+                            <button type="button" hx-get="/dir-editor?path={}" hx-target="closest .dir-meta" hx-swap="innerHTML">Retry</button>
                         </div>"#,
-                        form.owner_group, form.path
+                        form.owner_group,
+                        urlencoding::encode(&form.path)
                     );
                     return Ok(Html(html));
                 }
@@ -1167,9 +1165,10 @@ pub async fn apply_permissions(
         let html = format!(
             r#"<div style="font-size:0.82em; color:#900; padding:3px 4px; border:1px solid #fcc; background:#fff5f5;">
                 Apply failed: {} 
-                <button type="button" onclick="if (this.closest('.dir-meta')) htmx.ajax('GET','/dir-editor?path='+encodeURIComponent('{}'),{{target:this.closest('.dir-meta'),swap:'innerHTML'}})">Retry</button>
+                <button type="button" hx-get="/dir-editor?path={}" hx-target="closest .dir-meta" hx-swap="innerHTML">Retry</button>
             </div>"#,
-            e, form.path
+            e,
+            urlencoding::encode(&form.path)
         );
         return Ok(Html(html));
     }
@@ -1879,5 +1878,50 @@ ldap_default_authtok = "sekret"
             cleared.contains("Max-Age=0") || cleared.contains("session="),
             "logout should clear session cookie"
         );
+    }
+
+    /// Exercises the new inline tree meta + editor routes introduced for the
+    /// directory permissions UI refresh. Uses a real temp dir so get_dir_meta
+    /// has something to stat.
+    #[tokio::test]
+    async fn dir_meta_and_dir_editor_routes_work_with_real_fs_node() {
+        let (state, tmp) = make_test_state_with_temp_config();
+        let auth = state.auth.clone();
+        let token = auth.create_privileged_session("testadmin");
+
+        // Create a real subdirectory under one of the allowed host_paths so
+        // the UI routes have something to stat.
+        let host_root = tmp.path().join("allowed");
+        std::fs::create_dir_all(&host_root).unwrap();
+        let sub = host_root.join("mysubdir");
+        std::fs::create_dir(&sub).unwrap();
+
+        let app = router(state);
+
+        // /dir-meta should succeed and return a fragment containing the path
+        let meta_req = Request::builder()
+            .method("GET")
+            .uri(format!("/dir-meta?path={}", urlencoding::encode(host_root.to_str().unwrap())))
+            .body(Body::empty())
+            .unwrap();
+        let meta_req = add_session_cookie(meta_req, &token);
+        let resp = app.clone().oneshot(meta_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body_str = String::from_utf8_lossy(&body);
+        assert!(body_str.contains("mysubdir") || body_str.contains("Owner:"), "meta should contain path or ownership info");
+
+        // /dir-editor should also succeed (prefills with current FS values)
+        let editor_req = Request::builder()
+            .method("GET")
+            .uri(format!("/dir-editor?path={}", urlencoding::encode(host_root.to_str().unwrap())))
+            .body(Body::empty())
+            .unwrap();
+        let editor_req = add_session_cookie(editor_req, &token);
+        let resp = app.clone().oneshot(editor_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body_str = String::from_utf8_lossy(&body);
+        assert!(body_str.contains("dir-edit-form") || body_str.contains("Owner"), "editor should render the form");
     }
 }

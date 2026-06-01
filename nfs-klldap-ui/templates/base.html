@@ -6,11 +6,77 @@
     <title>NFS Kerb Manager</title>
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
     <style>
+        /* === Theme: Light (default) + automatic Dark via system preference === */
+        :root {
+            --bg: #ffffff;
+            --bg-alt: #f8f9fa;
+            --text: #222222;
+            --text-muted: #555555;
+            --text-light: #666666;
+            --border: #cccccc;
+            --border-light: #e5e5e5;
+            --link: #0d6efd;
+            --accent: #2b7de9;
+            --accent-light: #d0e8ff;
+            --input-bg: #ffffff;
+            --input-border: #ccc;
+            --card-bg: #f8fbff;
+            --warning-bg: #fff3cd;
+            --warning-border: #ffecb5;
+            --warning-text: #664e04;
+            --dir-hover: #f0f0f0;
+            --selected-bg: #d0e8ff;
+            --selected-border: #2b7de9;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #1f1f1f;
+                --bg-alt: #252525;
+                --text: #e0e0e0;
+                --text-muted: #aaaaaa;
+                --text-light: #999999;
+                --border: #444444;
+                --border-light: #333333;
+                --link: #6ea8fe;
+                --accent: #5fa8ff;
+                --accent-light: #1e3a5f;
+                --input-bg: #2a2a2a;
+                --input-border: #555555;
+                --card-bg: #252b35;
+                --warning-bg: #332200;
+                --warning-border: #665200;
+                --warning-text: #f0d080;
+                --dir-hover: #2a2a2a;
+                --selected-bg: #1e3a5f;
+                --selected-border: #5fa8ff;
+            }
+        }
+
+        html, body {
+            background: var(--bg);
+            color: var(--text);
+        }
+
         body { font-family: system-ui, sans-serif; margin: 2rem; }
+        a { color: var(--link); }
+
         .tree { margin-left: 1rem; }
         .dir { cursor: pointer; }
-        .dir:hover { background: #f0f0f0; }
-        .form { margin-top: 1rem; padding: 1rem; border: 1px solid #ccc; }
+        .dir:hover { background: var(--dir-hover); }
+        .form { margin-top: 1rem; padding: 1rem; border: 1px solid var(--border); background: var(--bg); }
+
+        input, select, textarea {
+            background: var(--input-bg);
+            color: var(--text);
+            border: 1px solid var(--input-border);
+        }
+
+        button {
+            background: var(--bg-alt);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
 
         /* Make the search suggestion dropdowns position correctly relative to their inputs */
         label {
@@ -20,28 +86,28 @@
         .suggestion {
             padding: 4px 8px;
             cursor: pointer;
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid var(--border-light);
         }
         .suggestion:hover {
-            background: #f8f8f8;
+            background: var(--dir-hover);
         }
 
         /* Basic dropdown styling for LLDAP user/group search results inside the permission form */
         .suggestions {
             position: absolute;
-            background: #fff;
-            border: 1px solid #ccc;
+            background: var(--bg);
+            border: 1px solid var(--border);
             border-radius: 4px;
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
-            max-height: 220px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+            max-height: 320px;
             overflow-y: auto;
             z-index: 100;
             min-width: 220px;
             margin-top: 2px;
         }
         .current-state {
-            background: #f9f9f9;
-            border: 1px solid #ddd;
+            background: var(--bg-alt);
+            border: 1px solid var(--border);
             padding: 8px 12px;
             margin: 12px 0;
             font-size: 0.9em;
@@ -49,10 +115,10 @@
         }
         .state-label {
             font-weight: 600;
-            color: #555;
+            color: var(--text-muted);
         }
         .mode-hint {
-            color: #888;
+            color: var(--text-light);
             font-size: 0.85em;
         }
 
@@ -61,12 +127,12 @@
            Multiple meta rows can stay visible for viewing, but only one dir is highlighted. */
         .dir.selected {
             font-weight: 600;
-            background: #d0e8ff;
-            border-left: 3px solid #2b7de9;
+            background: var(--selected-bg);
+            border-left: 3px solid var(--selected-border);
             padding: 2px 4px 2px 3px;
             margin-left: -2px;
             border-radius: 2px;
-            box-shadow: 0 1px 2px rgba(43, 125, 233, 0.15);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
         }
         .dir-meta {
             margin-left: 1.6em;
@@ -87,9 +153,9 @@
             pointer-events: none;
         }
         .edit-mode-banner {
-            background: #fff3cd;
-            border: 1px solid #ffecb5;
-            color: #664e04;
+            background: var(--warning-bg);
+            border: 1px solid var(--warning-border);
+            color: var(--warning-text);
             font-size: 0.8em;
             padding: 2px 8px;
             margin: 4px 0 8px;
@@ -104,11 +170,11 @@
             gap: 8px;
             flex-wrap: wrap;
             font-size: 0.81em;
-            color: #333;
+            color: var(--text);
             margin: 3px 0 5px 0.1em;
             max-width: 480px;           /* shortened for better aesthetics */
-            background: #f8fbff;
-            border: 1px solid #d6e4f5;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
             border-radius: 4px;
             padding: 3px 8px 3px 6px;
         }
@@ -120,10 +186,39 @@
             padding: 1px 7px;
             margin-left: 2px;
             cursor: pointer;
-            border: 1px solid #4a90e2;
-            background: #f0f7ff;
+            border: 1px solid var(--accent);
+            background: var(--accent-light);
             border-radius: 3px;
             white-space: nowrap;
+            color: var(--text);
+        }
+
+        /* Share cards and general cards */
+        .share-card {
+            background: var(--bg-alt);
+            border: 1px solid var(--border);
+            color: var(--text);
+        }
+        .share-card:hover {
+            background: var(--card-bg);
+            border-color: var(--accent);
+        }
+
+        /* Themed container for the dynamic permission editor form */
+        .dir-edit-form {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+        }
+
+        /* Better contrast for headings and small text in dark mode */
+        h1, h2, h3 { color: var(--text); }
+        small, .text-muted { color: var(--text-light); }
+
+        /* Make the server-rendered status boxes (in settings) adapt better */
+        #nfs-client-status {
+            background: var(--bg-alt) !important;
+            border-color: var(--border) !important;
+            color: var(--text) !important;
         }
     </style>
     <script>
@@ -168,9 +263,12 @@
             }
         }
 
-        window.startDirEdit = function(btn, path) {
+        window.startDirEdit = function(btn) {
             const meta = btn.closest('.dir-meta');
             if (!meta) return;
+            // Prefer data-path (safe, HTML-escaped, no JS string interpolation needed)
+            const path = btn.dataset.path || meta.dataset.path || btn.getAttribute('data-path');
+            if (!path) return;
             setEditMode(true, path);
             htmx.ajax('GET', '/dir-editor?path=' + encodeURIComponent(path), {
                 target: meta,
@@ -181,7 +279,8 @@
         window.cancelDirEdit = function(el) {
             const meta = el.closest('.dir-meta');
             if (!meta) return;
-            const path = meta.dataset.path || currentEditPath;
+            // Prefer data-path for safety (no JS string interpolation of paths)
+            const path = meta.dataset.path || el.dataset.path || currentEditPath;
             setEditMode(false, null);
             if (path) {
                 htmx.ajax('GET', '/dir-meta?path=' + encodeURIComponent(path), {
@@ -403,21 +502,21 @@
     <h1>nfs-klldap-host Manager</h1>
 
     {% if let Some(user) = current_user %}
-        <div style="background:#f0f0f0; padding:6px 12px; margin-bottom:0.5rem; border-radius:4px; font-size:0.9em;">
+        <div style="background: var(--bg-alt); padding:6px 12px; margin-bottom:0.5rem; border:1px solid var(--border); border-radius:4px; font-size:0.9em;">
             Logged in as <strong>{{ user }}</strong> &nbsp;|&nbsp;
-            <a href="/logout" style="color:#c00; text-decoration:none;">Logout</a>
+            <a href="/logout" style="color:#c44; text-decoration:none;">Logout</a>
         </div>
     {% endif %}
 
     {# Keytab status banner — shows whether the actual keytab on disk matches the expected principal #}
-    <div style="background:#fff8e1; border:1px solid #f0c36b; padding:4px 10px; margin-bottom:0.75rem; border-radius:4px; font-size:0.9em; color:#664e04;">
+    <div style="background: var(--warning-bg); border:1px solid var(--warning-border); padding:4px 10px; margin-bottom:0.75rem; border-radius:4px; font-size:0.9em; color: var(--warning-text);">
         <strong>{{ keytab_status_message }}</strong>
     </div>
 
     {% if let Some(_) = current_user %}
-    <nav style="margin-bottom:1rem; border-bottom:1px solid #ddd; padding-bottom:6px;">
-        <a href="/settings" style="margin-right:1rem; font-weight:600;">System Settings</a>
-        <a href="/" style="margin-right:1rem;">Share Permissions</a>
+    <nav style="margin-bottom:1rem; border-bottom:1px solid var(--border); padding-bottom:6px;">
+        <a href="/" style="margin-right:1rem; font-weight:600;">Share Permissions</a>
+        <a href="/settings" style="margin-right:1rem;">System Settings</a>
     </nav>
     {% endif %}
 

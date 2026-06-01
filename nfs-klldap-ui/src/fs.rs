@@ -79,6 +79,21 @@ impl FsManager {
         Some(node)
     }
 
+    /// Lightweight stat-only lookup for a single directory (owner, group, masked mode).
+    /// Used by the WebUI meta/editor fragments so we don't pay the cost of a full
+    /// recursive subtree walk just to show the current permissions line.
+    pub fn get_dir_meta(&self, path: &Path) -> Option<(u32, u32, u32)> {
+        let normalized = self.normalize_for_matching(path);
+        if !self.is_allowed(&normalized) {
+            return None;
+        }
+
+        let real = self.host_path_to_container_path(&normalized).ok()?;
+        let meta = fs::metadata(&real).ok()?;
+        let mode = meta.permissions().mode() & 0o7777;
+        Some((meta.uid(), meta.gid(), mode))
+    }
+
     /// Apply owner + group + permissions to a directory (and optionally recursive).
     /// This is the core action the visual GUI will call on "save and apply".
     ///

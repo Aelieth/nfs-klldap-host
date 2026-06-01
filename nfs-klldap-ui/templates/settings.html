@@ -15,7 +15,7 @@
 </div>
 
 {% if let Some(msg) = message %}
-    <div style="background:#e6ffe6; border:1px solid #0a0; padding:8px; margin:1rem 0;">
+    <div style="background: var(--card-bg); border:1px solid #28a745; color: var(--text); padding:8px; margin:1rem 0; border-radius:4px;">
         {{ msg }}
     </div>
 {% endif %}
@@ -110,7 +110,7 @@ function addShareRow() {
     <button type="submit" style="margin-top:6px;">Save Raw TOML</button>
 </form>
 
-<p style="color:#666;font-size:0.9em;margin-top:1rem;">
+<p style="color: var(--text-light); font-size:0.9em; margin-top:1rem;">
     The container watches the config file and will regenerate + reload automatically.
 </p>
 

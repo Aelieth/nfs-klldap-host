@@ -958,6 +958,31 @@ impl LdapClient {
         self.user_is_member_of(username, group_name).await
     }
 
+    /// Convenience for the WebUI login path: verify the user's password
+    /// *and* that they are a member of the given admin group.
+    ///
+    /// This keeps the two-lock + membership dance out of the web layer
+    /// and gives a single, clear error when the user is not an admin.
+    /// The fast-path memberOf cache (populated by verify_user_credentials)
+    /// is still used internally.
+    pub async fn verify_user_is_admin(
+        &self,
+        username: &str,
+        password: &str,
+        admin_group: &str,
+    ) -> Result<(), LdapError> {
+        self.verify_user_credentials(username, password).await?;
+
+        if self.user_is_member_of_group(username, admin_group).await {
+            Ok(())
+        } else {
+            Err(LdapError::Auth(format!(
+                "Access denied: '{}' is not a member of the '{}' group.",
+                username, admin_group
+            )))
+        }
+    }
+
     async fn user_is_member_of(&self, username: &str, group_name: &str) -> bool {
         // Fast path: if we just verified this exact user, use the memberOf list we already fetched.
         if let Some(admin_dn) = self.resolve_admin_group_dn(group_name).await {

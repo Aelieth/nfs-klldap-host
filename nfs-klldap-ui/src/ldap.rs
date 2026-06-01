@@ -50,6 +50,10 @@ pub struct LdapClient {
     // that hold &LdapClient across await points via the outer tokio::sync::MutexGuard).
     user_cache: Mutex<HashMap<String, CachedUser>>,
     group_cache: Mutex<HashMap<String, CachedGroup>>,
+    // Reverse caches for friendly name display in tree meta (uid/gid -> name) after FS stat.
+    // Same 10m IDENTITY TTL as forward caches; populated by list_* and direct resolves.
+    user_by_uid_cache: Mutex<HashMap<i32, CachedUser>>,
+    group_by_gid_cache: Mutex<HashMap<i32, CachedGroup>>,
     recent_user_searches: Mutex<HashMap<String, CachedSearch>>,
     recent_group_searches: Mutex<HashMap<String, CachedSearch>>,
     last_verified_memberofs: Mutex<Option<(String, Vec<String>, Instant)>>,
@@ -146,6 +150,8 @@ impl LdapClient {
             // caches start empty
             user_cache: Mutex::new(HashMap::new()),
             group_cache: Mutex::new(HashMap::new()),
+            user_by_uid_cache: Mutex::new(HashMap::new()),
+            group_by_gid_cache: Mutex::new(HashMap::new()),
             recent_user_searches: Mutex::new(HashMap::new()),
             recent_group_searches: Mutex::new(HashMap::new()),
             last_verified_memberofs: Mutex::new(None),
@@ -183,6 +189,10 @@ impl LdapClient {
 
         self.user_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
         self.group_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
+
+        // Reverse uid/gid caches (same TTL)
+        self.user_by_uid_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
+        self.group_by_gid_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
 
         self.recent_user_searches.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < SEARCH_CACHE_TTL);
         self.recent_group_searches.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < SEARCH_CACHE_TTL);
@@ -239,6 +249,51 @@ impl LdapClient {
         );
     }
 
+    // --- Reverse (uid/gid -> display) cache helpers (for friendly meta display after FS stat) ---
+    fn cache_get_user_by_uid(&self, uid: i32) -> Option<CachedUser> {
+        self.evict_expired();
+        if let Some(hit) = self.user_by_uid_cache.lock().unwrap().get(&uid).cloned() {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            return Some(hit);
+        }
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+
+    fn cache_put_user_by_uid(&self, uid: i32, u: &User) {
+        self.user_by_uid_cache.lock().unwrap().insert(
+            uid,
+            CachedUser {
+                uid_number: u.uid_number,
+                display_name: u.display_name.clone().unwrap_or_else(|| u.id.clone()),
+                dn: u.dn.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+
+    fn cache_get_group_by_gid(&self, gid: i32) -> Option<CachedGroup> {
+        self.evict_expired();
+        if let Some(hit) = self.group_by_gid_cache.lock().unwrap().get(&gid).cloned() {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            return Some(hit);
+        }
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+
+    fn cache_put_group_by_gid(&self, gid: i32, g: &Group) {
+        self.group_by_gid_cache.lock().unwrap().insert(
+            gid,
+            CachedGroup {
+                gid_number: g.gid_number,
+                display_name: g.display_name.clone().unwrap_or_else(|| g.id.clone()),
+                dn: g.dn.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+
     fn cache_put_search(&self, key: &str, is_user: bool, items: &[(String, Option<i32>, String)]) {
         let entry = CachedSearch {
             results: items.to_vec(),
@@ -277,6 +332,8 @@ impl LdapClient {
     pub fn clear_cache(&self) {
         self.user_cache.lock().unwrap().clear();
         self.group_cache.lock().unwrap().clear();
+        self.user_by_uid_cache.lock().unwrap().clear();
+        self.group_by_gid_cache.lock().unwrap().clear();
         self.recent_user_searches.lock().unwrap().clear();
         self.recent_group_searches.lock().unwrap().clear();
         *self.last_verified_memberofs.lock().unwrap() = None;
@@ -602,6 +659,116 @@ impl LdapClient {
         None
     }
 
+    /// Reverse lookup: uidNumber → (uid/name, display_name). Uses dedicated 10m cache.
+    /// Falls back to subtree search on uidNumber=; populates both reverse and forward name cache.
+    pub async fn resolve_user_by_uid(&self, uid: i32) -> Option<(String, String)> {
+        if let Some(hit) = self.cache_get_user_by_uid(uid) {
+            if let Some(_u) = hit.uid_number {
+                let name = hit.display_name.clone();
+                return Some((name.clone(), name));
+            }
+        }
+
+        let uid_attr = self.posix_attributes.user_uid_number.clone();
+        let name_attr = self.posix_attributes.user_name.clone();
+        let obj = self.posix_attributes.user_object_class.clone();
+        let full_attr = self.posix_attributes.user_full_name.clone();
+
+        let filter = format!(
+            "(&(objectClass={})({}={}))",
+            obj,
+            uid_attr,
+            uid
+        );
+        let attrs: Vec<String> = vec![
+            name_attr.clone(),
+            uid_attr.clone(),
+            "cn".into(),
+            "displayName".into(),
+            full_attr.clone(),
+        ];
+
+        let entries = match self.service_search(&self.user_base, &filter, attrs).await {
+            Ok(e) => e,
+            Err(_) => return None,
+        };
+
+        for se in entries {
+            let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_else(|| uid.to_string());
+            let display = Self::extract_display_name(&se, &full_attr, &id);
+
+            if let Some(uid_str) = Self::extract_first_attr(&se, &uid_attr) {
+                if let Ok(u) = uid_str.parse::<i32>() {
+                    if u == uid {
+                        let user = User {
+                            id: id.clone(),
+                            dn: se.dn.clone(),
+                            display_name: Some(display.clone()),
+                            uid_number: Some(u),
+                        };
+                        self.cache_put_user(&id, &user);           // forward
+                        self.cache_put_user_by_uid(uid, &user);    // reverse
+                        return Some((id, display));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Reverse lookup: gidNumber → (cn/name, display_name). Uses dedicated 10m cache.
+    pub async fn resolve_group_by_gid(&self, gid: i32) -> Option<(String, String)> {
+        if let Some(hit) = self.cache_get_group_by_gid(gid) {
+            if let Some(_g) = hit.gid_number {
+                let name = hit.display_name.clone();
+                return Some((name.clone(), name));
+            }
+        }
+
+        let gid_attr = self.posix_attributes.group_gid_number.clone();
+        let name_attr = self.posix_attributes.group_name.clone();
+        let obj = self.posix_attributes.group_object_class.clone();
+
+        let filter = format!(
+            "(&(objectClass={})({}={}))",
+            obj,
+            gid_attr,
+            gid
+        );
+        let attrs: Vec<String> = vec![
+            name_attr.clone(),
+            gid_attr.clone(),
+            "cn".into(),
+            "displayName".into(),
+        ];
+
+        let entries = self
+            .ldap_search_entries(&self.group_base, &filter, attrs)
+            .await;
+
+        for se in entries {
+            let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_else(|| gid.to_string());
+            let display = Self::extract_display_name(&se, &name_attr, &id);
+
+            if let Some(gid_str) = Self::extract_first_attr(&se, &gid_attr) {
+                if let Ok(g) = gid_str.parse::<i32>() {
+                    if g == gid {
+                        let group = Group {
+                            id: id.clone(),
+                            dn: se.dn.clone(),
+                            display_name: Some(display.clone()),
+                            gid_number: Some(g),
+                        };
+                        self.cache_put_group(&id, &group);
+                        self.cache_put_group_by_gid(gid, &group);
+                        return Some((id, display));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub async fn list_users(&self, filter: Option<&str>) -> Vec<User> {
         let q = filter.unwrap_or("").trim();
         let cache_key = if q.is_empty() { "__all__".to_string() } else { q.to_string() };
@@ -652,7 +819,7 @@ impl LdapClient {
                 let uid = Self::extract_first_attr(&se, &uid_attr).and_then(|s| s.parse::<i32>().ok());
                 User { id, dn: se.dn, display_name: Some(display.clone()), uid_number: uid }
             })
-            .take(20)
+            .take(25)
             .collect();
 
         let _ = users.first().map(|u| u.dn.len());
@@ -664,6 +831,9 @@ impl LdapClient {
         // also populate individual identity cache entries for future resolve_ hits
         for u in &users {
             self.cache_put_user(&u.id, u);
+            if let Some(uid) = u.uid_number {
+                self.cache_put_user_by_uid(uid, u);
+            }
         }
 
         users
@@ -715,7 +885,7 @@ impl LdapClient {
                 let gid = Self::extract_first_attr(&se, &gid_attr).and_then(|s| s.parse::<i32>().ok());
                 Group { id, dn: se.dn, display_name: Some(display.clone()), gid_number: gid }
             })
-            .take(20)
+            .take(25)
             .collect();
 
         let _ = groups.first().map(|g| g.dn.len());
@@ -725,6 +895,9 @@ impl LdapClient {
 
         for g in &groups {
             self.cache_put_group(&g.id, g);
+            if let Some(gid) = g.gid_number {
+                self.cache_put_group_by_gid(gid, g);
+            }
         }
 
         groups

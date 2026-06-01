@@ -55,6 +55,32 @@
             color: #888;
             font-size: 0.85em;
         }
+
+        /* === New tree meta + edit mode styles (inline permissions refactor) === */
+        .dir.selected {
+            font-weight: 700;
+            background: #e3f2fd;
+            padding: 1px 4px;
+            border-radius: 2px;
+        }
+        .dir-meta {
+            margin-left: 1.6em;
+        }
+        .dir-meta[style*="display:none"] { display: none !important; }
+        .tree-editing .dir:not(.selected) {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+        .edit-mode-banner {
+            background: #fff3cd;
+            border: 1px solid #ffecb5;
+            color: #664e04;
+            font-size: 0.8em;
+            padding: 2px 8px;
+            margin: 4px 0 8px;
+            border-radius: 3px;
+        }
+        .suggestions { max-height: 320px; } /* room for 25 items + scroll */
     </style>
     <script>
         function selectUser(name, uid) {
@@ -70,12 +96,84 @@
             if (suggestions) suggestions.innerHTML = '';
         }
 
-        // Helper to attach delegated .dir handlers (tree expansion + permission form with LLDAP owner/group search).
-        // Wrapped in DOMContentLoaded for reliable attachment even when script runs from <head>.
+        // === Edit mode state (tree locked while editing one directory's permissions) ===
+        let currentEditPath = null;
+        const META_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes per user feedback
+        const metaCache = new Map(); // path -> { html: string, ts: number }
+
+        function setEditMode(active, path) {
+            currentEditPath = active ? path : null;
+            const treeRoot = document.getElementById('tree-root');
+            if (treeRoot) {
+                if (active) treeRoot.classList.add('tree-editing');
+                else treeRoot.classList.remove('tree-editing');
+            }
+            // Subtle banner (feedback #5)
+            let banner = document.getElementById('edit-mode-banner');
+            if (active) {
+                if (!banner) {
+                    banner = document.createElement('div');
+                    banner.id = 'edit-mode-banner';
+                    banner.className = 'edit-mode-banner';
+                    banner.textContent = 'Edit mode active — click Cancel, Apply, or navigate away to finish.';
+                    const tree = document.getElementById('tree-root');
+                    if (tree && tree.parentNode) tree.parentNode.insertBefore(banner, tree);
+                }
+            } else if (banner) {
+                banner.remove();
+            }
+        }
+
+        window.startDirEdit = function(btn, path) {
+            const meta = btn.closest('.dir-meta');
+            if (!meta) return;
+            setEditMode(true, path);
+            htmx.ajax('GET', '/dir-editor?path=' + encodeURIComponent(path), {
+                target: meta,
+                swap: 'innerHTML'
+            });
+        };
+
+        window.cancelDirEdit = function(el) {
+            const meta = el.closest('.dir-meta');
+            if (!meta) return;
+            const path = meta.dataset.path || currentEditPath;
+            setEditMode(false, null);
+            if (path) {
+                htmx.ajax('GET', '/dir-meta?path=' + encodeURIComponent(path), {
+                    target: meta,
+                    swap: 'innerHTML'
+                });
+            }
+        };
+
+        // Clear stale hidden numeric when user edits the visible name/uid field (after a selection)
+        function attachEditorInputListeners(metaEl) {
+            if (!metaEl) return;
+            metaEl.querySelectorAll('input[name="owner_user"], input[name="owner_group"]').forEach(inp => {
+                inp.addEventListener('input', () => {
+                    const hidden = inp.name === 'owner_user'
+                        ? metaEl.querySelector('input[name="owner_user_uid"]')
+                        : metaEl.querySelector('input[name="owner_group_gid"]');
+                    if (hidden) hidden.value = '';
+                });
+            });
+        }
+
+        // 5-minute client-side meta cache (used on auto-select / re-click of recently viewed dir)
+        function getCachedMeta(path) {
+            const entry = metaCache.get(path);
+            if (entry && (Date.now() - entry.ts) < META_CACHE_TTL_MS) return entry.html;
+            return null;
+        }
+        function putCachedMeta(path, html) {
+            metaCache.set(path, { html, ts: Date.now() });
+        }
+
+        // Helper to attach delegated .dir handlers (tree expansion + new inline meta/edit).
         function attachDirClickHandlers() {
-            // Delegated handlers for .dir clicks in the tree:
-            // - First click on a tree node expands its children (lazy /tree load)
-            // - Always shows/updates the permission form for that directory (current state from FS + live LLDAP searches)
+            // Main delegated .dir click: select (bold + meta) + expand/collapse.
+            // While editing, only the current dir's meta is interactive; other clicks are ignored.
             document.body.addEventListener('click', function(evt) {
                 const dir = evt.target.closest('.dir');
                 if (!dir) return;
@@ -83,33 +181,42 @@
                 const path = dir.dataset.path;
                 if (!path) return;
 
-                // Toggle expand/collapse for directory tree nodes + always update permission form.
-                // When collapsing a node we do a "strong collapse": we also force-close
-                // all descendant directories underneath it (arrows back to ▶, children hidden,
-                // loaded state cleared). This gives clean "collapse up the tree" behavior.
-                const childrenDiv = dir.nextElementSibling;
+                if (currentEditPath && currentEditPath !== path) {
+                    // Tree functionality disabled during edit (per spec)
+                    return;
+                }
+
+                // Robust children lookup (skips .dir-meta placeholders)
+                let sib = dir.nextElementSibling;
+                while (sib && !sib.classList.contains('children')) {
+                    sib = sib.nextElementSibling;
+                }
+                const childrenDiv = sib;
+
+                // Selection: bold + load (or reuse cached) meta directly under this dir
+                document.querySelectorAll('.dir.selected').forEach(d => d.classList.remove('selected'));
+                dir.classList.add('selected');
+
                 if (childrenDiv && childrenDiv.classList.contains('children')) {
                     const hasContent = childrenDiv.innerHTML.trim().length > 0;
                     const isVisible = childrenDiv.style.display !== 'none';
 
                     if (hasContent && isVisible) {
-                        // Collapse this node
                         childrenDiv.style.display = 'none';
                         dir.textContent = dir.textContent.replace('▼', '▶');
 
-                        // Strong subtree collapse: close every descendant .dir under this node
                         const descendantDirs = childrenDiv.querySelectorAll('.dir');
                         descendantDirs.forEach(descDir => {
-                            const descChildren = descDir.nextElementSibling;
+                            let dSib = descDir.nextElementSibling;
+                            while (dSib && !dSib.classList.contains('children')) dSib = dSib.nextElementSibling;
+                            const descChildren = dSib;
                             if (descChildren && descChildren.classList.contains('children')) {
                                 descChildren.style.display = 'none';
-                                // Clear loaded state so it will fresh-load on next expand
                                 delete descChildren.dataset.loaded;
                                 descDir.textContent = descDir.textContent.replace('▼', '▶');
                             }
                         });
                     } else {
-                        // Expand (show or load)
                         childrenDiv.style.display = '';
                         if (!childrenDiv.dataset.loaded || !hasContent) {
                             htmx.ajax('GET', '/tree?path=' + encodeURIComponent(path), {
@@ -122,40 +229,47 @@
                     }
                 }
 
-                // Always populate the permission editor form (current owners/mode from FS via the container view,
-                // plus live LLDAP user/group search for choosing new owner/group).
-                htmx.ajax('GET', '/directory?path=' + encodeURIComponent(path), {
-                    target: '#permission-form',
-                    swap: 'innerHTML'
-                });
-                const panel = document.getElementById('permission-form');
-                if (panel) panel.style.display = 'block';
-            });
+                // Show meta (Owner/Group/Perms + Edit) directly under the dir using the stable placeholder
+                const li = dir.closest('li');
+                let meta = li ? li.querySelector(':scope > .dir-meta') : null;
+                if (meta) {
+                    meta.style.display = '';
+                    meta.dataset.path = path;
 
-            // Delegated handler for LLDAP user/group search suggestions in the permission editor.
-            // This replaces the previous unsafe inline onclick= attributes and prevents
-            // htmx:syntax:error when names contain quotes or other special characters.
-            document.body.addEventListener('click', function(evt) {
-                const suggestion = evt.target.closest('.suggestion');
-                if (!suggestion) return;
-
-                const userId = suggestion.dataset.userId;
-                if (userId) {
-                    const uid = parseInt(suggestion.dataset.uid || '0', 10);
-                    if (typeof selectUser === 'function') {
-                        selectUser(userId, uid);
-                    }
-                    return;
-                }
-
-                const groupId = suggestion.dataset.groupId;
-                if (groupId) {
-                    const gid = parseInt(suggestion.dataset.gid || '0', 10);
-                    if (typeof selectGroup === 'function') {
-                        selectGroup(groupId, gid);
+                    const cached = getCachedMeta(path);
+                    if (cached) {
+                        meta.innerHTML = cached;
+                    } else {
+                        htmx.ajax('GET', '/dir-meta?path=' + encodeURIComponent(path), {
+                            target: meta,
+                            swap: 'innerHTML'
+                        }).then(() => {
+                            // After first load, snapshot for the 5min cache
+                            putCachedMeta(path, meta.innerHTML);
+                        });
                     }
                 }
             });
+
+            // htmx hook: when a .dir-meta receives a swap that leaves no <form> inside, we are back in browse mode
+            document.body.addEventListener('htmx:afterSwap', function(evt) {
+                const target = evt.detail && evt.detail.target;
+                if (target && target.classList && target.classList.contains('dir-meta')) {
+                    if (!target.querySelector('form')) {
+                        setEditMode(false, null);
+                        // Opportunistically cache the fresh browse meta
+                        const p = target.dataset.path;
+                        if (p) putCachedMeta(p, target.innerHTML);
+                    } else {
+                        // Editor just appeared — wire its input listeners (clear hiddens on edit)
+                        attachEditorInputListeners(target);
+                    }
+                }
+            });
+
+            // Robust suggestion handler (already updated earlier in this file for Phase 1)
+            // (kept here for reference; the real listener was inserted in the previous edit)
+            // ... (the click + click-outside listeners from Phase 1 remain above)
         }
 
         if (document.readyState === 'loading') {

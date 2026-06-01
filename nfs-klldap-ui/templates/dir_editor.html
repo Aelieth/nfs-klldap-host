@@ -1,0 +1,61 @@
+{# Inline editor shown inside .dir-meta when "Edit" is clicked.
+   Searchable text boxes (HTMX live against /users/search + /groups/search, max 25 results).
+   Prefilled with current values (numeric strings from FS stat, or friendly if resolved).
+   Any POSIX number (e.g. 1000-60000 preferred) can be typed directly.
+   ONLY LDAP-mapped entries come from search/select.
+   Includes recursive checkbox (streamlined but functional).
+   Cancel/Apply buttons replace the Edit button during mode.
+   Tree clicks are guarded by JS while this is active.
+#}
+<form class="dir-edit-form" hx-post="/apply" hx-target="closest .dir-meta" hx-swap="innerHTML" style="font-size:0.82em; margin:3px 0 6px 0.3em; padding:4px 6px; background:#fafcff; border:1px solid #d0e0ff; border-radius:4px;">
+    <input type="hidden" name="path" value="{{ path }}">
+    <input type="hidden" name="owner_user_uid" value="">
+    <input type="hidden" name="owner_group_gid" value="">
+
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+        <label style="flex:1; min-width:160px; position:relative;">
+            Owner (name or UID)<br>
+            <input type="text" name="owner_user" value="{{ owner_value }}" size="18"
+                   hx-get="/users/search"
+                   hx-trigger="input changed delay:220ms [value.length > 0]"
+                   hx-target="#user-suggestions-edit"
+                   hx-swap="innerHTML"
+                   placeholder="search or 1000-60000"
+                   style="width:100%; font-size:0.9em;">
+            <div id="user-suggestions-edit" class="suggestions" style="min-width:180px;"></div>
+        </label>
+
+        <label style="flex:1; min-width:160px; position:relative;">
+            Group (name or GID)<br>
+            <input type="text" name="owner_group" value="{{ group_value }}" size="18"
+                   hx-get="/groups/search"
+                   hx-trigger="input changed delay:220ms [value.length > 0]"
+                   hx-target="#group-suggestions-edit"
+                   hx-swap="innerHTML"
+                   placeholder="search or 1000-60000"
+                   style="width:100%; font-size:0.9em;">
+            <div id="group-suggestions-edit" class="suggestions" style="min-width:180px;"></div>
+        </label>
+
+        <label style="min-width:70px;">
+            Mode (octal)<br>
+            <input type="text" name="mode" value="{{ mode_value }}" size="4" style="font-size:0.9em;">
+        </label>
+
+        <label style="font-size:0.8em; white-space:nowrap; margin-bottom:2px;">
+            <input type="checkbox" name="recursive" value="true" {{ recursive_checked }}> recursive
+        </label>
+
+        <div style="display:flex; gap:4px; margin-bottom:2px;">
+            <button type="button"
+                    onclick="if (window.cancelDirEdit) window.cancelDirEdit(this);"
+                    style="font-size:0.75em; padding:2px 8px; cursor:pointer;">Cancel</button>
+            <button type="submit"
+                    style="font-size:0.75em; padding:2px 10px; cursor:pointer; font-weight:600;">Apply</button>
+        </div>
+    </div>
+
+    <div style="font-size:0.7em; color:#666; margin-top:2px;">
+        Edit mode active — tree navigation locked. Numbers 1000-60000 preferred (any valid POSIX allowed).
+    </div>
+</form>

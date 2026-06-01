@@ -414,6 +414,30 @@ struct PermissionForm {
     current_state_html: String,
 }
 
+// New inline fragments for the tree refactor (replaces the bulky separate permission panel).
+#[derive(Template)]
+#[template(path = "dir_meta.html")]
+struct DirMetaTemplate {
+    path: String,
+    /// Pre-formatted "name (ID)" or just the ID string for display.
+    owner_display: String,
+    group_display: String,
+    /// Octal string, e.g. "755"
+    mode_octal: String,
+}
+
+#[derive(Template)]
+#[template(path = "dir_editor.html")]
+struct DirEditorTemplate {
+    path: String,
+    /// Prefilled value for the owner text input (numeric string preferred for direct entry).
+    owner_value: String,
+    group_value: String,
+    mode_value: String,
+    /// " checked" or empty for the recursive checkbox (per feedback: keep the capability, default off).
+    recursive_checked: String,
+}
+
 // === System Settings (two-page UI - System Settings page) ===
 
 #[derive(Template)]
@@ -569,6 +593,99 @@ pub async fn directory_form(
     Ok(Html(form.render().unwrap()))
 }
 
+// === New inline tree meta / editor handlers (refactor: permissions live *under* the dir row) ===
+
+#[derive(Deserialize)]
+pub(crate) struct DirMetaParams {
+    path: String,
+}
+
+/// Returns the compact read-only Owner/Group/Permissions line + Edit button (HTMX fragment).
+/// Attempts friendly name resolution via the (cached) reverse uid/gid lookups.
+pub async fn dir_meta(
+    State(state): State<AppState>,
+    Query(params): Query<DirMetaParams>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Redirect> {
+    let _user = require_auth(State(state.clone()), headers).await?;
+
+    let path = params.path;
+
+    let (owner_display, group_display, mode_octal) = if let Some(node) = state.fs.build_tree(std::path::Path::new(&path)) {
+        let owner = node.owner.unwrap_or(0);
+        let group = node.group.unwrap_or(0);
+        let mode = node.mode & 0o7777;
+
+        // Try reverse cache + LDAP (non-chatty: 10m TTL, populated by prior searches/lists).
+        let l = state.lldap.lock().await;
+        let owner_disp = if let Some((name, _)) = l.resolve_user_by_uid(owner as i32).await {
+            if owner > 0 { format!("{} ({})", name, owner) } else { name }
+        } else if owner > 0 {
+            owner.to_string()
+        } else {
+            "0".to_string()
+        };
+
+        let group_disp = if let Some((name, _)) = l.resolve_group_by_gid(group as i32).await {
+            if group > 0 { format!("{} ({})", name, group) } else { name }
+        } else if group > 0 {
+            group.to_string()
+        } else {
+            "0".to_string()
+        };
+
+        (owner_disp, group_disp, format!("{:o}", mode))
+    } else {
+        let safe = path.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        ("(unavailable)".into(), "(unavailable)".into(), format!("<span style=\"color:#b00\">{}</span>", safe))
+    };
+
+    let tpl = DirMetaTemplate {
+        path: path.clone(),
+        owner_display,
+        group_display,
+        mode_octal,
+    };
+
+    Ok(Html(tpl.render().unwrap()))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct DirEditorParams {
+    path: String,
+}
+
+/// Returns the inline editor form (searchable inputs prefilled, recursive checkbox, Cancel/Apply).
+/// Current values come from FS (numeric strings for direct POSIX entry).
+pub async fn dir_editor(
+    State(state): State<AppState>,
+    Query(params): Query<DirEditorParams>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Redirect> {
+    let _user = require_auth(State(state.clone()), headers).await?;
+
+    let path = params.path;
+
+    let (owner_value, group_value, mode_value) = if let Some(node) = state.fs.build_tree(std::path::Path::new(&path)) {
+        let owner = node.owner.unwrap_or(0);
+        let group = node.group.unwrap_or(0);
+        let mode = node.mode & 0o7777;
+        (owner.to_string(), group.to_string(), format!("{:o}", mode))
+    } else {
+        ("1000".into(), "1000".into(), "755".into())
+    };
+
+    let tpl = DirEditorTemplate {
+        path: path.clone(),
+        owner_value,
+        group_value,
+        mode_value,
+        recursive_checked: String::new(), // default off (user can tick for recursive apply)
+    };
+
+    Ok(Html(tpl.render().unwrap()))
+}
+
 // === Live LLDAP Search Handlers ===
 
 #[derive(Deserialize)]
@@ -589,7 +706,7 @@ pub async fn search_users(
     let users = lldap.list_users(params.q.as_deref()).await;
 
     let mut html = String::new();
-    for user in users.into_iter().take(12) {
+    for user in users.into_iter().take(25) {
         let uid = user.uid_number.unwrap_or(0);
         let name = user.display_name.unwrap_or(user.id.clone());
 
@@ -603,10 +720,16 @@ pub async fn search_users(
             .replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;");
-        // onclick sets hidden uid + visible input (prep for embedded numeric ID fast path)
+        // Data-driven only (delegated handler in base.html does the rest + robust clear).
+        // Show numeric for clarity so users see the POSIX mapping.
+        let label = if uid > 0 {
+            format!("{} (UID {})", safe_name, uid)
+        } else {
+            safe_name.clone()
+        };
         html.push_str(&format!(
-            r#"<div class="suggestion" data-user-id="{}" data-uid="{}" onclick="this.closest('form').querySelector('#owner_user').value='{}';this.closest('form').querySelector('#owner_user_uid').value='{}';this.parentNode.innerHTML='';">{}</div>"#,
-            safe_id, uid, safe_name, uid, safe_name
+            r#"<div class="suggestion" data-user-id="{}" data-uid="{}">{}</div>"#,
+            safe_id, uid, label
         ));
     }
     if html.is_empty() {
@@ -628,7 +751,7 @@ pub async fn search_groups(
     let groups = lldap.list_groups(params.q.as_deref()).await;
 
     let mut html = String::new();
-    for group in groups.into_iter().take(12) {
+    for group in groups.into_iter().take(25) {
         let gid = group.gid_number.unwrap_or(0);
         let name = group.display_name.unwrap_or(group.id.clone());
 
@@ -642,9 +765,15 @@ pub async fn search_groups(
             .replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;");
+        // Data-driven only (delegated handler in base.html does the rest + robust clear).
+        let label = if gid > 0 {
+            format!("{} (GID {})", safe_name, gid)
+        } else {
+            safe_name.clone()
+        };
         html.push_str(&format!(
-            r#"<div class="suggestion" data-group-id="{}" data-gid="{}" onclick="this.closest('form').querySelector('#owner_group').value='{}';this.closest('form').querySelector('#owner_group_gid').value='{}';this.parentNode.innerHTML='';">{}</div>"#,
-            safe_id, gid, safe_name, gid, safe_name
+            r#"<div class="suggestion" data-group-id="{}" data-gid="{}">{}</div>"#,
+            safe_id, gid, label
         ));
     }
     if html.is_empty() {
@@ -957,51 +1086,74 @@ pub async fn apply_permissions(
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(State(state.clone()), headers).await?;
 
-    let lldap = state.lldap.lock().await;
+    // Numeric bypass (core of the refactor requirement):
+    // - If hidden uid/gid from a search selection is present → use it (fast path, cached).
+    // - Else if the visible field parses as a valid POSIX number → use directly (no LDAP hit at all;
+    //   supports "any valid POSIX number may be entered" while searches only ever return LDAP-mapped).
+    // - Otherwise treat as name and resolve (the resolve itself is cache-first 10m).
+    //
+    // Only lock the LdapClient if we actually need to call resolve_*.
+    let mut owner_uid: u32 = 0;
+    let mut group_gid: u32 = 0;
+    let mut needs_lock = false;
 
-    // Prefer embedded numeric IDs from suggestion clicks (avoids 2 LDAP ops).
-    // Fall back to name resolve when not present (manual entry or direct POST).
-    let owner_uid = if let Some(uid) = form.owner_user_uid {
-        uid
-    } else {
-        match lldap.resolve_user(&form.owner_user).await {
-            Some((uid, _)) => uid as u32,
-            None => {
-                let html = format!(
-                    r#"<div class="form">
-                        <h3>Error applying permissions for <code>{}</code></h3>
-                        <p style="color: red;">Could not find user <strong>{}</strong> in LLDAP.</p>
-                        <button type="button" onclick="htmx.ajax('GET', '/directory?path=' + encodeURIComponent('{}'), {{target: '#permission-form', swap: 'innerHTML'}})">
-                            Back to editor
-                        </button>
-                    </div>"#,
-                    form.path, form.owner_user, form.path
-                );
-                return Ok(Html(html));
+    if let Some(uid) = form.owner_user_uid.filter(|&x| x > 0) {
+        owner_uid = uid;
+    } else if let Ok(n) = form.owner_user.trim().parse::<u32>() {
+        owner_uid = n;
+    } else if !form.owner_user.trim().is_empty() {
+        needs_lock = true;
+    }
+
+    if let Some(gid) = form.owner_group_gid.filter(|&x| x > 0) {
+        group_gid = gid;
+    } else if let Ok(n) = form.owner_group.trim().parse::<u32>() {
+        group_gid = n;
+    } else if !form.owner_group.trim().is_empty() {
+        needs_lock = true;
+    }
+
+    if needs_lock {
+        let lldap = state.lldap.lock().await;
+        if owner_uid == 0 && !form.owner_user.trim().is_empty() {
+            match lldap.resolve_user(&form.owner_user).await {
+                Some((uid, _)) => owner_uid = uid as u32,
+                None => {
+                    let html = format!(
+                        r#"<div style="font-size:0.85em; color:#900; padding:4px; border:1px solid #fcc;">
+                            Could not find user <strong>{}</strong> in LLDAP (or invalid number).
+                            <button type="button" onclick="if (this.closest('.dir-meta')) htmx.ajax('GET','/dir-editor?path='+encodeURIComponent('{}'),{{target:this.closest('.dir-meta'),swap:'innerHTML'}})">Retry</button>
+                        </div>"#,
+                        form.owner_user, form.path
+                    );
+                    return Ok(Html(html));
+                }
             }
         }
-    };
-
-    let group_gid = if let Some(gid) = form.owner_group_gid {
-        gid
-    } else {
-        match lldap.resolve_group(&form.owner_group).await {
-            Some((gid, _)) => gid as u32,
-            None => {
-                let html = format!(
-                    r#"<div class="form">
-                        <h3>Error applying permissions for <code>{}</code></h3>
-                        <p style="color: red;">Could not find group <strong>{}</strong> in LLDAP.</p>
-                        <button type="button" onclick="htmx.ajax('GET', '/directory?path=' + encodeURIComponent('{}'), {{target: '#permission-form', swap: 'innerHTML'}})">
-                            Back to editor
-                        </button>
-                    </div>"#,
-                    form.path, form.owner_group, form.path
-                );
-                return Ok(Html(html));
+        if group_gid == 0 && !form.owner_group.trim().is_empty() {
+            match lldap.resolve_group(&form.owner_group).await {
+                Some((gid, _)) => group_gid = gid as u32,
+                None => {
+                    let html = format!(
+                        r#"<div style="font-size:0.85em; color:#900; padding:4px; border:1px solid #fcc;">
+                            Could not find group <strong>{}</strong> in LLDAP (or invalid number).
+                            <button type="button" onclick="if (this.closest('.dir-meta')) htmx.ajax('GET','/dir-editor?path='+encodeURIComponent('{}'),{{target:this.closest('.dir-meta'),swap:'innerHTML'}})">Retry</button>
+                        </div>"#,
+                        form.owner_group, form.path
+                    );
+                    return Ok(Html(html));
+                }
             }
         }
-    };
+    }
+
+    // Fallbacks for completely empty fields (defensive)
+    if owner_uid == 0 {
+        owner_uid = 1000;
+    }
+    if group_gid == 0 {
+        group_gid = 1000;
+    }
 
     let mode = u32::from_str_radix(&form.mode, 8).unwrap_or(0o770);
 
@@ -1013,44 +1165,38 @@ pub async fn apply_permissions(
         form.recursive,
     ) {
         let html = format!(
-            r#"<div class="form">
-                <h3>Error applying permissions</h3>
-                <p style="color: red;">{}</p>
-                <button type="button" onclick="htmx.ajax('GET', '/directory?path=' + encodeURIComponent('{}'), {{target: '#permission-form', swap: 'innerHTML'}})">
-                    Back to editor
-                </button>
+            r#"<div style="font-size:0.82em; color:#900; padding:3px 4px; border:1px solid #fcc; background:#fff5f5;">
+                Apply failed: {} 
+                <button type="button" onclick="if (this.closest('.dir-meta')) htmx.ajax('GET','/dir-editor?path='+encodeURIComponent('{}'),{{target:this.closest('.dir-meta'),swap:'innerHTML'}})">Retry</button>
             </div>"#,
             e, form.path
         );
         return Ok(Html(html));
     }
 
+    // Success: return the *compact browse-mode meta* (swapped into .dir-meta by the editor form).
+    // This naturally exits edit mode (the htmx:afterSwap listener will clear flags + re-enable tree).
+    // Re-resolve friendly names for the fresh display (cache hit almost always).
+    let (owner_display, group_display, mode_octal) = {
+        let l = state.lldap.lock().await;
+        let od = if let Some((nm, _)) = l.resolve_user_by_uid(owner_uid as i32).await {
+            if owner_uid > 0 { format!("{} ({})", nm, owner_uid) } else { nm }
+        } else { owner_uid.to_string() };
 
-    let html = format!(
-        r#"<div class="form">
-            <h3>Successfully applied permissions for <code>{}</code></h3>
-            <p>
-                <strong>Owner:</strong> {} (UID {})<br>
-                <strong>Group:</strong> {} (GID {})<br>
-                <strong>Mode:</strong> {}<br>
-                <strong>Recursive:</strong> {}
-            </p>
-            <p style="color: green;">Changes applied directly inside the container.</p>
-            <button type="button" onclick="htmx.ajax('GET', '/directory?path=' + encodeURIComponent('{}'), {{target: '#permission-form', swap: 'innerHTML'}})">
-                Reload editor (see live state)
-            </button>
-        </div>"#,
-        form.path,
-        form.owner_user,
-        owner_uid,
-        form.owner_group,
-        group_gid,
-        form.mode,
-        if form.recursive { "YES" } else { "NO" },
-        form.path
-    );
+        let gd = if let Some((nm, _)) = l.resolve_group_by_gid(group_gid as i32).await {
+            if group_gid > 0 { format!("{} ({})", nm, group_gid) } else { nm }
+        } else { group_gid.to_string() };
 
-    Ok(Html(html))
+        (od, gd, format!("{:o}", mode))
+    };
+
+    let meta = DirMetaTemplate {
+        path: form.path.clone(),
+        owner_display,
+        group_display,
+        mode_octal,
+    };
+    Ok(Html(meta.render().unwrap()))
 }
 
 pub async fn settings_page(
@@ -1450,7 +1596,9 @@ pub fn router(state: AppState) -> Router {
         // Protected (two-page UI + core permission editor)
         .route("/", get(index))
         .route("/tree", get(tree_fragment))
-        .route("/directory", get(directory_form))
+        .route("/directory", get(directory_form)) // legacy (kept during transition)
+        .route("/dir-meta", get(dir_meta))
+        .route("/dir-editor", get(dir_editor))
         .route("/users/search", get(search_users))
         .route("/groups/search", get(search_groups))
         .route("/apply", axum::routing::post(apply_permissions))

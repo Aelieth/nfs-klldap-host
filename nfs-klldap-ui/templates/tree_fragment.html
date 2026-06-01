@@ -6,6 +6,9 @@
               style="cursor: pointer; user-select: none;">
             ▶ {{ child.name }}
         </span>
+        <!-- Stable placeholder for selected-dir meta (Owner/Group/Perms + Edit controls).
+             Always present so JS expand logic and HTMX swaps are reliable (no sibling races). -->
+        <div class="dir-meta" data-path="{{ child.path }}" style="display:none;"></div>
         <div class="children" style="margin-left: 1.5em;"></div>
     </li>
 {% endfor %}

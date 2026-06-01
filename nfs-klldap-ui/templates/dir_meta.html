@@ -1,0 +1,18 @@
+{# Compact read-only ownership + perms line shown *directly under* a selected directory in the tree.
+   Rendered by /dir-meta handler. Includes the [Edit] button to the right.
+   Friendly names attempted via LdapClient reverse caches (populated on search + list).
+#}
+<div class="dir-meta-inner" style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:0.82em; color:#333; margin:2px 0 4px 0.2em;">
+    <span>
+        <strong>Owner:</strong> {{ owner_display }} &nbsp;
+        <strong>Group:</strong> {{ group_display }} &nbsp;
+        <strong>Permissions:</strong> <code>{{ mode_octal }}</code>
+    </span>
+    <button type="button"
+            class="edit-btn"
+            data-path="{{ path }}"
+            onclick="if (window.startDirEdit) window.startDirEdit(this, '{{ path }}');"
+            style="font-size:0.75em; padding:1px 6px; margin-left:4px; cursor:pointer; border:1px solid #4a90e2; background:#f0f7ff; border-radius:3px;">
+        Edit
+    </button>
+</div>

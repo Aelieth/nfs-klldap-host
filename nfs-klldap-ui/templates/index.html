@@ -36,9 +36,8 @@
     Loading tree...
 </div>
 
-<div id="permission-form" class="form" style="display:none; margin-top: 1rem;">
-    <!-- Populated by HTMX when a directory is clicked -->
-</div>
+<!-- Old separate permission panel removed by the inline tree meta refactor.
+     Ownership/permissions + Edit now appear directly under the selected directory row. -->
 
 <script>
     let currentShareName = null;
@@ -55,16 +54,8 @@
             swap: 'innerHTML'
         });
 
-        // Immediately open the permission management form for the share root itself.
-        // This is the key "manage directories" experience: current owners/mode from the live
-        // filesystem (inside the container), plus live search against LLDAP for choosing
-        // new owner user/group, then apply chown/chmod (recursive supported).
-        htmx.ajax('GET', '/directory?path=' + encodeURIComponent(hostPath), {
-            target: '#permission-form',
-            swap: 'innerHTML'
-        });
-        const panel = document.getElementById('permission-form');
-        if (panel) panel.style.display = 'block';
+        // The new inline meta (Owner/Group/Perms + Edit) is loaded automatically by the
+        // .dir click handler when the user (or auto-select below) clicks a row.
     }
 
     // Click handler for share cards (reads data-* attributes so paths with spaces/special
@@ -78,13 +69,24 @@
         }
     }
 
-    // Initial load of the first share (if any) using the safe encode path.
-    // This replaces the old server-rendered hx-get on #tree-root which could not safely
-    // contain arbitrary host_path values.
+    // Initial load of the first share (if any). After the tree fragment lands, auto-select
+    // the root directory so the user immediately sees Owner/Group/Permissions + Edit button
+    // (per feedback). The 5min client meta cache (in base.html) will avoid re-fetch on
+    // quick re-visits.
     document.addEventListener('DOMContentLoaded', function () {
         const firstCard = document.querySelector('.share-card');
         if (firstCard && firstCard.dataset.hostPath) {
             selectShareFromCard(firstCard);
+
+            // Auto-select the share root row shortly after the tree renders.
+            // Gives the exact "click a directory → meta appears under it" experience on arrival.
+            setTimeout(function () {
+                const rootDir = document.querySelector('#tree-root .root-dir, #tree-root .dir');
+                if (rootDir && rootDir.dataset.path) {
+                    // Dispatch a real click so the full select + meta logic (including cache) runs.
+                    rootDir.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                }
+            }, 180);
         } else {
             const root = document.getElementById('tree-root');
             if (root) root.innerHTML = '<em>No shares configured — add some in System Settings.</em>';

@@ -9,6 +9,8 @@
           style="cursor: pointer; user-select: none; font-weight: 600;">
       ▶ {{ root.name }}
     </span>
+    <!-- Stable placeholder for selected-dir meta on the share root itself. -->
+    <div class="dir-meta" data-path="{{ root.path }}" style="display:none;"></div>
     <div class="children" style="margin-left: 1.5em;" data-loaded="true">
       {# Direct children of the root (pre-rendered for the initial view).
          data-loaded prevents the delegated click handler from doing a redundant fetch. #}
@@ -20,6 +22,7 @@
                 style="cursor: pointer; user-select: none;">
             ▶ {{ child.name }}
           </span>
+          <div class="dir-meta" data-path="{{ child.path }}" style="display:none;"></div>
           <div class="children" style="margin-left: 1.5em;"></div>
         </li>
       {% endfor %}

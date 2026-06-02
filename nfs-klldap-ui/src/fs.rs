@@ -157,6 +157,10 @@ impl FsManager {
     ///
     /// All mutations are performed directly inside the container as root.
     ///
+    /// - **Non-recursive**: the target directory plus **immediate regular files only**
+    ///   (child subdirectories are not modified and not descended into).
+    /// - **Recursive**: full subtree (dirs + files), symlinks never descended.
+    ///
     /// The `recursive` boolean is mapped to a rich `ApplyOptions` with safe modern defaults:
     /// apply to both files and dirs, continue_on_error = true (so one bad file does not
     /// abort the whole tree — this was a frequent source of opaque "failed" reports in edit mode).
@@ -239,24 +243,27 @@ impl FsManager {
         mode: u32,
         opts: &ApplyOptions,
     ) -> Result<ApplyResult, String> {
-        if opts.recursive {
-            // Recursive (and any dry-run variant of recursive) goes through the WalkDir engine.
-            self.apply_tree(path, uid, gid, mode, opts)
-                .map_err(|e| format!("apply failed: {}", e))
-        } else {
-            // Non-recursive fast path (single directory only). This also covers the
-            // non-recursive + dry_run case cleanly (no accidental child visitation).
-            if opts.dry_run {
-                return Ok(ApplyResult { changed: 1, errors: vec![], skipped: 0 });
-            }
-            crate::privileged::chown(path, uid, gid).map_err(|e| e.to_string())?;
-            crate::privileged::chmod(path, mode).map_err(|e| e.to_string())?;
-            Ok(ApplyResult {
-                changed: 1,
-                errors: vec![],
-                skipped: 0,
-            })
+        // WalkDir engine for both modes: non-recursive = dir + immediate files only;
+        // recursive = full subtree (see `should_apply_entry`).
+        self.apply_tree(path, uid, gid, mode, opts)
+            .map_err(|e| format!("apply failed: {}", e))
+    }
+
+    /// Whether this walk entry should receive chown/chmod under the current options.
+    fn should_apply_entry(entry: &DirEntry, opts: &ApplyOptions) -> bool {
+        let ft = entry.file_type();
+        if ft.is_symlink() {
+            return false;
         }
+        let is_dir = ft.is_dir();
+        let is_file = ft.is_file();
+        if opts.recursive {
+            return (is_dir && opts.apply_to_dirs) || (is_file && opts.apply_to_files);
+        }
+        // Non-recursive: target directory (depth 0) + immediate files (depth 1) only.
+        let depth = entry.depth();
+        (is_dir && opts.apply_to_dirs && depth == 0)
+            || (is_file && opts.apply_to_files && depth == 1)
     }
 
     /// Core tree-walking permission application using WalkDir (iterative, policy-driven).
@@ -324,10 +331,7 @@ impl FsManager {
                 continue;
             }
 
-            let is_dir = ft.is_dir();
-            let is_file = ft.is_file();
-
-            let should_apply = (is_dir && opts.apply_to_dirs) || (is_file && opts.apply_to_files);
+            let should_apply = Self::should_apply_entry(&entry, opts);
 
             if !should_apply {
                 result.skipped += 1;
@@ -615,6 +619,38 @@ mod tests {
         // root + d1 + d2 = 3 changed; the symlink is skipped
         assert!(res.changed >= 3);
         assert!(res.skipped >= 1, "symlink should have been counted as skipped");
+        assert!(res.errors.is_empty());
+    }
+
+    #[test]
+    fn apply_tree_non_recursive_changes_dir_and_immediate_files_only() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("target");
+        std::fs::create_dir_all(root.join("subdir")).unwrap();
+        std::fs::write(root.join("top.txt"), "a").unwrap();
+        std::fs::write(root.join("subdir/nested.txt"), "b").unwrap();
+
+        let cfg = make_test_config_with_shares(&[root.to_str().unwrap()]);
+        let mut cfg = cfg;
+        cfg.storage.container_root = root.to_string_lossy().into_owned();
+        cfg.shares[0].name.clear();
+
+        let fs = FsManager::new(cfg);
+
+        let opts = ApplyOptions {
+            recursive: false,
+            apply_to_dirs: true,
+            apply_to_files: true,
+            continue_on_error: true,
+            dry_run: true,
+        };
+
+        let res = fs
+            .apply_tree(&root, 1000, 1000, 0o755, &opts)
+            .expect("non-recursive dry run");
+
+        // target/ (dir) + top.txt — not subdir/ nor nested.txt
+        assert_eq!(res.changed, 2, "expected root dir and one immediate file");
         assert!(res.errors.is_empty());
     }
 }

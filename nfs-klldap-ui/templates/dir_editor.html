@@ -50,7 +50,7 @@
         </label>
 
         <label style="font-size:0.8em; white-space:nowrap; margin-bottom:2px;">
-            <input type="checkbox" name="recursive" value="true" {{ recursive_checked }}> recursive
+            <input type="checkbox" name="recursive" value="true" {{ recursive_checked }}> recursive (all subdirs)
         </label>
 
         <div style="display:flex; gap:4px; margin-bottom:2px;">
@@ -64,6 +64,6 @@
     </div>
 
     <div style="font-size:0.7em; color: var(--text-light); margin-top:2px;">
-        Edit mode active — tree navigation locked. Numbers 1000-60000 preferred (any valid POSIX allowed).
+        Edit mode active — tree navigation locked. Without recursive: this directory + files here only (not subdirs). Numbers 1000-60000 preferred.
     </div>
 </form>

@@ -928,19 +928,22 @@ impl LdapClient {
         let mut results: Vec<User> = Vec::new();
         let mut seen_ids: HashSet<String> = HashSet::new();
 
-        // Identity cache: resolved owners, reverse lookups, prior searches.
-        for (id, cu) in self.user_cache.lock().unwrap().iter() {
-            Self::try_push_user(
-                &mut results,
-                &mut seen_ids,
-                &q_lower,
-                User {
-                    id: id.clone(),
-                    dn: cu.dn.clone(),
-                    display_name: Some(cu.display_name.clone()),
-                    uid_number: cu.uid_number,
-                },
-            );
+        // Identity cache helps typed queries only. For "show all" (empty query), identity
+        // entries are partial (e.g. one resolved owner) and must not suppress the full list.
+        if !q_orig.is_empty() {
+            for (id, cu) in self.user_cache.lock().unwrap().iter() {
+                Self::try_push_user(
+                    &mut results,
+                    &mut seen_ids,
+                    &q_lower,
+                    User {
+                        id: id.clone(),
+                        dn: cu.dn.clone(),
+                        display_name: Some(cu.display_name.clone()),
+                        uid_number: cu.uid_number,
+                    },
+                );
+            }
         }
 
         // Recent search cache (2m): re-apply query filter — stale keys must not bypass typing.
@@ -962,10 +965,14 @@ impl LdapClient {
         }
 
         // LDAP when caches miss, typed query misses, or a stale empty __all__ cache blocks results.
-        let needs_ldap = results.is_empty()
-            && (search_cached.is_none()
-                || !q_lower.is_empty()
-                || search_cached.as_ref().is_some_and(|c| c.is_empty()));
+        let needs_ldap = if q_orig.is_empty() {
+            search_cached.as_ref().is_none_or(|c| c.is_empty())
+        } else {
+            results.is_empty()
+                && (search_cached.is_none()
+                    || !q_lower.is_empty()
+                    || search_cached.as_ref().is_some_and(|c| c.is_empty()))
+        };
         if needs_ldap {
             let ldap_filter = self.build_user_list_ldap_filter(&q_orig);
             let name_attr = self.posix_attributes.user_name.clone();
@@ -1033,18 +1040,20 @@ impl LdapClient {
         let mut results: Vec<Group> = Vec::new();
         let mut seen_ids: HashSet<String> = HashSet::new();
 
-        for (id, cg) in self.group_cache.lock().unwrap().iter() {
-            Self::try_push_group(
-                &mut results,
-                &mut seen_ids,
-                &q_lower,
-                Group {
-                    id: id.clone(),
-                    dn: cg.dn.clone(),
-                    display_name: Some(cg.display_name.clone()),
-                    gid_number: cg.gid_number,
-                },
-            );
+        if !q_orig.is_empty() {
+            for (id, cg) in self.group_cache.lock().unwrap().iter() {
+                Self::try_push_group(
+                    &mut results,
+                    &mut seen_ids,
+                    &q_lower,
+                    Group {
+                        id: id.clone(),
+                        dn: cg.dn.clone(),
+                        display_name: Some(cg.display_name.clone()),
+                        gid_number: cg.gid_number,
+                    },
+                );
+            }
         }
 
         let search_cached = self.cache_get_search(&cache_key, false);
@@ -1064,10 +1073,14 @@ impl LdapClient {
             }
         }
 
-        let needs_ldap = results.is_empty()
-            && (search_cached.is_none()
-                || !q_lower.is_empty()
-                || search_cached.as_ref().is_some_and(|c| c.is_empty()));
+        let needs_ldap = if q_orig.is_empty() {
+            search_cached.as_ref().is_none_or(|c| c.is_empty())
+        } else {
+            results.is_empty()
+                && (search_cached.is_none()
+                    || !q_lower.is_empty()
+                    || search_cached.as_ref().is_some_and(|c| c.is_empty()))
+        };
         if needs_ldap {
             let ldap_filter = self.build_group_list_ldap_filter(&q_orig);
             let name_attr = self.posix_attributes.group_name.clone();

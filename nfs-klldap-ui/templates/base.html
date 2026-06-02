@@ -350,6 +350,32 @@
             metaCache.set(path, { html, ts: Date.now() });
         }
 
+        function invalidateMetaCacheUnder(rootPath) {
+            const root = (rootPath || '').replace(/\/$/, '');
+            for (const key of metaCache.keys()) {
+                if (key === rootPath || (root && key.startsWith(root + '/'))) {
+                    metaCache.delete(key);
+                }
+            }
+        }
+
+        // After a recursive apply, refresh visible permission rows for all descendant dirs.
+        window.refreshSubtreeMetas = function(rootPath) {
+            if (!rootPath) return;
+            invalidateMetaCacheUnder(rootPath);
+            const root = rootPath.replace(/\/$/, '');
+            document.querySelectorAll('.dir-meta[data-path]').forEach(meta => {
+                const p = meta.dataset.path;
+                if (!p || p === rootPath) return;
+                if (!root || !p.startsWith(root + '/')) return;
+                if (meta.style.display === 'none') return;
+                htmx.ajax('GET', '/dir-meta?path=' + encodeURIComponent(p), {
+                    target: meta,
+                    swap: 'innerHTML'
+                }).then(() => putCachedMeta(p, meta.innerHTML));
+            });
+        };
+
         // Helper to attach delegated .dir handlers (tree expansion + new inline meta/edit).
         function attachDirClickHandlers() {
             // Main delegated .dir click: select (bold + meta) + expand/collapse.
@@ -361,8 +387,8 @@
                 const path = dir.dataset.path;
                 if (!path) return;
 
-                if (currentEditPath && currentEditPath !== path) {
-                    // Tree functionality disabled during edit (per spec)
+                if (currentEditPath) {
+                    // Edit mode: no tree expand/collapse/select — only the permission form is active.
                     return;
                 }
 
@@ -449,15 +475,40 @@
                 }
             });
 
+            // Remember recursive flag before apply swaps away the editor form.
+            document.body.addEventListener('htmx:beforeRequest', function(evt) {
+                const elt = evt.detail && evt.detail.elt;
+                const form = elt && elt.classList && elt.classList.contains('dir-edit-form')
+                    ? elt
+                    : (elt && elt.closest ? elt.closest('.dir-edit-form') : null);
+                if (!form) return;
+                const meta = form.closest('.dir-meta');
+                const path = form.querySelector('input[name="path"]')?.value;
+                const recursive = !!form.querySelector('input[name="recursive"]')?.checked;
+                if (meta && path) {
+                    meta.dataset.pendingRecursive = recursive ? '1' : '0';
+                    meta.dataset.pendingApplyPath = path;
+                }
+            });
+
             // htmx hook: when a .dir-meta receives a swap that leaves no <form> inside, we are back in browse mode
             document.body.addEventListener('htmx:afterSwap', function(evt) {
                 const target = evt.detail && evt.detail.target;
                 if (target && target.classList && target.classList.contains('dir-meta')) {
                     if (!target.querySelector('form')) {
                         setEditMode(false, null);
-                        // Opportunistically cache the fresh browse meta
                         const p = target.dataset.path;
-                        if (p) putCachedMeta(p, target.innerHTML);
+                        if (p) {
+                            putCachedMeta(p, target.innerHTML);
+                            if (target.dataset.pendingRecursive === '1') {
+                                invalidateMetaCacheUnder(p);
+                                if (window.refreshSubtreeMetas) {
+                                    window.refreshSubtreeMetas(p);
+                                }
+                            }
+                        }
+                        delete target.dataset.pendingRecursive;
+                        delete target.dataset.pendingApplyPath;
                     } else {
                         // Editor just appeared — wire its input listeners (clear hiddens on edit)
                         attachEditorInputListeners(target);

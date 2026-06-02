@@ -512,15 +512,23 @@ pub(crate) async fn apply_permissions(
     }
 
     // Build a human-readable command summary (less verbose)
-    let recursive_flag = if form.recursive { " -R" } else { "" };
-    let cmd = format!(
-        "chown {uid}:{gid}{r} {path}\nchmod {mode:o}{r} {path}",
-        uid = owner_uid,
-        gid = group_gid,
-        r = recursive_flag,
-        path = form.path,
-        mode = mode
-    );
+    let cmd = if form.recursive {
+        format!(
+            "chown {uid}:{gid} -R {path}\nchmod {mode:o} -R {path}",
+            uid = owner_uid,
+            gid = group_gid,
+            path = form.path,
+            mode = mode
+        )
+    } else {
+        format!(
+            "chown {uid}:{gid} {path} (+ immediate files in directory)\nchmod {mode:o} {path} (+ immediate files in directory)",
+            uid = owner_uid,
+            gid = group_gid,
+            path = form.path,
+            mode = mode
+        )
+    };
 
     // Build rich result text (more verbose)
     let mut result_text = format!(

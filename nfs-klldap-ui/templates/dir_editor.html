@@ -1,7 +1,7 @@
 {# Inline editor shown inside .dir-meta when "Edit" is clicked.
    Searchable text boxes (HTMX live against /users/search + /groups/search, max 25 results).
    Only users with uidNumber and groups with gidNumber are listed (posix accounts).
-   Prefilled with current values (numeric strings from FS stat, or friendly if resolved).
+   Prefilled with friendly owner/group labels when LDAP resolves (same as browse meta), plus hidden uid/gid for Apply.
    Any POSIX number (e.g. 1000-60000 preferred) can be typed directly; typing letters or digits
    filters the dropdown live by name or number. Focus/click initiates dropdown (no auto-clear).
    Includes recursive checkbox (streamlined but functional).
@@ -10,20 +10,21 @@
 #}
 <form class="dir-edit-form" hx-post="/apply" hx-target="closest .dir-meta" hx-swap="innerHTML" style="font-size:0.82em; margin:3px 0 6px 0.3em; padding:4px 6px; border-radius:4px;">
     <input type="hidden" name="path" value="{{ path }}">
-    <input type="hidden" name="owner_user_uid" value="">
-    <input type="hidden" name="owner_group_gid" value="">
+    <input type="hidden" name="owner_user_uid" value="{{ owner_uid_hidden }}">
+    <input type="hidden" name="owner_group_gid" value="{{ owner_gid_hidden }}">
 
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
         <label style="flex:1; min-width:160px; position:relative;">
             Owner (name or UID)<br>
             <input type="text" name="owner_user" value="{{ owner_value }}" size="18"
                    hx-get="/users/search"
-                   hx-trigger="input changed delay:220ms [value.length > 0], focus"
+                   hx-trigger="focus, click, input changed delay:220ms"
                    hx-target="#user-suggestions-edit"
                    hx-swap="innerHTML"
-                   hx-vals='js:{q: this.value}'
-                   hx-params="q"
+                   hx-include="this"
+                   hx-params="owner_user"
                    placeholder="search or 1000-60000"
+                   autocomplete="off"
                    style="width:100%; font-size:0.9em;">
             <div id="user-suggestions-edit" class="suggestions" style="min-width:180px;"></div>
         </label>
@@ -32,12 +33,13 @@
             Group (name or GID)<br>
             <input type="text" name="owner_group" value="{{ group_value }}" size="18"
                    hx-get="/groups/search"
-                   hx-trigger="input changed delay:220ms [value.length > 0], focus"
+                   hx-trigger="focus, click, input changed delay:220ms"
                    hx-target="#group-suggestions-edit"
                    hx-swap="innerHTML"
-                   hx-vals='js:{q: this.value}'
-                   hx-params="q"
+                   hx-include="this"
+                   hx-params="owner_group"
                    placeholder="search or 1000-60000"
+                   autocomplete="off"
                    style="width:100%; font-size:0.9em;">
             <div id="group-suggestions-edit" class="suggestions" style="min-width:180px;"></div>
         </label>

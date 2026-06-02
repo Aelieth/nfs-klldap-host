@@ -69,8 +69,41 @@ struct DirEditorTemplate {
     path: String,
     owner_value: String,
     group_value: String,
+    owner_uid_hidden: String,
+    owner_gid_hidden: String,
     mode_value: String,
     recursive_checked: String,
+}
+
+/// Friendly label for the permission editor / meta row: `display (uid)` when LDAP resolves.
+async fn friendly_user_label(lldap: &crate::ldap::LdapClient, uid: u32) -> String {
+    if uid == 0 {
+        return "0".to_string();
+    }
+    if let Some((id, display)) = lldap.resolve_user_by_uid(uid as i32).await {
+        let label = if !display.is_empty() && display != id {
+            display
+        } else {
+            id
+        };
+        return format!("{} ({})", label, uid);
+    }
+    uid.to_string()
+}
+
+async fn friendly_group_label(lldap: &crate::ldap::LdapClient, gid: u32) -> String {
+    if gid == 0 {
+        return "0".to_string();
+    }
+    if let Some((id, display)) = lldap.resolve_group_by_gid(gid as i32).await {
+        let label = if !display.is_empty() && display != id {
+            display
+        } else {
+            id
+        };
+        return format!("{} ({})", label, gid);
+    }
+    gid.to_string()
 }
 
 // === Query/Form params ===
@@ -94,7 +127,36 @@ pub(crate) struct DirEditorParams {
 
 #[derive(Deserialize)]
 pub(crate) struct SearchParams {
+    /// Legacy/alternate query param (some HTMX configs send `q` via js: vals).
     q: Option<String>,
+    /// Live search: current Owner field value (preferred — sent via hx-include on the input).
+    #[serde(default)]
+    owner_user: Option<String>,
+    /// Live search: current Group field value (preferred — sent via hx-include on the input).
+    #[serde(default)]
+    owner_group: Option<String>,
+}
+
+impl SearchParams {
+    fn user_query_raw(&self) -> Option<&str> {
+        let raw = self.q.as_deref().or(self.owner_user.as_deref())?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }
+
+    fn group_query_raw(&self) -> Option<&str> {
+        let raw = self.q.as_deref().or(self.owner_group.as_deref())?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -224,23 +286,11 @@ pub(crate) async fn dir_meta(
 
     let (owner_display, group_display, mode_octal) = if let Some((owner, group, mode)) = state.fs.get_dir_meta(std::path::Path::new(&path)) {
         let l = state.lldap.lock().await;
-        let owner_disp = if let Some((name, _)) = l.resolve_user_by_uid(owner as i32).await {
-            if owner > 0 { format!("{} ({})", name, owner) } else { name }
-        } else if owner > 0 {
-            owner.to_string()
-        } else {
-            "0".to_string()
-        };
-
-        let group_disp = if let Some((name, _)) = l.resolve_group_by_gid(group as i32).await {
-            if group > 0 { format!("{} ({})", name, group) } else { name }
-        } else if group > 0 {
-            group.to_string()
-        } else {
-            "0".to_string()
-        };
-
-        (owner_disp, group_disp, format!("{:o}", mode))
+        (
+            friendly_user_label(&l, owner).await,
+            friendly_group_label(&l, group).await,
+            format!("{:o}", mode),
+        )
     } else {
         let safe = path.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
         ("(unavailable)".into(), "(unavailable)".into(), format!("<span style=\"color:#b00\">{}</span>", safe))
@@ -265,16 +315,30 @@ pub(crate) async fn dir_editor(
 
     let path = params.path;
 
-    let (owner_value, group_value, mode_value) = if let Some((owner, group, mode)) = state.fs.get_dir_meta(std::path::Path::new(&path)) {
-        (owner.to_string(), group.to_string(), format!("{:o}", mode))
-    } else {
-        ("1000".into(), "1000".into(), "755".into())
-    };
+    let (owner_value, group_value, owner_uid_hidden, owner_gid_hidden, mode_value) =
+        if let Some((owner, group, mode)) = state.fs.get_dir_meta(std::path::Path::new(&path)) {
+            let l = state.lldap.lock().await;
+            let owner_label = friendly_user_label(&l, owner).await;
+            let group_label = friendly_group_label(&l, group).await;
+            let uid_h = if owner > 0 { owner.to_string() } else { String::new() };
+            let gid_h = if group > 0 { group.to_string() } else { String::new() };
+            (owner_label, group_label, uid_h, gid_h, format!("{:o}", mode))
+        } else {
+            (
+                "1000".into(),
+                "1000".into(),
+                "1000".into(),
+                "1000".into(),
+                "755".into(),
+            )
+        };
 
     let tpl = DirEditorTemplate {
         path: path.clone(),
         owner_value,
         group_value,
+        owner_uid_hidden,
+        owner_gid_hidden,
         mode_value,
         recursive_checked: String::new(),
     };
@@ -294,10 +358,10 @@ pub(crate) async fn search_users(
     }
 
     let lldap = state.lldap.lock().await;
-    let users = lldap.list_users(params.q.as_deref()).await;
+    let users = lldap.list_users(params.user_query_raw()).await;
 
     let mut html = String::new();
-    for user in users {
+    for user in users.into_iter().filter(|u| u.uid_number.is_some()) {
         let uid = user.uid_number.unwrap_or(0);
         let name = user.display_name.unwrap_or(user.id.clone());
 
@@ -326,10 +390,10 @@ pub(crate) async fn search_groups(
     }
 
     let lldap = state.lldap.lock().await;
-    let groups = lldap.list_groups(params.q.as_deref()).await;
+    let groups = lldap.list_groups(params.group_query_raw()).await;
 
     let mut html = String::new();
-    for group in groups {
+    for group in groups.into_iter().filter(|g| g.gid_number.is_some()) {
         let gid = group.gid_number.unwrap_or(0);
         let name = group.display_name.unwrap_or(group.id.clone());
 
@@ -529,4 +593,39 @@ pub(crate) async fn apply_permissions(
 
     let meta_html = meta.render().unwrap();
     Ok(Html(format!("{}\n{}", meta_html, status_html)))
+}
+
+#[cfg(test)]
+mod search_params_tests {
+    use super::SearchParams;
+
+    #[test]
+    fn user_query_uses_owner_user_field_from_htmx_include() {
+        let p = SearchParams {
+            q: None,
+            owner_user: Some("  alice  ".into()),
+            owner_group: None,
+        };
+        assert_eq!(p.user_query_raw(), Some("alice"));
+    }
+
+    #[test]
+    fn empty_owner_user_means_show_all() {
+        let p = SearchParams {
+            q: None,
+            owner_user: Some("   ".into()),
+            owner_group: None,
+        };
+        assert_eq!(p.user_query_raw(), None);
+    }
+
+    #[test]
+    fn group_query_uses_owner_group_field() {
+        let p = SearchParams {
+            q: Some("legacy".into()),
+            owner_user: None,
+            owner_group: Some("admins".into()),
+        };
+        assert_eq!(p.group_query_raw(), Some("legacy"));
+    }
 }

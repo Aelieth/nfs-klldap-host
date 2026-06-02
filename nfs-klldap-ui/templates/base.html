@@ -242,6 +242,23 @@
         }
     </style>
     <script>
+        // Normalize permission-editor field values (e.g. "Alice (1000)" → "1000") for HTMX search.
+        window.editorSearchQuery = function(input) {
+            const v = (input && input.value) ? input.value.trim() : '';
+            if (!v) return '';
+            const paren = v.match(/\((?:UID|GID|uid|gid)?\s*(\d+)\)\s*$/);
+            if (paren) return paren[1];
+            const open = v.lastIndexOf('(');
+            if (open > 0 && v.endsWith(')')) {
+                const inner = v.slice(open + 1, -1).trim();
+                const num = inner.replace(/^(UID|GID|uid|gid)\s*/i, '').trim();
+                if (/^\d+$/.test(num)) return num;
+                const name = v.slice(0, open).trim();
+                if (name) return name;
+            }
+            return v;
+        };
+
         function selectUser(name, uid) {
             const input = document.getElementById('owner_user');
             if (input) input.value = name;
@@ -461,9 +478,10 @@
                 const userId = suggestion.dataset.userId;
                 if (userId) {
                     const uid = parseInt(suggestion.dataset.uid || '0', 10);
+                    const label = (suggestion.textContent || '').trim();
                     const nameInput = container.querySelector('input[name="owner_user"], #owner_user');
                     const uidInput  = container.querySelector('input[name="owner_user_uid"], #owner_user_uid');
-                    if (nameInput) nameInput.value = userId;
+                    if (nameInput) nameInput.value = label || userId;
                     if (uidInput)  uidInput.value = String(uid || '');
                     if (suggBox) suggBox.innerHTML = '';
                     return;
@@ -472,9 +490,10 @@
                 const groupId = suggestion.dataset.groupId;
                 if (groupId) {
                     const gid = parseInt(suggestion.dataset.gid || '0', 10);
+                    const label = (suggestion.textContent || '').trim();
                     const nameInput = container.querySelector('input[name="owner_group"], #owner_group');
                     const gidInput  = container.querySelector('input[name="owner_group_gid"], #owner_group_gid');
-                    if (nameInput) nameInput.value = groupId;
+                    if (nameInput) nameInput.value = label || groupId;
                     if (gidInput)  gidInput.value = String(gid || '');
                     if (suggBox) suggBox.innerHTML = '';
                 }
@@ -501,12 +520,12 @@
 
                 // Small delay so that a click on a .suggestion still works (click fires after focusout)
                 setTimeout(() => {
-                    const container = input.closest('form, .dir-meta, .dir-editor') || document;
-                    const active = container.querySelector(':focus');
-                    // If focus didn't move to another suggestion trigger or the box itself, clear
-                    if (!active || !active.closest('.suggestions')) {
-                        const box = container.querySelector('.suggestions');
-                        if (box) box.innerHTML = '';
+                    const active = document.activeElement;
+                    const label = input.closest('label');
+                    const box = label ? label.querySelector('.suggestions') : null;
+                    // If focus left this field and its dropdown, collapse suggestions
+                    if (box && (!active || (active !== input && !box.contains(active)))) {
+                        box.innerHTML = '';
                     }
                 }, 120);
             });

@@ -9,7 +9,7 @@ Single TOML (`nfs-klldap.conf`) is the source of truth. `nfs-klldap-config` vali
 | `host_path` vs container  | UI + allow-list + ownership use the host-visible absolute path. Ganesha sees `$container_root/$share_name`. Translation happens only at the syscall boundary inside the container (`FsManager`). |
 | Hostname                  | `get_consistent_hostname()` (hostname(1) == /proc/sys/kernel/hostname). Mismatch → loud diagnostic. `--uts=host` is the normal way to get the real name. |
 | Realm                     | Strictly required. No silent EXAMPLE.COM. Auto-derived from ldap_uri host or NFS_REALM. |
-| ldap_uri                  | DNS hostname only (IP rejected at validate time). Forward+reverse DNS required for the `nfs/<host>@REALM` principal. |
+| ldap_uri                  | DNS hostname only (IP rejected). Forward+reverse DNS required. Keytab: `nfs/<short>@REALM` and `nfs/<fqdn>@REALM` when they differ (`--uts=host`). |
 | Execution                 | Everything (Ganesha, SSSD, WebUI, generator) runs as root inside the container. |
 | Reload                    | Watcher → SIGHUP to pid 1 → generator + permission fixup + daemon restart/reload. No DBUS. |
 

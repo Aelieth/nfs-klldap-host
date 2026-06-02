@@ -174,7 +174,7 @@ mod tests {
             config_path,
             keytab_hostname: "test-host".to_string(),
             keytab_realm: "EXAMPLE.COM".to_string(),
-            keytab_status_message: "Keytab principal: nfs/test-host@EXAMPLE.COM principal matches."
+            keytab_status_message: "Keytab: matched nfs/test-host@EXAMPLE.COM (expected one of: nfs/test-host@EXAMPLE.COM)."
                 .to_string(),
         };
 

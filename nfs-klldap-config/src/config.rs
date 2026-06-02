@@ -49,6 +49,7 @@ pub struct ServerSection {
 pub struct SssdSection {
     pub ldap_default_bind_dn: String,
     pub ldap_default_authtok: String,
+    /// Derived 636/389 for reference; SSSD uses ldap_uri (port must be in the URI).
     pub port: Option<u16>,
     pub ldap_user_search_base: Option<String>,
     pub ldap_group_search_base: Option<String>,

@@ -22,7 +22,7 @@ entrypoint (pid 1) → restart/reload daemons
         └── nfs-klldap-ui (9630, HTTPS, root) ──direct──> chown/chmod on bind-mounted host_path trees
 ```
 
-One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. `--uts=host` + keytab with the correct `nfs/<host>@REALM` principal are required.
+One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. Use `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN when they differ).
 
 ## Quick Start
 
@@ -69,9 +69,9 @@ The generator derives ports, search bases, sssd.conf, krb5.conf, and Ganesha fra
 ## WebUI (9630)
 
 - `/` — Live FS tree browser (under shares) + KLLDAP user/group search + direct recursive chown/chmod.
-- `/settings` — Raw + structured TOML editor + current LLDAP bind identity + "Reload NFS client" + "Clear identity cache" (10 min user/group + 30 s search cache; stats shown).
+- `/settings` — Raw + structured TOML editor + current LLDAP bind identity + "Reload NFS client" + "Clear identity cache" (10 min user/group + 2 min search cache; stats shown).
 
-Auth: "localhost" (sidecar bcrypt file next to config) or any LLDAP user in `webui_admin_group` (default `lldap_admin`).
+Auth: "localhost" (sidecar `webui-password` file next to config, SHA-256 hash) or any LLDAP user in `webui_admin_group` (default `lldap_admin`).
 
 ### Security Contracts for Directory Permission Changes
 
@@ -86,8 +86,8 @@ These contracts are also documented in source comments in `nfs-klldap-ui/src/fs.
 ## Prerequisites
 
 - Kerberos time sync.
-- `--uts=host` (recommended) so the container sees the real Docker host hostname. The TUI then shows the exact `nfs/<host>-nfs@REALM` principal needed.
-- Keytab (0600) containing that principal.
+- `--uts=host` (recommended) so the container sees the real Docker host hostname (`hostname` must match `/proc/sys/kernel/hostname`).
+- Keytab (0600) with `nfs/<short-hostname>@REALM` and `nfs/<fqdn>@REALM` when they differ.
 - `ldap_uri` host must resolve (DNS, not IP). Forward + reverse DNS required for the NFS principal.
 - Bind-mounted data directories on attached/media storage (numeric uid/gid must match KLLDAP posixAccount/posixGroup).
 

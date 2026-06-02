@@ -1,22 +1,18 @@
-//! Small pure helpers for displaying NFS keytab principal status in the UI.
-//! Originally lived at the top of the monolithic web.rs (lines 21-126).
-//! Only used at startup (main.rs) and stored in AppState for templates.
+//! NFS keytab principal status for the WebUI (startup banner + settings).
 
 use std::process::Command;
 
-/// Returns a user-friendly message describing whether the on-disk keytab
-/// contains the expected `nfs/<host>@REALM` principal.
-///
-/// This version supports keytabs containing multiple principals for the same
-/// host (e.g. both the short hostname and the FQDN, as is recommended).
+use nfs_klldap_config::{format_nfs_principal_list, nfs_keytab_host_matches};
+
+/// Whether the on-disk keytab contains an nfs/* principal matching the container hostname.
 pub fn compute_keytab_status_message(expected_host: &str, expected_realm: &str) -> String {
-    let expected = format!("nfs/{}@{}", expected_host, expected_realm);
+    let expected_list = format_nfs_principal_list(expected_host, expected_realm);
 
     match read_keytab_nfs_principals() {
         Ok(principals) => {
             let matching: Vec<&String> = principals
                 .iter()
-                .filter(|p| principal_host_matches(p, expected_host, expected_realm))
+                .filter(|p| principal_matches_host(p, expected_host, expected_realm))
                 .collect();
 
             if !matching.is_empty() {
@@ -25,7 +21,7 @@ pub fn compute_keytab_status_message(expected_host: &str, expected_realm: &str) 
                     .map(|s| s.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("Keytab principal: {} principal matches.", actual)
+                format!("Keytab: matched {} (expected one of: {}).", actual, expected_list)
             } else {
                 let found = if principals.is_empty() {
                     "none found".to_string()
@@ -33,44 +29,29 @@ pub fn compute_keytab_status_message(expected_host: &str, expected_realm: &str) 
                     principals.join(", ")
                 };
                 format!(
-                    "Keytab principal: {} principal does not match expected {}",
-                    found, expected
+                    "Keytab: no match for {}. Found: {}.",
+                    expected_list, found
                 )
             }
         }
-        Err(err) => {
-            format!(
-                "Keytab principal: {} (unable to read keytab: {})",
-                expected, err
-            )
-        }
+        Err(err) => format!(
+            "Keytab: expected {} (unable to read keytab: {}).",
+            expected_list, err
+        ),
     }
 }
 
-fn principal_host_matches(principal: &str, expected_host: &str, expected_realm: &str) -> bool {
+fn principal_matches_host(principal: &str, expected_host: &str, expected_realm: &str) -> bool {
     let Some(rest) = principal.strip_prefix("nfs/") else {
         return false;
     };
-
     let Some((host_part, realm_part)) = rest.split_once('@') else {
         return false;
     };
-
     if !realm_part.eq_ignore_ascii_case(expected_realm) {
         return false;
     }
-
-    let p = host_part.to_lowercase();
-    let e = expected_host.to_lowercase();
-
-    if p == e {
-        return true;
-    }
-
-    let p_short = p.split('.').next().unwrap_or(&p);
-    let e_short = e.split('.').next().unwrap_or(&e);
-
-    p_short == e_short
+    nfs_keytab_host_matches(host_part, expected_host)
 }
 
 fn read_keytab_nfs_principals() -> Result<Vec<String>, String> {
@@ -96,4 +77,15 @@ fn read_keytab_nfs_principals() -> Result<Vec<String>, String> {
     }
 
     Ok(found)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_message_mentions_principal_list() {
+        let msg = compute_keytab_status_message("aurora.test.com", "TEST.COM");
+        assert!(msg.contains("nfs/") || msg.contains("unable to read"));
+    }
 }

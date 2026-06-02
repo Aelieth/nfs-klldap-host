@@ -1,18 +1,5 @@
-//! Web-layer authentication (login flows, session cookies, protected-route guard).
-//!
-//! This module isolates all HTTP auth concerns for the UI:
-//! - `localhost` sidecar password (via AuthManager)
-//! - LLDAP users that are members of the configured admin group
-//! - Session cookie creation / parsing (now using the `cookie` crate)
-//! - `require_auth` guard used by protected handlers
-//!
-//! Fixes incorporated from audit:
-//! - Proper typed cookie construction (centralized, `SameSite=Lax` + `Secure` where appropriate)
-//! - Eliminated duplication of cookie strings and LoginTemplate error rendering
-//! - More diagnostic error paths for service-account vs. password failures
-//!
-//! Long-term: this is the natural home for evolving `AuthUser` into a real
-//! `axum::extract::FromRequestParts` extractor.
+//! Login, session cookies (`SameSite=Lax`, `Secure` on HTTPS), and `require_auth`.
+//! Auth: localhost sidecar (`webui-password`) or LLDAP members of `webui_admin_group`.
 
 use askama::Template;
 use axum::{

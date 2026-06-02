@@ -16,8 +16,9 @@ use std::thread;
 use std::time::Duration;
 
 use nfs_klldap_config::{
-    derive_realm_from_uri, extract_host_from_uri, get_consistent_hostname, is_persistent_config,
-    resolve_posix_attribute_mapping, suggested_nfs_hostname, ConfigError, NfsKlldapConfig,
+    derive_realm_from_uri, extract_host_from_uri, format_nfs_principal_list,
+    get_consistent_hostname, is_persistent_config, nfs_keytab_host_matches,
+    resolve_posix_attribute_mapping, ConfigError, NfsKlldapConfig,
 };
 
 fn main() {
@@ -60,21 +61,15 @@ Usage:
   nfs-klldap-startup run      Run the full guided 4-step waiting TUI until ready
   nfs-klldap-startup check    Run diagnostics once and exit
 
-Hostname (new standard):
-  Use --uts=host on the docker/podman command line.
-  The container will then see the real hostname of the Docker host machine.
-  The TUI will show the recommended Kerberos principal using the -nfs insertion
-  (e.g. realhost.example.com → nfs/realhost-nfs.example.com@REALM).
-
-  You may still pass --hostname if you want to override the name presented by
-  the container.
+Hostname / keytab:
+  Use --uts=host so the container sees the real Docker host hostname.
+  The TUI shows nfs/<hostname>@REALM using that name (short + FQDN principals
+  when the hostname contains a dot). You may pass --hostname to override.
 "
     );
 }
 
-// Hostname contract: --uts=host (preferred) or explicit --hostname.
-// Uses get_consistent_hostname() (hostname + /proc/sys/kernel/hostname must agree).
-// suggested_nfs_hostname() inserts "-nfs" before first dot for the service principal.
+// Hostname: get_consistent_hostname() — `hostname` and /proc must agree.
 
 /// Enhanced persistent volume check + writability test.
 /// Gives the user immediate, actionable feedback instead of mysterious later failures.
@@ -335,8 +330,7 @@ fn print_header(config_path: &Path) {
     let realm_display = attempt_realm_for_display(config_path)
         .unwrap_or_else(|| "YOUR.REALM (set ldap_uri to auto-derive)".to_string());
 
-    // Compute the recommended NFS service principal name using the insertion pattern.
-    let recommended_principal = suggested_nfs_hostname(&hostname);
+    let principal_list = format_nfs_principal_list(&hostname, &realm_display);
 
     println!("╔══════════════════════════════════════════════════════════════════════════════╗");
     println!("║  nfs-klldap-host — FIRST RUN SETUP (Step-by-Step)  [Rust guided mode]        ║");
@@ -345,15 +339,31 @@ fn print_header(config_path: &Path) {
     if !consistency_note.is_empty() {
         println!("║  {:<76} ║", consistency_note);
     }
-    println!(
-        "║  Keytab must contain: nfs/{:<50} ║",
-        format!("{}@{}", recommended_principal, realm_display)
-    );
-    println!("║                                                                              ║");
-    println!("║  Standard: Use --uts=host (container sees the real host hostname).           ║");
-    println!("║  The name above is what your keytab principal should be.                     ║");
-    println!("║  Explicit --hostname on docker run overrides this if you need something else.║");
+    println!("║  Keytab should include:                                                      ║");
+    for line in wrap_banner_lines(&principal_list, 74) {
+        println!("║  {:<76} ║", line);
+    }
+    println!("║  Use --uts=host so the hostname above is your real Docker host name.         ║");
+    println!("║  Optional: [server] hostname or --hostname to override.                      ║");
     println!("╚══════════════════════════════════════════════════════════════════════════════╝\n");
+}
+
+fn wrap_banner_lines(text: &str, width: usize) -> Vec<String> {
+    if text.len() <= width {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        if rest.len() <= width {
+            lines.push(rest.to_string());
+            break;
+        }
+        let split_at = rest[..width].rfind(", ").map(|i| i + 2).unwrap_or(width);
+        lines.push(rest[..split_at].trim_end().to_string());
+        rest = rest[split_at..].trim_start();
+    }
+    lines
 }
 
 /// Tolerantly extract ldap_uri from the config file (even if incomplete) and
@@ -589,6 +599,19 @@ fn print_current_step_guidance(current: &StartupStep) {
                         println!("             → Verify the DN exactly matches what is in your LDAP server.");
                         println!("             → Make sure the password has no extra spaces or newlines.");
                     }
+                }
+                let mapping = resolve_posix_attribute_mapping(&cfg.sssd);
+                println!();
+                println!("             [SSSD] After startup, see /etc/sssd/sssd.conf (from this file).");
+                println!("             Defaults: ldap_schema=rfc2307bis, enumerate=false, ldap_id_mapping=false");
+                println!("             POSIX attrs: uid={}, uidNumber={}, gidNumber={}, member={}",
+                    mapping.user_name, mapping.user_uid_number, mapping.user_gid_number, mapping.group_member);
+                if cfg.ldap_uri.starts_with("ldaps://") && cfg.sssd.ldap_tls_reqcert.is_none() {
+                    println!("             For self-signed LLDAP/KLLDAP certs add to [sssd]:");
+                    println!("               ldap_tls_reqcert = \"never\"");
+                }
+                if cfg.sssd.enumerate == Some(true) {
+                    println!("             WARNING: enumerate=true can overload KLLDAP — default is false.");
                 }
             }
         }
@@ -865,33 +888,30 @@ fn print_keytab_hostname_alignment() {
 
     let kt_str = kt_hosts.join(" ");
 
-    if kt_hosts.iter().any(|h| h == &current_host) {
+    let realm_hint = std::env::var("NFS_CONFIG")
+        .ok()
+        .and_then(|p| NfsKlldapConfig::load(Path::new(&p)).ok())
+        .map(|c| c.display_realm())
+        .unwrap_or_else(|| "YOUR.REALM".to_string());
+
+    let aligned = kt_hosts
+        .iter()
+        .any(|h| nfs_keytab_host_matches(h, &current_host));
+
+    if aligned {
         println!(
             "             (hostname and keytab: aligned)   hostname={}   keytab={}",
             current_host, kt_str
         );
     } else {
-        let suggested = suggested_nfs_hostname(&current_host);
-        println!("             WARNING: (hostname and keytab: mismatch! change hostname or recreate keytab)");
+        println!("             WARNING: hostname and keytab nfs/* principals do not match.");
+        println!("                      Container hostname : {}", current_host);
         println!(
-            "                      Container hostname : {}",
-            current_host
+            "                      Expected (best practice): {}",
+            format_nfs_principal_list(&current_host, &realm_hint)
         );
-        if suggested != current_host {
-            println!(
-                "                      Recommended hostname for this host: {}",
-                suggested
-            );
-            println!(
-                "                      (Use --hostname {} when starting the container)",
-                suggested
-            );
-        }
-        println!(
-            "                      nfs/ principals in keytab : {}",
-            kt_str
-        );
-        println!("                      Services will continue to start.");
-        println!("                      See the web UI (System Settings page) for current status and remediation steps.");
+        println!("                      nfs/ principals in keytab : {}", kt_str);
+        println!("                      Use --uts=host and recreate keytab with short + FQDN principals.");
+        println!("                      Services will continue; see WebUI System Settings for status.");
     }
 }

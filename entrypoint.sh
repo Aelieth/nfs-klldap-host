@@ -226,11 +226,8 @@ main() {
     ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
     GANESHA_PID=$!
 
-    # 4. WebUI (started last — it needs SSSD + Ganesha operational for some features)
-    #
-    # Plain HTTP by design. Reverse proxy (Caddy, nginx, Traefik, etc.) in front
-    # of the container if you need TLS at the network edge.
-    info "Starting WebUI on 0.0.0.0:9630 (HTTPS via axum-server)..."
+    # 4. WebUI (HTTPS on 9630 via axum-server + rustls; self-signed unless WEBUI_TLS_* set)
+    info "Starting WebUI on 0.0.0.0:9630 (HTTPS)..."
     NFS_KLLDAP_CONF="$NFS_CONFIG" \
     "$UI_BIN" --config "$NFS_CONFIG" \
         > >(tee -a /var/log/webui.log) 2>&1 &

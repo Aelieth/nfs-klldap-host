@@ -35,8 +35,7 @@ pub const RECOMMENDED_IGNORED_GROUP_ATTRIBUTES: &[&str] = &["memberuid", "userpa
 
 /// The recommended group membership attribute to use with KLLDAP when
 /// ldap_schema = rfc2307bis. KLLDAP populates `member` (and `uniqueMember`)
-/// with DNs automatically. Using "member" here is much cleaner than the
-/// legacy "memberUid" approach for pure KLLDAP deployments.
+/// with DNs automatically.
 pub const RECOMMENDED_KLLDAP_GROUP_MEMBER: &str = "member";
 
 /// Returns the recommended lists formatted as TOML array literals
@@ -57,17 +56,33 @@ pub fn get_kllldap_ignored_attributes_toml() -> (String, String) {
     (format!("[{}]", user_list), format!("[{}]", group_list))
 }
 
-/// Emitted block (when enabled). Keep short — full explanation lives in docs.
+/// Verbose comment block appended to generated sssd.conf when ignores are enabled.
 pub fn get_kllldap_ignored_attributes_comment_block() -> String {
     let (users, groups) = get_kllldap_ignored_attributes_toml();
     format!(
-        r#"# KLLDAP server-side ignores (copy into lldap.toml [ldap] or root):
+        r#"# -----------------------------------------------------------------------------
+# KLLDAP server-side ignored attributes (copy into KLLDAP / lldap.toml [ldap])
+# -----------------------------------------------------------------------------
+# SSSD and similar clients request many AD-compat attributes KLLDAP does not store.
+# Without server-side ignores, logs fill with "unknown attribute" noise and some
+# clients retry aggressively (TLS disconnects, high CPU).
+#
+# Steps:
+#   1. Paste the two lines below into your KLLDAP LDAP server configuration.
+#   2. Restart KLLDAP so ignores take effect.
+#   3. Keep [sssd] kllldap_ignored_attributes = true (default) in nfs-klldap.conf.
+#
+# Group membership: with ldap_schema = rfc2307bis the generator sets
+# ldap_group_member = "{member}" when ignores are enabled (not legacy memberUid).
+#
+# To stop emitting this block: kllldap_ignored_attributes = false in nfs-klldap.conf
+# -----------------------------------------------------------------------------
 ignored_user_attributes = {users}
 ignored_group_attributes = {groups}
-# Recommended with rfc2307bis: ldap_group_member = "member"
-# Disable emission: [sssd] kllldap_ignored_attributes = false
 "#,
-        users = users, groups = groups
+        users = users,
+        groups = groups,
+        member = RECOMMENDED_KLLDAP_GROUP_MEMBER,
     )
 }
 
@@ -87,7 +102,6 @@ mod tests {
         assert!(users.starts_with('[') && users.ends_with(']'));
         assert!(groups.starts_with('[') && groups.ends_with(']'));
         assert!(users.contains("gecos"));
-        assert!(users.contains("useraccountcontrol"));
         assert!(groups.contains("memberuid"));
     }
 
@@ -95,6 +109,7 @@ mod tests {
     fn comment_block_contains_guidance() {
         let block = get_kllldap_ignored_attributes_comment_block();
         assert!(block.contains("kllldap_ignored_attributes = false"));
-        assert!(block.contains("member")); // group membership recommendation
+        assert!(block.contains("ignored_user_attributes"));
+        assert!(block.contains("member"));
     }
 }

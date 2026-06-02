@@ -120,7 +120,7 @@ impl NfsKlldapConfig {
             }
         }
 
-        // Auto-derive port
+        // Informational port (636/389) — ldap_uri must include the port used by SSSD.
         if self.sssd.port.is_none() {
             self.sssd.port = Some(if self.ldap_uri.starts_with("ldaps://") {
                 636

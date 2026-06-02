@@ -5,12 +5,13 @@
 <p>Editing: <code>{{ config_path }}</code></p>
 
 <div class="current-state">
-    <span class="state-label">NFS Kerberos principal hostname (keytab must match this):</span>
+    <span class="state-label">NFS Kerberos hostname (two-tier: hostname + /proc):</span>
     <strong>{{ effective_hostname }}</strong><br>
     <span class="mode-hint">
-        Your <code>/etc/krb5.keytab</code> (mounted into the container) <strong>must</strong> contain a principal
-        <code>nfs/{{ effective_hostname }}@{{ effective_realm }}</code>.<br>
-        The container's entrypoint will warn loudly on mismatch.
+        Keytab should include <code>nfs/&lt;short&gt;@{{ effective_realm }}</code> and
+        <code>nfs/{{ effective_hostname }}@{{ effective_realm }}</code> when short and FQDN differ.
+        Use <code>--uts=host</code> so this name is your real Docker host.<br>
+        {{ keytab_status_message }}
     </span>
 </div>
 

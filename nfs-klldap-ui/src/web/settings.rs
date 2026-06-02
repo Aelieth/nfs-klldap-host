@@ -1,12 +1,4 @@
-//! System Settings page + TOML editing (raw + structured form) + LLDAP/NFS client status and reload.
-//!
-//! This module owns the entire "/settings" experience:
-//! - Raw TOML editor with validation
-//! - Structured form editor (with comment-preserving toml_edit writes)
-//! - LLDAP client status, reload, and cache clear (HTMX fragments)
-//!
-//! Extracted from the old monolithic web.rs during the 2026 modular refactor.
-//! All the heavy form-to-config + toml_edit logic lives here.
+//! `/settings`: raw + structured TOML editor, LLDAP reload, cache clear (HTMX).
 
 use askama::Template;
 use axum::{

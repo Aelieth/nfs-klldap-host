@@ -1,4 +1,4 @@
-//! Hybrid auth: "localhost" (bcrypt sidecar webui-password, 0600) + LLDAP users in webui_admin_group.
+//! Hybrid auth: localhost sidecar (webui-password, SHA-256) + LLDAP webui_admin_group members.
 //! "localhost" is local-only admin for this host. LLDAP users are cross-host admins.
 //! No sudo. Direct root FS ops from the UI. Sidecar lives next to nfs-klldap.conf.
 

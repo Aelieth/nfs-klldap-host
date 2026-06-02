@@ -4,116 +4,53 @@
 
 ## Strategy
 
-- Pure unit tests preferred for derivation, validation, hostname, credential helpers, allow-lists.
-- `tempfile` trees for `FsManager` (build_tree, is_allowed, host↔container translation).
-- `tower::ServiceExt` oneshot tests for the real Axum router (settings, apply, auth).
-- Container/watcher/healthcheck exercised via compose (not unit-testable).
+- Pure unit tests for derivation, validation, hostname/keytab variants, credential helpers, allow-lists.
+- `tempfile` trees for `FsManager`.
+- `tower::ServiceExt` oneshot tests for the Axum router.
+- Container/watcher/healthcheck via compose (not unit-tested).
 
 ## Well-Tested Areas
 
-- Config: validate_and_derive (realm, IP rejection, duplicate shares, security enum), generate output, load_host_paths_only, two-tier hostname contract + suggested_nfs_hostname.
-- UI config: ldap_service_creds (full DN, env override).
-- FsManager + web handlers: path mapping, safety refusals (uid 0, setid), tree building, settings save/apply.
-- Auth sessions.
+- Config: `validate_and_derive`, generate output (including sssd.conf header, no duplicate keys), `load_host_paths_only`, two-tier hostname + `nfs_keytab_host_variants` / `nfs_keytab_host_matches`.
+- UI config: `ldap_service_creds` (full DN verbatim, env override).
+- FsManager + web handlers: path mapping, safety refusals, tree building, settings save/apply.
+- Auth sessions and login cookie round-trip (`web/mod.rs`).
 
-## Hard Areas (Intentionally Not Unit-Tested)
+## Hard Areas (Not Unit-Tested)
 
-Live LLDAP binds, recursive chown on real bind mounts, full entrypoint + watcher orchestration.
+Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint + watcher orchestration.
 
+## Patterns
 
+### Config (`nfs-klldap-config`)
 
-## Recommended Testing Patterns
+- Golden checks on generated `sssd.conf` (see `generate_produces_expected_artifacts` in `lib.rs`).
+- `tempfile` for generation paths.
 
-### 1. Pure Configuration & Helper Logic (`nfs-klldap-ui/src/config.rs`)
+### WebUI (`nfs-klldap-ui`)
 
-Functions like `ldap_service_creds`, `derive_lldap_url`, and `all_managed_roots` are excellent for unit tests.
+- `FsManager` with `tempfile::tempdir()` and symlinks for WalkDir policy tests.
+- Router tests with `app.oneshot(request)` — preserve exact `Set-Cookie` on 303 login flows.
 
-Example (add under `#[cfg(test)] mod tests`):
+### Auth sidecar
 
-```rust
-#[test]
-fn lldap_creds_parses_dn_and_prefers_env() {
-    // test DN parsing + env override
-}
-```
+`webui-password` uses iterated SHA-256 (not bcrypt). See `nfs-klldap-ui/src/auth.rs`.
 
-### 2. Filesystem Manager (`nfs-klldap-ui/src/fs.rs`)
+## Adding Tests — Checklist
 
-- Construct `FsManager` with a known `Config` containing specific shares.
-- Use `tempfile::tempdir()` to create real directory trees for `build_tree`, `list_children`, `host_path_to_container_path`, and `is_allowed` tests.
-- Create symlinks inside the temp tree with `std::os::unix::fs::symlink` to exercise the "never descend" policy and `ApplyResult` skipped counts (via `dry_run` or the real engine).
-- The new `ApplyResult { changed, errors, skipped }` type is the preferred return for any mutation test.
-- Integration-style numeric verification (chown to the test process's own uid/gid then stat on the "host" side of the simulated bind mount) lives in the same `#[cfg(test)]` module and runs as a normal (non-root) user. Mark root-requiring variants `#[ignore]`.
+1. Prefer pure functions with controlled inputs.
+2. Security boundaries and config derivation are high priority.
+3. Update docs in the same change when tests clarify behavior.
 
-### 3. In-Container Permission Logic
+## Living Specification (module → tests)
 
-The primary path is now fully inside the container: the WebUI validates requests (`FsManager::is_allowed`, refusal of uid 0 / dangerous modes) and then performs `chown`/`chmod` directly on the bind-mounted host paths using libc (running as root).
+| Behavior | Tests |
+|----------|--------|
+| `ldap_service_creds` (verbatim DN, env override) | `nfs-klldap-ui/src/config.rs` |
+| `all_managed_roots` / `is_allowed` | `config.rs`, `fs.rs` |
+| Generated sssd.conf shape | `nfs-klldap-config/src/lib.rs` |
+| Hostname consistency + keytab variants | `hostname.rs`, `lib.rs` |
+| Keytab status message | `nfs-klldap-ui/src/web/keytab.rs` |
+| Axum settings/apply/auth | `nfs-klldap-ui/src/web/mod.rs` |
 
-Relevant testable pieces (in `nfs-klldap-ui`):
-- Host path → container path translation (exercised by both `apply_permissions` writes and `build_tree` / the live directory tree browser in the WebUI)
-- Recursive vs non-recursive command construction
-- Safety checks before applying changes
-
-Full end-to-end permission application is best exercised with a running container + real bind mounts.
-
-### 4. Web Layer (when adding)
-
-Use Axum's test utilities:
-
-```rust
-use axum::body::Body;
-use http::Request;
-use tower::ServiceExt; // for `oneshot`
-
-// then
-let response = app.oneshot(request).await.unwrap();
-```
-
-**Auth / login flows**: The primary integration test (`full_localhost_first_run_login_session_and_protected_route_flow` in `nfs-klldap-ui/src/web/mod.rs`) now follows real 303 redirects and round-trips the *exact* `Set-Cookie` value emitted by the handlers (parsed via the `cookie` crate) into the subsequent GET. This pattern catches "successful POST but cookie never reaches the redirect target" bugs (Secure flag, SameSite, Max-Age, extraction, etc.). Extend it or add focused helpers when touching `require_auth`, cookie builders, or login handlers.
-
-### 5. Config Library (`nfs-klldap-config`)
-
-Continue expanding here for:
-- `load_host_paths_only` (tolerant partial parse)
-- Edge cases in `validate_and_derive`
-- Export ID determinism
-- Share name sanitization
-
-## Hard-to-Test Areas (Documented Limitations)
-
-- Live interaction with external LLDAP + Kerberos (credential validation, group membership).
-- Full recursive permission application on real bind-mounted host data (best done manually or via integration containers).
-- Container startup, watcher, and healthcheck behavior (best exercised via `docker compose` or manual container runs).
-- The `localhost` password sidecar path in auth (involves filesystem + bcrypt).
-
-For these areas we rely on:
-- Strong type safety + validation in the happy path.
-- Unit tests for the pure logic around allow-lists, path mapping, and config derivation.
-- Manual testing + the container healthcheck.
-
-## Adding New Tests — Checklist
-
-1. Can this logic be made pure or given controlled inputs? If yes → unit test.
-2. Does the test exercise a security boundary or config derivation? High priority.
-3. Does writing the test reveal that the code or docs are unclear? Update docs immediately.
-4. Update this `TESTING.md` with any new patterns or newly testable modules.
-
-## Currently Well-Tested Behaviors (with links to tests)
-
-- **LDAP service credential extraction** (`ldap_service_creds`): DN parsing (`uid=`, `cn=`), environment variable override, graceful fallback. See `nfs-klldap-ui/src/config.rs` tests.
-- **URL derivation** for the LLDAP client (`derive_lldap_url`, `derive_login_url`).
-- **NFS client reload** (`lldap_status` + `reload_nfs_client` handlers + credential drift detection in `web/` layer).
-- **Allow-list root computation** (`all_managed_roots` + `is_allowed` in `FsManager`).
-- **FsManager** (`is_allowed`, `host_path_to_container_path`, `list_children`, `build_tree`, WalkDir-based apply with symlink policy + ApplyResult, host→container path mapping): Tested with real temporary directory trees (including symlinks created via `std::os::unix::fs::symlink`). See `nfs-klldap-ui/src/fs.rs` tests. The integration-style numeric verification test (self-uid variant) runs without root and proves the full translation + mutation + stat roundtrip.
-- **Axum handlers** (settings save raw + structured + permission apply): Tested using `tower::ServiceExt::oneshot` against the real router. See `nfs-klldap-ui/src/web/mod.rs` tests (WebUI router).
-- **Partial config loading** (`load_host_paths_only`) — used for the WebUI share allow-list.
-- **Name sanitization** and deterministic export ID generation in the generator.
-- **Safety checks** before delegating to the container (root UID/GID refusal, high-bit mode refusal).
-
-These tests serve as both regression protection and living specification.
-
-## Documentation & Tests Are One Activity
-
-Every time a new test is written for a previously under-documented area (e.g., `load_host_paths_only` behavior, DN parsing rules, share allow-list semantics), the corresponding documentation (in code comments, `TESTING.md`, root `README`, or architecture docs) should be updated in the same change.
-
-This repository treats "I added a test that forced me to understand X" as the trigger for improving the docs for X.
+Documentation and tests should be updated together when behavior changes.

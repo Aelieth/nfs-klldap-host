@@ -1,15 +1,4 @@
-//! Permission tree UI (the "/" page) + HTMX fragments.
-//!
-//! This module owns everything related to the interactive directory tree,
-//! live LLDAP user/group search, inline permission editors (dir-meta + dir-editor),
-//! and the core "apply" action that performs direct chown/chmod inside the container.
-//!
-//! Extracted from the old monolithic web.rs (2026 refactor) for maintainability.
-//! The corresponding templates are:
-//!   index.html, tree_fragment.html, tree_root.html, dir_meta.html, dir_editor.html
-//!
-//! All handlers here use the improved `require_auth(&state, &headers)` from the auth module
-//! (no more State clones per protected route).
+//! `/` permission tree, LLDAP search, and apply (chown/chmod via FsManager).
 
 use askama::Template;
 use axum::{

@@ -1,6 +1,5 @@
 # Recommended compose for nfs-klldap-host (Ganesha only).
-# Single source of truth: nfs-klldap.conf. In-container root WebUI on 9630.
-# No kernel NFS modules required on the host.
+# Single source of truth: nfs-klldap.conf. In-container WebUI on HTTPS port 9630.
 version: "3.8"
 
 services:
@@ -11,66 +10,19 @@ services:
     image: alma-nfs-kerb:latest
     container_name: alma-nfs-kerb
 
-    # Host networking is often simplest for NFS (especially with Kerberos + DNS).
-    # You can also publish ports explicitly if you prefer.
     network_mode: host
-
-    # Ganesha + SSSD + in-container WebUI (port 9630).
-    # The WebUI performs chown/chmod directly as root on bind mounts via the `privileged` module
-    # (see nfs-klldap-ui/src/privileged.rs). Safe std APIs are used.
-    # No cap_add for CHOWN/FOWNER/DAC_* is required for the permission editor in the normal root model.
-    # NET_BIND_SERVICE is only needed when dropping root privileges.
     uts: host
 
-    # No "user:" override — root execution is the model.
-
     volumes:
-      # ---------------------------------------------------------------------
-      # Storage (the only data volume in the new minimal model)
-      # Mount whatever media drives you want under /export inside the container.
-      # The numeric uid/gid on the host **must** match KLLDAP uidNumber/gidNumber.
-      # ---------------------------------------------------------------------
       - /media/SSD-01:/export:rw
-
-      # ---------------------------------------------------------------------
-      # The single source of truth (shared with the host UI)
-      # The in-container WebUI (on port 9630) edits this file directly.
-      # The container's Rust generator watches it (or reacts to SIGHUP) and
-      # regenerates sssd.conf / krb5.conf / Ganesha fragments.
-      # ---------------------------------------------------------------------
       - ./config:/config:rw
-
-      # ---------------------------------------------------------------------
-      # Kerberos keytab (ro)
-      # The container ships with a "keytab" group. For non-root operation,
-      # make this file group-readable on the *host*. The easiest way is:
-      #     ./scripts/fix-keytab-perms.sh ./secrets/krb5.keytab
-      # Then (optionally) add the GID via group_add in this compose file.
-      # See docs/run/README.md for details.
-      # ---------------------------------------------------------------------
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 
-      # No templates/ or ganesha-exports.d bind mounts are needed in the
-      # v0.5+ flow — everything is derived from nfs-klldap.conf.
-
     environment:
-      # No mandatory variables. Everything is driven by templates + files.
-      #
-      # You can still pass variables that will be expanded inside templates:
-      # - REALM=YOUR.REALM
-      # - MY_LDAP_HOST=lldap.example.com
-      #
-      # The management tool (or operators) can send SIGHUP for a simple reload:
-      #   docker kill -s HUP alma-nfs-kerb
-      #
-      # Preferred method is direct control via ganesha-ctl (see README).
+      # Optional: NFS_REALM=YOUR.REALM overrides [kerberos] realm at validate time.
 
     restart: unless-stopped
 
-    # The healthcheck is defined in the Dockerfile and uses container/healthcheck.sh
-    # It verifies: ganesha.nfsd process + listening on 2049 + basic responsiveness.
-
-# WebUI: https://host:9630 (settings + permissions tree).
-# See docs/run/README.md and root README for uts: host and TLS termination.
-# chown/chmod uses direct FFI as root — no --cap-add CHOWN etc. required.
-
+# WebUI: https://<host>:9630
+# Reload config: docker kill -s HUP alma-nfs-kerb
+# See docs/run/README.md for keytab principals and uts: host.

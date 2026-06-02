@@ -1,25 +1,43 @@
 //! Two-tier hostname: `hostname(1)` output must exactly match /proc/sys/kernel/hostname.
-//! Mismatch produces a rich diagnostic. All keytab banners and cert SANs use this path.
+//! Mismatch produces a rich diagnostic. Keytab banners and cert SANs use the confirmed name.
 
-/// Returns the recommended NFS container hostname: insert "-nfs" before the first dot.
-pub fn suggested_nfs_hostname(host: &str) -> String {
-    let h = host.trim();
-    if h.is_empty() || h == "." {
-        return "nfs-server".to_string();
-    }
-    let h = h.trim_matches('.');
+/// Short and FQDN host variants for NFS service principals in the keytab.
+/// When the hostname contains a dot, returns `[short, fqdn]`; otherwise a single entry.
+pub fn nfs_keytab_host_variants(host: &str) -> Vec<String> {
+    let h = host.trim().trim_matches('.');
     if h.is_empty() {
-        return "nfs-server".to_string();
+        return vec![];
     }
-    if let Some((first, rest)) = h.split_once('.') {
-        if first.is_empty() {
-            format!("{}-nfs", h)
-        } else {
-            format!("{}-nfs.{}", first, rest)
-        }
+    let short = h.split('.').next().unwrap_or(h).to_string();
+    if short.eq_ignore_ascii_case(h) {
+        vec![h.to_string()]
     } else {
-        format!("{}-nfs", h)
+        vec![short, h.to_string()]
     }
+}
+
+/// Formats recommended `nfs/<host>@REALM` principals for operator messaging.
+pub fn format_nfs_principal_list(host: &str, realm: &str) -> String {
+    nfs_keytab_host_variants(host)
+        .into_iter()
+        .map(|h| format!("nfs/{}@{}", h, realm))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// True if `keytab_host` (from klist) matches the container hostname (short or FQDN).
+pub fn nfs_keytab_host_matches(keytab_host: &str, container_host: &str) -> bool {
+    let k = keytab_host.trim().to_lowercase();
+    let c = container_host.trim().to_lowercase();
+    if k.is_empty() || c.is_empty() {
+        return false;
+    }
+    if k == c {
+        return true;
+    }
+    let k_short = k.split('.').next().unwrap_or(&k);
+    let c_short = c.split('.').next().unwrap_or(&c);
+    k_short == c_short
 }
 
 /// Returns true for 8-20 hex digits with no dot (typical Docker short container ID).
@@ -382,11 +400,12 @@ mod tests {
     }
 
     #[test]
-    fn suggested_nfs_not_applied_inside_consistency() {
-        // The two-tier layer only confirms raw observed hostname.
-        // Transformation to the -nfs form is a separate, later step.
-        let c = get_consistent_hostname_from_values("aurora", "aurora").unwrap();
-        assert_eq!(c.hostname, "aurora");
-        assert_eq!(suggested_nfs_hostname(&c.hostname), "aurora-nfs");
+    fn consistency_returns_raw_hostname_for_keytab() {
+        let c = get_consistent_hostname_from_values("aurora.test.com", "aurora.test.com").unwrap();
+        assert_eq!(c.hostname, "aurora.test.com");
+        assert_eq!(
+            nfs_keytab_host_variants(&c.hostname),
+            vec!["aurora".to_string(), "aurora.test.com".to_string()]
+        );
     }
 }

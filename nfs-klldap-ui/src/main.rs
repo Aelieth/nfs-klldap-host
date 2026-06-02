@@ -104,8 +104,9 @@ async fn main() {
     // early "no valid config yet" case.
     let keytab_realm = config.display_realm();
 
-    println!("\nKeytab reminder: your krb5.keytab must contain  nfs/{keytab_host}@{keytab_realm}");
-    println!("(Set [server] hostname in nfs-klldap.conf or pass --hostname to the container.)");
+    let principals = nfs_klldap_config::format_nfs_principal_list(&keytab_host, &keytab_realm);
+    println!("\nKeytab reminder: include {principals}");
+    println!("(Use --uts=host; optional [server] hostname or --hostname to override.)");
 
     // Filesystem manager (real-time, no DB) — driven by central shares config.
     let fs = Arc::new(crate::fs::FsManager::new((*config).clone()));

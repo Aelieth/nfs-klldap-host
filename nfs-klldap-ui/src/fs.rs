@@ -1,21 +1,6 @@
-//! FsManager: host_path (logical) ↔ container_path translation + permission application.
-//!
-//! ## Security & Correctness Audit Notes (2026)
-//! - The single bind-mount contract is `host_path_to_container_path` (all mutation and tree
-//!   building go through it). It is the only place that must stay in sync with the container's
-//!   volume layout (`storage.container_root` + share.name).
-//! - `is_allowed` + `all_managed_roots` (from config) is the allow-list gate. It is consulted
-//!   on every user action before any stat or chown.
-//! - **Symlink policy (explicit)**: WalkDir is used with `follow_links(false)` and
-//!   `filter_entry` that never descends into symlinks. `privileged::chown` / `chmod` use the
-//!   std following variants (matches chown(2) without NOFOLLOW). Symlink inodes themselves
-//!   are skipped for chown/chmod. This prevents escape from declared host_path trees.
-//! - **UID/GID contract**: We only ever write numeric u32 values (from LLDAP uidNumber/gidNumber
-//!   or direct user entry). Names are never stored on disk.
-//! - **Bind-mount UID namespace assumption**: The container runs as real root. Numeric IDs
-//!   written here are the IDs visible on the Docker host. --userns-remap or subuid shifts
-//!   will make on-disk owners appear wrong from the host/NFS side.
-//! - Safety refusals (uid/gid 0, set*id bits) remain in `apply_permissions` before any syscall.
+//! FsManager: host_path allow-list, container_path translation, recursive chown/chmod.
+//! WalkDir never descends into symlinks; only numeric uid/gid on disk.
+//! Requires root in container with bind mounts (no userns-remap). Refuses uid/gid 0 and set*id.
 
 #![deny(clippy::unwrap_used)]
 

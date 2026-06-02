@@ -19,7 +19,7 @@ pub(crate) struct LoginTemplate {
     /// First-run mode when no simple password sidecar exists yet.
     pub first_run: bool,
     pub admin_group: String,
-    pub keytab_status_message: String,
+    pub keytab_alert: Option<String>,
 }
 
 /// Shared form for both normal login and first-run setup.
@@ -60,7 +60,7 @@ pub async fn login_page(
             current_user: None,
             first_run,
             admin_group,
-            keytab_status_message: state.keytab_status_message.clone(),
+            keytab_alert: state.keytab_alert.clone(),
         }
         .render()
         .unwrap(),
@@ -140,7 +140,7 @@ pub async fn login(
                 current_user: None,
                 first_run,
                 admin_group,
-                keytab_status_message: state.keytab_status_message.clone(),
+                keytab_alert: state.keytab_alert.clone(),
             }
             .render()
             .unwrap();
@@ -164,7 +164,7 @@ pub async fn setup_password(
             current_user: None,
             first_run: false,
             admin_group: state.auth.admin_group().to_string(),
-            keytab_status_message: state.keytab_status_message.clone(),
+            keytab_alert: state.keytab_alert.clone(),
         }
         .render()
         .unwrap();
@@ -178,7 +178,7 @@ pub async fn setup_password(
             current_user: None,
             first_run: true,
             admin_group: state.auth.admin_group().to_string(),
-            keytab_status_message: state.keytab_status_message.clone(),
+            keytab_alert: state.keytab_alert.clone(),
         }
         .render()
         .unwrap();
@@ -212,7 +212,7 @@ pub async fn setup_password(
                 current_user: None,
                 first_run: true,
                 admin_group: state.auth.admin_group().to_string(),
-                keytab_status_message: state.keytab_status_message.clone(),
+                keytab_alert: state.keytab_alert.clone(),
             }
             .render()
             .unwrap();

@@ -181,8 +181,10 @@ async fn main() {
     let admin_group = config.management.webui_admin_group.clone();
     let auth = Arc::new(crate::auth::AuthManager::new(&config_path, admin_group));
 
-    let keytab_status_message =
-        crate::web::compute_keytab_status_message(&keytab_host, &keytab_realm);
+    let keytab_alert = crate::web::compute_keytab_alert(&keytab_host, &keytab_realm);
+    if let Some(ref msg) = keytab_alert {
+        eprintln!("WARNING: {}", msg);
+    }
 
     let state = crate::web::AppState {
         fs,
@@ -192,7 +194,7 @@ async fn main() {
         config_path: config_path.clone(),
         keytab_hostname: keytab_host,
         keytab_realm,
-        keytab_status_message,
+        keytab_alert,
     };
 
     let app = crate::web::router(state);

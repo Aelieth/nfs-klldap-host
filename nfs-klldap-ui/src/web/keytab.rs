@@ -4,8 +4,9 @@ use std::process::Command;
 
 use nfs_klldap_config::{format_nfs_principal_list, nfs_keytab_host_matches};
 
-/// Whether the on-disk keytab contains an nfs/* principal matching the container hostname.
-pub fn compute_keytab_status_message(expected_host: &str, expected_realm: &str) -> String {
+/// User-visible warning when the on-disk keytab does not match the container hostname.
+/// Returns `None` when a matching nfs/* principal is present (no banner needed).
+pub fn compute_keytab_alert(expected_host: &str, expected_realm: &str) -> Option<String> {
     let expected_list = format_nfs_principal_list(expected_host, expected_realm);
 
     match read_keytab_nfs_principals() {
@@ -16,28 +17,23 @@ pub fn compute_keytab_status_message(expected_host: &str, expected_realm: &str) 
                 .collect();
 
             if !matching.is_empty() {
-                let actual = matching
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("Keytab: matched {} (expected one of: {}).", actual, expected_list)
+                None
             } else {
                 let found = if principals.is_empty() {
                     "none found".to_string()
                 } else {
                     principals.join(", ")
                 };
-                format!(
+                Some(format!(
                     "Keytab: no match for {}. Found: {}.",
                     expected_list, found
-                )
+                ))
             }
         }
-        Err(err) => format!(
+        Err(err) => Some(format!(
             "Keytab: expected {} (unable to read keytab: {}).",
             expected_list, err
-        ),
+        )),
     }
 }
 
@@ -84,8 +80,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_message_mentions_principal_list() {
-        let msg = compute_keytab_status_message("aurora.test.com", "TEST.COM");
-        assert!(msg.contains("nfs/") || msg.contains("unable to read"));
+    fn alert_mentions_principal_list_when_keytab_unreadable_or_missing() {
+        let msg = compute_keytab_alert("aurora.test.com", "TEST.COM");
+        // In CI there is usually no keytab — expect a warning, not silence.
+        assert!(msg.is_some());
+        let text = msg.unwrap();
+        assert!(text.contains("nfs/") || text.contains("unable to read"));
     }
 }

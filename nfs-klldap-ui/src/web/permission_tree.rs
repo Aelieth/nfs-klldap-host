@@ -17,7 +17,7 @@ use super::{AppState, require_auth};
 struct IndexTemplate {
     shares: Vec<crate::config::Share>,
     current_user: Option<String>,
-    keytab_status_message: String,
+    keytab_alert: Option<String>,
 }
 
 #[derive(Template)]
@@ -176,7 +176,7 @@ pub(crate) async fn index(
     let tpl = IndexTemplate {
         shares: state.config.shares.clone(),
         current_user: Some(user.0),
-        keytab_status_message: state.keytab_status_message.clone(),
+        keytab_alert: state.keytab_alert.clone(),
     };
 
     Ok(Html(tpl.render().unwrap()))

@@ -10,8 +10,10 @@
     <span class="mode-hint">
         Keytab should include <code>nfs/&lt;short&gt;@{{ effective_realm }}</code> and
         <code>nfs/{{ effective_hostname }}@{{ effective_realm }}</code> when short and FQDN differ.
-        Use <code>--uts=host</code> so this name is your real Docker host.<br>
-        {{ keytab_status_message }}
+        Use <code>--uts=host</code> so this name is your real Docker host.
+        {% if let Some(keytab_msg) = keytab_alert %}
+        <br><strong style="color: var(--warning-text);">{{ keytab_msg }}</strong>
+        {% endif %}
     </span>
 </div>
 

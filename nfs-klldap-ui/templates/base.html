@@ -599,10 +599,12 @@
         </div>
     {% endif %}
 
-    {# Keytab status banner — shows whether the actual keytab on disk matches the expected principal #}
+    {% if let Some(keytab_msg) = keytab_alert %}
+    {# Keytab warning — only when the on-disk keytab does not match the expected NFS principal #}
     <div style="background: var(--warning-bg); border:1px solid var(--warning-border); padding:4px 10px; margin-bottom:0.75rem; border-radius:4px; font-size:0.9em; color: var(--warning-text);">
-        <strong>{{ keytab_status_message }}</strong>
+        <strong>{{ keytab_msg }}</strong>
     </div>
+    {% endif %}
 
     {% if let Some(_) = current_user %}
     <nav style="margin-bottom:1rem; border-bottom:1px solid var(--border); padding-bottom:6px;">

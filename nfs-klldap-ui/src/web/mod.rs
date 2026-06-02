@@ -22,7 +22,7 @@ mod permission_tree;
 mod settings;
 
 // Re-exports needed by main.rs (and for the router assembly below).
-pub use keytab::compute_keytab_status_message;
+pub use keytab::compute_keytab_alert;
 
 // Re-export handlers as pub(crate) so that the integration tests (which live
 // inside this module) can use `use super::*;` in a natural way (keeps the
@@ -61,7 +61,8 @@ pub struct AppState {
     pub keytab_realm: String,
     /// Human-readable status about whether the on-disk /etc/krb5.keytab actually contains
     /// the expected NFS service principal. Computed once at startup.
-    pub keytab_status_message: String,
+    /// Set when the on-disk keytab does not match; omitted from the UI when `None`.
+    pub keytab_alert: Option<String>,
 }
 
 /// Assembles all routes (public + protected).
@@ -174,8 +175,7 @@ mod tests {
             config_path,
             keytab_hostname: "test-host".to_string(),
             keytab_realm: "EXAMPLE.COM".to_string(),
-            keytab_status_message: "Keytab: matched nfs/test-host@EXAMPLE.COM (expected one of: nfs/test-host@EXAMPLE.COM)."
-                .to_string(),
+            keytab_alert: None,
         };
 
         (state, tmp)

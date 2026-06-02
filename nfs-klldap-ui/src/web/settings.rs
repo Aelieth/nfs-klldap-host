@@ -25,7 +25,7 @@ struct SettingsTemplate {
     effective_hostname: String,
     /// The Kerberos realm for the NFS service principal.
     effective_realm: String,
-    keytab_status_message: String,
+    keytab_alert: Option<String>,
 }
 
 // === Forms ===
@@ -192,7 +192,7 @@ fn make_settings_error_template(
     message: String,
     keytab_hostname: String,
     keytab_realm: String,
-    keytab_status_message: String,
+    keytab_alert: Option<String>,
 ) -> SettingsTemplate {
     SettingsTemplate {
         current_user,
@@ -201,7 +201,7 @@ fn make_settings_error_template(
         message: Some(message),
         effective_hostname: keytab_hostname,
         effective_realm: keytab_realm,
-        keytab_status_message,
+        keytab_alert,
     }
 }
 
@@ -227,7 +227,7 @@ fn make_settings_success_template(
     message: String,
     keytab_hostname: String,
     keytab_realm: String,
-    keytab_status_message: String,
+    keytab_alert: Option<String>,
 ) -> SettingsTemplate {
     SettingsTemplate {
         current_user,
@@ -236,7 +236,7 @@ fn make_settings_success_template(
         message: Some(message),
         effective_hostname: keytab_hostname,
         effective_realm: keytab_realm,
-        keytab_status_message,
+        keytab_alert,
     }
 }
 
@@ -347,7 +347,7 @@ pub(crate) async fn settings_page(
         message: None,
         effective_hostname: state.keytab_hostname.clone(),
         effective_realm: state.keytab_realm.clone(),
-        keytab_status_message: state.keytab_status_message.clone(),
+        keytab_alert: state.keytab_alert.clone(),
     };
     Ok(Html(tpl.render().unwrap()))
 }
@@ -384,7 +384,7 @@ pub(crate) async fn settings_save_raw(
         "Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into(),
         state.keytab_hostname.clone(),
         state.keytab_realm.clone(),
-        state.keytab_status_message.clone(),
+        state.keytab_alert.clone(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -415,7 +415,7 @@ pub(crate) async fn settings_save_structured(
             msg,
             state.keytab_hostname.clone(),
             state.keytab_realm.clone(),
-            state.keytab_status_message.clone(),
+            state.keytab_alert.clone(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -437,7 +437,7 @@ pub(crate) async fn settings_save_structured(
             msg,
             state.keytab_hostname.clone(),
             state.keytab_realm.clone(),
-            state.keytab_status_message.clone(),
+            state.keytab_alert.clone(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -450,7 +450,7 @@ pub(crate) async fn settings_save_structured(
         "Structured settings saved. Container will regenerate configs shortly.".into(),
         state.keytab_hostname.clone(),
         state.keytab_realm.clone(),
-        state.keytab_status_message.clone(),
+        state.keytab_alert.clone(),
     );
     Ok(Html(tpl.render().unwrap()))
 }

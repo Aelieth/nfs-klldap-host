@@ -128,6 +128,19 @@ pub async fn login(
             let mut headers = HeaderMap::new();
             headers.insert(SET_COOKIE, cookie.parse().unwrap());
 
+            // Warm permission editor search caches on (web) login for instant
+            // suggestions in UID/GID boxes (no repeated LDAP roundtrips on focus/type
+            // in the Share Permissions directory editor). The list_* calls populate
+            // both the 30s search cache (__all__) and the 10m identity caches.
+            {
+                let lldap = state.lldap.clone();
+                tokio::spawn(async move {
+                    let l = lldap.lock().await;
+                    let _ = l.list_users(None).await;
+                    let _ = l.list_groups(None).await;
+                });
+            }
+
             (headers, Redirect::to("/")).into_response()
         }
         Err(e) => {
@@ -189,6 +202,16 @@ pub async fn setup_password(
 
             let mut headers = HeaderMap::new();
             headers.insert(SET_COOKIE, cookie.parse().unwrap());
+
+            // Warm caches also for first-run setup (same benefit for editor UX).
+            {
+                let lldap = state.lldap.clone();
+                tokio::spawn(async move {
+                    let l = lldap.lock().await;
+                    let _ = l.list_users(None).await;
+                    let _ = l.list_groups(None).await;
+                });
+            }
 
             (headers, Redirect::to("/?first_run=1")).into_response()
         }

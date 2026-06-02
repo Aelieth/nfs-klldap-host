@@ -162,6 +162,19 @@ async fn main() {
 
     let lldap = Arc::new(Mutex::new(lldap));
 
+    // Warm the user/group search caches (and identity caches for the first ~25)
+    // at startup. This makes the first visit to Share Permissions + Edit mode fast:
+    // focus/click in the UID/GID boxes shows results from cache immediately, without
+    // repeated LDAP searches on every interaction.
+    {
+        let lldap_warm = lldap.clone();
+        tokio::spawn(async move {
+            let l = lldap_warm.lock().await;
+            let _ = l.list_users(None).await;
+            let _ = l.list_groups(None).await;
+        });
+    }
+
     // Hybrid auth manager (localhost simple-pw sidecar + LLDAP + admin group).
     // The sidecar lives next to the central config file.
     let admin_group = config.management.webui_admin_group.clone();

@@ -297,18 +297,14 @@ pub(crate) async fn search_users(
     let users = lldap.list_users(params.q.as_deref()).await;
 
     let mut html = String::new();
-    for user in users.into_iter().take(25) {
+    for user in users {
         let uid = user.uid_number.unwrap_or(0);
         let name = user.display_name.unwrap_or(user.id.clone());
 
         let safe_id = user.id.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
         let safe_name = name.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
 
-        let label = if uid > 0 {
-            format!("{} (UID {})", safe_name, uid)
-        } else {
-            safe_name.clone()
-        };
+        let label = format!("{} (UID {})", safe_name, uid);
         html.push_str(&format!(
             r#"<div class="suggestion" data-user-id="{}" data-uid="{}">{}</div>"#,
             safe_id, uid, label
@@ -333,18 +329,14 @@ pub(crate) async fn search_groups(
     let groups = lldap.list_groups(params.q.as_deref()).await;
 
     let mut html = String::new();
-    for group in groups.into_iter().take(25) {
+    for group in groups {
         let gid = group.gid_number.unwrap_or(0);
         let name = group.display_name.unwrap_or(group.id.clone());
 
         let safe_id = group.id.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
         let safe_name = name.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
 
-        let label = if gid > 0 {
-            format!("{} (GID {})", safe_name, gid)
-        } else {
-            safe_name.clone()
-        };
+        let label = format!("{} (GID {})", safe_name, gid);
         html.push_str(&format!(
             r#"<div class="suggestion" data-group-id="{}" data-gid="{}">{}</div>"#,
             safe_id, gid, label
@@ -499,8 +491,8 @@ pub(crate) async fn apply_permissions(
 
     // Build the status box content (will be swapped oob into #apply-status)
     let status_html = format!(
-        r#"<div id="apply-status" hx-swap-oob="true" class="apply-status" style="display:block; margin-top:1.25rem;">
-    <div style="font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">Last Apply</div>
+        r#"<div id="apply-status" hx-swap-oob="true" class="apply-status" style="display:block;">
+    <div style="font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">Apply Log</div>
     <div class="apply-status-content"
          style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
 <strong>Command</strong>

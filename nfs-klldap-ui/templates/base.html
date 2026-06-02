@@ -193,9 +193,20 @@
             color: var(--text);
         }
 
-        /* Status box shown after permission apply (below the tree) */
+        /* Apply Log: permanently attached to bottom-right, out of the way of share lists and directory tree.
+           Fixed positioning keeps it docked; scrolls internally if long. */
         .apply-status {
-            max-width: 720px;
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            z-index: 160;
+            max-width: 380px;
+            min-width: 240px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.18);
+        }
+        .apply-status-content {
+            max-height: 220px;
+            overflow-y: auto;
         }
         .apply-status-content strong {
             color: var(--accent);

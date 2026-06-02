@@ -34,13 +34,13 @@
     Loading tree...
 </div>
 
-<!-- Apply status box: shows the last permission change command(s) and detailed results.
-     Populated via hx-swap-oob from the /apply POST response. -->
-<div id="apply-status" class="apply-status" style="margin-top: 1.25rem; display: none;">
-    <div style="font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">Last Apply</div>
+<!-- Apply Log box: permanently attached bottom-right (fixed), shows last permission apply command+result.
+     Populated via hx-swap-oob from the /apply POST response. Stays visible across share switches. -->
+<div id="apply-status" class="apply-status" style="display:block;">
+    <div style="font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">Apply Log</div>
     <div id="apply-status-content" class="apply-status-content"
-         style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.3;">
-        <!-- Filled by HTMX oob swap from apply handler -->
+         style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
+        <em style="color:var(--text-light);">No permission applies yet.</em>
     </div>
 </div>
 
@@ -54,10 +54,6 @@
         currentShareName = name;
         document.getElementById('current-share-title').innerHTML =
             'Directory tree for share <strong>' + name + '</strong> <small>(NFS: ' + exportPath + ')</small>';
-
-        // Clear previous apply status when switching shares (keeps the UI clean)
-        const statusBox = document.getElementById('apply-status');
-        if (statusBox) statusBox.style.display = 'none';
 
         // Load the share *root* as the top clickable row, with its direct children visible underneath.
         // On completion, auto-select the root dir so the user immediately sees the inline
@@ -74,6 +70,7 @@
 
         // The new inline meta (Owner/Group/Perms + Edit) is loaded automatically by the
         // .dir click handler when the user (or auto-select above) clicks a row.
+        // Apply Log stays visible (bottom-right) across share changes.
     }
 
     // Click handler for share cards (reads data-* attributes so paths with spaces/special

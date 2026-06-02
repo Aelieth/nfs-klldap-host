@@ -1,8 +1,9 @@
 {# Inline editor shown inside .dir-meta when "Edit" is clicked.
    Searchable text boxes (HTMX live against /users/search + /groups/search, max 25 results).
+   Only users with uidNumber and groups with gidNumber are listed (posix accounts).
    Prefilled with current values (numeric strings from FS stat, or friendly if resolved).
-   Any POSIX number (e.g. 1000-60000 preferred) can be typed directly.
-   ONLY LDAP-mapped entries come from search/select.
+   Any POSIX number (e.g. 1000-60000 preferred) can be typed directly; typing letters or digits
+   filters the dropdown live by name or number. Focus/click initiates dropdown (no auto-clear).
    Includes recursive checkbox (streamlined but functional).
    Cancel/Apply buttons replace the Edit button during mode.
    Tree clicks are guarded by JS while this is active.
@@ -17,9 +18,11 @@
             Owner (name or UID)<br>
             <input type="text" name="owner_user" value="{{ owner_value }}" size="18"
                    hx-get="/users/search"
-                   hx-trigger="input changed delay:220ms [value.length > 0]"
+                   hx-trigger="input changed delay:220ms [value.length > 0], focus"
                    hx-target="#user-suggestions-edit"
                    hx-swap="innerHTML"
+                   hx-vals='js:{q: this.value}'
+                   hx-params="q"
                    placeholder="search or 1000-60000"
                    style="width:100%; font-size:0.9em;">
             <div id="user-suggestions-edit" class="suggestions" style="min-width:180px;"></div>
@@ -29,9 +32,11 @@
             Group (name or GID)<br>
             <input type="text" name="owner_group" value="{{ group_value }}" size="18"
                    hx-get="/groups/search"
-                   hx-trigger="input changed delay:220ms [value.length > 0]"
+                   hx-trigger="input changed delay:220ms [value.length > 0], focus"
                    hx-target="#group-suggestions-edit"
                    hx-swap="innerHTML"
+                   hx-vals='js:{q: this.value}'
+                   hx-params="q"
                    placeholder="search or 1000-60000"
                    style="width:100%; font-size:0.9em;">
             <div id="group-suggestions-edit" class="suggestions" style="min-width:180px;"></div>

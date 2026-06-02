@@ -790,8 +790,8 @@ impl LdapClient {
             let esc = Self::escape_filter_value(q);
             let full = self.posix_attributes.user_full_name.clone();
             format!(
-                "(&(objectClass={})(|({}=*{}*)(cn=*{}*)(displayName=*{}*)({}=*{}*)))",
-                obj, name_attr, esc, esc, esc, full, esc
+                "(&(objectClass={})(|({}=*{}*)(cn=*{}*)(displayName=*{}*)({}=*{}*)({}=*{}*)))",
+                obj, name_attr, esc, esc, esc, full, esc, uid_attr, esc
             )
         } else {
             format!("(objectClass={})", obj)
@@ -813,11 +813,15 @@ impl LdapClient {
         let full_attr = self.posix_attributes.user_full_name.clone();
         let users: Vec<User> = entries
             .into_iter()
-            .map(|se| {
+            .filter_map(|se| {
                 let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
                 let display = Self::extract_display_name(&se, &full_attr, &id);
                 let uid = Self::extract_first_attr(&se, &uid_attr).and_then(|s| s.parse::<i32>().ok());
-                User { id, dn: se.dn, display_name: Some(display.clone()), uid_number: uid }
+                if uid.is_some() {
+                    Some(User { id, dn: se.dn, display_name: Some(display.clone()), uid_number: uid })
+                } else {
+                    None
+                }
             })
             .take(25)
             .collect();
@@ -859,8 +863,8 @@ impl LdapClient {
         let ldap_filter = if !q.is_empty() {
             let esc = Self::escape_filter_value(q);
             format!(
-                "(&(objectClass={})(|({}=*{}*)(cn=*{}*)(displayName=*{}*)))",
-                obj, name_attr, esc, esc, esc
+                "(&(objectClass={})(|({}=*{}*)(cn=*{}*)(displayName=*{}*)({}=*{}*)))",
+                obj, name_attr, esc, esc, esc, gid_attr, esc
             )
         } else {
             format!("(objectClass={})", obj)
@@ -879,11 +883,15 @@ impl LdapClient {
 
         let groups: Vec<Group> = entries
             .into_iter()
-            .map(|se| {
+            .filter_map(|se| {
                 let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
                 let display = Self::extract_display_name(&se, &name_attr, &id);
                 let gid = Self::extract_first_attr(&se, &gid_attr).and_then(|s| s.parse::<i32>().ok());
-                Group { id, dn: se.dn, display_name: Some(display.clone()), gid_number: gid }
+                if gid.is_some() {
+                    Some(Group { id, dn: se.dn, display_name: Some(display.clone()), gid_number: gid })
+                } else {
+                    None
+                }
             })
             .take(25)
             .collect();

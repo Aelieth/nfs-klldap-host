@@ -187,6 +187,20 @@ mod tests {
         req
     }
 
+    /// Login/setup responses emit clear + set cookies; return the non-empty session token.
+    fn session_token_from_response(resp: &axum::response::Response) -> String {
+        for value in resp.headers().get_all(SET_COOKIE) {
+            let s = value.to_str().expect("Set-Cookie must be UTF-8");
+            if let Ok(parsed) = Cookie::parse(s) {
+                let v = parsed.value();
+                if !v.is_empty() {
+                    return v.to_string();
+                }
+            }
+        }
+        panic!("response did not include a non-empty session Set-Cookie");
+    }
+
     #[tokio::test]
     async fn settings_save_raw_accepts_valid_toml_and_preserves_user() {
         let (state, _tmp) = make_test_state_with_temp_config();
@@ -284,33 +298,23 @@ ldap_default_authtok = "sekret"
         let resp = app.clone().oneshot(setup_req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SEE_OTHER); // redirect after success
 
-        // Must have set a session cookie
-        let set_cookie = resp
+        let setup_token = session_token_from_response(&resp);
+        assert!(!setup_token.is_empty());
+        let any_cookie = resp
             .headers()
-            .get(SET_COOKIE)
+            .get_all(SET_COOKIE)
+            .iter()
+            .next()
             .expect("setup-password must set session cookie")
             .to_str()
             .unwrap();
-        assert!(
-            set_cookie.contains("session="),
-            "cookie header must contain session token"
-        );
-        assert!(set_cookie.contains("HttpOnly"));
-        assert!(set_cookie.contains("SameSite=Lax")); // Updated: we use Lax for reliable login redirects
+        assert!(any_cookie.contains("HttpOnly"));
+        assert!(any_cookie.contains("SameSite=Lax"));
 
         assert!(
             auth.has_simple_password(),
             "sidecar password file must now exist after setup"
         );
-
-        // Extract the token we just received (simple parse sufficient for test)
-        let _token = set_cookie
-            .split(';')
-            .next()
-            .unwrap()
-            .strip_prefix("session=")
-            .unwrap()
-            .to_string();
 
         // === Phase 3: Normal login as localhost with the password we just set ===
         let login_body = "username=localhost&password=initialStrongPass123";
@@ -323,20 +327,7 @@ ldap_default_authtok = "sekret"
         let resp = app.clone().oneshot(login_req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
 
-        let login_set_cookie = resp
-            .headers()
-            .get(SET_COOKIE)
-            .expect("successful login must set session cookie")
-            .to_str()
-            .unwrap();
-        let login_token = login_set_cookie
-            .split(';')
-            .next()
-            .unwrap()
-            .strip_prefix("session=")
-            .unwrap()
-            .to_string();
-        assert!(!login_token.is_empty());
+        let login_token = session_token_from_response(&resp);
 
         // === Phase 3b (NEW): Follow the *actual* login redirect using the real Set-Cookie ===
         // This is the critical missing coverage for the original bug: "login handler returns 303 + cookie,
@@ -350,11 +341,8 @@ ldap_default_authtok = "sekret"
             .to_str()
             .expect("Location must be valid UTF-8");
 
-        // Parse the *exact* Set-Cookie the login handler emitted (not our manual string).
-        // This exercises build_session_cookie end-to-end with the browser-like roundtrip.
-        let parsed = Cookie::parse(login_set_cookie)
-            .expect("login must emit a parseable Set-Cookie header");
-        let real_cookie_header = format!("{}={}", parsed.name(), parsed.value());
+        // Cookie header the browser would send after accepting Set-Cookie.
+        let real_cookie_header = format!("session={}", login_token);
 
         let follow_req = Request::builder()
             .method("GET")
@@ -399,6 +387,92 @@ ldap_default_authtok = "sekret"
         assert!(
             cleared.contains("Max-Age=0") || cleared.contains("session="),
             "logout should clear session cookie"
+        );
+
+        // === Phase 5b: Log in again after logout (regression: stale cookie must not block re-auth) ===
+        let login_again_req = Request::builder()
+            .method("POST")
+            .uri("/login")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("cookie", format!("session={}", login_token))
+            .body(Body::from(login_body))
+            .unwrap();
+        let resp = app.clone().oneshot(login_again_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let again_token = session_token_from_response(&resp);
+        assert_ne!(again_token, login_token, "re-login should issue a fresh session token");
+        let again_header = format!("session={}", again_token);
+        let again_location = resp.headers().get(LOCATION).unwrap().to_str().unwrap();
+        let follow_again = Request::builder()
+            .method("GET")
+            .uri(again_location)
+            .header(COOKIE, &again_header)
+            .body(Body::empty())
+            .unwrap();
+        let follow_again_resp = app.clone().oneshot(follow_again).await.unwrap();
+        assert_eq!(
+            follow_again_resp.status(),
+            StatusCode::OK,
+            "re-login after logout must reach protected page"
+        );
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_redirect_is_context_aware() {
+        let (state, _tmp) = make_test_state_with_temp_config();
+        let auth = state.auth.clone();
+        let app = router(state);
+
+        // First-run: no password sidecar → plain /login (no scary session message)
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers().get(LOCATION).unwrap().to_str().unwrap(),
+            "/login"
+        );
+
+        // After password exists: stale cookie → session error hint
+        let _ = auth.set_simple_password("initialStrongPass123");
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("cookie", "session=definitely-invalid-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers().get(LOCATION).unwrap().to_str().unwrap(),
+            "/login?error=session"
+        );
+
+        // No cookie at all → plain /login
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers().get(LOCATION).unwrap().to_str().unwrap(),
+            "/login"
         );
     }
 

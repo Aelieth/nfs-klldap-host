@@ -10,8 +10,6 @@ use axum::{
 use cookie::{Cookie, SameSite};
 use serde::Deserialize;
 
-
-
 /// Login page template (first-run or normal).
 #[derive(Template)]
 #[template(path = "login.html")]
@@ -44,17 +42,17 @@ pub(crate) struct LoginQuery {
 /// Supports ?error=... from require_auth redirects so failures are visible.
 pub async fn login_page(
     State(state): State<super::AppState>,
+    headers: HeaderMap,
     Query(q): Query<LoginQuery>,
 ) -> impl IntoResponse {
+    if validate_session_in_headers(&state, &headers).is_some() {
+        return Redirect::to("/").into_response();
+    }
+
     let first_run = !state.auth.has_simple_password();
     let admin_group = state.auth.admin_group().to_string();
 
-    let error = q.error.map(|e| match e.as_str() {
-        "session" | "required" | "auth" => {
-            "Your session has expired or you are not logged in. Please sign in again.".to_string()
-        }
-        other => format!("Authentication required: {}", other),
-    });
+    let error = login_error_message(first_run, q.error.as_deref());
 
     Html(
         LoginTemplate {
@@ -67,6 +65,7 @@ pub async fn login_page(
         .render()
         .unwrap(),
     )
+    .into_response()
 }
 
 /// POST /login — the main authentication entry point.
@@ -74,6 +73,7 @@ pub async fn login_page(
 /// On failure: re-renders login page with error.
 pub async fn login(
     State(state): State<super::AppState>,
+    headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> impl IntoResponse {
     let username = form.username.trim();
@@ -109,11 +109,13 @@ pub async fn login(
 
     match result {
         Ok(user) => {
+            // Drop any prior session tokens (stale browser cookies after logout/restart).
+            for old in extract_all_session_tokens_from_headers(&headers) {
+                state.auth.logout(&old);
+            }
             let token = state.auth.create_privileged_session(&user);
-            let cookie = build_session_cookie(&token);
-
-            let mut headers = HeaderMap::new();
-            headers.insert(SET_COOKIE, cookie.parse().unwrap());
+            let mut response_headers = HeaderMap::new();
+            insert_session_cookie(&mut response_headers, &token);
 
             // Warm permission editor search caches on (web) login for instant
             // suggestions in UID/GID boxes (no repeated LDAP roundtrips on focus/type
@@ -128,7 +130,7 @@ pub async fn login(
                 });
             }
 
-            (headers, Redirect::to("/")).into_response()
+            (response_headers, Redirect::to("/")).into_response()
         }
         Err(e) => {
             let first_run = !state.auth.has_simple_password();
@@ -151,6 +153,7 @@ pub async fn login(
 /// and immediately creates a session (auto-login).
 pub async fn setup_password(
     State(state): State<super::AppState>,
+    headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> impl IntoResponse {
     if state.auth.has_simple_password() {
@@ -184,11 +187,12 @@ pub async fn setup_password(
 
     match state.auth.set_simple_password(pw) {
         Ok(()) => {
+            for old in extract_all_session_tokens_from_headers(&headers) {
+                state.auth.logout(&old);
+            }
             let token = state.auth.create_privileged_session("localhost");
-            let cookie = build_session_cookie(&token);
-
-            let mut headers = HeaderMap::new();
-            headers.insert(SET_COOKIE, cookie.parse().unwrap());
+            let mut response_headers = HeaderMap::new();
+            insert_session_cookie(&mut response_headers, &token);
 
             // Warm caches also for first-run setup (same benefit for editor UX).
             {
@@ -200,7 +204,7 @@ pub async fn setup_password(
                 });
             }
 
-            (headers, Redirect::to("/?first_run=1")).into_response()
+            (response_headers, Redirect::to("/?first_run=1")).into_response()
         }
         Err(e) => {
             let html = LoginTemplate {
@@ -219,32 +223,61 @@ pub async fn setup_password(
 
 /// GET|POST /logout — clears the session server-side and the cookie.
 pub async fn logout(State(state): State<super::AppState>, headers: HeaderMap) -> impl IntoResponse {
-    if let Some(cookie) = headers.get("cookie") {
-        if let Ok(s) = cookie.to_str() {
-            if let Some(token) = extract_session_token(s) {
-                state.auth.logout(&token);
-            }
-        }
+    for token in extract_all_session_tokens_from_headers(&headers) {
+        state.auth.logout(&token);
     }
 
-    // Expire the cookie immediately (still HttpOnly etc. for safety).
-    let clear = build_clear_session_cookie();
     let mut h = HeaderMap::new();
-    h.insert(SET_COOKIE, clear.parse().unwrap());
+    insert_session_clear_cookie(&mut h);
     (h, Redirect::to("/login")).into_response()
 }
 
-/// Centralized, correct session cookie builder (the single source of truth).
-///
-/// Uses the `cookie` crate (already a dependency, previously unused).
-/// Policy chosen for long-term viability:
-/// - SameSite=Lax (works reliably with our POST→303→GET login flow)
-/// - HttpOnly + Path=/ + 12h Max-Age
-/// - Secure=true by default (correct for the rustls listener). Can be relaxed via
-///   WEBUI_COOKIE_SECURE=false for local dev, direct IP access, or certain
-///   reverse-proxy setups where the browser sees a non-https origin.
+/// Map ?error= query values to user-visible login messages.
+fn login_error_message(first_run: bool, error: Option<&str>) -> Option<String> {
+    let code = error?;
+    // First-run visitors are not "logged out" — suppress the session-expired copy.
+    if first_run && matches!(code, "session" | "required" | "auth") {
+        return None;
+    }
+    Some(match code {
+        "session" | "required" | "auth" => {
+            "Your session has expired or you are not logged in. Please sign in again.".to_string()
+        }
+        other => format!("Authentication required: {}", other),
+    })
+}
+
+/// Where to send unauthenticated users (context-aware, avoids misleading first-run copy).
+fn auth_failure_redirect(state: &super::AppState, headers: &HeaderMap) -> Redirect {
+    if !state.auth.has_simple_password() {
+        return Redirect::to("/login");
+    }
+    if had_session_cookie(headers) {
+        Redirect::to("/login?error=session")
+    } else {
+        Redirect::to("/login")
+    }
+}
+
+fn had_session_cookie(headers: &HeaderMap) -> bool {
+    headers
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|s| !extract_all_session_tokens(s).is_empty())
+}
+
+fn insert_session_cookie(headers: &mut HeaderMap, token: &str) {
+    let set = build_session_cookie(token);
+    headers.insert(SET_COOKIE, set.parse().expect("valid Set-Cookie"));
+}
+
+fn insert_session_clear_cookie(headers: &mut HeaderMap) {
+    let clear = build_clear_session_cookie();
+    headers.insert(SET_COOKIE, clear.parse().expect("valid Set-Cookie clear"));
+}
+
+/// Centralized session cookie builder (single source of truth).
 fn build_session_cookie(token: &str) -> String {
-    // 12 hours in seconds (matches previous Max-Age and SESSION_TTL intent).
     let max_age = cookie::time::Duration::seconds(12 * 3600);
 
     Cookie::build(("session", token))
@@ -256,7 +289,6 @@ fn build_session_cookie(token: &str) -> String {
         .to_string()
 }
 
-/// Matching clearer for logout.
 fn build_clear_session_cookie() -> String {
     Cookie::build(("session", ""))
         .http_only(true)
@@ -267,10 +299,10 @@ fn build_clear_session_cookie() -> String {
         .to_string()
 }
 
-/// Returns whether session cookies should be marked Secure.
-/// Defaults to true (correct for the always-rustls UI listener).
-/// Set WEBUI_COOKIE_SECURE=false (or 0/false/off/no) to relax for
-/// local development or proxy scenarios where the browser origin is not https.
+/// Whether session cookies should be marked Secure.
+/// Defaults to true (the WebUI always listens with TLS on :9630).
+/// Set `WEBUI_COOKIE_SECURE=false` only when the browser's origin is plain HTTP
+/// (e.g. an HTTP reverse-proxy in front of the container).
 fn cookie_secure() -> bool {
     std::env::var("WEBUI_COOKIE_SECURE")
         .map(|v| {
@@ -280,18 +312,38 @@ fn cookie_secure() -> bool {
         .unwrap_or(true)
 }
 
-/// Robust-ish extraction of the session token from a Cookie header value.
-/// (Improved from the original hand-rolled splitter; still simple because
-/// we control the cookie we emit.)
-pub(crate) fn extract_session_token(cookie_header: &str) -> Option<String> {
+/// All non-empty `session=` values from a Cookie header (oldest → newest).
+pub(crate) fn extract_all_session_tokens(cookie_header: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
     for part in cookie_header.split(';') {
         let kv = part.trim();
         if let Some(rest) = kv.strip_prefix("session=") {
-            // Trim any quotes the browser might have added (defensive).
             let token = rest.trim_matches('"');
             if !token.is_empty() {
-                return Some(token.to_string());
+                tokens.push(token.to_string());
             }
+        }
+    }
+    tokens
+}
+
+fn extract_all_session_tokens_from_headers(headers: &HeaderMap) -> Vec<String> {
+    headers
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .map(extract_all_session_tokens)
+        .unwrap_or_default()
+}
+
+/// Validate any session cookie on the request; prefers the last (most recently set) token.
+pub(crate) fn validate_session_in_headers(
+    state: &super::AppState,
+    headers: &HeaderMap,
+) -> Option<String> {
+    let tokens = extract_all_session_tokens_from_headers(headers);
+    for token in tokens.into_iter().rev() {
+        if let Some(user) = state.auth.validate(&token) {
+            return Some(user);
         }
     }
     None
@@ -303,26 +355,40 @@ pub(crate) fn extract_session_token(cookie_header: &str) -> Option<String> {
 pub struct AuthUser(pub String);
 
 /// Guard used by (almost) every protected route handler.
-/// Returns the username on success or a Redirect to /login on failure.
-///
-/// Callers typically do:
-///   let user = require_auth(&state, &headers).await?;
-///
-/// This is the current clean form (no State clone per call). A full
-/// `FromRequestParts` extractor is a natural long-term evolution.
 pub async fn require_auth(
     state: &super::AppState,
     headers: &HeaderMap,
 ) -> Result<AuthUser, Redirect> {
-    if let Some(cookie) = headers.get("cookie") {
-        if let Ok(s) = cookie.to_str() {
-            if let Some(token) = extract_session_token(s) {
-                if let Some(user) = state.auth.validate(&token) {
-                    return Ok(AuthUser(user));
-                }
-            }
-        }
+    if let Some(user) = validate_session_in_headers(state, headers) {
+        return Ok(AuthUser(user));
     }
-    // Surface a visible reason on the login page instead of a completely silent bounce.
-    Err(Redirect::to("/login?error=session"))
+    Err(auth_failure_redirect(state, headers))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_all_session_tokens_collects_duplicates() {
+        let raw = "foo=bar; session=old; session=new";
+        let t = extract_all_session_tokens(raw);
+        assert_eq!(t, vec!["old".to_string(), "new".to_string()]);
+    }
+
+    #[test]
+    fn login_error_message_suppresses_session_copy_on_first_run() {
+        assert!(login_error_message(true, Some("session")).is_none());
+        assert!(login_error_message(true, Some("required")).is_none());
+        assert!(
+            login_error_message(false, Some("session"))
+                .unwrap()
+                .contains("expired")
+        );
+    }
+
+    #[test]
+    fn cookie_secure_defaults_true() {
+        assert!(cookie_secure());
+    }
 }

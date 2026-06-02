@@ -1,6 +1,6 @@
 //! LdapClient (ldap3 + rustls). Shares uri/creds/PosixAttributeMapping with SSSD.
 //! Fresh conn per op (short-lived + explicit unbind for KLLDAP/rustls TLS compatibility).
-//! Identity cache (10m) + search cache (30s) + memberOf fast-path on verify.
+//! Identity cache (10m) + search cache (2m) + memberOf fast-path on verify.
 //! See clear_cache / cache_stats_summary.
 
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
@@ -83,12 +83,12 @@ pub struct Group {
 // ---------------------------------------------------------------------
 // Simple in-memory TTL caches (zero-dep) to eliminate repeated binds/searches.
 // Identity (name → uid/gid/DN) : 10 min
-// Recent filter searches (autocomplete) : 30 s
+// Recent filter searches (autocomplete) : 2 min
 // All access is behind the caller's Arc<Mutex<LdapClient>> so no extra locking.
 // ---------------------------------------------------------------------
 
 const IDENTITY_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
-const SEARCH_CACHE_TTL: Duration = Duration::from_secs(30);
+const SEARCH_CACHE_TTL: Duration = Duration::from_secs(2 * 60);
 const MAX_RECENT_SEARCHES: usize = 8;
 /// Max autocomplete rows returned to the permission editor (scrollable dropdown).
 const LIST_RESULT_LIMIT: usize = 25;
@@ -943,7 +943,7 @@ impl LdapClient {
             );
         }
 
-        // Recent search cache (30s): re-apply query filter — stale keys must not bypass typing.
+        // Recent search cache (2m): re-apply query filter — stale keys must not bypass typing.
         let search_cached = self.cache_get_search(&cache_key, true);
         if let Some(cached) = search_cached.clone() {
             for (id, uid, display) in cached {

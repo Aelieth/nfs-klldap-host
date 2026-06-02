@@ -530,7 +530,7 @@ pub(crate) async fn lldap_status(State(state): State<AppState>, headers: HeaderM
     html.push_str(
         r#"<button type='button' hx-post='/settings/clear-ldap-cache' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:8px; margin-left:8px; padding:4px 10px; cursor:pointer;'>Clear identity cache</button>"#
     );
-    html.push_str(r#" <span style='font-size:0.8em;color:#555'>(10m user/group cache + 30s search cache)</span>"#);
+    html.push_str(r#" <span style='font-size:0.8em;color:#555'>(10m user/group cache + 2m search cache)</span>"#);
 
     let stats = client.cache_stats_summary();
     let hit_rate = if stats.hits + stats.misses > 0 {

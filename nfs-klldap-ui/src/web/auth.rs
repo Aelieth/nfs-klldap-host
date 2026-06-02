@@ -131,7 +131,7 @@ pub async fn login(
             // Warm permission editor search caches on (web) login for instant
             // suggestions in UID/GID boxes (no repeated LDAP roundtrips on focus/type
             // in the Share Permissions directory editor). The list_* calls populate
-            // both the 30s search cache (__all__) and the 10m identity caches.
+            // both the 2m search cache (__all__) and the 10m identity caches.
             {
                 let lldap = state.lldap.clone();
                 tokio::spawn(async move {

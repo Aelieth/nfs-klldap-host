@@ -6,8 +6,15 @@
     <title>NFS Kerb Manager</title>
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
     <style>
-        /* === Theme: Light (default) + automatic Dark via system preference === */
+        /* === Theme: 3-state (auto/light/dark) with LLDAP/LLDAP-inspired coloration ===
+           - data-theme on <html> (or :root) controls explicit choice.
+           - 'auto' (default/absent) + media query honors browser/OS prefers-color-scheme.
+           - Explicit 'light'/'dark' win and persist; media listener only active for auto.
+           - Colors tuned for parity with KLLDAP nightshade (body #222 dark, grays, blue primary)
+             while preserving current compact UI density. New alert/success vars for dynamic content.
+        */
         :root {
+            /* Light (default + explicit light) */
             --bg: #ffffff;
             --bg-alt: #f8f9fa;
             --text: #222222;
@@ -27,13 +34,25 @@
             --dir-hover: #f0f0f0;
             --selected-bg: #d0e8ff;
             --selected-border: #2b7de9;
+
+            /* Status/alert colors (light) - match BS/LLDAP for success/danger in dynamic HTML */
+            --success-bg: #d4edda;
+            --success-border: #28a745;
+            --success-text: #0f5132;
+            --danger-bg: #f8d7da;
+            --danger-border: #dc3545;
+            --danger-text: #842029;
+            --warning-amber-bg: #fff3cd;
+            --warning-amber-border: #ffc107;
+            --warning-amber-text: #664e04;
         }
 
         @media (prefers-color-scheme: dark) {
-            :root {
-                --bg: #1f1f1f;
-                --bg-alt: #252525;
-                --text: #e0e0e0;
+            :root:not([data-theme="light"]) {
+                /* Dark via system (when auto or explicit dark) */
+                --bg: #222222;
+                --bg-alt: #2a2a2a;
+                --text: #e1e1e1;
                 --text-muted: #aaaaaa;
                 --text-light: #999999;
                 --border: #444444;
@@ -50,7 +69,84 @@
                 --dir-hover: #2a2a2a;
                 --selected-bg: #1e3a5f;
                 --selected-border: #5fa8ff;
+
+                /* Dark alert/status (inspired by LLDAP $*-alt + BS dark scales) */
+                --success-bg: #0f3d2f;
+                --success-border: #00bc8c;
+                --success-text: #75b798;
+                --danger-bg: #3c1f1f;
+                --danger-border: #e74c3c;
+                --danger-text: #f5a3a3;
+                --warning-amber-bg: #3c2f00;
+                --warning-amber-border: #ffca2c;
+                --warning-amber-text: #ffe69c;
             }
+        }
+
+        /* Explicit dark always wins (overrides media) */
+        :root[data-theme="dark"] {
+            --bg: #222222;
+            --bg-alt: #2a2a2a;
+            --text: #e1e1e1;
+            --text-muted: #aaaaaa;
+            --text-light: #999999;
+            --border: #444444;
+            --border-light: #333333;
+            --link: #6ea8fe;
+            --accent: #5fa8ff;
+            --accent-light: #1e3a5f;
+            --input-bg: #2a2a2a;
+            --input-border: #555555;
+            --card-bg: #252b35;
+            --warning-bg: #332200;
+            --warning-border: #665200;
+            --warning-text: #f0d080;
+            --dir-hover: #2a2a2a;
+            --selected-bg: #1e3a5f;
+            --selected-border: #5fa8ff;
+
+            --success-bg: #0f3d2f;
+            --success-border: #00bc8c;
+            --success-text: #75b798;
+            --danger-bg: #3c1f1f;
+            --danger-border: #e74c3c;
+            --danger-text: #f5a3a3;
+            --warning-amber-bg: #3c2f00;
+            --warning-amber-border: #ffca2c;
+            --warning-amber-text: #ffe69c;
+        }
+
+        /* Explicit light always forces light (even if system dark) */
+        :root[data-theme="light"] {
+            --bg: #ffffff;
+            --bg-alt: #f8f9fa;
+            --text: #222222;
+            --text-muted: #555555;
+            --text-light: #666666;
+            --border: #cccccc;
+            --border-light: #e5e5e5;
+            --link: #0d6efd;
+            --accent: #2b7de9;
+            --accent-light: #d0e8ff;
+            --input-bg: #ffffff;
+            --input-border: #ccc;
+            --card-bg: #f8fbff;
+            --warning-bg: #fff3cd;
+            --warning-border: #ffecb5;
+            --warning-text: #664e04;
+            --dir-hover: #f0f0f0;
+            --selected-bg: #d0e8ff;
+            --selected-border: #2b7de9;
+
+            --success-bg: #d4edda;
+            --success-border: #28a745;
+            --success-text: #0f5132;
+            --danger-bg: #f8d7da;
+            --danger-border: #dc3545;
+            --danger-text: #842029;
+            --warning-amber-bg: #fff3cd;
+            --warning-amber-border: #ffc107;
+            --warning-amber-text: #664e04;
         }
 
         html, body {
@@ -76,6 +172,52 @@
             background: var(--bg-alt);
             color: var(--text);
             border: 1px solid var(--border);
+            border-radius: 3px;
+            padding: 3px 8px;
+            font-size: 0.85em;
+            cursor: pointer;
+        }
+        button:hover {
+            background: var(--accent-light);
+            border-color: var(--accent);
+        }
+        /* Slightly larger interactive buttons (per feedback) without breaking compact density */
+        .btn {
+            font-size: 0.88em;
+            padding: 4px 10px;
+        }
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
+        .btn-primary:hover {
+            filter: brightness(1.08);
+            background: var(--accent);
+        }
+
+        /* Alert boxes for success/error/warning in templates + dynamic Rust HTML (settings/permission_tree) */
+        .alert {
+            padding: 6px 10px;
+            margin: 6px 0;
+            border: 1px solid;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        .alert-success {
+            background: var(--success-bg);
+            border-color: var(--success-border);
+            color: var(--success-text);
+        }
+        .alert-danger {
+            background: var(--danger-bg);
+            border-color: var(--danger-border);
+            color: var(--danger-text);
+        }
+        .alert-warning {
+            background: var(--warning-amber-bg);
+            border-color: var(--warning-amber-border);
+            color: var(--warning-amber-text);
         }
 
         /* Make the search suggestion dropdowns position correctly relative to their inputs */
@@ -261,7 +403,65 @@
             border-color: var(--border) !important;
             color: var(--text) !important;
         }
+
+        /* === Theme icon tray (3-state: auto 🖥️ / dark 🌙 / light ☀️) ===
+           Right-aligned on same line as h1 (compact tray, no big switch).
+           Radios styled as small icon buttons. Auto is default.
+           Selected state uses accent. Slightly larger per feedback but still tiny.
+        */
+        .theme-tray {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            margin-left: 12px;
+            vertical-align: middle;
+            font-size: 0.85em;
+        }
+        .theme-tray input[type="radio"] {
+            display: none;
+        }
+        .theme-tray label {
+            cursor: pointer;
+            padding: 2px 5px;
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            background: var(--bg-alt);
+            color: var(--text);
+            user-select: none;
+            line-height: 1;
+            min-width: 18px;
+            text-align: center;
+        }
+        .theme-tray label:hover {
+            border-color: var(--accent);
+            background: var(--accent-light);
+        }
+        .theme-tray input[type="radio"]:checked + label {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+            font-weight: 600;
+        }
+        .theme-tray label span {
+            font-size: 0.95em;
+        }
     </style>
+    <!-- Early theme init (before body paint) to avoid FOUC. Sets data-theme based on localStorage or system. -->
+    <script>
+        (function() {
+            try {
+                var saved = localStorage.getItem('theme');
+                var root = document.documentElement;
+                if (saved === 'light' || saved === 'dark') {
+                    root.setAttribute('data-theme', saved);
+                } else {
+                    // 'auto' or absent/null: do not set explicit data-theme so @media applies
+                    root.removeAttribute('data-theme');
+                    // If user had legacy 'auto' string, keep it but no attr needed for media
+                }
+            } catch (e) { /* localStorage blocked; fall to media query */ }
+        })();
+    </script>
     <script>
         // Normalize permission-editor field values (e.g. "Alice (1000)" → "1000") for HTMX search.
         window.editorSearchQuery = function(input) {
@@ -291,6 +491,69 @@
             if (input) input.value = name;
             const suggestions = document.getElementById('group-suggestions');
             if (suggestions) suggestions.innerHTML = '';
+        }
+
+        // === Theme manager (3-state: auto / dark / light) ===
+        // Persists in localStorage 'theme'. Auto follows prefers-color-scheme live.
+        // data-theme on <html> drives CSS (explicit wins; absent/removed => media).
+        window.setTheme = function(mode) {
+            try { localStorage.setItem('theme', mode); } catch (e) {}
+            var root = document.documentElement;
+            if (mode === 'light' || mode === 'dark') {
+                root.setAttribute('data-theme', mode);
+            } else {
+                // auto: remove explicit so media query controls
+                root.removeAttribute('data-theme');
+            }
+            // Sync radio tray if present
+            var tray = document.getElementById('theme-tray');
+            if (tray) {
+                var radio = tray.querySelector('input[name="theme-choice"][value="' + mode + '"]');
+                if (radio) radio.checked = true;
+            }
+        };
+
+        function initThemeTray() {
+            var tray = document.getElementById('theme-tray');
+            if (!tray) return;
+
+            // Determine current effective + saved
+            var saved = null;
+            try { saved = localStorage.getItem('theme'); } catch (e) {}
+            var current = saved || 'auto';
+
+            // Select the matching radio
+            var toCheck = tray.querySelector('input[name="theme-choice"][value="' + current + '"]');
+            if (toCheck) toCheck.checked = true;
+
+            // Wire radios (change handler)
+            tray.querySelectorAll('input[name="theme-choice"]').forEach(function(r) {
+                r.addEventListener('change', function() {
+                    if (this.checked) {
+                        window.setTheme(this.value);
+                    }
+                });
+            });
+
+            // Live system change listener (only while in auto)
+            var mql = window.matchMedia('(prefers-color-scheme: dark)');
+            function onSystemChange() {
+                var s = null;
+                try { s = localStorage.getItem('theme'); } catch (e) {}
+                if (!s || s === 'auto') {
+                    // Re-apply by removing data-theme (media will pick new)
+                    var rt = document.documentElement;
+                    rt.removeAttribute('data-theme');
+                    // Keep tray on auto
+                    var ar = tray.querySelector('input[name="theme-choice"][value="auto"]');
+                    if (ar) ar.checked = true;
+                }
+            }
+            if (mql && mql.addEventListener) {
+                mql.addEventListener('change', onSystemChange);
+            } else if (mql && mql.addListener) {
+                mql.addListener(onSystemChange); // older
+            }
         }
 
         // === Edit mode state (tree locked while editing one directory's permissions) ===
@@ -694,19 +957,34 @@
         }
 
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', attachDirClickHandlers);
+            document.addEventListener('DOMContentLoaded', function() {
+                attachDirClickHandlers();
+                initThemeTray();
+            });
         } else {
             attachDirClickHandlers();
+            initThemeTray();
         }
     </script>
 </head>
 <body>
-    <h1>nfs-klldap-host Manager</h1>
+    <!-- Header line: title left + compact 3-state theme icon tray right-aligned (auto 🖥️ / dark 🌙 / light ☀️) -->
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.25rem;">
+        <h1 style="margin:0; font-size:1.35rem;">nfs-klldap-host Manager</h1>
+        <div class="theme-tray" id="theme-tray" role="radiogroup" aria-label="Theme">
+            <input type="radio" id="theme-auto" name="theme-choice" value="auto">
+            <label for="theme-auto" title="Auto (follow browser/OS)"><span>🖥️</span></label>
+            <input type="radio" id="theme-dark" name="theme-choice" value="dark">
+            <label for="theme-dark" title="Dark"><span>🌙</span></label>
+            <input type="radio" id="theme-light" name="theme-choice" value="light">
+            <label for="theme-light" title="Light"><span>☀️</span></label>
+        </div>
+    </div>
 
     {% if let Some(user) = current_user %}
         <div style="background: var(--bg-alt); padding:6px 12px; margin-bottom:0.5rem; border:1px solid var(--border); border-radius:4px; font-size:0.9em;">
             Logged in as <strong>{{ user }}</strong> &nbsp;|&nbsp;
-            <a href="/logout" style="color:#c44; text-decoration:none;">Logout</a>
+            <a href="/logout" style="color:var(--danger-text); text-decoration:none;">Logout</a>
         </div>
     {% endif %}
 

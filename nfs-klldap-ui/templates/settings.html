@@ -18,7 +18,7 @@
 </div>
 
 {% if let Some(msg) = message %}
-    <div style="background: var(--card-bg); border:1px solid #28a745; color: var(--text); padding:8px; margin:1rem 0; border-radius:4px;">
+    <div class="alert alert-success" style="margin:1rem 0;">
         {{ msg }}
     </div>
 {% endif %}
@@ -28,7 +28,7 @@
 <div id="nfs-client-status"
      hx-get="/settings/lldap-status"
      hx-trigger="load"
-     style="border:1px solid #aaa; background:#f5f5f5; padding:10px; margin:1rem 0; border-radius:4px;">
+     style="border:1px solid var(--border); background:var(--bg-alt); padding:10px; margin:1rem 0; border-radius:4px;">
     <em>Loading NFS client status…</em>
 </div>
 
@@ -82,7 +82,7 @@
     <button type="button" onclick="addShareRow()" style="margin:6px 0;">+ Add share</button>
 
     <br>
-    <button type="submit" style="padding:8px 16px;">Save Structured</button>
+    <button type="submit" class="btn btn-primary" style="padding:8px 16px;">Save Structured</button>
 </form>
 
 <script>
@@ -110,7 +110,7 @@ function addShareRow() {
 <h3>Raw TOML Editor (full control + comments preserved)</h3>
 <form method="post" action="/settings/save-raw">
     <textarea name="raw_content" rows="16" style="width:100%; font-family:monospace;">{{ raw_toml }}</textarea><br>
-    <button type="submit" style="margin-top:6px;">Save Raw TOML</button>
+    <button type="submit" class="btn btn-primary" style="margin-top:6px;">Save Raw TOML</button>
 </form>
 
 <p style="color: var(--text-light); font-size:0.9em; margin-top:1rem;">

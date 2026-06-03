@@ -24,12 +24,12 @@
                    style="width: 100%; padding: 8px;">
         </label>
     </div>
-    <button type="submit" style="padding: 10px 20px; background:#28a745; color:white; border:none;">
+    <button type="submit" class="btn btn-primary" style="padding: 10px 20px;">
         Set password &amp; log in as localhost
     </button>
 </form>
 
-<p style="margin-top: 1.5rem; font-size: 0.9em; color:#555;">
+<p style="margin-top: 1.5rem; font-size: 0.9em; color: var(--text-light);">
     After this one-time step you (or anyone with the password) can log in as <code>localhost</code>.<br>
     Members of the <code>{{ admin_group }}</code> group in LLDAP can also log in from any machine and manage this host remotely.
 </p>
@@ -48,12 +48,12 @@
                    style="width: 100%; padding: 8px;">
         </label>
     </div>
-    <button type="submit" style="padding: 10px 20px;">Log in</button>
+    <button type="submit" class="btn btn-primary" style="padding: 10px 20px;">Log in</button>
 </form>
 {% endif %}
 
 {% if let Some(err) = error %}
-    <p style="color:#c00; margin-top: 1rem; font-weight: 600;">{{ err }}</p>
+    <p class="alert alert-danger" style="margin-top: 1rem;">{{ err }}</p>
 {% endif %}
 
 {% endblock %}

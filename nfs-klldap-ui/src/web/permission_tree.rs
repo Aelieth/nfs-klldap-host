@@ -230,7 +230,7 @@ pub(crate) async fn tree_fragment(
         .replace('<', "&lt;")
         .replace('>', "&gt;");
     let msg = format!(
-        r#"<div style="color:#b00; padding:0.5em; border:1px solid #fcc; background:#fff5f5; border-radius:4px;">
+        r#"<div class="alert alert-danger" style="padding:0.5em;">
             <strong>Cannot display directory tree.</strong><br>
             <code>{}</code> is allowed by your config but is not visible inside the container
             (check bind mounts / <code>storage.container_root</code> and the startup diagnostics
@@ -287,7 +287,7 @@ pub(crate) async fn dir_meta(
         )
     } else {
         let safe = path.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-        ("(unavailable)".into(), "(unavailable)".into(), format!("<span style=\"color:#b00\">{}</span>", safe))
+        ("(unavailable)".into(), "(unavailable)".into(), format!("<span style=\"color:var(--danger-text)\">{}</span>", safe))
     };
 
     let tpl = DirMetaTemplate {
@@ -452,7 +452,7 @@ pub(crate) async fn apply_permissions(
                 Some((uid, _)) => owner_uid = uid as u32,
                 None => {
                     let html = format!(
-                        r#"<div style="font-size:0.85em; color:#900; padding:4px; border:1px solid #fcc;">
+                        r#"<div class="alert alert-danger" style="font-size:0.85em; padding:4px;">
                             Could not find user <strong>{}</strong> in LLDAP (or invalid number).
                             <button type="button" hx-get="/dir-editor?path={}" hx-target="closest .dir-meta" hx-swap="innerHTML">Retry</button>
                         </div>"#,
@@ -468,7 +468,7 @@ pub(crate) async fn apply_permissions(
                 Some((gid, _)) => group_gid = gid as u32,
                 None => {
                     let html = format!(
-                        r#"<div style="font-size:0.85em; color:#900; padding:4px; border:1px solid #fcc;">
+                        r#"<div class="alert alert-danger" style="font-size:0.85em; padding:4px;">
                             Could not find group <strong>{}</strong> in LLDAP (or invalid number).
                             <button type="button" hx-get="/dir-editor?path={}" hx-target="closest .dir-meta" hx-swap="innerHTML">Retry</button>
                         </div>"#,
@@ -601,7 +601,7 @@ pub(crate) async fn apply_permissions(
     // happen only after the poller sees finished and does the final /dir-meta fetch.
     let placeholder = format!(
         r#"<div class="dir-meta-inner" data-path="{}" data-applying="1">
-    <span style="color:#b8860b;">⏳ Applying permissions — see Apply Log (bottom right) for progress and Cancel. Tree navigation locked until complete.</span>
+    <span style="color:var(--warning-text);">⏳ Applying permissions — see Apply Log (bottom right) for progress and Cancel. Tree navigation locked until complete.</span>
 </div>"#,
         form.path
     );
@@ -617,9 +617,9 @@ pub(crate) async fn apply_permissions(
 /// When !active_cancel we also emit data-apply-finished so the JS poller listener can stop itself.
 fn render_apply_status_oob(cmd: &str, result_or_live: &str, active_cancel: bool) -> String {
     let cancel_btn = if active_cancel {
-        r#"<button type="button" onclick="if (window.cancelCurrentApply) window.cancelCurrentApply();" style="font-size:0.72em; padding:2px 8px; border:1px solid #c33; color:#c33; background:#fff5f5; border-radius:2px; cursor:pointer;">Cancel Apply</button>"#
+        r#"<button type="button" onclick="if (window.cancelCurrentApply) window.cancelCurrentApply();" class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--danger-border); color:var(--danger-text); background:var(--danger-bg); border-radius:2px; cursor:pointer;">Cancel Apply</button>"#
     } else {
-        r#"<button type="button" disabled style="font-size:0.72em; padding:2px 8px; border:1px solid #aaa; color:#888; opacity:0.6; border-radius:2px;">Cancel Apply</button>"#
+        r#"<button type="button" disabled class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--border); color:var(--text-light); opacity:0.6; border-radius:2px;">Cancel Apply</button>"#
     };
     let finished_attr = if !active_cancel { r#"data-apply-finished="true""# } else { "" };
     format!(
@@ -684,7 +684,7 @@ pub(crate) async fn apply_progress(
             r#"<div id="apply-status" hx-swap-oob="true" class="apply-status" style="display:block;">
     <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">
       <span>Apply Log</span>
-      <button type="button" disabled style="font-size:0.72em; padding:2px 8px; border:1px solid #aaa; color:#888; opacity:0.6; border-radius:2px;">Cancel Apply</button>
+      <button type="button" disabled class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--border); color:var(--text-light); opacity:0.6; border-radius:2px;">Cancel Apply</button>
     </div>
     <div class="apply-status-content" style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
 <em style="color:var(--text-light);">No permission apply in progress.</em>
@@ -703,7 +703,7 @@ pub(crate) async fn cancel_apply(
     if let Some(prog) = state.apply_progress.lock().await.as_ref() {
         prog.cancelled.store(true, Ordering::Relaxed);
     }
-    Ok(Html(r#"<span style="font-size:0.7em; color:#c33;">Cancel requested.</span>"#.to_string()))
+    Ok(Html(r#"<span style="font-size:0.7em; color:var(--danger-text);">Cancel requested.</span>"#.to_string()))
 }
 
 #[cfg(test)]

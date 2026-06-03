@@ -2,7 +2,7 @@
 
 {% block content %}
 <h2>Share Permissions</h2>
-<p style="font-size:0.8em; color:#777; margin-top:-0.4em;">
+<p style="font-size:0.8em; color:var(--text-light); margin-top:-0.4em;">
     Shares list and allowed roots are loaded at container startup. After adding or editing shares, restart the container for the list to update.
 </p>
 
@@ -41,7 +41,7 @@
 <div id="apply-status" class="apply-status" style="display:block;">
     <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">
       <span>Apply Log</span>
-      <button type="button" disabled style="font-size:0.72em; padding:2px 8px; border:1px solid #aaa; color:#888; opacity:0.6; border-radius:2px;">Cancel Apply</button>
+      <button type="button" disabled class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--border); color:var(--text-light); opacity:0.6; border-radius:2px;">Cancel Apply</button>
     </div>
     <div id="apply-status-content" class="apply-status-content"
          style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">

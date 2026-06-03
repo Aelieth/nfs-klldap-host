@@ -362,18 +362,18 @@ pub(crate) async fn settings_save_raw(
     let tmp_path = state.config_path.with_extension("tmp-validate");
     if let Err(e) = std::fs::write(&tmp_path, &form.raw_content) {
         let msg = format!("Failed to write temp file for validation: {}", e);
-        return Ok(Html(format!("<p style='color:#c00'>{}</p>", msg)));
+        return Ok(Html(format!("<p class='alert alert-danger'>{}</p>", msg)));
     }
     let validation = nfs_klldap_config::NfsKlldapConfig::load(&tmp_path);
     let _ = std::fs::remove_file(&tmp_path);
 
     if let Err(e) = validation {
         let msg = format!("Validation failed — not saving: {}", e);
-        return Ok(Html(format!("<p style='color:#c00'>{}</p>", msg)));
+        return Ok(Html(format!("<p class='alert alert-danger'>{}</p>", msg)));
     }
 
     if let Err(msg) = atomic_write_config(&state.config_path, &form.raw_content) {
-        return Ok(Html(format!("<p style='color:#c00'>{}</p>", msg)));
+        return Ok(Html(format!("<p class='alert alert-danger'>{}</p>", msg)));
     }
 
     let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
@@ -460,7 +460,7 @@ pub(crate) async fn settings_save_structured(
 pub(crate) async fn lldap_status(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     if require_auth(&state, &headers).await.is_err() {
         return Html(
-            "<div id='nfs-client-status' style='color:#c00'>Unauthorized</div>".to_string(),
+            "<div id='nfs-client-status' class='alert alert-danger'>Unauthorized</div>".to_string(),
         );
     }
 
@@ -489,7 +489,7 @@ pub(crate) async fn lldap_status(State(state): State<AppState>, headers: HeaderM
 
     let notice_html = if username_differs {
         let mut n = String::from(
-            "<div style='background:#fff3cd; border:1px solid #ffc107; padding:8px; margin:6px 0; border-radius:3px;'>"
+            "<div class='alert alert-warning' style='margin:6px 0;'>"
         );
         n.push_str("<strong>Bind credentials changed on disk.</strong><br>");
         n.push_str(&format!("On-disk now uses <code>{}</code>, but the running NFS permission client is still using <code>{}</code> (loaded at startup or last reload).<br>", disk_user, auth_as));
@@ -502,7 +502,7 @@ pub(crate) async fn lldap_status(State(state): State<AppState>, headers: HeaderM
     };
 
     let mut html = String::from(
-        "<div id='nfs-client-status' style='border:1px solid #aaa; background:#f5f5f5; padding:10px; margin:1rem 0; border-radius:4px;'>"
+        "<div id='nfs-client-status' style='border:1px solid var(--border); background:var(--bg-alt); padding:10px; margin:1rem 0; border-radius:4px;'>"
     );
     html.push_str("<strong>NFS Permission Client (KLLDAP/LLDAP connection)</strong><br>");
     html.push_str("<span style='font-size:0.9em;'>Used for live user/group lookups and uid/gid resolution when managing share permissions.</span><br><br>");
@@ -510,19 +510,19 @@ pub(crate) async fn lldap_status(State(state): State<AppState>, headers: HeaderM
     html.push_str(&format!("Last connected: {}<br>", last_str));
     html.push_str(&notice_html);
     if !username_differs {
-        html.push_str("<span style='font-size:0.8em;color:#666;'>Reload always reads the latest bind credentials + ldap_uri from disk/env.</span><br>");
+        html.push_str("<span style='font-size:0.8em;color:var(--text-light);'>Reload always reads the latest bind credentials + ldap_uri from disk/env.</span><br>");
     }
     html.push_str(
         "<button type='button' hx-post='/settings/reload-nfs-client' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:8px; padding:4px 10px; cursor:pointer;'>Reload NFS client</button>"
     );
     html.push_str(
-        " <span style='font-size:0.8em; color:#555; margin-left:6px;'>(re-reads sssd.ldap_default_bind_* + ldap_uri and re-binds)</span>"
+        " <span style='font-size:0.8em; color:var(--text-light); margin-left:6px;'>(re-reads sssd.ldap_default_bind_* + ldap_uri and re-binds)</span>"
     );
 
     html.push_str(
         r#"<button type='button' hx-post='/settings/clear-ldap-cache' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:8px; margin-left:8px; padding:4px 10px; cursor:pointer;'>Clear identity cache</button>"#
     );
-    html.push_str(r#" <span style='font-size:0.8em;color:#555'>(10m user/group cache + 2m search cache)</span>"#);
+    html.push_str(r#" <span style='font-size:0.8em;color:var(--text-light)'>(10m user/group cache + 2m search cache)</span>"#);
 
     let stats = client.cache_stats_summary();
     let hit_rate = if stats.hits + stats.misses > 0 {
@@ -530,7 +530,7 @@ pub(crate) async fn lldap_status(State(state): State<AppState>, headers: HeaderM
     } else { 0 };
     let last_cleared = stats.last_cleared_ago_secs.map(|s| format!(" • last cleared {}s ago", s)).unwrap_or_default();
     html.push_str(&format!(
-        r#"<div style='font-size:0.75em;color:#666;margin-top:6px;'>Cache: {} users, {} groups, {} searches • {}% hit ({} hits / {} misses) • clears: {}{}</div>"#,
+        r#"<div style='font-size:0.75em;color:var(--text-light);margin-top:6px;'>Cache: {} users, {} groups, {} searches • {}% hit ({} hits / {} misses) • clears: {}{}</div>"#,
         stats.user_entries, stats.group_entries, stats.recent_search_entries, hit_rate, stats.hits, stats.misses, stats.clears, last_cleared
     ));
 
@@ -545,14 +545,14 @@ pub(crate) async fn reload_nfs_client(
 ) -> impl IntoResponse {
     if require_auth(&state, &headers).await.is_err() {
         return Html(
-            "<div id='nfs-client-status' style='color:#c00'>Unauthorized</div>".to_string(),
+            "<div id='nfs-client-status' class='alert alert-danger'>Unauthorized</div>".to_string(),
         );
     }
 
     let fresh = match crate::config::load_config_from(&state.config_path) {
         Ok(c) => c,
         Err(e) => {
-            let mut err = String::from("<div id='nfs-client-status' style='background:#f8d7da;border:1px solid #dc3545;padding:8px;'>");
+            let mut err = String::from("<div id='nfs-client-status' class='alert alert-danger'>");
             err.push_str(&format!(
                 "<strong>Failed to read config:</strong> {}<br>",
                 e
@@ -566,7 +566,7 @@ pub(crate) async fn reload_nfs_client(
     let (user, pass) = crate::config::ldap_service_creds(&fresh);
 
     if pass.trim().is_empty() || pass == "SET_ME" || pass == "CHANGE_THIS_TO_A_STRONG_SECRET" {
-        let mut msg = String::from("<div id='nfs-client-status' style='background:#fff3cd;border:1px solid #ffc107;padding:8px;'>");
+        let mut msg = String::from("<div id='nfs-client-status' class='alert alert-warning'>");
         msg.push_str(&format!("<strong>Cannot reload:</strong> No valid password present for <code>{}</code> in the current config (or env).<br>", user));
         msg.push_str("<button type='button' hx-get='/settings/lldap-status' hx-target='#nfs-client-status' hx-swap='outerHTML'>Refresh</button>");
         msg.push_str("</div>");
@@ -600,7 +600,7 @@ pub(crate) async fn reload_nfs_client(
                 *guard = new_client;
             }
 
-            let mut ok = String::from("<div id='nfs-client-status' style='background:#d4edda;border:1px solid #28a745;padding:8px;border-radius:3px;'>");
+            let mut ok = String::from("<div id='nfs-client-status' class='alert alert-success'>");
             ok.push_str("<strong>NFS client reloaded successfully.</strong><br>");
             ok.push_str(&format!("Now authenticated as <code>{}</code> using current values from nfs-klldap.conf.<br>", user));
             ok.push_str("<button type='button' hx-get='/settings/lldap-status' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:4px;'>Show updated status</button>");
@@ -608,7 +608,7 @@ pub(crate) async fn reload_nfs_client(
             Html(ok)
         }
         Err(e) => {
-            let mut err = String::from("<div id='nfs-client-status' style='background:#f8d7da;border:1px solid #dc3545;padding:8px;'>");
+            let mut err = String::from("<div id='nfs-client-status' class='alert alert-danger'>");
             err.push_str(&format!(
                 "<strong>Re-authentication failed:</strong> {}<br>",
                 e
@@ -627,7 +627,7 @@ pub(crate) async fn clear_ldap_cache(
 ) -> impl IntoResponse {
     if require_auth(&state, &headers).await.is_err() {
         return Html(
-            "<div id='nfs-client-status' style='color:#c00'>Unauthorized</div>".to_string(),
+            "<div id='nfs-client-status' class='alert alert-danger'>Unauthorized</div>".to_string(),
         );
     }
 
@@ -636,7 +636,7 @@ pub(crate) async fn clear_ldap_cache(
         client.clear_cache();
     }
 
-    let mut ok = String::from("<div id='nfs-client-status' style='background:#d4edda;border:1px solid #28a745;padding:8px;border-radius:3px;'>");
+    let mut ok = String::from("<div id='nfs-client-status' class='alert alert-success'>");
     ok.push_str("<strong>LDAP identity cache cleared.</strong><br>");
     ok.push_str("<span style='font-size:0.8em'>Next lookups will hit KLLDAP (10m TTL restarts after first fetch).</span><br>");
     ok.push_str("<button type='button' hx-get='/settings/lldap-status' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:4px;'>Show status</button>");

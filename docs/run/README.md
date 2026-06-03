@@ -40,7 +40,7 @@ The startup TUI and WebUI System Settings page compare `hostname` with `/proc/sy
 
 ## Troubleshooting at Start
 
-Watch `docker logs`. `nfs-klldap-startup` prints step-by-step requirements (persistent `/config`, DNS `ldap_uri`, bind test, shares) and SSSD-oriented hints at step 3.
+Watch `docker logs`. `nfs-klldap-startup` prints step-by-step requirements (persistent `/config`, DNS `ldap_uri`, bind test) and SSSD-oriented hints at step 3.
 
 Force reload from host: `docker kill -s HUP <name>`.
 

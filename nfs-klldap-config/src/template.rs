@@ -54,7 +54,8 @@ default_security = "krb5p"   # krb5p (recommended) | krb5i | krb5
 # webui_admin_group = "lldap_admin"   # LLDAP group for WebUI admins (default)
 
 # =============================================================================
-# Shares — at least one [[shares]] required for startup.
+# Optional Shares — add [[shares]] sections (via the WebUI System Settings page
+# or by editing this file). Restart the container after adding/editing shares.
 #   host_path = absolute path on the Docker HOST (WebUI chown/chmod allow-list).
 #   Bind-mount so data appears at container_root/name (default /export/<name>).
 # =============================================================================

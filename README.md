@@ -57,16 +57,9 @@ ldap_default_authtok = "strong-secret"
 
 [kerberos]
 realm = "EXAMPLE.COM"        # or rely on auto-derivation from ldap_uri host
-
-[[shares]]
-name = "data"
-host_path = "/media/data"
-# security = "krb5p"         # per-share override (krb5p|krb5i|krb5); falls back to [ganesha] default_security
-# rw = true                  # default; false for read-only
-# export_path = "/data"      # optional; defaults to /<name> if omitted
-# # root_squash checkbox in UI sets squash = "root_squash" (default is no_root_squash, key omitted)
-# # sync defaults to true (Sync=true in export); key omitted when default
 ```
+
+# [[shares]] sections are optional for first-run (add via WebUI System Settings or edit here; restart container to activate).
 
 The generator derives ports, search bases, sssd.conf, krb5.conf, and Ganesha fragments. `kllldap_ignored_attributes = true` (default) emits recommended server-side ignore lists.
 

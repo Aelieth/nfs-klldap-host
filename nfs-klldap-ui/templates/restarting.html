@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Restarting – NFS Kerb Manager</title>
+    <style>
+        /* === Minimal self-contained subset of base.html theme ===
+           Only the vars + rules needed for a clean standalone restart/retry page.
+           Copied/adapted from templates/base.html so the page has the same look
+           (light + prefers-color-scheme dark + explicit data-theme) without
+           depending on the base template or external assets. */
+        :root {
+            /* Light (default + explicit light) */
+            --bg: #ffffff;
+            --bg-alt: #f8f9fa;
+            --text: #222222;
+            --text-muted: #555555;
+            --text-light: #666666;
+            --border: #cccccc;
+            --border-light: #e5e5e5;
+            --link: #0d6efd;
+            --accent: #2b7de9;
+            --accent-light: #d0e8ff;
+            --success-bg: #d4edda;
+            --success-border: #28a745;
+            --success-text: #0f5132;
+            --danger-bg: #f8d7da;
+            --danger-border: #dc3545;
+            --danger-text: #842029;
+            --warning-amber-bg: #fff3cd;
+            --warning-amber-border: #ffc107;
+            --warning-amber-text: #664e04;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                /* Dark via system (when auto or explicit dark) */
+                --bg: #222222;
+                --bg-alt: #2a2a2a;
+                --text: #e1e1e1;
+                --text-muted: #aaaaaa;
+                --text-light: #999999;
+                --border: #444444;
+                --border-light: #333333;
+                --link: #6ea8fe;
+                --accent: #5fa8ff;
+                --accent-light: #1e3a5f;
+                --success-bg: #0f3d2f;
+                --success-border: #00bc8c;
+                --success-text: #75b798;
+                --danger-bg: #3c1f1f;
+                --danger-border: #e74c3c;
+                --danger-text: #f5a3a3;
+                --warning-amber-bg: #3c2f00;
+                --warning-amber-border: #ffca2c;
+                --warning-amber-text: #ffe69c;
+            }
+        }
+
+        /* Explicit dark always wins (overrides media) */
+        :root[data-theme="dark"] {
+            --bg: #222222;
+            --bg-alt: #2a2a2a;
+            --text: #e1e1e1;
+            --text-muted: #aaaaaa;
+            --text-light: #999999;
+            --border: #444444;
+            --border-light: #333333;
+            --link: #6ea8fe;
+            --accent: #5fa8ff;
+            --accent-light: #1e3a5f;
+            --success-bg: #0f3d2f;
+            --success-border: #00bc8c;
+            --success-text: #75b798;
+            --danger-bg: #3c1f1f;
+            --danger-border: #e74c3c;
+            --danger-text: #f5a3a3;
+            --warning-amber-bg: #3c2f00;
+            --warning-amber-border: #ffca2c;
+            --warning-amber-text: #ffe69c;
+        }
+
+        /* Explicit light always forces light (even if system dark) */
+        :root[data-theme="light"] {
+            --bg: #ffffff;
+            --bg-alt: #f8f9fa;
+            --text: #222222;
+            --text-muted: #555555;
+            --text-light: #666666;
+            --border: #cccccc;
+            --border-light: #e5e5e5;
+            --link: #0d6efd;
+            --accent: #2b7de9;
+            --accent-light: #d0e8ff;
+            --success-bg: #d4edda;
+            --success-border: #28a745;
+            --success-text: #0f5132;
+            --danger-bg: #f8d7da;
+            --danger-border: #dc3545;
+            --danger-text: #842029;
+            --warning-amber-bg: #fff3cd;
+            --warning-amber-border: #ffc107;
+            --warning-amber-text: #664e04;
+        }
+
+        html, body {
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        body {
+            font-family: system-ui, sans-serif;
+            margin: 2rem auto;
+            max-width: 720px;
+            line-height: 1.45;
+            padding: 0 1rem;
+        }
+
+        a { color: var(--link); }
+
+        h1 { font-size: 1.55em; margin: 0 0 0.35em; }
+
+        .status {
+            margin: 1rem 0;
+            padding: 0.85rem 1rem;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: var(--bg-alt);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.92em;
+        }
+
+        /* tiny inline CSS spinner (no external assets) */
+        .spinner {
+            display: inline-block;
+            width: 0.95em;
+            height: 0.95em;
+            border: 2px solid var(--text-light);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.75s linear infinite;
+            vertical-align: -0.12em;
+            margin-right: 0.4em;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .small { font-size: 0.9em; color: var(--text-light); }
+        .note { font-size: 0.86em; color: var(--text-muted); margin-top: 1.25rem; }
+    </style>
+</head>
+<body>
+    <h1>Restarting to apply changes</h1>
+
+    <p>The container is performing a graceful restart so the updated System Settings (and any shares) are fully applied.</p>
+    <p>NFS service and this WebUI will be unavailable for a short time while the supervisor, Ganesha, SSSD and UI restart. Your Docker / Podman / compose restart policy will automatically bring the container back.</p>
+
+    <div id="retry" class="status">
+        <span class="spinner"></span>
+        <span id="msg">Preparing for shutdown…</span>
+    </div>
+
+    <p class="small">You will be redirected to the login page automatically when the service is back. Sessions are cleared on restart (log in again with your password or LLDAP account).</p>
+
+    <p class="note"><a href="/login">Manual login link</a> (will work once the container has restarted).</p>
+
+    <script>
+        (function () {
+            const msg = document.getElementById('msg');
+            let n = 0;
+            const origin = window.location.origin;
+
+            async function tick() {
+                n += 1;
+                msg.textContent = 'Retrying connection (attempt ' + n + ')…';
+                try {
+                    // Use 'manual' redirect so we see the response even on 3xx.
+                    // Any non-network-error response means the new server is up.
+                    const r = await fetch(origin + '/login', {
+                        method: 'GET',
+                        cache: 'no-store',
+                        redirect: 'manual'
+                    });
+                    if (r.type !== 'opaque' && (r.ok || r.status < 500)) {
+                        msg.textContent = 'Service is back. Redirecting to login…';
+                        setTimeout(function () { window.location.href = '/login'; }, 220);
+                        return;
+                    }
+                } catch (_) {
+                    // still down — ignore and retry
+                }
+                if (n > 120) {
+                    msg.innerHTML = 'Still unreachable after many attempts. <a href="/login">Try the login link</a> or inspect container logs / <code>docker ps</code>.';
+                    return;
+                }
+                setTimeout(tick, 1750);
+            }
+
+            // Give the "preparing" text a moment, then start the loop.
+            // Combined with the handler's ~1.4s delay this ensures the page is fully
+            // delivered before the old server terminates.
+            setTimeout(tick, 850);
+        })();
+    </script>
+</body>
+</html>

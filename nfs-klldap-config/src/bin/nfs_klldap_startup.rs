@@ -1,10 +1,11 @@
 //! nfs-klldap-startup — Guided first-run TUI + reachability diagnostics (runs as root).
 //!
-//! 4-step state machine that blocks until:
+//! 3-step state machine that blocks until:
 //!   1. Persistent /config volume
 //!   2. ldap_uri (DNS name) reachable
 //!   3. Bind credentials work
-//!   4. At least one valid share host_path
+//!
+//! (Shares are optional at startup and may be added later.)
 //!
 //! Emits the required `nfs/<host>@REALM` principal banner using the two-tier
 //! hostname contract. Entry point remains a thin pid-1 supervisor.
@@ -55,10 +56,10 @@ fn main() {
 
 fn print_help() {
     eprintln!(
-        "nfs-klldap-startup — guided container bring-up (4-step TUI; entrypoint orchestrates services)
+        "nfs-klldap-startup — guided container bring-up (3-step TUI; entrypoint orchestrates services)
 
 Usage:
-  nfs-klldap-startup run      Run the full guided 4-step waiting TUI until ready
+  nfs-klldap-startup run      Run the full guided 3-step waiting TUI until ready
   nfs-klldap-startup check    Run diagnostics once and exit
 
 Hostname / keytab:
@@ -263,13 +264,15 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
 
 // is_persistent_config (and tolerant load helpers) below are used by both the TUI and the WebUI.
 
-/// Guided first-run loop (4 steps: volume, ldap_uri, bind creds, shares).
+/// Guided first-run loop (3 steps: volume, ldap_uri, bind creds).
 ///
-/// The 4 steps are:
+/// The 3 steps are:
 ///   1. Persistent volume at $NFS_CONFIG (different device from container root)
 ///   2. ldap_uri present + TCP reachable (must be DNS name, not IP)
 ///   3. Bind DN + password present and ldapsearch succeeds
-///   4. At least one [[shares]] with a host_path that exists on the host
+///
+/// (A [[shares]] section is no longer required to reach Ready; shares may be
+/// added later via the WebUI or config edit.)
 ///
 /// Steps are marked [✓] as soon as they are satisfied (see is_step_complete).
 fn run_guided_startup(config_path: &Path) -> Result<(), ConfigError> {
@@ -305,7 +308,6 @@ enum StartupStep {
     WaitForPersistentVolume,
     SetLdapUri,
     AddBindCredentials,
-    AddShares,
     Ready,
 }
 
@@ -403,23 +405,18 @@ fn print_step_status(current: &StartupStep) {
     let steps = [
         (
             StartupStep::WaitForPersistentVolume,
-            "STEP 1/4",
+            "STEP 1/3",
             "Mount a persistent config volume (REQUIRED)",
         ),
         (
             StartupStep::SetLdapUri,
-            "STEP 2/4",
+            "STEP 2/3",
             "Set ldap_uri in nfs-klldap.conf (DNS name only)",
         ),
         (
             StartupStep::AddBindCredentials,
-            "STEP 3/4",
+            "STEP 3/3",
             "Add LLDAP bind credentials in [sssd] section",
-        ),
-        (
-            StartupStep::AddShares,
-            "STEP 4/4",
-            "Add at least one [[shares]] section",
         ),
     ];
 
@@ -437,7 +434,7 @@ fn print_step_status(current: &StartupStep) {
 }
 
 /// Returns true if `step` has been completed given that we are now at `current`.
-/// Ordering: WaitForPersistentVolume < SetLdapUri < AddBindCredentials < AddShares < Ready
+/// Ordering: WaitForPersistentVolume < SetLdapUri < AddBindCredentials < Ready
 fn is_step_complete(step: &StartupStep, current: &StartupStep) -> bool {
     if *step == *current {
         return false;
@@ -450,13 +447,11 @@ fn is_step_complete(step: &StartupStep, current: &StartupStep) -> bool {
         // Step 1 is complete once we are past it
         (
             StartupStep::WaitForPersistentVolume,
-            StartupStep::SetLdapUri | StartupStep::AddBindCredentials | StartupStep::AddShares,
+            StartupStep::SetLdapUri | StartupStep::AddBindCredentials,
         ) => true,
         // Step 2 is complete once we are past it
-        (StartupStep::SetLdapUri, StartupStep::AddBindCredentials | StartupStep::AddShares) => true,
-        // Step 3 is complete once we are past it
-        (StartupStep::AddBindCredentials, StartupStep::AddShares) => true,
-        // Step 4 is only complete when we reach Ready (handled above)
+        (StartupStep::SetLdapUri, StartupStep::AddBindCredentials) => true,
+        // Step 3 is complete once we reach Ready (handled above)
         _ => false,
     }
 }
@@ -616,67 +611,6 @@ fn print_current_step_guidance(current: &StartupStep) {
             }
         }
 
-        StartupStep::AddShares => {
-            println!("             [[shares]]");
-            println!("             name = \"my-share\"");
-            println!("             host_path = \"/home/user/data/my-share\"   # REAL path on the Docker HOST");
-            println!();
-            println!("             # host_path = real location on your host (used by web UI for permissions)");
-            println!("             # You must still provide a matching bind mount, e.g.:");
-            println!("             #   -v /home/user/data/my-share:/export/my-share");
-            println!();
-
-            println!("             [TROUBLESHOOTING] Checking shares...");
-
-            let config_path = std::env::var("NFS_CONFIG")
-                .unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
-
-            match NfsKlldapConfig::load(Path::new(&config_path)) {
-                Ok(cfg) => {
-                    if cfg.shares.is_empty() {
-                        println!("             No [[shares]] sections found yet.");
-                    } else {
-                        for share in &cfg.shares {
-                            let container_path = cfg.container_path_for(share);
-                            let host_p = &share.host_path;
-
-                            println!(
-                                "             Share: {}  →  host: {}  |  container: {}",
-                                share.name,
-                                host_p.display(),
-                                container_path
-                            );
-
-                            if !host_p.is_absolute() {
-                                println!(
-                                    "             ❌ host_path must be absolute (start with /)"
-                                );
-                            } else if Path::new(&container_path).exists() {
-                                println!(
-                                    "             ✓ Data visible inside container at {}",
-                                    container_path
-                                );
-                            } else {
-                                println!(
-                                    "             ⚠ Data NOT visible inside container at {}",
-                                    container_path
-                                );
-                                println!("                → Add this bind mount when starting the container:");
-                                println!(
-                                    "                  -v {}:{}",
-                                    host_p.display(),
-                                    container_path
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(_) => {
-                    println!("             Could not load config to validate shares.");
-                }
-            }
-        }
-
         StartupStep::Ready => {}
     }
 }
@@ -722,28 +656,9 @@ fn compute_current_step(config_path: &Path) -> StartupStep {
         return StartupStep::AddBindCredentials;
     }
 
-    // Step 4: At least one share whose data is visible inside the container
-    match NfsKlldapConfig::load(config_path) {
-        Ok(cfg) => {
-            if cfg.shares.is_empty() {
-                return StartupStep::AddShares;
-            }
-
-            // Check that at least one share's container path is visible
-            let any_visible = cfg.shares.iter().any(|share| {
-                let container_path = cfg.container_path_for(share);
-                Path::new(&container_path).exists()
-            });
-
-            if !any_visible {
-                return StartupStep::AddShares;
-            }
-        }
-        Err(_) => {
-            return StartupStep::AddShares;
-        }
-    }
-
+    // Ready once bind credentials are present and working.
+    // Shares ([[shares]]) are optional for initial startup and may be configured
+    // later (via WebUI System Settings or direct edit + container restart).
     StartupStep::Ready
 }
 

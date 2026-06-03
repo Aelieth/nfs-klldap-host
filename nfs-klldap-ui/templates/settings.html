@@ -241,5 +241,20 @@ wireOverride('input[name="override_sssd_enumerate"]', '#sssd_enumerate');
     The container watches the config file and will regenerate + reload automatically.
 </p>
 
+<hr style="margin: 1.1rem 0 0.6rem;">
+
+<div style="margin-top:0.1rem;">
+    <strong>Restart and apply</strong><br>
+    <span style="font-size:0.82em; color:var(--text-light);">
+        Shares (and some core settings) are loaded at container startup. This performs a graceful restart so the updated config is fully active (NFS will be briefly unavailable).
+    </span>
+    <form method="post" action="/settings/restart" style="margin-top:0.45rem;">
+        <button type="submit" class="btn btn-primary" style="padding:8px 16px;"
+                onclick="return confirm('Restart the container now to apply changes? NFS and the WebUI will restart.');">
+            Restart and apply
+        </button>
+    </form>
+</div>
+
 <p><a href="/">← Back to Share Permissions</a></p>
 {% endblock %}

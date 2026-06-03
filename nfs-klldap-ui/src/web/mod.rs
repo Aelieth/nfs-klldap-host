@@ -35,6 +35,7 @@ pub(crate) use permission_tree::{
 pub(crate) use settings::{
     clear_ldap_cache, lldap_status, reload_nfs_client, settings_page,
     settings_save_raw, settings_save_structured, settings_save_shares,
+    system_restart,
 };
 
 // The pub(crate) re-exports below serve two purposes:
@@ -100,6 +101,7 @@ pub fn router(state: AppState) -> Router {
         .route("/settings/lldap-status", get(lldap_status))
         .route("/settings/reload-nfs-client", post(reload_nfs_client))
         .route("/settings/clear-ldap-cache", post(clear_ldap_cache))
+        .route("/settings/restart", post(system_restart))
 
         .with_state(state)
 }

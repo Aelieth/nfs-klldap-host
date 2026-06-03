@@ -22,7 +22,7 @@
         {% endfor %}
     </div>
 {% else %}
-    <p style="color: var(--text-light);">No shares configured in your nfs-klldap.conf yet. Use the <strong>System Settings</strong> page to add some.</p>
+    <p style="color: var(--text-light);">No shares are configured, please add a share in System Settings</p>
 {% endif %}
 
 {# Exports generation moved to container (see web/ layer) #}
@@ -100,7 +100,7 @@
             // Auto-select happens inside selectShare via .then() on the tree htmx load (reliable).
         } else {
             const root = document.getElementById('tree-root');
-            if (root) root.innerHTML = '<em>No shares configured — add some in System Settings.</em>';
+            if (root) root.innerHTML = '<em>No shares are configured, please add a share in System Settings.</em>';
         }
     });
 

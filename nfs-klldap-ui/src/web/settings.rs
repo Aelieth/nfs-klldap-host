@@ -1,4 +1,6 @@
 //! `/settings`: raw + structured TOML editor (settings + separate shares), LLDAP reload, cache clear (HTMX).
+//! + graceful "Restart and apply" that returns a self-contained retry-to-login page and then
+//!   signals pid 1 so the container runtime restarts us.
 
 use askama::Template;
 use axum::{
@@ -69,6 +71,14 @@ struct SettingsTemplate {
     /// Next index the client-side JS should use when the user clicks "+ Add share".
     next_share_idx: usize,
 }
+
+/// Standalone template for the post-"Restart and apply" page.
+/// Deliberately does not extend base.html: it is rendered once, then the server
+/// shuts down (the JS inside performs the retry-to-login loop with no further
+/// server round-trips until the container is back).
+#[derive(Template)]
+#[template(path = "restarting.html")]
+struct RestartingTemplate;
 
 // === Forms ===
 
@@ -1079,4 +1089,42 @@ pub(crate) async fn clear_ldap_cache(
     ok.push_str("<button type='button' hx-get='/settings/lldap-status' hx-target='#nfs-client-status' hx-swap='outerHTML' style='margin-top:4px;'>Show status</button>");
     ok.push_str("</div>");
     Html(ok)
+}
+
+// === Graceful restart ("Restart and apply" from System Settings) ===
+
+/// POST /settings/restart
+/// Requires auth (like every other settings action).
+/// Immediately returns a standalone restarting page (the HTML is delivered before we pull the rug).
+/// Then, after a short delay, signals pid 1 (the entrypoint supervisor) with SIGTERM so its
+/// cleanup trap runs and the process exits. The container runtime's restart policy is then
+/// responsible for bringing the whole system (entrypoint + all children) back with the
+/// freshly-written config.
+pub(crate) async fn system_restart(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Redirect> {
+    let user = require_auth(&state, &headers).await?;
+
+    // Schedule the graceful container restart *after* we have returned the response.
+    // The ~1.4 s delay gives the HTTP server time to flush the restarting page + headers
+    // to the browser before we terminate the listener (and the rest of the container).
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(1400)).await;
+        eprintln!(
+            "INFO: 'Restart and apply' requested by '{}' — triggering graceful shutdown (TERM to pid 1)",
+            user.0
+        );
+        // Fire-and-forget a tiny shell snippet. We do not wait for it.
+        // This makes the supervisor (pid 1) run its trap cleanup + exit; the runtime
+        // (docker / podman / compose with restart: unless-stopped etc.) brings the
+        // container back up, re-running entrypoint, regenerating, starting daemons + UI.
+        let _ = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 0.25; kill -TERM 1 2>/dev/null || true")
+            .spawn();
+    });
+
+    let tpl = RestartingTemplate;
+    Ok(Html(tpl.render().unwrap()))
 }

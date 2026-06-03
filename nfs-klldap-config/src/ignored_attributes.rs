@@ -61,21 +61,16 @@ pub fn get_kllldap_ignored_attributes_comment_block() -> String {
     let (users, groups) = get_kllldap_ignored_attributes_toml();
     format!(
         r#"# -----------------------------------------------------------------------------
-# KLLDAP server-side ignored attributes (copy into KLLDAP / lldap.toml [ldap])
+# KLLDAP server-side ignored attributes
 # -----------------------------------------------------------------------------
 # SSSD and similar clients request many AD-compat attributes KLLDAP does not store.
 # Without server-side ignores, logs fill with "unknown attribute" noise and some
 # clients retry aggressively (TLS disconnects, high CPU).
+# Keep [sssd] kllldap_ignored_attributes = true (default) in nfs-klldap.conf.
 #
-# Steps:
-#   1. Paste the two lines below into your KLLDAP LDAP server configuration.
-#   2. Restart KLLDAP so ignores take effect.
-#   3. Keep [sssd] kllldap_ignored_attributes = true (default) in nfs-klldap.conf.
-#
-# Group membership: with ldap_schema = rfc2307bis the generator sets
 # ldap_group_member = "{member}" when ignores are enabled (not legacy memberUid).
 #
-# To stop emitting this block: kllldap_ignored_attributes = false in nfs-klldap.conf
+# To disable this setting add: "kllldap_ignored_attributes = false" in nfs-klldap.conf
 # -----------------------------------------------------------------------------
 ignored_user_attributes = {users}
 ignored_group_attributes = {groups}

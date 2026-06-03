@@ -335,6 +335,34 @@ mod tests {
     }
 
     #[test]
+    fn kllldap_ignored_attributes_false_omits_ignore_blocks() {
+        let mut c = minimal_cfg();
+        c.sssd.kllldap_ignored_attributes = Some(false);
+        let _ = c.validate_and_derive();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = GenerationPaths {
+            sssd_conf: tmp.path().join("sssd.conf"),
+            krb5_conf: tmp.path().join("krb5.conf"),
+            ganesha_conf: tmp.path().join("ganesha.conf"),
+            exports_dir: tmp.path().join("exports.d"),
+        };
+        generate_all(&c, &paths).expect("generate with kll=false");
+
+        let sssd = fs::read_to_string(&paths.sssd_conf).unwrap();
+        assert!(
+            !sssd.contains("ignored_user_attributes"),
+            "kll=false must not emit the KLLDAP ignore blocks into sssd.conf"
+        );
+        assert!(
+            !sssd.contains("ignored_group_attributes"),
+            "kll=false must not emit the KLLDAP ignore blocks into sssd.conf"
+        );
+        // Still emits the header note about the setting value
+        assert!(sssd.contains("kllldap_ignored_attributes=false"));
+    }
+
+    #[test]
     fn ldap_uri_ip_rejected_with_exact_message() {
         let _env = ENV_LOCK.lock().unwrap();
         std::env::remove_var("NFS_REALM");

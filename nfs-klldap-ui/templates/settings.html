@@ -11,10 +11,19 @@
         Keytab should include <code>nfs/&lt;short&gt;@{{ effective_realm }}</code> and
         <code>nfs/{{ effective_hostname }}@{{ effective_realm }}</code> when short and FQDN differ.
         Use <code>--uts=host</code> so this name is your real Docker host.
-        {% if let Some(keytab_msg) = keytab_alert %}
-        <br><strong style="color: var(--warning-text);">{{ keytab_msg }}</strong>
-        {% endif %}
     </span>
+    {% if !keytab_found_principals.is_empty() %}
+    <div style="margin-top:4px; font-size:0.9em;">
+        <span class="state-label">Keytab NFS principals:</span>
+        {% for p in keytab_found_principals %}
+            <code>{{ p }}</code>{% if !loop.last %}, {% endif %}
+        {% endfor %}
+        <span style="color:var(--text-light); font-size:0.8em;"> (matching {{ effective_hostname }} should be present; see alert below if not)</span>
+    </div>
+    {% endif %}
+    {% if let Some(keytab_msg) = keytab_alert %}
+    <br><strong style="color: var(--warning-text);">{{ keytab_msg }}</strong>
+    {% endif %}
 </div>
 
 {% if let Some(msg) = message %}
@@ -32,52 +41,80 @@
     <em>Loading NFS client status…</em>
 </div>
 
-<h3>Structured Editor (common top fields; shares as blank rows for add/replace)</h3>
+<h3>Structured Editor (edits common fields + shares; Raw TOML below is the full-fidelity path)</h3>
 <form method="post" action="/settings/save" style="max-width: 920px;">
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-        <label>ldap_uri<br><input name="ldap_uri" style="width:100%" placeholder="ldaps://kllap.example.com:6360"></label>
-        <label>storage.container_root<br><input name="storage_container_root" value="/export" style="width:100%"></label>
-        <label>server.hostname (optional)<br><input name="server_hostname" style="width:100%"></label>
+        <label>ldap_uri<br><input name="ldap_uri" value="{{ ldap_uri }}" style="width:100%" placeholder="ldaps://kllap.example.com:6360"></label>
+        <label>storage.container_root<br><input name="storage_container_root" value="{{ storage_container_root }}" style="width:100%"></label>
+        <label>server.hostname (optional)<br><input name="server_hostname" id="server_hostname" value="{{ server_hostname }}" style="width:100%{% if !override_server_hostname %};opacity:0.65;background-color:#fafafa{% endif %}" {% if !override_server_hostname %}disabled{% endif %}>
+            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_server_hostname" value="true" {% if override_server_hostname %}checked{% endif %}> override (persist explicit)</span>
+        </label>
+        <label>kerberos.realm (optional, usually derived)<br><input name="kerberos_realm" id="kerberos_realm" value="{{ kerberos_realm }}" style="width:100%{% if !override_kerberos_realm %};opacity:0.65;background-color:#fafafa{% endif %}" {% if !override_kerberos_realm %}disabled{% endif %}>
+            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_kerberos_realm" value="true" {% if override_kerberos_realm %}checked{% endif %}> override (persist explicit)</span>
+        </label>
         <label>ganesha.default_security<br>
-            <select name="ganesha_default_security" style="width:100%">
-                <option value="krb5p">krb5p</option>
-                <option value="krb5i">krb5i</option>
-                <option value="krb5">krb5</option>
+            <select name="ganesha_default_security" id="ganesha_default_security" style="width:100%{% if !override_ganesha_default_security %};opacity:0.65;background-color:#fafafa{% endif %}" {% if !override_ganesha_default_security %}disabled{% endif %}>
+                {% if ganesha_default_security == "krb5p" %}<option value="krb5p" selected>krb5p</option>{% else %}<option value="krb5p">krb5p</option>{% endif %}
+                {% if ganesha_default_security == "krb5i" %}<option value="krb5i" selected>krb5i</option>{% else %}<option value="krb5i">krb5i</option>{% endif %}
+                {% if ganesha_default_security == "krb5" %}<option value="krb5" selected>krb5</option>{% else %}<option value="krb5">krb5</option>{% endif %}
             </select>
+            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_ganesha_default_security" value="true" {% if override_ganesha_default_security %}checked{% endif %}> override (persist explicit)</span>
         </label>
     </div>
 
     <h4 style="margin-top:1rem">SSSD Credentials</h4>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-        <label>sssd.bind_dn<br><input name="sssd_bind_dn" style="width:100%" required></label>
-        <label>sssd.bind_pw (secret)<br><input type="password" name="sssd_bind_pw" style="width:100%" required></label>
-        <label>sssd.ldap_search_base (optional override)<br><input name="sssd_search_base" placeholder="dc=...,dc=..." style="width:100%"></label>
+        <label>sssd.bind_dn<br><input name="sssd_bind_dn" value="{{ sssd_bind_dn }}" style="width:100%" required></label>
+        <label>sssd.bind_pw (secret)<br><input type="password" name="sssd_bind_pw" style="width:100%" placeholder="leave blank to keep current"></label>
+        <label>sssd.ldap_search_base (optional override)<br><input name="sssd_search_base" id="sssd_search_base" value="{{ sssd_search_base }}" placeholder="dc=...,dc=..." style="width:100%{% if !override_sssd_search_base %};opacity:0.65;background-color:#fafafa{% endif %}" {% if !override_sssd_search_base %}disabled{% endif %}>
+            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_search_base" value="true" {% if override_sssd_search_base %}checked{% endif %}> override (persist explicit)</span>
+        </label>
+        <label>sssd.ldap_user_search_base<br><input name="sssd_user_base" id="sssd_user_base" value="{{ sssd_user_base }}" style="width:100%{% if !override_sssd_user_base %};opacity:0.65;background-color:#fafafa{% endif %}" {% if !override_sssd_user_base %}disabled{% endif %}>
+            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_user_base" value="true" {% if override_sssd_user_base %}checked{% endif %}> override (persist explicit)</span>
+        </label>
+        <label>sssd.ldap_group_search_base<br><input name="sssd_group_base" id="sssd_group_base" value="{{ sssd_group_base }}" style="width:100%{% if !override_sssd_group_base %};opacity:0.65;background-color:#fafafa{% endif %}" {% if !override_sssd_group_base %}disabled{% endif %}>
+            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_group_base" value="true" {% if override_sssd_group_base %}checked{% endif %}> override (persist explicit)</span>
+        </label>
     </div>
+    <label style="display:block; margin:4px 0;">
+        <input type="checkbox" name="kllldap_ignored_attributes" value="true" {% if kllldap_ignored_attributes %}checked{% endif %}>
+        kllldap_ignored_attributes (true = emit server-side ignore blocks + use 'member'; uncheck for false)
+    </label>
 
     <h4 style="margin-top:0.6rem">SSSD TLS / Security (ldap vs ldaps, self-signed certs)</h4>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-        <label>sssd.ldap_tls_reqcert (e.g. never / demand)<br><input name="sssd_ldap_tls_reqcert" placeholder="never" style="width:100%"></label>
-        <label>sssd.ldap_tls_cacert (optional path)<br><input name="sssd_ldap_tls_cacert" placeholder="/etc/pki/..." style="width:100%"></label>
+        <label>sssd.ldap_tls_reqcert (e.g. never / demand)<br><input name="sssd_ldap_tls_reqcert" id="sssd_ldap_tls_reqcert" value="{{ sssd_ldap_tls_reqcert }}" placeholder="never" style="width:100%{% if !override_sssd_ldap_tls_reqcert %};opacity:0.65;background-color:#fafafa{% endif %}" {% if !override_sssd_ldap_tls_reqcert %}disabled{% endif %}>
+            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_ldap_tls_reqcert" value="true" {% if override_sssd_ldap_tls_reqcert %}checked{% endif %}> override (persist explicit)</span>
+        </label>
+        <label>sssd.ldap_tls_cacert (optional path)<br><input name="sssd_ldap_tls_cacert" id="sssd_ldap_tls_cacert" value="{{ sssd_ldap_tls_cacert }}" placeholder="/etc/pki/..." style="width:100%{% if !override_sssd_ldap_tls_cacert %};opacity:0.65;background-color:#fafafa{% endif %}" {% if !override_sssd_ldap_tls_cacert %}disabled{% endif %}>
+            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_ldap_tls_cacert" value="true" {% if override_sssd_ldap_tls_cacert %}checked{% endif %}> override (persist explicit)</span>
+        </label>
     </div>
     <label style="display:block; margin:4px 0;">
-        <input type="checkbox" name="sssd_ldap_id_use_start_tls" value="true">
+        <input type="checkbox" id="sssd_ldap_id_use_start_tls" name="sssd_ldap_id_use_start_tls" value="true" {% if sssd_ldap_id_use_start_tls %}checked{% endif %} {% if !override_sssd_ldap_id_use_start_tls %}disabled{% endif %}>
         sssd.ldap_id_use_start_tls (only for plain ldap:// + STARTTLS)
+        <span style="font-size:0.7em; margin-left:8px;"><input type="checkbox" name="override_sssd_ldap_id_use_start_tls" value="true" {% if override_sssd_ldap_id_use_start_tls %}checked{% endif %}> override</span>
     </label>
     <label style="display:block; margin:4px 0;">
-        <input type="checkbox" name="sssd_enumerate" value="true">
+        <input type="checkbox" id="sssd_enumerate" name="sssd_enumerate" value="true" {% if sssd_enumerate %}checked{% endif %} {% if !override_sssd_enumerate %}disabled{% endif %}>
         sssd.enumerate (default false; do NOT enable casually on KLLDAP — high load/attribute noise)
+        <span style="font-size:0.7em; margin-left:8px;"><input type="checkbox" name="override_sssd_enumerate" value="true" {% if override_sssd_enumerate %}checked{% endif %}> override</span>
     </label>
 
-    <h4 style="margin-top:1rem">Shares</h4>
+    <h4 style="margin-top:1rem">Shares (name + host_path required; edit/remove rows then Save Structured)</h4>
     <div id="shares-container">
-        <!-- Shares editor is intentionally minimal: always blank rows (no pre-pop of current).
-             Submitting replaces [[shares]] if any rows filled; use Raw TOML for full edit. -->
+        {% for row in current_shares %}
         <div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
-            <input name="share_name_0" placeholder="name" style="width:130px">
-            <input name="share_host_0" placeholder="host_path" style="flex:1">
-            <input name="share_export_0" placeholder="/pseudo (opt)" style="width:160px">
+            <input name="share_name_{{ row.idx }}" value="{{ row.name }}" style="width:130px" placeholder="name">
+            <input name="share_host_{{ row.idx }}" value="{{ row.host_path }}" style="flex:1" placeholder="host_path">
+            <input name="share_export_{{ row.idx }}" value="{{ row.export_path }}" style="width:160px" placeholder="/pseudo (opt)">
+            <input name="share_security_{{ row.idx }}" value="{{ row.security }}" style="width:110px" placeholder="krb5p (opt)">
             <button type="button" onclick="this.closest('.share-row').remove()">×</button>
         </div>
+        {% endfor %}
+        {% if current_shares.is_empty() %}
+        <!-- no shares yet; first add will create idx 0 -->
+        {% endif %}
     </div>
     <button type="button" onclick="addShareRow()" style="margin:6px 0;">+ Add share</button>
 
@@ -86,10 +123,9 @@
 </form>
 
 <script>
-// Sequential counter (avoids gigantic Date.now() indices and makes server-side
-// collection trivial + deterministic). Start high to never collide with the
-// static example row that uses index 0.
-let nextShareIdx = 1000;
+// nextShareIdx initialized from server (len of rendered current shares) so added rows
+// never collide with existing idx values used for name/host/export/security fields.
+let nextShareIdx = {{ next_share_idx }};
 
 function addShareRow() {
     const c = document.getElementById('shares-container');
@@ -100,9 +136,46 @@ function addShareRow() {
     d.innerHTML = `<input name="share_name_${idx}" placeholder="name" style="width:130px">
                    <input name="share_host_${idx}" placeholder="host_path" style="flex:1">
                    <input name="share_export_${idx}" placeholder="/pseudo (opt)" style="width:160px">
+                   <input name="share_security_${idx}" placeholder="krb5p (opt)" style="width:110px">
                    <button type="button" onclick="this.closest('.share-row').remove()">×</button>`;
     c.appendChild(d);
 }
+
+// Wire override checkboxes to enable/disable + mute their associated fields.
+// Non-checked override => field is disabled (non-editable) and visually muted.
+function wireOverride(overrideSelector, fieldSelector) {
+  const overrideCb = document.querySelector(overrideSelector);
+  const field = document.querySelector(fieldSelector);
+  if (!overrideCb || !field) return;
+
+  function update() {
+    const isOverriding = overrideCb.checked;
+    field.disabled = !isOverriding;
+    if (!isOverriding) {
+      field.style.opacity = '0.65';
+      field.style.backgroundColor = '#fafafa';
+    } else {
+      field.style.opacity = '';
+      field.style.backgroundColor = '';
+    }
+  }
+
+  overrideCb.addEventListener('change', update);
+  // Run once for initial state (in case disabled attr from server didn't fully apply styles)
+  update();
+}
+
+// Wire all overridable fields. Use name= for overrides (they are checkboxes), id= for the value controls.
+wireOverride('input[name="override_server_hostname"]', '#server_hostname');
+wireOverride('input[name="override_kerberos_realm"]', '#kerberos_realm');
+wireOverride('input[name="override_ganesha_default_security"]', '#ganesha_default_security');
+wireOverride('input[name="override_sssd_search_base"]', '#sssd_search_base');
+wireOverride('input[name="override_sssd_user_base"]', '#sssd_user_base');
+wireOverride('input[name="override_sssd_group_base"]', '#sssd_group_base');
+wireOverride('input[name="override_sssd_ldap_tls_reqcert"]', '#sssd_ldap_tls_reqcert');
+wireOverride('input[name="override_sssd_ldap_tls_cacert"]', '#sssd_ldap_tls_cacert');
+wireOverride('input[name="override_sssd_ldap_id_use_start_tls"]', '#sssd_ldap_id_use_start_tls');
+wireOverride('input[name="override_sssd_enumerate"]', '#sssd_enumerate');
 </script>
 
 <hr>

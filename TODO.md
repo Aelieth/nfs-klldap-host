@@ -20,22 +20,21 @@ Tests were verified passing (`cargo test --workspace`).
    - CLI usage text shows `v0.7` (docs alignment only).
    - No `CARGO_PKG_VERSION` used at runtime for banners/usage (hardcoded or omitted). If a release process canonicalizes this, it is not reflected in source.
 
-2. **nfs-klldap-ui structured settings editor is intentionally partial**
-   - `/settings` "Structured Editor" only offers a subset of top-level fields + always-blank share rows (JS adds more; submit replaces `[[shares]]` if any provided).
-   - Current shares are **not** pre-populated from disk config into the form (HTML comments + code in `web/settings.rs` + `templates/settings.html` make this explicit).
-   - Raw TOML editor is the full-fidelity path (preserves comments/order via toml_edit).
-   - Docs (root README, ui README) call it "Raw + structured TOML editor" — accurate at high level but the structured part is a convenience subset, not a complete round-trippable view of the TOML.
-   - Template comment and H3 updated during audit for clarity; no behavior change.
+2. **nfs-klldap-ui structured settings editor (now substantially implemented)**
+   - Structured editor prefills fields + current [[shares]] rows from on-disk nfs-klldap.conf (server-rendered).
+   - Shares support create (add row), modify (edit fields), delete (× remove row before submit); structured submit always replaces [[shares]] with the submitted rows.
+   - kllldap_ignored_attributes, search bases, TLS fields, etc. are now round-trippable via structured (apply fns keep toml_edit for comment preservation on untouched parts).
+   - Raw TOML editor remains the full-fidelity path (comments, order, advanced/niche fields, exact formatting).
+   - See the 0.7+ WebUI System Settings work + plan for details. The "intentionally partial" notes from the initial audit are largely addressed for the common case.
 
 3. **sssd.enumerate guidance (now aligned)**
    - Core: default `false` in `GaneshaSection`/`SssdSection` + `resolve...` + generator + `docs/ldap-integration.md` ("do NOT set true on KLLDAP without reason", "enumerate=true is discouraged").
    - UI form previously had `checked` + "recommended True for small..." (conflicted).
    - Form label + checked attr updated to match code/docs during audit. (Checkbox still present for users who know what they're doing.)
 
-4. **Incomplete pre-pop / "fuller version" in settings UI**
-   - Shares section in structured form starts with one static example row (idx 0) + add button. No server-side rendering of existing `[[shares]]` values (contrast with raw textarea which loads current text).
-   - `web/settings.rs:collect_shares_from_structured_form` + `apply...` handle submitted rows as authoritative replacement when non-empty.
-   - This is a known limitation of the current structured path (see template comments). Users wanting to edit existing shares without losing data must use Raw or carefully re-enter.
+4. **(Resolved) Incomplete pre-pop / "fuller version" in settings UI**
+   - Addressed in the System Settings structured editor implementation: shares are now server-rendered from current config; pre-pop + mod/del work for the common fields.
+   - Raw remains the path for anything not exposed in the convenience form (per requirements). See updated item 2 and the implementation plan.
 
 5. **Keytab / hostname two-tier is the law**
    - `get_consistent_hostname` + `confirm_consistent_hostname` + `nfs_keytab_host_*` are used in startup TUI banner, WebUI startup, keytab alert, dry-run, and runtime diagnostics.

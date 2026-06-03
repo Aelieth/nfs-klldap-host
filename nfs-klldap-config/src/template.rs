@@ -42,6 +42,8 @@ ldap_default_authtok = "CHANGE_THIS_TO_A_STRONG_SECRET"
 # ldap_user_search_base = "ou=people,dc=example,dc=com"
 # ldap_group_search_base = "ou=groups,dc=example,dc=com"
 
+kllldap_ignored_attributes = true   #improves lookup time, prevents attribute spam
+
 # [kerberos]
 # realm = "KRB.EXAMPLE.COM"   # Required if auto-derivation from ldap_uri fails
 

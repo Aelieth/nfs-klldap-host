@@ -4,6 +4,17 @@ use std::process::Command;
 
 use nfs_klldap_config::{format_nfs_principal_list, nfs_keytab_host_matches};
 
+/// Rich keytab status for the settings page (list of nfs/* principals + whether any match the expected host).
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct KeytabInfo {
+    pub expected_host: String,
+    pub expected_realm: String,
+    pub found_nfs_principals: Vec<String>,
+    /// If Some, a warning string (no matching principal, or read failure). If None, at least one match was present.
+    pub alert: Option<String>,
+}
+
 /// User-visible warning when the on-disk keytab does not match the container hostname.
 /// Returns `None` when a matching nfs/* principal is present (no banner needed).
 pub fn compute_keytab_alert(expected_host: &str, expected_realm: &str) -> Option<String> {
@@ -73,6 +84,19 @@ fn read_keytab_nfs_principals() -> Result<Vec<String>, String> {
     }
 
     Ok(found)
+}
+
+/// Return rich keytab info (always includes the list of found nfs principals) for display
+/// in System Settings. Underline/highlight logic is done in the template using the expected_host.
+pub fn get_keytab_info(expected_host: &str, expected_realm: &str) -> KeytabInfo {
+    let alert = compute_keytab_alert(expected_host, expected_realm);
+    let found = read_keytab_nfs_principals().unwrap_or_default();
+    KeytabInfo {
+        expected_host: expected_host.to_string(),
+        expected_realm: expected_realm.to_string(),
+        found_nfs_principals: found,
+        alert,
+    }
 }
 
 #[cfg(test)]

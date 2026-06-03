@@ -9,7 +9,7 @@ use axum::{
 use serde::Deserialize;
 use std::path::PathBuf;
 
-use super::{AppState, require_auth};
+use super::{get_keytab_info, AppState, require_auth};
 
 // === Template ===
 
@@ -26,6 +26,48 @@ struct SettingsTemplate {
     /// The Kerberos realm for the NFS service principal.
     effective_realm: String,
     keytab_alert: Option<String>,
+
+    /// NFS principals found in the keytab (for display + matching underline in template).
+    keytab_found_principals: Vec<String>,
+
+    // === Structured editor prefill (populated from on-disk nfs-klldap.conf on every render) ===
+    // Raw TOML remains the full-fidelity path (comments, order, advanced fields).
+    ldap_uri: String,
+    storage_container_root: String,
+    server_hostname: String,
+    sssd_bind_dn: String,
+    // bind_pw is *never* prefilled into the form (security + source visibility; raw textarea already shows it).
+    // Submit non-empty value to change it.
+    sssd_search_base: String,
+    sssd_user_base: String,
+    sssd_group_base: String,
+    sssd_ldap_tls_reqcert: String,
+    sssd_ldap_tls_cacert: String,
+    sssd_ldap_id_use_start_tls: bool,
+    sssd_enumerate: bool,
+    kerberos_realm: String,
+    ganesha_default_security: String,
+    kllldap_ignored_attributes: bool,
+
+    // Override flags (from explicit presence in raw source TOML, not derivation).
+    // These control whether structured save will write the value as an override
+    // or omit it (allowing derivation on next load/generate). Key fields (ldap_uri,
+    // container_root, bind_* , kllldap_ignored_attributes) have no override flag.
+    override_server_hostname: bool,
+    override_kerberos_realm: bool,
+    override_ganesha_default_security: bool,
+    override_sssd_search_base: bool,
+    override_sssd_user_base: bool,
+    override_sssd_group_base: bool,
+    override_sssd_ldap_tls_reqcert: bool,
+    override_sssd_ldap_tls_cacert: bool,
+    override_sssd_ldap_id_use_start_tls: bool,
+    override_sssd_enumerate: bool,
+
+    /// Server-rendered current shares (enables proper edit + delete via row removal before submit).
+    current_shares: Vec<ShareTemplateRow>,
+    /// Next index the client-side JS should use when the user clicks "+ Add share".
+    next_share_idx: usize,
 }
 
 // === Forms ===
@@ -46,25 +88,37 @@ pub(crate) struct StructuredSettingsForm {
 
     // [server]
     server_hostname: Option<String>,
+    override_server_hostname: Option<bool>,
 
     // [sssd]
     sssd_bind_dn: Option<String>,
     sssd_bind_pw: Option<String>,
     sssd_port: Option<u16>,
     sssd_search_base: Option<String>,
+    override_sssd_search_base: Option<bool>,
     sssd_user_base: Option<String>,
+    override_sssd_user_base: Option<bool>,
     sssd_group_base: Option<String>,
+    override_sssd_group_base: Option<bool>,
     // TLS options
     sssd_ldap_tls_reqcert: Option<String>,
+    override_sssd_ldap_tls_reqcert: Option<bool>,
     sssd_ldap_tls_cacert: Option<String>,
+    override_sssd_ldap_tls_cacert: Option<bool>,
     sssd_ldap_id_use_start_tls: Option<bool>,
+    override_sssd_ldap_id_use_start_tls: Option<bool>,
     sssd_enumerate: Option<bool>,
+    override_sssd_enumerate: Option<bool>,
+    // Control for server-side KLLDAP ignore lists (and ldap_group_member choice) emitted into sssd.conf.
+    kllldap_ignored_attributes: Option<bool>,
 
     // [kerberos]
     kerberos_realm: Option<String>,
+    override_kerberos_realm: Option<bool>,
 
     // [ganesha]
     ganesha_default_security: Option<String>,
+    override_ganesha_default_security: Option<bool>,
 
     // Shares (indexed fields via flatten)
     #[serde(flatten)]
@@ -73,7 +127,7 @@ pub(crate) struct StructuredSettingsForm {
 
 // === Internal helper types ===
 
-/// Internal row representation for the share editor form.
+/// Internal row representation for the share editor form (used during collect from POST).
 #[derive(Debug, Clone)]
 struct ShareFormRow {
     idx: usize,
@@ -81,6 +135,124 @@ struct ShareFormRow {
     host: String,
     export_path: Option<String>,
     security: Option<String>,
+}
+
+/// Template row for server-rendered shares in the structured editor (string values for simple Askama rendering).
+#[derive(Debug, Clone)]
+struct ShareTemplateRow {
+    idx: usize,
+    name: String,
+    host_path: String,
+    export_path: String,
+    security: String,
+}
+
+/// Returns true if `key` is explicitly present in the (raw, pre-derive) TOML source.
+/// Used to pre-check the "override" boxes for non-key fields. Key fields (ldap_uri,
+/// container_root, bind dn/pw, kllldap_ignored_attributes) are always treated as
+/// explicit and have no override flag.
+fn has_explicit(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> bool {
+    if section.is_empty() {
+        doc.get(key).is_some()
+    } else {
+        doc.get(section)
+            .and_then(|i| i.as_table())
+            .map_or(false, |t| t.get(key).is_some())
+    }
+}
+
+/// Return the string value of a key if present in the raw doc (for special prefill logic).
+fn get_explicit_str(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> Option<String> {
+    let val = if section.is_empty() {
+        doc.get(key)
+    } else {
+        doc.get(section)
+            .and_then(|i| i.as_table())
+            .and_then(|t| t.get(key))
+    };
+    val.and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+/// Build a fully-populated SettingsTemplate by reading the current on-disk config.
+/// This is the source of truth for pre-filling the structured editor (including shares).
+/// Used for initial page load and after raw/structured save (success or error).
+fn build_settings_template(
+    current_user: Option<String>,
+    config_path: impl AsRef<std::path::Path>,
+    message: Option<String>,
+    keytab_hostname: String,
+    keytab_realm: String,
+    keytab_alert: Option<String>,
+) -> SettingsTemplate {
+    let p = config_path.as_ref();
+    let raw_toml = std::fs::read_to_string(p)
+        .unwrap_or_else(|_| "# Could not read config file".to_string());
+
+    // Parse raw (un-derived) TOML to detect which fields are *explicit overrides*
+    // vs. purely derived at load/validate time. This drives the "override" checkboxes.
+    let doc: toml_edit::DocumentMut = raw_toml.parse().unwrap_or_default();
+
+    let cfg = nfs_klldap_config::NfsKlldapConfig::load(p).unwrap_or_default();
+
+    let current_shares: Vec<ShareTemplateRow> = cfg
+        .shares
+        .iter()
+        .enumerate()
+        .map(|(idx, s)| ShareTemplateRow {
+            idx,
+            name: s.name.clone(),
+            host_path: s.host_path.display().to_string(),
+            export_path: s.export_path.clone().unwrap_or_default(),
+            security: s.security.clone().unwrap_or_default(),
+        })
+        .collect();
+    let next_share_idx = current_shares.len();
+
+    SettingsTemplate {
+        current_user,
+        raw_toml,
+        config_path: p.display().to_string(),
+        message,
+        effective_hostname: keytab_hostname.clone(),
+        effective_realm: keytab_realm.clone(),
+        keytab_alert: keytab_alert.clone(),
+        keytab_found_principals: get_keytab_info(&keytab_hostname, &keytab_realm)
+            .found_nfs_principals,
+        ldap_uri: cfg.ldap_uri,
+        storage_container_root: cfg.storage.container_root.clone(),
+        server_hostname: cfg.server.hostname.clone().unwrap_or_default(),
+        sssd_bind_dn: cfg.sssd.ldap_default_bind_dn.clone(),
+        sssd_search_base: cfg.sssd.ldap_search_base.clone().unwrap_or_default(),
+        sssd_user_base: cfg.sssd.ldap_user_search_base.clone().unwrap_or_default(),
+        sssd_group_base: cfg.sssd.ldap_group_search_base.clone().unwrap_or_default(),
+        sssd_ldap_tls_reqcert: cfg.sssd.ldap_tls_reqcert.clone().unwrap_or_default(),
+        sssd_ldap_tls_cacert: cfg.sssd.ldap_tls_cacert.clone().unwrap_or_default(),
+        sssd_ldap_id_use_start_tls: cfg.sssd.ldap_id_use_start_tls.unwrap_or(false),
+        sssd_enumerate: cfg.sssd.enumerate.unwrap_or(false),
+        kerberos_realm: cfg.kerberos.realm.clone().unwrap_or_default(),
+        ganesha_default_security: cfg.ganesha.default_security.clone(),
+        kllldap_ignored_attributes: cfg.sssd.kllldap_ignored_attributes.unwrap_or(true),
+
+        // Computed from *raw source presence* (not from derived cfg values).
+        override_server_hostname: has_explicit(&doc, "server", "hostname"),
+        override_kerberos_realm: has_explicit(&doc, "kerberos", "realm"),
+        // Special for ganesha: treat explicit "krb5p" the same as absent (the non-override default state).
+        // Only if the source has a non-krb5p value do we consider it an active override.
+        // Combined with the writer always ensuring "krb5p" when !override, this keeps the
+        // default materialized in the conf without the checkbox appearing "stuck" on for the default.
+        override_ganesha_default_security: get_explicit_str(&doc, "ganesha", "default_security")
+            .map_or(false, |v| v != "krb5p"),
+        override_sssd_search_base: has_explicit(&doc, "sssd", "ldap_search_base"),
+        override_sssd_user_base: has_explicit(&doc, "sssd", "ldap_user_search_base"),
+        override_sssd_group_base: has_explicit(&doc, "sssd", "ldap_group_search_base"),
+        override_sssd_ldap_tls_reqcert: has_explicit(&doc, "sssd", "ldap_tls_reqcert"),
+        override_sssd_ldap_tls_cacert: has_explicit(&doc, "sssd", "ldap_tls_cacert"),
+        override_sssd_ldap_id_use_start_tls: has_explicit(&doc, "sssd", "ldap_id_use_start_tls"),
+        override_sssd_enumerate: has_explicit(&doc, "sssd", "enumerate"),
+
+        current_shares,
+        next_share_idx,
+    }
 }
 
 // === Helpers (used by both raw and structured save paths) ===
@@ -146,63 +318,99 @@ fn apply_structured_form_to_config(
     if let Some(v) = form.storage_container_root.clone() {
         cfg.storage.container_root = v;
     }
-    if let Some(v) = form.server_hostname.clone() {
-        cfg.server.hostname = Some(v);
+    if form.override_server_hostname.unwrap_or(false) {
+        if let Some(v) = form.server_hostname.clone() {
+            cfg.server.hostname = if v.trim().is_empty() { None } else { Some(v) };
+        }
     }
 
     if let Some(v) = form.sssd_bind_dn.clone() {
         cfg.sssd.ldap_default_bind_dn = v;
     }
+    // Only overwrite bind pw if a non-empty value was submitted (structured form does not prefill the secret).
     if let Some(v) = form.sssd_bind_pw.clone() {
-        cfg.sssd.ldap_default_authtok = v;
+        if !v.trim().is_empty() {
+            cfg.sssd.ldap_default_authtok = v;
+        }
     }
     if let Some(v) = form.sssd_port {
         cfg.sssd.port = Some(v);
     }
-    if let Some(v) = form.sssd_search_base.clone() {
-        cfg.sssd.ldap_search_base = if v.trim().is_empty() { None } else { Some(v) };
+    if form.override_sssd_search_base.unwrap_or(false) {
+        if let Some(v) = form.sssd_search_base.clone() {
+            cfg.sssd.ldap_search_base = if v.trim().is_empty() { None } else { Some(v) };
+        }
     }
-    if let Some(v) = form.sssd_user_base.clone() {
-        cfg.sssd.ldap_user_search_base = if v.trim().is_empty() { None } else { Some(v) };
+    if form.override_sssd_user_base.unwrap_or(false) {
+        if let Some(v) = form.sssd_user_base.clone() {
+            cfg.sssd.ldap_user_search_base = if v.trim().is_empty() { None } else { Some(v) };
+        }
     }
-    if let Some(v) = form.sssd_group_base.clone() {
-        cfg.sssd.ldap_group_search_base = if v.trim().is_empty() { None } else { Some(v) };
+    if form.override_sssd_group_base.unwrap_or(false) {
+        if let Some(v) = form.sssd_group_base.clone() {
+            cfg.sssd.ldap_group_search_base = if v.trim().is_empty() { None } else { Some(v) };
+        }
     }
-    if let Some(v) = form.sssd_ldap_tls_reqcert.clone() {
-        cfg.sssd.ldap_tls_reqcert = if v.trim().is_empty() { None } else { Some(v) };
+    if form.override_sssd_ldap_tls_reqcert.unwrap_or(false) {
+        if let Some(v) = form.sssd_ldap_tls_reqcert.clone() {
+            cfg.sssd.ldap_tls_reqcert = if v.trim().is_empty() { None } else { Some(v) };
+        }
     }
-    if let Some(v) = form.sssd_ldap_tls_cacert.clone() {
-        cfg.sssd.ldap_tls_cacert = if v.trim().is_empty() { None } else { Some(v) };
+    if form.override_sssd_ldap_tls_cacert.unwrap_or(false) {
+        if let Some(v) = form.sssd_ldap_tls_cacert.clone() {
+            cfg.sssd.ldap_tls_cacert = if v.trim().is_empty() { None } else { Some(v) };
+        }
     }
-    cfg.sssd.ldap_id_use_start_tls = form.sssd_ldap_id_use_start_tls;
-    cfg.sssd.enumerate = form.sssd_enumerate;
+    if form.override_sssd_ldap_id_use_start_tls.unwrap_or(false) {
+        cfg.sssd.ldap_id_use_start_tls = form.sssd_ldap_id_use_start_tls;
+    }
+    if form.override_sssd_enumerate.unwrap_or(false) {
+        cfg.sssd.enumerate = form.sssd_enumerate;
+    }
 
-    if let Some(v) = form.kerberos_realm.clone() {
-        cfg.kerberos.realm = Some(v);
+    // kllldap_ignored_attributes: checkbox absence on submit (for this default-true flag) means explicit false.
+    // We always produce Some so structured saves make the value explicit in the TOML.
+    cfg.sssd.kllldap_ignored_attributes = Some(form.kllldap_ignored_attributes.unwrap_or(false));
+
+    if form.override_kerberos_realm.unwrap_or(false) {
+        if let Some(v) = form.kerberos_realm.clone() {
+            cfg.kerberos.realm = if v.trim().is_empty() { None } else { Some(v) };
+        }
     }
-    if let Some(v) = form.ganesha_default_security.clone() {
-        cfg.ganesha.default_security = v;
+    if form.override_ganesha_default_security.unwrap_or(false) {
+        if let Some(v) = form.ganesha_default_security.clone() {
+            if !v.trim().is_empty() {
+                cfg.ganesha.default_security = v;
+            } else {
+                cfg.ganesha.default_security = "krb5p".to_string();
+            }
+        }
+    } else {
+        // Not overriding: materialize the standard default (so ganesha.conf always
+        // gets a known SecType, and "go back" from override restores krb5p in source
+        // instead of stripping the key entirely).
+        cfg.ganesha.default_security = "krb5p".to_string();
     }
 }
 
 fn make_settings_error_template(
     current_user: Option<String>,
-    raw_toml: String,
     config_path: impl AsRef<std::path::Path>,
     message: String,
     keytab_hostname: String,
     keytab_realm: String,
     keytab_alert: Option<String>,
 ) -> SettingsTemplate {
-    SettingsTemplate {
+    // Always re-read current on-disk state for prefilled structured fields + raw.
+    // On structured validation error the file on disk is unchanged.
+    build_settings_template(
         current_user,
-        raw_toml,
-        config_path: config_path.as_ref().display().to_string(),
-        message: Some(message),
-        effective_hostname: keytab_hostname,
-        effective_realm: keytab_realm,
+        config_path,
+        Some(message),
+        keytab_hostname,
+        keytab_realm,
         keytab_alert,
-    }
+    )
 }
 
 fn atomic_write_config(path: &std::path::Path, content: &str) -> Result<(), String> {
@@ -222,22 +430,21 @@ fn atomic_write_config(path: &std::path::Path, content: &str) -> Result<(), Stri
 
 fn make_settings_success_template(
     current_user: Option<String>,
-    raw_toml: String,
     config_path: impl AsRef<std::path::Path>,
     message: String,
     keytab_hostname: String,
     keytab_realm: String,
     keytab_alert: Option<String>,
 ) -> SettingsTemplate {
-    SettingsTemplate {
+    // Re-read after successful write so structured pre-fills reflect the just-saved state.
+    build_settings_template(
         current_user,
-        raw_toml,
-        config_path: config_path.as_ref().display().to_string(),
-        message: Some(message),
-        effective_hostname: keytab_hostname,
-        effective_realm: keytab_realm,
+        config_path,
+        Some(message),
+        keytab_hostname,
+        keytab_realm,
         keytab_alert,
-    }
+    )
 }
 
 fn apply_structured_form_to_toml_doc(
@@ -255,10 +462,16 @@ fn apply_structured_form_to_toml_doc(
             tbl["container_root"] = toml_edit::value(v.clone());
         }
     }
-    if let Some(v) = &form.server_hostname {
-        let item = doc.entry("server").or_insert(toml_edit::table());
+    if form.override_server_hostname.unwrap_or(false) {
+        if let Some(v) = &form.server_hostname {
+            let item = doc.entry("server").or_insert(toml_edit::table());
+            if let Some(tbl) = item.as_table_mut() {
+                tbl["hostname"] = toml_edit::value(v.clone());
+            }
+        }
+    } else if let Some(item) = doc.get_mut("server") {
         if let Some(tbl) = item.as_table_mut() {
-            tbl["hostname"] = toml_edit::value(v.clone());
+            let _ = tbl.remove("hostname");
         }
     }
 
@@ -268,10 +481,13 @@ fn apply_structured_form_to_toml_doc(
             tbl["ldap_default_bind_dn"] = toml_edit::value(v.clone());
         }
     }
+    // Only write bind pw if non-empty (structured editor never prefills the secret field).
     if let Some(v) = &form.sssd_bind_pw {
-        let item = doc.entry("sssd").or_insert(toml_edit::table());
-        if let Some(tbl) = item.as_table_mut() {
-            tbl["ldap_default_authtok"] = toml_edit::value(v.clone());
+        if !v.trim().is_empty() {
+            let item = doc.entry("sssd").or_insert(toml_edit::table());
+            if let Some(tbl) = item.as_table_mut() {
+                tbl["ldap_default_authtok"] = toml_edit::value(v.clone());
+            }
         }
     }
     if let Some(v) = form.sssd_port {
@@ -280,53 +496,168 @@ fn apply_structured_form_to_toml_doc(
             tbl["port"] = toml_edit::value(v as i64);
         }
     }
-    if let Some(v) = &form.sssd_user_base {
-        let item = doc.entry("sssd").or_insert(toml_edit::table());
+    if form.override_sssd_search_base.unwrap_or(false) {
+        if let Some(v) = &form.sssd_search_base {
+            let item = doc.entry("sssd").or_insert(toml_edit::table());
+            if let Some(tbl) = item.as_table_mut() {
+                if v.trim().is_empty() {
+                    let _ = tbl.remove("ldap_search_base");
+                } else {
+                    tbl["ldap_search_base"] = toml_edit::value(v.clone());
+                }
+            }
+        }
+    } else if let Some(item) = doc.get_mut("sssd") {
         if let Some(tbl) = item.as_table_mut() {
-            tbl["ldap_user_search_base"] = toml_edit::value(v.clone());
+            let _ = tbl.remove("ldap_search_base");
         }
     }
-    if let Some(v) = &form.sssd_group_base {
-        let item = doc.entry("sssd").or_insert(toml_edit::table());
+    if form.override_sssd_user_base.unwrap_or(false) {
+        if let Some(v) = &form.sssd_user_base {
+            let item = doc.entry("sssd").or_insert(toml_edit::table());
+            if let Some(tbl) = item.as_table_mut() {
+                tbl["ldap_user_search_base"] = toml_edit::value(v.clone());
+            }
+        }
+    } else if let Some(item) = doc.get_mut("sssd") {
         if let Some(tbl) = item.as_table_mut() {
-            tbl["ldap_group_search_base"] = toml_edit::value(v.clone());
+            let _ = tbl.remove("ldap_user_search_base");
+        }
+    }
+    if form.override_sssd_group_base.unwrap_or(false) {
+        if let Some(v) = &form.sssd_group_base {
+            let item = doc.entry("sssd").or_insert(toml_edit::table());
+            if let Some(tbl) = item.as_table_mut() {
+                tbl["ldap_group_search_base"] = toml_edit::value(v.clone());
+            }
+        }
+    } else if let Some(item) = doc.get_mut("sssd") {
+        if let Some(tbl) = item.as_table_mut() {
+            let _ = tbl.remove("ldap_group_search_base");
         }
     }
 
-    if let Some(v) = &form.kerberos_realm {
-        let item = doc.entry("kerberos").or_insert(toml_edit::table());
+    if form.override_sssd_ldap_tls_reqcert.unwrap_or(false) {
+        if let Some(v) = &form.sssd_ldap_tls_reqcert {
+            let item = doc.entry("sssd").or_insert(toml_edit::table());
+            if let Some(tbl) = item.as_table_mut() {
+                if v.trim().is_empty() {
+                    let _ = tbl.remove("ldap_tls_reqcert");
+                } else {
+                    tbl["ldap_tls_reqcert"] = toml_edit::value(v.clone());
+                }
+            }
+        }
+    } else if let Some(item) = doc.get_mut("sssd") {
         if let Some(tbl) = item.as_table_mut() {
-            tbl["realm"] = toml_edit::value(v.clone());
+            let _ = tbl.remove("ldap_tls_reqcert");
         }
     }
-    if let Some(v) = &form.ganesha_default_security {
+    if form.override_sssd_ldap_tls_cacert.unwrap_or(false) {
+        if let Some(v) = &form.sssd_ldap_tls_cacert {
+            let item = doc.entry("sssd").or_insert(toml_edit::table());
+            if let Some(tbl) = item.as_table_mut() {
+                if v.trim().is_empty() {
+                    let _ = tbl.remove("ldap_tls_cacert");
+                } else {
+                    tbl["ldap_tls_cacert"] = toml_edit::value(v.clone());
+                }
+            }
+        }
+    } else if let Some(item) = doc.get_mut("sssd") {
+        if let Some(tbl) = item.as_table_mut() {
+            let _ = tbl.remove("ldap_tls_cacert");
+        }
+    }
+    if form.override_sssd_ldap_id_use_start_tls.unwrap_or(false) {
+        let v = form.sssd_ldap_id_use_start_tls.unwrap_or(false);
+        let item = doc.entry("sssd").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            tbl["ldap_id_use_start_tls"] = toml_edit::value(v);
+        }
+    } else if let Some(item) = doc.get_mut("sssd") {
+        if let Some(tbl) = item.as_table_mut() {
+            let _ = tbl.remove("ldap_id_use_start_tls");
+        }
+    }
+    if form.override_sssd_enumerate.unwrap_or(false) {
+        let v = form.sssd_enumerate.unwrap_or(false);
+        let item = doc.entry("sssd").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            tbl["enumerate"] = toml_edit::value(v);
+        }
+    } else if let Some(item) = doc.get_mut("sssd") {
+        if let Some(tbl) = item.as_table_mut() {
+            let _ = tbl.remove("enumerate");
+        }
+    }
+
+    // kllldap_ignored_attributes is always emitted explicitly from the structured path
+    // (we treat unchecked as false for this default-true flag).
+    {
+        let kll = form.kllldap_ignored_attributes.unwrap_or(false);
+        let item = doc.entry("sssd").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            tbl["kllldap_ignored_attributes"] = toml_edit::value(kll);
+        }
+    }
+
+    if form.override_kerberos_realm.unwrap_or(false) {
+        if let Some(v) = &form.kerberos_realm {
+            let item = doc.entry("kerberos").or_insert(toml_edit::table());
+            if let Some(tbl) = item.as_table_mut() {
+                tbl["realm"] = toml_edit::value(v.clone());
+            }
+        }
+    } else if let Some(item) = doc.get_mut("kerberos") {
+        if let Some(tbl) = item.as_table_mut() {
+            let _ = tbl.remove("realm");
+        }
+    }
+    if form.override_ganesha_default_security.unwrap_or(false) {
+        if let Some(v) = &form.ganesha_default_security {
+            let val = if v.trim().is_empty() { "krb5p".to_string() } else { v.clone() };
+            let item = doc.entry("ganesha").or_insert(toml_edit::table());
+            if let Some(tbl) = item.as_table_mut() {
+                tbl["default_security"] = toml_edit::value(val);
+            }
+        } else {
+            // override checked but no value submitted (e.g. was disabled before toggle): use default
+            let item = doc.entry("ganesha").or_insert(toml_edit::table());
+            if let Some(tbl) = item.as_table_mut() {
+                tbl["default_security"] = toml_edit::value("krb5p");
+            }
+        }
+    } else {
+        // Not overriding ganesha: ensure the default "krb5p" is present in the source
+        // (prevents the value from being "removed entirely" when un-overriding; other
+        // derived fields intentionally omit their keys to allow dynamic derivation).
         let item = doc.entry("ganesha").or_insert(toml_edit::table());
         if let Some(tbl) = item.as_table_mut() {
-            tbl["default_security"] = toml_edit::value(v.clone());
+            tbl["default_security"] = toml_edit::value("krb5p");
         }
     }
 
-    // Shares: submitted rows are authoritative. Wholesale replacement of [[shares]].
-    if !new_shares.is_empty() {
-        let mut shares = toml_edit::ArrayOfTables::new();
-        for s in new_shares {
-            let mut t = toml_edit::Table::new();
-            t["name"] = toml_edit::value(s.name.clone());
-            t["host_path"] = toml_edit::value(s.host_path.display().to_string());
-            if let Some(ep) = &s.export_path {
-                t["export_path"] = toml_edit::value(ep.clone());
-            }
-            if let Some(sec) = &s.security {
-                t["security"] = toml_edit::value(sec.clone());
-            }
-            t["rw"] = toml_edit::value(s.rw.unwrap_or(true));
-            if let Some(sq) = &s.squash {
-                t["squash"] = toml_edit::value(sq.clone());
-            }
-            shares.push(t);
+    // Shares: submitted rows (now pre-populated on load) are always authoritative.
+    // We replace [[shares]] even if the submitted list is empty (user explicitly removed all rows).
+    let mut shares = toml_edit::ArrayOfTables::new();
+    for s in new_shares {
+        let mut t = toml_edit::Table::new();
+        t["name"] = toml_edit::value(s.name.clone());
+        t["host_path"] = toml_edit::value(s.host_path.display().to_string());
+        if let Some(ep) = &s.export_path {
+            t["export_path"] = toml_edit::value(ep.clone());
         }
-        doc["shares"] = toml_edit::Item::ArrayOfTables(shares);
+        if let Some(sec) = &s.security {
+            t["security"] = toml_edit::value(sec.clone());
+        }
+        t["rw"] = toml_edit::value(s.rw.unwrap_or(true));
+        if let Some(sq) = &s.squash {
+            t["squash"] = toml_edit::value(sq.clone());
+        }
+        shares.push(t);
     }
+    doc["shares"] = toml_edit::Item::ArrayOfTables(shares);
 }
 
 // === Handlers ===
@@ -337,18 +668,14 @@ pub(crate) async fn settings_page(
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
 
-    let raw_toml = std::fs::read_to_string(&state.config_path)
-        .unwrap_or_else(|_| "# Could not read config file".to_string());
-
-    let tpl = SettingsTemplate {
-        current_user: Some(user.0),
-        raw_toml,
-        config_path: state.config_path.display().to_string(),
-        message: None,
-        effective_hostname: state.keytab_hostname.clone(),
-        effective_realm: state.keytab_realm.clone(),
-        keytab_alert: state.keytab_alert.clone(),
-    };
+    let tpl = build_settings_template(
+        Some(user.0),
+        &state.config_path,
+        None,
+        state.keytab_hostname.clone(),
+        state.keytab_realm.clone(),
+        state.keytab_alert.clone(),
+    );
     Ok(Html(tpl.render().unwrap()))
 }
 
@@ -376,10 +703,8 @@ pub(crate) async fn settings_save_raw(
         return Ok(Html(format!("<p class='alert alert-danger'>{}</p>", msg)));
     }
 
-    let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
     let tpl = make_settings_success_template(
         Some(user.0),
-        raw_toml,
         &state.config_path,
         "Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into(),
         state.keytab_hostname.clone(),
@@ -400,17 +725,15 @@ pub(crate) async fn settings_save_structured(
 
     apply_structured_form_to_config(&form, &mut cfg);
 
+    // Always take the submitted shares rows as authoritative (pre-population means a no-op submit
+    // re-sends the current list; removing rows in the UI produces a shorter list = delete).
     let new_shares = collect_shares_from_structured_form(&form.extra);
-    if !new_shares.is_empty() {
-        cfg.shares = new_shares.clone();
-    }
+    cfg.shares = new_shares.clone();
 
     if let Err(e) = cfg.validate_and_derive() {
         let msg = format!("Validation error: {}", e);
-        let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
         let tpl = make_settings_error_template(
             Some(user.0.clone()),
-            raw_toml,
             &state.config_path,
             msg,
             state.keytab_hostname.clone(),
@@ -429,10 +752,8 @@ pub(crate) async fn settings_save_structured(
 
     let text = doc.to_string();
     if let Err(msg) = atomic_write_config(&state.config_path, &text) {
-        let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
         let tpl = make_settings_error_template(
             Some(user.0.clone()),
-            raw_toml,
             &state.config_path,
             msg,
             state.keytab_hostname.clone(),
@@ -442,10 +763,8 @@ pub(crate) async fn settings_save_structured(
         return Ok(Html(tpl.render().unwrap()));
     }
 
-    let raw_toml = std::fs::read_to_string(&state.config_path).unwrap_or_default();
     let tpl = make_settings_success_template(
-        None,
-        raw_toml,
+        Some(user.0),
         &state.config_path,
         "Structured settings saved. Container will regenerate configs shortly.".into(),
         state.keytab_hostname.clone(),

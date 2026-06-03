@@ -22,7 +22,7 @@ mod permission_tree;
 mod settings;
 
 // Re-exports needed by main.rs (and for the router assembly below).
-pub use keytab::compute_keytab_alert;
+pub use keytab::{compute_keytab_alert, get_keytab_info};
 
 // Re-export handlers as pub(crate) so that the integration tests (which live
 // inside this module) can use `use super::*;` in a natural way (keeps the
@@ -242,14 +242,22 @@ ldap_default_authtok = "sekret"
     #[tokio::test]
     async fn settings_save_structured_updates_top_level_fields() {
         let (state, _tmp) = make_test_state_with_temp_config();
+        let config_path = state.config_path.clone();
         let auth = state.auth.clone();
         // Use the real privileged session creator (same path the login handlers use)
         let token = auth.create_privileged_session("testadmin");
 
         let app = router(state);
 
-        // Simple form that only changes ldap_uri
-        let body = "ldap_uri=ldaps%3A%2F%2Fnewhost.example.com%3A6360";
+        // Exercise override flags:
+        // - server_hostname + override=true → should be written explicitly
+        // - sssd_user_base sent but override=false (or absent) → should be removed (allow derive)
+        // - kerberos_realm + override → written
+        // ldap_uri (key) always written
+        let body = "ldap_uri=ldaps%3A%2F%2Fnewhost.example.com%3A6360\
+&server_hostname=override-host.example.com&override_server_hostname=true\
+&sssd_user_base=ou%3Dpeople%2Cdc%3Dfoo&override_sssd_user_base=false\
+&kerberos_realm=OVERRIDE.REALM&override_kerberos_realm=true";
 
         let req = Request::builder()
             .method("POST")
@@ -262,6 +270,17 @@ ldap_default_authtok = "sekret"
 
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify the written config has the expected explicit keys (and omits non-overridden).
+        let written = std::fs::read_to_string(&config_path).unwrap_or_default();
+        assert!(written.contains("ldap_uri = \"ldaps://newhost.example.com:6360\""), "key field must be written");
+        assert!(written.contains("hostname = \"override-host.example.com\""), "server override must be persisted when flag true");
+        assert!(written.contains("realm = \"OVERRIDE.REALM\""), "kerberos override must be persisted when flag true");
+        assert!(!written.contains("ldap_user_search_base"), "sssd_user_base must be omitted (no override) so derivation applies");
+
+        // ganesha: even though not mentioned in this POST, the !override path forces the default into the source
+        // (addresses the "value removed entirely" complaint; other derived fields intentionally omit).
+        assert!(written.contains("default_security = \"krb5p\""), "ganesha must default to krb5p and be materialized when not overridden");
     }
 
     /// Exercises the complete localhost first-run + normal login + session + protected route flow.

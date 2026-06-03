@@ -274,6 +274,7 @@
 
         // === Edit mode state (tree locked while editing one directory's permissions) ===
         let currentEditPath = null;
+        let applyInProgress = false;
         const META_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes per user feedback
         const metaCache = new Map(); // path -> { html: string, ts: number }
 
@@ -312,6 +313,43 @@
                 swap: 'innerHTML'
             });
         };
+
+        // Native (non-htmx) cancel for the Apply Log button. Works even while the long
+        // apply is running and the only "safe" UI action.
+        window.cancelCurrentApply = function() {
+            // Best-effort; no confirm to keep it a fast bail-out as requested.
+            fetch('/cancel-apply', { method: 'POST', credentials: 'include' })
+                .catch(() => { /* ignore network errors for a cancel */ });
+        };
+
+        // Hidden poller element (htmx) that drives live updates to #apply-status (oob)
+        // while an apply is in flight. Created on demand when we receive the placeholder
+        // from /apply. Stopped (hx-trigger removed) when we see data-apply-finished.
+        let applyPollerEl = null;
+        function startApplyProgressPoller() {
+            if (applyPollerEl && document.body.contains(applyPollerEl)) {
+                // Already running; just make sure the trigger is present.
+                if (!applyPollerEl.getAttribute('hx-trigger')) {
+                    applyPollerEl.setAttribute('hx-trigger', 'every 350ms');
+                    if (window.htmx) htmx.process(applyPollerEl);
+                }
+                return;
+            }
+            applyPollerEl = document.createElement('div');
+            applyPollerEl.id = 'apply-poller';
+            applyPollerEl.style.display = 'none';
+            applyPollerEl.setAttribute('hx-get', '/apply-progress');
+            applyPollerEl.setAttribute('hx-trigger', 'every 350ms');
+            applyPollerEl.setAttribute('hx-swap', 'none'); // oob in the response does the real work
+            document.body.appendChild(applyPollerEl);
+            if (window.htmx) htmx.process(applyPollerEl);
+        }
+        function stopApplyProgressPoller() {
+            if (applyPollerEl) {
+                applyPollerEl.removeAttribute('hx-trigger');
+                // Leave the element; next start will reuse or recreate.
+            }
+        }
 
         window.cancelDirEdit = function(el) {
             const meta = el.closest('.dir-meta');
@@ -387,8 +425,10 @@
                 const path = dir.dataset.path;
                 if (!path) return;
 
-                if (currentEditPath) {
-                    // Edit mode: no tree expand/collapse/select — only the permission form is active.
+                if (currentEditPath || applyInProgress) {
+                    // Edit mode or a running apply: no tree expand/collapse/select.
+                    // The apply lock is only released after the background process finishes
+                    // and the final /dir-meta swap has landed.
                     return;
                 }
 
@@ -496,7 +536,26 @@
                 const target = evt.detail && evt.detail.target;
                 if (target && target.classList && target.classList.contains('dir-meta')) {
                     if (!target.querySelector('form')) {
-                        setEditMode(false, null);
+                        // If this swap is the *start* of an apply (we just got the placeholder back from /apply),
+                        // keep the tree locked and let the progress poller drive the final unlock + refresh later.
+                        const isApplyingPlaceholder = !!(target.dataset.applying || target.querySelector('[data-applying]'));
+                        if (isApplyingPlaceholder) {
+                            applyInProgress = true;
+                            if (target.dataset.path) {
+                                currentEditPath = target.dataset.path;
+                            }
+                            // Start (or restart) the background poller that will keep the Apply Log fresh
+                            // with scanned counts + spinner, real %, and will detect finish.
+                            startApplyProgressPoller();
+                            // pending* datasets are left on the container so the *final* meta swap (after finish)
+                            // can still decide whether to call refreshSubtreeMetas.
+                            return;
+                        }
+
+                        // Normal case (or the final meta refresh after an apply finished): unlock + optional subtree refresh.
+                        if (!applyInProgress) {
+                            setEditMode(false, null);
+                        }
                         const p = target.dataset.path;
                         if (p) {
                             putCachedMeta(p, target.innerHTML);
@@ -509,9 +568,40 @@
                         }
                         delete target.dataset.pendingRecursive;
                         delete target.dataset.pendingApplyPath;
+                        // If we just landed the final meta after an apply, make sure the flag is clear.
+                        applyInProgress = false;
                     } else {
                         // Editor just appeared — wire its input listeners (clear hiddens on edit)
                         attachEditorInputListeners(target);
+                    }
+                }
+            });
+
+            // Listen for polled /apply-progress responses (the poller itself has hx-swap=none).
+            // When the response contains the finished marker we stop the poller, clear the
+            // applying flag, and fire the *final* /dir-meta request that will cause the real
+            // meta to land and the afterSwap above to unlock the tree + do subtree refresh (if rec).
+            document.body.addEventListener('htmx:afterOnLoad', function(evt) {
+                const elt = evt.detail && evt.detail.elt;
+                if (elt && elt.id === 'apply-poller') {
+                    const xhr = evt.detail.xhr;
+                    const txt = (xhr && xhr.responseText) || '';
+                    if (txt.indexOf('data-apply-finished="true"') !== -1) {
+                        stopApplyProgressPoller();
+                        applyInProgress = false;
+                        // Trigger the final meta refresh for whatever dir is showing the applying placeholder.
+                        // The container keeps data-path (and pendingRecursive if this was a rec apply).
+                        const metas = document.querySelectorAll('.dir-meta[data-applying], .dir-meta-inner[data-applying]');
+                        metas.forEach(function(m) {
+                            const container = m.closest('.dir-meta') || m;
+                            const pth = (container && container.dataset && container.dataset.path) || (m.dataset && m.dataset.path);
+                            if (pth) {
+                                htmx.ajax('GET', '/dir-meta?path=' + encodeURIComponent(pth), {
+                                    target: container,
+                                    swap: 'innerHTML'
+                                });
+                            }
+                        });
                     }
                 }
             });

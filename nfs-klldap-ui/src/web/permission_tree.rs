@@ -7,6 +7,11 @@ use axum::{
     response::{Html, IntoResponse, Redirect},
 };
 use serde::Deserialize;
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use crate::fs::ApplyProgress;
 
 use super::{AppState, require_auth};
 
@@ -481,37 +486,7 @@ pub(crate) async fn apply_permissions(
 
     let mode = u32::from_str_radix(&form.mode, 8).unwrap_or(0o770);
 
-    let apply_result = match state.fs.apply_permissions(
-        std::path::Path::new(&form.path),
-        owner_uid,
-        group_gid,
-        mode,
-        form.recursive,
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            let html = format!(
-                r#"<div style="font-size:0.82em; color:#900; padding:3px 4px; border:1px solid #fcc; background:#fff5f5;">
-                    Apply failed: {} 
-                    <button type="button" hx-get="/dir-editor?path={}" hx-target="closest .dir-meta" hx-swap="innerHTML">Retry</button>
-                </div>"#,
-                e,
-                urlencoding::encode(&form.path)
-            );
-            return Ok(Html(html));
-        }
-    };
-
-    // Fire-and-forget background cache invalidation hook
-    {
-        let fs = state.fs.clone();
-        let p = form.path.clone();
-        tokio::spawn(async move {
-            fs.invalidate_path(std::path::Path::new(&p));
-        });
-    }
-
-    // Build a human-readable command summary (less verbose)
+    // Build command string (used for immediate log and final result text)
     let cmd = if form.recursive {
         format!(
             "chown {uid}:{gid} -R {path}\nchmod {mode:o} -R {path}",
@@ -530,66 +505,205 @@ pub(crate) async fn apply_permissions(
         )
     };
 
-    // Build rich result text (more verbose)
-    let mut result_text = format!(
-        "Result: {} changed, {} skipped, {} errors",
-        apply_result.changed, apply_result.skipped, apply_result.errors.len()
+    // === Always async path (for live progress in Apply Log, spinner while estimating,
+    //      tree lock until done, and Cancel button). Even non-recursive on a dir with
+    //      thousands of immediate entries benefits from the UX.
+    let progress = Arc::new(ApplyProgress::default());
+    {
+        let mut slot = state.apply_progress.lock().await;
+        *slot = Some(progress.clone());
+    }
+    {
+        let mut c = progress.cmd.lock().unwrap();
+        *c = Some(cmd.clone());
+    }
+
+    let fs = state.fs.clone();
+    let pth = form.path.clone();
+    let uid = owner_uid;
+    let gid = group_gid;
+    let md = mode;
+    let rec = form.recursive;
+    let prog = progress.clone();
+    tokio::spawn(async move {
+        // Count-as-you-go phase gives immediate visible feedback ("scanned N so far |")
+        // via the poller + render_apply_status_oob. No long silent pre-count.
+        *prog.phase.lock().unwrap() = "scanning".to_string();
+        let _ = fs.count_applicable_with_live(std::path::Path::new(&pth), rec, &prog);
+        let total = prog.processed.load(Ordering::Relaxed);
+        prog.total.store(total, Ordering::Relaxed);
+        prog.processed.store(0, Ordering::Relaxed);
+        *prog.phase.lock().unwrap() = "applying".to_string();
+
+        let apply_res = match fs.apply_permissions_with_progress(
+            std::path::Path::new(&pth), uid, gid, md, rec, &prog,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                prog.error_count.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut errs) = prog.recent_errors.lock() {
+                    errs.push((PathBuf::from(&pth), e.clone()));
+                }
+                let err_text = format!("Apply failed before walking tree: {}", e);
+                *prog.final_result_text.lock().expect("progress mutex poisoned") = Some(err_text);
+                prog.finished.store(true, Ordering::Relaxed);
+                // Still attempt cache invalidate (no-op) and exit task early
+                {
+                    let fs2 = fs.clone();
+                    let p2 = pth.clone();
+                    tokio::spawn(async move {
+                        fs2.invalidate_path(std::path::Path::new(&p2));
+                    });
+                }
+                return;
+            }
+        };
+
+        // Existing background cache invalidation (moved inside the task)
+        {
+            let fs2 = fs.clone();
+            let p2 = pth.clone();
+            tokio::spawn(async move {
+                fs2.invalidate_path(std::path::Path::new(&p2));
+            });
+        }
+
+        let mut rtext = format!(
+            "Result: {} changed, {} skipped, {} errors",
+            apply_res.changed, apply_res.skipped, apply_res.errors.len()
+        );
+        if prog.cancelled.load(Ordering::Relaxed) {
+            let last = prog.last_path.lock().expect("progress mutex poisoned").clone().unwrap_or_else(|| pth.clone());
+            rtext = format!("CANCELLED after {}\n{}", last, rtext);
+        }
+        if !apply_res.errors.is_empty() {
+            rtext.push_str("\n\nErrors:\n");
+            for (pp, msg) in apply_res.errors.iter().take(5) {
+                rtext.push_str(&format!("  {} — {}\n", pp.display(), msg));
+            }
+            if apply_res.errors.len() > 5 {
+                rtext.push_str(&format!("  ... and {} more\n", apply_res.errors.len() - 5));
+            }
+        }
+        if apply_res.skipped > 0 {
+            rtext.push_str("\n(skipped entries were typically symlinks — never followed for safety)");
+        }
+
+        {
+            let mut ft = prog.final_result_text.lock().expect("progress mutex poisoned");
+            *ft = Some(rtext);
+        }
+        prog.finished.store(true, Ordering::Relaxed);
+    });
+
+    // Immediate response: placeholder keeps the .dir-meta target (and the edit/applying lock
+    // via JS + data-applying + currentEditPath). Real meta + subtree refresh (if recursive)
+    // happen only after the poller sees finished and does the final /dir-meta fetch.
+    let placeholder = format!(
+        r#"<div class="dir-meta-inner" data-path="{}" data-applying="1">
+    <span style="color:#b8860b;">⏳ Applying permissions — see Apply Log (bottom right) for progress and Cancel. Tree navigation locked until complete.</span>
+</div>"#,
+        form.path
     );
 
-    if !apply_result.errors.is_empty() {
-        result_text.push_str("\n\nErrors:\n");
-        for (p, msg) in apply_result.errors.iter().take(5) {
-            result_text.push_str(&format!("  {} — {}\n", p.display(), msg));
-        }
-        if apply_result.errors.len() > 5 {
-            result_text.push_str(&format!("  ... and {} more\n", apply_result.errors.len() - 5));
-        }
-    }
+    // Initial status (will be replaced by polls with live scanned/spinner or real %)
+    let status_html = render_apply_status_oob(&cmd, "Stand-by, estimating total... (live updates below)", true);
 
-    if apply_result.skipped > 0 {
-        result_text.push_str("\n(skipped entries were typically symlinks — never followed for safety)");
-    }
+    Ok(Html(format!("{}\n{}", placeholder, status_html)))
+}
 
-    // Build the status box content (will be swapped oob into #apply-status)
-    let status_html = format!(
-        r#"<div id="apply-status" hx-swap-oob="true" class="apply-status" style="display:block;">
-    <div style="font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">Apply Log</div>
+/// Renders the full oob-swappable #apply-status (header with Cancel on the right + content).
+/// active_cancel controls the red clickable vs. muted disabled appearance of the button.
+/// When !active_cancel we also emit data-apply-finished so the JS poller listener can stop itself.
+fn render_apply_status_oob(cmd: &str, result_or_live: &str, active_cancel: bool) -> String {
+    let cancel_btn = if active_cancel {
+        r#"<button type="button" onclick="if (window.cancelCurrentApply) window.cancelCurrentApply();" style="font-size:0.65em; padding:1px 6px; border:1px solid #c33; color:#c33; background:#fff5f5; border-radius:2px; cursor:pointer;">Cancel Apply</button>"#
+    } else {
+        r#"<button type="button" disabled style="font-size:0.65em; padding:1px 6px; border:1px solid #aaa; color:#888; opacity:0.6; border-radius:2px;">Cancel Apply</button>"#
+    };
+    let finished_attr = if !active_cancel { r#"data-apply-finished="true""# } else { "" };
+    format!(
+        r#"<div id="apply-status" hx-swap-oob="true" class="apply-status" style="display:block;" {finished_attr}>
+    <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">
+      <span>Apply Log</span>
+      {cancel_btn}
+    </div>
     <div class="apply-status-content"
          style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
 <strong>Command</strong>
 {cmd}
 
-<strong>Result</strong>
-{result_text}
+<strong>Status</strong>
+{result_or_live}
     </div>
 </div>"#,
+        finished_attr = finished_attr,
+        cancel_btn = cancel_btn,
         cmd = cmd,
-        result_text = result_text
-    );
+        result_or_live = result_or_live
+    )
+}
 
-    // Success → return fresh compact meta (for the clicked dir) + oob status box
-    let (owner_display, group_display, mode_octal) = {
-        let l = state.lldap.lock().await;
-        let od = if let Some((nm, _)) = l.resolve_user_by_uid(owner_uid as i32).await {
-            if owner_uid > 0 { format!("{} ({})", nm, owner_uid) } else { nm }
-        } else { owner_uid.to_string() };
+pub(crate) async fn apply_progress(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Redirect> {
+    let _user = require_auth(&state, &headers).await?;
 
-        let gd = if let Some((nm, _)) = l.resolve_group_by_gid(group_gid as i32).await {
-            if group_gid > 0 { format!("{} ({})", nm, group_gid) } else { nm }
-        } else { group_gid.to_string() };
+    let html = {
+        let guard = state.apply_progress.lock().await;
+        if let Some(prog) = guard.as_ref() {
+            let total = prog.total.load(Ordering::Relaxed);
+            let proc = prog.processed.load(Ordering::Relaxed);
+            let ch = prog.changed.load(Ordering::Relaxed);
+            let sk = prog.skipped.load(Ordering::Relaxed);
+            let errc = prog.error_count.load(Ordering::Relaxed);
+            let phase = prog.phase.lock().expect("progress mutex poisoned").clone();
+            let finished = prog.finished.load(Ordering::Relaxed);
 
-        (od, gd, format!("{:o}", mode))
+            let cmd = prog.cmd.lock().expect("progress mutex poisoned").clone().unwrap_or_default();
+
+            let live_or_final = if finished {
+                prog.final_result_text.lock().expect("progress mutex poisoned").clone().unwrap_or_else(|| "Finished.".into())
+            } else if total == 0 {
+                // Still estimating (count-as-you-go phase)
+                let spin_chars = ["|", "/", "-", "\\"];
+                let spin = spin_chars[proc % 4];
+                format!("Stand-by, estimating total... scanned {} so far {}", proc, spin)
+            } else {
+                let pct = if total > 0 { ((proc as f64 * 100.0) / total as f64) as u32 } else { 0 };
+                format!(
+                    "Phase: {}\nProcessed: {}/{} ({}%)\nchanged: {}  skipped: {}  errors: {}",
+                    phase, proc, total, pct, ch, sk, errc
+                )
+            };
+
+            render_apply_status_oob(&cmd, &live_or_final, !finished)
+        } else {
+            // Neutral / last-known state when no apply slot is active
+            r#"<div id="apply-status" hx-swap-oob="true" class="apply-status" style="display:block;">
+    <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">
+      <span>Apply Log</span>
+      <button type="button" disabled style="font-size:0.65em; padding:1px 6px; border:1px solid #aaa; color:#888; opacity:0.6; border-radius:2px;">Cancel Apply</button>
+    </div>
+    <div class="apply-status-content" style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
+<em style="color:var(--text-light);">No permission apply in progress.</em>
+    </div>
+</div>"#.to_string()
+        }
     };
+    Ok(Html(html))
+}
 
-    let meta = DirMetaTemplate {
-        path: form.path.clone(),
-        owner_display,
-        group_display,
-        mode_octal,
-    };
-
-    let meta_html = meta.render().unwrap();
-    Ok(Html(format!("{}\n{}", meta_html, status_html)))
+pub(crate) async fn cancel_apply(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Redirect> {
+    let _user = require_auth(&state, &headers).await?;
+    if let Some(prog) = state.apply_progress.lock().await.as_ref() {
+        prog.cancelled.store(true, Ordering::Relaxed);
+    }
+    Ok(Html(r#"<span style="font-size:0.7em; color:#c33;">Cancel requested.</span>"#.to_string()))
 }
 
 #[cfg(test)]

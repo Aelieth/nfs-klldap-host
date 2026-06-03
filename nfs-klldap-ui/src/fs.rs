@@ -7,6 +7,8 @@
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex as StdMutex;
 
 use walkdir::{DirEntry, WalkDir};
 
@@ -45,6 +47,35 @@ pub struct ApplyResult {
     /// Entries that were deliberately skipped (symlinks under the current policy,
     /// entries filtered by apply_to_* flags, or everything in a dry-run).
     pub skipped: usize,
+}
+
+/// Live progress + cancellation state for a (possibly long-running) permission apply.
+/// Updated from the (blocking) walk thread via atomics; read (snapshotted) by the
+/// web layer for the Apply Log and for the "Stand-by, estimating..." + spinner UX.
+///
+/// The count pass (or the apply walk itself) increments `processed` as "scanned so far"
+/// while `total` is still 0; the UI shows a cycling ASCII spinner until `total` is known.
+/// After the count pass, `processed` is reset and real % updates are shown during the
+/// mutation pass. `last_path` is updated before each entry so that Cancel can report
+/// exactly where the operation was when the user bailed.
+#[derive(Debug, Default)]
+pub struct ApplyProgress {
+    pub total: AtomicUsize,
+    pub processed: AtomicUsize,
+    pub changed: AtomicUsize,
+    pub skipped: AtomicUsize,
+    pub error_count: AtomicUsize,
+    pub cancelled: AtomicBool,
+    pub finished: AtomicBool,
+    /// "scanning" | "applying" | "done"
+    pub phase: StdMutex<String>,
+    pub cmd: StdMutex<Option<String>>,
+    pub final_result_text: StdMutex<Option<String>>,
+    /// Capped recent errors for live display (full list is in the final result text).
+    pub recent_errors: StdMutex<Vec<(PathBuf, String)>>,
+    /// Last path the walker was about to process (or was processing) when cancel was
+    /// observed. Included in the "CANCELLED after ..." message.
+    pub last_path: StdMutex<Option<String>>,
 }
 
 pub struct FsManager {
@@ -161,9 +192,11 @@ impl FsManager {
     ///   (child subdirectories are not modified and not descended into).
     /// - **Recursive**: full subtree (dirs + files), symlinks never descended.
     ///
-    /// The `recursive` boolean is mapped to a rich `ApplyOptions` with safe modern defaults:
-    /// apply to both files and dirs, continue_on_error = true (so one bad file does not
-    /// abort the whole tree — this was a frequent source of opaque "failed" reports in edit mode).
+    /// The implementation always goes through the progress-aware engine (using a
+    /// dummy ApplyProgress). This keeps a single code path for live feedback, cancel,
+    /// and the "count as you go + spinner" UX while still supporting direct callers
+    /// (tests, potential future CLI) that only want the final ApplyResult.
+    #[allow(dead_code)]
     pub fn apply_permissions(
         &self,
         path: &Path,
@@ -187,17 +220,92 @@ impl FsManager {
 
         let target_path = self.host_path_to_container_path(&normalized)?;
 
-        // Modern defaults for the web UI path (edit mode). The engine now supports
-        // granular control for future CLI / advanced use cases.
         let opts = ApplyOptions {
             recursive,
             apply_to_dirs: true,
             apply_to_files: true,
-            continue_on_error: true, // major UX improvement over the old all-or-nothing walk
+            continue_on_error: true,
             dry_run: false,
         };
 
-        self.apply_direct(&target_path, owner_uid, group_gid, mode, &opts)
+        let dummy = ApplyProgress::default();
+        self.apply_direct_with_progress(&target_path, owner_uid, group_gid, mode, &opts, &dummy)
+            .map_err(|e| format!("apply failed: {}", e))
+    }
+
+    /// Count how many entries *would* be mutated by an apply under the current policy.
+    /// Used to pre-compute a total for the % display. For non-recursive this is O(1).
+    #[allow(dead_code)]
+    pub fn count_applicable(&self, path: &Path, recursive: bool) -> Result<usize, String> {
+        let dummy = ApplyProgress::default();
+        self.count_applicable_with_live(path, recursive, &dummy)
+    }
+
+    /// Count variant that increments `progress.processed` as "scanned so far" (for the
+    /// "Stand-by, estimating total... scanned N so far [spinner]" live feedback) and
+    /// honours cancel. Returns the final count (which becomes `total`).
+    pub fn count_applicable_with_live(
+        &self,
+        path: &Path,
+        recursive: bool,
+        progress: &ApplyProgress,
+    ) -> Result<usize, String> {
+        let normalized = self.normalize_for_matching(path);
+        if !self.is_allowed(&normalized) {
+            return Err("Path is outside allowed managed roots".into());
+        }
+
+        let target_path = self.host_path_to_container_path(&normalized)?;
+
+        let opts = ApplyOptions {
+            recursive,
+            apply_to_dirs: true,
+            apply_to_files: true,
+            continue_on_error: true,
+            dry_run: false,
+        };
+
+        self.count_tree(&target_path, &opts, progress)
+            .map_err(|e| format!("count failed: {}", e))
+    }
+
+    /// Apply variant that drives the supplied progress atomics (and last_path) and
+    /// honours cancellation. The caller is expected to have set (or let the count set)
+    /// progress.total beforehand for accurate %; if total is still 0 this pass will
+    /// still run and update processed.
+    pub fn apply_permissions_with_progress(
+        &self,
+        path: &Path,
+        owner_uid: u32,
+        group_gid: u32,
+        mode: u32,
+        recursive: bool,
+        progress: &ApplyProgress,
+    ) -> Result<ApplyResult, String> {
+        let normalized = self.normalize_for_matching(path);
+        if !self.is_allowed(&normalized) {
+            return Err("Path is outside allowed managed roots".into());
+        }
+
+        if owner_uid == 0 || group_gid == 0 {
+            return Err("Refusing to set UID or GID 0".into());
+        }
+        if mode & 0o7000 != 0 {
+            return Err("Refusing mode with setuid/setgid/sticky bits".into());
+        }
+
+        let target_path = self.host_path_to_container_path(&normalized)?;
+
+        let opts = ApplyOptions {
+            recursive,
+            apply_to_dirs: true,
+            apply_to_files: true,
+            continue_on_error: true,
+            dry_run: false,
+        };
+
+        self.apply_direct_with_progress(&target_path, owner_uid, group_gid, mode, &opts, progress)
+            .map_err(|e| format!("apply failed: {}", e))
     }
 
     /// host_path (from config/UI) → real path under container_root + share.name.
@@ -235,6 +343,7 @@ impl FsManager {
     ///
     /// All privileged host-mutating operations are routed through `privileged`.
     /// See `privileged.rs` for rationale and security boundary.
+    #[allow(dead_code)]
     fn apply_direct(
         &self,
         path: &Path,
@@ -243,9 +352,21 @@ impl FsManager {
         mode: u32,
         opts: &ApplyOptions,
     ) -> Result<ApplyResult, String> {
-        // WalkDir engine for both modes: non-recursive = dir + immediate files only;
-        // recursive = full subtree (see `should_apply_entry`).
-        self.apply_tree(path, uid, gid, mode, opts)
+        let dummy = ApplyProgress::default();
+        self.apply_direct_with_progress(path, uid, gid, mode, opts, &dummy)
+            .map_err(|e| format!("apply failed: {}", e))
+    }
+
+    fn apply_direct_with_progress(
+        &self,
+        path: &Path,
+        uid: u32,
+        gid: u32,
+        mode: u32,
+        opts: &ApplyOptions,
+        progress: &ApplyProgress,
+    ) -> Result<ApplyResult, String> {
+        self.apply_tree_with_progress(path, uid, gid, mode, opts, progress)
             .map_err(|e| format!("apply failed: {}", e))
     }
 
@@ -266,51 +387,99 @@ impl FsManager {
             || (is_file && opts.apply_to_files && depth == 1)
     }
 
+    /// Count-only tree walk (used by count_applicable_with_live). Increments
+    /// progress.processed as "scanned so far" (for spinner UX), updates last_path,
+    /// and aborts early if cancelled. Does not perform any mutations.
+    fn count_tree(
+        &self,
+        root: &Path,
+        opts: &ApplyOptions,
+        progress: &ApplyProgress,
+    ) -> std::io::Result<usize> {
+        let max_d = if opts.recursive { usize::MAX } else { 1 };
+
+        let walker = WalkDir::new(root)
+            .follow_links(false)
+            .max_depth(max_d)
+            .into_iter()
+            .filter_entry(|e: &DirEntry| {
+                if e.file_type().is_symlink() {
+                    return true;
+                }
+                true
+            });
+
+        let mut count = 0usize;
+        for entry_res in walker {
+            if progress.cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            let entry: DirEntry = match entry_res {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if entry.file_type().is_symlink() {
+                continue;
+            }
+            if Self::should_apply_entry(&entry, opts) {
+                let p = entry.path().to_path_buf();
+                *progress.last_path.lock().expect("last_path mutex poisoned") = Some(p.display().to_string());
+                count += 1;
+                progress.processed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Ok(count)
+    }
+
     /// Core tree-walking permission application using WalkDir (iterative, policy-driven).
+    /// This is the single implementation; the non-progress apply_tree is now a thin
+    /// delegate using a dummy progress (for backward compat with tests + direct callers).
     ///
-    /// Key guarantees:
-    /// - `follow_links(false)` + explicit symlink pruning in filter_entry
-    /// - Never descends symlinks (prevents escape out of the host_path tree)
-    /// - `chown`/`chmod` still follow symlinks for the entries we *do* mutate
-    ///   (matches the documented "follow for chown" policy)
-    /// - Supports apply_to_dirs / apply_to_files, continue_on_error, dry_run
-    fn apply_tree(
+    /// In addition to the classic guarantees, this version:
+    /// - updates all progress atomics (processed/changed/skipped/error_count)
+    /// - records last_path before operating on an entry (for "Cancelled after ..." UX)
+    /// - checks the cancelled flag between entries and aborts the walk early
+    /// - always sets finished=true on the way out
+    fn apply_tree_with_progress(
         &self,
         root: &Path,
         uid: u32,
         gid: u32,
         mode: u32,
         opts: &ApplyOptions,
+        progress: &ApplyProgress,
     ) -> std::io::Result<ApplyResult> {
         let mut result = ApplyResult::default();
 
-        // max_depth: 0 would only yield root in some WalkDir versions; use a large number
-        // when not recursing but still go through the same engine for uniform policy handling.
         let max_d = if opts.recursive { usize::MAX } else { 1 };
 
-        // filter_entry lives on the iterator (IntoIter), not WalkDir itself.
         let walker = WalkDir::new(root)
-            .follow_links(false) // never follow for traversal decisions
+            .follow_links(false)
             .max_depth(max_d)
             .into_iter()
             .filter_entry(|e: &DirEntry| {
-                // Never descend into symlinks, even if they point at directories.
-                // This is the critical safety fix vs. the old Path::is_dir() + read_dir behavior.
                 if e.file_type().is_symlink() {
-                    // Yield the symlink entry itself (so we can count it as skipped)
-                    // but do not descend into whatever it points at.
                     return true;
                 }
                 true
             });
 
         for entry_res in walker {
+            if progress.cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+
             let entry: DirEntry = match entry_res {
                 Ok(e) => e,
                 Err(e) => {
                     let p = e.path().map(|pp| pp.to_path_buf()).unwrap_or_else(|| PathBuf::from("<unknown>"));
                     let msg = e.to_string();
-                    result.errors.push((p, msg));
+                    result.errors.push((p.clone(), msg.clone()));
+                    progress.error_count.fetch_add(1, Ordering::Relaxed);
+                    if let Ok(mut errs) = progress.recent_errors.lock() {
+                        errs.push((p, msg));
+                        if errs.len() > 10 { errs.remove(0); }
+                    }
                     if !opts.continue_on_error {
                         return Err(std::io::Error::other(
                             "aborted on walk error (continue_on_error=false)",
@@ -324,10 +493,8 @@ impl FsManager {
             let ft = entry.file_type();
 
             if ft.is_symlink() {
-                // Explicit policy: skip mutation of symlink inodes themselves for now.
-                // (If a future policy wants lchown on the link, we would branch here and
-                // use a different privileged helper.)
                 result.skipped += 1;
+                progress.skipped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
 
@@ -335,31 +502,65 @@ impl FsManager {
 
             if !should_apply {
                 result.skipped += 1;
+                progress.skipped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
+
+            // Record the path we are about to touch (for cancel reporting)
+            *progress.last_path.lock().expect("last_path mutex poisoned") = Some(p.display().to_string());
 
             if opts.dry_run {
                 result.changed += 1;
+                progress.changed.fetch_add(1, Ordering::Relaxed);
+                progress.processed.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
 
-            // Perform the actual privileged operations (these follow symlinks for the target).
+            // Perform the actual privileged operations.
             if let Err(e) = crate::privileged::chown(&p, uid, gid) {
                 result.errors.push((p.clone(), format!("chown: {}", e)));
+                progress.error_count.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut errs) = progress.recent_errors.lock() {
+                    errs.push((p.clone(), format!("chown: {}", e)));
+                    if errs.len() > 10 { errs.remove(0); }
+                }
                 if !opts.continue_on_error {
                     return Err(e);
                 }
             } else if let Err(e) = crate::privileged::chmod(&p, mode) {
                 result.errors.push((p.clone(), format!("chmod: {}", e)));
+                progress.error_count.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut errs) = progress.recent_errors.lock() {
+                    errs.push((p.clone(), format!("chmod: {}", e)));
+                    if errs.len() > 10 { errs.remove(0); }
+                }
                 if !opts.continue_on_error {
                     return Err(e);
                 }
             } else {
                 result.changed += 1;
+                progress.changed.fetch_add(1, Ordering::Relaxed);
             }
+
+            progress.processed.fetch_add(1, Ordering::Relaxed);
         }
 
+        progress.finished.store(true, Ordering::Relaxed);
         Ok(result)
+    }
+
+    /// Backward-compat thin wrapper for existing call sites and tests.
+    #[allow(dead_code)]
+    fn apply_tree(
+        &self,
+        root: &Path,
+        uid: u32,
+        gid: u32,
+        mode: u32,
+        opts: &ApplyOptions,
+    ) -> std::io::Result<ApplyResult> {
+        let dummy = ApplyProgress::default();
+        self.apply_tree_with_progress(root, uid, gid, mode, opts, &dummy)
     }
 
     pub(crate) fn is_allowed(&self, path: &Path) -> bool {

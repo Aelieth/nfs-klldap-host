@@ -29,8 +29,8 @@ pub use keytab::compute_keytab_alert;
 // port of the large test module as mechanical as possible).
 pub(crate) use auth::{login, login_page, logout, require_auth, setup_password};
 pub(crate) use permission_tree::{
-    apply_permissions, dir_editor, dir_meta, fs_children, index, search_groups, search_users,
-    tree_fragment,
+    apply_permissions, apply_progress, cancel_apply, dir_editor, dir_meta, fs_children, index,
+    search_groups, search_users, tree_fragment,
 };
 pub(crate) use settings::{
     clear_ldap_cache, lldap_status, reload_nfs_client, settings_page,
@@ -63,6 +63,10 @@ pub struct AppState {
     /// the expected NFS service principal. Computed once at startup.
     /// Set when the on-disk keytab does not match; omitted from the UI when `None`.
     pub keytab_alert: Option<String>,
+    /// Shared state for an in-flight (recursive or non-recursive) permission apply.
+    /// Populated when /apply starts the background task; read by /apply-progress for the
+    /// live Apply Log (with XXXX/XXXX + spinner while estimating) and by cancel_apply.
+    pub apply_progress: Arc<Mutex<Option<Arc<crate::fs::ApplyProgress>>>>,
 }
 
 /// Assembles all routes (public + protected).
@@ -85,6 +89,8 @@ pub fn router(state: AppState) -> Router {
         .route("/users/search", get(search_users))
         .route("/groups/search", get(search_groups))
         .route("/apply", post(apply_permissions))
+        .route("/apply-progress", get(apply_progress))
+        .route("/cancel-apply", post(cancel_apply))
 
         // === Protected: System Settings + LLDAP client management ===
         .route("/settings", get(settings_page))
@@ -176,6 +182,7 @@ mod tests {
             keytab_hostname: "test-host".to_string(),
             keytab_realm: "EXAMPLE.COM".to_string(),
             keytab_alert: None,
+            apply_progress: Arc::new(Mutex::new(None)),
         };
 
         (state, tmp)
@@ -569,10 +576,18 @@ ldap_default_authtok = "sekret"
         // returns a friendly 200 error box. If it somehow succeeds we also accept 200.
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body_str = String::from_utf8_lossy(&body);
-        // Either a success meta fragment or the "Apply failed" error box from the handler.
+        // With the async apply path the immediate response is the applying placeholder
+        // (dir-meta-inner + data-applying) + oob Apply Log status (contains the Command).
+        // The final Result text and real meta arrive later via the poller + final /dir-meta.
+        // The old sync "Result:" or "dir-meta" (final) may appear for the oob status or in
+        // other code paths; we accept the new applying shape as success for the test.
         assert!(
-            body_str.contains("dir-meta") || body_str.contains("Apply failed") || body_str.contains("Result:"),
-            "response should be a meta refresh or an error box, not a deserializer panic page"
+            body_str.contains("dir-meta") ||
+            body_str.contains("Apply failed") ||
+            body_str.contains("Result:") ||
+            body_str.contains("data-applying") ||
+            body_str.contains("Applying permissions"),
+            "response should be a meta/apply-status or the new applying placeholder, not a deserializer panic page"
         );
     }
 }

@@ -35,9 +35,14 @@
 </div>
 
 <!-- Apply Log box: permanently attached bottom-right (fixed), shows last permission apply command+result.
-     Populated via hx-swap-oob from the /apply POST response. Stays visible across share switches. -->
+     Populated via hx-swap-oob from the /apply POST response and from /apply-progress polling.
+     Stays visible across share switches. The Cancel button on the right is normally muted;
+     it activates (red, clickable) only while an apply (rec or non-rec) is in flight. -->
 <div id="apply-status" class="apply-status" style="display:block;">
-    <div style="font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">Apply Log</div>
+    <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">
+      <span>Apply Log</span>
+      <button type="button" disabled style="font-size:0.65em; padding:1px 6px; border:1px solid #aaa; color:#888; opacity:0.6; border-radius:2px;">Cancel Apply</button>
+    </div>
     <div id="apply-status-content" class="apply-status-content"
          style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
         <em style="color:var(--text-light);">No permission applies yet.</em>

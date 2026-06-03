@@ -740,7 +740,7 @@ mod tests {
         assert_eq!(node.children[0].name, "subdir");
     }
 
-    // === New tests for the 2026 audit + improvements ===
+    // Additional policy + translation tests:
 
     #[test]
     fn host_path_to_container_path_exact_and_subpath() {

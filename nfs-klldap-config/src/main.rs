@@ -12,7 +12,7 @@ use nfs_klldap_config::{
 
 fn usage() {
     eprintln!(
-        "nfs-klldap-config v0.5 — type-safe config tool for nfs-klldap-host
+        "nfs-klldap-config v0.7 — type-safe config tool for nfs-klldap-host
 
 Usage:
   nfs-klldap-config init     --config <path>
@@ -20,7 +20,7 @@ Usage:
   nfs-klldap-config validate --config <path>
 
 Companion binary:
-  nfs-klldap-startup         (guided container startup / orchestration — replaces most of entrypoint.sh logic over time)
+  nfs-klldap-startup         (guided container startup / orchestration TUI; entrypoint.sh calls it for 4-step readiness)
 
 The binaries are intended to be called by the container entrypoint and the host UI."
     );
@@ -109,7 +109,7 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
             cfg.effective_hostname()
         );
 
-        // NEW: Show the two-tier confirmed runtime value (primary + secondary must agree).
+        // Show the two-tier confirmed runtime value (primary + secondary must agree).
         // This is the value the TUI and WebUI will actually use for keytab reminders
         // when no [server] hostname override is present. Useful for CI / sanity checks
         // that the same name is seen by nfs-klldap-config, nfs-klldap-startup, and nfs-klldap-ui.

@@ -55,7 +55,7 @@ fn main() {
 
 fn print_help() {
     eprintln!(
-        "nfs-klldap-startup — guided container bring-up (replaces most of entrypoint.sh logic)
+        "nfs-klldap-startup — guided container bring-up (4-step TUI; entrypoint orchestrates services)
 
 Usage:
   nfs-klldap-startup run      Run the full guided 4-step waiting TUI until ready
@@ -310,7 +310,7 @@ enum StartupStep {
 }
 
 fn print_header(config_path: &Path) {
-    // NEW: Two-tier consistent retrieval (hostname command + /proc confirmation).
+    // Two-tier consistent retrieval (hostname command + /proc confirmation).
     // Both sources must agree. If they don't, we surface a loud, actionable error.
     let (hostname, consistency_note) = match get_consistent_hostname() {
         Ok(c) => (c.hostname, " (confirmed by `hostname` + /proc)".to_string()),

@@ -32,7 +32,7 @@
     <em>Loading NFS client status…</em>
 </div>
 
-<h3>Structured Editor (top fields + shares)</h3>
+<h3>Structured Editor (common top fields; shares as blank rows for add/replace)</h3>
 <form method="post" action="/settings/save" style="max-width: 920px;">
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
         <label>ldap_uri<br><input name="ldap_uri" style="width:100%" placeholder="ldaps://kllap.example.com:6360"></label>
@@ -64,14 +64,14 @@
         sssd.ldap_id_use_start_tls (only for plain ldap:// + STARTTLS)
     </label>
     <label style="display:block; margin:4px 0;">
-        <input type="checkbox" name="sssd_enumerate" value="true" checked>
-        sssd.enumerate (recommended True for small LLDAP environments during bring-up)
+        <input type="checkbox" name="sssd_enumerate" value="true">
+        sssd.enumerate (default false; do NOT enable casually on KLLDAP — high load/attribute noise)
     </label>
 
     <h4 style="margin-top:1rem">Shares</h4>
     <div id="shares-container">
-        <!-- Existing shares would be rendered here in a fuller version -->
-        <!-- For this step we provide blank rows + JS add -->
+        <!-- Shares editor is intentionally minimal: always blank rows (no pre-pop of current).
+             Submitting replaces [[shares]] if any rows filled; use Raw TOML for full edit. -->
         <div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
             <input name="share_name_0" placeholder="name" style="width:130px">
             <input name="share_host_0" placeholder="host_path" style="flex:1">

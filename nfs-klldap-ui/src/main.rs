@@ -87,7 +87,7 @@ async fn main() {
     }
 
     // Startup banner: keytab hostname requirement.
-    // NEW: Use the two-tier consistent value (hostname command + /proc). Both sources
+    // Use the two-tier consistent value (hostname command + /proc). Both sources
     // must agree, otherwise we emit the full rich diagnostic before the normal reminder.
     let keytab_host = if let Some(h) = &config.server.hostname {
         if !h.trim().is_empty() {

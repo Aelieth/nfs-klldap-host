@@ -47,10 +47,12 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | Behavior | Tests |
 |----------|--------|
 | `ldap_service_creds` (verbatim DN, env override) | `nfs-klldap-ui/src/config.rs` |
-| `all_managed_roots` / `is_allowed` | `config.rs`, `fs.rs` |
-| Generated sssd.conf shape | `nfs-klldap-config/src/lib.rs` |
-| Hostname consistency + keytab variants | `hostname.rs`, `lib.rs` |
-| Keytab status message | `nfs-klldap-ui/src/web/keytab.rs` |
-| Axum settings/apply/auth | `nfs-klldap-ui/src/web/mod.rs` |
+| `all_managed_roots` / `is_allowed` + host<->container path mapping | `nfs-klldap-ui/src/config.rs`, `fs.rs` |
+| Generated sssd.conf shape + no dups + tls options | `nfs-klldap-config/src/lib.rs` |
+| Hostname consistency + keytab variants + docker-id detection | `nfs-klldap-config/src/hostname.rs`, `lib.rs` |
+| Keytab status message / alert | `nfs-klldap-ui/src/web/keytab.rs` |
+| Axum settings/apply/auth + login flows + cookie policy + empty-uid apply | `nfs-klldap-ui/src/web/mod.rs` (and sub) |
+| ApplyOptions (continue, dry, recursive policy, symlink skip) + WalkDir safety | `nfs-klldap-ui/src/fs.rs` |
+| Ldap list filters, normalize query, cache behavior (unit) | `nfs-klldap-ui/src/ldap.rs` (list_search_tests) |
 
-Documentation and tests should be updated together when behavior changes.
+Documentation and tests should be updated together when behavior changes. (See also fs.rs symlink policy comments and privileged.rs boundary.)

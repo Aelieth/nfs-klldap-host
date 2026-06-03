@@ -18,11 +18,6 @@ When you want the tool to be directly accessible without a reverse proxy, we can
    - The container (via its watcher or SIGHUP) picks up any share/config changes and regenerates Ganesha exports.
 4. UI shows success + refreshed current state from filesystem.
 
-## Open Decisions / Next Steps
+Current: lazy 1-level tree expand, inline dir meta+editor (no separate panel), live async apply with progress/cancel + oob Apply Log, HTMX fragments.
 
-- Exact styling (Tailwind via CDN for maximum simplicity?).
-- How deep to make the tree (lazy load subdirectories?).
-- Whether to show a "dry-run / preview" of the exact chown/chmod commands before applying.
-- Multi-user support for the UI (who made the last change?).
-
-This design stays true to "small program" while giving the visual, friendly experience you described.
+See source `web/permission_tree.rs`, `fs.rs` (ApplyOptions/ApplyProgress), templates for implemented UX. The original "open decisions" list is historical; lazy tree + direct apply are live.

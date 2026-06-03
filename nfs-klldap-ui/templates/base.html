@@ -160,10 +160,12 @@
             padding: 2px 8px;
             margin: 4px 0 8px;
             border-radius: 3px;
+            max-width: 640px;  /* Edit Mode banner width; gives room for Permissions on same line in editor */
         }
         .suggestions { max-height: 320px; } /* room for 25 items + scroll */
 
-        /* Compact, aesthetically pleasing permissions meta row (shortened width) */
+        /* Compact, aesthetically pleasing permissions meta row (shortened width).
+           Kept narrow enough to avoid running into the fixed bottom-right Apply Log. */
         .dir-meta-inner {
             display: flex;
             align-items: center;
@@ -172,7 +174,7 @@
             font-size: 0.81em;
             color: var(--text);
             margin: 3px 0 5px 0.1em;
-            max-width: 480px;           /* shortened for better aesthetics */
+            max-width: 640px;           /* edit mode width; gives room for "Permissions" on same line */
             background: var(--card-bg);
             border: 1px solid var(--border);
             border-radius: 4px;
@@ -224,10 +226,29 @@
             border-color: var(--accent);
         }
 
-        /* Themed container for the dynamic permission editor form */
+        /* Themed container for the dynamic permission editor form.
+           Constrained width to stay clear of the Apply Log (bottom-right). */
         .dir-edit-form {
             background: var(--card-bg);
             border: 1px solid var(--border);
+            max-width: 640px;
+            box-sizing: border-box;
+        }
+
+        /* Slightly larger interactive elements in the edit form and Apply Log, per request.
+           Checkbox scaled for visibility; buttons get a bit more font/padding. */
+        .dir-edit-form input[type="checkbox"] {
+            transform: scale(1.15);
+            margin-right: 3px;
+            vertical-align: middle;
+        }
+        .dir-edit-form button {
+            font-size: 0.82em !important;
+            padding: 3px 10px !important;
+        }
+        .apply-status button {
+            font-size: 0.72em !important;
+            padding: 2px 8px !important;
         }
 
         /* Better contrast for headings and small text in dark mode */

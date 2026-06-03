@@ -617,9 +617,9 @@ pub(crate) async fn apply_permissions(
 /// When !active_cancel we also emit data-apply-finished so the JS poller listener can stop itself.
 fn render_apply_status_oob(cmd: &str, result_or_live: &str, active_cancel: bool) -> String {
     let cancel_btn = if active_cancel {
-        r#"<button type="button" onclick="if (window.cancelCurrentApply) window.cancelCurrentApply();" style="font-size:0.65em; padding:1px 6px; border:1px solid #c33; color:#c33; background:#fff5f5; border-radius:2px; cursor:pointer;">Cancel Apply</button>"#
+        r#"<button type="button" onclick="if (window.cancelCurrentApply) window.cancelCurrentApply();" style="font-size:0.72em; padding:2px 8px; border:1px solid #c33; color:#c33; background:#fff5f5; border-radius:2px; cursor:pointer;">Cancel Apply</button>"#
     } else {
-        r#"<button type="button" disabled style="font-size:0.65em; padding:1px 6px; border:1px solid #aaa; color:#888; opacity:0.6; border-radius:2px;">Cancel Apply</button>"#
+        r#"<button type="button" disabled style="font-size:0.72em; padding:2px 8px; border:1px solid #aaa; color:#888; opacity:0.6; border-radius:2px;">Cancel Apply</button>"#
     };
     let finished_attr = if !active_cancel { r#"data-apply-finished="true""# } else { "" };
     format!(
@@ -684,7 +684,7 @@ pub(crate) async fn apply_progress(
             r#"<div id="apply-status" hx-swap-oob="true" class="apply-status" style="display:block;">
     <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">
       <span>Apply Log</span>
-      <button type="button" disabled style="font-size:0.65em; padding:1px 6px; border:1px solid #aaa; color:#888; opacity:0.6; border-radius:2px;">Cancel Apply</button>
+      <button type="button" disabled style="font-size:0.72em; padding:2px 8px; border:1px solid #aaa; color:#888; opacity:0.6; border-radius:2px;">Cancel Apply</button>
     </div>
     <div class="apply-status-content" style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
 <em style="color:var(--text-light);">No permission apply in progress.</em>

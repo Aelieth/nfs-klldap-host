@@ -27,6 +27,7 @@
             --accent-light: #d0e8ff;
             --input-bg: #ffffff;
             --input-border: #ccc;
+            --input-bg-disabled: #f4f4f4;
             --card-bg: #f8fbff;
             --warning-bg: #fff3cd;
             --warning-border: #ffecb5;
@@ -62,6 +63,7 @@
                 --accent-light: #1e3a5f;
                 --input-bg: #2a2a2a;
                 --input-border: #555555;
+                --input-bg-disabled: #1f1f1f;
                 --card-bg: #252b35;
                 --warning-bg: #332200;
                 --warning-border: #665200;
@@ -97,6 +99,7 @@
             --accent-light: #1e3a5f;
             --input-bg: #2a2a2a;
             --input-border: #555555;
+            --input-bg-disabled: #1f1f1f;
             --card-bg: #252b35;
             --warning-bg: #332200;
             --warning-border: #665200;
@@ -130,6 +133,7 @@
             --accent-light: #d0e8ff;
             --input-bg: #ffffff;
             --input-border: #ccc;
+            --input-bg-disabled: #f4f4f4;
             --card-bg: #f8fbff;
             --warning-bg: #fff3cd;
             --warning-border: #ffecb5;
@@ -166,6 +170,14 @@
             background: var(--input-bg);
             color: var(--text);
             border: 1px solid var(--input-border);
+        }
+
+        /* Inactive/derived fields (override checkbox unchecked) use a dimmer bg in both themes.
+           JS only toggles the native disabled attr; this rule + --input-bg-disabled var provides
+           the correct (lower-brightness) look, especially in dark mode where #fafafa was glaring. */
+        input:disabled, select:disabled {
+            background-color: var(--input-bg-disabled);
+            opacity: 0.65;
         }
 
         button {
@@ -262,6 +274,21 @@
         .mode-hint {
             color: var(--text-light);
             font-size: 0.85em;
+        }
+
+        /* Chunked sections on the settings page for better differentiation (addresses overwhelming flat form).
+           Uses existing --card-bg (subtle blue tint in light, #252b35 in dark) + border. */
+        .settings-group {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            padding: 8px 10px;
+            margin: 8px 0;
+        }
+        .settings-group h4 {
+            margin: 0 0 6px;
+            font-size: 0.9em;
+            color: var(--text-muted);
         }
 
         /* === New tree meta + edit mode styles (inline permissions refactor) === */

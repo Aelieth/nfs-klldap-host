@@ -1,4 +1,4 @@
-//! `/settings`: raw + structured TOML editor, LLDAP reload, cache clear (HTMX).
+//! `/settings`: raw + structured TOML editor (settings + separate shares), LLDAP reload, cache clear (HTMX).
 
 use askama::Template;
 use axum::{
@@ -77,7 +77,8 @@ pub(crate) struct RawSaveForm {
     raw_content: String,
 }
 
-// Structured form for the common editable parts of nfs-klldap.conf
+// Structured form for the common editable parts of nfs-klldap.conf.
+// (Also reused for /save-shares POSTs; only the share_* keys in the flatten extra matter for that path.)
 #[derive(Deserialize, Debug, Default)]
 pub(crate) struct StructuredSettingsForm {
     // Top level
@@ -128,6 +129,7 @@ pub(crate) struct StructuredSettingsForm {
 // === Internal helper types ===
 
 /// Internal row representation for the share editor form (used during collect from POST).
+/// Used by both the (now settings-only) structured save and the dedicated shares save.
 #[derive(Debug, Clone)]
 struct ShareFormRow {
     idx: usize,
@@ -450,7 +452,6 @@ fn make_settings_success_template(
 fn apply_structured_form_to_toml_doc(
     form: &StructuredSettingsForm,
     doc: &mut toml_edit::DocumentMut,
-    new_shares: &[nfs_klldap_config::Share],
 ) {
     if let Some(v) = &form.ldap_uri {
         doc["ldap_uri"] = toml_edit::value(v.clone());
@@ -637,7 +638,13 @@ fn apply_structured_form_to_toml_doc(
             tbl["default_security"] = toml_edit::value("krb5p");
         }
     }
+}
 
+/// Write (or replace) only the [[shares]] array in the raw TOML doc.
+/// Used exclusively by the dedicated shares-save path so that saving shares
+/// never touches [sssd], [server], etc. (and vice-versa for settings save).
+/// Mirrors the emission that used to live inside apply_structured_form_to_toml_doc.
+fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_klldap_config::Share]) {
     // Shares: submitted rows (now pre-populated on load) are always authoritative.
     // We replace [[shares]] even if the submitted list is empty (user explicitly removed all rows).
     let mut shares = toml_edit::ArrayOfTables::new();
@@ -725,9 +732,68 @@ pub(crate) async fn settings_save_structured(
 
     apply_structured_form_to_config(&form, &mut cfg);
 
-    // Always take the submitted shares rows as authoritative (pre-population means a no-op submit
-    // re-sends the current list; removing rows in the UI produces a shorter list = delete).
+    // Note: shares are *not* collected or touched here. The dedicated /settings/save-shares
+    // path (and its form) is the only thing that mutates [[shares]]. This ensures a
+    // "Save Settings" cannot overwrite custom shares (or their comments) in the raw TOML.
+    if let Err(e) = cfg.validate_and_derive() {
+        let msg = format!("Validation error: {}", e);
+        let tpl = make_settings_error_template(
+            Some(user.0.clone()),
+            &state.config_path,
+            msg,
+            state.keytab_hostname.clone(),
+            state.keytab_realm.clone(),
+            state.keytab_alert.clone(),
+        );
+        return Ok(Html(tpl.render().unwrap()));
+    }
+
+    let original_text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+    let mut doc = original_text
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap_or_default();
+
+    apply_structured_form_to_toml_doc(&form, &mut doc);
+
+    let text = doc.to_string();
+    if let Err(msg) = atomic_write_config(&state.config_path, &text) {
+        let tpl = make_settings_error_template(
+            Some(user.0.clone()),
+            &state.config_path,
+            msg,
+            state.keytab_hostname.clone(),
+            state.keytab_realm.clone(),
+            state.keytab_alert.clone(),
+        );
+        return Ok(Html(tpl.render().unwrap()));
+    }
+
+    let tpl = make_settings_success_template(
+        Some(user.0),
+        &state.config_path,
+        "Structured settings saved (shares left untouched in TOML). Container will regenerate configs shortly.".into(),
+        state.keytab_hostname.clone(),
+        state.keytab_realm.clone(),
+        state.keytab_alert.clone(),
+    );
+    Ok(Html(tpl.render().unwrap()))
+}
+
+/// Dedicated handler for the separate Shares form.
+/// Only mutates the [[shares]] array in the on-disk TOML (via apply_shares_to_toml_doc);
+/// never re-applies or rewrites any [sssd], [server], ldap_uri, etc. keys.
+/// Validation is still performed (shares validation lives in validate_and_derive).
+pub(crate) async fn settings_save_shares(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<StructuredSettingsForm>,
+) -> Result<impl IntoResponse, Redirect> {
+    let user = require_auth(&state, &headers).await?;
+
+    // Collect only from the share_* indexed fields in the flatten extra (other form fields absent/None).
     let new_shares = collect_shares_from_structured_form(&form.extra);
+
+    let mut cfg = nfs_klldap_config::NfsKlldapConfig::load(&state.config_path).unwrap_or_default();
     cfg.shares = new_shares.clone();
 
     if let Err(e) = cfg.validate_and_derive() {
@@ -748,7 +814,7 @@ pub(crate) async fn settings_save_structured(
         .parse::<toml_edit::DocumentMut>()
         .unwrap_or_default();
 
-    apply_structured_form_to_toml_doc(&form, &mut doc, &new_shares);
+    apply_shares_to_toml_doc(&mut doc, &new_shares);
 
     let text = doc.to_string();
     if let Err(msg) = atomic_write_config(&state.config_path, &text) {
@@ -766,7 +832,7 @@ pub(crate) async fn settings_save_structured(
     let tpl = make_settings_success_template(
         Some(user.0),
         &state.config_path,
-        "Structured settings saved. Container will regenerate configs shortly.".into(),
+        "Shares saved (SSSD and other sections left untouched in TOML). Container will regenerate configs shortly.".into(),
         state.keytab_hostname.clone(),
         state.keytab_realm.clone(),
         state.keytab_alert.clone(),

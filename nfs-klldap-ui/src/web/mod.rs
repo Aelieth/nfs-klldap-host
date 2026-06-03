@@ -284,6 +284,47 @@ ldap_default_authtok = "sekret"
         assert!(written.contains("default_security = \"krb5p\""), "ganesha must default to krb5p and be materialized when not overridden");
     }
 
+    #[tokio::test]
+    async fn settings_save_shares_keeps_export_blank_when_omitted() {
+        let (state, _tmp) = make_test_state_with_temp_config();
+        let config_path = state.config_path.clone();
+        let auth = state.auth.clone();
+        let token = auth.create_privileged_session("testadmin");
+        let app = router(state);
+
+        // Save share with empty export field (optional pseudo path).
+        let body = "share_name_0=data&share_host_0=%2Ftmp%2Fdata&share_export_0=&share_rw_0=true&share_sync_0=on";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/settings/save-shares")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let written = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            !written.contains("export_path"),
+            "omitted export must not be written to TOML"
+        );
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body_bytes.to_vec()).unwrap();
+        assert!(
+            !html.contains("share_export_0\" value=\"/data\""),
+            "derived /data must not auto-fill the export input after save"
+        );
+        assert!(
+            html.contains("share_export_0\" value=\"\""),
+            "export input should stay empty when not set in TOML"
+        );
+    }
+
     /// Exercises the complete localhost first-run + normal login + session + protected route flow.
     /// This is the primary self-contained authentication path that does not require a live LLDAP.
     ///

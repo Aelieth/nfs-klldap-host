@@ -181,6 +181,24 @@ fn get_explicit_str(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> O
     val.and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
+/// Export path for the shares editor: only when `export_path` is explicit in raw [[shares]].
+/// Derived defaults from validate_and_derive (e.g. `/{name}`) must not appear in the form.
+fn share_export_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize) -> String {
+    let Some(arr) = doc.get("shares").and_then(|s| s.as_array_of_tables()) else {
+        return String::new();
+    };
+    let Some(tbl) = arr.get(idx) else {
+        return String::new();
+    };
+    if tbl.get("export_path").is_none() {
+        return String::new();
+    }
+    tbl.get("export_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_default()
+}
+
 /// Build a fully-populated SettingsTemplate by reading the current on-disk config.
 /// This is the source of truth for pre-filling the structured editor (including shares).
 /// Used for initial page load and after raw/structured save (success or error).
@@ -210,7 +228,7 @@ fn build_settings_template(
             idx,
             name: s.name.clone(),
             host_path: s.host_path.display().to_string(),
-            export_path: s.export_path.clone().unwrap_or_default(),
+            export_path: share_export_path_from_raw(&doc, idx),
             security: s.security.clone().unwrap_or_default(),
             rw: s.rw.unwrap_or(true),
             root_squash: s.squash.as_deref() == Some("root_squash"),

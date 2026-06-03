@@ -62,6 +62,11 @@ default_security = "krb5p"   # krb5p (recommended) | krb5i | krb5
 # [[shares]]
 # name = "movies"
 # host_path = "/home/user/nfs-data/movies"
+# # export_path = "/movies"   # optional; if absent, generator derives "/" + name
+# # security = "krb5p"        # optional per-share override (krb5p|krb5i|krb5); default from [ganesha]
+# rw = true                 # default RW; set false for RO (or use UI dropdown)
+# # squash omitted means no_root_squash; UI has "root_squash" checkbox to set "root_squash"
+# # sync omitted means true (safer synchronous writes); set false to disable
 "#
     .to_string()
 }

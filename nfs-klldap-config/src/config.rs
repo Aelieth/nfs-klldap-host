@@ -286,6 +286,9 @@ pub struct Share {
     pub security: Option<String>,
     pub rw: Option<bool>,
     pub squash: Option<String>,
+    /// Whether to use synchronous writes for this share (default true for safety).
+    /// If None or true, the key is typically omitted from nfs-klldap.conf (default behavior).
+    pub sync: Option<bool>,
 }
 
 impl Default for Share {
@@ -297,6 +300,7 @@ impl Default for Share {
             security: None,
             rw: Some(true),
             squash: Some("no_root_squash".to_string()),
+            sync: Some(true),
         }
     }
 }

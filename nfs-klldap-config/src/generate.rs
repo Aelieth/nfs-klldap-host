@@ -416,6 +416,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         let sec = share.security.as_deref().unwrap_or(default_sec);
         let access = if share.rw.unwrap_or(true) { "RW" } else { "RO" };
         let squash = share.squash.as_deref().unwrap_or("no_root_squash");
+        let sync = if share.sync.unwrap_or(true) { "true" } else { "false" };
 
         let block = format!(
             r#"# Generated from nfs-klldap.conf share "{}"
@@ -428,13 +429,14 @@ EXPORT {{
     Protocols = 4;
     Transports = TCP;
     Squash = {};
+    Sync = {};
 
     FSAL {{
         Name = VFS;
     }}
 }}
 "#,
-            share.name, export_id, path, pseudo, access, sec, squash
+            share.name, export_id, path, pseudo, access, sec, squash, sync
         );
 
         let filename = format!("{:02}-{}.conf", i + 10, sanitize_name(&share.name));

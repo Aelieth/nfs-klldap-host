@@ -137,6 +137,9 @@ struct ShareFormRow {
     host: String,
     export_path: Option<String>,
     security: Option<String>,
+    rw: bool,
+    root_squash: bool,
+    sync: bool,
 }
 
 /// Template row for server-rendered shares in the structured editor (string values for simple Askama rendering).
@@ -147,6 +150,9 @@ struct ShareTemplateRow {
     host_path: String,
     export_path: String,
     security: String,
+    rw: bool,
+    root_squash: bool,
+    sync: bool,
 }
 
 /// Returns true if `key` is explicitly present in the (raw, pre-derive) TOML source.
@@ -159,7 +165,7 @@ fn has_explicit(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> bool 
     } else {
         doc.get(section)
             .and_then(|i| i.as_table())
-            .map_or(false, |t| t.get(key).is_some())
+            .is_some_and(|t| t.get(key).is_some())
     }
 }
 
@@ -206,6 +212,9 @@ fn build_settings_template(
             host_path: s.host_path.display().to_string(),
             export_path: s.export_path.clone().unwrap_or_default(),
             security: s.security.clone().unwrap_or_default(),
+            rw: s.rw.unwrap_or(true),
+            root_squash: s.squash.as_deref() == Some("root_squash"),
+            sync: s.sync.unwrap_or(true),
         })
         .collect();
     let next_share_idx = current_shares.len();
@@ -243,7 +252,7 @@ fn build_settings_template(
         // Combined with the writer always ensuring "krb5p" when !override, this keeps the
         // default materialized in the conf without the checkbox appearing "stuck" on for the default.
         override_ganesha_default_security: get_explicit_str(&doc, "ganesha", "default_security")
-            .map_or(false, |v| v != "krb5p"),
+            .is_some_and(|v| v != "krb5p"),
         override_sssd_search_base: has_explicit(&doc, "sssd", "ldap_search_base"),
         override_sssd_user_base: has_explicit(&doc, "sssd", "ldap_user_search_base"),
         override_sssd_group_base: has_explicit(&doc, "sssd", "ldap_group_search_base"),
@@ -279,18 +288,27 @@ fn collect_shares_from_structured_form(
                 let export_path = extra
                     .get(&format!("share_export_{}", idx))
                     .cloned()
-                    .filter(|s| !s.trim().is_empty())
-                    .or_else(|| Some(format!("/{}", name)));
+                    .filter(|s| !s.trim().is_empty());
+                // no auto-fill: leave None so it stays optional/blank in the raw toml
                 let security = extra
                     .get(&format!("share_security_{}", idx))
                     .cloned()
                     .filter(|s| !s.trim().is_empty());
+                let rw = extra
+                    .get(&format!("share_rw_{}", idx))
+                    .map(|v| v.trim() == "true")
+                    .unwrap_or(true);
+                let root_squash = extra.contains_key(&format!("share_root_squash_{}", idx));
+                let sync = extra.contains_key(&format!("share_sync_{}", idx));
                 share_rows.push(ShareFormRow {
                     idx,
                     name,
                     host,
                     export_path,
                     security,
+                    rw,
+                    root_squash,
+                    sync,
                 });
             }
         }
@@ -304,8 +322,13 @@ fn collect_shares_from_structured_form(
             host_path: PathBuf::from(r.host),
             export_path: r.export_path,
             security: r.security,
-            rw: Some(true),
-            squash: Some("no_root_squash".to_string()),
+            rw: Some(r.rw),
+            squash: if r.root_squash {
+                Some("root_squash".to_string())
+            } else {
+                None // omit default so it doesn't get written to raw toml
+            },
+            sync: Some(r.sync),
         })
         .collect()
 }
@@ -658,9 +681,20 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
         if let Some(sec) = &s.security {
             t["security"] = toml_edit::value(sec.clone());
         }
-        t["rw"] = toml_edit::value(s.rw.unwrap_or(true));
+        // Only persist non-defaults in the source TOML (keeps conf clean; generator
+        // always applies the effective default when the key is absent).
+        let rw = s.rw.unwrap_or(true);
+        if !rw {
+            t["rw"] = toml_edit::value(false);
+        }
         if let Some(sq) = &s.squash {
-            t["squash"] = toml_edit::value(sq.clone());
+            if sq != "no_root_squash" {
+                t["squash"] = toml_edit::value(sq.clone());
+            }
+        }
+        let sync = s.sync.unwrap_or(true);
+        if !sync {
+            t["sync"] = toml_edit::value(false);
         }
         shares.push(t);
     }

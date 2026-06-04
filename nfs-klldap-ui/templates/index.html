@@ -15,12 +15,12 @@
                  data-nfs-path="{{ share.nfs_path }}"
                  data-host-path="{{ share.host_path }}"
                  onclick="selectShareFromCard(this)">
-                <strong>{{ share.name }}</strong><br>
-                <small style="color: var(--text-muted);">NFS: <code>{{ share.nfs_path }}</code></small><br>
-                <small style="color: var(--text-muted);">Host: <code>{{ share.host_path }}</code></small>
-                <div style="margin-top: 3px; font-size: 0.68em; color: var(--text-muted);">
-                    {{ share.access }} • {{ share.squash_label }} • {{ share.sync_label }} • {{ share.cache_profile }}
-                </div>
+                <strong>{{ share.name }}</strong>
+                <span style="margin-left: 0.85em; font-size: 0.76em; color: var(--text-muted); white-space: nowrap;">
+                    {{ share.access }} · {{ share.squash_label }} · {{ share.sync_label }} · {{ share.cache_profile }}
+                </span><br>
+                <small style="color: var(--text-muted); display: block; margin-top: 2px;">NFS: <code>{{ share.nfs_path }}</code></small>
+                <small style="color: var(--text-muted); display: block;">Host: <code>{{ share.host_path }}</code></small>
             </div>
         {% endfor %}
     </div>

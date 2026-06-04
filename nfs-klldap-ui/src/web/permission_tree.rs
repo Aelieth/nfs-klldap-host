@@ -221,9 +221,9 @@ pub(crate) async fn index(
             let nfs_path = format!("{}:{}", server, pseudo);
 
             let access = if s.rw.unwrap_or(true) {
-                "RW".to_string()
+                "rw".to_string()
             } else {
-                "RO".to_string()
+                "ro".to_string()
             };
 
             let root_squash = s.squash.as_deref() == Some("root_squash");
@@ -243,7 +243,8 @@ pub(crate) async fn index(
                 .cache_profile
                 .clone()
                 .filter(|v| !v.trim().is_empty())
-                .unwrap_or_else(|| "Default".to_string());
+                .unwrap_or_else(|| "Default".to_string())
+                .to_lowercase();
 
             ShareInfo {
                 name: s.name.clone(),

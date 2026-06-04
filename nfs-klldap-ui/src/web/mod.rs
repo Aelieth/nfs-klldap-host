@@ -585,8 +585,8 @@ ldap_default_authtok = "sekret"
             "share card must include Host: label"
         );
         assert!(
-            body_str.contains("RW • no-squash • sync • Default"),
-            "share card must render the compact RW/squash/sync/cache labels (using defaults from test config)"
+            body_str.contains("rw · no-squash · sync · default"),
+            "share card must render the compact rw/squash/sync/cache labels (using defaults from test config)"
         );
 
         // /dir-meta should succeed and return a fragment containing the path

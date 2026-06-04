@@ -1,6 +1,6 @@
 # Architecture
 
-Single TOML (`nfs-klldap.conf`) is the source of truth. `nfs-klldap-config` validates + generates sssd.conf, krb5.conf, ganesha exports. `entrypoint.sh` + watcher drive reloads. `nfs-klldap-ui` (9630) edits the TOML and performs direct chown/chmod on bind mounts as root. Ganesha + SSSD (LLDAP POSIX) serve NFSv4. No kernel NFS on the host.
+Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+derives+generates sssd/krb5/ganesha fragments. entrypoint (pid1) + watcher (SIGHUP) + ganesha-ctl handle reloads/bounces. nfs-klldap-ui (9630 HTTPS) edits TOML + direct chown/chmod (root, on allowed host_path trees). Ganesha VFS + SSSD (from LLDAP POSIX) serve NFSv4 krb5. No host kernel NFS.
 
 ## Key Contracts
 

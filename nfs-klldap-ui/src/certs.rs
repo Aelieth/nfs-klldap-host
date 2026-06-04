@@ -1,10 +1,5 @@
-//! WebUI TLS certificate handling (restored axum-server path).
-//!
-//! Supports:
-//! - Externally provided certificates via WEBUI_TLS_CERT + WEBUI_TLS_KEY env vars.
-//! - Automatic self-signed certificate generation when no certs are present.
-//!
-//! This restores the original direct HTTPS serving capability using axum-server.
+//! Ensure WebUI TLS: env override (WEBUI_TLS_*) or self-signed via rcgen (SANs: host+localhost).
+//! Self-signed written to stable /var/lib/... path (0600 key).
 
 use std::path::{Path, PathBuf};
 
@@ -28,12 +23,7 @@ pub struct TlsPaths {
     pub key: PathBuf,
 }
 
-/// Ensure valid WebUI TLS certificates exist.
-///
-/// Priority:
-/// 1. If WEBUI_TLS_CERT and WEBUI_TLS_KEY env vars are set, use those paths.
-/// 2. Otherwise, use the provided `cert_path` / `key_path`.
-/// 3. If the files don't exist or are invalid, generate a fresh self-signed cert.
+/// Priority: WEBUI_TLS_* env > provided paths > generate self-signed.
 pub fn ensure_webui_tls_certs(
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,

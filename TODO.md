@@ -1,105 +1,40 @@
-# nfs-klldap-host Code Audit TODO (2026)
+# nfs-klldap-host Audit (reconciled to code)
 
-This file was produced by the full code audit chore. **Actual code always takes precedence** over docs, comments, tests descriptions, and examples. Documentation and comments were aligned to match observed behavior in source. Only absolutely necessary non-behavior edits were made (version strings in usage text, explanatory comments pruned of "NEW:" markers, setup verbosity untouched).
+**Actual implementation in *.rs always wins.** Readmes, TODO, and comments updated to match observed behavior (tests: `cargo test --workspace` green; clippy clean). Documentation kept concise and accessible to non-experts. Only config template + startup TUI kept intentionally verbose for operators.
 
-Tests were verified passing (`cargo test --workspace`).
+## Lingering / dead code (may cause issues; left as-is, documented here)
 
-## Items requiring no immediate action (aligned or low impact)
+- **entrypoint.sh:215** (the if ! grep aurora.testlabby.local block): always appends a lab-specific /etc/hosts entry on every start if absent. Test artifact. Can pollute container DNS view or conflict on real hosts using that name/IP. Guarded only by comment ("remove prior to release"). Recommend: env guard or delete before wider use.
+- **scripts/fix-keytab-perms.sh**: hard-deprecated; prints message and `exit 1`. No-op for current root-in-container model. Safe (errors loudly) but dead for normal deploys.
+- **Hardcoded versions**: Cargo.toml workspace = "0.7.0"; git branch 0.8; CLI usage texts (nfs-klldap-config main.rs:15, startup help) say "v0.7". No CARGO_PKG_VERSION at runtime. Drift only; no functional impact.
+- **nfs-klldap-ui/src/fs.rs** (apply_permissions, count_applicable, apply_direct, apply_tree): marked #[allow(dead_code)]. Active handlers use the *with_progress / count_*_with_live paths only. These are legacy wrappers (used by internal tests). Kept for compat; harmless.
+- **web/keytab.rs**: KeytabInfo had stray allow(dead_code) (now used by get_keytab_info in settings page); removed during audit.
+- Minor: trailing blank lines in some .rs (trimmed), some internal wrappers only exercised in tests.
 
-- Most module docs, doc comments, and high-level READMEs / docs/*.md now reflect current validation, generation, two-tier hostname, FsManager WalkDir policy (follow_links(false) + filter, numeric only, no root/setid), async apply progress, hybrid auth, LLDAP client details, etc.
-- Setup TUI in `nfs-klldap-config/src/bin/nfs_klldap_startup.rs` (the 4-step guided loop + rich diagnostics + banner) intentionally verbose for first-time users — left exactly as-is per requirements.
-- Default config template (`template.rs`) long header comments kept verbatim for new users.
-- Security contracts detailed in `nfs-klldap-ui/src/fs.rs` and `privileged.rs` are the source of truth (README cross-refs them).
-- All unit tests (config derivation, golden sssd/krb5/exports, hostname, fs policy+translation, auth flows+cookie, apply dry/symlink/nonrec, ldap normalize+filters, web router oneshot) pass and cover the behaviors described.
+All other "partial" / "NEW" markers from prior audits resolved in code; docs now match (structured shares editor fully round-trips common fields + shares; two-tier hostname enforced everywhere; caches, async apply, etc. live).
 
-## Items noted (no code changes made; behavior/code is source of truth)
+## What the code actually does (high level, for docs alignment)
 
-1. **Versioning**
-   - Workspace `Cargo.toml` declares `version = "0.7.0"`.
-   - Git branch at audit start: `0.6.9` (superseded by 0.7.0 alignment; no matching tag visible in `git describe`).
-   - CLI usage text shows `v0.7` (docs alignment only).
-   - No `CARGO_PKG_VERSION` used at runtime for banners/usage (hardcoded or omitted). If a release process canonicalizes this, it is not reflected in source.
+- Single nfs-klldap.conf (TOML) → validate+derive (dns-only ldap_uri, required realm no EXAMPLE, unique shares, pref/cache_profile validation, search bases, posix attr mapping) → generate (sssd.conf 0600 with ignores+attrs+schema when enabled, krb5.conf 644, ganesha main + per-share 10-*.conf fragments after full clean of exports.d).
+- Startup TUI (3 steps, blocks): 1. persistent /config volume (different dev from /), 2. ldap_uri (DNS) + TCP reachable (getent+nc), 3. bind creds + narrow ldapsearch probe using same attr map as later SSSD/UI. Shares optional for Ready.
+- Hostname: get_consistent_hostname() requires `hostname(1)` == /proc after trim-dot norm (case sensitive for principals). Rich error + remediation if not (docker ID detection). Used by TUI banner, UI keytab, generate dry-run, keytab check.
+- FS ops (UI as root): is_allowed = prefix under any share host_path (logical). Translate to container_root/name only at syscall. WalkDir(follow_links=false), symlink entries skipped entirely (never descend), non-recursive = target dir (d0) + immediate files (d1) only. Refuse uid/gid=0 or set*id modes. All via std chown (follows links) / set_permissions in privileged.rs. Progress/cancel/dry/continue supported for async apply.
+- Auth: sidecar `webui-password` (next to conf, 0600, iter SHA-256) for "localhost" OR LLDAP user in webui_admin_group (default lldap_admin) via memberOf fastpath + verify. 12h mem sessions, cookie HttpOnly Lax Secure (12h). Context-aware ?error on redirect.
+- Web: / (tree + search + apply), /settings (raw+structured TOML + shares editor + LLDAP reload/clear/restart). Structured uses toml_edit to preserve comments on untouched sections; raw is full fidelity.
+- LdapClient (UI): fresh conn+bind+search+unbind per op (KLLDAP/rustls), shared PosixAttributeMapping + tls_policy + bases with generator. 10m identity caches (name/uid/gid), 2m search caches, stats/clear in /settings.
+- Container: entrypoint pid1 (preflight, startup TUI block, initial generate, start sssd/ganesha/watcher/ui, SIGHUP handler does generate+perms + bounce ganesha/sssd/ui). Watcher signals only pid1. ganesha-ctl = file ops + pkill (no dbus). Health = procs + listeners (2049 + nss pipe + 9630).
+- No kernel NFS; Ganesha VFS only. --uts=host + keytab nfs/<short>+<fqdn>@REALM recommended.
 
-2. **nfs-klldap-ui structured settings editor (now substantially implemented)**
-   - Structured editor prefills fields + current [[shares]] rows from on-disk nfs-klldap.conf (server-rendered).
-   - Shares support create (add row), modify (edit fields), delete (× remove row before submit); structured submit always replaces [[shares]] with the submitted rows.
-   - kllldap_ignored_attributes, search bases, TLS fields, etc. are now round-trippable via structured (apply fns keep toml_edit for comment preservation on untouched parts).
-   - Raw TOML editor remains the full-fidelity path (comments, order, advanced/niche fields, exact formatting).
-   - See the 0.7+ WebUI System Settings work + plan for details. The "intentionally partial" notes from the initial audit are largely addressed for the common case.
+## Documentation / comment changes in this audit
 
-3. **sssd.enumerate guidance (now aligned)**
-   - Core: default `false` in `GaneshaSection`/`SssdSection` + `resolve...` + generator + `docs/ldap-integration.md` ("do NOT set true on KLLDAP without reason", "enumerate=true is discouraged").
-   - UI form previously had `checked` + "recommended True for small..." (conflicted).
-   - Form label + checked attr updated to match code/docs during audit. (Checkbox still present for users who know what they're doing.)
+- Root + docs/*.md + examples + TESTING.md + container/README + scripts headers: wording tightened to observed behavior (no drift on two-tier, FS policy, cache_profile resolution, auth, generation cleanup, no shares-required at start, etc.). Average-user language, minimal verbosity.
+- Code comments (outside startup TUI + config template): pruned to short engineering notes on structure, flow, or block purpose only. Verbose explanations, history, and "why" stories removed (facts live in code + tests + this TODO). Security contracts in fs/privileged kept factual but concise.
+- Config template long header + entire startup bin left untouched (operator help).
 
-4. **(Resolved) Incomplete pre-pop / "fuller version" in settings UI**
-   - Addressed in the System Settings structured editor implementation: shares are now server-rendered from current config; pre-pop + mod/del work for the common fields.
-   - Raw remains the path for anything not exposed in the convenience form (per requirements). See updated item 2 and the implementation plan.
+## How to keep aligned
 
-5. **Keytab / hostname two-tier is the law**
-   - `get_consistent_hostname` + `confirm_consistent_hostname` + `nfs_keytab_host_*` are used in startup TUI banner, WebUI startup, keytab alert, dry-run, and runtime diagnostics.
-   - All paths surface the rich `HostnameInconsistency` when `hostname(1)` != `/proc/sys/kernel/hostname` (after norm).
-   - Docs (root, run, examples, ganesha-arch, ldap-int) consistently say `--uts=host` + short+ FQDN principals. Code and tests match exactly (including docker-default-ID detection and case sensitivity).
-   - No silent fallback to `hostname` alone anywhere that matters.
+On any behavior change, update the corresponding .rs (if comments), tests, this TODO, and affected *.md in same change. Run `cargo test --workspace`.
 
-6. **Ganesha fragment naming and cleanup**
-   - Generator (`generate.rs:write_export_fragments`) always cleans `exports.d/*.conf` then writes `{:02}-<sanitized>.conf` (starting at 10).
-   - `ganesha-ctl remove-export` / show / reload are best-effort file ops + pkill (no DBUS). Matches container scripts and entrypoint SIGHUP path.
-   - Example in `examples/ganesha-exports.d/10-example.conf` updated during audit; it is reference only.
+Re-run audit when touching entrypoint, fs apply policy, hostname, generation, or auth.
 
-7. **LdapClient / SSSD attribute sharing**
-   - `resolve_posix_attribute_mapping`, `effective_ldap_search_bases`, `ldap_tls_policy` are the single source used by generator (sssd.conf), startup bind probe (narrow attrs), and UI LdapClient.
-   - Startup probe now uses the *same* narrow attr list as future SSSD (see `check_ldap_bind`).
-   - WebUI "Reload NFS client" fully re-instantiates with current on-disk + env values.
-   - Caches (10m identity, 2m search) + clear + stats exposed in /settings. All matches docs.
-
-8. **FsManager / privileged security contracts**
-   - `is_allowed` + `host_path_to_container_path` (prefix under share host_path, logical host namespace) + WalkDir `follow_links(false)` + `filter_entry` + numeric-only writes + refuse 0 / set*id.
-   - Mutations go through `privileged::chown`/`chmod` (std following variants).
-   - Non-recursive: only target dir (depth0) + immediate files (depth1).
-   - Dry-run, continue_on_error, progress/cancel all exercised in tests + live UI.
-   - Root README + fs.rs + privileged.rs are in sync.
-
-9. **Auth / sessions**
-    - Sidecar `webui-password` (iterated SHA-256 + 0600) next to config; or LLDAP member of `webui_admin_group` (default lldap_admin) via `verify_user_is_admin` (which does memberOf fast-path).
-    - Cookies: HttpOnly + SameSite=Lax + Secure (overridable) + 12h TTL. Multiple tokens supported (last wins). require_auth context-aware redirect (?error=session for first-run vs normal).
-    - Tests in `web/mod.rs` and `web/auth.rs` cover the full first-run setup + login + redirect follow + protected + logout + re-login + stale cookie flows.
-    - Matches root README and `docs/run/README.md`.
-
-10. **Container / entrypoint / watcher / ctl**
-    - pid1 (entrypoint.sh) does preflight, first init, calls startup TUI (blocks), generate, perm fix, start SSSD/Ganesha/watcher/WebUI, SIGHUP handler for regen+SSSD-restart+Ganesha-prods.
-    - Conf-watcher only signals pid1 (guarantees root:root 0600 for sssd.conf).
-    - ganesha-ctl is pure file + pkill shim (no DBUS).
-    - Healthcheck: process + listener checks for 2049 + nss pipe + 9630 (best-effort exports).
-    - All scripts have "See container/README.md" headers. container/README is minimal but accurate.
-    - `scripts/fix-keytab-perms.sh` is a hard-deprecated no-op (for the old non-root model).
-
-11. **Test coverage notes (from TESTING.md + actual)**
-    - Pure + tempfile + tower::oneshot cover the critical derivation, safety, auth, FS policy, and config golden paths.
-    - Live LLDAP, real bind mounts chown, full entrypoint+watcher orchestration, and Ganesha runtime are intentionally out-of-unit (as documented).
-    - No drift found between "Well-Tested Areas" / table and the tests that exist.
-
-12. **Minor / cosmetic**
-    - Some long explanatory comments in `fs.rs`, `ldap.rs`, `startup.rs`, `web/*` exist because they are security contracts, UX rationale for async apply, or KLLDAP compatibility notes. These were left (they are the "also documented in source" that README promises). Only "NEW:" and obviously-stale markers were trimmed for minimalism.
-    - `generate.rs` has a couple of extra blank lines / comments; harmless.
-    - `scripts/verify-ganesha.sh` is a convenience wrapper around the same checks; not referenced as primary in most docs (healthcheck + ganesha-ctl + getent are).
-
-## Recommendations for next major steps (post 0.7.x)
-
-- Consider making the structured shares editor in /settings load + render current rows (server-side) so it is a true "edit" rather than "append/replace" tool. (Would improve UX without changing core model.)
-- Drive the workspace version from git tag or a single source during release (or document the Cargo vs. branch convention).
-- Remove or guard the aurora.testlabby.local /etc/hosts injection (or move it behind an env var) before wider distribution.
-- If "fuller" structured editor is never planned, update high-level docs to say "Raw TOML (full) + structured convenience form (common fields + shares)".
-- Add a small integration note or make target in Makefile for "container smoke" using the compose example + healthcheck (currently only unit + manual).
-- Audit the exact set of sssd.conf advanced fields emitted vs. the full SssdSection struct (some krb5_* etc. are conditional; docs are close but not exhaustive).
-
-## How this audit was performed
-
-- Full tree read of *.rs (both crates), all *.md, *.sh, Dockerfile, Makefile, examples, templates.
-- Cross-checked: public API surface vs. root/docs/README usage; generator output vs. golden tests + example conf; hostname contract in 4+ call sites + tests + docs; FS safety policy (WalkDir + privileged) vs. every mention; auth flows vs. tests + cookie construction; LLDAP/SSSD attr sharing; startup TUI step machine vs. docs.
-- Ran `cargo test --workspace` (all green before and after doc/comment edits).
-- Changes limited to: version strings in usage, "NEW:" pruning, one UI label/checked for consistency with code default, HTML comments + H3 for accuracy, one sh comment, TESTING.md table, ui-design.md, a few docs/README wording for precision. No logic, no defaults, no control flow, no test assertions changed.
-
-If a future change touches any of the noted areas, update this file + the corresponding docs/tests in the same PR.
-
-End of audit notes.
+End.

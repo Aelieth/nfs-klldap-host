@@ -1,12 +1,5 @@
-//! Thin orchestration for the WebUI (Axum handlers + templates).
-//!
-//! The real logic lives in focused submodules:
-//! - `auth`      : login, cookies (using the `cookie` crate), require_auth guard + fixes
-//! - `permission_tree` : the / page (tree, HTMX fragments, searches, apply)
-//! - `settings`  : /settings + raw/structured TOML editing + LLDAP client reload
-//!
-//! This file stays small (<500 lines target, tests at bottom are acceptable per review).
-//! It owns AppState (the god-object passed to every handler) and assembles the Router.
+//! Router assembly + AppState (shared by handlers) + router integration tests.
+//! Submodules hold the logic: auth, permission_tree, settings, keytab.
 
 use axum::{routing::{get, post}, Router};
 use std::path::PathBuf;
@@ -113,13 +106,7 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-// === Integration tests ===
-//
-// These were originally in the monolithic web.rs. They are kept here (at the
-// bottom of the thin orchestration module) per review feedback. The critical
-// `full_localhost_first_run_login_session_and_protected_route_flow` test
-// exercises the entire auth + session + cookie + protected route path and
-// must continue to pass after the refactor and cookie policy changes.
+// Integration tests (auth flows, settings, apply, cookie policy).
 #[cfg(test)]
 mod tests {
     use super::*;

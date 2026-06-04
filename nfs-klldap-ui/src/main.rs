@@ -42,16 +42,7 @@ use nfs_klldap_config::get_consistent_hostname;
 async fn main() {
     println!("=== nfs-klldap-ui (in-container WebUI) ===\n");
 
-    // Install the ring CryptoProvider *very early*, before any TLS code runs.
-    //
-    // This is required for reliable LDAPS handshakes against strict rustls-based
-    // servers such as KLLDAP (lldap). The first real outbound LDAPS connections
-    // (service account bind + probes) happen during LdapClient initialization,
-    // which occurs *before* axum-server starts.
-    //
-    // Without an early explicit install, some short-lived connections can fail
-    // the TLS handshake, manifesting as "[LDAPS] Service Error: tls handshake eof"
-    // on the KLLDAP side. We tolerate a second install (the `let _ =`).
+    // Install ring CryptoProvider early (before any LDAPS). Required for KLLDAP/rustls compat.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Support --config /path or NFS_KLLDAP_CONF env (the shared volume with the container)
@@ -86,9 +77,7 @@ async fn main() {
         println!("  - {} → {} (host: {})", s.name, ep, s.host_path.display());
     }
 
-    // Startup banner: keytab hostname requirement.
-    // Use the two-tier consistent value (hostname command + /proc). Both sources
-    // must agree, otherwise we emit the full rich diagnostic before the normal reminder.
+    // Keytab host: prefer explicit [server], else two-tier consistent hostname (emits diag on mismatch).
     let keytab_host = if let Some(h) = &config.server.hostname {
         if !h.trim().is_empty() {
             h.trim().to_string()
@@ -138,10 +127,7 @@ async fn main() {
         start_tls,
     );
 
-    // Real credentials from the same nfs-klldap.conf (sssd section) with env override support.
-    // The first element is the full bind DN (or verbatim identity). Bare uids are
-    // deliberately never produced here — they cause connection drops on LDAPS.
-    // Interactive prompt is intentionally avoided for daemon/container use cases.
+    // Bind creds: prefer NFS_KLLDAP_LLDAP_* env, else sssd section (full DN verbatim required).
     let (lldap_user, lldap_pass) = crate::config::ldap_service_creds(&config);
     if lldap_pass.trim().is_empty()
         || lldap_pass == "CHANGE_THIS_TO_A_STRONG_SECRET"
@@ -163,10 +149,7 @@ async fn main() {
 
     let lldap = Arc::new(Mutex::new(lldap));
 
-    // Warm the user/group search caches (and identity caches for the first ~25)
-    // at startup. This makes the first visit to Share Permissions + Edit mode fast:
-    // focus/click in the UID/GID boxes shows results from cache immediately, without
-    // repeated LDAP searches on every interaction.
+    // Warm caches at startup for fast first / edit interactions.
     {
         let lldap_warm = lldap.clone();
         tokio::spawn(async move {

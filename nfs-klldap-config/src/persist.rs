@@ -1,8 +1,4 @@
-//! Persistence detection and partial/tolerant config loading.
-//!
-//! These helpers are intentionally tolerant of incomplete configs so that
-//! privileged helpers (e.g. the permission management sidecar) can still
-//! function even when the user has not yet provided full bind credentials.
+//! is_persistent_config (dev inode diff) + load_host_paths_only (tolerant for UI allow-list).
 
 use std::path::{Path, PathBuf};
 

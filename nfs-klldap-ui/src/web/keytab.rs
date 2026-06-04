@@ -4,14 +4,13 @@ use std::process::Command;
 
 use nfs_klldap_config::{format_nfs_principal_list, nfs_keytab_host_matches};
 
-/// Rich keytab status for the settings page (list of nfs/* principals + whether any match the expected host).
+/// Rich keytab status for the settings page (get_keytab_info builds full; current callers only use .found_nfs_principals).
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct KeytabInfo {
     pub expected_host: String,
     pub expected_realm: String,
     pub found_nfs_principals: Vec<String>,
-    /// If Some, a warning string (no matching principal, or read failure). If None, at least one match was present.
     pub alert: Option<String>,
 }
 

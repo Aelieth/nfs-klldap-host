@@ -1,6 +1,5 @@
-//! FsManager: host_path allow-list, container_path translation, recursive chown/chmod.
-//! WalkDir never descends into symlinks; only numeric uid/gid on disk.
-//! Requires root in container with bind mounts (no userns-remap). Refuses uid/gid 0 and set*id.
+//! FsManager: allow-list (host_path from shares), host<->container path translation, WalkDir-based chown/chmod.
+//! Policy: follow_links(false), never descend symlinks, numeric ids only, refuse 0/set*id. Non-rec = dir+immediate files.
 
 #![deny(clippy::unwrap_used)]
 
@@ -19,20 +18,13 @@ pub struct DirectoryNode {
     pub children: Vec<DirectoryNode>,
 }
 
-/// Options controlling permission application (fine-grained, auditable behavior
-/// for the recursive case).
+/// Options for apply (recursive policy, continue, dry).
 #[derive(Debug, Clone, Default)]
 pub struct ApplyOptions {
-    /// Walk subdirectories.
     pub recursive: bool,
-    /// Apply chown/chmod to directories (including the target root).
     pub apply_to_dirs: bool,
-    /// Apply chown/chmod to regular files.
     pub apply_to_files: bool,
-    /// Continue after per-entry errors instead of aborting the whole tree.
-    /// (Old behavior was "abort on first error".)
     pub continue_on_error: bool,
-    /// Dry-run: walk and count what *would* change, but perform no syscalls.
     pub dry_run: bool,
 }
 
@@ -49,15 +41,8 @@ pub struct ApplyResult {
     pub skipped: usize,
 }
 
-/// Live progress + cancellation state for a (possibly long-running) permission apply.
-/// Updated from the (blocking) walk thread via atomics; read (snapshotted) by the
-/// web layer for the Apply Log and for the "Stand-by, estimating..." + spinner UX.
-///
-/// The count pass (or the apply walk itself) increments `processed` as "scanned so far"
-/// while `total` is still 0; the UI shows a cycling ASCII spinner until `total` is known.
-/// After the count pass, `processed` is reset and real % updates are shown during the
-/// mutation pass. `last_path` is updated before each entry so that Cancel can report
-/// exactly where the operation was when the user bailed.
+/// Live progress/cancel for async apply (atomics updated by walker, read by web poller).
+/// Supports count phase (spinner) then apply phase, last_path for cancel messages.
 #[derive(Debug, Default)]
 pub struct ApplyProgress {
     pub total: AtomicUsize,
@@ -183,19 +168,7 @@ impl FsManager {
     /// plugged in here later with no other changes.
     pub fn invalidate_path(&self, _path: &Path) {}
 
-    /// Apply owner + group + permissions to a directory (and optionally recursive).
-    /// This is the core action the visual GUI will call on "save and apply".
-    ///
-    /// All mutations are performed directly inside the container as root.
-    ///
-    /// - **Non-recursive**: the target directory plus **immediate regular files only**
-    ///   (child subdirectories are not modified and not descended into).
-    /// - **Recursive**: full subtree (dirs + files), symlinks never descended.
-    ///
-    /// The implementation always goes through the progress-aware engine (using a
-    /// dummy ApplyProgress). This keeps a single code path for live feedback, cancel,
-    /// and the "count as you go + spinner" UX while still supporting direct callers
-    /// (tests, potential future CLI) that only want the final ApplyResult.
+    /// Legacy non-progress apply (delegates to with_progress + dummy). Not used by live handlers.
     #[allow(dead_code)]
     pub fn apply_permissions(
         &self,
@@ -233,8 +206,7 @@ impl FsManager {
             .map_err(|e| format!("apply failed: {}", e))
     }
 
-    /// Count how many entries *would* be mutated by an apply under the current policy.
-    /// Used to pre-compute a total for the % display. For non-recursive this is O(1).
+    /// Legacy count (delegates). Live path uses count_applicable_with_live.
     #[allow(dead_code)]
     pub fn count_applicable(&self, path: &Path, recursive: bool) -> Result<usize, String> {
         let dummy = ApplyProgress::default();
@@ -339,10 +311,7 @@ impl FsManager {
         ))
     }
 
-    /// Direct chown/chmod as root on host bind mounts.
-    ///
-    /// All privileged host-mutating operations are routed through `privileged`.
-    /// See `privileged.rs` for rationale and security boundary.
+    /// Legacy direct wrapper (delegates to progress impl).
     #[allow(dead_code)]
     fn apply_direct(
         &self,
@@ -549,7 +518,7 @@ impl FsManager {
         Ok(result)
     }
 
-    /// Backward-compat thin wrapper for existing call sites and tests.
+    /// Internal compat wrapper used by fs tests (delegates to progress impl).
     #[allow(dead_code)]
     fn apply_tree(
         &self,

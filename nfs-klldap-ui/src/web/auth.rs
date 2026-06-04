@@ -1,5 +1,4 @@
-//! Login, session cookies (`SameSite=Lax`, `Secure` on HTTPS), and `require_auth`.
-//! Auth: localhost sidecar (`webui-password`) or LLDAP members of `webui_admin_group`.
+//! Login handlers, cookie construction (HttpOnly/Lax/Secure, 12h), require_auth + redirects.
 
 use askama::Template;
 use axum::{

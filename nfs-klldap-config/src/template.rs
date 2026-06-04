@@ -1,4 +1,4 @@
-//! Default first-run nfs-klldap.conf template.
+//! First-run default template (long header kept for new users; see generate_default_template).
 
 use std::fs;
 use std::path::Path;

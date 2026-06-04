@@ -33,10 +33,7 @@ impl NfsKlldapConfig {
             return Err(ConfigError::Validation("ldap_uri is required".into()));
         }
 
-        // Normalize all [sssd] string override fields:
-        // Treat blank / whitespace-only values the same as "not specified".
-        // This ensures that an explicit value in nfs-klldap.conf always takes
-        // precedence, while blank values fall back to auto-derived or good defaults.
+        // Normalize blank [sssd] overrides to None so explicit values win over derivation.
         {
             let s = &mut self.sssd;
             normalize_blank(&mut s.ldap_search_base);
@@ -69,8 +66,7 @@ impl NfsKlldapConfig {
             // krb5_validate and krb5_store_password_if_offline are bools — no string normalization needed
         }
 
-        // Enforce DNS name (not IP) for ldap_uri. Forward + reverse DNS is mandatory
-        // for the NFS service principal (keytab) and Kerberos GSSAPI operation.
+        // ldap_uri must be DNS (not IP) — forward+reverse required for Kerberos principals.
         let host = crate::extract_host_from_uri(&self.ldap_uri);
         if crate::uri::host_is_ip(&host) {
             return Err(ConfigError::Validation(
@@ -79,15 +75,12 @@ impl NfsKlldapConfig {
             ));
         }
 
-        // Auto-derive realm if missing (from ldap_uri)
+        // Derive realm from ldap_uri if absent; NFS_REALM/REALM env overrides.
         if self.kerberos.realm.is_none() {
             if let Some(realm) = crate::derive_realm_from_uri(&self.ldap_uri) {
                 self.kerberos.realm = Some(realm);
             }
         }
-
-        // Allow env var override / injection (NFS_REALM or REALM). Env takes precedence
-        // over ldap_uri derivation and over an omitted config value.
         if let Ok(env_realm) = std::env::var("NFS_REALM") {
             let t = env_realm.trim();
             if !t.is_empty() {
@@ -103,9 +96,7 @@ impl NfsKlldapConfig {
             }
         }
 
-        // Enforce a usable realm: no silent fallback to EXAMPLE.COM.
-        // Validation must fail (container will not start) if the user never provides a real realm
-        // and auto-derivation could not produce one (e.g. IP-based ldap_uri).
+        // Require real realm (no EXAMPLE.COM placeholder or empty).
         {
             let r = self.kerberos.realm.as_deref().unwrap_or("").trim();
             if r.is_empty()
@@ -120,7 +111,7 @@ impl NfsKlldapConfig {
             }
         }
 
-        // Informational port (636/389) — ldap_uri must include the port used by SSSD.
+        // Derive informational port from ldap_uri scheme.
         if self.sssd.port.is_none() {
             self.sssd.port = Some(if self.ldap_uri.starts_with("ldaps://") {
                 636
@@ -129,7 +120,7 @@ impl NfsKlldapConfig {
             });
         }
 
-        // Auto search bases — derive from the actual realm (no more stale example.com defaults)
+        // Derive search bases from effective realm.
         let base_dn = format!(
             "dc={}",
             self.effective_realm().to_lowercase().replace('.', ",dc=")

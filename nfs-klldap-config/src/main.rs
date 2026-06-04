@@ -20,7 +20,7 @@ Usage:
   nfs-klldap-config validate --config <path>
 
 Companion binary:
-  nfs-klldap-startup         (guided container startup / orchestration TUI; entrypoint.sh calls it for 4-step readiness)
+  nfs-klldap-startup         (guided container startup / orchestration TUI; entrypoint.sh calls it for 3-step readiness)
 
 The binaries are intended to be called by the container entrypoint and the host UI."
     );

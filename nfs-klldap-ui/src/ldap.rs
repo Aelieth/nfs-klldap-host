@@ -1,7 +1,6 @@
-//! LdapClient (ldap3 + rustls). Shares uri/creds/PosixAttributeMapping with SSSD.
-//! Fresh conn per op (short-lived + explicit unbind for KLLDAP/rustls TLS compatibility).
-//! Identity cache (10m) + search cache (2m) + memberOf fast-path on verify.
-//! See clear_cache / cache_stats_summary.
+//! LdapClient: short-lived ldap3 conns + unbind (KLLDAP/rustls compat).
+//! Shares PosixAttributeMapping + search bases with generator/SSSD.
+//! 10m identity + 2m search caches; memberOf fastpath for admin verify.
 
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
 use nfs_klldap_config::PosixAttributeMapping;
@@ -46,8 +45,7 @@ pub struct LdapClient {
     no_tls_verify: bool,
     start_tls: bool,
 
-    // Caches use std::sync::Mutex so LdapClient remains Sync (required for Axum handlers
-    // that hold &LdapClient across await points via the outer tokio::sync::MutexGuard).
+    // std Mutex for Sync (Axum & across await via outer tokio Mutex).
     user_cache: Mutex<HashMap<String, CachedUser>>,
     group_cache: Mutex<HashMap<String, CachedGroup>>,
     // Reverse caches for friendly name display in tree meta (uid/gid -> name) after FS stat.
@@ -80,12 +78,7 @@ pub struct Group {
     pub gid_number: Option<i32>,
 }
 
-// ---------------------------------------------------------------------
-// Simple in-memory TTL caches (zero-dep) to eliminate repeated binds/searches.
-// Identity (name → uid/gid/DN) : 10 min
-// Recent filter searches (autocomplete) : 2 min
-// All access is behind the caller's Arc<Mutex<LdapClient>> so no extra locking.
-// ---------------------------------------------------------------------
+// In-memory TTL caches (identity 10m, search 2m). Zero-dep.
 
 const IDENTITY_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const SEARCH_CACHE_TTL: Duration = Duration::from_secs(2 * 60);

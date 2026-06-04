@@ -1,6 +1,5 @@
-//! Hybrid auth: localhost sidecar (webui-password, SHA-256) + LLDAP webui_admin_group members.
-//! "localhost" is local-only admin for this host. LLDAP users are cross-host admins.
-//! No sudo. Direct root FS ops from the UI. Sidecar lives next to nfs-klldap.conf.
+//! Hybrid auth: sidecar webui-password (iter SHA-256, 0600) next to conf OR LLDAP member of webui_admin_group.
+//! Sessions: 12h in-mem, HttpOnly + SameSite=Lax + Secure cookie.
 
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -199,11 +198,7 @@ impl AuthManager {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Lightweight iterated SHA-256 password hashing for the local sidecar.
-// Not intended to be a high-security KDF for internet-facing use — the
-// actual protection here is the 0600 file + container/root boundary.
-// -----------------------------------------------------------------------------
+// Iterated SHA-256 for local sidecar pw (protection is 0600 + root container).
 
 const PW_HASH_ITERATIONS: u32 = 100_000;
 

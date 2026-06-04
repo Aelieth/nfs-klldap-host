@@ -1,7 +1,4 @@
-//! `/settings`: raw + structured TOML editor (settings + separate shares), LLDAP reload, cache clear (HTMX).
-//! + graceful "Restart and apply" that returns a self-contained retry-to-login page and then
-//!   HUPs pid 1 so the supervisor bounces just Ganesha + SSSD + this WebUI (the services that
-//!   must re-read generated configs or the shares list for the permission tree).
+//! /settings: raw TOML + structured form (top + shares), LLDAP status/reload/clear, restart (HUP pid1).
 
 use askama::Template;
 use axum::{
@@ -73,10 +70,7 @@ struct SettingsTemplate {
     next_share_idx: usize,
 }
 
-/// Standalone template for the post-"Restart and apply" page.
-/// Deliberately does not extend base.html: it is rendered once, then the current
-/// WebUI process is terminated as part of the service bounce (the JS inside
-/// performs the retry-to-login loop until the fresh WebUI is listening again).
+/// Self-contained restart page (JS polls until new UI ready, then to /login).
 #[derive(Template)]
 #[template(path = "restarting.html")]
 struct RestartingTemplate;
@@ -88,8 +82,7 @@ pub(crate) struct RawSaveForm {
     raw_content: String,
 }
 
-// Structured form for the common editable parts of nfs-klldap.conf.
-// (Also reused for /save-shares POSTs; only the share_* keys in the flatten extra matter for that path.)
+// Structured form (top-level + shares rows). Shares POST reuses subset of fields.
 #[derive(Deserialize, Debug, Default)]
 pub(crate) struct StructuredSettingsForm {
     // Top level
@@ -170,10 +163,7 @@ struct ShareTemplateRow {
     cache_profile: String,
 }
 
-/// Returns true if `key` is explicitly present in the (raw, pre-derive) TOML source.
-/// Used to pre-check the "override" boxes for non-key fields. Key fields (ldap_uri,
-/// container_root, bind dn/pw, kllldap_ignored_attributes) are always treated as
-/// explicit and have no override flag.
+/// Key present in raw source (used to decide override checkboxes; core keys always explicit).
 fn has_explicit(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> bool {
     if section.is_empty() {
         doc.get(key).is_some()
@@ -184,7 +174,7 @@ fn has_explicit(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> bool 
     }
 }
 
-/// Return the string value of a key if present in the raw doc (for special prefill logic).
+/// Raw string value if present (for structured prefill of overrides).
 fn get_explicit_str(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> Option<String> {
     let val = if section.is_empty() {
         doc.get(key)

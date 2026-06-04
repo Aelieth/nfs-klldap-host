@@ -1,5 +1,5 @@
-//! Two-tier hostname: `hostname(1)` output must exactly match /proc/sys/kernel/hostname.
-//! Mismatch produces a rich diagnostic. Keytab banners and cert SANs use the confirmed name.
+//! Two-tier hostname: hostname(1) must match /proc/sys/kernel/hostname after normalization.
+//! Mismatch -> rich diagnostic (used for keytab + cert SANs).
 
 /// Short and FQDN host variants for NFS service principals in the keytab.
 /// When the hostname contains a dot, returns `[short, fqdn]`; otherwise a single entry.

@@ -303,7 +303,8 @@ ldap_default_authtok = "sekret"
         let app = router(state);
 
         // Save share with empty export field (optional pseudo path).
-        let body = "share_name_0=data&share_host_0=%2Ftmp%2Fdata&share_export_0=&share_rw_0=true&share_sync_0=on";
+        // Include the new cache_profile field so collect + apply exercise the profile path.
+        let body = "share_name_0=data&share_host_0=%2Ftmp%2Fdata&share_export_0=&share_rw_0=true&share_sync_0=on&share_cache_profile_0=Default";
         let req = Request::builder()
             .method("POST")
             .uri("/settings/save-shares")

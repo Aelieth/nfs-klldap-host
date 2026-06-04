@@ -289,20 +289,23 @@ pub struct Share {
     /// Whether to use synchronous writes for this share (default true for safety).
     /// If None or true, the key is typically omitted from nfs-klldap.conf (default behavior).
     pub sync: Option<bool>,
-    /// Optional PrefRead size in bytes for this export (Ganesha EXPORT.PrefRead).
-    /// Controls the preferred read size advertised to NFS clients, which influences
-    /// client readahead behavior for sequential/streaming access to large files.
+    /// Cache profile selector (preferred for UI-driven shares).
+    /// Written as `cache_profile = "..."` inside [[shares]].
+    /// When present and valid, the generator resolves it to Ganesha PrefRead/PrefWrite
+    /// values for the share's EXPORT block.
+    /// This is the mechanism for the "Cache Profile" dropdown in System Settings.
     ///
-    /// Common values (bytes):
-    /// - omit (None): Ganesha default (64 MiB) — good general case
-    /// - 1048576 (1 MiB) or 2097152: "Min" — smaller chunks, lower latency for random-ish
-    ///   workloads such as mounted game ISOs / CDs
-    /// - 16777216 (16 MiB) or 67108864 (64 MiB): "Max" — aggressive readahead for large
-    ///   sequential streaming (4K video, huge files) especially on spinning HDD backing storage
-    ///
-    /// Only values in 512..64MiB are valid (enforced at validation). When set, emitted as
-    /// `PrefRead = N;` in the generated EXPORT block. Omitted keys use Ganesha's built-in default.
+    /// Allowed values (exact): "Default", "Read - Basic", "Read - Heavy", "Mixed Use", "Write - Heavy".
+    /// See README for the matrix and "Best For" descriptions. (Server read_ahead_kb is a
+    /// host-only concern; see the short note in the README.)
+    pub cache_profile: Option<String>,
+    /// Optional PrefRead size in bytes (Ganesha EXPORT.PrefRead). Advanced/raw use.
+    /// When a valid cache_profile is also present it takes precedence for generation.
+    /// (Legacy numeric values in nfs-klldap.conf are still accepted and validated.)
     pub pref_read: Option<u64>,
+    /// Optional PrefWrite size in bytes (Ganesha EXPORT.PrefWrite). Advanced/raw use.
+    /// Symmetric to pref_read; usually resolved from cache_profile in normal operation.
+    pub pref_write: Option<u64>,
 }
 
 impl Default for Share {
@@ -315,7 +318,9 @@ impl Default for Share {
             rw: Some(true),
             squash: Some("no_root_squash".to_string()),
             sync: Some(true),
+            cache_profile: Some("Default".to_string()),
             pref_read: None,
+            pref_write: None,
         }
     }
 }
@@ -339,3 +344,40 @@ impl Default for GenerationPaths {
         }
     }
 }
+
+// =============================================================================
+// Cache Profiles (for [[shares]] "Cache Profile" dropdown)
+// The profile *name* is written into nfs-klldap.conf under [[shares]].
+// The generator resolves it at emit time to Ganesha PrefRead/PrefWrite values
+// for the corresponding EXPORT block.
+// =============================================================================
+
+/// The 5 supported values for share.cache_profile (order matches the WebUI dropdown).
+pub const CACHE_PROFILES: &[&str] = &[
+    "Default",
+    "Read - Basic",
+    "Read - Heavy",
+    "Mixed Use",
+    "Write - Heavy",
+];
+
+/// Resolve a cache profile name to the Ganesha tunables (PrefRead, PrefWrite in bytes).
+pub fn resolve_cache_profile(profile: &str) -> Option<(u64, u64)> {
+    match profile.trim() {
+        "Default" => Some((1048576, 1048576)),
+        "Read - Basic" => Some((4194304, 4194304)),
+        "Read - Heavy" => Some((16777216, 8388608)),
+        "Mixed Use" => Some((4194304, 4194304)),
+        "Write - Heavy" => Some((2097152, 16777216)),
+        _ => None,
+    }
+}
+
+
+
+
+
+
+
+
+

@@ -10,9 +10,9 @@ mod uri;
 mod validate;
 
 pub use config::{
-    effective_ldap_search_bases, resolve_posix_attribute_mapping, GaneshaSection, GenerationPaths,
-    KerberosSection, ManagementSection, NfsKlldapConfig, PosixAttributeMapping, ServerSection,
-    Share, SssdSection, StorageSection,
+    effective_ldap_search_bases, resolve_cache_profile, resolve_posix_attribute_mapping,
+    CACHE_PROFILES, GaneshaSection, GenerationPaths, KerberosSection, ManagementSection,
+    NfsKlldapConfig, PosixAttributeMapping, ServerSection, Share, SssdSection, StorageSection,
 };
 
 pub mod ignored_attributes;
@@ -207,6 +207,24 @@ mod tests {
         let mut c3 = minimal_cfg();
         c3.shares[0].pref_read = Some(16 * 1024 * 1024);
         assert!(c3.validate_and_derive().is_ok(), "valid 16M streaming value accepted");
+    }
+
+    #[test]
+    fn invalid_cache_profile_rejected_and_valid_profiles_accepted() {
+        let mut c = minimal_cfg();
+        c.shares[0].cache_profile = Some("Turbo".to_string());
+        assert!(c.validate_and_derive().is_err(), "unknown profile must be rejected");
+
+        // All 5 official profiles must pass
+        for prof in crate::CACHE_PROFILES {
+            let mut c_ok = minimal_cfg();
+            c_ok.shares[0].cache_profile = Some((*prof).to_string());
+            assert!(
+                c_ok.validate_and_derive().is_ok(),
+                "profile '{}' should be accepted",
+                prof
+            );
+        }
     }
 
     #[test]

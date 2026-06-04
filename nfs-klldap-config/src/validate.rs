@@ -203,6 +203,28 @@ impl NfsKlldapConfig {
                     )));
                 }
             }
+            // Validate optional pref_write (symmetric to pref_read)
+            if let Some(v) = share.pref_write {
+                const MIN: u64 = 512;
+                const MAX: u64 = 64 * 1024 * 1024;
+                if !(MIN..=MAX).contains(&v) {
+                    return Err(ConfigError::Validation(format!(
+                        "share '{}' pref_write must be between {} and {} bytes (got {})",
+                        share.name, MIN, MAX, v
+                    )));
+                }
+            }
+            // Validate cache_profile (the primary UI-driven field for the 5 tuning profiles)
+            if let Some(p) = &share.cache_profile {
+                if crate::resolve_cache_profile(p).is_none() {
+                    return Err(ConfigError::Validation(format!(
+                        "share '{}' cache_profile must be one of: {} (got '{}')",
+                        share.name,
+                        crate::CACHE_PROFILES.join(", "),
+                        p
+                    )));
+                }
+            }
         }
 
         // Require bind credentials for sssd

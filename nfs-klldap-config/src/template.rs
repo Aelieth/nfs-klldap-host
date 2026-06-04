@@ -70,10 +70,13 @@ default_security = "krb5p"   # krb5p (recommended) | krb5i | krb5
 # rw = true                 # default RW; set false for RO (or use UI dropdown)
 # # squash omitted means no_root_squash; UI has "root_squash" checkbox to set "root_squash"
 # # sync omitted means true (safer synchronous writes); set false to disable
-# # pref_read omitted = Ganesha default (64 MiB PrefRead). For read-ahead / streaming/large files:
-# #   "Min" (gaming ISOs, random-ish, low latency): 1048576 or 2097152 (1-2 MiB)
-# #   "Max" (4K streaming, huge seq files on HDD): 16777216 (16 MiB) or 67108864 (64 MiB)
-# #   Value is bytes; must be 512..64M. Raw TOML or UI structured shares editor.
+# # cache_profile (recommended) — sets Ganesha PrefRead/PrefWrite for the share's EXPORT block.
+# #   Use the WebUI "Cache Profile" dropdown in System Settings → Shares (writes e.g. cache_profile = "Read - Heavy").
+# #   Profiles are re-resolved into concrete Pref* values and server tunings on every generate/restart.
+# #   See README.md "Cache Profiles (Shares tuning)" for the full table + "Best For" descriptions.
+# #   Allowed: "Default" | "Read - Basic" | "Read - Heavy" | "Mixed Use" | "Write - Heavy"
+# # Advanced/raw: you may still put pref_read = N; and/or pref_write = M; (bytes, 512..64M) under [[shares]].
+# #   When cache_profile is also present it takes precedence for generation.
 "#
     .to_string()
 }

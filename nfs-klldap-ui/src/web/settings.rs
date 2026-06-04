@@ -151,7 +151,9 @@ struct ShareFormRow {
     rw: bool,
     root_squash: bool,
     sync: bool,
-    pref_read: Option<String>,
+    cache_profile: Option<String>,
+    pref_read: Option<String>,  // legacy numeric support (still parsed if posted)
+    pref_write: Option<String>,
 }
 
 /// Template row for server-rendered shares in the structured editor (string values for simple Askama rendering).
@@ -165,7 +167,7 @@ struct ShareTemplateRow {
     rw: bool,
     root_squash: bool,
     sync: bool,
-    pref_read: String,
+    cache_profile: String,
 }
 
 /// Returns true if `key` is explicitly present in the (raw, pre-derive) TOML source.
@@ -212,6 +214,22 @@ fn share_export_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize) -> Strin
         .unwrap_or_default()
 }
 
+/// Map legacy direct pref_read/pref_write numeric values (from older nfs-klldap.conf)
+/// back to one of the 5 canonical profile names for dropdown pre-selection.
+/// This provides a smooth migration experience when the user first opens /settings
+/// after the PrefRd → Cache Profile change. Exact byte matches only.
+fn infer_profile_from_prefs(pref_read: Option<u64>, pref_write: Option<u64>) -> String {
+    match (pref_read, pref_write) {
+        (Some(1048576), Some(1048576)) => "Default".to_string(),
+        (Some(4194304), Some(4194304)) => "Read - Basic".to_string(),
+        (Some(16777216), Some(8388608)) => "Read - Heavy".to_string(),
+        (Some(2097152), Some(16777216)) => "Write - Heavy".to_string(),
+        // Mixed Use has identical numbers to Read-Basic in the spec; pick one.
+        // A user who truly wants the Mixed Use label can select it after load.
+        _ => "Default".to_string(),
+    }
+}
+
 /// Build a fully-populated SettingsTemplate by reading the current on-disk config.
 /// This is the source of truth for pre-filling the structured editor (including shares).
 /// Used for initial page load and after raw/structured save (success or error).
@@ -246,7 +264,11 @@ fn build_settings_template(
             rw: s.rw.unwrap_or(true),
             root_squash: s.squash.as_deref() == Some("root_squash"),
             sync: s.sync.unwrap_or(true),
-            pref_read: s.pref_read.map(|v| v.to_string()).unwrap_or_default(),
+            cache_profile: s
+                .cache_profile
+                .clone()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| infer_profile_from_prefs(s.pref_read, s.pref_write)),
         })
         .collect();
     let next_share_idx = current_shares.len();
@@ -332,8 +354,16 @@ fn collect_shares_from_structured_form(
                     .unwrap_or(true);
                 let root_squash = extra.contains_key(&format!("share_root_squash_{}", idx));
                 let sync = extra.contains_key(&format!("share_sync_{}", idx));
+                let cache_profile = extra
+                    .get(&format!("share_cache_profile_{}", idx))
+                    .cloned()
+                    .filter(|s| !s.trim().is_empty());
                 let pref_read = extra
                     .get(&format!("share_pref_read_{}", idx))
+                    .cloned()
+                    .filter(|s| !s.trim().is_empty());
+                let pref_write = extra
+                    .get(&format!("share_pref_write_{}", idx))
                     .cloned()
                     .filter(|s| !s.trim().is_empty());
                 share_rows.push(ShareFormRow {
@@ -345,7 +375,9 @@ fn collect_shares_from_structured_form(
                     rw,
                     root_squash,
                     sync,
+                    cache_profile,
                     pref_read,
+                    pref_write,
                 });
             }
         }
@@ -366,7 +398,9 @@ fn collect_shares_from_structured_form(
                 None // omit default so it doesn't get written to raw toml
             },
             sync: Some(r.sync),
+            cache_profile: r.cache_profile,
             pref_read: r.pref_read.and_then(|s| s.trim().parse::<u64>().ok()),
+            pref_write: r.pref_write.and_then(|s| s.trim().parse::<u64>().ok()),
         })
         .collect()
 }
@@ -734,8 +768,21 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
         if !sync {
             t["sync"] = toml_edit::value(false);
         }
-        if let Some(pr) = s.pref_read {
-            t["pref_read"] = toml_edit::value(pr as i64);
+        // Write cache_profile (the new primary field from the Cache Profile dropdown).
+        // This is what gets stored in [[shares]] for the organized profile-driven path.
+        // If absent (legacy direct numeric path via raw edit), fall back to writing
+        // the explicit pref_read / pref_write so generator can still use them.
+        if let Some(cp) = &s.cache_profile {
+            if !cp.trim().is_empty() {
+                t["cache_profile"] = toml_edit::value(cp.clone());
+            }
+        } else {
+            if let Some(pr) = s.pref_read {
+                t["pref_read"] = toml_edit::value(pr as i64);
+            }
+            if let Some(pw) = s.pref_write {
+                t["pref_write"] = toml_edit::value(pw as i64);
+            }
         }
         shares.push(t);
     }

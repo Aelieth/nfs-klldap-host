@@ -63,7 +63,26 @@ realm = "EXAMPLE.COM"        # or rely on auto-derivation from ldap_uri host
 
 The generator derives ports, search bases, sssd.conf, krb5.conf, and Ganesha fragments. `kllldap_ignored_attributes = true` (default) emits recommended server-side ignore lists.
 
-Per-share Ganesha options (in [[shares]]) include `sync`, and `pref_read` (bytes) for tuning client readahead on streaming or large-file workloads (e.g. 1 MiB "min" for random/gaming ISOs; 16-64 MiB "max" for sequential 4K/HDD streaming). See the default template comments or WebUI /settings shares editor for examples. Raw TOML always supports any valid Ganesha EXPORT key as fallback.
+Per-share Ganesha options (in [[shares]]) include `sync`, `cache_profile` (see below), and the advanced/raw `pref_read` / `pref_write` (bytes). The recommended way is the **Cache Profile** dropdown in the WebUI (stored as e.g. `cache_profile = "Read - Heavy"` under the share). The generator always resolves the profile (or falls back to explicit pref_* for power users) when (re)writing Ganesha EXPORT fragments. See the table below and the WebUI shares editor. Raw TOML always supports any valid Ganesha EXPORT key as fallback.
+
+### Cache Profiles (Shares tuning)
+In **System Settings → Shares** the former "PrefRd" numeric input is now a **Cache Profile** dropdown with five curated options. The chosen profile name is written into the `[[shares]]` table (e.g. `cache_profile = "Read - Heavy"`) and becomes the source of truth for that share.
+
+On every `generate` (container start, config watcher, "Restart and apply", or explicit HUP) the following are *rewritten* from the profiles in `nfs-klldap.conf`:
+- Ganesha `EXPORT` blocks (`PrefRead` + `PrefWrite` values for the share's export).
+- Ganesha I/O sizing via the Cache Profile dropdown (see below).
+
+| Tuning Profile | Ganesha pref_read | Ganesha pref_write | Best For |
+|----------------|-------------------|--------------------|----------|
+| Default        | 1 MiB (1048576)   | 1 MiB (1048576)    | General purpose, maximum compatibility, set-and-forget |
+| Read - Basic   | 4 MiB (4194304)   | 4 MiB (4194304)    | Light-to-moderate read workloads, file shares |
+| Read - Heavy   | 16 MiB (16777216) | 8 MiB (8388608)    | 4K movies, large ISOs, mostly sequential media |
+| Mixed Use      | 4 MiB (4194304)   | 4 MiB (4194304)    | Everyday shares with both reads and writes |
+| Write - Heavy  | 2 MiB (2097152)   | 16 MiB (16777216)  | Backups, large uploads, write-intensive workloads |
+
+Legacy `pref_read = N;` (and `pref_write`) values in raw TOML are still honored by the generator when no `cache_profile` key is present on the share (useful for one-off custom sizes). Saving shares via the WebUI structured editor will convert a legacy numeric to the nearest profile name on next load and will write the `cache_profile` key (cleaning the numeric on save).
+
+Note: to optimize performance for sequential workloads, set read_ahead_kb on the host block devices backing the shares (outside the container).
 
 ## WebUI (9630)
 

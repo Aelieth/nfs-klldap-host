@@ -45,10 +45,10 @@ Usage:
   ganesha-ctl add-export <file> [name]     # (no-op, watcher-driven)
   ganesha-ctl remove-export <name-or-id>   # delete matching fragment
   ganesha-ctl show-exports                 # list current exports.d/*.conf
-  ganesha-ctl reload                       # restart ganesha to pick up changes
+  ganesha-ctl reload                       # ask supervisor to bounce ganesha (and related) to pick up changes
 
-The container watches exports.d/ internally using inotify and restarts
-ganesha.nfsd automatically when fragments are added, changed, or removed.
+The container watches the central config (and thus exports.d/ fragments) and the
+supervisor bounces ganesha (plus SSSD + WebUI for share applies) when they change.
 No host DBUS socket is required.
 EOF
 }
@@ -115,7 +115,7 @@ case "$CMD" in
         fi
 
         log "add-export received for $FILE"
-        log "In self-contained mode the container supervisor will pick this up (via inotify + restart)."
+        log "In self-contained mode the watcher + supervisor will pick this up (via inotify + HUP bounce of ganesha)."
         log "If you just wrote the file from outside, the change should already be processing."
         log "You can force an immediate reload with: ganesha-ctl reload"
         ;;
@@ -169,10 +169,10 @@ case "$CMD" in
 
     reload)
         log "Requesting immediate Ganesha restart (self-contained mode)..."
-        # In this image we use a simple pkill + restart model driven by the
-        # entrypoint. There is no separate ganesha-export-watcher binary.
+        # In this image the entrypoint (on HUP) does pkill + re-spawn of ganesha
+        # (and SSSD + WebUI) while keeping the supervisor alive. No DBUS.
         pkill -TERM ganesha.nfsd 2>/dev/null || true
-        log "Reload triggered. The container supervisor will restart ganesha.nfsd."
+        log "Reload triggered. Supervisor will re-spawn ganesha.nfsd (and related services for a full apply)."
         ;;
 
     *)

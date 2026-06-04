@@ -33,7 +33,7 @@ pub(crate) use permission_tree::{
     search_groups, search_users, tree_fragment,
 };
 pub(crate) use settings::{
-    clear_ldap_cache, lldap_status, reload_nfs_client, settings_page,
+    clear_ldap_cache, lldap_status, reload_nfs_client, restart_status, settings_page,
     settings_save_raw, settings_save_structured, settings_save_shares,
     system_restart,
 };
@@ -68,6 +68,11 @@ pub struct AppState {
     /// Populated when /apply starts the background task; read by /apply-progress for the
     /// live Apply Log (with XXXX/XXXX + spinner while estimating) and by cancel_apply.
     pub apply_progress: Arc<Mutex<Option<Arc<crate::fs::ApplyProgress>>>>,
+    /// Latched true on first successful POST /settings/restart. Guards against duplicate
+    /// scheduling of the delayed HUP (e.g. fast double-click, or browser re-POST on
+    /// refresh of the /settings/restart result "page"). Once set we just re-serve the
+    /// standalone restarting.html without side-effects.
+    pub restart_requested: Arc<Mutex<bool>>,
 }
 
 /// Assembles all routes (public + protected).
@@ -79,6 +84,8 @@ pub fn router(state: AppState) -> Router {
         .route("/login", get(login_page).post(login))
         .route("/setup-password", post(setup_password))
         .route("/logout", get(logout).post(logout))
+        // Public status for the post-restart poller (no auth; used by restarting.html)
+        .route("/restart-status", get(restart_status))
 
         // === Protected: Main permission tree UI (/) ===
         .route("/", get(index))
@@ -186,6 +193,7 @@ mod tests {
             keytab_realm: "EXAMPLE.COM".to_string(),
             keytab_alert: None,
             apply_progress: Arc::new(Mutex::new(None)),
+            restart_requested: Arc::new(Mutex::new(false)),
         };
 
         (state, tmp)

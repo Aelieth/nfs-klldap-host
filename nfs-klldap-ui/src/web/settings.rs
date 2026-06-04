@@ -1,6 +1,7 @@
 //! `/settings`: raw + structured TOML editor (settings + separate shares), LLDAP reload, cache clear (HTMX).
 //! + graceful "Restart and apply" that returns a self-contained retry-to-login page and then
-//!   signals pid 1 so the container runtime restarts us.
+//!   HUPs pid 1 so the supervisor bounces just Ganesha + SSSD + this WebUI (the services that
+//!   must re-read generated configs or the shares list for the permission tree).
 
 use askama::Template;
 use axum::{
@@ -73,9 +74,9 @@ struct SettingsTemplate {
 }
 
 /// Standalone template for the post-"Restart and apply" page.
-/// Deliberately does not extend base.html: it is rendered once, then the server
-/// shuts down (the JS inside performs the retry-to-login loop with no further
-/// server round-trips until the container is back).
+/// Deliberately does not extend base.html: it is rendered once, then the current
+/// WebUI process is terminated as part of the service bounce (the JS inside
+/// performs the retry-to-login loop until the fresh WebUI is listening again).
 #[derive(Template)]
 #[template(path = "restarting.html")]
 struct RestartingTemplate;
@@ -894,7 +895,7 @@ pub(crate) async fn settings_save_shares(
     let tpl = make_settings_success_template(
         Some(user.0),
         &state.config_path,
-        "Shares saved (SSSD and other sections left untouched in TOML). Container will regenerate configs shortly.".into(),
+        "Shares saved (SSSD and other sections left untouched in TOML). The config watcher (or Restart and apply) will make Ganesha + WebUI see them shortly.".into(),
         state.keytab_hostname.clone(),
         state.keytab_realm.clone(),
         state.keytab_alert.clone(),
@@ -1091,37 +1092,93 @@ pub(crate) async fn clear_ldap_cache(
     Html(ok)
 }
 
-// === Graceful restart ("Restart and apply" from System Settings) ===
+/// GET /restart-status
+/// Public (no auth) lightweight status for the restarting.html poller.
+/// Returns 200 only after the entrypoint has completed a full service recycle
+/// (i.e. the "Services (Ganesha + SSSD + WebUI) recycled in place for config apply."
+/// log has been emitted). This prevents the poller from declaring "up" as soon
+/// as the new WebUI process binds (which happens before Ganesha/SSSD are ready
+/// and before the shell declares the cycle complete).
+pub(crate) async fn restart_status() -> impl IntoResponse {
+    const MARKER: &str = "/tmp/.nfs-klldap-services-recycled";
+    if std::path::Path::new(MARKER).exists() {
+        // Only trust a recent marker (this particular apply, not a leftover
+        // from hours/days ago).
+        if let Ok(meta) = std::fs::metadata(MARKER) {
+            if let Ok(mtime) = meta.modified() {
+                if let Ok(age) = mtime.elapsed() {
+                    if age < std::time::Duration::from_secs(10 * 60) {
+                        return (axum::http::StatusCode::OK, "recycled");
+                    }
+                }
+            }
+        }
+    }
+    (axum::http::StatusCode::SERVICE_UNAVAILABLE, "pending")
+}
+
+// === Graceful "Restart and apply" (from System Settings) ===
 
 /// POST /settings/restart
 /// Requires auth (like every other settings action).
 /// Immediately returns a standalone restarting page (the HTML is delivered before we pull the rug).
-/// Then, after a short delay, signals pid 1 (the entrypoint supervisor) with SIGTERM so its
-/// cleanup trap runs and the process exits. The container runtime's restart policy is then
-/// responsible for bringing the whole system (entrypoint + all children) back with the
-/// freshly-written config.
+/// Then, after a short delay, sends SIGHUP to pid 1. The entrypoint's handle_sighup runs the
+/// Rust generator (if needed), fixes permissions, and bounces exactly the services that must
+/// see the new config:
+///   - Ganesha (to pick up new/changed [[shares]] export fragments + ganesha.conf)
+///   - SSSD (to pick up sssd.conf changes: binds, search bases, schema, krb5 bits, etc.)
+///   - WebUI (to re-load the central Config + rebuild FsManager with the current shares list
+///     so the permission tree / allowed roots / dir editor see new shares)
+///
+/// Kerberos (krb5.conf) changes are picked up by the freshly-started processes that use the
+/// Kerberos libs.
+///
+/// The supervisor (entrypoint) itself stays alive; only the three children are cycled.
+/// This is "restart the services we need" rather than a full container death + runtime
+/// restart policy cycle (although a real `docker/podman restart` or TERM to pid 1 still does
+/// the full thing for recovery/crash cases).
+///
+/// A one-shot guard (restart_requested in AppState) ensures that only the first request
+/// schedules the delayed HUP; later POSTs (double-click, F5 on the result URL, etc.)
+/// just re-serve the restarting page without additional side effects.
 pub(crate) async fn system_restart(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
 
-    // Schedule the graceful container restart *after* we have returned the response.
+    // One-shot guard: if a restart was already requested (e.g. rapid re-click or
+    // browser refresh of POST result), just return the page again without rescheduling.
+    {
+        let mut flag = state.restart_requested.lock().await;
+        if *flag {
+            let tpl = RestartingTemplate;
+            return Ok(Html(tpl.render().unwrap()));
+        }
+        *flag = true;
+    }
+
+    // Clear the apply-complete marker (if any) so the JS poller on the restarting
+    // page will not see a stale "done" from a prior run. The marker is (re)created
+    // by the entrypoint only after the full "Services ... recycled" declaration.
+    let _ = std::fs::remove_file("/tmp/.nfs-klldap-services-recycled");
+
+    // Schedule the HUP *after* we have returned the response.
     // The ~1.4 s delay gives the HTTP server time to flush the restarting page + headers
-    // to the browser before we terminate the listener (and the rest of the container).
+    // to the browser before the current WebUI listener is terminated (as part of the
+    // service bounce). The JS in the page then polls for the new UI to come up.
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_millis(1400)).await;
         eprintln!(
-            "INFO: 'Restart and apply' requested by '{}' — triggering graceful shutdown (TERM to pid 1)",
+            "INFO: 'Restart and apply' requested by '{}' — triggering service bounce (HUP to pid 1)",
             user.0
         );
         // Fire-and-forget a tiny shell snippet. We do not wait for it.
-        // This makes the supervisor (pid 1) run its trap cleanup + exit; the runtime
-        // (docker / podman / compose with restart: unless-stopped etc.) brings the
-        // container back up, re-running entrypoint, regenerating, starting daemons + UI.
+        // The HUP handler in entrypoint does the generate + coordinated bounce of
+        // Ganesha/SSSD/WebUI (supervisor stays up; no full container restart).
         let _ = std::process::Command::new("sh")
             .arg("-c")
-            .arg("sleep 0.25; kill -TERM 1 2>/dev/null || true")
+            .arg("sleep 0.25; kill -HUP 1 2>/dev/null || true")
             .spawn();
     });
 

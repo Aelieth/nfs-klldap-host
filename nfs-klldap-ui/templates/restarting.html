@@ -152,17 +152,17 @@
 <body>
     <h1>Restarting to apply changes</h1>
 
-    <p>The container is performing a graceful restart so the updated System Settings (and any shares) are fully applied.</p>
-    <p>NFS service and this WebUI will be unavailable for a short time while the supervisor, Ganesha, SSSD and UI restart. Your Docker / Podman / compose restart policy will automatically bring the container back.</p>
+    <p>Applying updated System Settings (and any shares) by cycling the required services.</p>
+    <p>NFS service and this WebUI will be unavailable for a short time while Ganesha (for exports + core NFS params), SSSD (for idmap / bind / Kerberos bits) and the WebUI (to see the current shares list for the permission tree) are restarted. The supervisor stays up; this is a targeted service bounce rather than a full container stop/start.</p>
 
     <div id="retry" class="status">
         <span class="spinner"></span>
-        <span id="msg">Preparing for shutdown…</span>
+        <span id="msg">Waiting for full service recycle…</span>
     </div>
 
     <p class="small">You will be redirected to the login page automatically when the service is back. Sessions are cleared on restart (log in again with your password or LLDAP account).</p>
 
-    <p class="note"><a href="/login">Manual login link</a> (will work once the container has restarted).</p>
+    <p class="note"><a href="/login">Manual login link</a> (will work once the services are back).</p>
 
     <script>
         (function () {
@@ -174,22 +174,30 @@
                 n += 1;
                 msg.textContent = 'Retrying connection (attempt ' + n + ')…';
                 try {
-                    // Use 'manual' redirect so we see the response even on 3xx.
-                    // Any non-network-error response means the new server is up.
-                    const r = await fetch(origin + '/login', {
+                    // Poll the dedicated status. The Rust handler for /settings/restart
+                    // clears the marker, and the shell's HUP handler only touches
+                    // /tmp/.nfs-klldap-services-recycled *after* logging
+                    // "Services (Ganesha + SSSD + WebUI) recycled in place for config apply."
+                    // This ensures we don't declare success (and redirect) until the
+                    // *full* service restart (not just the new WebUI process binding).
+                    const r = await fetch(origin + '/restart-status', {
                         method: 'GET',
-                        cache: 'no-store',
-                        redirect: 'manual'
+                        cache: 'no-store'
                     });
-                    if (r.type !== 'opaque' && (r.ok || r.status < 500)) {
-                        msg.textContent = 'Service is back. Redirecting to login…';
+                    if (r.ok) {
+                        // Marker present and recent => shell has declared the cycle complete.
+                        msg.textContent = 'Full service recycle complete. Redirecting to login…';
                         setTimeout(function () { window.location.href = '/login'; }, 220);
                         return;
+                    } else if (r.status < 500) {
+                        // A server is responding (old one with cleared marker, or new UI
+                        // up but shell not yet at the "recycled" declaration).
+                        msg.textContent = 'Waiting for full Ganesha+SSSD+WebUI recycle declaration (attempt ' + n + ')…';
                     }
                 } catch (_) {
                     // still down — ignore and retry
                 }
-                if (n > 120) {
+                if (n > 180) {
                     msg.innerHTML = 'Still unreachable after many attempts. <a href="/login">Try the login link</a> or inspect container logs / <code>docker ps</code>.';
                     return;
                 }
@@ -197,8 +205,8 @@
             }
 
             // Give the "preparing" text a moment, then start the loop.
-            // Combined with the handler's ~1.4s delay this ensures the page is fully
-            // delivered before the old server terminates.
+            // The first poll will typically see 503 (marker cleared by the restart
+            // handler) until the shell finishes the full bounce and touches the marker.
             setTimeout(tick, 850);
         })();
     </script>

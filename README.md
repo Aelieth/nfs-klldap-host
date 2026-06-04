@@ -59,7 +59,7 @@ ldap_default_authtok = "strong-secret"
 realm = "EXAMPLE.COM"        # or rely on auto-derivation from ldap_uri host
 ```
 
-# [[shares]] sections are optional for first-run (add via WebUI System Settings or edit here; restart container to activate).
+# [[shares]] sections are optional for first-run (add via WebUI System Settings or edit here; use "Restart and apply" or let the watcher trigger a service bounce to activate).
 
 The generator derives ports, search bases, sssd.conf, krb5.conf, and Ganesha fragments. `kllldap_ignored_attributes = true` (default) emits recommended server-side ignore lists.
 

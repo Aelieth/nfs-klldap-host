@@ -11,7 +11,7 @@ Single TOML (`nfs-klldap.conf`) is the source of truth. `nfs-klldap-config` vali
 | Realm                     | Strictly required. No silent EXAMPLE.COM. Auto-derived from ldap_uri host or NFS_REALM. |
 | ldap_uri                  | DNS hostname only (IP rejected). Forward+reverse DNS required. Keytab: `nfs/<short>@REALM` and `nfs/<fqdn>@REALM` when they differ (`--uts=host`). |
 | Execution                 | Everything (Ganesha, SSSD, WebUI, generator) runs as root inside the container. |
-| Reload                    | Watcher → SIGHUP to pid 1 → generator + permission fixup + daemon restart/reload. No DBUS. |
+| Reload                    | Watcher → SIGHUP to pid 1 → generator + permission fixup + supervisor bounces Ganesha/SSSD/WebUI in place (no full container death). No DBUS. |
 
 ## Volumes (typical)
 

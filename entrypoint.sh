@@ -1,5 +1,9 @@
 #!/bin/bash
 # pid-1 supervisor. Heavy logic lives in the Rust binaries (nfs-klldap-startup + nfs-klldap-config).
+# Focus is on the services: on config changes (watcher or "Restart and apply" button)
+# we HUP to bounce Ganesha + SSSD + WebUI in place. The supervisor just stays alive
+# (simple loop) to keep traps working. Real TERM causes full cleanup + exit (for
+# container restart policy if desired). No complex death detection.
 set -euo pipefail
 
 # Paths (override for CI/test)
@@ -111,7 +115,13 @@ GANESHA_PID=""
 WEBUI_PID=""
 
 cleanup() {
-    log "INFO" "Shutting down services (received termination signal)..."
+    local reason="${1:-termination signal}"
+    log "INFO" "Shutting down services (received ${reason})..."
+
+    # Prevent re-entrancy: calling exit(0) from a SIG* handler will fire the EXIT trap,
+    # which used to cause duplicate "Shutting down... / Shutdown complete." logs (and
+    # duplicate pkill/sleep work) on TERM-to-pid1 paths.
+    trap - EXIT SIGTERM SIGINT
 
     # Prefer killing tracked PIDs when we have them
     for pidvar in WEBUI_PID GANESHA_PID SSSD_PID WATCHER_PID; do
@@ -133,7 +143,8 @@ cleanup() {
     exit 0
 }
 
-trap cleanup SIGTERM SIGINT EXIT
+trap 'cleanup "termination signal"' SIGTERM SIGINT
+trap 'cleanup "exit"' EXIT
 
 handle_sighup() {
     info "SIGHUP received — reloading configuration via Rust generator..."
@@ -145,19 +156,53 @@ handle_sighup() {
 
     fix_derived_permissions
 
-    # Ask Ganesha to pick up new exports (via our helper or direct signal)
+    # Ganesha: we kill it (or use ctl which does the same) so it re-reads the
+    # freshly generated exports.d/* + ganesha.conf (default_security etc.).
+    # In this DBUS-free setup a full process restart is the reliable way to
+    # activate new/changed [[shares]].
     if [ -x "$GANESHA_CTL" ]; then
-        "$GANESHA_CTL" reload 2>/dev/null || pkill -HUP ganesha.nfsd 2>/dev/null || true
+        "$GANESHA_CTL" reload 2>/dev/null || pkill -TERM ganesha.nfsd 2>/dev/null || true
     else
-        pkill -HUP ganesha.nfsd 2>/dev/null || true
+        pkill -TERM ganesha.nfsd 2>/dev/null || true
     fi
+    sleep 0.3
+    info "Starting NFS-Ganesha..."
+    ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    GANESHA_PID=$!
 
-    # SSSD almost always needs a full restart when its config changes.
+    # SSSD almost always needs a full restart when its config changes (bind DN,
+    # search bases, schema/ignores, krb5 provider bits, etc.).
     pkill -TERM sssd 2>/dev/null || true
-    sleep 1
+    sleep 0.5
     sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} 2>/dev/null &
     SSSD_PID=$!
     info "SSSD restarted after config change"
+
+    # WebUI must also be cycled for share changes: the FsManager + allowed
+    # roots (host_paths from [[shares]]) and some other core settings are
+    # loaded into memory at UI startup (see nfs-klldap-ui/src/fs.rs and config.rs).
+    # "Reload NFS client" only refreshes the LdapClient; shares require process
+    # restart (or a future hot-reload path).
+    if [ -n "${WEBUI_PID:-}" ] && kill -0 "$WEBUI_PID" 2>/dev/null; then
+        kill -TERM "$WEBUI_PID" 2>/dev/null || true
+        sleep 0.3
+    fi
+    info "Starting WebUI on 0.0.0.0:9630 (HTTPS)..."
+    NFS_KLLDAP_CONF="$NFS_CONFIG" \
+    "$UI_BIN" --config "$NFS_CONFIG" \
+        > >(tee -a /var/log/webui.log) 2>&1 &
+    WEBUI_PID=$!
+    sleep 0.8
+    if ! kill -0 "$WEBUI_PID" 2>/dev/null; then
+        warn "WebUI process exited quickly after reload — last log lines:"
+        tail -n 20 /var/log/webui.log 2>/dev/null || true
+    fi
+
+    info "Services (Ganesha + SSSD + WebUI) recycled in place for config apply."
+    # Create the marker *after* the declaration. The /restart-status handler
+    # (polled by restarting.html) will only return 200 for a recent marker.
+    # This is the signal the client waits for before redirecting to /login.
+    touch /tmp/.nfs-klldap-services-recycled
 }
 
 trap 'handle_sighup' SIGHUP
@@ -242,13 +287,27 @@ main() {
     fi
 
 
-    info "All services launched. Supervisor (this process) remains as pid 1 for signal handling."
+    info "All services launched. Supervisor (this process) remains as pid 1."
+    # Ensure no stale apply marker from a previous container run (the button
+    # handler also clears it when starting a restart, and the status handler
+    # has an age check).
+    rm -f /tmp/.nfs-klldap-services-recycled 2>/dev/null || true
     info "Container is ready."
 
-    # Wait for any child to exit. When one dies we exit, letting the container
-    # runtime apply its restart policy. This is the desired behavior for
-    # "unless-stopped", "on-failure", etc.
-    wait
+    # Keep the supervisor alive indefinitely. This is the simplest possible model
+    # focused purely on the services:
+    # - Launches of SSSD + watcher + Ganesha + WebUI happen above (with waits).
+    # - On config change (watcher) or "Restart and apply" button we HUP; handle_sighup
+    #   does generate + fix_perms + bounces Ganesha + SSSD + WebUI (re-assigns PIDs).
+    # - No liveness checks that can false-positive at startup, no reload windows,
+    #   no "child death => supervisor exit" logic (removed the old restart code).
+    # - Supervisor stays up via this loop (which also reaps to avoid zombies).
+    #   Only explicit TERM/INT/EXIT triggers full cleanup + supervisor exit.
+    #   Crashed services simply stay down until next HUP or container restart.
+    while true; do
+        wait -n 2>/dev/null || true   # reap any exited children promptly
+        sleep 5
+    done
 }
 
 main "$@"

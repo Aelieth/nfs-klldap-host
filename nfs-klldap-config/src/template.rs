@@ -55,7 +55,9 @@ default_security = "krb5p"   # krb5p (recommended) | krb5i | krb5
 
 # =============================================================================
 # Optional Shares — add [[shares]] sections (via the WebUI System Settings page
-# or by editing this file). Restart the container after adding/editing shares.
+# or by editing this file). After adding/editing shares use the "Restart and apply"
+# button (or let the config watcher + supervisor bounce the services) so both
+# Ganesha and the WebUI permission tree see the new exports/roots.
 #   host_path = absolute path on the Docker HOST (WebUI chown/chmod allow-list).
 #   Bind-mount so data appears at container_root/name (default /export/<name>).
 # =============================================================================

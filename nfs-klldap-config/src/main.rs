@@ -85,7 +85,7 @@ fn handle_init(path: &Path) -> Result<(), ConfigError> {
     match write_default_config_if_missing(path) {
         Ok(true) => {
             println!("Created default config at {}", path.display());
-            println!("Edit it, then restart the container or send SIGHUP.");
+            println!("Edit it, then use the WebUI 'Restart and apply' (or send SIGHUP to the running container) so Ganesha/SSSD/WebUI pick it up.");
             Ok(())
         }
         Ok(false) => {

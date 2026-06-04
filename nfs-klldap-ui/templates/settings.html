@@ -246,11 +246,11 @@ wireOverride('input[name="override_sssd_enumerate"]', '#sssd_enumerate');
 <div style="margin-top:0.1rem;">
     <strong>Restart and apply</strong><br>
     <span style="font-size:0.82em; color:var(--text-light);">
-        Shares (and some core settings) are loaded at container startup. This performs a graceful restart so the updated config is fully active (NFS will be briefly unavailable).
+        Shares (and some core settings) are loaded at startup of Ganesha and/or the WebUI. This triggers a targeted bounce of Ganesha + SSSD + WebUI (via the supervisor) so the updated config + shares list is fully active. NFS will be briefly unavailable.
     </span>
     <form method="post" action="/settings/restart" style="margin-top:0.45rem;">
-        <button type="submit" class="btn btn-primary" style="padding:8px 16px;"
-                onclick="return confirm('Restart the container now to apply changes? NFS and the WebUI will restart.');">
+        <button type="submit" class="btn btn-danger" style="padding:8px 16px;"
+                onclick="return confirm('Restart services now to apply changes? NFS and the WebUI will be briefly unavailable.');">
             Restart and apply
         </button>
     </form>

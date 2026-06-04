@@ -196,6 +196,7 @@ async fn main() {
         keytab_realm,
         keytab_alert,
         apply_progress: Arc::new(Mutex::new(None)),
+        restart_requested: Arc::new(Mutex::new(false)),
     };
 
     let app = crate::web::router(state);

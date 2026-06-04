@@ -56,7 +56,7 @@ fn main() {
 
 fn print_help() {
     eprintln!(
-        "nfs-klldap-startup — guided container bring-up (3-step TUI; entrypoint orchestrates services)
+        "nfs-klldap-startup v{} — guided container bring-up (3-step TUI; entrypoint orchestrates services)
 
 Usage:
   nfs-klldap-startup run      Run the full guided 3-step waiting TUI until ready
@@ -66,7 +66,8 @@ Hostname / keytab:
   Use --uts=host so the container sees the real Docker host hostname.
   The TUI shows nfs/<hostname>@REALM using that name (short + FQDN principals
   when the hostname contains a dot). You may pass --hostname to override.
-"
+",
+        env!("CARGO_PKG_VERSION")
     );
 }
 

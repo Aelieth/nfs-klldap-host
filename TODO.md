@@ -2,15 +2,6 @@
 
 **Actual implementation in *.rs always wins.** Readmes, TODO, and comments updated to match observed behavior (tests: `cargo test --workspace` green; clippy clean). Documentation kept concise and accessible to non-experts. Only config template + startup TUI kept intentionally verbose for operators.
 
-## Lingering / dead code (may cause issues; left as-is, documented here)
-
-- **entrypoint.sh:215** (the if ! grep aurora.testlabby.local block): always appends a lab-specific /etc/hosts entry on every start if absent. Test artifact. Can pollute container DNS view or conflict on real hosts using that name/IP. Guarded only by comment ("remove prior to release"). Recommend: env guard or delete before wider use.
-- **scripts/fix-keytab-perms.sh**: hard-deprecated; prints message and `exit 1`. No-op for current root-in-container model. Safe (errors loudly) but dead for normal deploys.
-- **Hardcoded versions**: Cargo.toml workspace = "0.7.0"; git branch 0.8; CLI usage texts (nfs-klldap-config main.rs:15, startup help) say "v0.7". No CARGO_PKG_VERSION at runtime. Drift only; no functional impact.
-- **nfs-klldap-ui/src/fs.rs** (apply_permissions, count_applicable, apply_direct, apply_tree): marked #[allow(dead_code)]. Active handlers use the *with_progress / count_*_with_live paths only. These are legacy wrappers (used by internal tests). Kept for compat; harmless.
-- **web/keytab.rs**: KeytabInfo had stray allow(dead_code) (now used by get_keytab_info in settings page); removed during audit.
-- Minor: trailing blank lines in some .rs (trimmed), some internal wrappers only exercised in tests.
-
 All other "partial" / "NEW" markers from prior audits resolved in code; docs now match (structured shares editor fully round-trips common fields + shares; two-tier hostname enforced everywhere; caches, async apply, etc. live).
 
 ## What the code actually does (high level, for docs alignment)

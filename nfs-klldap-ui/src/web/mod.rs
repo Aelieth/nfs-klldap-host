@@ -560,6 +560,35 @@ ldap_default_authtok = "sekret"
 
         let app = router(state);
 
+        // Also exercise the main Share Permissions page (/) to verify the updated share cards
+        // (proper NFS client path using keytab_hostname + the compact new attribute labels).
+        let index_req = Request::builder()
+            .method("GET")
+            .uri("/")
+            .body(Body::empty())
+            .unwrap();
+        let index_req = add_session_cookie(index_req, &token);
+        let resp = app.clone().oneshot(index_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body_str = String::from_utf8_lossy(&body);
+        assert!(
+            body_str.contains("test-host:/data"),
+            "share card must render proper client NFS path (server + export)"
+        );
+        assert!(
+            body_str.contains("/tmp/data"),
+            "share card must still show host_path"
+        );
+        assert!(
+            body_str.contains("Host:"),
+            "share card must include Host: label"
+        );
+        assert!(
+            body_str.contains("RW • no-squash • sync • Default"),
+            "share card must render the compact RW/squash/sync/cache labels (using defaults from test config)"
+        );
+
         // /dir-meta should succeed and return a fragment containing the path
         let meta_req = Request::builder()
             .method("GET")

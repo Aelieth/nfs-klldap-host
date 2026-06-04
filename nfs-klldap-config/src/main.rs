@@ -12,7 +12,7 @@ use nfs_klldap_config::{
 
 fn usage() {
     eprintln!(
-        "nfs-klldap-config v0.7 — type-safe config tool for nfs-klldap-host
+        "nfs-klldap-config v{} — type-safe config tool for nfs-klldap-host
 
 Usage:
   nfs-klldap-config init     --config <path>
@@ -22,7 +22,8 @@ Usage:
 Companion binary:
   nfs-klldap-startup         (guided container startup / orchestration TUI; entrypoint.sh calls it for 3-step readiness)
 
-The binaries are intended to be called by the container entrypoint and the host UI."
+The binaries are intended to be called by the container entrypoint and the host UI.",
+        env!("CARGO_PKG_VERSION")
     );
 }
 

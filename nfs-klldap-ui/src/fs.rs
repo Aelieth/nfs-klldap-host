@@ -168,51 +168,6 @@ impl FsManager {
     /// plugged in here later with no other changes.
     pub fn invalidate_path(&self, _path: &Path) {}
 
-    /// Legacy non-progress apply (delegates to with_progress + dummy). Not used by live handlers.
-    #[allow(dead_code)]
-    pub fn apply_permissions(
-        &self,
-        path: &Path,
-        owner_uid: u32,
-        group_gid: u32,
-        mode: u32,
-        recursive: bool,
-    ) -> Result<ApplyResult, String> {
-        let normalized = self.normalize_for_matching(path);
-        if !self.is_allowed(&normalized) {
-            return Err("Path is outside allowed managed roots".into());
-        }
-
-        // Defense-in-depth policy (refuse dangerous operations before asking the container).
-        if owner_uid == 0 || group_gid == 0 {
-            return Err("Refusing to set UID or GID 0".into());
-        }
-        if mode & 0o7000 != 0 {
-            return Err("Refusing mode with setuid/setgid/sticky bits".into());
-        }
-
-        let target_path = self.host_path_to_container_path(&normalized)?;
-
-        let opts = ApplyOptions {
-            recursive,
-            apply_to_dirs: true,
-            apply_to_files: true,
-            continue_on_error: true,
-            dry_run: false,
-        };
-
-        let dummy = ApplyProgress::default();
-        self.apply_direct_with_progress(&target_path, owner_uid, group_gid, mode, &opts, &dummy)
-            .map_err(|e| format!("apply failed: {}", e))
-    }
-
-    /// Legacy count (delegates). Live path uses count_applicable_with_live.
-    #[allow(dead_code)]
-    pub fn count_applicable(&self, path: &Path, recursive: bool) -> Result<usize, String> {
-        let dummy = ApplyProgress::default();
-        self.count_applicable_with_live(path, recursive, &dummy)
-    }
-
     /// Count variant that increments `progress.processed` as "scanned so far" (for the
     /// "Stand-by, estimating total... scanned N so far [spinner]" live feedback) and
     /// honours cancel. Returns the final count (which becomes `total`).
@@ -309,21 +264,6 @@ impl FsManager {
             "Path {} is not under any configured share host_path",
             host_path.display()
         ))
-    }
-
-    /// Legacy direct wrapper (delegates to progress impl).
-    #[allow(dead_code)]
-    fn apply_direct(
-        &self,
-        path: &Path,
-        uid: u32,
-        gid: u32,
-        mode: u32,
-        opts: &ApplyOptions,
-    ) -> Result<ApplyResult, String> {
-        let dummy = ApplyProgress::default();
-        self.apply_direct_with_progress(path, uid, gid, mode, opts, &dummy)
-            .map_err(|e| format!("apply failed: {}", e))
     }
 
     fn apply_direct_with_progress(
@@ -516,20 +456,6 @@ impl FsManager {
 
         progress.finished.store(true, Ordering::Relaxed);
         Ok(result)
-    }
-
-    /// Internal compat wrapper used by fs tests (delegates to progress impl).
-    #[allow(dead_code)]
-    fn apply_tree(
-        &self,
-        root: &Path,
-        uid: u32,
-        gid: u32,
-        mode: u32,
-        opts: &ApplyOptions,
-    ) -> std::io::Result<ApplyResult> {
-        let dummy = ApplyProgress::default();
-        self.apply_tree_with_progress(root, uid, gid, mode, opts, &dummy)
     }
 
     pub(crate) fn is_allowed(&self, path: &Path) -> bool {
@@ -785,7 +711,7 @@ mod tests {
             dry_run: true,
         };
 
-        let res = fs.apply_tree(&root, 1000, 1000, 0o755, &opts).expect("dry run");
+        let res = fs.apply_tree_with_progress(&root, 1000, 1000, 0o755, &opts, &ApplyProgress::default()).expect("dry run");
         // root + d1 + d2 = 3 changed; the symlink is skipped
         assert!(res.changed >= 3);
         assert!(res.skipped >= 1, "symlink should have been counted as skipped");
@@ -816,7 +742,7 @@ mod tests {
         };
 
         let res = fs
-            .apply_tree(&root, 1000, 1000, 0o755, &opts)
+            .apply_tree_with_progress(&root, 1000, 1000, 0o755, &opts, &ApplyProgress::default())
             .expect("non-recursive dry run");
 
         // target/ (dir) + top.txt — not subdir/ nor nested.txt

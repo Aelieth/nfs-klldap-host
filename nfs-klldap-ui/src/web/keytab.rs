@@ -6,11 +6,13 @@ use nfs_klldap_config::{format_nfs_principal_list, nfs_keytab_host_matches};
 
 /// Rich keytab status for the settings page (get_keytab_info builds full; current callers only use .found_nfs_principals).
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct KeytabInfo {
+    #[allow(dead_code)]
     pub expected_host: String,
+    #[allow(dead_code)]
     pub expected_realm: String,
     pub found_nfs_principals: Vec<String>,
+    #[allow(dead_code)]
     pub alert: Option<String>,
 }
 

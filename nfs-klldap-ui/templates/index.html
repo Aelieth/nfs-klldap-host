@@ -9,15 +9,18 @@
 {% if shares.len() > 0 %}
     <div class="shares-list" style="margin-bottom: 1.5rem;">
         {% for share in shares %}
-            {% set ep = share.export_path.as_deref().unwrap_or(share.name.as_str()) %}
             <div class="share-card"
                  style="padding: 10px 14px; margin-bottom: 8px; border-radius: 6px; cursor: pointer;"
                  data-name="{{ share.name }}"
-                 data-export-path="/{{ ep }}"
-                 data-host-path="{{ share.host_path.display() }}"
+                 data-nfs-path="{{ share.nfs_path }}"
+                 data-host-path="{{ share.host_path }}"
                  onclick="selectShareFromCard(this)">
                 <strong>{{ share.name }}</strong><br>
-                <small style="color: var(--text-muted);">NFS path: <code>/{{ ep }}</code> &nbsp;•&nbsp; Host: <code>{{ share.host_path.display() }}</code></small>
+                <small style="color: var(--text-muted);">NFS: <code>{{ share.nfs_path }}</code></small><br>
+                <small style="color: var(--text-muted);">Host: <code>{{ share.host_path }}</code></small>
+                <div style="margin-top: 3px; font-size: 0.68em; color: var(--text-muted);">
+                    {{ share.access }} • {{ share.squash_label }} • {{ share.sync_label }} • {{ share.cache_profile }}
+                </div>
             </div>
         {% endfor %}
     </div>
@@ -55,10 +58,10 @@
 <script>
     let currentShareName = null;
 
-    function selectShare(name, exportPath, hostPath) {
+    function selectShare(name, nfsPath, hostPath) {
         currentShareName = name;
         document.getElementById('current-share-title').innerHTML =
-            'Directory tree for share <strong>' + name + '</strong> <small>(NFS: ' + exportPath + ')</small>';
+            'Directory tree for share <strong>' + name + '</strong> <small>(NFS: ' + nfsPath + ')</small>';
 
         // Load the share *root* as the top clickable row, with its direct children visible underneath.
         // On completion, auto-select the root dir so the user immediately sees the inline
@@ -82,10 +85,10 @@
     // chars are never interpolated raw into attributes or JS string literals).
     function selectShareFromCard(card) {
         const name = card.dataset.name || '';
-        const exportPath = card.dataset.exportPath || '';
+        const nfsPath = card.dataset.nfsPath || '';
         const hostPath = card.dataset.hostPath || '';
         if (hostPath) {
-            selectShare(name, exportPath, hostPath);
+            selectShare(name, nfsPath, hostPath);
         }
     }
 

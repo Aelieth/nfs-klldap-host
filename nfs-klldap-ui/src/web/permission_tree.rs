@@ -20,7 +20,7 @@ use super::{AppState, require_auth};
 #[derive(Template)]
 #[template(path = "index.html")]
 struct IndexTemplate {
-    shares: Vec<crate::config::Share>,
+    shares: Vec<ShareInfo>,
     current_user: Option<String>,
     keytab_alert: Option<String>,
 }
@@ -45,6 +45,24 @@ struct TreeRootTemplate {
 pub(crate) struct DirNode {
     pub path: String,
     pub name: String,
+}
+
+/// Display row for a share card on the Share Permissions page.
+/// Precomputes the client-visible NFS path (using the effective keytab hostname)
+/// and compact labels for the new attributes (RW/RO, squash, sync, cache profile).
+#[derive(Debug, Clone)]
+struct ShareInfo {
+    pub name: String,
+    /// Full client NFS path, e.g. "myhost:/data" or "myhost:/exports/foo".
+    pub nfs_path: String,
+    pub host_path: String,
+    /// "RW" or "RO"
+    pub access: String,
+    /// "no-squash" or "root-squash"
+    pub squash_label: String,
+    /// "sync" or "async"
+    pub sync_label: String,
+    pub cache_profile: String,
 }
 
 // New inline fragments (the current UX model).
@@ -178,8 +196,69 @@ pub(crate) async fn index(
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
 
+    // Build display-oriented share cards. Centralizes:
+    // - Proper client NFS path using the same keytab_hostname the rest of the system uses
+    //   (so it matches what clients should put in `server:/path` mount commands).
+    // - Compact labels for RW/RO, root-squash/no, sync/async, and cache profile.
+    // This also eliminates the previous ad-hoc `ep` logic + double-slash bug in the template.
+    let server = &state.keytab_hostname;
+    let display_shares: Vec<ShareInfo> = state
+        .config
+        .shares
+        .iter()
+        .map(|s| {
+            let pseudo = s
+                .export_path
+                .as_deref()
+                .map(|p| {
+                    if p.starts_with('/') {
+                        p.to_string()
+                    } else {
+                        format!("/{}", p)
+                    }
+                })
+                .unwrap_or_else(|| format!("/{}", s.name));
+            let nfs_path = format!("{}:{}", server, pseudo);
+
+            let access = if s.rw.unwrap_or(true) {
+                "RW".to_string()
+            } else {
+                "RO".to_string()
+            };
+
+            let root_squash = s.squash.as_deref() == Some("root_squash");
+            let squash_label = if root_squash {
+                "root-squash".to_string()
+            } else {
+                "no-squash".to_string()
+            };
+
+            let sync_label = if s.sync.unwrap_or(true) {
+                "sync".to_string()
+            } else {
+                "async".to_string()
+            };
+
+            let cache_profile = s
+                .cache_profile
+                .clone()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "Default".to_string());
+
+            ShareInfo {
+                name: s.name.clone(),
+                nfs_path,
+                host_path: s.host_path.display().to_string(),
+                access,
+                squash_label,
+                sync_label,
+                cache_profile,
+            }
+        })
+        .collect();
+
     let tpl = IndexTemplate {
-        shares: state.config.shares.clone(),
+        shares: display_shares,
         current_user: Some(user.0),
         keytab_alert: state.keytab_alert.clone(),
     };

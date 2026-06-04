@@ -220,6 +220,7 @@ pub async fn setup_password(
     }
 }
 
+
 /// GET|POST /logout — clears the session server-side and the cookie.
 pub async fn logout(State(state): State<super::AppState>, headers: HeaderMap) -> impl IntoResponse {
     for token in extract_all_session_tokens_from_headers(&headers) {

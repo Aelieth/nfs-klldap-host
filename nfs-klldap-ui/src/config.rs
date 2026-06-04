@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub use nfs_klldap_config::{NfsKlldapConfig as Config, Share};
+pub use nfs_klldap_config::NfsKlldapConfig as Config;
 
 pub fn load_config_from(path: &Path) -> Result<Config, String> {
     if !path.exists() {

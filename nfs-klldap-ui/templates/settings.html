@@ -122,11 +122,11 @@
     <div style="display:flex;gap:6px;margin-bottom:1px;font-size:0.62em;color:var(--text-muted);font-weight:600;">
         <span style="width:115px">Name <span style="color:var(--warning-amber-text)">*</span></span>
         <span style="flex:1">Host Path <span style="color:var(--warning-amber-text)">*</span></span>
-        <span style="width:130px">Export (opt)</span>
         <span style="width:90px" title="per-share Kerberos security (leave default to use [ganesha] default_security)">Sec (opt)</span>
         <span style="width:65px">Access</span>
         <span style="width:50px" title="root_squash (instead of no_root_squash)">RootSq</span>
         <span style="width:45px" title="Sync writes (default true; omit in conf when default)">Sync</span>
+        <span style="width:110px" title="PrefRead bytes (optional) — larger values enable better client readahead for streaming/large files. 1M-2M for Min/random/gaming ISOs; 16M-64M for Max/4K/HDD streaming. Omit for Ganesha default (64M).">PrefRd (opt)</span>
         <span style="width:18px"></span>
     </div>
     <div id="shares-container">
@@ -134,7 +134,7 @@
         <div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
             <input name="share_name_{{ row.idx }}" value="{{ row.name }}" style="width:115px" placeholder="name">
             <input name="share_host_{{ row.idx }}" value="{{ row.host_path }}" style="flex:1" placeholder="host_path">
-            <input name="share_export_{{ row.idx }}" value="{{ row.export_path }}" style="width:130px" placeholder="/pseudo (opt)">
+            <input type="hidden" name="share_export_{{ row.idx }}" value="{{ row.export_path }}">
             <select name="share_security_{{ row.idx }}" style="width:90px">
                 <option value="">default</option>
                 <option value="krb5p" {% if row.security == "krb5p" %}selected{% endif %}>krb5p</option>
@@ -147,6 +147,7 @@
             </select>
             <input type="checkbox" name="share_root_squash_{{ row.idx }}" {% if row.root_squash %}checked{% endif %} style="width:50px;margin-top:3px;" title="root_squash">
             <input type="checkbox" name="share_sync_{{ row.idx }}" {% if row.sync %}checked{% endif %} style="width:45px;margin-top:3px;" title="sync writes (default)">
+            <input name="share_pref_read_{{ row.idx }}" value="{{ row.pref_read }}" style="width:110px" placeholder="e.g. 16777216" title="PrefRead bytes (opt)">
             <button type="button" onclick="this.closest('.share-row').remove()">×</button>
         </div>
         {% endfor %}
@@ -163,7 +164,8 @@
 
 <script>
 // nextShareIdx initialized from server (len of rendered current shares) so added rows
-// never collide with existing idx values used for name/host/export/security fields.
+// never collide with existing idx values used for name/host/security fields.
+
 let nextShareIdx = {{ next_share_idx }};
 
 function addShareRow() {
@@ -174,7 +176,6 @@ function addShareRow() {
     d.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;';
     d.innerHTML = `<input name="share_name_${idx}" placeholder="name" style="width:115px">
                    <input name="share_host_${idx}" placeholder="host_path" style="flex:1">
-                   <input name="share_export_${idx}" placeholder="/pseudo (opt)" style="width:130px">
                    <select name="share_security_${idx}" style="width:90px">
                      <option value="">default</option>
                      <option value="krb5p">krb5p</option>
@@ -187,6 +188,7 @@ function addShareRow() {
                    </select>
                    <input type="checkbox" name="share_root_squash_${idx}" style="width:50px;margin-top:3px;" title="root_squash">
                    <input type="checkbox" name="share_sync_${idx}" checked style="width:45px;margin-top:3px;" title="sync writes (default)">
+                   <input name="share_pref_read_${idx}" style="width:110px" placeholder="e.g. 16777216" title="PrefRead bytes (opt)">
                    <button type="button" onclick="this.closest('.share-row').remove()">×</button>`;
     c.appendChild(d);
 }

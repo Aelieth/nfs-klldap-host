@@ -192,6 +192,17 @@ impl NfsKlldapConfig {
                     )));
                 }
             }
+            // Validate optional pref_read (read-ahead size for streaming/large files)
+            if let Some(v) = share.pref_read {
+                const MIN: u64 = 512;
+                const MAX: u64 = 64 * 1024 * 1024;
+                if !(MIN..=MAX).contains(&v) {
+                    return Err(ConfigError::Validation(format!(
+                        "share '{}' pref_read must be between {} and {} bytes (got {}) — use e.g. 1048576 for 1 MiB (Min/ISO) or 16777216 for 16 MiB (Max/streaming)",
+                        share.name, MIN, MAX, v
+                    )));
+                }
+            }
         }
 
         // Require bind credentials for sssd

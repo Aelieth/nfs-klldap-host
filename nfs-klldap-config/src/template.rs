@@ -70,6 +70,10 @@ default_security = "krb5p"   # krb5p (recommended) | krb5i | krb5
 # rw = true                 # default RW; set false for RO (or use UI dropdown)
 # # squash omitted means no_root_squash; UI has "root_squash" checkbox to set "root_squash"
 # # sync omitted means true (safer synchronous writes); set false to disable
+# # pref_read omitted = Ganesha default (64 MiB PrefRead). For read-ahead / streaming/large files:
+# #   "Min" (gaming ISOs, random-ish, low latency): 1048576 or 2097152 (1-2 MiB)
+# #   "Max" (4K streaming, huge seq files on HDD): 16777216 (16 MiB) or 67108864 (64 MiB)
+# #   Value is bytes; must be 512..64M. Raw TOML or UI structured shares editor.
 "#
     .to_string()
 }

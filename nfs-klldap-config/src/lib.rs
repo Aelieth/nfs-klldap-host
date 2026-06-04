@@ -195,6 +195,21 @@ mod tests {
     }
 
     #[test]
+    fn invalid_pref_read_rejected() {
+        let mut c = minimal_cfg();
+        c.shares[0].pref_read = Some(64 * 1024 * 1024 + 1);
+        assert!(c.validate_and_derive().is_err(), "above max must be rejected");
+
+        let mut c2 = minimal_cfg();
+        c2.shares[0].pref_read = Some(1);
+        assert!(c2.validate_and_derive().is_err(), "below min must be rejected");
+
+        let mut c3 = minimal_cfg();
+        c3.shares[0].pref_read = Some(16 * 1024 * 1024);
+        assert!(c3.validate_and_derive().is_ok(), "valid 16M streaming value accepted");
+    }
+
+    #[test]
     fn load_host_paths_only_returns_only_host_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("partial.conf");

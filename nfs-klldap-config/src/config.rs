@@ -289,6 +289,20 @@ pub struct Share {
     /// Whether to use synchronous writes for this share (default true for safety).
     /// If None or true, the key is typically omitted from nfs-klldap.conf (default behavior).
     pub sync: Option<bool>,
+    /// Optional PrefRead size in bytes for this export (Ganesha EXPORT.PrefRead).
+    /// Controls the preferred read size advertised to NFS clients, which influences
+    /// client readahead behavior for sequential/streaming access to large files.
+    ///
+    /// Common values (bytes):
+    /// - omit (None): Ganesha default (64 MiB) — good general case
+    /// - 1048576 (1 MiB) or 2097152: "Min" — smaller chunks, lower latency for random-ish
+    ///   workloads such as mounted game ISOs / CDs
+    /// - 16777216 (16 MiB) or 67108864 (64 MiB): "Max" — aggressive readahead for large
+    ///   sequential streaming (4K video, huge files) especially on spinning HDD backing storage
+    ///
+    /// Only values in 512..64MiB are valid (enforced at validation). When set, emitted as
+    /// `PrefRead = N;` in the generated EXPORT block. Omitted keys use Ganesha's built-in default.
+    pub pref_read: Option<u64>,
 }
 
 impl Default for Share {
@@ -301,6 +315,7 @@ impl Default for Share {
             rw: Some(true),
             squash: Some("no_root_squash".to_string()),
             sync: Some(true),
+            pref_read: None,
         }
     }
 }

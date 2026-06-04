@@ -63,6 +63,8 @@ realm = "EXAMPLE.COM"        # or rely on auto-derivation from ldap_uri host
 
 The generator derives ports, search bases, sssd.conf, krb5.conf, and Ganesha fragments. `kllldap_ignored_attributes = true` (default) emits recommended server-side ignore lists.
 
+Per-share Ganesha options (in [[shares]]) include `sync`, and `pref_read` (bytes) for tuning client readahead on streaming or large-file workloads (e.g. 1 MiB "min" for random/gaming ISOs; 16-64 MiB "max" for sequential 4K/HDD streaming). See the default template comments or WebUI /settings shares editor for examples. Raw TOML always supports any valid Ganesha EXPORT key as fallback.
+
 ## WebUI (9630)
 
 - `/` — Live FS tree browser (under shares) + KLLDAP user/group search + direct recursive chown/chmod.

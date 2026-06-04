@@ -418,6 +418,13 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         let squash = share.squash.as_deref().unwrap_or("no_root_squash");
         let sync = if share.sync.unwrap_or(true) { "true" } else { "false" };
 
+        // Optional per-share I/O tuning for read-ahead / streaming (large files).
+        // Emitted only when set so that source TOML stays clean when using defaults.
+        let pref_read_line = share
+            .pref_read
+            .map(|v| format!("    PrefRead = {};\n", v))
+            .unwrap_or_default();
+
         let block = format!(
             r#"# Generated from nfs-klldap.conf share "{}"
 EXPORT {{
@@ -430,13 +437,13 @@ EXPORT {{
     Transports = TCP;
     Squash = {};
     Sync = {};
-
+{pref_read_line}
     FSAL {{
         Name = VFS;
     }}
 }}
 "#,
-            share.name, export_id, path, pseudo, access, sec, squash, sync
+            share.name, export_id, path, pseudo, access, sec, squash, sync, pref_read_line = pref_read_line
         );
 
         let filename = format!("{:02}-{}.conf", i + 10, sanitize_name(&share.name));
@@ -466,5 +473,61 @@ mod tests {
             derive_export_id("movies", 1000),
             derive_export_id("data", 1000)
         );
+    }
+
+    #[test]
+    fn pref_read_emitted_conditionally_in_export_fragment() {
+        // Build a minimal valid config with one share requesting a specific PrefRead (16 MiB "Max" streaming case)
+        let mut cfg = crate::NfsKlldapConfig {
+            ldap_uri: "ldaps://k.test:6360".into(),
+            sssd: crate::SssdSection {
+                ldap_default_bind_dn: "uid=admin,ou=people,dc=test,dc=com".into(),
+                ldap_default_authtok: "sekret".into(),
+                ..Default::default()
+            },
+            shares: vec![crate::Share {
+                name: "stream".into(),
+                host_path: "/media/stream".into(),
+                pref_read: Some(16 * 1024 * 1024),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        cfg.validate_and_derive().expect("valid test config");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let exports_dir = tmp.path().join("exports.d");
+        let paths = crate::GenerationPaths {
+            sssd_conf: tmp.path().join("sssd.conf"),
+            krb5_conf: tmp.path().join("krb5.conf"),
+            ganesha_conf: tmp.path().join("ganesha.conf"),
+            exports_dir: exports_dir.clone(),
+        };
+        crate::generate_all(&cfg, &paths).expect("generate");
+
+        let frag_path = exports_dir.join("10-stream.conf");
+        let frag = std::fs::read_to_string(&frag_path).unwrap_or_else(|_| {
+            // Fallback search in case naming shifts
+            let mut s = String::new();
+            if let Ok(rd) = std::fs::read_dir(&exports_dir) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.to_string_lossy().contains("stream") {
+                        s = std::fs::read_to_string(p).unwrap_or_default();
+                        break;
+                    }
+                }
+            }
+            s
+        });
+        assert!(
+            frag.contains("PrefRead = 16777216;"),
+            "expected PrefRead line for streaming share, got:\n{}",
+            frag
+        );
+        // Sanity: the rest of the block is still there
+        assert!(frag.contains("EXPORT {"));
+        assert!(frag.contains("Sync = true;"));
+        // When omitted, no PrefRead line at all (tested indirectly via other generation paths)
     }
 }

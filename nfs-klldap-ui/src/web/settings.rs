@@ -151,6 +151,7 @@ struct ShareFormRow {
     rw: bool,
     root_squash: bool,
     sync: bool,
+    pref_read: Option<String>,
 }
 
 /// Template row for server-rendered shares in the structured editor (string values for simple Askama rendering).
@@ -164,6 +165,7 @@ struct ShareTemplateRow {
     rw: bool,
     root_squash: bool,
     sync: bool,
+    pref_read: String,
 }
 
 /// Returns true if `key` is explicitly present in the (raw, pre-derive) TOML source.
@@ -244,6 +246,7 @@ fn build_settings_template(
             rw: s.rw.unwrap_or(true),
             root_squash: s.squash.as_deref() == Some("root_squash"),
             sync: s.sync.unwrap_or(true),
+            pref_read: s.pref_read.map(|v| v.to_string()).unwrap_or_default(),
         })
         .collect();
     let next_share_idx = current_shares.len();
@@ -329,6 +332,10 @@ fn collect_shares_from_structured_form(
                     .unwrap_or(true);
                 let root_squash = extra.contains_key(&format!("share_root_squash_{}", idx));
                 let sync = extra.contains_key(&format!("share_sync_{}", idx));
+                let pref_read = extra
+                    .get(&format!("share_pref_read_{}", idx))
+                    .cloned()
+                    .filter(|s| !s.trim().is_empty());
                 share_rows.push(ShareFormRow {
                     idx,
                     name,
@@ -338,6 +345,7 @@ fn collect_shares_from_structured_form(
                     rw,
                     root_squash,
                     sync,
+                    pref_read,
                 });
             }
         }
@@ -358,6 +366,7 @@ fn collect_shares_from_structured_form(
                 None // omit default so it doesn't get written to raw toml
             },
             sync: Some(r.sync),
+            pref_read: r.pref_read.and_then(|s| s.trim().parse::<u64>().ok()),
         })
         .collect()
 }
@@ -724,6 +733,9 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
         let sync = s.sync.unwrap_or(true);
         if !sync {
             t["sync"] = toml_edit::value(false);
+        }
+        if let Some(pr) = s.pref_read {
+            t["pref_read"] = toml_edit::value(pr as i64);
         }
         shares.push(t);
     }

@@ -120,46 +120,20 @@ Note: to optimize performance for sequential workloads, set read_ahead_kb on the
 
 Environment variables are availble to those that prefer them, but not necessary to run nfs-klldap-host as walking through the TUI or a pre-configured nfs-klldap.conf maybe used. 
 
-Core `nfs-klldap.conf` options (not every advanced `[sssd]` field) plus select runtime options can be supplied or overridden via environment variables at container start (`docker -e` or compose `environment:`). Environment variables always win over file values. This enables secrets injection, 12-factor deploys, and minimal TOML files.
+Not every advanced `[sssd]` option is exposed via env. The core options (LDAP URI + binds, realm, hostname, storage root, Ganesha default security, WebUI admin group, KLLDAP ignored attributes, SSSD TLS fields, and `[webui]`) can be supplied or overridden using `NFS_KLLDAP_*` (preferred) or `WEBUI_*` variables. `NFS_REALM` / `REALM` legacy aliases are preserved. Environment variables always win and allow omitting the corresponding keys from `nfs-klldap.conf` in many cases.
 
-| Variable                                   | Default                          | Example                                      | Description |
-|--------------------------------------------|----------------------------------|----------------------------------------------|-------------|
-| `NFS_CONFIG`                               | `/config/nfs-klldap.conf`        | `/config/nfs-klldap.conf`                    | Path to the central `nfs-klldap.conf` (single source of truth TOML). Override if you mount the config volume to a different container path. |
-| `NFS_KLLDAP_LDAP_URI`                      | *(required)*                     | `ldaps://kllap.example.com:6360`             | LDAP(S) server URI. **Must** include port and use a resolvable DNS hostname (IPs are rejected for Kerberos reasons). |
-| `NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN`     | *(required)*                     | `uid=admin,ou=people,dc=example,dc=com`      | Full bind DN (or identity) used by SSSD for LDAP lookups. |
-| `NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK`     | *(required)*                     | `strong-secret`                              | Bind password / authentication token for the above DN. |
-| `NFS_KLLDAP_LLDAP_USER`                    | *(compat alias)*                 | `uid=admin,ou=people,dc=example,dc=com`      | Alias that also sets the bind DN. Honored by the WebUI for live directory queries (in addition to generate/TUI). |
-| `NFS_KLLDAP_LLDAP_PW`                      | *(compat alias)*                 | `strong-secret`                              | Alias that also sets the bind password. |
-| `NFS_KLLDAP_KERBEROS_REALM`                | *(derived from `ldap_uri` host)* | `EXAMPLE.COM`                                | Kerberos realm. Overrides automatic derivation from the LDAP URI hostname. |
-| `NFS_REALM`                                | *(legacy alias)*                 | `EXAMPLE.COM`                                | Legacy alias for realm (still supported). |
-| `REALM`                                    | *(legacy)*                       | `EXAMPLE.COM`                                | Older legacy alias for realm. |
-| `NFS_KLLDAP_SERVER_HOSTNAME`               | *(container hostname)*           | `myhost.example.com`                         | Optional override for the hostname used when matching keytab `nfs/<host>` principals. Strongly prefer `docker run --uts=host`. |
-| `NFS_KLLDAP_STORAGE_CONTAINER_ROOT`        | `/export`                        | `/export`                                    | Container mount point for exported data. Must match the target of your `-v /host/data:/export` (or compose equivalent). |
-| `NFS_KLLDAP_GANESHA_DEFAULT_SECURITY`      | `krb5p`                          | `krb5p`                                      | Default Ganesha security type for exports: `krb5p` (recommended), `krb5i`, or `krb5`. Can be overridden per `[[shares]]`. |
-| `NFS_KLLDAP_MANAGEMENT_WEBUI_ADMIN_GROUP`  | `lldap_admin`                    | `lldap_admin`                                | Name of the LLDAP group whose members are granted WebUI admin rights (alongside the localhost `webui-password` sidecar). |
-| `NFS_KLLDAP_SSSD_KLLLDAP_IGNORED_ATTRIBUTES` | `true`                         | `true`                                       | Boolean (accepts `true`/`1`/`yes`/`on`). When enabled (default), the generator emits KLLDAP-specific `ignored_*_attributes` blocks into `sssd.conf`. |
-| `NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT`         | *(none / derived)*               | `never`                                      | Value for SSSD `ldap_tls_reqcert` (commonly `never` when using self-signed/internal CAs). |
-| `NFS_KLLDAP_SSSD_LDAP_TLS_CACERT`          | *(none)*                         | `/config/ca.pem`                             | Absolute path inside the container to a CA certificate file for verifying the LDAP server. |
-| `NFS_KLLDAP_SSSD_LDAP_ID_USE_START_TLS`    | `false`                          | `true`                                       | Boolean. When true, emits `ldap_id_use_start_tls = true` (only valid with plain `ldap://` URIs, not `ldaps://`). |
-| `WEBUI_TLS`                                | *(TLS enabled)*                  | `off`                                        | Set to `off` / `false` / `0` / `no` (case-insensitive) to disable the WebUI's internal TLS server (plain HTTP for reverse-proxy frontends). |
-| `WEBUI_TLS_CERT`                           | *(self-signed in container)*     | `/config/webui.crt`                          | Custom cert PEM path for the WebUI. Takes precedence over `[webui] tls_cert` in the TOML. |
-| `WEBUI_TLS_KEY`                            | *(self-signed in container)*     | `/config/webui.key`                          | Custom key PEM path (recommend 0600). Precedence same as cert. |
-| `NFS_KLLDAP_WEBUI_TLS` / `_CERT` / `_KEY`  | *(prefixed aliases)*             | `off`                                        | `NFS_KLLDAP_WEBUI_*` variants of the three `WEBUI_TLS*` variables (consistent naming with the rest of the `NFS_KLLDAP_*` set). |
-| `WEBUI_BIND`                               | `0.0.0.0:9630`                   | `127.0.0.1:9630`                             | Listen address and port for the WebUI (both TLS and plain-http modes). |
+Example in compose:
 
-### Additional / operational environment variables
+```
+environment:
+  NFS_KLLDAP_LDAP_URI: ldaps://kllap.example.com:6360
+  NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN: uid=admin,ou=people,dc=example,dc=com
+  NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK: "..."
+  NFS_REALM: EXAMPLE.COM
+  WEBUI_TLS: "off"
+```
 
-These are less commonly needed:
-
-| Variable                     | Default   | Example | Description |
-|------------------------------|-----------|---------|-------------|
-| `LOG_FORMAT`                 | `text`    | `json`  | Container stdout log format: `text` (default) or `json`. |
-| `SSSD_DEBUG_LEVEL`           | *(unset)* | `4`     | When set, passed as `-d $SSSD_DEBUG_LEVEL` to the `sssd` daemon for increased verbosity. |
-| `WATCHER_DEBOUNCE_SECONDS`   | `2`       | `1`     | Seconds to sleep after detecting a config file change (via inotify) before signaling the supervisor for reload. |
-
-A small number of path/binary overrides (`SSSD_CONF`, `GANESHA_CONF`, `CONFIG_BIN`, `HEALTHCHECK`, etc.) and `NFS_KLLDAP_CONF` exist primarily for testing, CI, and image development. Typical users set `NFS_CONFIG` (which also drives `NFS_KLLDAP_CONF` for the WebUI) instead.
-
-See [docs/run/README.md](docs/run/README.md) for reverse-proxy setup, `WEBUI_TLS=off` behavior, and compose examples.
+See [docs/run/README.md](docs/run/README.md) for environment variables and reverse-proxy setup, `WEBUI_TLS=off` behavior, and compose examples.
 
 ## WebUI (9630)
 

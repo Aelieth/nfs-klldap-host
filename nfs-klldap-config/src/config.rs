@@ -282,15 +282,15 @@ pub struct ManagementSection {
 }
 
 /// WebUI runtime options (single-source in nfs-klldap.conf under [webui]).
-/// These align with the existing WEBUI_* env vars (env takes precedence at runtime).
-/// tls=false (or WEBUI_TLS=off/false) disables internal TLS for reverse-proxy setups.
+/// These align with NFS_KLLDAP_WEBUI_* env vars (env takes precedence at runtime; only prefixed forms supported).
+/// tls=false (or NFS_KLLDAP_WEBUI_TLS=off/false) disables internal TLS for reverse-proxy setups.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebuiSection {
-    /// If Some(false), equivalent to WEBUI_TLS=off (reverse proxy mode; plain HTTP + X-Forwarded-Proto).
+    /// If Some(false), equivalent to NFS_KLLDAP_WEBUI_TLS=off (reverse proxy mode; plain HTTP + X-Forwarded-Proto).
     pub tls: Option<bool>,
-    /// Optional path to custom cert PEM (WEBUI_TLS_CERT env wins).
+    /// Optional path to custom cert PEM (NFS_KLLDAP_WEBUI_TLS_CERT env wins).
     pub tls_cert: Option<String>,
-    /// Optional path to custom key PEM (WEBUI_TLS_KEY env wins).
+    /// Optional path to custom key PEM (NFS_KLLDAP_WEBUI_TLS_KEY env wins).
     pub tls_key: Option<String>,
 }
 

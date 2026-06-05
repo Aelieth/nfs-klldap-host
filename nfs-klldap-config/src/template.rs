@@ -43,10 +43,10 @@ ldap_default_authtok = "strong-secret"
 # ldap_user_search_base = "ou=people,dc=example,dc=com"         # Default - Edit this if your base user OU differs
 # ldap_group_search_base = "ou=groups,dc=example,dc=com"        # Default - Edit this if your base user OU differs
 kllldap_ignored_attributes = true                               # KLLDAP specific - improves lookup time, prevents attribute spam
-# Cert / SSL options for ldaps:// or STARTTLS (self-signed LLDAP common in labs):
-# ldap_tls_reqcert = "never"                                  # typical for internal/self-signed
-# ldap_tls_cacert = "/path/to/ca.pem"                         # when using custom CA instead of never
-# ldap_id_use_start_tls = true                                # only with ldap:// + STARTTLS (not ldaps://)
+
+# ldap_tls_reqcert = "never"                                    # auto-dervived - typical for internal/self-signed
+# ldap_tls_cacert = "/path/to/ca.pem"                           # when using custom CA instead of never
+# ldap_id_use_start_tls = true                                  # only with ldap:// + STARTTLS (not ldaps://)
 
 [kerberos]
 # realm = "EXAMPLE.COM"                                         # Default - auto-derived from ldap_uri host, edit to override
@@ -55,9 +55,9 @@ kllldap_ignored_attributes = true                               # KLLDAP specifi
 default_security = "krb5p"                                      # securtiy, krb5p (default) | krb5i | krb5
 
 [webui]
-# WEBUI_TLS = false                                           # commented off by default (tls on). Set tls = false (or use WEBUI_TLS=off env) for reverse-proxy (Caddy/Nginx/Traefik) in front; plain HTTP inside + X-Forwarded-Proto: https required.
-# tls_cert = "/config/webui.crt"                              # optional custom cert (WEBUI_TLS_CERT env wins)
-# tls_key = "/config/webui.key"                               # optional custom key (WEBUI_TLS_KEY env wins; 0600)
+# WEBUI_TLS = false                                             # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
+# tls_cert = "/config/webui.crt"                                # optional custom cert (NFS_KLLDAP_WEBUI_TLS_CERT env wins)
+# tls_key = "/config/webui.key"                                 # optional custom key (NFS_KLLDAP_WEBUI_TLS_KEY env wins; 0600)
 
 "#
     .to_string()

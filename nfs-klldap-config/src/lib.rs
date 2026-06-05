@@ -85,7 +85,8 @@ mod tests {
     }
 
     /// Returns a Vec of EnvGuard that will restore previous values (or absence)
-    /// for every process environment variable consulted by `apply_core_env_overrides`.
+    /// for every process environment variable consulted by `apply_core_env_overrides`
+    /// (NFS_KLLDAP_* prefixed forms only after cleanup).
     /// The returned value must be kept alive for the duration of any validate_and_derive
     /// (or minimal_cfg + subsequent re-validate) calls in the test. Holding the ENV_LOCK
     /// is still required by the caller to serialize against other env-mutating tests.
@@ -108,11 +109,6 @@ mod tests {
             "NFS_KLLDAP_WEBUI_TLS",
             "NFS_KLLDAP_WEBUI_TLS_CERT",
             "NFS_KLLDAP_WEBUI_TLS_KEY",
-            "WEBUI_TLS",
-            "WEBUI_TLS_CERT",
-            "WEBUI_TLS_KEY",
-            "NFS_REALM",
-            "REALM",
         ];
         vars.iter().map(|&k| EnvGuard::remove(k)).collect()
     }
@@ -327,7 +323,7 @@ mod tests {
         let err = c.validate_and_derive().unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("kerberos.realm is required"));
-        assert!(msg.contains("NFS_REALM"));
+        assert!(msg.contains("NFS_KLLDAP_KERBEROS_REALM"));
 
         // Good realm passes.
         c.kerberos.realm = Some("MY.REALM".into());
@@ -339,7 +335,7 @@ mod tests {
     fn realm_from_env_works() {
         let _env = ENV_LOCK.lock().unwrap();
         let _guards = clean_core_env();
-        let _guard = EnvGuard::set("NFS_REALM", "ENV.REALM");
+        let _guard = EnvGuard::set("NFS_KLLDAP_KERBEROS_REALM", "ENV.REALM");
 
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://kllap.test:6360".into(),
@@ -366,7 +362,7 @@ mod tests {
         let _g1 = EnvGuard::set("NFS_KLLDAP_LDAP_URI", "ldaps://envhost.testdomain.com:6360");
         let _g2 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN", "uid=envadmin,ou=people,dc=example,dc=com");
         let _g3 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK", "env-secret-123");
-        let _g4 = EnvGuard::set("WEBUI_TLS", "off");
+        let _g4 = EnvGuard::set("NFS_KLLDAP_WEBUI_TLS", "off");
         let _g5 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT", "never");
 
         let mut c = NfsKlldapConfig {

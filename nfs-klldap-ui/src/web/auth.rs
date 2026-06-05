@@ -286,11 +286,11 @@ fn insert_session_clear_cookie(
 }
 
 /// Returns the value for the Secure flag on cookies for this request.
-/// Prefers explicit WEBUI_COOKIE_SECURE (legacy escape hatch, for setups that
-/// already relied on forcing the bit off even when TLS was on). When absent,
+/// Prefers explicit NFS_KLLDAP_WEBUI_COOKIE_SECURE (escape hatch for setups that
+/// need to force the bit off even when TLS was on). When absent,
 /// delegates to the smart detection (direct TLS or X-Forwarded-Proto: https).
 fn effective_cookie_secure(state: &super::AppState, headers: &HeaderMap) -> bool {
-    if let Ok(v) = std::env::var("WEBUI_COOKIE_SECURE") {
+    if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_COOKIE_SECURE") {
         let v = v.trim().to_ascii_lowercase();
         return !(v == "0" || v == "false" || v == "off" || v == "no");
     }
@@ -299,7 +299,7 @@ fn effective_cookie_secure(state: &super::AppState, headers: &HeaderMap) -> bool
 
 /// Centralized session cookie builder (single source of truth).
 /// Secure bit is now conditional on effective https (direct or via proxy header),
-/// while still honoring the legacy WEBUI_COOKIE_SECURE override.
+/// while still honoring the NFS_KLLDAP_WEBUI_COOKIE_SECURE override.
 fn build_session_cookie(state: &super::AppState, req_headers: &HeaderMap, token: &str) -> String {
     let max_age = cookie::time::Duration::seconds(12 * 3600);
 
@@ -326,14 +326,13 @@ fn build_clear_session_cookie(state: &super::AppState, req_headers: &HeaderMap) 
     cookie.to_string()
 }
 
-/// Legacy env-only decider for the Secure cookie bit (still used by unit test).
+/// Env-only decider for the Secure cookie bit (still used by unit test).
 /// The primary logic now lives in `effective_cookie_secure` (which respects this
 /// env when present, else delegates to `AppState::is_https` for direct_tls or
-/// X-Forwarded-Proto). Kept so existing tests + any external callers of the
-/// old name continue to work.
+/// X-Forwarded-Proto). Kept so existing tests continue to work.
 #[allow(dead_code)]
 fn cookie_secure() -> bool {
-    std::env::var("WEBUI_COOKIE_SECURE")
+    std::env::var("NFS_KLLDAP_WEBUI_COOKIE_SECURE")
         .map(|v| {
             let v = v.trim().to_ascii_lowercase();
             !(v == "0" || v == "false" || v == "off" || v == "no")

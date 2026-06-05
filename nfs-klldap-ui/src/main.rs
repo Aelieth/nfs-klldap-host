@@ -169,11 +169,11 @@ async fn main() {
         eprintln!("WARNING: {}", msg);
     }
 
-    // WEBUI_BIND is used for both TLS and plain-http (reverse proxy) modes.
-    let addr = std::env::var("WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
-    // Compute TLS mode with env precedence (WEBUI_TLS=off/false etc.) then [webui] tls from nfs-klldap.conf.
-    // Env handling lives here (and in certs) per alignment task. WEBUI_* envs always win.
-    let webui_tls_off = if let Ok(v) = std::env::var("WEBUI_TLS") {
+    // NFS_KLLDAP_WEBUI_BIND is used for both TLS and plain-http (reverse proxy) modes.
+    let addr = std::env::var("NFS_KLLDAP_WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
+    // Compute TLS mode with env precedence (NFS_KLLDAP_WEBUI_TLS=off/false etc.) then [webui] tls from nfs-klldap.conf.
+    // Env handling lives here (and in certs). Only NFS_KLLDAP_* prefixed forms are supported.
+    let webui_tls_off = if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
         let t = v.trim().to_ascii_lowercase();
         t == "off" || t == "false" || t == "0" || t == "no"
     } else if let Some(t) = config.webui.tls {
@@ -200,7 +200,7 @@ async fn main() {
 
     if webui_tls_off {
         // plain HTTP path (do NOT call ensure_webui_tls_certs).
-        // webui_tls_off computed above with env (WEBUI_TLS=off/false/...) precedence then config.webui.tls.
+        // webui_tls_off computed above with env (NFS_KLLDAP_WEBUI_TLS=off/false/...) precedence then config.webui.tls.
         println!("\nTLS: disabled (reverse proxy mode)");
         println!("Listening on http://{addr}");
         let listener = tokio::net::TcpListener::bind(&addr)
@@ -224,15 +224,15 @@ async fn main() {
 
         // Use a stable absolute path inside the container (created in Dockerfile).
         // This avoids polluting / and works under root-only execution model.
-        // Precedence: WEBUI_TLS_CERT/KEY env > [webui] tls_cert/tls_key in nfs-klldap.conf > built-in default path.
+        // Precedence: NFS_KLLDAP_WEBUI_TLS_CERT/KEY env > [webui] tls_cert/tls_key in nfs-klldap.conf > built-in default path.
         // (Env handling + conf alignment explicit here in main.rs.)
         let default_cert = "/var/lib/nfs-klldap/webui-certs/webui.crt".to_string();
         let default_key = "/var/lib/nfs-klldap/webui-certs/webui.key".to_string();
-        let cert_path = std::env::var("WEBUI_TLS_CERT")
+        let cert_path = std::env::var("NFS_KLLDAP_WEBUI_TLS_CERT")
             .ok()
             .or_else(|| config.webui.tls_cert.clone())
             .unwrap_or(default_cert);
-        let key_path = std::env::var("WEBUI_TLS_KEY")
+        let key_path = std::env::var("NFS_KLLDAP_WEBUI_TLS_KEY")
             .ok()
             .or_else(|| config.webui.tls_key.clone())
             .unwrap_or(default_key);
@@ -246,7 +246,7 @@ async fn main() {
         println!("\nTLS: enabled (self-signed or custom)");
         println!("Listening on https://{addr} (TLS enabled via axum-server)");
         println!("Certificate: {}", tls_paths.cert.display());
-        // Note: if WEBUI_TLS_CERT/KEY or [webui] were used, they are reflected in the resolved tls_paths.
+        // Note: if NFS_KLLDAP_WEBUI_TLS_CERT/KEY or [webui] were used, they are reflected in the resolved tls_paths.
 
         let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(
             &tls_paths.cert,

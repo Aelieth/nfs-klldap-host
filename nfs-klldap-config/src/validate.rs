@@ -30,9 +30,9 @@ impl NfsKlldapConfig {
 
     pub fn validate_and_derive(&mut self) -> Result<(), ConfigError> {
         // Apply env overrides for core nfs-klldap.conf options FIRST (env wins over file or absence).
-        // This enables NFS_KLLDAP_* (and WEBUI_*) injection for secrets/compose without requiring
+        // This enables NFS_KLLDAP_* injection for secrets/compose without requiring
         // values in the TOML (parse uses #[serde(default)], validate enforces after apply).
-        // Only core options (per task); not every [sssd] advanced field.
+        // Only core options (per task); not every [sssd] advanced field. Only NFS_KLLDAP_* prefixed forms are supported.
         self.apply_core_env_overrides();
 
         if self.ldap_uri.trim().is_empty() {
@@ -85,24 +85,16 @@ impl NfsKlldapConfig {
             ));
         }
 
-        // Derive realm from ldap_uri if absent; NFS_REALM/REALM env overrides.
+        // Derive realm from ldap_uri if absent; NFS_KLLDAP_KERBEROS_REALM env override (only prefixed form supported).
         if self.kerberos.realm.is_none() {
             if let Some(realm) = crate::derive_realm_from_uri(&self.ldap_uri) {
                 self.kerberos.realm = Some(realm);
             }
         }
-        if let Ok(env_realm) = std::env::var("NFS_REALM") {
+        if let Ok(env_realm) = std::env::var("NFS_KLLDAP_KERBEROS_REALM") {
             let t = env_realm.trim();
             if !t.is_empty() {
                 self.kerberos.realm = Some(t.to_string());
-            }
-        }
-        if self.kerberos.realm.is_none() {
-            if let Ok(env_realm) = std::env::var("REALM") {
-                let t = env_realm.trim();
-                if !t.is_empty() {
-                    self.kerberos.realm = Some(t.to_string());
-                }
             }
         }
 
@@ -115,7 +107,7 @@ impl NfsKlldapConfig {
             {
                 return Err(ConfigError::Validation(
                     "kerberos.realm is required (auto-derivation from ldap_uri failed or produced a placeholder).\n\
-                     Set [kerberos] realm = \"YOUR.REALM\" in nfs-klldap.conf, or provide NFS_REALM env var.\n\
+                     Set [kerberos] realm = \"YOUR.REALM\" in nfs-klldap.conf, or provide NFS_KLLDAP_KERBEROS_REALM env var.\n\
                      Example: realm = \"KRB.EXAMPLE.COM\"".into(),
                 ));
             }
@@ -275,9 +267,8 @@ impl NfsKlldapConfig {
     }
 
     /// Apply env var overrides for *core* nfs-klldap.conf options (env wins).
-    /// Called early in validate_and_derive. Prefixed names for new options (NFS_KLLDAP_*);
-    /// preserves legacy NFS_REALM/REALM and NFS_KLLDAP_LLDAP_* for bind.
-    /// Also supports WEBUI_* (for [webui] alignment) and optional NFS_KLLDAP_SSSD_LDAP_TLS_* for cert options.
+    /// Called early in validate_and_derive. Only NFS_KLLDAP_* prefixed forms are supported
+    /// (no bare WEBUI_* or legacy REALM aliases). NFS_KLLDAP_LLDAP_* kept for bind/UI compat.
     fn apply_core_env_overrides(&mut self) {
         // ldap_uri (top-level core)
         if let Ok(v) = std::env::var("NFS_KLLDAP_LDAP_URI") {
@@ -287,7 +278,7 @@ impl NfsKlldapConfig {
             }
         }
 
-        // [kerberos] realm — support new prefixed + keep existing logic later for REALM
+        // [kerberos] realm (only the NFS_KLLDAP_KERBEROS_REALM prefixed form is supported)
         if let Ok(v) = std::env::var("NFS_KLLDAP_KERBEROS_REALM") {
             let t = v.trim();
             if !t.is_empty() {
@@ -295,7 +286,7 @@ impl NfsKlldapConfig {
             }
         }
 
-        // [sssd] bind creds — core + secret path (LLDAP_* kept for UI compat; also honored for generate/TUI now)
+        // [sssd] bind creds — core + secret path (NFS_KLLDAP_LLDAP_* supported for UI/compat + generate/TUI)
         if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN") {
             let t = v.trim();
             if !t.is_empty() {
@@ -373,25 +364,7 @@ impl NfsKlldapConfig {
             self.sssd.ldap_id_use_start_tls = Some(t == "true" || t == "1" || t == "yes" || t == "on");
         }
 
-        // [webui] — align WEBUI_TLS=false etc. (under [webui] in conf per review)
-        if let Ok(v) = std::env::var("WEBUI_TLS") {
-            let t = v.trim().to_ascii_lowercase();
-            let disabled = t == "off" || t == "false" || t == "0" || t == "no";
-            self.webui.tls = Some(!disabled);
-        }
-        if let Ok(v) = std::env::var("WEBUI_TLS_CERT") {
-            let t = v.trim();
-            if !t.is_empty() {
-                self.webui.tls_cert = Some(t.to_string());
-            }
-        }
-        if let Ok(v) = std::env::var("WEBUI_TLS_KEY") {
-            let t = v.trim();
-            if !t.is_empty() {
-                self.webui.tls_key = Some(t.to_string());
-            }
-        }
-        // Also allow prefixed variants for webui (rare, but consistent)
+        // [webui] TLS mode + certs (only NFS_KLLDAP_WEBUI_* prefixed forms supported; env wins)
         if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
             let t = v.trim().to_ascii_lowercase();
             let disabled = t == "off" || t == "false" || t == "0" || t == "no";

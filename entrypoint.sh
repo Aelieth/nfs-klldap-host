@@ -20,7 +20,7 @@ UI_BIN="${UI_BIN:-/usr/local/bin/nfs-klldap-ui}"
 WATCHER_BIN="${WATCHER_BIN:-/usr/local/bin/nfs-klldap-conf-watcher}"
 GANESHA_CTL="${GANESHA_CTL:-/usr/local/bin/ganesha-ctl}"
 # WebUI TLS certs are now handled internally by nfs-klldap-ui (rcgen self-signed
-# or user-provided via WEBUI_TLS_*). The certs live under
+# or user-provided via NFS_KLLDAP_WEBUI_TLS_*). The certs live under
 # /var/lib/nfs-klldap/webui-certs inside the container.
 HEALTHCHECK="${HEALTHCHECK:-/container/healthcheck.sh}"
 
@@ -273,7 +273,7 @@ main() {
     ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
     GANESHA_PID=$!
 
-    # 4. WebUI (HTTPS on 9630 via axum-server + rustls; self-signed unless WEBUI_TLS_* set)
+    # 4. WebUI (HTTPS on 9630 via axum-server + rustls; self-signed unless NFS_KLLDAP_WEBUI_TLS_* set)
     info "Starting WebUI on 0.0.0.0:9630 (HTTPS)..."
     NFS_KLLDAP_CONF="$NFS_CONFIG" \
     "$UI_BIN" --config "$NFS_CONFIG" \

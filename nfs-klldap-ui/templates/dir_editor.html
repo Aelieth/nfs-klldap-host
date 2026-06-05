@@ -2,7 +2,7 @@
    Searchable text boxes (HTMX live against /users/search + /groups/search, max 25 results).
    Only users with uidNumber and groups with gidNumber are listed (posix accounts).
    Prefilled with friendly owner/group labels when LDAP resolves (same as browse meta), plus hidden uid/gid for Apply.
-   Any POSIX number (e.g. 1000-60000 preferred) can be typed directly; typing letters or digits
+   Any POSIX number (e.g. 0-60000 preferred) can be typed directly; typing letters or digits
    filters the dropdown live by name or number. Focus/click initiates dropdown (no auto-clear).
    Includes recursive checkbox (streamlined but functional).
    Cancel/Apply buttons replace the Edit button during mode.
@@ -23,7 +23,7 @@
                    hx-swap="innerHTML"
                    hx-include="this"
                    hx-params="owner_user"
-                   placeholder="search or 1000-60000"
+                   placeholder="search or 0-60000"
                    autocomplete="off"
                    style="width:100%; font-size:0.9em;">
             <div id="user-suggestions-edit" class="suggestions" style="min-width:180px;"></div>
@@ -38,7 +38,7 @@
                    hx-swap="innerHTML"
                    hx-include="this"
                    hx-params="owner_group"
-                   placeholder="search or 1000-60000"
+                   placeholder="search or 0-60000"
                    autocomplete="off"
                    style="width:100%; font-size:0.9em;">
             <div id="group-suggestions-edit" class="suggestions" style="min-width:180px;"></div>
@@ -64,6 +64,6 @@
     </div>
 
     <div style="font-size:0.7em; color: var(--text-light); margin-top:2px;">
-        Edit mode active — tree navigation locked. Without recursive: this directory + files here only (not subdirs). Numbers 1000-60000 preferred.
+        Edit mode active — tree navigation locked. Without recursive: this directory + files here only (not subdirs). Numbers 0-60000 preferred.
     </div>
 </form>

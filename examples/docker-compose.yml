@@ -19,14 +19,14 @@ services:
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 
     environment:
-      # Optional env overrides for core nfs-klldap.conf options (env wins; NFS_KLLDAP_* prefixed for most).
+      # Optional env overrides for core nfs-klldap.conf options (env wins; only NFS_KLLDAP_* prefixed forms).
       # See root README "Environment Variables" section for the full table (with defaults/examples).
-      # Common ones: NFS_REALM (or NFS_KLLDAP_KERBEROS_REALM), WEBUI_TLS=off for reverse proxy.
+      # Common ones: NFS_KLLDAP_KERBEROS_REALM, NFS_KLLDAP_WEBUI_TLS=off for reverse proxy.
       # - NFS_KLLDAP_LDAP_URI=ldaps://...
       # - NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN=...
       # - NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK=...
-      # - NFS_REALM=YOUR.REALM
-      # - WEBUI_TLS=off
+      # - NFS_KLLDAP_KERBEROS_REALM=YOUR.REALM
+      # - NFS_KLLDAP_WEBUI_TLS=off
 
     restart: unless-stopped
 

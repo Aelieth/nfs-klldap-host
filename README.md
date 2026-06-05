@@ -79,7 +79,7 @@ kllldap_ignored_attributes = true                               # KLLDAP specifi
 default_security = "krb5p"                                      # securtiy, krb5p (default) | krb5i | krb5
 
 [webui]
-# WEBUI_TLS = false                                             # commented (tls on by default). Set tls=false (or WEBUI_TLS=off env) for reverse proxy.
+# WEBUI_TLS = false                                             # commented (tls on by default). Set tls=false (or NFS_KLLDAP_WEBUI_TLS=off env) for reverse proxy.
 # tls_cert = "/config/webui.crt"
 # tls_key = "/config/webui.key"
 
@@ -120,7 +120,7 @@ Note: to optimize performance for sequential workloads, set read_ahead_kb on the
 
 Environment variables are availble to those that prefer them, but not necessary to run nfs-klldap-host as walking through the TUI or a pre-configured nfs-klldap.conf maybe used. 
 
-Not every advanced `[sssd]` option is exposed via env. The core options (LDAP URI + binds, realm, hostname, storage root, Ganesha default security, WebUI admin group, KLLDAP ignored attributes, SSSD TLS fields, and `[webui]`) can be supplied or overridden using `NFS_KLLDAP_*` (preferred) or `WEBUI_*` variables. `NFS_REALM` / `REALM` legacy aliases are preserved. Environment variables always win and allow omitting the corresponding keys from `nfs-klldap.conf` in many cases.
+Not every advanced `[sssd]` option is exposed via env. The core options (LDAP URI + binds, realm, hostname, storage root, Ganesha default security, WebUI admin group, KLLDAP ignored attributes, SSSD TLS fields, and `[webui]`) can be supplied or overridden using `NFS_KLLDAP_*` variables (only prefixed forms are available). Environment variables always win and allow omitting the corresponding keys from `nfs-klldap.conf` in many cases.
 
 Example in compose:
 
@@ -129,11 +129,11 @@ environment:
   NFS_KLLDAP_LDAP_URI: ldaps://kllap.example.com:6360
   NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN: uid=admin,ou=people,dc=example,dc=com
   NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK: "..."
-  NFS_REALM: EXAMPLE.COM
-  WEBUI_TLS: "off"
+  NFS_KLLDAP_KERBEROS_REALM: EXAMPLE.COM
+  NFS_KLLDAP_WEBUI_TLS: "off"
 ```
 
-See [docs/run/README.md](docs/run/README.md) for environment variables and reverse-proxy setup, `WEBUI_TLS=off` behavior, and compose examples.
+See [docs/run/README.md](docs/run/README.md) for environment variables and reverse-proxy setup, `NFS_KLLDAP_WEBUI_TLS=off` behavior, and compose examples.
 
 ## WebUI (9630)
 

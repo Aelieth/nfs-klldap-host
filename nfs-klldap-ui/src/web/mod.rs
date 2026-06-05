@@ -74,7 +74,7 @@ pub struct AppState {
     /// standalone restarting.html without side-effects.
     pub restart_requested: Arc<Mutex<bool>>,
     /// Whether the WebUI is serving its own TLS (affects default Secure cookie policy
-    /// and is_https() helper). false when WEBUI_TLS=off (reverse-proxy mode).
+    /// and is_https() helper). false when NFS_KLLDAP_WEBUI_TLS=off (reverse-proxy mode).
     pub direct_tls: bool,
 }
 
@@ -82,9 +82,9 @@ impl AppState {
     /// Returns whether the effective (client-visible) connection is HTTPS.
     /// Used exclusively to decide the `Secure` flag on session cookies.
     ///
-    /// - `true` if `direct_tls` (we are the TLS terminator, WEBUI_TLS not "off")
+    /// - `true` if `direct_tls` (we are the TLS terminator, NFS_KLLDAP_WEBUI_TLS not "off")
     /// - OR the incoming request carried `X-Forwarded-Proto: https` (case-insensitive)
-    ///   (set by the reverse proxy when WEBUI_TLS=off).
+    ///   (set by the reverse proxy when NFS_KLLDAP_WEBUI_TLS=off).
     ///
     /// X-Forwarded-Host is inspected by the middleware layer but not required here.
     pub fn is_https(&self, headers: &HeaderMap) -> bool {

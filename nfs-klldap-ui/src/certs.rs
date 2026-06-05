@@ -1,4 +1,4 @@
-//! Ensure WebUI TLS: env override (WEBUI_TLS_*) or self-signed via rcgen (SANs: host+localhost).
+//! Ensure WebUI TLS: env override (NFS_KLLDAP_WEBUI_TLS_*) or self-signed via rcgen (SANs: host+localhost).
 //! Self-signed written to stable /var/lib/... path (0600 key).
 
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ pub enum CertError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("WebUI TLS is disabled (WEBUI_TLS=off)")]
+    #[error("WebUI TLS is disabled (NFS_KLLDAP_WEBUI_TLS=off)")]
     TlsDisabled,
 }
 
@@ -26,12 +26,12 @@ pub struct TlsPaths {
     pub key: PathBuf,
 }
 
-/// Returns true when WEBUI_TLS=off (or =false/0/no; case-insensitive). In this mode the WebUI
+/// Returns true when NFS_KLLDAP_WEBUI_TLS=off (or =false/0/no; case-insensitive). In this mode the WebUI
 /// must not attempt to serve TLS or generate/require cert material; a reverse
 /// proxy is expected in front (supplying X-Forwarded-Proto etc.).
 /// Env always wins over [webui] tls in nfs-klldap.conf.
 pub fn webui_tls_disabled() -> bool {
-    if let Ok(v) = std::env::var("WEBUI_TLS") {
+    if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
         let t = v.trim().to_ascii_lowercase();
         if t == "off" || t == "false" || t == "0" || t == "no" {
             return true;
@@ -43,7 +43,7 @@ pub fn webui_tls_disabled() -> bool {
     false
 }
 
-/// Priority: WEBUI_TLS_* env > provided paths > generate self-signed.
+/// Priority: NFS_KLLDAP_WEBUI_TLS_* env > provided paths > generate self-signed.
 pub fn ensure_webui_tls_certs(
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,
@@ -53,10 +53,10 @@ pub fn ensure_webui_tls_certs(
         return Err(CertError::TlsDisabled);
     }
 
-    // Allow external certificates via environment (common in container deployments)
+    // Allow external certificates via environment (common in container deployments; only NFS_KLLDAP_ prefixed)
     if let (Ok(cert), Ok(key)) = (
-        std::env::var("WEBUI_TLS_CERT"),
-        std::env::var("WEBUI_TLS_KEY"),
+        std::env::var("NFS_KLLDAP_WEBUI_TLS_CERT"),
+        std::env::var("NFS_KLLDAP_WEBUI_TLS_KEY"),
     ) {
         let cert = PathBuf::from(cert);
         let key = PathBuf::from(key);

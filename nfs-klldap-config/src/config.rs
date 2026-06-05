@@ -6,6 +6,7 @@ use std::path::PathBuf;
 /// Top-level config (nfs-klldap.conf)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NfsKlldapConfig {
+    #[serde(default)]
     pub ldap_uri: String,
 
     #[serde(default)]
@@ -25,6 +26,9 @@ pub struct NfsKlldapConfig {
 
     #[serde(default)]
     pub management: ManagementSection,
+
+    #[serde(default)]
+    pub webui: WebuiSection,
 
     #[serde(default)]
     pub shares: Vec<Share>,
@@ -47,7 +51,9 @@ pub struct ServerSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SssdSection {
+    #[serde(default)]
     pub ldap_default_bind_dn: String,
+    #[serde(default)]
     pub ldap_default_authtok: String,
     /// Derived 636/389 for reference; SSSD uses ldap_uri (port must be in the URI).
     pub port: Option<u16>,
@@ -273,6 +279,19 @@ pub struct ManagementSection {
     pub use_sudo: Option<bool>,
     pub ganesha_container_name: Option<String>,
     pub webui_admin_group: Option<String>,
+}
+
+/// WebUI runtime options (single-source in nfs-klldap.conf under [webui]).
+/// These align with the existing WEBUI_* env vars (env takes precedence at runtime).
+/// tls=false (or WEBUI_TLS=off/false) disables internal TLS for reverse-proxy setups.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebuiSection {
+    /// If Some(false), equivalent to WEBUI_TLS=off (reverse proxy mode; plain HTTP + X-Forwarded-Proto).
+    pub tls: Option<bool>,
+    /// Optional path to custom cert PEM (WEBUI_TLS_CERT env wins).
+    pub tls_cert: Option<String>,
+    /// Optional path to custom key PEM (WEBUI_TLS_KEY env wins).
+    pub tls_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

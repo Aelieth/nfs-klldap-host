@@ -47,6 +47,7 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | Behavior | Tests |
 |----------|--------|
 | `ldap_service_creds` (verbatim DN, env override) | `nfs-klldap-ui/src/config.rs` |
+| Core env overrides (NFS_KLLDAP_*/WEBUI_* for ldap_uri, bind, realm, [webui] tls etc.) + [serde(default)] for omission | `nfs-klldap-config/src/validate.rs`, `config.rs`, lib.rs tests |
 | `all_managed_roots` / `is_allowed` + host<->container path mapping | `nfs-klldap-ui/src/config.rs`, `fs.rs` |
 | Generated sssd.conf shape + no dups + tls options | `nfs-klldap-config/src/lib.rs` |
 | Hostname consistency + keytab variants + docker-id detection | `nfs-klldap-config/src/hostname.rs`, `lib.rs` |

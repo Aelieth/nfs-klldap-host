@@ -171,8 +171,16 @@ async fn main() {
 
     // WEBUI_BIND is used for both TLS and plain-http (reverse proxy) modes.
     let addr = std::env::var("WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
-    // Compute once; passed into AppState (for is_https decisions) and used to pick serve path.
-    let webui_tls_off = crate::certs::webui_tls_disabled();
+    // Compute TLS mode with env precedence (WEBUI_TLS=off/false etc.) then [webui] tls from nfs-klldap.conf.
+    // Env handling lives here (and in certs) per alignment task. WEBUI_* envs always win.
+    let webui_tls_off = if let Ok(v) = std::env::var("WEBUI_TLS") {
+        let t = v.trim().to_ascii_lowercase();
+        t == "off" || t == "false" || t == "0" || t == "no"
+    } else if let Some(t) = config.webui.tls {
+        !t
+    } else {
+        crate::certs::webui_tls_disabled()
+    };
 
     let state = crate::web::AppState {
         fs,
@@ -192,9 +200,7 @@ async fn main() {
 
     if webui_tls_off {
         // plain HTTP path (do NOT call ensure_webui_tls_certs).
-        // (webui_tls_off comes from the helper that implements exactly:
-        //   std::env::var("WEBUI_TLS").map(|v| v.eq_ignore_ascii_case("off")).unwrap_or(false)
-        //   per the query specification.)
+        // webui_tls_off computed above with env (WEBUI_TLS=off/false/...) precedence then config.webui.tls.
         println!("\nTLS: disabled (reverse proxy mode)");
         println!("Listening on http://{addr}");
         let listener = tokio::net::TcpListener::bind(&addr)
@@ -218,10 +224,21 @@ async fn main() {
 
         // Use a stable absolute path inside the container (created in Dockerfile).
         // This avoids polluting / and works under root-only execution model.
-        // Full paths can still be overridden via WEBUI_TLS_CERT / WEBUI_TLS_KEY.
+        // Precedence: WEBUI_TLS_CERT/KEY env > [webui] tls_cert/tls_key in nfs-klldap.conf > built-in default path.
+        // (Env handling + conf alignment explicit here in main.rs.)
+        let default_cert = "/var/lib/nfs-klldap/webui-certs/webui.crt".to_string();
+        let default_key = "/var/lib/nfs-klldap/webui-certs/webui.key".to_string();
+        let cert_path = std::env::var("WEBUI_TLS_CERT")
+            .ok()
+            .or_else(|| config.webui.tls_cert.clone())
+            .unwrap_or(default_cert);
+        let key_path = std::env::var("WEBUI_TLS_KEY")
+            .ok()
+            .or_else(|| config.webui.tls_key.clone())
+            .unwrap_or(default_key);
         let tls_paths = crate::certs::ensure_webui_tls_certs(
-            "/var/lib/nfs-klldap/webui-certs/webui.crt",
-            "/var/lib/nfs-klldap/webui-certs/webui.key",
+            &cert_path,
+            &key_path,
             &cert_hostname,
         )
         .expect("failed to ensure WebUI TLS certificates");
@@ -229,6 +246,7 @@ async fn main() {
         println!("\nTLS: enabled (self-signed or custom)");
         println!("Listening on https://{addr} (TLS enabled via axum-server)");
         println!("Certificate: {}", tls_paths.cert.display());
+        // Note: if WEBUI_TLS_CERT/KEY or [webui] were used, they are reflected in the resolved tls_paths.
 
         let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(
             &tls_paths.cert,

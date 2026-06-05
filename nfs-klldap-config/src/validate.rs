@@ -29,6 +29,12 @@ impl NfsKlldapConfig {
     }
 
     pub fn validate_and_derive(&mut self) -> Result<(), ConfigError> {
+        // Apply env overrides for core nfs-klldap.conf options FIRST (env wins over file or absence).
+        // This enables NFS_KLLDAP_* (and WEBUI_*) injection for secrets/compose without requiring
+        // values in the TOML (parse uses #[serde(default)], validate enforces after apply).
+        // Only core options (per task); not every [sssd] advanced field.
+        self.apply_core_env_overrides();
+
         if self.ldap_uri.trim().is_empty() {
             return Err(ConfigError::Validation("ldap_uri is required".into()));
         }
@@ -65,6 +71,10 @@ impl NfsKlldapConfig {
             normalize_blank(&mut s.krb5_kpasswd);
             // krb5_validate and krb5_store_password_if_offline are bools — no string normalization needed
         }
+
+        // Normalize webui string paths (tls bool needs no string norm).
+        normalize_blank(&mut self.webui.tls_cert);
+        normalize_blank(&mut self.webui.tls_key);
 
         // ldap_uri must be DNS (not IP) — forward+reverse required for Kerberos principals.
         let host = crate::extract_host_from_uri(&self.ldap_uri);
@@ -262,6 +272,143 @@ impl NfsKlldapConfig {
             })
             .map(|r| r.to_string())
             .unwrap_or_else(|| "YOUR.REALM".to_string())
+    }
+
+    /// Apply env var overrides for *core* nfs-klldap.conf options (env wins).
+    /// Called early in validate_and_derive. Prefixed names for new options (NFS_KLLDAP_*);
+    /// preserves legacy NFS_REALM/REALM and NFS_KLLDAP_LLDAP_* for bind.
+    /// Also supports WEBUI_* (for [webui] alignment) and optional NFS_KLLDAP_SSSD_LDAP_TLS_* for cert options.
+    fn apply_core_env_overrides(&mut self) {
+        // ldap_uri (top-level core)
+        if let Ok(v) = std::env::var("NFS_KLLDAP_LDAP_URI") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.ldap_uri = t.to_string();
+            }
+        }
+
+        // [kerberos] realm — support new prefixed + keep existing logic later for REALM
+        if let Ok(v) = std::env::var("NFS_KLLDAP_KERBEROS_REALM") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.kerberos.realm = Some(t.to_string());
+            }
+        }
+
+        // [sssd] bind creds — core + secret path (LLDAP_* kept for UI compat; also honored for generate/TUI now)
+        if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.sssd.ldap_default_bind_dn = t.to_string();
+            }
+        }
+        if let Ok(v) = std::env::var("NFS_KLLDAP_LLDAP_USER") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.sssd.ldap_default_bind_dn = t.to_string();
+            }
+        }
+        if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.sssd.ldap_default_authtok = t.to_string();
+            }
+        }
+        if let Ok(v) = std::env::var("NFS_KLLDAP_LLDAP_PW") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.sssd.ldap_default_authtok = t.to_string();
+            }
+        }
+
+        // [server]
+        if let Ok(v) = std::env::var("NFS_KLLDAP_SERVER_HOSTNAME") {
+            let t = v.trim();
+            self.server.hostname = if t.is_empty() { None } else { Some(t.to_string()) };
+        }
+
+        // [storage]
+        if let Ok(v) = std::env::var("NFS_KLLDAP_STORAGE_CONTAINER_ROOT") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.storage.container_root = t.to_string();
+            }
+        }
+
+        // [ganesha]
+        if let Ok(v) = std::env::var("NFS_KLLDAP_GANESHA_DEFAULT_SECURITY") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.ganesha.default_security = t.to_string();
+            }
+        }
+
+        // [management]
+        if let Ok(v) = std::env::var("NFS_KLLDAP_MANAGEMENT_WEBUI_ADMIN_GROUP") {
+            let t = v.trim();
+            self.management.webui_admin_group = if t.is_empty() { None } else { Some(t.to_string()) };
+        }
+
+        // [sssd] core toggle (bool tolerant)
+        if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_KLLLDAP_IGNORED_ATTRIBUTES") {
+            let t = v.trim().to_ascii_lowercase();
+            self.sssd.kllldap_ignored_attributes = Some(t == "true" || t == "1" || t == "yes" || t == "on");
+        }
+
+        // [sssd] TLS cert/ssl options ("cert options for ssl")
+        if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.sssd.ldap_tls_reqcert = Some(t.to_string());
+            }
+        }
+        if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_TLS_CACERT") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.sssd.ldap_tls_cacert = Some(t.to_string());
+            }
+        }
+        if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_ID_USE_START_TLS") {
+            let t = v.trim().to_ascii_lowercase();
+            self.sssd.ldap_id_use_start_tls = Some(t == "true" || t == "1" || t == "yes" || t == "on");
+        }
+
+        // [webui] — align WEBUI_TLS=false etc. (under [webui] in conf per review)
+        if let Ok(v) = std::env::var("WEBUI_TLS") {
+            let t = v.trim().to_ascii_lowercase();
+            let disabled = t == "off" || t == "false" || t == "0" || t == "no";
+            self.webui.tls = Some(!disabled);
+        }
+        if let Ok(v) = std::env::var("WEBUI_TLS_CERT") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.webui.tls_cert = Some(t.to_string());
+            }
+        }
+        if let Ok(v) = std::env::var("WEBUI_TLS_KEY") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.webui.tls_key = Some(t.to_string());
+            }
+        }
+        // Also allow prefixed variants for webui (rare, but consistent)
+        if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
+            let t = v.trim().to_ascii_lowercase();
+            let disabled = t == "off" || t == "false" || t == "0" || t == "no";
+            self.webui.tls = Some(!disabled);
+        }
+        if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS_CERT") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.webui.tls_cert = Some(t.to_string());
+            }
+        }
+        if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS_KEY") {
+            let t = v.trim();
+            if !t.is_empty() {
+                self.webui.tls_key = Some(t.to_string());
+            }
+        }
     }
 
     pub fn container_path_for(&self, share: &Share) -> String {

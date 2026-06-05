@@ -13,6 +13,7 @@ pub use config::{
     effective_ldap_search_bases, resolve_cache_profile, resolve_posix_attribute_mapping,
     CACHE_PROFILES, GaneshaSection, GenerationPaths, KerberosSection, ManagementSection,
     NfsKlldapConfig, PosixAttributeMapping, ServerSection, Share, SssdSection, StorageSection,
+    WebuiSection,
 };
 
 pub mod ignored_attributes;
@@ -83,7 +84,45 @@ mod tests {
         }
     }
 
+    /// Returns a Vec of EnvGuard that will restore previous values (or absence)
+    /// for every process environment variable consulted by `apply_core_env_overrides`.
+    /// The returned value must be kept alive for the duration of any validate_and_derive
+    /// (or minimal_cfg + subsequent re-validate) calls in the test. Holding the ENV_LOCK
+    /// is still required by the caller to serialize against other env-mutating tests.
+    fn clean_core_env() -> Vec<EnvGuard> {
+        let vars = [
+            "NFS_KLLDAP_LDAP_URI",
+            "NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN",
+            "NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK",
+            "NFS_KLLDAP_LLDAP_USER",
+            "NFS_KLLDAP_LLDAP_PW",
+            "NFS_KLLDAP_KERBEROS_REALM",
+            "NFS_KLLDAP_SERVER_HOSTNAME",
+            "NFS_KLLDAP_STORAGE_CONTAINER_ROOT",
+            "NFS_KLLDAP_GANESHA_DEFAULT_SECURITY",
+            "NFS_KLLDAP_MANAGEMENT_WEBUI_ADMIN_GROUP",
+            "NFS_KLLDAP_SSSD_KLLLDAP_IGNORED_ATTRIBUTES",
+            "NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT",
+            "NFS_KLLDAP_SSSD_LDAP_TLS_CACERT",
+            "NFS_KLLDAP_SSSD_LDAP_ID_USE_START_TLS",
+            "NFS_KLLDAP_WEBUI_TLS",
+            "NFS_KLLDAP_WEBUI_TLS_CERT",
+            "NFS_KLLDAP_WEBUI_TLS_KEY",
+            "WEBUI_TLS",
+            "WEBUI_TLS_CERT",
+            "WEBUI_TLS_KEY",
+            "NFS_REALM",
+            "REALM",
+        ];
+        vars.iter().map(|&k| EnvGuard::remove(k)).collect()
+    }
+
     fn minimal_cfg() -> NfsKlldapConfig {
+        // Clear at construction time so the internal validate sees a clean env.
+        // Callers that later mutate the returned cfg and re-validate must keep
+        // the result of clean_core_env() alive for the lifetime of the test
+        // (see uses of `let _guards = clean_core_env();` below).
+        let _guards = clean_core_env();
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://kllap.test:6360".into(),
             sssd: SssdSection {
@@ -112,6 +151,8 @@ mod tests {
 
     #[test]
     fn load_and_derive_works() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let _guards = clean_core_env();
         let c = minimal_cfg();
         assert_eq!(c.effective_realm(), "TEST");
         assert!(c.sssd.port.is_some());
@@ -121,6 +162,8 @@ mod tests {
 
     #[test]
     fn generate_produces_expected_artifacts() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let _guards = clean_core_env();
         let cfg = minimal_cfg();
         let tmp = tempfile::tempdir().unwrap();
         let paths = GenerationPaths {
@@ -174,6 +217,8 @@ mod tests {
 
     #[test]
     fn duplicate_names_rejected() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.shares.push(Share {
             name: "movies".into(),
@@ -185,6 +230,8 @@ mod tests {
 
     #[test]
     fn invalid_security_rejected() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.ganesha.default_security = "krb5x".into();
         assert!(c.validate_and_derive().is_err());
@@ -196,6 +243,8 @@ mod tests {
 
     #[test]
     fn invalid_pref_read_rejected() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.shares[0].pref_read = Some(64 * 1024 * 1024 + 1);
         assert!(c.validate_and_derive().is_err(), "above max must be rejected");
@@ -211,6 +260,8 @@ mod tests {
 
     #[test]
     fn invalid_cache_profile_rejected_and_valid_profiles_accepted() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.shares[0].cache_profile = Some("Turbo".to_string());
         assert!(c.validate_and_derive().is_err(), "unknown profile must be rejected");
@@ -255,8 +306,7 @@ mod tests {
     #[test]
     fn realm_is_required_no_silent_example() {
         let _env = ENV_LOCK.lock().unwrap();
-        let _g1 = EnvGuard::remove("NFS_REALM");
-        let _g2 = EnvGuard::remove("REALM");
+        let _guards = clean_core_env();
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://kllap.example.com:6360".into(),
             kerberos: KerberosSection {
@@ -288,6 +338,7 @@ mod tests {
     #[test]
     fn realm_from_env_works() {
         let _env = ENV_LOCK.lock().unwrap();
+        let _guards = clean_core_env();
         let _guard = EnvGuard::set("NFS_REALM", "ENV.REALM");
 
         let mut c = NfsKlldapConfig {
@@ -309,10 +360,42 @@ mod tests {
     }
 
     #[test]
+    fn core_env_overrides_for_ldap_uri_bind_and_webui_work() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let _guards = clean_core_env(); // clears everything first (under lock)
+        let _g1 = EnvGuard::set("NFS_KLLDAP_LDAP_URI", "ldaps://envhost.testdomain.com:6360");
+        let _g2 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN", "uid=envadmin,ou=people,dc=example,dc=com");
+        let _g3 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK", "env-secret-123");
+        let _g4 = EnvGuard::set("WEBUI_TLS", "off");
+        let _g5 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT", "never");
+
+        let mut c = NfsKlldapConfig {
+            // intentionally minimal / placeholder to prove env supplies
+            ldap_uri: "ldaps://placeholder:6360".into(),
+            sssd: SssdSection {
+                ldap_default_bind_dn: "uid=placeholder,ou=people,dc=x,dc=com".into(),
+                ldap_default_authtok: "placeholder".into(),
+                ..Default::default()
+            },
+            shares: vec![Share {
+                name: "t".into(),
+                host_path: "/t".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(c.validate_and_derive().is_ok());
+        assert_eq!(c.ldap_uri, "ldaps://envhost.testdomain.com:6360");
+        assert_eq!(c.sssd.ldap_default_bind_dn, "uid=envadmin,ou=people,dc=example,dc=com");
+        assert_eq!(c.sssd.ldap_default_authtok, "env-secret-123");
+        assert_eq!(c.sssd.ldap_tls_reqcert.as_deref(), Some("never"));
+        assert_eq!(c.webui.tls, Some(false)); // off -> disabled
+    }
+
+    #[test]
     fn display_realm_returns_real_value_after_validation_and_placeholder_otherwise() {
         let _env = ENV_LOCK.lock().unwrap();
-        let _g1 = EnvGuard::remove("NFS_REALM");
-        let _g2 = EnvGuard::remove("REALM");
+        let _guards = clean_core_env();
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://ldap.testdomain.com:6360".into(),
             sssd: SssdSection {
@@ -344,6 +427,8 @@ mod tests {
 
     #[test]
     fn sssd_tls_options_are_emitted_when_set() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.sssd.ldap_tls_reqcert = Some("never".into());
         c.sssd.ldap_id_use_start_tls = Some(true);
@@ -369,6 +454,8 @@ mod tests {
 
     #[test]
     fn kllldap_ignored_attributes_false_omits_ignore_blocks() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.sssd.kllldap_ignored_attributes = Some(false);
         let _ = c.validate_and_derive();
@@ -398,8 +485,7 @@ mod tests {
     #[test]
     fn ldap_uri_ip_rejected_with_exact_message() {
         let _env = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("NFS_REALM");
-        std::env::remove_var("REALM");
+        let _guards = clean_core_env();
 
         fn make_minimal(ip_uri: &str) -> NfsKlldapConfig {
             NfsKlldapConfig {

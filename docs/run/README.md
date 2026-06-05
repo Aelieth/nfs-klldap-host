@@ -10,7 +10,7 @@ See [examples/docker-compose.yml](../../examples/docker-compose.yml). The exampl
 
 ## Realm & ldap_uri Hardening
 
-- `kerberos.realm` is mandatory after first init (or `NFS_REALM` env). No silent EXAMPLE.COM.
+- `kerberos.realm` is mandatory after first init (or `NFS_REALM` / `NFS_KLLDAP_KERBEROS_REALM` env). No silent EXAMPLE.COM.
 - `ldap_uri` host must be a DNS name (literal IPs are rejected at validation).
 - Port must be in `ldap_uri` (not only `[sssd] port`, which is derived for reference).
 - Forward + reverse DNS are required for Kerberos NFS.
@@ -63,7 +63,35 @@ WEBUI_TLS=off
 # WEBUI_BIND=0.0.0.0:9630   # (optional, default is fine)
 ```
 
+Or set in `nfs-klldap.conf` (single source of truth; env still wins at runtime):
+
+```
+[webui]
+tls = false
+# tls_cert = "/config/webui.crt"
+# tls_key = "/config/webui.key"
+```
+
 Start-up logs will clearly state `TLS: disabled (reverse proxy mode)` vs `TLS: enabled (self-signed or custom)`.
+
+## Environment variable overrides (core nfs-klldap.conf options)
+
+Not every advanced `[sssd]` option is exposed via env. The core options (LDAP URI + binds, realm, hostname, storage root, Ganesha default security, WebUI admin group, KLLDAP ignored attributes, SSSD TLS fields, and `[webui]`) can be supplied or overridden using `NFS_KLLDAP_*` (preferred) or `WEBUI_*` variables. `NFS_REALM` / `REALM` legacy aliases are preserved. Environment variables always win and allow omitting the corresponding keys from `nfs-klldap.conf` in many cases.
+
+Full list with defaults and examples: see the table in the root [README.md](../README.md#environment-variables).
+
+Example in compose:
+
+```
+environment:
+  NFS_KLLDAP_LDAP_URI: ldaps://kllap.example.com:6360
+  NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN: uid=admin,ou=people,dc=example,dc=com
+  NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK: "..."
+  NFS_REALM: EXAMPLE.COM
+  WEBUI_TLS: "off"
+```
+
+After load/validate, `NfsKlldapConfig` reflects the effective (env-applied) values for generate, TUI, and UI.
 
 ## Keytab
 

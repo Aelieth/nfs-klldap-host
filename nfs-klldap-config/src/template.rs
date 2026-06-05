@@ -12,71 +12,44 @@ pub fn generate_default_template() -> String {
 # nfs-klldap.conf — Single Source of Truth for nfs-klldap-host
 # =============================================================================
 # This file is the ONLY configuration file that needs editing.
-# The container (via bundled Rust generator) auto-derives sssd.conf,
-# krb5.conf, and all Ganesha EXPORT fragments from it.
+# The container auto-derives sssd.conf, krb5.conf, and all Ganesha EXPORT fragments.
 #
 # REQUIRED: ldap_uri + [sssd] bind credentials.
 # ldap_uri host MUST be a DNS name (A/AAAA + PTR recommended). IP addresses are
 # rejected because forward/reverse DNS is required for Kerberos NFS principals.
 #
 # Kerberos keytab (best practice with --uts=host):
-#   Include nfs/<short-hostname>@REALM and nfs/<fqdn>@REALM when they differ.
+#   Include nfs/<short-hostname>@REALM and nfs/<fqdn>@REALM
 #   The hostname is confirmed by `hostname` matching /proc/sys/kernel/hostname.
 #
 # After first edit: the container NEVER overwrites this file.
+# Advanced users may insert 1:1 value overrides under respective section.
 # =============================================================================
 
-ldap_uri = "ldaps://klldap.example.com:6360"
-# Port must appear in ldap_uri. [sssd] port is derived for display only (636/389).
+ldap_uri = "ldaps://kllap.example.com:6360"                     # LLDAP default secure port. 3890 for LLDAP unencrypted
 
 [storage]
-container_root = "/export"   # Match docker -v ...:/export
+container_root = "/export"                                      # Where your Ganesha NFS shares mount at. Match docker -v ...:/export
+
+[management]
+# webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins
 
 [server]
-# hostname = "myhost.example.com"   # Optional override for keytab only.
-# Recommended: docker run --uts=host (container sees the real host hostname).
+# hostname = "myhost.example.com"                               # Default - Optional override for keytab only. Recommended: docker run --uts=host
 
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
-ldap_default_authtok = "CHANGE_THIS_TO_A_STRONG_SECRET"
-# ldap_user_search_base = "ou=people,dc=example,dc=com"
-# ldap_group_search_base = "ou=groups,dc=example,dc=com"
+ldap_default_authtok = "strong-secret"
+# ldap_user_search_base = "ou=people,dc=example,dc=com"         # Default - Edit this if your base user OU differs
+# ldap_group_search_base = "ou=groups,dc=example,dc=com"        # Default - Edit this if your base user OU differs
+kllldap_ignored_attributes = true                               # KLLDAP specific - improves lookup time, prevents attribute spam
 
-kllldap_ignored_attributes = true   #improves lookup time, prevents attribute spam
-
-# [kerberos]
-# realm = "KRB.EXAMPLE.COM"   # Required if auto-derivation from ldap_uri fails
+[kerberos]
+# realm = "EXAMPLE.COM"                                         # Default - auto-derived from ldap_uri host, edit to override
 
 [ganesha]
-default_security = "krb5p"   # krb5p (recommended) | krb5i | krb5
+default_security = "krb5p"                                      # securtiy, krb5p (default) | krb5i | krb5
 
-[management]
-# webui_admin_group = "lldap_admin"   # LLDAP group for WebUI admins (default)
-
-# =============================================================================
-# Optional Shares — add [[shares]] sections (via the WebUI System Settings page
-# or by editing this file). After adding/editing shares use the "Restart and apply"
-# button (or let the config watcher + supervisor bounce the services) so both
-# Ganesha and the WebUI permission tree see the new exports/roots.
-#   host_path = absolute path on the Docker HOST (WebUI chown/chmod allow-list).
-#   Bind-mount so data appears at container_root/name (default /export/<name>).
-# =============================================================================
-
-# [[shares]]
-# name = "movies"
-# host_path = "/home/user/nfs-data/movies"
-# # export_path = "/movies"   # optional; if absent, generator derives "/" + name
-# # security = "krb5p"        # optional per-share override (krb5p|krb5i|krb5); default from [ganesha]
-# rw = true                 # default RW; set false for RO (or use UI dropdown)
-# # squash omitted means no_root_squash; UI has "root_squash" checkbox to set "root_squash"
-# # sync omitted means true (safer synchronous writes); set false to disable
-# # cache_profile (recommended) — sets Ganesha PrefRead/PrefWrite for the share's EXPORT block.
-# #   Use the WebUI "Cache Profile" dropdown in System Settings → Shares (writes e.g. cache_profile = "Read - Heavy").
-# #   Profiles are re-resolved into concrete Pref* values and server tunings on every generate/restart.
-# #   See README.md "Cache Profiles (Shares tuning)" for the full table + "Best For" descriptions.
-# #   Allowed: "Default" | "Read - Basic" | "Read - Heavy" | "Mixed Use" | "Write - Heavy"
-# # Advanced/raw: you may still put pref_read = N; and/or pref_write = M; (bytes, 512..64M) under [[shares]].
-# #   When cache_profile is also present it takes precedence for generation.
 "#
     .to_string()
 }

@@ -22,7 +22,7 @@ entrypoint (pid 1) → restart/reload daemons
         └── nfs-klldap-ui (9630, HTTPS, root) ──direct──> chown/chmod on bind-mounted host_path trees
 ```
 
-One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. Use `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN when they differ).
+One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. Use `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN strongly suggested).
 
 ## Quick Start
 
@@ -38,25 +38,52 @@ docker run -d \
   ghcr.io/aelieth/nfs-klldap-host:latest
 ```
 
-First run writes a default `nfs-klldap.conf`. Edit it (or use the WebUI at https://host:9630). The watcher + entrypoint handle regeneration and reload.
+First run writes a default `nfs-klldap.conf`. 
+A console guided TUI will do basic diagnostics via a loop and look for 3 key, important working options in the nfs-klldap.conf
+1. Mount point for config to persist
+2. ldap_uri
+3. sssd - ldap_default_bind_dn and ldap_default_authtok
 
+Edit nfs-klldap.conf in container or via mounted directory. The watcher + entrypoint handle regeneration and reload.
 
 
 See [docs/run/README.md](docs/run/README.md) for compose examples and TLS notes.
 
 ## Configuration
 
-Minimal `nfs-klldap.conf`:
+Sample generated `nfs-klldap.conf`:
 
 ```toml
-ldap_uri = "ldaps://kllap.example.com:6360"
+ldap_uri = "ldaps://kllap.example.com:6360"                     # LLDAP default secure port. 3890 for LLDAP unencrypted
+
+[storage]
+container_root = "/export"                                      # Where your Ganesha NFS shares mount at. Match docker -v ...:/export
+
+[management]
+# webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins
+
+[server]
+# hostname = "myhost.example.com"                               # Default - Optional override for keytab only. Recommended: docker run --uts=host
 
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
 ldap_default_authtok = "strong-secret"
+# ldap_user_search_base = "ou=people,dc=example,dc=com"         # Default - Edit this if your base user OU differs
+# ldap_group_search_base = "ou=groups,dc=example,dc=com"        # Default - Edit this if your base user OU differs 
+kllldap_ignored_attributes = true                               # KLLDAP specific - improves lookup time, prevents attribute spam
 
 [kerberos]
-realm = "EXAMPLE.COM"        # or rely on auto-derivation from ldap_uri host
+# realm = "EXAMPLE.COM"                                         # Default - auto-derived from ldap_uri host, edit to override
+
+[ganesha]
+default_security = "krb5p"                                      # securtiy, krb5p (default) | krb5i | krb5
+
+# [[shares]]                                                    # shares section sample, shares can be added / edited via system settings
+# name = "movies"
+# host_path = "/home/user/nfs-data/movies"
+# export_path = "/movies"                                       # optional; if absent, generator derives "/" + name
+# security = "krb5p"                                            # optional per-share override (krb5p|krb5i|krb5); default from [ganesha]
+# rw = true                                                     # default RW; set false for RO
 ```
 
 # [[shares]] sections are optional for first-run (add via WebUI System Settings or edit here; use "Restart and apply" or let the watcher trigger a service bounce to activate).
@@ -120,17 +147,6 @@ From client:
 ```bash
 kinit alice && mount -t nfs4 -o sec=krb5p server:/data /mnt && ls -l /mnt
 ```
-
-## Build & Test
-
-```bash
-cargo build --workspace
-make docker          # or make docker-multi
-cargo test --workspace
-make clippy
-```
-
-See [TESTING.md](TESTING.md).
 
 ## Project Layout (workspace)
 

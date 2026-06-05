@@ -246,7 +246,7 @@ access_provider = {access}"#,
 
 
     out.push_str(&format!(
-        "\n# Informational (computed from active POSIX attribute mappings above):\n# ldap_user_extra_attrs only *adds* (it does not restrict).\n# We deliberately do not emit the restricting ldap_user_attributes=/ldap_group_attributes=\n# forms here. The per-field ldap_user_* / ldap_group_* settings + server-side\n# ignored_*_attributes (when kllldap_ignored_attributes=true) are the designed mechanism.\n# Shown for reference/debugging only:\n#ldap_user_attributes = {}\n#ldap_group_attributes = {}",
+        "\n# Informational (computed from active POSIX attribute mappings above):\n# ldap_user_extra_attrs only *adds* (it does not restrict).\n# Shown for reference/debugging only:\n#ldap_user_attributes = {}\n#ldap_group_attributes = {}",
         user_attr_list, group_attr_list
     ));
 

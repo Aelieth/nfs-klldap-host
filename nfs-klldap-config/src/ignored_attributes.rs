@@ -31,7 +31,7 @@ pub const RECOMMENDED_IGNORED_USER_ATTRIBUTES: &[&str] = &[
 ];
 
 /// Attributes commonly requested by SSSD and sync tools on *group* entries.
-pub const RECOMMENDED_IGNORED_GROUP_ATTRIBUTES: &[&str] = &["memberuid", "userpassword"];
+pub const RECOMMENDED_IGNORED_GROUP_ATTRIBUTES: &[&str] = &["memberuid", "userpassword", "sudohost"];
 
 /// The recommended group membership attribute to use with KLLDAP when
 /// ldap_schema = rfc2307bis. KLLDAP populates `member` (and `uniqueMember`)

@@ -35,6 +35,9 @@ rcgen = { version = "0.14", features = ["pem"] }
 askama = { workspace = true, features = ["with-axum"] }
 askama_axum = { workspace = true }
 
+# --- HTTP middleware (normalize-path for proxy friendliness; used for reverse-proxy TLS mode) ---
+tower-http = { version = "0.5", features = ["normalize-path"] }
+
 # --- Local authentication ----------------------------------------------------
 cookie = { workspace = true }
 rand = { workspace = true }

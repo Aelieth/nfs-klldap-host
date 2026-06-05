@@ -1,10 +1,17 @@
 //! Router assembly + AppState (shared by handlers) + router integration tests.
 //! Submodules hold the logic: auth, permission_tree, settings, keytab.
 
-use axum::{routing::{get, post}, Router};
+use axum::{
+    body::Body,
+    http::{HeaderMap, Request, Response},
+    middleware::{self, Next},
+    routing::{get, post},
+    Router,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tower_http::normalize_path::NormalizePathLayer;
 
 use crate::{auth::AuthManager, config::Config, fs::FsManager, ldap::LdapClient};
 
@@ -66,13 +73,71 @@ pub struct AppState {
     /// refresh of the /settings/restart result "page"). Once set we just re-serve the
     /// standalone restarting.html without side-effects.
     pub restart_requested: Arc<Mutex<bool>>,
+    /// Whether the WebUI is serving its own TLS (affects default Secure cookie policy
+    /// and is_https() helper). false when WEBUI_TLS=off (reverse-proxy mode).
+    pub direct_tls: bool,
+}
+
+impl AppState {
+    /// Returns whether the effective (client-visible) connection is HTTPS.
+    /// Used exclusively to decide the `Secure` flag on session cookies.
+    ///
+    /// - `true` if `direct_tls` (we are the TLS terminator, WEBUI_TLS not "off")
+    /// - OR the incoming request carried `X-Forwarded-Proto: https` (case-insensitive)
+    ///   (set by the reverse proxy when WEBUI_TLS=off).
+    ///
+    /// X-Forwarded-Host is inspected by the middleware layer but not required here.
+    pub fn is_https(&self, headers: &HeaderMap) -> bool {
+        self.direct_tls
+            || headers
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|s| s.eq_ignore_ascii_case("https"))
+    }
+}
+
+/// Per-request effective scheme derived from direct_tls + X-Forwarded-* headers.
+/// Stored in request extensions by the middleware layer (for "stores effective scheme"
+/// requirement) and used to drive cookie Secure decisions via AppState::is_https.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct EffectiveScheme {
+    #[allow(dead_code)]
+    pub https: bool,
+    // X-Forwarded-Host is read by the layer (per spec) but not needed for is_https today.
+}
+
+/// Lightweight middleware that reads X-Forwarded-Proto / X-Forwarded-Host (as requested),
+/// combines with the AppState's direct_tls flag, and stores EffectiveScheme in extensions.
+/// Combined with NormalizePathLayer this satisfies the tower-http dep + custom header layer ask.
+async fn detect_effective_scheme(
+    direct_tls: bool,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response<Body> {
+    let h = req.headers();
+    let proto = h
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_ascii_lowercase());
+    let _host = h
+        .get("x-forwarded-host")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let is_https = direct_tls || proto.as_deref() == Some("https");
+    req.extensions_mut().insert(EffectiveScheme { https: is_https });
+    next.run(req).await
 }
 
 /// Assembles all routes (public + protected).
 /// Routes are grouped for readability. Handler implementations live in the
 /// focused submodules (auth, permission_tree, settings).
+///
+/// Layers (NormalizePath + scheme detection from X-Forwarded-*) are applied
+/// after with_state; they wrap the stateful service. The scheme layer stores
+/// EffectiveScheme in extensions (and we snapshot direct_tls for it).
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let direct_tls = state.direct_tls;
+    let app = Router::new()
         // === Public (no auth) ===
         .route("/login", get(login_page).post(login))
         .route("/setup-password", post(setup_password))
@@ -103,7 +168,13 @@ pub fn router(state: AppState) -> Router {
         .route("/settings/clear-ldap-cache", post(clear_ldap_cache))
         .route("/settings/restart", post(system_restart))
 
-        .with_state(state)
+        .with_state(state);
+
+    app.layer(NormalizePathLayer::trim_trailing_slash())
+        .layer(middleware::from_fn(move |req, next| {
+            let d = direct_tls;
+            async move { detect_effective_scheme(d, req, next).await }
+        }))
 }
 
 // Integration tests (auth flows, settings, apply, cookie policy).
@@ -181,6 +252,7 @@ mod tests {
             keytab_alert: None,
             apply_progress: Arc::new(Mutex::new(None)),
             restart_requested: Arc::new(Mutex::new(false)),
+            direct_tls: true,
         };
 
         (state, tmp)

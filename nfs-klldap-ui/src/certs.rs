@@ -14,6 +14,9 @@ pub enum CertError {
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("WebUI TLS is disabled (WEBUI_TLS=off)")]
+    TlsDisabled,
 }
 
 /// Paths to the certificate and private key files.
@@ -23,12 +26,25 @@ pub struct TlsPaths {
     pub key: PathBuf,
 }
 
+/// Returns true when WEBUI_TLS=off (case-insensitive). In this mode the WebUI
+/// must not attempt to serve TLS or generate/require cert material; a reverse
+/// proxy is expected in front (supplying X-Forwarded-Proto etc.).
+pub fn webui_tls_disabled() -> bool {
+    std::env::var("WEBUI_TLS")
+        .map(|v| v.eq_ignore_ascii_case("off"))
+        .unwrap_or(false)
+}
+
 /// Priority: WEBUI_TLS_* env > provided paths > generate self-signed.
 pub fn ensure_webui_tls_certs(
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,
     hostname: &str,
 ) -> Result<TlsPaths, CertError> {
+    if webui_tls_disabled() {
+        return Err(CertError::TlsDisabled);
+    }
+
     // Allow external certificates via environment (common in container deployments)
     if let (Ok(cert), Ok(key)) = (
         std::env::var("WEBUI_TLS_CERT"),

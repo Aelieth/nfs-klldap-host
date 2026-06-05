@@ -17,11 +17,53 @@ See [examples/docker-compose.yml](../../examples/docker-compose.yml). The exampl
 
 ## WebUI (9630)
 
-HTTPS (axum-server + rustls). Self-signed certs unless `WEBUI_TLS_CERT` / `WEBUI_TLS_KEY` are set.
+HTTPS by default (axum-server + rustls, self-signed or via `WEBUI_TLS_CERT` / `WEBUI_TLS_KEY`).
 
 - Edit `nfs-klldap.conf` (raw or structured form).
 - Reload NFS client after changing bind credentials.
 - Login: `localhost` (`webui-password` sidecar) or LLDAP members of `webui_admin_group` (default `lldap_admin`).
+
+### TLS mode and reverse proxy support
+
+The WebUI always serves on `WEBUI_BIND` (default `0.0.0.0:9630`).
+
+- **Default (TLS enabled)**: internal TLS is terminated by the WebUI. Session cookies are emitted with the `Secure` flag. Self-signed certs are generated into a stable container path unless you provide `WEBUI_TLS_CERT` + `WEBUI_TLS_KEY`.
+- **Reverse proxy mode (`WEBUI_TLS=off`)**: disables internal TLS and the cert ensure logic entirely; a plain HTTP server is started (`axum::serve` + `TcpListener`). Use this when a front proxy (Caddy, Nginx, Traefik, ...) terminates TLS and forwards to the container. The proxy **must** set `X-Forwarded-Proto: https` (and preferably `X-Forwarded-Host`) on requests that arrived over HTTPS; the WebUI reads these (via a lightweight middleware layer) so that `AppState::is_https()` returns true and session cookies still get `Secure` (plus `HttpOnly`, `SameSite=Lax`, `Path=/`, 12h Max-Age). Without the header the cookies will be non-Secure (appropriate for a direct HTTP client).
+
+The legacy `WEBUI_COOKIE_SECURE=false` override is still honored when present (forces non-Secure regardless of TLS/headers) for setups that were already using the workaround.
+
+Login, first-run setup, redirects, logout, and all session validation are identical in both modes. The large in-tree auth flow tests cover the cookie emission paths for both direct-TLS and proxied cases.
+
+#### Recommended proxy snippets
+
+Caddy (headers are set automatically):
+
+```
+yourhost.example.com {
+    reverse_proxy 127.0.0.1:9630
+}
+```
+
+Nginx:
+
+```
+location / {
+    proxy_pass http://127.0.0.1:9630;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    # add other standard proxy headers as needed
+}
+```
+
+Set the env in your container / compose:
+
+```
+WEBUI_TLS=off
+# WEBUI_BIND=0.0.0.0:9630   # (optional, default is fine)
+```
+
+Start-up logs will clearly state `TLS: disabled (reverse proxy mode)` vs `TLS: enabled (self-signed or custom)`.
 
 ## Keytab
 

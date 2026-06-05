@@ -114,7 +114,7 @@ pub async fn login(
             }
             let token = state.auth.create_privileged_session(&user);
             let mut response_headers = HeaderMap::new();
-            insert_session_cookie(&mut response_headers, &token);
+            insert_session_cookie(&state, &headers, &mut response_headers, &token);
 
             // Warm permission editor search caches on (web) login for instant
             // suggestions in UID/GID boxes (no repeated LDAP roundtrips on focus/type
@@ -191,7 +191,7 @@ pub async fn setup_password(
             }
             let token = state.auth.create_privileged_session("localhost");
             let mut response_headers = HeaderMap::new();
-            insert_session_cookie(&mut response_headers, &token);
+            insert_session_cookie(&state, &headers, &mut response_headers, &token);
 
             // Warm caches also for first-run setup (same benefit for editor UX).
             {
@@ -228,7 +228,7 @@ pub async fn logout(State(state): State<super::AppState>, headers: HeaderMap) ->
     }
 
     let mut h = HeaderMap::new();
-    insert_session_clear_cookie(&mut h);
+    insert_session_clear_cookie(&state, &headers, &mut h);
     (h, Redirect::to("/login")).into_response()
 }
 
@@ -266,43 +266,72 @@ fn had_session_cookie(headers: &HeaderMap) -> bool {
         .is_some_and(|s| !extract_all_session_tokens(s).is_empty())
 }
 
-fn insert_session_cookie(headers: &mut HeaderMap, token: &str) {
-    let set = build_session_cookie(token);
+fn insert_session_cookie(
+    state: &super::AppState,
+    req_headers: &HeaderMap,
+    headers: &mut HeaderMap,
+    token: &str,
+) {
+    let set = build_session_cookie(state, req_headers, token);
     headers.insert(SET_COOKIE, set.parse().expect("valid Set-Cookie"));
 }
 
-fn insert_session_clear_cookie(headers: &mut HeaderMap) {
-    let clear = build_clear_session_cookie();
+fn insert_session_clear_cookie(
+    state: &super::AppState,
+    req_headers: &HeaderMap,
+    headers: &mut HeaderMap,
+) {
+    let clear = build_clear_session_cookie(state, req_headers);
     headers.insert(SET_COOKIE, clear.parse().expect("valid Set-Cookie clear"));
 }
 
+/// Returns the value for the Secure flag on cookies for this request.
+/// Prefers explicit WEBUI_COOKIE_SECURE (legacy escape hatch, for setups that
+/// already relied on forcing the bit off even when TLS was on). When absent,
+/// delegates to the smart detection (direct TLS or X-Forwarded-Proto: https).
+fn effective_cookie_secure(state: &super::AppState, headers: &HeaderMap) -> bool {
+    if let Ok(v) = std::env::var("WEBUI_COOKIE_SECURE") {
+        let v = v.trim().to_ascii_lowercase();
+        return !(v == "0" || v == "false" || v == "off" || v == "no");
+    }
+    state.is_https(headers)
+}
+
 /// Centralized session cookie builder (single source of truth).
-fn build_session_cookie(token: &str) -> String {
+/// Secure bit is now conditional on effective https (direct or via proxy header),
+/// while still honoring the legacy WEBUI_COOKIE_SECURE override.
+fn build_session_cookie(state: &super::AppState, req_headers: &HeaderMap, token: &str) -> String {
     let max_age = cookie::time::Duration::seconds(12 * 3600);
 
-    Cookie::build(("session", token))
+    let mut cookie = Cookie::build(("session", token))
         .http_only(true)
         .same_site(SameSite::Lax)
         .path("/")
-        .max_age(max_age)
-        .secure(cookie_secure())
-        .to_string()
+        .max_age(max_age);
+    if effective_cookie_secure(state, req_headers) {
+        cookie = cookie.secure(true);
+    }
+    cookie.to_string()
 }
 
-fn build_clear_session_cookie() -> String {
-    Cookie::build(("session", ""))
+fn build_clear_session_cookie(state: &super::AppState, req_headers: &HeaderMap) -> String {
+    let mut cookie = Cookie::build(("session", ""))
         .http_only(true)
         .same_site(SameSite::Lax)
         .path("/")
-        .max_age(cookie::time::Duration::seconds(0))
-        .secure(cookie_secure())
-        .to_string()
+        .max_age(cookie::time::Duration::seconds(0));
+    if effective_cookie_secure(state, req_headers) {
+        cookie = cookie.secure(true);
+    }
+    cookie.to_string()
 }
 
-/// Whether session cookies should be marked Secure.
-/// Defaults to true (the WebUI always listens with TLS on :9630).
-/// Set `WEBUI_COOKIE_SECURE=false` only when the browser's origin is plain HTTP
-/// (e.g. an HTTP reverse-proxy in front of the container).
+/// Legacy env-only decider for the Secure cookie bit (still used by unit test).
+/// The primary logic now lives in `effective_cookie_secure` (which respects this
+/// env when present, else delegates to `AppState::is_https` for direct_tls or
+/// X-Forwarded-Proto). Kept so existing tests + any external callers of the
+/// old name continue to work.
+#[allow(dead_code)]
 fn cookie_secure() -> bool {
     std::env::var("WEBUI_COOKIE_SECURE")
         .map(|v| {

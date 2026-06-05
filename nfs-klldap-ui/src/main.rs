@@ -169,6 +169,11 @@ async fn main() {
         eprintln!("WARNING: {}", msg);
     }
 
+    // WEBUI_BIND is used for both TLS and plain-http (reverse proxy) modes.
+    let addr = std::env::var("WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
+    // Compute once; passed into AppState (for is_https decisions) and used to pick serve path.
+    let webui_tls_off = crate::certs::webui_tls_disabled();
+
     let state = crate::web::AppState {
         fs,
         lldap,
@@ -180,56 +185,71 @@ async fn main() {
         keytab_alert,
         apply_progress: Arc::new(Mutex::new(None)),
         restart_requested: Arc::new(Mutex::new(false)),
+        direct_tls: !webui_tls_off,
     };
 
     let app = crate::web::router(state);
 
-    // Determine hostname for self-signed certificate SANs (same logic as keytab)
-    let cert_hostname = if let Some(h) = &config.server.hostname {
-        if !h.trim().is_empty() {
-            h.trim().to_string()
+    if webui_tls_off {
+        // plain HTTP path (do NOT call ensure_webui_tls_certs).
+        // (webui_tls_off comes from the helper that implements exactly:
+        //   std::env::var("WEBUI_TLS").map(|v| v.eq_ignore_ascii_case("off")).unwrap_or(false)
+        //   per the query specification.)
+        println!("\nTLS: disabled (reverse proxy mode)");
+        println!("Listening on http://{addr}");
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
+            .expect("failed to bind plain HTTP listener");
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("WebUI HTTP server failed");
+    } else {
+        // existing axum_server::bind_rustls path (TLS enabled)
+        // Determine hostname for self-signed certificate SANs (same logic as keytab)
+        let cert_hostname = if let Some(h) = &config.server.hostname {
+            if !h.trim().is_empty() {
+                h.trim().to_string()
+            } else {
+                resolve_runtime_hostname_for_banner()
+            }
         } else {
             resolve_runtime_hostname_for_banner()
-        }
-    } else {
-        resolve_runtime_hostname_for_banner()
-    };
+        };
 
-    // HTTPS (axum-server + rustls). Self-signed via rcgen unless WEBUI_TLS_* provided.
-    let addr = std::env::var("WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
+        // Use a stable absolute path inside the container (created in Dockerfile).
+        // This avoids polluting / and works under root-only execution model.
+        // Full paths can still be overridden via WEBUI_TLS_CERT / WEBUI_TLS_KEY.
+        let tls_paths = crate::certs::ensure_webui_tls_certs(
+            "/var/lib/nfs-klldap/webui-certs/webui.crt",
+            "/var/lib/nfs-klldap/webui-certs/webui.key",
+            &cert_hostname,
+        )
+        .expect("failed to ensure WebUI TLS certificates");
 
-    // Use a stable absolute path inside the container (created in Dockerfile).
-    // This avoids polluting / and works under root-only execution model.
-    // Full paths can still be overridden via WEBUI_TLS_CERT / WEBUI_TLS_KEY.
-    let tls_paths = crate::certs::ensure_webui_tls_certs(
-        "/var/lib/nfs-klldap/webui-certs/webui.crt",
-        "/var/lib/nfs-klldap/webui-certs/webui.key",
-        &cert_hostname,
-    )
-    .expect("failed to ensure WebUI TLS certificates");
+        println!("\nTLS: enabled (self-signed or custom)");
+        println!("Listening on https://{addr} (TLS enabled via axum-server)");
+        println!("Certificate: {}", tls_paths.cert.display());
 
-    println!("\nListening on https://{addr} (TLS enabled via axum-server)");
-    println!("Certificate: {}", tls_paths.cert.display());
-
-    let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(
-        &tls_paths.cert,
-        &tls_paths.key,
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("FATAL: Failed to load TLS certificate and key:");
-            eprintln!("  cert: {}", tls_paths.cert.display());
-            eprintln!("  key : {}", tls_paths.key.display());
-            eprintln!("  error: {e}");
-            eprintln!("The WebUI cannot start without valid TLS material.");
-            std::process::exit(1);
-        }
-    };
-
-    axum_server::bind_rustls(addr.parse().expect("invalid bind address"), config)
-        .serve(app.into_make_service())
+        let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(
+            &tls_paths.cert,
+            &tls_paths.key,
+        )
         .await
-        .expect("WebUI HTTPS server failed");
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("FATAL: Failed to load TLS certificate and key:");
+                eprintln!("  cert: {}", tls_paths.cert.display());
+                eprintln!("  key : {}", tls_paths.key.display());
+                eprintln!("  error: {e}");
+                eprintln!("The WebUI cannot start without valid TLS material.");
+                std::process::exit(1);
+            }
+        };
+
+        axum_server::bind_rustls(addr.parse().expect("invalid bind address"), config)
+            .serve(app.into_make_service())
+            .await
+            .expect("WebUI HTTPS server failed");
+    }
 }

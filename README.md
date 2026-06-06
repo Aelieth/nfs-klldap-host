@@ -1,8 +1,14 @@
 # nfs-klldap-host
 
+Companion app for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos), this docker container helps to host and manage NFS shares with POSIX attributes sync'ed with real name resolution to users and groups across the LDAP protocol for simple management and visualization. Lightweight, flexible, and agile enough to host multiple shares, be deployable across a small network, and allow easy remote management via secure connections with KLLDAP.
+
 AlmaLinux 10 container providing a complete Kerberized NFSv4 server (NFS-Ganesha) with KLLDAP-backed POSIX UID/GID mapping via SSSD.
 
-Designed for hosts without (or that prefer not to use) kernel NFS modules.
+<img
+  src="https://raw.githubusercontent.com/Aelieth/nfs-klldap-host/refs/heads/main/screenshot.png"
+  alt="Screenshot of the nfs shares"
+  width="50%"
+/>
 
 ## Architecture
 
@@ -79,7 +85,7 @@ kllldap_ignored_attributes = true                               # KLLDAP specifi
 default_security = "krb5p"                                      # security, krb5p (default) | krb5i | krb5
 
 [webui]
-# WEBUI_TLS = false                                             # commented (tls on by default). Set tls=false (or NFS_KLLDAP_WEBUI_TLS=off env) for reverse proxy.
+# webui_tls = false                                             # commented (tls on by default). Set tls=false (or NFS_KLLDAP_WEBUI_TLS=off env) for reverse proxy.
 # tls_cert = "/config/webui.crt"
 # tls_key = "/config/webui.key"
 
@@ -91,7 +97,7 @@ default_security = "krb5p"                                      # security, krb5
 # rw = true                                                     # default RW; set false for RO
 ```
 
-# [[shares]] sections are optional for first-run (add via WebUI System Settings or edit here; use "Restart and apply" or let the watcher trigger a service bounce to activate).
+## [[shares]] sections are optional for first-run.
 
 The generator derives ports, search bases, sssd.conf, krb5.conf, and Ganesha fragments. `kllldap_ignored_attributes = true` (default) emits recommended server-side ignore lists.
 
@@ -160,17 +166,6 @@ These contracts are also documented in source comments in `nfs-klldap-ui/src/fs.
 - `ldap_uri` host must resolve (DNS, not IP). Forward + reverse DNS required for the NFS principal.
 - Bind-mounted data directories on attached/media storage (numeric uid/gid must match KLLDAP posixAccount/posixGroup).
 
-## Verification
-
-Inside container:
-```bash
-getent passwd alice && id alice && klist -k /etc/krb5.keytab && ganesha-ctl show-exports
-```
-
-From client:
-```bash
-kinit alice && mount -t nfs4 -o sec=krb5p server:/data /mnt && ls -l /mnt
-```
 
 ## Project Layout (workspace)
 

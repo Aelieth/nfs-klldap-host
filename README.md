@@ -2,7 +2,7 @@
 
 Companion app for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos), this docker container helps to host and manage NFS shares with POSIX attributes sync'ed with real name resolution to users and groups across the LDAP protocol for simple management and visualization. Lightweight, flexible, and agile enough to host multiple shares, be deployable across a small network, and allow easy remote management via secure connections with KLLDAP.
 
-AlmaLinux 10 container providing a complete Kerberized NFSv4 server (NFS-Ganesha) with KLLDAP-backed POSIX UID/GID mapping via SSSD.
+Fedora 44 minimal container providing a complete Kerberized NFSv4 server (NFS-Ganesha) with KLLDAP-backed POSIX UID/GID mapping via SSSD.
 
 <img
   src="https://raw.githubusercontent.com/Aelieth/nfs-klldap-host/refs/heads/main/screenshot.png"

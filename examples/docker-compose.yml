@@ -6,8 +6,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: alma-nfs-kerb:latest
-    container_name: alma-nfs-kerb
+    image: nfs-klldap-host:latest
+    container_name: nfs-klldap-host
 
     network_mode: host
     uts: host
@@ -30,5 +30,5 @@ services:
     restart: unless-stopped
 
 # WebUI: https://<host>:9630
-# Reload config: docker kill -s HUP alma-nfs-kerb
+# Reload config: docker kill -s HUP nfs-klldap-host
 # See docs/run/README.md for keytab principals and uts: host.

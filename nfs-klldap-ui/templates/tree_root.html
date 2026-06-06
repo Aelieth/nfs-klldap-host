@@ -13,7 +13,7 @@
     <div class="dir-meta" data-path="{{ root.path }}" style="display:none;"></div>
     <div class="children" style="margin-left: 1.5em;" data-loaded="true">
       {# Direct children of the root (pre-rendered for the initial view).
-         data-loaded prevents the delegated click handler from doing a redundant fetch. #}
+         data-loaded avoids redundant fetch on expand. #}
       <ul class="tree">
       {% for child in children %}
         <li>

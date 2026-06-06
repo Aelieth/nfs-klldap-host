@@ -27,14 +27,13 @@ pub fn is_persistent_config(path: &Path) -> bool {
         Err(_) => return false,
     };
 
-    // Different device IDs => the file lives on a different mount (i.e. host volume)
+    // dev != root => host volume (not container rootfs)
     config_meta.dev() != root_meta.dev()
 }
 
 #[cfg(not(unix))]
 pub fn is_persistent_config(_path: &Path) -> bool {
-    // On non-Unix we conservatively say "assume it's persistent" so the
-    // guided flow doesn't block forever in weird environments.
+    // Conservative (assume persistent) on non-Unix.
     true
 }
 

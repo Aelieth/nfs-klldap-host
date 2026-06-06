@@ -76,7 +76,7 @@ kllldap_ignored_attributes = true                               # KLLDAP specifi
 # realm = "EXAMPLE.COM"                                         # Default - auto-derived from ldap_uri host, edit to override
 
 [ganesha]
-default_security = "krb5p"                                      # securtiy, krb5p (default) | krb5i | krb5
+default_security = "krb5p"                                      # security, krb5p (default) | krb5i | krb5
 
 [webui]
 # WEBUI_TLS = false                                             # commented (tls on by default). Set tls=false (or NFS_KLLDAP_WEBUI_TLS=off env) for reverse proxy.
@@ -118,7 +118,7 @@ Note: to optimize performance for sequential workloads, set read_ahead_kb on the
 
 ## Environment Variables
 
-Environment variables are availble to those that prefer them, but not necessary to run nfs-klldap-host as walking through the TUI or a pre-configured nfs-klldap.conf maybe used. 
+Environment variables are available to those that prefer them, but not necessary to run nfs-klldap-host (walk through the TUI or use a pre-configured nfs-klldap.conf). 
 
 Not every advanced `[sssd]` option is exposed via env. The core options (LDAP URI + binds, realm, hostname, storage root, Ganesha default security, WebUI admin group, KLLDAP ignored attributes, SSSD TLS fields, and `[webui]`) can be supplied or overridden using `NFS_KLLDAP_*` variables (only prefixed forms are available). Environment variables always win and allow omitting the corresponding keys from `nfs-klldap.conf` in many cases.
 

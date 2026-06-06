@@ -121,8 +121,7 @@ fn generate_self_signed(hostname: &str) -> Result<(String, String), CertError> {
     Ok((cert.pem(), key_pair.serialize_pem()))
 }
 
-/// Cheap validation: can we at least parse the PEM files as cert(s) + private key?
-/// (Actual serving is done by axum-server which does its own robust loading.)
+/// Cheap PEM parse check (axum-server does full load/validate at serve time).
 fn pem_files_are_parsable(cert_path: &Path, key_path: &Path) -> bool {
     let Ok(cert_pem) = std::fs::read_to_string(cert_path) else {
         return false;

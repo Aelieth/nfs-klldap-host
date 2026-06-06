@@ -1,13 +1,6 @@
 #!/bin/bash
-# Watches nfs-klldap.conf and SIGHUPs pid 1 to trigger regeneration + reload.
+# inotify watcher on nfs-klldap.conf; SIGHUPs pid 1 (guarantees privileged 0600 sssd.conf etc.).
 # See container/README.md.
-# Usage:
-#   nfs-klldap-conf-watcher [path-to-config]
-#
-# Environment:
-#   NFS_CONFIG          - fallback config path
-#   WATCHER_DEBOUNCE_SECONDS (default 2)
-#
 set -euo pipefail
 
 CONFIG_PATH="${1:-${NFS_CONFIG:-/config/nfs-klldap.conf}}"

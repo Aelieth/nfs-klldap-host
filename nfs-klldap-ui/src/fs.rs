@@ -118,7 +118,7 @@ impl FsManager {
     }
 
     /// Lightweight stat-only lookup for a single directory (owner, group, masked mode).
-    /// Used by the inline meta/editor fragments (avoids full subtree walks).
+    /// (lazy 1-level; avoids full subtree walks)
     pub fn get_dir_meta(&self, path: &Path) -> Option<(u32, u32, u32)> {
         let normalized = self.normalize_for_matching(path);
         if !self.is_allowed(&normalized) {
@@ -132,7 +132,7 @@ impl FsManager {
     }
 
     /// Lightweight, non-recursive listing of *immediate* child directories only.
-    /// Used by the `/fs/children` HTMX endpoint (lazy tree expands pay O(1) cost).
+    /// (for /fs/children HTMX; O(1) lazy expand)
     ///
     /// Returns nodes with `.children == vec![]`. Logical paths synthesized like build_tree.
     pub fn list_children(&self, path: &Path) -> Option<Vec<DirectoryNode>> {
@@ -341,8 +341,7 @@ impl FsManager {
     }
 
     /// Core tree-walking permission application using WalkDir (iterative, policy-driven).
-    /// This is the single implementation; the non-progress apply_tree is now a thin
-    /// delegate using a dummy progress (for backward compat with tests + direct callers).
+    /// Core impl (non-progress apply_tree delegates for tests/compat).
     ///
     /// In addition to the classic guarantees, this version:
     /// - updates all progress atomics (processed/changed/skipped/error_count)

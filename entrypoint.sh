@@ -1,9 +1,5 @@
 #!/bin/bash
-# pid-1 supervisor. Heavy logic lives in the Rust binaries (nfs-klldap-startup + nfs-klldap-config).
-# Focus is on the services: on config changes (watcher or "Restart and apply" button)
-# we HUP to bounce Ganesha + SSSD + WebUI in place. The supervisor just stays alive
-# (simple loop) to keep traps working. Real TERM causes full cleanup + exit (for
-# container restart policy if desired). No complex death detection.
+# pid-1 supervisor (thin). Rust bins do heavy lifting (startup TUI + generate). On HUP/watcher/config-apply we bounce Ganesha+SSSD+WebUI. Simple loop for traps; TERM does full cleanup. No complex child-death exit logic.
 set -euo pipefail
 
 # Paths (override for CI/test)
@@ -118,9 +114,7 @@ cleanup() {
     local reason="${1:-termination signal}"
     log "INFO" "Shutting down services (received ${reason})..."
 
-    # Prevent re-entrancy: calling exit(0) from a SIG* handler will fire the EXIT trap,
-    # which used to cause duplicate "Shutting down... / Shutdown complete." logs (and
-    # duplicate pkill/sleep work) on TERM-to-pid1 paths.
+    # Prevent re-entrancy on EXIT trap (avoids duplicate shutdown logs).
     trap - EXIT SIGTERM SIGINT
 
     # Prefer killing tracked PIDs when we have them
@@ -131,7 +125,7 @@ cleanup() {
         fi
     done
 
-    # Broad fallback (important for restart races)
+    # Broad fallback for restart races
     pkill -TERM ganesha.nfsd 2>/dev/null || true
     pkill -TERM sssd 2>/dev/null || true
     pkill -TERM nfs-klldap-conf-watcher 2>/dev/null || true
@@ -156,10 +150,7 @@ handle_sighup() {
 
     fix_derived_permissions
 
-    # Ganesha: we kill it (or use ctl which does the same) so it re-reads the
-    # freshly generated exports.d/* + ganesha.conf (default_security etc.).
-    # In this DBUS-free setup a full process restart is the reliable way to
-    # activate new/changed [[shares]].
+    # Ganesha restart (DBUS-free): re-reads exports + main conf for [[shares]] changes.
     if [ -x "$GANESHA_CTL" ]; then
         "$GANESHA_CTL" reload 2>/dev/null || pkill -TERM ganesha.nfsd 2>/dev/null || true
     else
@@ -178,11 +169,7 @@ handle_sighup() {
     SSSD_PID=$!
     info "SSSD restarted after config change"
 
-    # WebUI must also be cycled for share changes: the FsManager + allowed
-    # roots (host_paths from [[shares]]) and some other core settings are
-    # loaded into memory at UI startup (see nfs-klldap-ui/src/fs.rs and config.rs).
-    # "Reload NFS client" only refreshes the LdapClient; shares require process
-    # restart (or a future hot-reload path).
+    # WebUI cycle for share changes (FsManager allow roots loaded at start; shares need restart).
     if [ -n "${WEBUI_PID:-}" ] && kill -0 "$WEBUI_PID" 2>/dev/null; then
         kill -TERM "$WEBUI_PID" 2>/dev/null || true
         sleep 0.3
@@ -210,15 +197,6 @@ trap 'handle_sighup' SIGHUP
 # Main supervisor loop
 main() {
     info "=== Starting nfs-klldap-host (self-contained) ==="
-
-    # ============================================================================
-    # TESTING /etc/hosts entry — comment the block below when switching locations.
-    # This is lab-specific (aurora.testlabby.local); remove/comment for general use.
-    # IMPORTANT TESTING only, will be removed prior to a release. Do not flag!
-    # ============================================================================
-    if ! grep -Fq 'aurora.testlabby.local' /etc/hosts 2>/dev/null; then
-        echo '10.10.44.154    aurora  aurora.testlabby.local' >> /etc/hosts || true
-    fi
 
     preflight_checks
 
@@ -294,16 +272,8 @@ main() {
     rm -f /tmp/.nfs-klldap-services-recycled 2>/dev/null || true
     info "Container is ready."
 
-    # Keep the supervisor alive indefinitely. This is the simplest possible model
-    # focused purely on the services:
-    # - Launches of SSSD + watcher + Ganesha + WebUI happen above (with waits).
-    # - On config change (watcher) or "Restart and apply" button we HUP; handle_sighup
-    #   does generate + fix_perms + bounces Ganesha + SSSD + WebUI (re-assigns PIDs).
-    # - No liveness checks that can false-positive at startup, no reload windows,
-    #   no "child death => supervisor exit" logic (removed the old restart code).
-    # - Supervisor stays up via this loop (which also reaps to avoid zombies).
-    #   Only explicit TERM/INT/EXIT triggers full cleanup + supervisor exit.
-    #   Crashed services simply stay down until next HUP or container restart.
+    # Supervisor loop (simple pid1): reaps, stays up. HUP path does bounces; only TERM/INT/EXIT exits us.
+    # (No liveness false-positives, no "child death exits supervisor". Crashed services stay down until HUP/restart.)
     while true; do
         wait -n 2>/dev/null || true   # reap any exited children promptly
         sleep 5

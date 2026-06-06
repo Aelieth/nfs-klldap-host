@@ -297,7 +297,7 @@ fn effective_cookie_secure(state: &super::AppState, headers: &HeaderMap) -> bool
     state.is_https(headers)
 }
 
-/// Centralized session cookie builder (single source of truth).
+/// Session cookie builder (HttpOnly/Lax/Secure + effective https).
 /// Secure bit is now conditional on effective https (direct or via proxy header),
 /// while still honoring the NFS_KLLDAP_WEBUI_COOKIE_SECURE override.
 fn build_session_cookie(state: &super::AppState, req_headers: &HeaderMap, token: &str) -> String {

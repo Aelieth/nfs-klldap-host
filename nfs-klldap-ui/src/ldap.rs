@@ -423,7 +423,7 @@ impl LdapClient {
                     let mut ldap = LdapConn::with_settings(settings, &uri)
                         .map_err(|e| format!("connect: {}", e))?;
 
-                    // Best-effort clean TLS shutdown via UnbindRequest + unbind.
+                    // Best-effort TLS clean shutdown on unbind.
                     let op_result = (|| -> Result<Vec<SearchEntry>, String> {
                         ldap.simple_bind(&u, &p)
                             .map_err(|e| format!("bind: {}", e))?

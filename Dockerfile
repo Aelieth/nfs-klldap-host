@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM quay.io/almalinuxorg/10-minimal AS chef
 
-# Build deps for Rust + openldap-clients (used by startup probes)
+# Build deps for Rust (openldap-clients for ldapsearch is in runtime only; used by startup TUI probes)
 RUN microdnf install -y --assumeyes \
         shadow-utils pkgconf openssl-devel gcc make perl curl gzip krb5-devel \
     && microdnf clean all
@@ -61,7 +61,7 @@ RUN microdnf install -y --assumeyes epel-release && \
         nfs-ganesha nfs-ganesha-vfs nfs-ganesha-utils nfs-ganesha-selinux \
         sssd sssd-ldap openldap-clients \
         krb5-workstation krb5-libs \
-        inotify-tools procps-ng iproute net-tools bind-utils nmap-ncat \
+        inotify-tools procps-ng iproute nmap-ncat \
         strace less nano libcap ca-certificates sudo hostname openssl \
     && microdnf clean all
 

@@ -28,4 +28,6 @@ On any behavior change, update the corresponding .rs (if comments), tests, this 
 
 Re-run audit when touching entrypoint, fs apply policy, hostname, generation, or auth.
 
+0.8.6 polish round: version bump (workspace only), comment minimization (kept TUI/SSSD/graphical-config + security contracts), dead ManagementSection fields removed, Dockerfile comment + low-hanging pkgs (bind-utils, net-tools; double-checked: TUI uses getent+nc+ldapsearch+ss, not dig/netstat) + compose legacy version removed. Tests/clippy green; README+template typos fixed; docs/code aligned.
+
 End.

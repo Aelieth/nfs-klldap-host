@@ -110,10 +110,7 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
             cfg.effective_hostname()
         );
 
-        // Show the two-tier confirmed runtime value (primary + secondary must agree).
-        // This is the value the TUI and WebUI will actually use for keytab reminders
-        // when no [server] hostname override is present. Useful for CI / sanity checks
-        // that the same name is seen by nfs-klldap-config, nfs-klldap-startup, and nfs-klldap-ui.
+        // Two-tier runtime hostname (TUI/UI use this for keytab; CI/sanity aid).
         match get_consistent_hostname() {
             Ok(c) => {
                 println!(

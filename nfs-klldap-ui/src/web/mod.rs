@@ -38,12 +38,9 @@ pub(crate) use settings::{
     system_restart,
 };
 
-// The pub(crate) re-exports below serve two purposes:
-// 1. They give us short, clean names for the router registration in this file.
-// 2. They make the handlers available to the integration tests via `use super::*;`.
+// pub(crate) re-exports: short names for router + accessible to integration tests in this module.
 
-/// The single piece of state shared by all handlers.
-/// (Kept here for now; could move to a state.rs if it grows further.)
+/// Shared state for all handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub fs: Arc<FsManager>,
@@ -129,8 +126,7 @@ async fn detect_effective_scheme(
 }
 
 /// Assembles all routes (public + protected).
-/// Routes are grouped for readability. Handler implementations live in the
-/// focused submodules (auth, permission_tree, settings).
+/// Routes grouped; handlers in submodules (auth, permission_tree, settings, keytab).
 ///
 /// Layers (NormalizePath + scheme detection from X-Forwarded-*) are applied
 /// after with_state; they wrap the stateful service. The scheme layer stores
@@ -393,6 +389,143 @@ ldap_default_authtok = "sekret"
             html.contains("share_export_0\" value=\"\""),
             "export input should stay empty when not set in TOML"
         );
+    }
+
+    #[tokio::test]
+    async fn settings_save_shares_places_shares_after_webui_on_first_add() {
+        // Start from a config shaped like the default template: ends with [webui] + its
+        // commented keys and has no [[shares]] yet. This reproduces the reported ordering bug.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("test-nfs-klldap.conf");
+
+        // Close approximation of generate_default_template() output for the sections
+        // the shares-save path must not disturb, plus the exact [webui] trailer.
+        let initial = r#"ldap_uri = "ldaps://kllap.test:6360"
+
+[storage]
+container_root = "/export"
+
+[management]
+
+[server]
+
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+kllldap_ignored_attributes = true
+
+[kerberos]
+
+[ganesha]
+default_security = "krb5p"
+
+[webui]
+# webui_tls = false                                             # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
+# tls_cert = "/config/webui.crt"                                # optional custom cert (NFS_KLLDAP_WEBUI_TLS_CERT env wins)
+# tls_key = "/config/webui.key"                                 # optional custom key (NFS_KLLDAP_WEBUI_TLS_KEY env wins; 0600)
+"#;
+        std::fs::write(&config_path, initial).unwrap();
+
+        let config = Arc::new(
+            nfs_klldap_config::NfsKlldapConfig::load(&config_path).expect("valid test config"),
+        );
+        let fs = Arc::new(FsManager::new((*config).clone()));
+
+        // Dummy LLDAP client (settings handlers don't use it) — match make_test_state_with_temp_config.
+        let default_mapping = nfs_klldap_config::PosixAttributeMapping {
+            user_object_class: "posixAccount".to_string(),
+            group_object_class: "posixGroup".to_string(),
+            user_name: "uid".to_string(),
+            user_uid_number: "uidNumber".to_string(),
+            user_gid_number: "gidNumber".to_string(),
+            user_home_directory: "homeDirectory".to_string(),
+            user_shell: "loginShell".to_string(),
+            user_full_name: "displayName".to_string(),
+            group_name: "cn".to_string(),
+            group_gid_number: "gidNumber".to_string(),
+            group_member: "member".to_string(),
+        };
+        let lldap = Arc::new(Mutex::new(LdapClient::new_with_attributes(
+            "ldaps://kllap.test:6360",
+            "ou=people,dc=test,dc=com",
+            "ou=groups,dc=test,dc=com",
+            default_mapping,
+            true, // no_tls_verify for test dummy
+            false,
+        )));
+
+        let auth = Arc::new(AuthManager::new(&config_path, None));
+
+        let state = AppState {
+            fs,
+            lldap,
+            config,
+            auth: auth.clone(),
+            config_path: config_path.clone(),
+            keytab_hostname: "test-host".into(),
+            keytab_realm: "TEST".into(),
+            keytab_alert: None,
+            apply_progress: Arc::new(Mutex::new(None)),
+            restart_requested: Arc::new(Mutex::new(false)),
+            direct_tls: true,
+        };
+
+        let token = auth.create_privileged_session("testadmin");
+        let app = router(state);
+
+        // Add two shares (exercises multiple [[shares]] and "comments must not appear after last share").
+        let body = "share_name_0=shares&share_host_0=%2Fvar%2Fhome%2Flocal%2FProjects%2Ftest-nfs-home%2Fshares%2F&share_rw_0=true&share_sync_0=on&share_cache_profile_0=Default\
+&share_name_1=documents&share_host_1=%2Fvar%2Fhome%2Flocal%2FProjects%2Ftest-nfs-home%2Fdocuments%2F&share_rw_0=true&share_sync_0=on&share_cache_profile_0=Default";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/settings/save-shares")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let written = std::fs::read_to_string(&config_path).unwrap();
+
+        // Shares must have been written.
+        assert!(written.contains("[[shares]]"), "shares array must be present");
+        assert!(written.contains("name = \"shares\""));
+        assert!(written.contains("name = \"documents\""));
+
+        // The critical ordering requirement:
+        // [webui] (and its comments) must appear before the first [[shares]].
+        let webui_pos = written.find("[webui]").expect("[webui] header must still be present");
+        let first_shares_pos = written.find("[[shares]]").expect("[[shares]] must be present");
+        assert!(
+            webui_pos < first_shares_pos,
+            "[webui] must precede [[shares]] after first add via editor; got written:\n{}",
+            written
+        );
+
+        // At least one distinctive webui comment must appear after [webui] and before the first [[shares]].
+        let webui_comment_pos = written.find("# webui_tls = false");
+        assert!(
+            webui_comment_pos.is_some() && webui_comment_pos.unwrap() > webui_pos && webui_comment_pos.unwrap() < first_shares_pos,
+            "webui comment must remain with [webui] section before [[shares]]; got written:\n{}",
+            written
+        );
+
+        // No webui comments should appear after the last share content.
+        // (Search after the last known share name.)
+        let last_share_name_pos = written.rfind("name = \"documents\"").unwrap_or(0);
+        if let Some(cpos) = written.find("# tls_key = ") {
+            assert!(
+                cpos < last_share_name_pos,
+                "webui comments must not be orphaned after shares; got written:\n{}",
+                written
+            );
+        }
+
+        // Also sanity-check that the shares data survived correctly (cache_profile etc.).
+        assert!(written.contains("host_path = \"/var/home/local/Projects/test-nfs-home/shares/\""));
+        assert!(written.contains("cache_profile = \"Default\""));
     }
 
     /// Exercises the complete localhost first-run + normal login + session + protected route flow.

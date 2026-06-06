@@ -1,6 +1,5 @@
 # Recommended compose for nfs-klldap-host (Ganesha only).
 # Single source of truth: nfs-klldap.conf. In-container WebUI on HTTPS port 9630.
-version: "3.8"
 
 services:
   nfs-kerb:

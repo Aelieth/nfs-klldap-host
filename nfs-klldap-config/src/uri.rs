@@ -3,9 +3,7 @@
 //! These are pure functions with no side effects and are used both by
 //! validation/derivation and by the generation engine + startup TUI.
 
-/// Extract the host portion from an ldap/ldaps URI.
-/// Public so the startup binary (and future slimmed-down shell) can use the
-/// same robust logic instead of fragile sed/grep.
+/// Extract host from ldap/ldaps URI (used by validate + TUI).
 pub fn extract_host_from_uri(uri: &str) -> String {
     let after = uri.split("://").nth(1).unwrap_or(uri);
     // IPv6 literal: ldaps://[2001:db8::1]:636  or ldaps://[::1]/...

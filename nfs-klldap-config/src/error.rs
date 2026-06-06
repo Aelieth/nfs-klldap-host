@@ -1,7 +1,4 @@
-//! Error type for the nfs-klldap-config crate.
-//!
-//! This is intentionally a simple, non-`thiserror` error type to keep
-//! the container binary size small (as noted in the original Cargo.toml).
+//! Error type for nfs-klldap-config (manual, no thiserror, for small binary size).
 
 #[derive(Debug)]
 pub enum ConfigError {

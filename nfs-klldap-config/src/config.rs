@@ -69,16 +69,14 @@ pub struct SssdSection {
     pub ldap_tls_cacert: Option<String>,
     pub ldap_id_use_start_tls: Option<bool>,
 
-    // === Rich LLDAP + POSIX attribute mapping (broad spectrum support) ===
-    // These have excellent defaults for typical LLDAP deployments with POSIX attributes.
-    // Override only when your LLDAP schema differs.
+    // POSIX attribute mapping (excellent LLDAP defaults; override only on schema mismatch)
     pub enumerate: Option<bool>,
 
-    // Object classes (user often has inetOrgPerson + posixAccount auxiliary in LLDAP)
+    // Object classes (LLDAP typical: inetOrgPerson + posixAccount aux)
     pub ldap_user_object_class: Option<String>,
     pub ldap_group_object_class: Option<String>,
 
-    // User attribute mappings (highly recommended for correct UID/GID + home/shell)
+    // User attr mappings (for UID/GID + home/shell)
     pub ldap_user_name: Option<String>,
     pub ldap_user_uid_number: Option<String>,
     pub ldap_user_gid_number: Option<String>,
@@ -86,7 +84,7 @@ pub struct SssdSection {
     pub ldap_user_shell: Option<String>,
     pub ldap_user_fullname: Option<String>,
 
-    // Group attribute mappings
+    // Group attr mappings
     pub ldap_group_name: Option<String>,
     pub ldap_group_gid_number: Option<String>,
     pub ldap_group_member: Option<String>,
@@ -274,10 +272,6 @@ fn default_security() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ManagementSection {
-    pub lldap_graphql_url: Option<String>,
-    pub helper_path: Option<PathBuf>,
-    pub use_sudo: Option<bool>,
-    pub ganesha_container_name: Option<String>,
     pub webui_admin_group: Option<String>,
 }
 
@@ -364,12 +358,7 @@ impl Default for GenerationPaths {
     }
 }
 
-// =============================================================================
-// Cache Profiles (for [[shares]] "Cache Profile" dropdown)
-// The profile *name* is written into nfs-klldap.conf under [[shares]].
-// The generator resolves it at emit time to Ganesha PrefRead/PrefWrite values
-// for the corresponding EXPORT block.
-// =============================================================================
+// Cache Profiles (for [[shares]] dropdown; name stored in TOML, resolved to Pref* at generate)
 
 /// The 5 supported values for share.cache_profile (order matches the WebUI dropdown).
 pub const CACHE_PROFILES: &[&str] = &[

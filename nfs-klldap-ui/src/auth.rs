@@ -1,5 +1,5 @@
 //! Hybrid auth: sidecar webui-password (iter SHA-256, 0600) next to conf OR LLDAP member of webui_admin_group.
-//! Sessions: 12h in-mem, HttpOnly + SameSite=Lax + Secure cookie.
+//! 12h in-mem sessions; sidecar (SHA-256) + LLDAP admin group; cookie policy.
 
 use rand::Rng;
 use sha2::{Digest, Sha256};

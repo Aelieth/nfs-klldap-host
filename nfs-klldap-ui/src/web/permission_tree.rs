@@ -681,7 +681,7 @@ pub(crate) async fn apply_permissions(
     // happen only after the poller sees finished and does the final /dir-meta fetch.
     let placeholder = format!(
         r#"<div class="dir-meta-inner" data-path="{}" data-applying="1">
-    <span style="color:var(--warning-text);">⏳ Applying permissions — see Apply Log (bottom right) for progress and Cancel. Tree navigation locked until complete.</span>
+    <span style="color:var(--warning-text);">⏳ Applying permissions — see Apply Log for progress. Tree navigation locked until complete.</span>
 </div>"#,
         form.path
     );

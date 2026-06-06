@@ -84,12 +84,7 @@ mod tests {
         }
     }
 
-    /// Returns a Vec of EnvGuard that will restore previous values (or absence)
-    /// for every process environment variable consulted by `apply_core_env_overrides`
-    /// (NFS_KLLDAP_* prefixed forms only after cleanup).
-    /// The returned value must be kept alive for the duration of any validate_and_derive
-    /// (or minimal_cfg + subsequent re-validate) calls in the test. Holding the ENV_LOCK
-    /// is still required by the caller to serialize against other env-mutating tests.
+    /// Clear NFS_KLLDAP_* env (test helper); hold guards alive across validate calls under ENV_LOCK.
     fn clean_core_env() -> Vec<EnvGuard> {
         let vars = [
             "NFS_KLLDAP_LDAP_URI",

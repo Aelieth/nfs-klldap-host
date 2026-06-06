@@ -26,10 +26,6 @@ if command -v ss >/dev/null 2>&1; then
     if ss -tlnp 2>/dev/null | grep -q ':2049'; then
         listening_2049=true
     fi
-elif command -v netstat >/dev/null 2>&1; then
-    if netstat -tlnp 2>/dev/null | grep -q ':2049'; then
-        listening_2049=true
-    fi
 else
     if timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/2049' 2>/dev/null; then
         listening_2049=true
@@ -53,10 +49,6 @@ fi
 listening_9630=false
 if command -v ss >/dev/null 2>&1; then
     if ss -tlnp 2>/dev/null | grep -q ':9630'; then
-        listening_9630=true
-    fi
-elif command -v netstat >/dev/null 2>&1; then
-    if netstat -tlnp 2>/dev/null | grep -q ':9630'; then
         listening_9630=true
     fi
 else

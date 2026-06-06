@@ -133,7 +133,7 @@ pub(crate) struct StructuredSettingsForm {
 // === Internal helper types ===
 
 /// Internal row representation for the share editor form (used during collect from POST).
-/// Used by both the (now settings-only) structured save and the dedicated shares save.
+/// Used by structured save + dedicated shares save.
 #[derive(Debug, Clone)]
 struct ShareFormRow {
     idx: usize,
@@ -221,7 +221,7 @@ fn infer_profile_from_prefs(pref_read: Option<u64>, pref_write: Option<u64>) -> 
 }
 
 /// Build a fully-populated SettingsTemplate by reading the current on-disk config.
-/// This is the source of truth for pre-filling the structured editor (including shares).
+/// Source for pre-filling structured editor (incl. shares).
 /// Used for initial page load and after raw/structured save (success or error).
 fn build_settings_template(
     current_user: Option<String>,
@@ -732,6 +732,10 @@ fn apply_structured_form_to_toml_doc(
 fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_klldap_config::Share]) {
     // Shares: submitted rows (now pre-populated on load) are always authoritative.
     // We replace [[shares]] even if the submitted list is empty (user explicitly removed all rows).
+    let had_shares = doc.get("shares").is_some();
+    // Remove first so we can control insertion position for the first-add case.
+    let _ = doc.as_table_mut().remove("shares");
+
     let mut shares = toml_edit::ArrayOfTables::new();
     for s in new_shares {
         let mut t = toml_edit::Table::new();
@@ -776,7 +780,163 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
         }
         shares.push(t);
     }
-    doc["shares"] = toml_edit::Item::ArrayOfTables(shares);
+
+    let shares_item = toml_edit::Item::ArrayOfTables(shares);
+
+    if !had_shares {
+        // First introduction of [[shares]] by the editor (e.g. from the default template
+        // that ends with [webui] + comments). Force the array after [webui] (or the nearest
+        // prior known anchor) so that [webui] and its comments appear before [[shares]].
+        let anchor = if doc.get("webui").is_some() {
+            Some("webui")
+        } else if doc.get("ganesha").is_some() {
+            Some("ganesha")
+        } else if doc.get("kerberos").is_some() {
+            Some("kerberos")
+        } else if doc.get("sssd").is_some() {
+            Some("sssd")
+        } else {
+            None
+        };
+
+        if let Some(anchor_key) = anchor {
+            // Preserve any document-level trailing trivia (newlines/comments after the last key).
+            // Empty [webui] with only comments underneath in the source often ends up here.
+            let trailing = doc.trailing().clone();
+
+            // Snapshot current top-level items (in their existing order) after the remove above.
+            let items: Vec<(String, toml_edit::Item)> = doc
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect();
+
+            // Clear the root table so we can re-add keys (and the shares item) in the desired order.
+            // Per-key Decor (comments/whitespace) is carried on the cloned Items.
+            for (k, _) in &items {
+                let _ = doc.as_table_mut().remove(k.as_str());
+            }
+
+            let mut inserted = false;
+            for (k, v) in items {
+                doc[k.as_str()] = v;
+                if k == anchor_key {
+                    doc["shares"] = shares_item.clone();
+                    inserted = true;
+                }
+            }
+            if !inserted {
+                // Defensive: anchor check passed but it was not in the snapshot; append.
+                doc["shares"] = shares_item;
+            }
+
+            // Restore trailing so comments that were not attached to any key survive.
+            doc.set_trailing(trailing);
+        } else {
+            // No recognized anchor section; fall back to append (legacy or minimal configs).
+            doc["shares"] = shares_item;
+        }
+    } else {
+        // Shares key already existed in the source — replace it in its prior position
+        // so we do not reorder a file the user may have arranged via raw edit.
+        doc["shares"] = shares_item;
+    }
+
+    // --- Post-serialization safety net for first-add from the default template ---
+    // An empty [webui] whose only content is comments often has those comments stored
+    // as document trailing trivia by toml_edit rather than decor on the table item.
+    // The key-reordering and trailing restore cannot pull them forward. For the narrow
+    // first-add-via-editor case we do a final textual correction: collect every [[shares]]
+    // block, remove them from the text, then re-insert the collected shares text
+    // immediately after the [webui] stanza (header + its following comment/blank lines).
+    // This guarantees the on-disk order the user expects from the generated template.
+    if !had_shares {
+        let mut full = doc.to_string();
+
+        // Collect the entire tail starting at the first [[shares]]. Because the shares-save
+        // path writes only shares (and any trivia that toml_edit put after them), this tail
+        // may contain both the [[shares]] tables *and* webui comments that were trailing.
+        let shares_tail = if let Some(start) = full.find("[[shares]]") {
+            let t = full[start..].trim_end().to_string();
+            // Excise it so the prefix is clean for re-insertion.
+            full = full[..start].to_string();
+            Some(t)
+        } else {
+            None
+        };
+
+        if let Some(tail) = shares_tail {
+            // Peel any trailing comment/blank suffix off the tail; those are the webui comments
+            // that toml_edit placed after the shares. We want them to live with [webui].
+            // Walk backward from the collected tail and peel any suffix of blank/# lines
+            // (these are the webui comments that toml_edit put after the shares in the bad case).
+            let lines: Vec<&str> = tail.lines().collect();
+            let mut peel_count = 0usize;
+            for line in lines.iter().rev() {
+                let t = line.trim_start();
+                if t.is_empty() || t.starts_with('#') {
+                    peel_count += 1;
+                } else {
+                    break;
+                }
+            }
+            let (shares_part_owned, peeled_comments) = if peel_count > 0 {
+                let keep = lines.len() - peel_count;
+                let s = if keep == 0 { String::new() } else { lines[..keep].join("\n") };
+                let c = lines[keep..].join("\n");
+                (s, c)
+            } else {
+                (tail.clone(), String::new())
+            };
+            let shares_text = shares_part_owned.trim().to_string();
+
+            // Find [webui] in the shares-free prefix and insert after its stanza
+            // (header line + any comments/blanks that were already there).
+            if let Some(wstart) = full.find("[webui]") {
+                let mut insert_at = wstart;
+                if let Some(nl) = full[insert_at..].find('\n') {
+                    insert_at += nl + 1;
+                } else {
+                    insert_at = full.len();
+                }
+                // Include blanks/# that already follow [webui] in the prefix.
+                let tail_after = &full[insert_at..];
+                let mut consumed = 0usize;
+                for line in tail_after.lines() {
+                    let t = line.trim_start();
+                    if t.is_empty() || t.starts_with('#') {
+                        consumed += line.len() + 1;
+                    } else {
+                        break;
+                    }
+                }
+                insert_at += consumed;
+
+                let before = &full[..insert_at];
+                let after = &full[insert_at..];
+
+                // Place any peeled webui comments right after the webui stanza, then the shares.
+                let mut middle = String::new();
+                if !peeled_comments.is_empty() {
+                    middle.push('\n');
+                    middle.push_str(&peeled_comments);
+                }
+                if !shares_text.is_empty() {
+                    middle.push_str("\n\n");
+                    middle.push_str(&shares_text);
+                }
+
+                let reassembled = if after.trim().is_empty() {
+                    format!("{}{}\n", before.trim_end(), middle)
+                } else {
+                    format!("{}{}{}", before.trim_end(), middle, after)
+                };
+
+                if let Ok(reparsed) = reassembled.parse::<toml_edit::DocumentMut>() {
+                    *doc = reparsed;
+                }
+            }
+        }
+    }
 }
 
 // === Handlers ===
@@ -1002,7 +1162,6 @@ pub(crate) async fn lldap_status(State(state): State<AppState>, headers: HeaderM
         "<div id='nfs-client-status' style='border:1px solid var(--border); background:var(--bg-alt); padding:10px; margin:1rem 0; border-radius:4px;'>"
     );
     html.push_str("<strong>NFS Permission Client (KLLDAP/LLDAP connection)</strong><br>");
-    html.push_str("<span style='font-size:0.9em;'>Used for live user/group lookups and uid/gid resolution when managing share permissions.</span><br><br>");
     html.push_str(&format!("Authenticated as: <code>{}</code><br>", auth_as));
     html.push_str(&format!("Last connected: {}<br>", last_str));
     html.push_str(&notice_html);

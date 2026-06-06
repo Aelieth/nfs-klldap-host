@@ -23,7 +23,6 @@ path = "src/bin/nfs_klldap_startup.rs"
 serde = { workspace = true }
 toml = { workspace = true }
 # thiserror kept out for tiny container binary size; manual error impl below
-# (serde_json was previously listed but never actually used in this crate)
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -29,17 +29,14 @@ impl NfsKlldapConfig {
     }
 
     pub fn validate_and_derive(&mut self) -> Result<(), ConfigError> {
-        // Apply env overrides for core nfs-klldap.conf options FIRST (env wins over file or absence).
-        // This enables NFS_KLLDAP_* injection for secrets/compose without requiring
-        // values in the TOML (parse uses #[serde(default)], validate enforces after apply).
-        // Only core options (per task); not every [sssd] advanced field. Only NFS_KLLDAP_* prefixed forms are supported.
+        // Env overrides (NFS_KLLDAP_* only) win; applied first.
         self.apply_core_env_overrides();
 
         if self.ldap_uri.trim().is_empty() {
             return Err(ConfigError::Validation("ldap_uri is required".into()));
         }
 
-        // Normalize blank [sssd] overrides to None so explicit values win over derivation.
+        // Normalize blank [sssd] overrides (explicit wins over derive).
         {
             let s = &mut self.sssd;
             normalize_blank(&mut s.ldap_search_base);
@@ -59,24 +56,21 @@ impl NfsKlldapConfig {
             normalize_blank(&mut s.ldap_group_gid_number);
             normalize_blank(&mut s.ldap_group_member);
 
-            // kllldap_ignored_attributes is Option<bool> — default handled in generator
-            // (we still want to allow explicit false in the TOML)
-
-            // New advanced fields
+            // kllldap_ignored_attributes (Option<bool>) defaulted in generator; allow explicit false.
             normalize_blank(&mut s.domain);
             normalize_blank(&mut s.auth_provider);
             normalize_blank(&mut s.chpass_provider);
             normalize_blank(&mut s.ldap_schema);
             normalize_blank(&mut s.krb5_server);
             normalize_blank(&mut s.krb5_kpasswd);
-            // krb5_validate and krb5_store_password_if_offline are bools — no string normalization needed
+            // (bools like krb5_* need no norm)
         }
 
         // Normalize webui string paths (tls bool needs no string norm).
         normalize_blank(&mut self.webui.tls_cert);
         normalize_blank(&mut self.webui.tls_key);
 
-        // ldap_uri must be DNS (not IP) — forward+reverse required for Kerberos principals.
+        // ldap_uri must be DNS (not IP) for Kerberos.
         let host = crate::extract_host_from_uri(&self.ldap_uri);
         if crate::uri::host_is_ip(&host) {
             return Err(ConfigError::Validation(
@@ -85,7 +79,7 @@ impl NfsKlldapConfig {
             ));
         }
 
-        // Derive realm from ldap_uri if absent; NFS_KLLDAP_KERBEROS_REALM env override (only prefixed form supported).
+        // Derive realm from ldap_uri if absent (or NFS_KLLDAP_KERBEROS_REALM env).
         if self.kerberos.realm.is_none() {
             if let Some(realm) = crate::derive_realm_from_uri(&self.ldap_uri) {
                 self.kerberos.realm = Some(realm);
@@ -278,7 +272,7 @@ impl NfsKlldapConfig {
             }
         }
 
-        // [kerberos] realm (only the NFS_KLLDAP_KERBEROS_REALM prefixed form is supported)
+        // [kerberos] realm (NFS_KLLDAP_KERBEROS_REALM only)
         if let Ok(v) = std::env::var("NFS_KLLDAP_KERBEROS_REALM") {
             let t = v.trim();
             if !t.is_empty() {
@@ -334,7 +328,7 @@ impl NfsKlldapConfig {
             }
         }
 
-        // [management]
+        // [management] webui_admin_group
         if let Ok(v) = std::env::var("NFS_KLLDAP_MANAGEMENT_WEBUI_ADMIN_GROUP") {
             let t = v.trim();
             self.management.webui_admin_group = if t.is_empty() { None } else { Some(t.to_string()) };

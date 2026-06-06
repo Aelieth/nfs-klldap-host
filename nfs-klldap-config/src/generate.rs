@@ -390,7 +390,7 @@ EXPORT_DEFAULTS {{
 }
 
 fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(), ConfigError> {
-    // Clean old managed fragments (we own them)
+    // Remove prior managed fragments (we own exports.d/*.conf)
     if exports_dir.exists() {
         for entry in fs::read_dir(exports_dir)? {
             let p = entry?.path();
@@ -413,7 +413,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         let squash = share.squash.as_deref().unwrap_or("no_root_squash");
         let sync = if share.sync.unwrap_or(true) { "true" } else { "false" };
 
-        // Resolve Pref* from cache_profile (UI path) or fall back to raw pref_*.
+        // Resolve Pref* from cache_profile or raw pref_* fallback.
         let (pref_r, pref_w) = if let Some(cp) = &share.cache_profile {
             if let Some((r, w)) = crate::resolve_cache_profile(cp) {
                 (Some(r), Some(w))
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn pref_read_emitted_conditionally_in_export_fragment() {
-        // Build a minimal valid config with one share requesting a specific PrefRead (16 MiB "Max" streaming case)
+        // Minimal config + share with explicit PrefRead (legacy path)
         let mut cfg = crate::NfsKlldapConfig {
             ldap_uri: "ldaps://k.test:6360".into(),
             sssd: crate::SssdSection {
@@ -514,7 +514,7 @@ mod tests {
 
         let frag_path = exports_dir.join("10-stream.conf");
         let frag = std::fs::read_to_string(&frag_path).unwrap_or_else(|_| {
-            // Fallback search in case naming shifts
+            // Fallback (name shift tolerance)
             let mut s = String::new();
             if let Ok(rd) = std::fs::read_dir(&exports_dir) {
                 for e in rd.flatten() {
@@ -532,15 +532,14 @@ mod tests {
             "expected PrefRead line for streaming share, got:\n{}",
             frag
         );
-        // Sanity: the rest of the block is still there
         assert!(frag.contains("EXPORT {"));
         assert!(frag.contains("Sync = true;"));
-        // When omitted, no PrefRead line at all (tested indirectly via other generation paths)
+        // (omitted PrefRead case covered indirectly)
     }
 
     #[test]
     fn cache_profile_emits_both_pref_read_and_pref_write() {
-        // Use a profile that has asymmetric read/write (Read - Heavy) to prove both are emitted.
+        // Asymmetric profile (Read-Heavy) to prove both Pref* emitted.
         let mut cfg = crate::NfsKlldapConfig {
             ldap_uri: "ldaps://k.test:6360".into(),
             sssd: crate::SssdSection {
@@ -552,7 +551,7 @@ mod tests {
                 name: "movies4k".into(),
                 host_path: "/media/movies4k".into(),
                 cache_profile: Some("Read - Heavy".to_string()),
-                // Do not set pref_*; profile must supply them.
+                // No raw pref_*; profile supplies.
                 ..Default::default()
             }],
             ..Default::default()

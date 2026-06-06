@@ -15,7 +15,7 @@
 
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
         <label style="flex:1; min-width:160px; position:relative;">
-            Owner (name or UID)<br>
+            Owner<br>
             <input type="text" name="owner_user" value="{{ owner_value }}" size="18"
                    hx-get="/users/search"
                    hx-trigger="focus, click, input changed delay:220ms"
@@ -30,7 +30,7 @@
         </label>
 
         <label style="flex:1; min-width:160px; position:relative;">
-            Group (name or GID)<br>
+            Group<br>
             <input type="text" name="owner_group" value="{{ group_value }}" size="18"
                    hx-get="/groups/search"
                    hx-trigger="focus, click, input changed delay:220ms"
@@ -45,12 +45,12 @@
         </label>
 
         <label style="min-width:90px;">
-            Permissions (octal)<br>
+            Permissions<br>
             <input type="text" name="mode" value="{{ mode_value }}" size="4" style="font-size:0.9em;">
         </label>
 
         <label style="font-size:0.85em; white-space:nowrap; margin-bottom:2px;">
-            <input type="checkbox" name="recursive" value="true" {{ recursive_checked }} style="transform:scale(1.15); margin-right:3px; vertical-align:middle;"> recursive (all subdirs)
+            <input type="checkbox" name="recursive" value="true" {{ recursive_checked }} style="transform:scale(1.15); margin-right:3px; vertical-align:middle;"> recursive
         </label>
 
         <div style="display:flex; gap:4px; margin-bottom:2px;">
@@ -63,7 +63,4 @@
         </div>
     </div>
 
-    <div style="font-size:0.7em; color: var(--text-light); margin-top:2px;">
-        Edit mode active — tree navigation locked. Without recursive: this directory + files here only (not subdirs). Numbers 0-60000 preferred.
-    </div>
 </form>

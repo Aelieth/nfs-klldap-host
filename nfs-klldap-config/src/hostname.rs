@@ -378,11 +378,8 @@ mod tests {
 
     #[test]
     fn real_get_consistent_hostname_smoke() {
-        // This proves the real I/O path works on the current Linux environment.
-        // In a real container without --uts=host this would surface the Docker ID problem.
+        // Real I/O path smoke (succeeds or well-formed inconsistency; never panic/garbage).
         let result = get_consistent_hostname();
-        // We only assert that it either succeeds with matching sources OR
-        // produces a well-formed inconsistency (never panics or returns garbage).
         match result {
             Ok(c) => {
                 assert!(!c.hostname.is_empty());

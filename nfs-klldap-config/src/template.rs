@@ -1,4 +1,4 @@
-//! First-run default template (long header kept for new users; see generate_default_template).
+//! First-run default template
 
 use std::fs;
 use std::path::Path;
@@ -26,10 +26,10 @@ pub fn generate_default_template() -> String {
 # Advanced users may insert 1:1 value overrides under respective section.
 # =============================================================================
 
-ldap_uri = "ldaps://kllap.example.com:6360"                     # LLDAP default secure port. 3890 for LLDAP unencrypted
+ldap_uri = "ldaps://kllap.example.com:6360"                     # Required - LLDAP default secure port. 3890 for LLDAP unencrypted (389, 636 for standard)
 
 [storage]
-container_root = "/export"                                      # Where your Ganesha NFS shares mount at. Match docker -v ...:/export
+container_root = "/export"                                      # Required - Where your Ganesha NFS shares mount at. Match docker -v ...:/export
 
 [management]
 # webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins
@@ -38,8 +38,8 @@ container_root = "/export"                                      # Where your Gan
 # hostname = "myhost.example.com"                               # Default - Optional override for keytab only. Recommended: docker run --uts=host
 
 [sssd]
-ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
-ldap_default_authtok = "strong-secret"
+ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"  # Required - LDAP bind DN
+ldap_default_authtok = "strong-secret"                          # Required - LDAP bind password
 # ldap_user_search_base = "ou=people,dc=example,dc=com"         # Default - Edit this if your base user OU differs
 # ldap_group_search_base = "ou=groups,dc=example,dc=com"        # Default - Edit this if your base user OU differs
 kllldap_ignored_attributes = true                               # KLLDAP specific - improves lookup time, prevents attribute spam
@@ -52,10 +52,10 @@ kllldap_ignored_attributes = true                               # KLLDAP specifi
 # realm = "EXAMPLE.COM"                                         # Default - auto-derived from ldap_uri host, edit to override
 
 [ganesha]
-default_security = "krb5p"                                      # securtiy, krb5p (default) | krb5i | krb5
+default_security = "krb5p"                                      # Security, krb5p (default) | krb5i | krb5
 
 [webui]
-# WEBUI_TLS = false                                             # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
+# webui_tls = false                                             # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
 # tls_cert = "/config/webui.crt"                                # optional custom cert (NFS_KLLDAP_WEBUI_TLS_CERT env wins)
 # tls_key = "/config/webui.key"                                 # optional custom key (NFS_KLLDAP_WEBUI_TLS_KEY env wins; 0600)
 

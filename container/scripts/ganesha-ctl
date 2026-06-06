@@ -1,27 +1,7 @@
 #!/bin/bash
-# DBUS-free helper for Ganesha (show-exports / reload via inotify + SIGHUP).
-# See container/README.md.
-#   - Any *.conf file containing one or more EXPORT {} blocks is loaded
-#   - Changes to exports.d/ (or SIGHUP / ganesha-ctl reload) cause the
-#     entrypoint to restart ganesha.nfsd so the new config is picked up.
-#   - No dedicated ganesha-export-watcher binary is shipped or needed.
-#
-# Commands:
-#   add-export <file> [name]     - Deprecated / no-op.
-#                                  Just place the file in the bind-mounted exports.d/
-#                                  directory; the container supervisor will reload.
-#   remove-export <name-or-id>   - Best-effort removal: delete the matching
-#                                  fragment file (e.g. "10-myshare" or "myshare").
-#   show-exports                 - List all current export fragments (the real state).
-#   reload                       - Force an immediate restart of ganesha.nfsd
-#                                  so it re-reads exports.d/.
-#
-# Typical interactive use from the host:
-#   docker exec alma-nfs-kerb ganesha-ctl show-exports
-#   docker exec alma-nfs-kerb ganesha-ctl reload
-#
-# The management tool (Rust) normally just writes files into the bind-mounted
-# exports.d directory. The container takes care of the rest.
+# DBUS-free Ganesha helper (show-exports/reload/remove via inotify + SIGHUP to supervisor).
+# See container/README.md. Writes go to exports.d/; supervisor + watcher handle reloads.
+# add-export is deprecated/no-op.
 #
 
 set -euo pipefail
@@ -39,17 +19,15 @@ die() {
 
 usage() {
     cat <<EOF
-ganesha-ctl - NFS-Ganesha management helper (DBUS-free / self-contained)
+ganesha-ctl - NFS-Ganesha helper (DBUS-free; inotify + supervisor HUP)
 
 Usage:
-  ganesha-ctl add-export <file> [name]     # (no-op, watcher-driven)
-  ganesha-ctl remove-export <name-or-id>   # delete matching fragment
-  ganesha-ctl show-exports                 # list current exports.d/*.conf
-  ganesha-ctl reload                       # ask supervisor to bounce ganesha (and related) to pick up changes
+  add-export <file> [name]   # (no-op / deprecated; watcher-driven)
+  remove-export <name>       # delete matching fragment
+  show-exports               # list exports.d
+  reload                     # bounce ganesha via supervisor
 
-The container watches the central config (and thus exports.d/ fragments) and the
-supervisor bounces ganesha (plus SSSD + WebUI for share applies) when they change.
-No host DBUS socket is required.
+Container watches config/exports.d; supervisor bounces on change. No host DBUS.
 EOF
 }
 
@@ -95,29 +73,19 @@ shift || true
 
 case "$CMD" in
     add-export)
-        # In the self-contained world this is mostly a no-op.
-        # The management tool (or admin) is expected to write the file directly
-        # into the bind-mounted exports.d directory. The watcher will notice.
+        # Deprecated/no-op: write directly to bind-mounted exports.d; watcher + supervisor pick up.
         FILE="${1:-}"
-        NAME="${2:-}"
-
         if [ -z "$FILE" ]; then
             die "Usage: ganesha-ctl add-export <file-in-exports.d> [name]"
         fi
-
         if [ ! -f "$FILE" ]; then
-            # Allow calling with just a basename; look it up in exports.d
             if [ -f "${EXPORTS_DIR}/$(basename "$FILE")" ]; then
                 FILE="${EXPORTS_DIR}/$(basename "$FILE")"
             else
-                die "Fragment file not found: $FILE (did you write it into ${EXPORTS_DIR}?)"
+                die "Fragment file not found: $FILE (write it into ${EXPORTS_DIR})"
             fi
         fi
-
-        log "add-export received for $FILE"
-        log "In self-contained mode the watcher + supervisor will pick this up (via inotify + HUP bounce of ganesha)."
-        log "If you just wrote the file from outside, the change should already be processing."
-        log "You can force an immediate reload with: ganesha-ctl reload"
+        log "add-export (no-op): $FILE will be picked up by watcher + HUP"
         ;;
 
     remove-export)
@@ -168,11 +136,10 @@ case "$CMD" in
         ;;
 
     reload)
-        log "Requesting immediate Ganesha restart (self-contained mode)..."
-        # In this image the entrypoint (on HUP) does pkill + re-spawn of ganesha
-        # (and SSSD + WebUI) while keeping the supervisor alive. No DBUS.
+        log "Requesting Ganesha restart (self-contained)..."
+        # Supervisor HUP does pkill + respawn (SSSD/WebUI too for full apply). No DBUS.
         pkill -TERM ganesha.nfsd 2>/dev/null || true
-        log "Reload triggered. Supervisor will re-spawn ganesha.nfsd (and related services for a full apply)."
+        log "Reload triggered (supervisor will respawn)."
         ;;
 
     *)

@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-FROM quay.io/almalinuxorg/10-minimal AS chef
+ARG FEDORA_VERSION=44
+FROM registry.fedoraproject.org/fedora-minimal:${FEDORA_VERSION} AS chef
 
 # Build deps for Rust (openldap-clients for ldapsearch is in runtime only; used by startup TUI probes)
 RUN microdnf install -y --assumeyes \
@@ -49,17 +50,15 @@ RUN set -euxo pipefail && \
     cp "target/$TARGET/release/nfs-klldap-config" "target/$TARGET/release/nfs-klldap-startup" "target/$TARGET/release/nfs-klldap-ui" /output/ && \
     (strip /output/nfs-klldap-config /output/nfs-klldap-startup /output/nfs-klldap-ui || true)
 
-FROM quay.io/almalinuxorg/10-minimal
+FROM registry.fedoraproject.org/fedora-minimal:${FEDORA_VERSION}
 
 LABEL maintainer="Aelieth" \
       version="0.8.6"
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 
-# Runtime: Ganesha (from CentOS Storage SIG) + SSSD + Kerberos + tools.
-RUN microdnf install -y --assumeyes epel-release && \
-    microdnf install -y --assumeyes centos-release-nfs-ganesha7 && \
-    microdnf install -y --assumeyes \
+# Runtime: Ganesha (native Fedora packages) + SSSD + Kerberos + tools.
+RUN microdnf install -y --assumeyes \
         nfs-ganesha nfs-ganesha-vfs nfs-ganesha-utils nfs-ganesha-selinux \
         sssd sssd-ldap openldap-clients \
         krb5-workstation krb5-libs \

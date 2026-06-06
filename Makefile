@@ -15,7 +15,13 @@ IMAGE_NAME ?= nfs-klldap-host
 REGISTRY ?= ghcr.io/aelieth
 FULL_IMAGE := $(REGISTRY)/$(IMAGE_NAME)
 
+# We deliberately target x86-64-v2 baseline (not plain amd64).
+# This gives better performance on modern CPUs while still being widely compatible.
+# (Excludes very old pre-2009 CPUs that lack SSE4.2 / POPCNT etc.)
 PLATFORMS := linux/amd64/v2,linux/arm64
+
+# Control whether we also tag :latest (set to false for pre-releases / CI)
+DOCKER_TAG_LATEST ?= true
 
 # Rust targets for host-side tools (these run on the *host* OS, not inside the container)
 AMD64_TARGET := x86_64-unknown-linux-gnu
@@ -83,12 +89,16 @@ dist: build-cross
 # -----------------------------------------------------------------------------
 # Container Image
 # -----------------------------------------------------------------------------
+# Base image is Fedora minimal (see Dockerfile ARG FEDORA_VERSION=44 by default;
+# supports 43+ and provides native nfs-ganesha for x86_64 + aarch64).
 .PHONY: docker
 docker:
-	@echo "==> Building container image (local architecture)..."
-	$(DOCKER) build \
-		-t $(IMAGE_NAME):$(VERSION) \
-		-t $(IMAGE_NAME):latest \
+	@echo "==> Building container image for linux/amd64/v2..."
+	$(BUILDX) build \
+		--platform linux/amd64/v2 \
+		--tag $(IMAGE_NAME):$(VERSION) \
+		--tag $(IMAGE_NAME):latest \
+		--load \
 		.
 
 .PHONY: docker-multi
@@ -97,7 +107,7 @@ docker-multi:
 	$(BUILDX) build \
 		--platform $(PLATFORMS) \
 		--tag $(FULL_IMAGE):$(VERSION) \
-		--tag $(FULL_IMAGE):latest \
+		$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(FULL_IMAGE):latest,) \
 		$(if $(filter false,$(DOCKER_PUSH)),--load,--push) \
 		.
 

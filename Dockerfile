@@ -51,12 +51,14 @@ RUN set -euxo pipefail && \
 
 FROM quay.io/almalinuxorg/10-minimal
 
-LABEL maintainer="Aelieth"
+LABEL maintainer="Aelieth" \
+      version="0.8.6"
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
-# Runtime: Ganesha + SSSD + Kerberos + tools
+
+# Runtime: Ganesha (from CentOS Storage SIG) + SSSD + Kerberos + tools.
 RUN microdnf install -y --assumeyes epel-release && \
-    microdnf install -y --assumeyes centos-release-nfs-ganesha7 2>/dev/null || true && \
+    microdnf install -y --assumeyes centos-release-nfs-ganesha7 && \
     microdnf install -y --assumeyes \
         nfs-ganesha nfs-ganesha-vfs nfs-ganesha-utils nfs-ganesha-selinux \
         sssd sssd-ldap openldap-clients \

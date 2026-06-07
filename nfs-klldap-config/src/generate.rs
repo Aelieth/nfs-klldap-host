@@ -369,6 +369,16 @@ fn write_ganesha_main(
     let content = format!(
         r#"NFS_CORE_PARAM {{
     Protocols = 4;
+    Transports = TCP;
+    NFS_Port = 2049;
+    Bind_addr = "0.0.0.0";
+    Enable_UDP = false;
+    Mountd_Port = 0;
+    NLM_Port = 0;
+    Rquota_Port = 0;
+    Enable_NLM = false;
+    Enable_RQUOTA = false;
+    Allow_Set_Io_Flusher_Fail = true;
 }}
 
 NFSV4 {{
@@ -379,7 +389,7 @@ EXPORT_DEFAULTS {{
     SecType = {sec};
 }}
 
-%include "{exports}/*.conf"
+%include {exports}/*.conf
 "#,
         sec = sec,
         exports = exports_dir.display(),
@@ -411,7 +421,14 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         let sec = share.security.as_deref().unwrap_or(default_sec);
         let access = if share.rw.unwrap_or(true) { "RW" } else { "RO" };
         let squash = share.squash.as_deref().unwrap_or("no_root_squash");
-        let sync = if share.sync.unwrap_or(true) { "true" } else { "false" };
+
+        // Only emit Sync line when explicitly set (Ganesha 5+/VFS often treats Sync as invalid/undesired for host FS VFS exports).
+        // Default (None) = omit; admin can force via sync = true/false in [[shares]] or the WebUI checkbox.
+        let sync_line = if let Some(s) = share.sync {
+            format!("    Sync = {};\n", if s { "true" } else { "false" })
+        } else {
+            String::new()
+        };
 
         // Resolve Pref* from cache_profile or raw pref_* fallback.
         let (pref_r, pref_w) = if let Some(cp) = &share.cache_profile {
@@ -432,7 +449,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             .unwrap_or_default();
 
         let block = format!(
-            r#"# Generated from nfs-klldap.conf share "{}"
+            r#"# Generated from nfs-klldap.conf share "{}" (strict NFSv4+ only; no NFSv3)
 EXPORT {{
     Export_Id = {};
     Path = {};
@@ -442,14 +459,19 @@ EXPORT {{
     Protocols = 4;
     Transports = TCP;
     Squash = {};
-    Sync = {};
-{pref_read_line}{pref_write_line}
+{sync_line}{pref_read_line}{pref_write_line}
     FSAL {{
         Name = VFS;
     }}
+
+    CLIENT {{
+        Clients = *;
+        Access_Type = {};
+        SecType = {};
+    }}
 }}
 "#,
-            share.name, export_id, path, pseudo, access, sec, squash, sync, pref_read_line = pref_read_line, pref_write_line = pref_write_line
+            share.name, export_id, path, pseudo, access, sec, squash, access, sec, sync_line = sync_line, pref_read_line = pref_read_line, pref_write_line = pref_write_line
         );
 
         let filename = format!("{:02}-{}.conf", i + 10, sanitize_name(&share.name));
@@ -496,6 +518,7 @@ mod tests {
                 host_path: "/media/stream".into(),
                 cache_profile: None, // force direct pref_read path (legacy numeric in source)
                 pref_read: Some(16 * 1024 * 1024),
+                sync: Some(true), // explicit to exercise Sync emission + keep assertion
                 ..Default::default()
             }],
             ..Default::default()
@@ -534,6 +557,13 @@ mod tests {
         );
         assert!(frag.contains("EXPORT {"));
         assert!(frag.contains("Sync = true;"));
+        // Strict NFSv4+ per-share hardening (Ganesha 9.x+ / no NFSv3)
+        assert!(frag.contains("CLIENT {"));
+        assert!(frag.contains("Clients = *;"));
+        assert!(frag.contains("Access_Type = RW;"));
+        assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in CLIENT block");
+        // Protocols = 4 must be present inside the per-share EXPORT (defensive)
+        assert!(frag.contains("Protocols = 4;"));
         // (omitted PrefRead case covered indirectly)
     }
 
@@ -552,6 +582,7 @@ mod tests {
                 host_path: "/media/movies4k".into(),
                 cache_profile: Some("Read - Heavy".to_string()),
                 // No raw pref_*; profile supplies.
+                sync: Some(true), // explicit to exercise Sync emission + keep assertion
                 ..Default::default()
             }],
             ..Default::default()
@@ -595,5 +626,67 @@ mod tests {
         );
         assert!(frag.contains("EXPORT {"));
         assert!(frag.contains("Sync = true;"));
+        // Strict NFSv4+ per-share hardening (Ganesha 9.x+ / no NFSv3)
+        assert!(frag.contains("CLIENT {"));
+        assert!(frag.contains("Clients = *;"));
+        assert!(frag.contains("Access_Type = RW;"));
+        assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in CLIENT block");
+        assert!(frag.contains("Protocols = 4;"));
+    }
+
+    #[test]
+    fn per_share_client_block_respects_rw_and_security_overrides() {
+        // Exercise non-defaults: RO + krb5i security -> CLIENT must reflect them (strict v4+ regression)
+        let mut cfg = crate::NfsKlldapConfig {
+            ldap_uri: "ldaps://k.test:6360".into(),
+            sssd: crate::SssdSection {
+                ldap_default_bind_dn: "uid=admin,ou=people,dc=test,dc=com".into(),
+                ldap_default_authtok: "sekret".into(),
+                ..Default::default()
+            },
+            shares: vec![crate::Share {
+                name: "backups".into(),
+                host_path: "/media/backups".into(),
+                rw: Some(false),
+                security: Some("krb5i".to_string()),
+                cache_profile: Some("Default".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        cfg.validate_and_derive().expect("valid test config");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let exports_dir = tmp.path().join("exports.d");
+        let paths = crate::GenerationPaths {
+            sssd_conf: tmp.path().join("sssd.conf"),
+            krb5_conf: tmp.path().join("krb5.conf"),
+            ganesha_conf: tmp.path().join("ganesha.conf"),
+            exports_dir: exports_dir.clone(),
+        };
+        crate::generate_all(&cfg, &paths).expect("generate");
+
+        let frag_path = exports_dir.join("10-backups.conf");
+        let frag = std::fs::read_to_string(&frag_path).unwrap_or_else(|_| {
+            let mut s = String::new();
+            if let Ok(rd) = std::fs::read_dir(&exports_dir) {
+                for e in rd.flatten() {
+                    if e.path().to_string_lossy().contains("backups") {
+                        s = std::fs::read_to_string(e.path()).unwrap_or_default();
+                        break;
+                    }
+                }
+            }
+            s
+        });
+
+        assert!(frag.contains("Access_Type = RO;"), "top-level Access should be RO");
+        assert!(frag.contains("SecType = krb5i;"), "top-level SecType should be krb5i");
+        assert!(frag.contains("CLIENT {"));
+        assert!(frag.contains("Clients = *;"));
+        // The CLIENT must carry the *same* per-share overrides (the key strict-v4 hardening)
+        assert!(frag.contains("Access_Type = RO;"), "CLIENT must inherit RO");
+        assert!(frag.contains("SecType = krb5i;"), "CLIENT must inherit krb5i");
+        assert!(frag.contains("Protocols = 4;"));
     }
 }

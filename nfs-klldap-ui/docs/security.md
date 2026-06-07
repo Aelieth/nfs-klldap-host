@@ -1,7 +1,11 @@
 # Security Model
 
-The WebUI runs as root inside the container and performs chown/chmod directly on bind-mounted host_path trees via `src/privileged.rs` (safe std APIs, no extra capabilities required).
+The WebUI runs as root inside the container and performs chown/chmod directly on bind-mounted host_path trees via `src/privileged.rs` (safe std APIs).
 
-It validates requests against the `[[shares]]` host_path list in nfs-klldap.conf and refuses uid/gid 0 or set*id bits.
+Typical production runs add `SYS_ADMIN` and `DAC_READ_SEARCH` capabilities (see the main project's `examples/docker-compose.yml` and `docs/run/README.md`). These caps are not required for the `chown(2)`/`chmod(2)` syscalls themselves when running as root on a normal bind mount, but they improve reliability for:
+- Ganesha VFS when serving the exported host trees, and
+- the WebUI's recursive WalkDir scanner when the tree contains directories with restrictive permissions for intermediate owners.
 
-The in-container root model is the supported path. Running the binary on the host is not recommended.
+The container must still be started as real root (for 0600 sssd.conf, privileged port 2049, and arbitrary numeric UID/GID mutations). The in-container root model is the supported path. Running the binary on the host is not recommended.
+
+All mutations are still gated by the allow-list from configured shares + the WalkDir safety policy (no symlink descent for mutation, no set*id, refuse uid/gid 0). See `fs.rs` and `privileged.rs`.

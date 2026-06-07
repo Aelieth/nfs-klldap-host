@@ -25,6 +25,7 @@ pub const RECOMMENDED_IGNORED_USER_ATTRIBUTES: &[&str] = &[
     "shadowmax",
     "shadowmin",
     "shadowwarning",
+    "sudohost",
     "useraccountcontrol",
     "usercertificate;binary",
     "userpassword",

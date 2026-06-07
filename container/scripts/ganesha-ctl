@@ -1,5 +1,7 @@
 #!/bin/bash
-# DBUS-free Ganesha helper (show-exports/reload/remove via inotify + SIGHUP to supervisor).
+# Ganesha helper (show-exports/reload/remove via inotify + SIGHUP to supervisor).
+# The container provides a system bus (dbus-daemon) for Ganesha's own use, but this
+# helper (and the supervisor) manage exports/reloads via fragments + HUP (no DBUS RPCs to ganesha).
 # See container/README.md. Writes go to exports.d/; supervisor + watcher handle reloads.
 # add-export is deprecated/no-op.
 #
@@ -19,7 +21,7 @@ die() {
 
 usage() {
     cat <<EOF
-ganesha-ctl - NFS-Ganesha helper (DBUS-free; inotify + supervisor HUP)
+ganesha-ctl - NFS-Ganesha helper (inotify + supervisor HUP; container bus is for Ganesha internals)
 
 Usage:
   add-export <file> [name]   # (no-op / deprecated; watcher-driven)
@@ -27,7 +29,7 @@ Usage:
   show-exports               # list exports.d
   reload                     # bounce ganesha via supervisor
 
-Container watches config/exports.d; supervisor bounces on change. No host DBUS.
+Container watches config/exports.d; supervisor bounces on change.
 EOF
 }
 
@@ -137,7 +139,8 @@ case "$CMD" in
 
     reload)
         log "Requesting Ganesha restart (self-contained)..."
-        # Supervisor HUP does pkill + respawn (SSSD/WebUI too for full apply). No DBUS.
+        # Supervisor HUP does pkill + respawn (SSSD/WebUI too for full apply).
+        # (The container now has a system bus; this path does not use DBUS for management.)
         pkill -TERM ganesha.nfsd 2>/dev/null || true
         log "Reload triggered (supervisor will respawn)."
         ;;

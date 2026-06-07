@@ -1,5 +1,6 @@
 # Recommended compose for nfs-klldap-host (Ganesha only).
 # Single source of truth: nfs-klldap.conf. In-container WebUI on HTTPS port 9630.
+# cap_add for SYS_ADMIN + DAC_READ_SEARCH is strongly recommended (see docs/run/README.md).
 
 services:
   nfs-kerb:
@@ -11,6 +12,13 @@ services:
 
     network_mode: host
     uts: host
+
+    # SYS_ADMIN + DAC_READ_SEARCH are recommended for reliable Ganesha VFS operation
+    # against host bind-mounted trees and for the WebUI's recursive chown/chmod traversal.
+    # See docs/run/README.md "Running Ganesha in Docker against the host filesystem".
+    cap_add:
+      - SYS_ADMIN
+      - DAC_READ_SEARCH
 
     volumes:
       - /media/SSD-01:/export:rw

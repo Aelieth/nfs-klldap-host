@@ -790,8 +790,8 @@ default_security = "krb5p"
             "share card must include Host: label"
         );
         assert!(
-            body_str.contains("rw · no-squash · sync · default"),
-            "share card must render the compact rw/squash/sync/cache labels (using defaults from test config)"
+            body_str.contains("rw · no-squash · default · default"),
+            "share card must render the compact rw/squash/sync/cache labels (using defaults from test config; sync defaults to 'default' label when omitted)"
         );
 
         // /dir-meta should succeed and return a fragment containing the path

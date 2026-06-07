@@ -36,6 +36,7 @@ One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, and Gane
 docker run -d \
   --name nfs-klldap \
   --uts=host \
+  --cap-add SYS_ADMIN --cap-add DAC_READ_SEARCH \
   -p 2049:2049/tcp -p 2049:2049/udp \
   -p 9630:9630/tcp \
   -v /path/to/config:/config \

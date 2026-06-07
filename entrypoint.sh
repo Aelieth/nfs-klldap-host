@@ -222,9 +222,10 @@ main() {
 
     fix_derived_permissions
 
-    # --- Start core services (order matters) ---
+    # --- Start core services (order matters for stable Ganesha bring-up) ---
 
-    # 1. SSSD (provides NSS for POSIX identity from LLDAP)
+    # SSSD (provides NSS for POSIX identity from LLDAP). Start early; Ganesha
+    # and the rest of the stack benefit from consistent UID/GID mapping.
     info "Starting SSSD..."
     # Do not fully silence stderr here — early SSSD errors (config, permissions, etc.)
     # are valuable in the primary container logs for quick diagnosis.
@@ -244,45 +245,8 @@ main() {
         die "SSSD NSS pipe did not appear. Check LLDAP connectivity and bind credentials."
     fi
 
-    # dbus system bus (required by Ganesha on Fedora builds for its monitoring/management features).
-    # We launch it here (after SSSD is ready for logging order) but before Ganesha.
-    mkdir -p /run/dbus
-    if ! pgrep -x dbus-daemon >/dev/null 2>&1; then
-        info "Starting dbus-daemon (system bus)..."
-        dbus-daemon --system --nofork &
-        DBUS_PID=$!
-        # Give the socket a moment to appear
-        for _ in {1..20}; do
-            [ -S /run/dbus/system_bus_socket ] && break
-            sleep 0.1
-        done
-    fi
-
-    # rpcbind for tooling/compatibility only (Ganesha runs strict NFSv4+ only; some admin tools still reference portmapper).
-    if command -v rpcbind >/dev/null 2>&1; then
-        if ! pgrep -x rpcbind >/dev/null 2>&1; then
-            info "Starting rpcbind..."
-            rpcbind -w 2>/dev/null || rpcbind 2>/dev/null || true
-            # rpcbind typically daemonizes; we don't rely on a stable foreground PID.
-        fi
-    fi
-
-    # 2. Config watcher (signals this pid 1 on changes) — critical for auto-reload
-    info "Starting config watcher..."
-    "$WATCHER_BIN" "$NFS_CONFIG" &
-    WATCHER_PID=$!
-
-    # dbus system bus + rpcbind (same as the HUP path; ensure they are up before the first Ganesha start).
-    mkdir -p /run/dbus
-    if ! pgrep -x dbus-daemon >/dev/null 2>&1; then
-        info "Starting dbus-daemon (system bus)..."
-        dbus-daemon --system --nofork &
-        DBUS_PID=$!
-        for _ in {1..20}; do
-            [ -S /run/dbus/system_bus_socket ] && break
-            sleep 0.1
-        done
-    fi
+    # Ganesha prerequisites in the required order: rpcbind, dbus, wait for socket, then ganesha.
+    # rpcbind (tooling/compatibility; Ganesha itself is strict NFSv4+).
     if command -v rpcbind >/dev/null 2>&1; then
         if ! pgrep -x rpcbind >/dev/null 2>&1; then
             info "Starting rpcbind..."
@@ -290,14 +254,37 @@ main() {
         fi
     fi
 
-    # 3. Ganesha (the actual NFS server)
+    # dbus system bus (Ganesha on Fedora builds uses it for monitoring/management features).
+    mkdir -p /run/dbus
+    if ! pgrep -x dbus-daemon >/dev/null 2>&1; then
+        info "Starting dbus-daemon (system bus)..."
+        dbus-daemon --system --nofork &
+        DBUS_PID=$!
+    fi
+
+    # Wait for the system bus socket to exist before launching Ganesha.
+    info "Waiting for D-Bus system bus socket..."
+    for _ in {1..40}; do
+        [ -S /run/dbus/system_bus_socket ] && break
+        sleep 0.1
+    done
+    if [ ! -S /run/dbus/system_bus_socket ]; then
+        warn "D-Bus system bus socket did not appear; Ganesha may have limited management features."
+    fi
+
+    # Config watcher is intentionally NOT started after initial generation.
+    # It only watched the source; on restart we do not want background regeneration
+    # that could overwrite/rewrite the final ganesha.conf while Ganesha is coming up.
+    # (Manual HUP to pid 1 or explicit generate still work for controlled reloads.)
+
+    # Ganesha (the actual NFS server). Start only after rpcbind + dbus + socket are ready.
     info "Starting NFS-Ganesha..."
     # Allow early Ganesha startup errors (bad config, missing exports dir, etc.)
     # to appear in the main container logs. The long-term log is still in /var/log/ganesha.log.
     ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
     GANESHA_PID=$!
 
-    # 4. WebUI (HTTPS on 9630 via axum-server + rustls; self-signed unless NFS_KLLDAP_WEBUI_TLS_* set)
+    # WebUI (HTTPS on 9630 via axum-server + rustls; self-signed unless NFS_KLLDAP_WEBUI_TLS_* set)
     info "Starting WebUI on 0.0.0.0:9630 (HTTPS)..."
     NFS_KLLDAP_CONF="$NFS_CONFIG" \
     "$UI_BIN" --config "$NFS_CONFIG" \
@@ -309,7 +296,6 @@ main() {
         warn "WebUI process exited quickly — last log lines:"
         tail -n 30 /var/log/webui.log 2>/dev/null || true
     fi
-
 
     info "All services launched. Supervisor (this process) remains as pid 1."
     # Ensure no stale apply marker from a previous container run (the button

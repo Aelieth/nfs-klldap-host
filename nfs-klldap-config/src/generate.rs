@@ -30,14 +30,20 @@ pub(crate) fn derive_export_id(name: &str, base: u16) -> u16 {
     base + (h % 55000) as u16
 }
 
+/// Basename for a managed export fragment (matches write_export_fragments numbering).
+pub(crate) fn fragment_basename(index: usize, name: &str) -> String {
+    format!("{:02}-{}.conf", index + 10, sanitize_name(name))
+}
+
 
 
 pub fn generate_all(cfg: &NfsKlldapConfig, paths: &GenerationPaths) -> Result<(), ConfigError> {
     fs::create_dir_all(&paths.exports_dir)?;
     write_sssd_conf(cfg, &paths.sssd_conf)?;
     write_krb5_conf(cfg, &paths.krb5_conf)?;
-    write_ganesha_main(cfg, &paths.ganesha_conf, &paths.exports_dir)?;
+    // Fragments first so the referenced files exist when Ganesha parses the main conf.
     write_export_fragments(cfg, &paths.exports_dir)?;
+    write_ganesha_main(cfg, &paths.ganesha_conf, &paths.exports_dir)?;
     Ok(())
 }
 
@@ -366,18 +372,22 @@ fn write_ganesha_main(
 ) -> Result<(), ConfigError> {
     let sec = &cfg.ganesha.default_security;
 
+    // Explicit includes (no glob) for deterministic load order and to avoid
+    // Ganesha startup races on container restart / image rebuild.
+    let includes: String = cfg
+        .shares
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let name = fragment_basename(i, &s.name);
+            format!("%include {}/{}\n", exports_dir.display(), name)
+        })
+        .collect();
+
     let content = format!(
         r#"NFS_CORE_PARAM {{
     Protocols = 4;
-    Transports = TCP;
-    NFS_Port = 2049;
-    Bind_addr = "0.0.0.0";
     Enable_UDP = false;
-    Mountd_Port = 0;
-    NLM_Port = 0;
-    Rquota_Port = 0;
-    Enable_NLM = false;
-    Enable_RQUOTA = false;
     Allow_Set_Io_Flusher_Fail = true;
 }}
 
@@ -389,10 +399,9 @@ EXPORT_DEFAULTS {{
     SecType = {sec};
 }}
 
-%include {exports}/*.conf
-"#,
+{includes}"#,
         sec = sec,
-        exports = exports_dir.display(),
+        includes = includes,
     );
 
     fs::write(out, content.as_bytes())?;
@@ -474,7 +483,7 @@ EXPORT {{
             share.name, export_id, path, pseudo, access, sec, squash, access, sec, sync_line = sync_line, pref_read_line = pref_read_line, pref_write_line = pref_write_line
         );
 
-        let filename = format!("{:02}-{}.conf", i + 10, sanitize_name(&share.name));
+        let filename = fragment_basename(i, &share.name);
         fs::write(exports_dir.join(filename), block.as_bytes())?;
     }
 

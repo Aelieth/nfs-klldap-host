@@ -186,29 +186,21 @@ ganesha.nfsd ...
 ```
 
 ### NFS_CORE_PARAM and the generated ganesha.conf
-The generator emits a hardened block targeting Ganesha 5+/9.x+ and **strict NFSv4+ only** (see `write_ganesha_main` in nfs-klldap-config). No NFSv3 protocol negotiation or legacy service listeners are enabled.
+The generator emits a minimal, proven-safe block for the Ganesha build in this image (see `write_ganesha_main` in nfs-klldap-config). Only options accepted by the parser in this build are emitted.
 
 ```
 NFS_CORE_PARAM {
     Protocols = 4;
-    Transports = TCP;
-    NFS_Port = 2049;
-    Bind_addr = "0.0.0.0";
     Enable_UDP = false;
-    Mountd_Port = 0;
-    NLM_Port = 0;
-    Rquota_Port = 0;
-    Enable_NLM = false;
-    Enable_RQUOTA = false;
     Allow_Set_Io_Flusher_Fail = true;
 }
 ```
 
-- `Protocols = 4` + `Transports = TCP` + the explicit `Enable_NLM = false` / `Enable_RQUOTA = false` + port-0 settings together provide strict NFSv4-only behavior (Ganesha 9.x+ compliant). NFSv3 is not offered to clients and the legacy listener ports are disabled.
-- `Enable_UDP = false` disables UDP listeners (common hardening; the image still publishes 2049/udp in the Dockerfile for backward compatibility with published examples).
-- `Bind_addr = "0.0.0.0"` is explicit (the previous minimal block relied on the default).
-- The `Allow_Set_Io_Flusher_Fail` + port-0 settings match documented tunables for Linux + containerized use (from `ganesha-core-config(8)`).
-- `%include /etc/ganesha/exports.d/*.conf` (unquoted, per request; the generator continues to use a single glob because it fully owns the exports.d directory).
+- `Protocols = 4` restricts to NFSv4 (no NFSv3 negotiation).
+- `Enable_UDP = false` disables UDP listeners.
+- `Allow_Set_Io_Flusher_Fail = true` is a Linux/container compatibility tunable.
+- Other options (Transports, Bind_addr, Mountd_Port/NLM_Port/Rquota_Port, Enable_NLM, Enable_RQUOTA, etc.) are omitted because they are rejected by the parser in the packaged Ganesha build.
+- Explicit per-share `%include` lines are emitted for the fragments under `/etc/ganesha/exports.d/` (no glob).
 
 Each generated per-share EXPORT block (in `exports.d/NN-name.conf`) also includes:
 - `Protocols = 4; Transports = TCP;` (defensive per-export)

@@ -188,15 +188,18 @@ mod tests {
         assert!(main.contains("%include"));
         // The include is emitted unquoted (no surrounding double quotes).
         assert!(!main.contains("%include \""));
-        // Core production tunables from the hardened NFS_CORE_PARAM block (strict NFSv4+ / Ganesha 9.x+)
-        assert!(main.contains("Bind_addr = \"0.0.0.0\""));
+        // Minimal proven-safe NFS_CORE_PARAM block for this Ganesha build.
+        assert!(main.contains("Protocols = 4;"));
         assert!(main.contains("Enable_UDP = false"));
         assert!(main.contains("Allow_Set_Io_Flusher_Fail = true"));
-        // New explicit v3-disables and global transport for strict NFSv4-only
-        assert!(main.contains("Transports = TCP;"));
-        assert!(main.contains("Enable_NLM = false;"));
-        assert!(main.contains("Enable_RQUOTA = false;"));
-        assert!(main.contains("Protocols = 4;"));
+        // These must not appear (rejected by parser in this build)
+        assert!(!main.contains("Transports"));
+        assert!(!main.contains("Bind_addr"));
+        assert!(!main.contains("Mountd_Port"));
+        assert!(!main.contains("NLM_Port"));
+        assert!(!main.contains("Rquota_Port"));
+        assert!(!main.contains("Enable_NLM"));
+        assert!(!main.contains("Enable_RQUOTA"));
 
         let exports: Vec<_> = fs::read_dir(&paths.exports_dir)
             .unwrap()

@@ -330,7 +330,7 @@ impl Default for Share {
             security: None,
             rw: Some(true),
             squash: Some("no_root_squash".to_string()),
-            sync: Some(true),
+            sync: None,
             cache_profile: Some("Default".to_string()),
             pref_read: None,
             pref_write: None,

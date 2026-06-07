@@ -123,7 +123,7 @@
         <span style="width:90px" title="per-share Kerberos security (leave default to use [ganesha] default_security)">Krb Security</span>
         <span style="width:65px">Access</span>
         <span style="width:50px" title="root_squash (instead of no_root_squash)">Root Squash</span>
-        <span style="width:45px" title="Sync writes (default true; omit in conf when default)">Sync</span>
+        <span style="width:45px" title="Force Ganesha Sync = true (omit by default for Ganesha 5+/VFS safety on host FS)">Sync</span>
         <span style="width:145px" title="Cache Profile — selects Ganesha PrefRead/PrefWrite values for this share (emitted into its Ganesha EXPORT block). See README for the matrix and 'Best For' descriptions.">Cache Profile</span>
         <span style="width:18px"></span>
     </div>
@@ -144,7 +144,7 @@
                 <option value="false" {% if !row.rw %}selected{% endif %}>RO</option>
             </select>
             <input type="checkbox" name="share_root_squash_{{ row.idx }}" {% if row.root_squash %}checked{% endif %} style="width:50px;margin-top:3px;" title="root_squash">
-            <input type="checkbox" name="share_sync_{{ row.idx }}" {% if row.sync %}checked{% endif %} style="width:45px;margin-top:3px;" title="sync writes (default)">
+            <input type="checkbox" name="share_sync_{{ row.idx }}" {% if row.sync %}checked{% endif %} style="width:45px;margin-top:3px;" title="Force Ganesha-level Sync (default: omit)">
             <select name="share_cache_profile_{{ row.idx }}" style="width:145px" title="Cache Profile for this share (Ganesha PrefRead/PrefWrite)">
                 <option value="Default" {% if row.cache_profile == "Default" %}selected{% endif %}>Default</option>
                 <option value="Read - Basic" {% if row.cache_profile == "Read - Basic" %}selected{% endif %}>Read - Basic</option>
@@ -191,7 +191,7 @@ function addShareRow() {
                      <option value="false">RO</option>
                    </select>
                    <input type="checkbox" name="share_root_squash_${idx}" style="width:50px;margin-top:3px;" title="root_squash">
-                   <input type="checkbox" name="share_sync_${idx}" checked style="width:45px;margin-top:3px;" title="sync writes (default)">
+                   <input type="checkbox" name="share_sync_${idx}" style="width:45px;margin-top:3px;" title="Force Ganesha-level Sync (default: omit / let underlying FS decide)">
                    <select name="share_cache_profile_${idx}" style="width:145px" title="Cache Profile for this share (Ganesha PrefRead/PrefWrite)">
                      <option value="Default" selected>Default</option>
                      <option value="Read - Basic">Read - Basic</option>

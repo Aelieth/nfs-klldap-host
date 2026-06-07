@@ -60,7 +60,7 @@ struct ShareInfo {
     pub access: String,
     /// "no-squash" or "root-squash"
     pub squash_label: String,
-    /// "sync" or "async"
+    /// "sync", "async", or "default" (when sync: None in source — generator omits the key)
     pub sync_label: String,
     pub cache_profile: String,
 }
@@ -233,10 +233,10 @@ pub(crate) async fn index(
                 "no-squash".to_string()
             };
 
-            let sync_label = if s.sync.unwrap_or(true) {
-                "sync".to_string()
-            } else {
-                "async".to_string()
+            let sync_label = match s.sync {
+                Some(true) => "sync".to_string(),
+                Some(false) => "async".to_string(),
+                None => "default".to_string(),
             };
 
             let cache_profile = s

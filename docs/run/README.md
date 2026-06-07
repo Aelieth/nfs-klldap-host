@@ -6,7 +6,7 @@ See root README for the docker run example.
 
 ## docker-compose
 
-See [examples/docker-compose.yml](../../examples/docker-compose.yml). The example uses `uts: host`. The three volumes (data, config, keytab) are normally sufficient. No extra capabilities are required for chown/chmod when running as root.
+See [examples/docker-compose.yml](../../examples/docker-compose.yml). The example uses `uts: host` + `network_mode: host`. The three volumes (data, config, keytab) are normally sufficient. `cap_add: [SYS_ADMIN, DAC_READ_SEARCH]` is included in the example and strongly recommended for reliable Ganesha VFS + WebUI recursive operations on host bind mounts (see the dedicated section below).
 
 ## Realm & ldap_uri Hardening
 
@@ -136,3 +136,106 @@ Watch `docker logs`. `nfs-klldap-startup` prints step-by-step requirements (pers
 Force reload from host: `docker kill -s HUP <name>`.
 
 Do not set compose `user:` unless you have a specific reason — pid 1 must manage 0600 files and daemons as root.
+
+## Running Ganesha in Docker against the host filesystem (capabilities, dbus, rpcbind, pitfalls)
+
+This project exports real directories from the Docker *host* via Ganesha VFS inside the container. The WebUI also performs direct recursive `chown`/`chmod` on those trees (as root, under an allow-list from `[[shares]].host_path`). The following is the distilled guidance after review of Ganesha container patterns, Fedora packaging, Ganesha core config man pages, and practical bind-mount/UID realities.
+
+### Core contract (unchanged but worth repeating)
+- `host_path` values in `nfs-klldap.conf` (and the UI) are **absolute paths on the Docker host**.
+- Inside the container they are visible under `storage.container_root/<share_name>` (default `/export/<name>`).
+- Translation happens only at the syscall boundary (`FsManager` + `privileged.rs`).
+- **Numeric UID/GID identity must be identical** on the host and inside the container for the bind-mounted trees. Do **not** use `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts. The on-disk owners written by the WebUI (and seen by NFS clients) are the raw numbers from LLDAP `uidNumber`/`gidNumber`.
+
+### Recommended container flags
+```yaml
+# (or equivalent docker run flags)
+network_mode: host
+uts: host
+cap_add:
+  - SYS_ADMIN
+  - DAC_READ_SEARCH
+volumes:
+  - /real/host/data/tree:/export:rw   # or multiple per-share mounts
+  - ./config:/config:rw
+  - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
+```
+
+- `uts: host` — makes the container see the real hostname so that the keytab principals (`nfs/<short>@REALM` and `nfs/<fqdn>@REALM`) match what clients and Kerberos expect. This has always been the documented recommendation.
+- `SYS_ADMIN` — provides the broad capabilities Ganesha VFS containers commonly need for certain namespace, mount, and process-control operations when exporting host paths. Many community Ganesha images (e.g. patterns derived from janeczku/nfs-ganesha and similar) document this cap.
+- `DAC_READ_SEARCH` — allows bypassing normal directory traversal permission checks. This is important for:
+  - The WebUI's `WalkDir`-based recursive permission scanner (it must be able to descend trees that have mixed ownership and restrictive perms on intermediate directories).
+  - Ganesha VFS itself when it walks or stats content under the exported paths on behalf of NFS clients.
+  Community reports and provisioner code frequently list this exact pair for "Ganesha or NFS-provisioner on bind-mounted host trees."
+
+`--privileged` works but is overkill and not recommended. The two caps above are the minimal practical set for this workload.
+
+### dbus-daemon and rpcbind (new in the image)
+- Ganesha on recent Fedora packages (including the native `nfs-ganesha` in F44) expects a D-Bus system bus (typically `/run/dbus/system_bus_socket`). The image now installs `dbus-daemon` and the entrypoint launches `dbus-daemon --system --nofork &` early, before `ganesha.nfsd`.
+- `rpcbind` is also installed and started (best-effort). For pure NFSv4 (`Protocols = 4`) it is not strictly required, but:
+  - Some tooling, `showmount`, older clients, or status scripts still reference the portmapper.
+  - The user request explicitly asked for it "for good measure."
+- The supervisor and `ganesha-ctl` management path remain "DBUS-free" (we use export fragments on disk + SIGHUP to pid 1 + pkill/respawn). The bus is present for Ganesha's internal/monitoring use.
+
+In the container you should see the socket and processes:
+```
+/run/dbus/system_bus_socket
+dbus-daemon ...
+rpcbind (may daemonize)
+ganesha.nfsd ...
+```
+
+### NFS_CORE_PARAM and the generated ganesha.conf
+The generator emits a hardened block targeting Ganesha 5+/9.x+ and **strict NFSv4+ only** (see `write_ganesha_main` in nfs-klldap-config). No NFSv3 protocol negotiation or legacy service listeners are enabled.
+
+```
+NFS_CORE_PARAM {
+    Protocols = 4;
+    Transports = TCP;
+    NFS_Port = 2049;
+    Bind_addr = "0.0.0.0";
+    Enable_UDP = false;
+    Mountd_Port = 0;
+    NLM_Port = 0;
+    Rquota_Port = 0;
+    Enable_NLM = false;
+    Enable_RQUOTA = false;
+    Allow_Set_Io_Flusher_Fail = true;
+}
+```
+
+- `Protocols = 4` + `Transports = TCP` + the explicit `Enable_NLM = false` / `Enable_RQUOTA = false` + port-0 settings together provide strict NFSv4-only behavior (Ganesha 9.x+ compliant). NFSv3 is not offered to clients and the legacy listener ports are disabled.
+- `Enable_UDP = false` disables UDP listeners (common hardening; the image still publishes 2049/udp in the Dockerfile for backward compatibility with published examples).
+- `Bind_addr = "0.0.0.0"` is explicit (the previous minimal block relied on the default).
+- The `Allow_Set_Io_Flusher_Fail` + port-0 settings match documented tunables for Linux + containerized use (from `ganesha-core-config(8)`).
+- `%include /etc/ganesha/exports.d/*.conf` (unquoted, per request; the generator continues to use a single glob because it fully owns the exports.d directory).
+
+Each generated per-share EXPORT block (in `exports.d/NN-name.conf`) also includes:
+- `Protocols = 4; Transports = TCP;` (defensive per-export)
+- An explicit locking `CLIENT { Clients = *; Access_Type = RW|RO; SecType = krb5p|...; }` using the share's `rw` / `security` settings (or defaults). This pins the security flavor for the export and makes the "kerberos-only, no AUTH_SYS fallback" policy unambiguous for strict v4 deployments. Additional CLIENT blocks for specific nets can be added manually if needed (they survive only until the next regeneration from the TOML source of truth).
+
+### The "Sync" option (Ganesha 5+/VFS)
+Per-export `Sync = true;` (or false) has been observed to be rejected or treated as invalid/unknown by recent Ganesha + the VFS FSAL on Fedora-packaged builds. The underlying Linux filesystem already provides the desired durability semantics for most workloads.
+
+- New default in the model: `sync` omitted from `[[shares]]` → generator emits **no** `Sync =` line in the EXPORT block.
+- You can still force the Ganesha-level behavior by setting `sync = true` (or `false`) under a share in raw TOML, or by using the "Sync" checkbox in the WebUI structured editor (the checkbox now means "Force Ganesha-level Sync"; the label and generated fragments reflect the new semantics).
+- The WebUI card and tree labels show "default" for omitted shares (instead of the old "sync").
+
+If you have existing `sync = true` lines in `nfs-klldap.conf` they will continue to produce the `Sync = true;` line until you re-save the share via the structured editor (or manually remove the key).
+
+### SELinux, volume labeling, and other host notes
+- On enforcing hosts the `nfs-ganesha-selinux` package is already installed in the image. You will often still need the `:Z` (or `:z`) suffix on bind-mounted data volumes so that the content is labeled appropriately for container use (`container_file_t` etc.).
+- If you see denials related to dbus, rpc, or file labeling, the two caps + relabeling resolve the large majority of cases. Full `--privileged` is a last resort.
+- `read_ahead_kb` on the host block devices that back your shares remains a host-side tuning knob (outside the container) for sequential read workloads.
+
+### Common failure modes and fixes
+- "No such file or directory" when mounting a VFS export, or Ganesha failing to traverse the tree → missing `SYS_ADMIN`/`DAC_READ_SEARCH` or the bind mount not actually visible at the expected `Path` inside the container.
+- WebUI "apply" fails with permission errors on subdirectories → numeric UIDs don't match across the host/container boundary, or the DAC cap is absent.
+- Ganesha fails to start with dbus/socket errors → the entrypoint dbus launch didn't produce `/run/dbus/system_bus_socket` in time (rare; the readiness loop helps), or the package was not present in an old image.
+- Kerberos principal / hostname mismatches → missing `--uts=host` (or `uts: host` in compose) and/or keytab principals that don't match the name the container sees.
+- UDP clients or legacy `showmount` tools complain → we disable UDP by default in CORE_PARAM and ship rpcbind anyway; open the ports you actually need.
+
+### Security model recap (WebUI FS changes)
+All owner/group/mode mutations still go exclusively through `FsManager` (allow-list from configured `host_path` entries, WalkDir with `follow_links(false)`, never descend symlinks for mutation, refuse uid/gid 0 and set*id bits). The caps are additive for traversal and Ganesha VFS reliability; they do not relax the allow-list or symlink policy. See `nfs-klldap-ui/src/fs.rs`, `privileged.rs`, and `ui/docs/security.md`.
+
+This combination (bind mounts + root inside + the two caps + `--uts=host` + explicit CORE_PARAM + dbus in the image) is the practical, supportable way to run this Ganesha-based appliance while giving the WebUI safe direct control over the host's exported trees.

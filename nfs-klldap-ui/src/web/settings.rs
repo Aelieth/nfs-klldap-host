@@ -253,7 +253,8 @@ fn build_settings_template(
             security: s.security.clone().unwrap_or_default(),
             rw: s.rw.unwrap_or(true),
             root_squash: s.squash.as_deref() == Some("root_squash"),
-            sync: s.sync.unwrap_or(true),
+            // For UI: treat None (new omit-by-default) as visually unchecked. Checking the box forces explicit true.
+            sync: s.sync.unwrap_or(false),
             cache_profile: s
                 .cache_profile
                 .clone()
@@ -343,6 +344,7 @@ fn collect_shares_from_structured_form(
                     .map(|v| v.trim() == "true")
                     .unwrap_or(true);
                 let root_squash = extra.contains_key(&format!("share_root_squash_{}", idx));
+                // Checkbox presence means "Force Sync (explicit true)". Absence for a row = omit (new generator default).
                 let sync = extra.contains_key(&format!("share_sync_{}", idx));
                 let cache_profile = extra
                     .get(&format!("share_cache_profile_{}", idx))
@@ -387,7 +389,8 @@ fn collect_shares_from_structured_form(
             } else {
                 None // omit default so it doesn't get written to raw toml
             },
-            sync: Some(r.sync),
+            // Only Some(true) when the "Force Sync" checkbox was submitted; otherwise None (omit in generator).
+            sync: if r.sync { Some(true) } else { None },
             cache_profile: r.cache_profile,
             pref_read: r.pref_read.and_then(|s| s.trim().parse::<u64>().ok()),
             pref_write: r.pref_write.and_then(|s| s.trim().parse::<u64>().ok()),
@@ -758,9 +761,9 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
                 t["squash"] = toml_edit::value(sq.clone());
             }
         }
-        let sync = s.sync.unwrap_or(true);
-        if !sync {
-            t["sync"] = toml_edit::value(false);
+        // Write explicit sync only when the user made a choice (Some). None = omit (generator default for Ganesha 5+/VFS safety).
+        if let Some(sv) = s.sync {
+            t["sync"] = toml_edit::value(sv);
         }
         // Write cache_profile (the new primary field from the Cache Profile dropdown).
         // This is what gets stored in [[shares]] for the organized profile-driven path.

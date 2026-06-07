@@ -109,6 +109,8 @@ WATCHER_PID=""
 SSSD_PID=""
 GANESHA_PID=""
 WEBUI_PID=""
+DBUS_PID=""
+RPCBIND_PID=""
 
 cleanup() {
     local reason="${1:-termination signal}"
@@ -118,7 +120,7 @@ cleanup() {
     trap - EXIT SIGTERM SIGINT
 
     # Prefer killing tracked PIDs when we have them
-    for pidvar in WEBUI_PID GANESHA_PID SSSD_PID WATCHER_PID; do
+    for pidvar in WEBUI_PID GANESHA_PID SSSD_PID WATCHER_PID DBUS_PID RPCBIND_PID; do
         local pid="${!pidvar:-}"
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill -TERM "$pid" 2>/dev/null || true
@@ -129,6 +131,8 @@ cleanup() {
     pkill -TERM ganesha.nfsd 2>/dev/null || true
     pkill -TERM sssd 2>/dev/null || true
     pkill -TERM nfs-klldap-conf-watcher 2>/dev/null || true
+    pkill -TERM dbus-daemon 2>/dev/null || true
+    pkill -TERM rpcbind 2>/dev/null || true
 
     # Give processes a moment to exit cleanly
     sleep 1
@@ -150,7 +154,8 @@ handle_sighup() {
 
     fix_derived_permissions
 
-    # Ganesha restart (DBUS-free): re-reads exports + main conf for [[shares]] changes.
+    # Ganesha restart (management via pkill + respawn from supervisor; system bus is now present
+    # inside the container for any D-Bus features Ganesha itself may use).
     if [ -x "$GANESHA_CTL" ]; then
         "$GANESHA_CTL" reload 2>/dev/null || pkill -TERM ganesha.nfsd 2>/dev/null || true
     else
@@ -239,10 +244,51 @@ main() {
         die "SSSD NSS pipe did not appear. Check LLDAP connectivity and bind credentials."
     fi
 
+    # dbus system bus (required by Ganesha on Fedora builds for its monitoring/management features).
+    # We launch it here (after SSSD is ready for logging order) but before Ganesha.
+    mkdir -p /run/dbus
+    if ! pgrep -x dbus-daemon >/dev/null 2>&1; then
+        info "Starting dbus-daemon (system bus)..."
+        dbus-daemon --system --nofork &
+        DBUS_PID=$!
+        # Give the socket a moment to appear
+        for _ in {1..20}; do
+            [ -S /run/dbus/system_bus_socket ] && break
+            sleep 0.1
+        done
+    fi
+
+    # rpcbind for tooling/compatibility only (Ganesha runs strict NFSv4+ only; some admin tools still reference portmapper).
+    if command -v rpcbind >/dev/null 2>&1; then
+        if ! pgrep -x rpcbind >/dev/null 2>&1; then
+            info "Starting rpcbind..."
+            rpcbind -w 2>/dev/null || rpcbind 2>/dev/null || true
+            # rpcbind typically daemonizes; we don't rely on a stable foreground PID.
+        fi
+    fi
+
     # 2. Config watcher (signals this pid 1 on changes) — critical for auto-reload
     info "Starting config watcher..."
     "$WATCHER_BIN" "$NFS_CONFIG" &
     WATCHER_PID=$!
+
+    # dbus system bus + rpcbind (same as the HUP path; ensure they are up before the first Ganesha start).
+    mkdir -p /run/dbus
+    if ! pgrep -x dbus-daemon >/dev/null 2>&1; then
+        info "Starting dbus-daemon (system bus)..."
+        dbus-daemon --system --nofork &
+        DBUS_PID=$!
+        for _ in {1..20}; do
+            [ -S /run/dbus/system_bus_socket ] && break
+            sleep 0.1
+        done
+    fi
+    if command -v rpcbind >/dev/null 2>&1; then
+        if ! pgrep -x rpcbind >/dev/null 2>&1; then
+            info "Starting rpcbind..."
+            rpcbind -w 2>/dev/null || rpcbind 2>/dev/null || true
+        fi
+    fi
 
     # 3. Ganesha (the actual NFS server)
     info "Starting NFS-Ganesha..."

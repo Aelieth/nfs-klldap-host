@@ -132,12 +132,47 @@ These are less commonly needed:
 | `SSSD_DEBUG_LEVEL`           | *(unset)* | `4`     | When set, passed as `-d $SSSD_DEBUG_LEVEL` to the `sssd` daemon for increased verbosity. |
 | `GANESHA_DEBUG`              | *(unset)* | `TRUE`  | When set exactly to `TRUE`, the generator emits a `LOG { Default_Log_Level = DEBUG; Components { IDMAPPER/FSAL/NFS4 = FULL_DEBUG; } }` block into `ganesha.conf`. For deep Ganesha troubleshooting only. |
 | `WATCHER_DEBOUNCE_SECONDS`   | `2`       | `1`     | Seconds to sleep after detecting a config file change (via inotify) before signaling the supervisor for reload. |
+| `HOST_NFS` (or `NFS_KLLDAP_HOST_NFS`) | `false` | `true` | When truthy, runs the container as a management sidecar only. Ganesha fragments are still generated and written to host-visible paths (mount the host's `/etc/ganesha`); the container does not start or manage the NFS server. See the dedicated "HOST_NFS mode" section below for compose, keytab, UI, and ZimaOS notes. |
 | `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS` | `600` | `0` | Seconds between idhelper LDAP→nss_passwd syncs (`0` disables periodic rebulk). |
 | `NFS_KLLDAP_WEBUI_COOKIE_SECURE` | *(derived)* | `false` | Force non-Secure session cookies regardless of TLS mode or `X-Forwarded-Proto`. |
 
 A small number of path/binary overrides (`SSSD_CONF`, `GANESHA_CONF`, `CONFIG_BIN`, `HEALTHCHECK`, etc.) and `NFS_KLLDAP_CONF` exist primarily for testing, CI, and image development. Typical users set `NFS_CONFIG` (which also drives `NFS_KLLDAP_CONF` for the WebUI) instead.
 
 After load/validate, `NfsKlldapConfig` reflects the effective (env-applied) values for generate, setup wizard, and UI.
+
+### HOST_NFS mode (host-managed NFS server)
+
+Set `HOST_NFS=true` (or `NFS_KLLDAP_HOST_NFS=true`) to run the container as a **management sidecar**:
+
+- The container still fully owns `nfs-klldap.conf`, the WebUI (9630), share editing, recursive chown/chmod on your `host_path` trees, SSSD (for numeric uid/gid resolution from LLDAP), and generation of `krb5.conf` + Ganesha export fragments.
+- It does **not** start or manage `ganesha.nfsd` (or bounce it on HUP).
+- Ganesha config fragments are written to the normal container paths (`/etc/ganesha/ganesha.conf` and `/etc/ganesha/exports.d/*.conf`). The operator bind-mounts the *host's* Ganesha config tree so the host daemon picks them up:
+  ```yaml
+  volumes:
+    - /etc/ganesha:/etc/ganesha:rw          # host Ganesha reads our fragments
+    - /media/SSD-01:/export:rw
+    - ./config:/config:rw
+    - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
+  environment:
+    - HOST_NFS=true
+  ```
+- Healthcheck, entrypoint logs, and the UI adapt automatically (no 2049 expectation inside the container; restart button becomes "Apply to host NFS").
+- The same keytab (with `nfs/<short>@REALM` + `nfs/<fqdn>@REALM`) must be available to the **host** Ganesha process (usual location `/etc/krb5.keytab` on the host). The container mount satisfies the container's krb5 client needs and the UI/startup banners continue to advertise the required principals.
+- `--uts=host` + the two caps (`SYS_ADMIN`, `DAC_READ_SEARCH`) + numeric UID identity contract remain exactly as documented for normal operation.
+- WebUI share management, permission tree, and raw/structured TOML editing stay fully functional. Only server-daemon controls are muted/grayed with explanatory notes.
+
+This mode is the recommended integration shape for appliance OSes such as ZimaOS (and similar CasaOS-derived or minimal NAS hosts). ZimaOS primarily documents kernel NFS via direct `/etc/exports` edits, but many deployments (or custom images) run Ganesha on the host and consume standard `/etc/ganesha/exports.d` fragments. The sidecar writes the exact fragments the host Ganesha expects while the container continues to provide the friendly WebUI + identity + permission layer.
+
+In the UI you will see a prominent banner on System Settings and adjusted language on the share list page and restart flow. The on-disk `nfs-klldap.conf` may also declare the mode persistently:
+
+```toml
+[host]
+host_nfs = true
+```
+
+Env always wins (you can force normal mode with `HOST_NFS=false` even if the file says true).
+
+Example healthcheck behavior in this mode: only SSSD NSS pipe + WebUI 9630 are asserted; ganesha process + 2049 listener checks are skipped.
 
 ## Keytab
 

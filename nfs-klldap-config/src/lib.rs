@@ -16,9 +16,9 @@ mod validate;
 
 pub use config::{
     effective_ldap_search_bases, resolve_cache_profile, resolve_posix_attribute_mapping,
-    ShareFieldWarning, CACHE_PROFILES, GaneshaSection, GenerationPaths, KerberosSection,
-    ManagementSection, NfsKlldapConfig, PosixAttributeMapping, ServerSection, Share,
-    SssdSection, StorageSection, WebuiSection, SHARE_KNOWN_KEYS,
+    ShareFieldWarning, CACHE_PROFILES, GaneshaSection, GenerationPaths, HostSection,
+    KerberosSection, ManagementSection, NfsKlldapConfig, PosixAttributeMapping, ServerSection,
+    Share, SssdSection, StorageSection, WebuiSection, SHARE_KNOWN_KEYS,
 };
 pub use network::{
     container_primary_ipv4, extract_server_addr_from_ganesha_line, is_docker_bridge_ipv4,

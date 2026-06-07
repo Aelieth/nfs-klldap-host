@@ -4,6 +4,8 @@ Thin shell (entrypoint exec, healthcheck, watcher, ganesha-ctl) + Rust binaries.
 
 The container includes dbus-daemon (launched by the supervisor before Ganesha) and rpcbind for Ganesha/runtime compatibility. Export fragments under `/etc/ganesha/exports.d/` are generated from `nfs-klldap.conf` by `nfs-klldap-config`; reload is triggered via SIGHUP to pid 1 (conf-watcher, WebUI apply, or `ganesha-ctl reload`), not D-Bus RPCs to Ganesha.
 
+When `HOST_NFS=true` the supervisor and healthcheck skip ganesha.nfsd entirely (the host NFS server at `/etc/ganesha` owns the daemon and the 2049 listener); the container remains the source of truth for config generation, keytab material, SSSD identity, and the WebUI permission tools.
+
 ## Scripts
 
 | Path | Installed as | Role |

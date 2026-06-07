@@ -61,6 +61,12 @@ struct SettingsTemplate {
     current_shares: Vec<ShareTemplateRow>,
     /// Next index the client-side JS should use when the user clicks "+ Add share".
     next_share_idx: usize,
+
+    /// HOST_NFS (host-managed NFS) mode. When true many server-side controls are
+    /// muted/grayed because the actual NFS server runs on the host and reads the
+    /// generated ganesha fragments we write to (bind-mounted) /etc/ganesha paths.
+    /// Share definition, raw TOML, and the live permission tree remain fully usable.
+    host_nfs_mode: bool,
 }
 
 /// Self-contained restart page (JS polls until new UI ready, then to /login).
@@ -228,6 +234,7 @@ fn build_settings_template(
     config_path: impl AsRef<std::path::Path>,
     message: Option<String>,
     keytab: KeytabDisplayContext,
+    host_nfs_mode: bool,
 ) -> SettingsTemplate {
     let p = config_path.as_ref();
     let raw_toml = std::fs::read_to_string(p)
@@ -307,6 +314,7 @@ fn build_settings_template(
 
         current_shares,
         next_share_idx,
+        host_nfs_mode,
     }
 }
 
@@ -483,10 +491,11 @@ fn make_settings_error_template(
     config_path: impl AsRef<std::path::Path>,
     message: String,
     keytab: KeytabDisplayContext,
+    host_nfs_mode: bool,
 ) -> SettingsTemplate {
     // Always re-read current on-disk state for prefilled structured fields + raw.
     // On structured validation error the file on disk is unchanged.
-    build_settings_template(current_user, config_path, Some(message), keytab)
+    build_settings_template(current_user, config_path, Some(message), keytab, host_nfs_mode)
 }
 
 fn atomic_write_config(path: &std::path::Path, content: &str) -> Result<(), String> {
@@ -509,9 +518,10 @@ fn make_settings_success_template(
     config_path: impl AsRef<std::path::Path>,
     message: String,
     keytab: KeytabDisplayContext,
+    host_nfs_mode: bool,
 ) -> SettingsTemplate {
     // Re-read after successful write so structured pre-fills reflect the just-saved state.
-    build_settings_template(current_user, config_path, Some(message), keytab)
+    build_settings_template(current_user, config_path, Some(message), keytab, host_nfs_mode)
 }
 
 fn apply_structured_form_to_toml_doc(
@@ -909,6 +919,7 @@ pub(crate) async fn settings_page(
         &state.config_path,
         None,
         state.keytab_display(),
+        state.host_nfs_mode,
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -942,6 +953,7 @@ pub(crate) async fn settings_save_raw(
         &state.config_path,
         "Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into(),
         state.keytab_display(),
+        state.host_nfs_mode,
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -967,6 +979,7 @@ pub(crate) async fn settings_save_structured(
             &state.config_path,
             msg,
             state.keytab_display(),
+            state.host_nfs_mode,
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -985,6 +998,7 @@ pub(crate) async fn settings_save_structured(
             &state.config_path,
             msg,
             state.keytab_display(),
+            state.host_nfs_mode,
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -994,6 +1008,7 @@ pub(crate) async fn settings_save_structured(
         &state.config_path,
         "Structured settings saved (shares left untouched in TOML). Container will regenerate configs shortly.".into(),
         state.keytab_display(),
+        state.host_nfs_mode,
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -1022,6 +1037,7 @@ pub(crate) async fn settings_save_shares(
             &state.config_path,
             msg,
             state.keytab_display(),
+            state.host_nfs_mode,
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1040,6 +1056,7 @@ pub(crate) async fn settings_save_shares(
             &state.config_path,
             msg,
             state.keytab_display(),
+            state.host_nfs_mode,
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1049,6 +1066,7 @@ pub(crate) async fn settings_save_shares(
         &state.config_path,
         "Shares saved (SSSD and other sections left untouched in TOML). The config watcher (or Restart and apply) will make Ganesha + WebUI see them shortly.".into(),
         state.keytab_display(),
+        state.host_nfs_mode,
     );
     Ok(Html(tpl.render().unwrap()))
 }

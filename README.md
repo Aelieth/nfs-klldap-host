@@ -158,6 +158,8 @@ Environment variables are available to those that prefer them, but not necessary
 
 Not every advanced `[sssd]` option is exposed via env. The core options (LDAP URI + binds, realm, hostname, storage root, Ganesha default security, WebUI admin group, KLLDAP ignored attributes, SSSD TLS fields, and `[webui]`) can be supplied or overridden using `NFS_KLLDAP_*` variables (only prefixed forms are available). Environment variables always win and allow omitting the corresponding keys from `nfs-klldap.conf` in many cases.
 
+A new top-level switch `HOST_NFS=true` (or `NFS_KLLDAP_HOST_NFS=true`) runs the container as a management sidecar for a *host* NFS server (Ganesha at `/etc/ganesha`). Shares, Kerberos config, and the WebUI permission tools continue to work normally; the container does not start ganesha.nfsd. See docs/run/README.md for compose volumes, keytab sharing, UI gray-out behavior, and ZimaOS-style appliance notes.
+
 Example in compose:
 
 ```

@@ -3,7 +3,12 @@
 {% block content %}
 <h2>Share Permissions</h2>
 <p style="font-size:0.8em; color:var(--text-light); margin-top:-0.4em;">
-    Shares list and allowed roots are loaded at WebUI startup (and Ganesha reads the exports at its startup). After adding or editing shares, use "Restart and apply" in System Settings (or wait for the config watcher) so the permission tree and NFS see the new shares.
+    Shares list and allowed roots are loaded at WebUI startup.
+    {% if host_nfs_mode %}
+    (HOST_NFS mode: the host NFS server reads the generated fragments; use "Apply to host NFS" in System Settings or wait for the watcher.)
+    {% else %}
+    (Ganesha reads the exports at its startup). After adding or editing shares, use "Restart and apply" in System Settings (or wait for the config watcher) so the permission tree and NFS see the new shares.
+    {% endif %}
 </p>
 
 {% if shares.len() > 0 %}

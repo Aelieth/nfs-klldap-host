@@ -65,6 +65,11 @@ pub struct AppState {
     pub setup_marker_override: Option<PathBuf>,
     /// Last successful wizard test inputs (probe-only; not persisted until continue).
     pub setup_test: Arc<StdMutex<setup::SetupTestState>>,
+    /// HOST_NFS mode (management sidecar). When true the container does not run
+    /// the NFS server; it writes Ganesha fragments for a host NFS server, while
+    /// still providing the WebUI, share config, Kerberos client material, and
+    /// direct POSIX permission management on the bind-mounted host_path trees.
+    pub host_nfs_mode: bool,
 }
 
 impl AppState {
@@ -240,6 +245,7 @@ pub(crate) fn make_test_state_with_temp_config() -> (AppState, tempfile::TempDir
         direct_tls: true,
         setup_marker_override: Some(setup_marker),
         setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
+        host_nfs_mode: false,
     };
 
     (state, tmp)
@@ -478,6 +484,7 @@ default_security = "krb5p"
             direct_tls: true,
             setup_marker_override: Some(setup_marker),
             setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
+            host_nfs_mode: false,
         };
 
         let token = auth.create_privileged_session("testadmin");
@@ -931,6 +938,7 @@ ldap_default_authtok = "sekret"
             direct_tls: true,
             setup_marker_override: Some(tmp.path().join("no_marker")),
             setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
+            host_nfs_mode: false,
         };
         (state, SetupWizardTestEnv { _tmp: tmp })
     }

@@ -39,7 +39,23 @@ services:
       # - NFS_KLLDAP_KERBEROS_REALM=YOUR.REALM
       # - NFS_KLLDAP_WEBUI_TLS=off
 
+      # HOST_NFS mode (host-managed Ganesha): set true and add a volume for the host's /etc/ganesha
+      # so generated fragments are consumed by the host NFS server. The container still provides
+      # the WebUI, share config, Kerberos client config, and recursive permission management.
+      # See docs/run/README.md "HOST_NFS mode".
+      # - HOST_NFS=true
+
     restart: unless-stopped
+
+# Example volume addition for HOST_NFS (add alongside the existing ones):
+#    volumes:
+#      - /etc/ganesha:/etc/ganesha:rw   # host Ganesha reads our exports.d fragments
+#      - /media/SSD-01:/export:rw
+#      - ./config:/config:rw
+#      - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
+#
+# The same keytab with nfs/ principals must be visible to the *host* ganesha.nfsd
+# (typically at the host's /etc/krb5.keytab). --uts=host is still strongly recommended.
 
 # WebUI: https://<host>:9630
 # Reload config: docker kill -s HUP nfs-klldap-host

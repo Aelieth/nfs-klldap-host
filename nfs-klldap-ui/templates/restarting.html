@@ -153,7 +153,7 @@
     <h1>Restarting to apply changes</h1>
 
     <p>Applying updated System Settings (and any shares) by cycling the required services.</p>
-    <p>NFS service and this WebUI will be unavailable for a short time while Ganesha (for exports + core NFS params), SSSD (for idmap / bind / Kerberos bits) and the WebUI (to see the current shares list for the permission tree) are restarted. The supervisor stays up; this is a targeted service bounce rather than a full container stop/start.</p>
+    <p>NFS (served by the host in HOST_NFS mode, or by the in-container Ganesha otherwise) and this WebUI will be briefly affected while SSSD (identity), config regeneration, and the WebUI recycle. In normal mode Ganesha is also cycled. The supervisor stays up; this is a targeted service bounce.</p>
 
     <div id="retry" class="status">
         <span class="spinner"></span>

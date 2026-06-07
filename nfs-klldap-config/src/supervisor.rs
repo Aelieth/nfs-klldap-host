@@ -12,6 +12,7 @@ use std::time::Duration;
 use nfs_klldap_config::{
     compute_startup_step, is_preconfigured_deployment, is_setup_wizard_complete,
     mark_setup_wizard_complete, resolve_keytab_path, should_bring_up_services, webui_setup_url,
+    NfsKlldapConfig,
 };
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -41,6 +42,8 @@ struct SupervisorEnv {
     log_format_json: bool,
     /// CI one-shot path: generate + log preconf bring-up, then exit (no daemon loop).
     supervise_probe: bool,
+    /// HOST_NFS sidecar mode: generate fragments for host Ganesha, skip in-container nfsd.
+    host_nfs_mode: bool,
 }
 
 impl SupervisorEnv {
@@ -74,8 +77,28 @@ impl SupervisorEnv {
                 .unwrap_or(false),
             supervise_probe: std::env::var("NFS_KLLDAP_SUPERVISE_PROBE")
                 .is_ok_and(|v| v == "1"),
+            host_nfs_mode: resolve_host_nfs_mode(config_path),
         }
     }
+}
+
+fn host_nfs_from_env() -> Option<bool> {
+    std::env::var("HOST_NFS")
+        .or_else(|_| std::env::var("NFS_KLLDAP_HOST_NFS"))
+        .ok()
+        .map(|v| {
+            let t = v.trim().to_ascii_lowercase();
+            t == "true" || t == "1" || t == "yes" || t == "on"
+        })
+}
+
+fn resolve_host_nfs_mode(config_path: &Path) -> bool {
+    if let Some(val) = host_nfs_from_env() {
+        return val;
+    }
+    NfsKlldapConfig::load(config_path)
+        .map(|cfg| cfg.is_host_nfs())
+        .unwrap_or(false)
 }
 
 #[derive(Default)]
@@ -105,6 +128,11 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
     };
 
     sup.log_info("=== Starting nfs-klldap-host (Rust supervisor) ===");
+    if sup.env.host_nfs_mode {
+        sup.log_info("HOST_NFS mode active — container is management sidecar only.");
+        sup.log_info("  Ganesha fragments will be written for the *host* NFS server (e.g. at /etc/ganesha).");
+        sup.log_info("  Kerberos (keytab) + LDAP/SSSD identity + WebUI permission management remain in-container.");
+    }
     if sup.env.supervise_probe {
         sup.log_info("Supervise-probe mode enabled");
     }
@@ -233,10 +261,17 @@ impl Supervisor {
             return Err("SSSD NSS pipe did not appear — check LLDAP connectivity".into());
         }
         self.restart_idhelper_and_wait_bulk();
-        self.ensure_ganesha_prereqs();
-        self.log_info("Starting NFS-Ganesha...");
-        self.start_ganesha();
+        if self.env.host_nfs_mode {
+            self.log_info("HOST_NFS mode: skipping in-container ganesha.nfsd (host NFS server will serve the exports).");
+        } else {
+            self.ensure_ganesha_prereqs();
+            self.log_info("Starting NFS-Ganesha...");
+            self.start_ganesha();
+        }
         self.start_webui()?;
+        if self.env.host_nfs_mode {
+            self.log_info("HOST_NFS: host NFS server is responsible for 2049; this container provides config, Kerberos material, identity mapping (SSSD), and the WebUI.");
+        }
         Ok(())
     }
 
@@ -317,6 +352,7 @@ impl Supervisor {
             return Err("SIGHUP generate failed".into());
         }
         self.fix_derived_permissions();
+        self.env.host_nfs_mode = resolve_host_nfs_mode(&self.env.nfs_config);
         self.recycle_services_after_config();
         self.log_info("Services recycled after config apply.");
         let _ = OpenOptions::new()
@@ -378,12 +414,18 @@ impl Supervisor {
         let _ = fs::create_dir_all("/var/lib/nfs-klldap");
         let _ = fs::create_dir_all("/var/run/nfs-klldap");
         let _ = fs::create_dir_all("/var/lib/extrausers");
-        self.stop_ganesha();
+        if !self.env.host_nfs_mode {
+            self.stop_ganesha();
+        }
         self.restart_sssd_and_wait();
         self.restart_idhelper_and_wait_bulk();
-        self.ensure_ganesha_prereqs();
-        self.log_info("Starting NFS-Ganesha after recycle...");
-        self.start_ganesha();
+        if self.env.host_nfs_mode {
+            self.log_info("HOST_NFS mode: skipping Ganesha restart (host owns the NFS server; fragments were regenerated for it).");
+        } else {
+            self.ensure_ganesha_prereqs();
+            self.log_info("Starting NFS-Ganesha after recycle...");
+            self.start_ganesha();
+        }
         let _ = self.start_webui();
     }
 

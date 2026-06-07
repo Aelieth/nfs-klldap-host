@@ -198,6 +198,18 @@ async fn main() {
         crate::certs::webui_tls_disabled()
     };
 
+    // HOST_NFS mode: prefer explicit env (HOST_NFS or NFS_KLLDAP_HOST_NFS), else the value
+    // persisted in the loaded central config ([host] host_nfs or equivalent). This lets the
+    // UI render grayed/muted elements even when only the config file declares the mode.
+    let host_nfs_from_env = std::env::var("HOST_NFS")
+        .or_else(|_| std::env::var("NFS_KLLDAP_HOST_NFS"))
+        .map(|v| {
+            let t = v.trim().to_ascii_lowercase();
+            t == "true" || t == "1" || t == "yes" || t == "on"
+        })
+        .unwrap_or(false);
+    let host_nfs_mode = host_nfs_from_env || config.is_host_nfs();
+
     let state = crate::web::AppState {
         fs,
         lldap,
@@ -212,6 +224,7 @@ async fn main() {
         direct_tls: !webui_tls_off,
         setup_marker_override: None,
         setup_test: Arc::new(std::sync::Mutex::new(crate::web::setup::SetupTestState::default())),
+        host_nfs_mode,
     };
 
     let app = crate::web::router(state);

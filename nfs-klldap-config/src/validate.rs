@@ -407,6 +407,21 @@ impl NfsKlldapConfig {
             self.server.hostname = if t.is_empty() { None } else { Some(t.to_string()) };
         }
 
+        // [host] — HOST_NFS mode (bare HOST_NFS supported per design; NFS_KLLDAP_ alias for consistency)
+        // Env wins. If no env, the deserialized value from [host] host_nfs (or top-level) in TOML remains.
+        {
+            let env_host_nfs = std::env::var("HOST_NFS")
+                .or_else(|_| std::env::var("NFS_KLLDAP_HOST_NFS"))
+                .ok()
+                .map(|v| {
+                    let t = v.trim().to_ascii_lowercase();
+                    t == "true" || t == "1" || t == "yes" || t == "on"
+                });
+            if let Some(val) = env_host_nfs {
+                self.host.host_nfs = Some(val);
+            }
+        }
+
         // [storage]
         if let Ok(v) = std::env::var("NFS_KLLDAP_STORAGE_CONTAINER_ROOT") {
             let t = v.trim();
@@ -523,5 +538,13 @@ impl NfsKlldapConfig {
 
     pub fn host_paths(&self) -> Vec<PathBuf> {
         self.shares.iter().map(|s| s.host_path.clone()).collect()
+    }
+
+    /// Returns true if running in HOST_NFS (host-managed NFS) sidecar mode.
+    /// The container still generates sssd/krb5/ganesha fragments and runs the WebUI
+    /// + SSSD for identity/permission management, but does not start ganesha.nfsd.
+    /// The host's Ganesha (reading /etc/ganesha exports) serves the shares.
+    pub fn is_host_nfs(&self) -> bool {
+        self.host.host_nfs.unwrap_or(false)
     }
 }

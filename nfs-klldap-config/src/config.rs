@@ -28,6 +28,9 @@ pub struct NfsKlldapConfig {
     pub management: ManagementSection,
 
     #[serde(default)]
+    pub host: HostSection,
+
+    #[serde(default)]
     pub webui: WebuiSection,
 
     #[serde(default)]
@@ -198,6 +201,20 @@ fn default_security() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ManagementSection {
     pub webui_admin_group: Option<String>,
+}
+
+/// Host / deployment mode options.
+/// `host_nfs = true` (or env HOST_NFS=true / NFS_KLLDAP_HOST_NFS=true) switches the
+/// container into management-sidecar mode: it still generates and writes Ganesha
+/// fragments (to host-visible paths) and runs the WebUI + SSSD for identity/perms,
+/// but does not run the in-container NFS-Ganesha server. The host's Ganesha (or
+/// equivalent) at /etc/ganesha serves the exports using the keytab and configs.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HostSection {
+    /// When true the container is a config + WebUI + identity manager only.
+    /// NFS server (ganesha.nfsd) runs on the host and reads the generated fragments
+    /// from the (bind-mounted) /etc/ganesha tree.
+    pub host_nfs: Option<bool>,
 }
 
 /// WebUI runtime options (single-source in nfs-klldap.conf under [webui]).

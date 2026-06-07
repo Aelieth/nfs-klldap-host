@@ -21,6 +21,8 @@ struct IndexTemplate {
     shares: Vec<ShareInfo>,
     current_user: Option<String>,
     keytab_alert: Option<String>,
+    /// Mirrors AppState; used by the template to adjust the top "Ganesha reads..." note.
+    host_nfs_mode: bool,
 }
 
 #[derive(Template)]
@@ -260,6 +262,7 @@ pub(crate) async fn index(
         shares: display_shares,
         current_user: Some(user.0),
         keytab_alert: state.keytab_alert.lock().unwrap().clone(),
+        host_nfs_mode: state.host_nfs_mode,
     };
 
     Ok(Html(tpl.render().unwrap()))

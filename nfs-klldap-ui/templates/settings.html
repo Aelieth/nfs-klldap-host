@@ -4,6 +4,14 @@
 <h2>System Settings</h2>
 <p>Editing: <code>{{ config_path }}</code></p>
 
+{% if host_nfs_mode %}
+<div class="alert alert-info" style="margin:0.5rem 0; padding:8px 12px; border-left:4px solid var(--accent, #0af);">
+    <strong>HOST_NFS mode active</strong> — NFS server runs on the host and reads Ganesha configs written to (bind-mounted) <code>/etc/ganesha</code>.
+    This container manages share definitions, Kerberos material, LDAP/SSSD identity mapping, and direct POSIX permission changes via the WebUI.
+    Many server controls below are muted (host-enforced).
+</div>
+{% endif %}
+
 <div class="current-state">
     <span class="state-label">NFS Kerberos hostname: </span>
     <strong>{{ effective_hostname }}</strong><br>
@@ -63,12 +71,16 @@
             <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_kerberos_realm" value="true" {% if override_kerberos_realm %}checked{% endif %}> override (persist explicit)</span>
         </label>
         <label>ganesha.default_security<br>
-            <select name="ganesha_default_security" id="ganesha_default_security" style="width:100%" {% if !override_ganesha_default_security %}disabled{% endif %}>
+            <select name="ganesha_default_security" id="ganesha_default_security" style="width:100%" {% if host_nfs_mode %}disabled{% else %}{% if !override_ganesha_default_security %}disabled{% endif %}{% endif %}>
                 {% if ganesha_default_security == "krb5p" %}<option value="krb5p" selected>krb5p</option>{% else %}<option value="krb5p">krb5p</option>{% endif %}
                 {% if ganesha_default_security == "krb5i" %}<option value="krb5i" selected>krb5i</option>{% else %}<option value="krb5i">krb5i</option>{% endif %}
                 {% if ganesha_default_security == "krb5" %}<option value="krb5" selected>krb5</option>{% else %}<option value="krb5">krb5</option>{% endif %}
             </select>
+            {% if host_nfs_mode %}
+            <span style="font-size:0.7em; display:block; margin-top:2px; color:var(--text-light);">host-managed (NFS server runs outside this container)</span>
+            {% else %}
             <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_ganesha_default_security" value="true" {% if override_ganesha_default_security %}checked{% endif %}> override (persist explicit)</span>
+            {% endif %}
         </label>
     </div>
     </div>
@@ -269,14 +281,18 @@ wireOverride('input[name="override_sssd_enumerate"]', '#sssd_enumerate');
 <hr style="margin: 1.1rem 0 0.6rem;">
 
 <div style="margin-top:0.1rem;">
-    <strong>Restart and apply</strong><br>
+    <strong>{% if host_nfs_mode %}Apply config to host{% else %}Restart and apply{% endif %}</strong><br>
     <span style="font-size:0.82em; color:var(--text-light);">
+        {% if host_nfs_mode %}
+        In HOST_NFS mode this regenerates the Ganesha fragments (sssd.conf + krb5.conf too) so the *host* NFS server sees the latest share definitions and security settings. No local Ganesha bounce occurs.
+        {% else %}
         Shares (and some core settings) are loaded at startup of Ganesha and/or the WebUI. This triggers a targeted bounce of Ganesha + SSSD + WebUI (via the supervisor) so the updated config + shares list is fully active. NFS will be briefly unavailable.
+        {% endif %}
     </span>
     <form method="post" action="/settings/restart" style="margin-top:0.45rem;">
-        <button type="submit" class="btn btn-danger" style="padding:8px 16px;"
-                onclick="return confirm('Restart services now to apply changes? NFS and the WebUI will be briefly unavailable.');">
-            Restart and apply
+        <button type="submit" class="btn {% if host_nfs_mode %}btn-primary{% else %}btn-danger{% endif %}" style="padding:8px 16px;"
+                onclick="return confirm('{% if host_nfs_mode %}Apply latest fragments to the host-managed NFS server?{% else %}Restart services now to apply changes? NFS and the WebUI will be briefly unavailable.{% endif %}');">
+            {% if host_nfs_mode %}Apply to host NFS{% else %}Restart and apply{% endif %}
         </button>
     </form>
 </div>

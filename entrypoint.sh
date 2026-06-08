@@ -272,11 +272,6 @@ main() {
         warn "D-Bus system bus socket did not appear; Ganesha may have limited management features."
     fi
 
-    # Config watcher is intentionally NOT started after initial generation.
-    # It only watched the source; on restart we do not want background regeneration
-    # that could overwrite/rewrite the final ganesha.conf while Ganesha is coming up.
-    # (Manual HUP to pid 1 or explicit generate still work for controlled reloads.)
-
     # Ganesha (the actual NFS server). Start only after rpcbind + dbus + socket are ready.
     info "Starting NFS-Ganesha..."
     # Allow early Ganesha startup errors (bad config, missing exports dir, etc.)
@@ -302,6 +297,18 @@ main() {
     # handler also clears it when starting a restart, and the status handler
     # has an age check).
     rm -f /tmp/.nfs-klldap-services-recycled 2>/dev/null || true
+
+    # Config watcher (inotify on the mounted source nfs-klldap.conf). It signals
+    # pid 1 (HUP) so the privileged supervisor can run the generator (ensuring
+    # 0600 root:root sssd.conf etc.) and bounce services. We start it *late*
+    # (after Ganesha + WebUI are up) so inotify events during the critical
+    # early bring-up on container start / image rebuild cannot race with the
+    # first ganesha.nfsd launch or the dbus/rpc readiness waits. Once running
+    # it provides the documented live-edit experience for the source config.
+    info "Starting config watcher..."
+    "$WATCHER_BIN" "$NFS_CONFIG" &
+    WATCHER_PID=$!
+
     info "Container is ready."
 
     # Supervisor loop (simple pid1): reaps, stays up. HUP path does bounces; only TERM/INT/EXIT exits us.

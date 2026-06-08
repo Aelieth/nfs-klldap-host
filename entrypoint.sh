@@ -256,26 +256,37 @@ main() {
 
     # dbus system bus (Ganesha on Fedora builds uses it for monitoring/management features).
     mkdir -p /run/dbus
+
+    # Clean stale pid file (very common cause of "Failed to start message bus")
+    rm -f /run/dbus/pid
+
     if ! pgrep -x dbus-daemon >/dev/null 2>&1; then
         info "Starting dbus-daemon (system bus)..."
         dbus-daemon --system --nofork &
         DBUS_PID=$!
+        sleep 0.5
     fi
 
-    # Wait for the system bus socket to exist before launching Ganesha.
+    # Wait for the system bus socket + functional responsiveness
     info "Waiting for D-Bus system bus socket..."
-    for _ in {1..40}; do
-        [ -S /run/dbus/system_bus_socket ] && break
-        sleep 0.1
+    for _ in {1..50}; do
+        if [ -S /run/dbus/system_bus_socket ]; then
+            # Functional test — this catches the case where the socket exists but the daemon isn't ready
+            if dbus-send --system --print-reply --dest=org.freedesktop.DBus \
+                /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1; then
+                info "D-Bus system bus is ready"
+                break
+            fi
+        fi
+        sleep 0.2
     done
+
     if [ ! -S /run/dbus/system_bus_socket ]; then
         warn "D-Bus system bus socket did not appear; Ganesha may have limited management features."
     fi
 
-    # Ganesha (the actual NFS server). Start only after rpcbind + dbus + socket are ready.
+    # Ganesha (the actual NFS server). Start only after rpcbind + dbus readiness checks.
     info "Starting NFS-Ganesha..."
-    # Allow early Ganesha startup errors (bad config, missing exports dir, etc.)
-    # to appear in the main container logs. The long-term log is still in /var/log/ganesha.log.
     ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
     GANESHA_PID=$!
 

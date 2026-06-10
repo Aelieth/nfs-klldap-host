@@ -388,11 +388,15 @@ fn write_ganesha_main(
         r#"NFS_CORE_PARAM {{
     Protocols = 4;
     Enable_UDP = false;
+    Enable_RQUOTA = false;
+    Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
+    Bind_addr = 0.0.0.0;
 }}
 
 NFSV4 {{
     Lease_Lifetime = 60;
+    Grace_Period = 3;
 }}
 
 EXPORT_DEFAULTS {{

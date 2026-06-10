@@ -162,9 +162,25 @@ handle_sighup() {
         pkill -TERM ganesha.nfsd 2>/dev/null || true
     fi
     sleep 0.3
+
     info "Starting NFS-Ganesha..."
-    ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
-    GANESHA_PID=$!
+
+    if [ "${ENABLE_STRACE:-false}" = "true" ]; then
+        info "Starting NFS-Ganesha under strace (debug mode)..."
+        strace -f -tt -e trace=file,network,process,signal,desc \
+            -o /var/log/ganesha.strace.log \
+            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+        STRACE_PID=$!
+        sleep 0.6
+        GANESHA_PID=$(pgrep -P "$STRACE_PID" ganesha.nfsd 2>/dev/null | head -1)
+        if [ -z "$GANESHA_PID" ]; then
+            warn "Failed to detect real ganesha.nfsd PID under strace — using strace PID as fallback"
+            GANESHA_PID=$STRACE_PID
+        fi
+    else
+        ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+        GANESHA_PID=$!
+    fi
 
     # SSSD almost always needs a full restart when its config changes (bind DN,
     # search bases, schema/ignores, krb5 provider bits, etc.).
@@ -287,8 +303,23 @@ main() {
 
     # Ganesha (the actual NFS server). Start only after rpcbind + dbus readiness checks.
     info "Starting NFS-Ganesha..."
-    ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
-    GANESHA_PID=$!
+
+    if [ "${ENABLE_STRACE:-false}" = "true" ]; then
+        info "Starting NFS-Ganesha under strace (debug mode)..."
+        strace -f -tt -e trace=file,network,process,signal,desc \
+            -o /var/log/ganesha.strace.log \
+            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+        STRACE_PID=$!
+        sleep 0.6
+        GANESHA_PID=$(pgrep -P "$STRACE_PID" ganesha.nfsd 2>/dev/null | head -1)
+        if [ -z "$GANESHA_PID" ]; then
+            warn "Failed to detect real ganesha.nfsd PID under strace — using strace PID as fallback"
+            GANESHA_PID=$STRACE_PID
+        fi
+    else
+        ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+        GANESHA_PID=$!
+    fi
 
     # WebUI (HTTPS on 9630 via axum-server + rustls; self-signed unless NFS_KLLDAP_WEBUI_TLS_* set)
     info "Starting WebUI on 0.0.0.0:9630 (HTTPS)..."

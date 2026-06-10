@@ -59,14 +59,13 @@ LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-hos
 
 # Runtime: Ganesha (native Fedora packages) + SSSD + Kerberos + tools.
 # dbus-daemon: required by Ganesha (system bus for its internal features/monitoring).
-# rpcbind: included for compatibility/tooling only (Ganesha is configured strict NFSv4+ only; no NFSv3).
 RUN microdnf install -y --assumeyes \
-        nfs-ganesha nfs-ganesha-vfs nfs-ganesha-utils nfs-ganesha-selinux \
+        nfs-ganesha nfs-ganesha-vfs \
         sssd sssd-ldap openldap-clients \
         krb5-workstation krb5-libs \
         inotify-tools procps-ng iproute nmap-ncat \
         strace less nano libcap ca-certificates sudo hostname openssl \
-        dbus-daemon rpcbind \
+        dbus-daemon  \
     && microdnf clean all
 
 RUN mkdir -p \

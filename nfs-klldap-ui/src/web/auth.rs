@@ -21,6 +21,14 @@ pub(crate) struct LoginTemplate {
     pub keytab_alert: Option<String>,
 }
 
+// NOTE on keytab_alert usage here:
+// The keytab principal/hostname mismatch (see web/keytab.rs + main.rs bg task) is
+// intentionally a *display-only* warning banner. It is passed through to
+// LoginTemplate only so the banner can be shown on /login (pre-auth) and on
+// post-login pages. The presence or absence of an alert value must never affect
+// the localhost simple-pw path, the LLDAP+webui_admin_group path, session creation,
+// or redirects. See the approved plan and AppState docs for the invariant.
+
 /// Shared form for both normal login and first-run setup.
 #[derive(Deserialize)]
 pub(crate) struct LoginForm {
@@ -59,7 +67,7 @@ pub async fn login_page(
             current_user: None,
             first_run,
             admin_group,
-            keytab_alert: state.keytab_alert.clone(),
+            keytab_alert: state.keytab_alert.lock().unwrap().clone(),
         }
         .render()
         .unwrap(),
@@ -70,6 +78,9 @@ pub async fn login_page(
 /// POST /login — the main authentication entry point.
 /// On success: creates privileged session + sets properly-formed cookie + redirects.
 /// On failure: re-renders login page with error.
+///
+/// (keytab principal mismatch warning, if any, is only carried into the re-rendered
+/// template for display; it does not change success/failure or the created session.)
 pub async fn login(
     State(state): State<super::AppState>,
     headers: HeaderMap,
@@ -139,7 +150,7 @@ pub async fn login(
                 current_user: None,
                 first_run,
                 admin_group,
-                keytab_alert: state.keytab_alert.clone(),
+                keytab_alert: state.keytab_alert.lock().unwrap().clone(),
             }
             .render()
             .unwrap();
@@ -163,7 +174,7 @@ pub async fn setup_password(
             current_user: None,
             first_run: false,
             admin_group: state.auth.admin_group().to_string(),
-            keytab_alert: state.keytab_alert.clone(),
+            keytab_alert: state.keytab_alert.lock().unwrap().clone(),
         }
         .render()
         .unwrap();
@@ -177,7 +188,7 @@ pub async fn setup_password(
             current_user: None,
             first_run: true,
             admin_group: state.auth.admin_group().to_string(),
-            keytab_alert: state.keytab_alert.clone(),
+            keytab_alert: state.keytab_alert.lock().unwrap().clone(),
         }
         .render()
         .unwrap();
@@ -211,7 +222,7 @@ pub async fn setup_password(
                 current_user: None,
                 first_run: true,
                 admin_group: state.auth.admin_group().to_string(),
-                keytab_alert: state.keytab_alert.clone(),
+                keytab_alert: state.keytab_alert.lock().unwrap().clone(),
             }
             .render()
             .unwrap();
@@ -383,6 +394,11 @@ pub(crate) fn validate_session_in_headers(
 pub struct AuthUser(pub String);
 
 /// Guard used by (almost) every protected route handler.
+///
+/// Key point for the principal-mismatch requirement: this (and validate_session_in_headers)
+/// only look at session cookies + the AuthManager. keytab_alert (the NFS hostname vs.
+/// keytab principal warning) lives in AppState only for template rendering and has no
+/// effect on authentication decisions or on whether modifications are allowed.
 pub async fn require_auth(
     state: &super::AppState,
     headers: &HeaderMap,

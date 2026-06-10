@@ -956,7 +956,7 @@ pub(crate) async fn settings_page(
         None,
         state.keytab_hostname.clone(),
         state.keytab_realm.clone(),
-        state.keytab_alert.clone(),
+        state.keytab_alert.lock().unwrap().clone(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -991,7 +991,7 @@ pub(crate) async fn settings_save_raw(
         "Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into(),
         state.keytab_hostname.clone(),
         state.keytab_realm.clone(),
-        state.keytab_alert.clone(),
+        state.keytab_alert.lock().unwrap().clone(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -1018,7 +1018,7 @@ pub(crate) async fn settings_save_structured(
             msg,
             state.keytab_hostname.clone(),
             state.keytab_realm.clone(),
-            state.keytab_alert.clone(),
+            state.keytab_alert.lock().unwrap().clone(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1038,7 +1038,7 @@ pub(crate) async fn settings_save_structured(
             msg,
             state.keytab_hostname.clone(),
             state.keytab_realm.clone(),
-            state.keytab_alert.clone(),
+            state.keytab_alert.lock().unwrap().clone(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1049,7 +1049,7 @@ pub(crate) async fn settings_save_structured(
         "Structured settings saved (shares left untouched in TOML). Container will regenerate configs shortly.".into(),
         state.keytab_hostname.clone(),
         state.keytab_realm.clone(),
-        state.keytab_alert.clone(),
+        state.keytab_alert.lock().unwrap().clone(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -1079,7 +1079,7 @@ pub(crate) async fn settings_save_shares(
             msg,
             state.keytab_hostname.clone(),
             state.keytab_realm.clone(),
-            state.keytab_alert.clone(),
+            state.keytab_alert.lock().unwrap().clone(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1099,7 +1099,7 @@ pub(crate) async fn settings_save_shares(
             msg,
             state.keytab_hostname.clone(),
             state.keytab_realm.clone(),
-            state.keytab_alert.clone(),
+            state.keytab_alert.lock().unwrap().clone(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1110,7 +1110,7 @@ pub(crate) async fn settings_save_shares(
         "Shares saved (SSSD and other sections left untouched in TOML). The config watcher (or Restart and apply) will make Ganesha + WebUI see them shortly.".into(),
         state.keytab_hostname.clone(),
         state.keytab_realm.clone(),
-        state.keytab_alert.clone(),
+        state.keytab_alert.lock().unwrap().clone(),
     );
     Ok(Html(tpl.render().unwrap()))
 }

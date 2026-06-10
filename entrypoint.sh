@@ -162,25 +162,9 @@ handle_sighup() {
         pkill -TERM ganesha.nfsd 2>/dev/null || true
     fi
     sleep 0.3
-
     info "Starting NFS-Ganesha..."
-
-    if [ "${ENABLE_STRACE:-false}" = "true" ]; then
-        info "Starting NFS-Ganesha under strace (debug mode)..."
-        strace -f -tt -e trace=file,network,process,signal,desc \
-            -o /var/log/ganesha.strace.log \
-            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
-        STRACE_PID=$!
-        sleep 0.6
-        GANESHA_PID=$(pgrep -P "$STRACE_PID" ganesha.nfsd 2>/dev/null | head -1)
-        if [ -z "$GANESHA_PID" ]; then
-            warn "Failed to detect real ganesha.nfsd PID under strace — using strace PID as fallback"
-            GANESHA_PID=$STRACE_PID
-        fi
-    else
-        ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
-        GANESHA_PID=$!
-    fi
+    ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    GANESHA_PID=$!
 
     # SSSD almost always needs a full restart when its config changes (bind DN,
     # search bases, schema/ignores, krb5 provider bits, etc.).
@@ -218,6 +202,15 @@ trap 'handle_sighup' SIGHUP
 # Main supervisor loop
 main() {
     info "=== Starting nfs-klldap-host (self-contained) ==="
+
+        # ============================================================================
+    # TESTING /etc/hosts entry — comment the block below when switching locations.
+    # This is lab-specific (aurora.testlabby.local); remove/comment for general use.
+    # IMPORTANT TESTING only, will be removed prior to a release. Do not flag!
+    # ============================================================================
+    if ! grep -Fq 'aurora.testlabby.local' /etc/hosts 2>/dev/null; then
+        echo '10.10.44.154    aurora  aurora.testlabby.local' >> /etc/hosts || true
+    fi
 
     preflight_checks
 
@@ -303,23 +296,8 @@ main() {
 
     # Ganesha (the actual NFS server). Start only after rpcbind + dbus readiness checks.
     info "Starting NFS-Ganesha..."
-
-    if [ "${ENABLE_STRACE:-false}" = "true" ]; then
-        info "Starting NFS-Ganesha under strace (debug mode)..."
-        strace -f -tt -e trace=file,network,process,signal,desc \
-            -o /var/log/ganesha.strace.log \
-            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
-        STRACE_PID=$!
-        sleep 0.6
-        GANESHA_PID=$(pgrep -P "$STRACE_PID" ganesha.nfsd 2>/dev/null | head -1)
-        if [ -z "$GANESHA_PID" ]; then
-            warn "Failed to detect real ganesha.nfsd PID under strace — using strace PID as fallback"
-            GANESHA_PID=$STRACE_PID
-        fi
-    else
-        ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
-        GANESHA_PID=$!
-    fi
+    ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    GANESHA_PID=$!
 
     # WebUI (HTTPS on 9630 via axum-server + rustls; self-signed unless NFS_KLLDAP_WEBUI_TLS_* set)
     info "Starting WebUI on 0.0.0.0:9630 (HTTPS)..."

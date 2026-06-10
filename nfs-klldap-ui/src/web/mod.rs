@@ -10,6 +10,7 @@ use axum::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
 use tower_http::normalize_path::NormalizePathLayer;
 
@@ -58,9 +59,18 @@ pub struct AppState {
     /// Kerberos realm for the NFS principal (derived/validated at startup, same as krb5.conf generator).
     pub keytab_realm: String,
     /// Human-readable status about whether the on-disk /etc/krb5.keytab actually contains
-    /// the expected NFS service principal. Computed once at startup.
-    /// Set when the on-disk keytab does not match; omitted from the UI when `None`.
-    pub keytab_alert: Option<String>,
+    /// the expected NFS service principal (the "kerberos ticket principal does not match
+    /// the hostname expectation" condition).
+    ///
+    /// This is populated best-effort by a background task in main.rs after the HTTP
+    /// listener is brought up. It is *display-only*: presence of a value (or a transient
+    /// None while the check runs) must never gate authentication (localhost sidecar or
+    /// LLDAP+webui_admin_group), session creation, require_auth, or any modification path.
+    /// The only effect is rendering the warning banner (base.html + settings "current-state").
+    ///
+    /// See nfs-klldap-ui/src/web/keytab.rs (compute_keytab_alert) and the two-tier
+    /// hostname logic in the nfs_klldap_config crate.
+    pub keytab_alert: Arc<StdMutex<Option<String>>>,
     /// Shared state for an in-flight (recursive or non-recursive) permission apply.
     /// Populated when /apply starts the background task; read by /apply-progress for the
     /// live Apply Log (with XXXX/XXXX + spinner while estimating) and by cancel_apply.
@@ -245,7 +255,7 @@ mod tests {
             config_path,
             keytab_hostname: "test-host".to_string(),
             keytab_realm: "EXAMPLE.COM".to_string(),
-            keytab_alert: None,
+            keytab_alert: Arc::new(StdMutex::new(None)),
             apply_progress: Arc::new(Mutex::new(None)),
             restart_requested: Arc::new(Mutex::new(false)),
             direct_tls: true,
@@ -464,7 +474,7 @@ default_security = "krb5p"
             config_path: config_path.clone(),
             keytab_hostname: "test-host".into(),
             keytab_realm: "TEST".into(),
-            keytab_alert: None,
+            keytab_alert: Arc::new(StdMutex::new(None)),
             apply_progress: Arc::new(Mutex::new(None)),
             restart_requested: Arc::new(Mutex::new(false)),
             direct_tls: true,
@@ -744,6 +754,50 @@ default_security = "krb5p"
         assert_eq!(
             resp.headers().get(LOCATION).unwrap().to_str().unwrap(),
             "/login"
+        );
+    }
+
+    /// Regression test for the core requirement: a keytab principal/hostname mismatch
+    /// (the "kerberos ticket principal does not match" case) produces only a display
+    /// warning (keytab_alert = Some(...)). It must not prevent session creation,
+    /// require_auth, or reaching protected routes / apply. Localhost and (in real
+    /// deploys) webui_admin_group LDAP logins must still fully work for modifications.
+    #[tokio::test]
+    async fn keytab_mismatch_alert_does_not_break_auth_or_protected_actions() {
+        let (state, _tmp) = make_test_state_with_temp_config();
+        // Seed the exact symptom condition.
+        *state.keytab_alert.lock().unwrap() = Some(
+            "Keytab: no match for nfs/broken-host@EXAMPLE.COM. Found: nfs/other@EXAMPLE.COM.".to_string(),
+        );
+        let auth = state.auth.clone();
+        let token = auth.create_privileged_session("testadmin"); // same as real login success path
+        let app = router(state);
+
+        // Protected page must be reachable (no redirect to /login).
+        let req = Request::builder()
+            .method("GET")
+            .uri("/settings")
+            .body(Body::empty())
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "mismatch alert must not cause require_auth to reject a valid session");
+
+        // An apply POST must also be accepted by the auth layer (may 200 "apply failed in test env"
+        // or the new applying placeholder, but must never 3xx back to login).
+        let body = "path=%2Ftmp%2Fdata&owner_user=1000&owner_group=1000&mode=755&recursive=false&owner_user_uid=1000&owner_group_gid=1000";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/apply")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(
+            resp.status().is_success() || resp.status() == StatusCode::UNPROCESSABLE_ENTITY,
+            "apply under mismatch alert must be allowed by auth (got {})",
+            resp.status()
         );
     }
 

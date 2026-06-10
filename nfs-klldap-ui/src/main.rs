@@ -34,6 +34,7 @@ fn resolve_runtime_hostname_for_banner() -> String {
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
 
 use nfs_klldap_config::get_consistent_hostname;
@@ -164,9 +165,26 @@ async fn main() {
     let admin_group = config.management.webui_admin_group.clone();
     let auth = Arc::new(crate::auth::AuthManager::new(&config_path, admin_group));
 
-    let keytab_alert = crate::web::compute_keytab_alert(&keytab_host, &keytab_realm);
-    if let Some(ref msg) = keytab_alert {
-        eprintln!("WARNING: {}", msg);
+    // Keytab principal/hostname mismatch alert is *display-only* (affects only the
+    // warning banner shown via base.html / settings / login templates). It must never
+    // prevent the listener from coming up or block localhost / webui_admin_group
+    // logins + modifications. Compute it in a background task so even a pathological
+    // hang in klist(1) cannot make the WebUI unreachable for auth.
+    let keytab_alert: Arc<StdMutex<Option<String>>> = Arc::new(StdMutex::new(None));
+    {
+        let alert_slot = keytab_alert.clone();
+        let h = keytab_host.clone();
+        let r = keytab_realm.clone();
+        tokio::spawn(async move {
+            // compute_keytab_alert shells out to klist -k; do it off the main thread.
+            let alert = crate::web::compute_keytab_alert(&h, &r);
+            if let Some(ref msg) = alert {
+                eprintln!("WARNING: {}", msg);
+            }
+            if let Ok(mut slot) = alert_slot.lock() {
+                *slot = alert;
+            }
+        });
     }
 
     // NFS_KLLDAP_WEBUI_BIND is used for both TLS and plain-http (reverse proxy) modes.

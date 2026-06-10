@@ -261,7 +261,7 @@ pub(crate) async fn index(
     let tpl = IndexTemplate {
         shares: display_shares,
         current_user: Some(user.0),
-        keytab_alert: state.keytab_alert.clone(),
+        keytab_alert: state.keytab_alert.lock().unwrap().clone(),
     };
 
     Ok(Html(tpl.render().unwrap()))

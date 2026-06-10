@@ -391,7 +391,6 @@ fn write_ganesha_main(
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
-    Bind_addr = 0.0.0.0;
 }}
 
 NFSV4 {{

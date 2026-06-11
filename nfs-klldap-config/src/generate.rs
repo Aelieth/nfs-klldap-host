@@ -477,7 +477,7 @@ EXPORT {{
     }}
 }}
 "#,
-            share.name, export_id, path, pseudo, access, sec, squash, access, sec, sync_line = sync_line, pref_read_line = pref_read_line, pref_write_line = pref_write_line
+            share.name, export_id, path, pseudo, access, sec, squash, sync_line = sync_line, pref_read_line = pref_read_line, pref_write_line = pref_write_line
         );
 
         let filename = fragment_basename(i, &share.name);
@@ -563,13 +563,10 @@ mod tests {
         );
         assert!(frag.contains("EXPORT {"));
         assert!(frag.contains("Sync = true;"));
-        // Strict NFSv4+ per-share hardening (Ganesha 9.x+ / no NFSv3)
-        assert!(frag.contains("CLIENT {"));
-        assert!(frag.contains("Clients = *;"));
         assert!(frag.contains("Access_Type = RW;"));
-        assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in CLIENT block");
-        // Protocols = 4 must be present inside the per-share EXPORT (defensive)
+        assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(frag.contains("Protocols = 4;"));
+        assert!(!frag.contains("CLIENT {"));
         // (omitted PrefRead case covered indirectly)
     }
 
@@ -632,17 +629,15 @@ mod tests {
         );
         assert!(frag.contains("EXPORT {"));
         assert!(frag.contains("Sync = true;"));
-        // Strict NFSv4+ per-share hardening (Ganesha 9.x+ / no NFSv3)
-        assert!(frag.contains("CLIENT {"));
-        assert!(frag.contains("Clients = *;"));
         assert!(frag.contains("Access_Type = RW;"));
-        assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in CLIENT block");
+        assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(frag.contains("Protocols = 4;"));
+        assert!(!frag.contains("CLIENT {"));
     }
 
     #[test]
-    fn per_share_client_block_respects_rw_and_security_overrides() {
-        // Exercise non-defaults: RO + krb5i security -> CLIENT must reflect them (strict v4+ regression)
+    fn per_share_export_respects_rw_and_security_overrides() {
+        // Exercise non-defaults: RO + krb5i security -> EXPORT must reflect them
         let mut cfg = crate::NfsKlldapConfig {
             ldap_uri: "ldaps://k.test:6360".into(),
             sssd: crate::SssdSection {
@@ -686,13 +681,9 @@ mod tests {
             s
         });
 
-        assert!(frag.contains("Access_Type = RO;"), "top-level Access should be RO");
-        assert!(frag.contains("SecType = krb5i;"), "top-level SecType should be krb5i");
-        assert!(frag.contains("CLIENT {"));
-        assert!(frag.contains("Clients = *;"));
-        // The CLIENT must carry the *same* per-share overrides (the key strict-v4 hardening)
-        assert!(frag.contains("Access_Type = RO;"), "CLIENT must inherit RO");
-        assert!(frag.contains("SecType = krb5i;"), "CLIENT must inherit krb5i");
+        assert!(frag.contains("Access_Type = RO;"), "EXPORT Access_Type should be RO");
+        assert!(frag.contains("SecType = krb5i;"), "EXPORT SecType should be krb5i");
         assert!(frag.contains("Protocols = 4;"));
+        assert!(!frag.contains("CLIENT {"));
     }
 }

@@ -166,10 +166,12 @@ async fn main() {
     let auth = Arc::new(crate::auth::AuthManager::new(&config_path, admin_group));
 
     // Keytab principal/hostname mismatch alert is *display-only* (affects only the
-    // warning banner shown via base.html / settings / login templates). It must never
-    // prevent the listener from coming up or block localhost / webui_admin_group
-    // logins + modifications. Compute it in a background task so even a pathological
-    // hang in klist(1) cannot make the WebUI unreachable for auth.
+    // warning banner shown on post-auth pages via base.html + settings "current-state").
+    // It must never prevent the listener from coming up or block localhost /
+    // webui_admin_group logins + modifications (the login form is intentionally
+    // kept free of this banner so a bad keytab/hostname never interferes with
+    // admin access for fixing config). Compute it in a background task so even a
+    // pathological hang in klist(1) cannot make the WebUI unreachable for auth.
     let keytab_alert: Arc<StdMutex<Option<String>>> = Arc::new(StdMutex::new(None));
     {
         let alert_slot = keytab_alert.clone();

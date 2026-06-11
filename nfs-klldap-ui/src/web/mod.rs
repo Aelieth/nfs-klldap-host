@@ -66,7 +66,10 @@ pub struct AppState {
     /// listener is brought up. It is *display-only*: presence of a value (or a transient
     /// None while the check runs) must never gate authentication (localhost sidecar or
     /// LLDAP+webui_admin_group), session creation, require_auth, or any modification path.
-    /// The only effect is rendering the warning banner (base.html + settings "current-state").
+    /// The only effect is rendering the warning banner on authenticated pages
+    /// (Share Permissions + System Settings). The pre-auth /login form deliberately
+    /// receives no keytab_alert so a hostname/keytab mismatch never interferes with
+    /// admin or LDAP login for recovery.
     ///
     /// See nfs-klldap-ui/src/web/keytab.rs (compute_keytab_alert) and the two-tier
     /// hostname logic in the nfs_klldap_config crate.
@@ -759,9 +762,10 @@ default_security = "krb5p"
 
     /// Regression test for the core requirement: a keytab principal/hostname mismatch
     /// (the "kerberos ticket principal does not match" case) produces only a display
-    /// warning (keytab_alert = Some(...)). It must not prevent session creation,
-    /// require_auth, or reaching protected routes / apply. Localhost and (in real
-    /// deploys) webui_admin_group LDAP logins must still fully work for modifications.
+    /// warning (keytab_alert = Some(...)) on *post-auth* pages. It must not prevent
+    /// session creation, require_auth, or reaching protected routes / apply. The
+    /// pre-auth login form never receives the alert. Localhost and (in real deploys)
+    /// webui_admin_group LDAP logins must still fully work for modifications.
     #[tokio::test]
     async fn keytab_mismatch_alert_does_not_break_auth_or_protected_actions() {
         let (state, _tmp) = make_test_state_with_temp_config();
@@ -772,6 +776,24 @@ default_security = "krb5p"
         let auth = state.auth.clone();
         let token = auth.create_privileged_session("testadmin"); // same as real login success path
         let app = router(state);
+
+        // Pre-auth login form must never surface the keytab mismatch banner (this is the
+        // core of the resolution: a "kerberos ticket mismatch" / hostname-vs-principal
+        // condition must not pollute or interfere with reaching the login form or
+        // completing auth for admin / LDAP users).
+        let login_req = Request::builder()
+            .method("GET")
+            .uri("/login")
+            .body(Body::empty())
+            .unwrap();
+        let login_resp = app.clone().oneshot(login_req).await.unwrap();
+        assert_eq!(login_resp.status(), StatusCode::OK);
+        let login_body = axum::body::to_bytes(login_resp.into_body(), usize::MAX).await.unwrap();
+        let login_html = String::from_utf8_lossy(&login_body);
+        assert!(
+            !login_html.contains("broken-host@EXAMPLE.COM"),
+            "keytab mismatch banner must not appear on the unauthenticated /login form (would interfere with admin/LDAP login)"
+        );
 
         // Protected page must be reachable (no redirect to /login).
         let req = Request::builder()

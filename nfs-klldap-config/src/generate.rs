@@ -475,12 +475,6 @@ EXPORT {{
     FSAL {{
         Name = VFS;
     }}
-
-    CLIENT {{
-        Clients = *;
-        Access_Type = {};
-        SecType = {};
-    }}
 }}
 "#,
             share.name, export_id, path, pseudo, access, sec, squash, access, sec, sync_line = sync_line, pref_read_line = pref_read_line, pref_write_line = pref_write_line

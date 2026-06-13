@@ -40,7 +40,7 @@ docker run -d \
   -p 2049:2049/tcp -p 2049:2049/udp \
   -p 9630:9630/tcp \
   -v /path/to/config:/config \
-  -v /media/data:/export \
+  -v /media/:/export \
   -v /secure/krb5.keytab:/etc/krb5.keytab:ro \
   ghcr.io/aelieth/nfs-klldap-host:latest
 ```
@@ -64,7 +64,7 @@ Sample generated `nfs-klldap.conf`:
 ldap_uri = "ldaps://kllap.example.com:6360"                     # LLDAP default secure port. 3890 for LLDAP unencrypted
 
 [storage]
-container_root = "/export"                                      # Where your Ganesha NFS shares mount at. Match docker -v ...:/export
+container_root = "/export"                                      # Anchor for Ganesha paths (container_root + share.export_path). Bind a host parent once (e.g. /media/:/export). host_path values are independent.
 
 [management]
 # webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins
@@ -93,7 +93,7 @@ default_security = "krb5p"                                      # security, krb5
 # [[shares]]                                                    # shares section sample, shares can be added / edited via system settings
 # name = "movies"
 # host_path = "/home/user/nfs-data/movies"
-# export_path = "/movies"                                       # optional; if absent, generator derives "/" + name
+# export_path = "/movies"                                       # optional; controls both Ganesha Path (under container_root) and client Pseudo. With single root bind use e.g. "/HDD-RAID/movies"; derives to /<name> when absent.
 # security = "krb5p"                                            # optional per-share override (krb5p|krb5i|krb5); default from [ganesha]
 # rw = true                                                     # default RW; set false for RO
 ```

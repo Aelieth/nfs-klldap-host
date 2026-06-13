@@ -165,7 +165,10 @@ impl NfsKlldapConfig {
                     share.name
                 )));
             }
-            // Derive export_path if missing
+            // Derive export_path if missing. This value now drives *both*:
+            // - the NFSv4 Pseudo path clients see (unchanged), and
+            // - the container-visible Ganesha Path (container_root joined with export_path).
+            // The default ("/" + name) preserves exact prior behavior for simple/legacy configs.
             if share.export_path.is_none() {
                 share.export_path = Some(format!("/{}", share.name));
             }
@@ -379,11 +382,24 @@ impl NfsKlldapConfig {
     }
 
     pub fn container_path_for(&self, share: &Share) -> String {
-        format!(
-            "{}/{}",
-            self.storage.container_root.trim_end_matches('/'),
-            share.name
-        )
+        // The container-visible location for this share's tree (used for Ganesha Path= and
+        // for the WebUI FsManager host->container translation). With a single root-level
+        // bind (host parent:/export) this is container_root joined with the share's export_path
+        // (which may encode a rich subtree such as "/HDD-RAID/media").
+        let root = self.storage.container_root.trim_end_matches('/');
+        let ep_owned: String = share
+            .export_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("/{}", share.name));
+        let ep = if ep_owned.starts_with('/') {
+            ep_owned
+        } else {
+            format!("/{}", ep_owned)
+        };
+        format!("{}{}", root, ep)
     }
 
     pub fn host_paths(&self) -> Vec<PathBuf> {

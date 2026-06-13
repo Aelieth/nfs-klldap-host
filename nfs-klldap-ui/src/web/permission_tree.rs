@@ -313,8 +313,8 @@ pub(crate) async fn tree_fragment(
         r#"<div class="alert alert-danger" style="padding:0.5em;">
             <strong>Cannot display directory tree.</strong><br>
             <code>{}</code> is allowed by your config but is not visible inside the container
-            (check bind mounts / <code>storage.container_root</code> and the startup diagnostics
-            for the suggested <code>-v HOST:CONTAINER</code> line).
+            (check bind mounts / <code>storage.container_root</code> + share <code>export_path</code> and the startup diagnostics
+            for the suggested <code>-v HOST:CONTAINER</code> line; single root parent bind recommended).
         </div>"#,
         safe_path
     );

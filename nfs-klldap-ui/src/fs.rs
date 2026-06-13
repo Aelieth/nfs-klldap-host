@@ -235,7 +235,13 @@ impl FsManager {
             .map_err(|e| format!("apply failed: {}", e))
     }
 
-    /// host_path (from config/UI) → real path under container_root + share.name.
+    /// host_path (from config/UI) → real path inside the container for the matching share.
+    /// The container base is derived from storage.container_root + the share's export_path
+    /// (see NfsKlldapConfig::container_path_for). The relative suffix under host_path is appended
+    /// unchanged. This supports both the classic flat "/export/<name>" layout and the new
+    /// single-root-bind model (host /media/ → /export with rich export_path subtrees such as
+    /// "/HDD-RAID/media").
+    ///
     /// The single bind-mount contract used by both apply_permissions and build_tree.
     ///
     /// This is the authoritative translation. All security decisions (is_allowed) are
@@ -243,7 +249,6 @@ impl FsManager {
     /// See the module-level docs for the "bind-mount UID namespace" assumption.
     pub(crate) fn host_path_to_container_path(&self, host_path: &Path) -> Result<PathBuf, String> {
         let normalized = self.normalize_for_matching(host_path);
-        let container_root = self.config.storage.container_root.trim_end_matches('/');
 
         for share in &self.config.shares {
             let share_normalized = self.normalize_for_matching(&share.host_path);
@@ -251,8 +256,7 @@ impl FsManager {
                 let rel = normalized
                     .strip_prefix(&share_normalized)
                     .unwrap_or(Path::new(""));
-                let mut cpath = PathBuf::from(container_root);
-                cpath.push(&share.name);
+                let mut cpath = PathBuf::from(self.config.container_path_for(share));
                 if !rel.as_os_str().is_empty() {
                     cpath.push(rel);
                 }
@@ -500,7 +504,9 @@ mod tests {
     }
 
     /// Helper that creates a config exercising the host_path → container translation.
-    /// The real on-disk tree lives at `container_root`/`share_name`.
+    /// The real on-disk tree lives under container_root joined with the share's (derived or
+    /// explicit) export_path (via container_path_for). With ..Default the export_path is None
+    /// and falls back to "/<name>" so classic tests continue to assert container_root + name.
     /// Calls to build_tree use the `host_path` (logical) and must return nodes
     /// whose .path values stay in the logical host namespace.
     fn make_test_config_with_container_mapping(
@@ -562,8 +568,8 @@ mod tests {
         // that the WebUI tree browser relies on inside the container.
         let tmp = TempDir::new().unwrap();
 
-        // Real tree lives under container_root + share.name (simulating the bind mount
-        // layout /export/mydata that the container actually sees).
+        // Real tree lives under container_root + effective export subtree (here derived to
+        // /mydata via export_path fallback). Simulates the bind mount layout the container sees.
         let container_root = tmp.path().join("container-root");
         let real_share_dir = container_root.join("mydata");
         std::fs::create_dir_all(&real_share_dir).unwrap();
@@ -655,6 +661,34 @@ mod tests {
     }
 
     #[test]
+    fn host_path_to_container_path_respects_explicit_export_path() {
+        // Exercise the new single-root-bind model: rich export_path (subtree under /export)
+        // produces a different container location than name, while host_path stays the
+        // real on-disk host location. UI allow-list + ops remain host_path based.
+        let mut cfg = make_test_config_with_container_mapping(
+            "/media/HDD-RAID/media",
+            "/export",
+            "media",
+        );
+        // Override the default-derived export_path for this share to the rich value.
+        cfg.shares[0].export_path = Some("/HDD-RAID/media".to_string());
+
+        let fs = FsManager::new(cfg);
+
+        // Root of the share
+        let root = fs
+            .host_path_to_container_path(Path::new("/media/HDD-RAID/media"))
+            .unwrap();
+        assert_eq!(root, PathBuf::from("/export/HDD-RAID/media"));
+
+        // Nested subdir must append the same relative tail
+        let sub = fs
+            .host_path_to_container_path(Path::new("/media/HDD-RAID/media/videos/4k"))
+            .unwrap();
+        assert_eq!(sub, PathBuf::from("/export/HDD-RAID/media/videos/4k"));
+    }
+
+    #[test]
     fn host_path_to_container_path_no_match() {
         let cfg = make_test_config_with_container_mapping("/host/allowed", "/c", "s");
         let fs = FsManager::new(cfg);
@@ -699,6 +733,7 @@ mod tests {
         let mut cfg = cfg;
         cfg.storage.container_root = root.to_string_lossy().into_owned();
         cfg.shares[0].name.clear();
+        // name="" + export_path=None falls back to container_root + "" (identity) in container_path_for.
 
         let fs = FsManager::new(cfg);
 
@@ -729,6 +764,7 @@ mod tests {
         let mut cfg = cfg;
         cfg.storage.container_root = root.to_string_lossy().into_owned();
         cfg.shares[0].name.clear();
+        // name="" + export_path=None falls back to container_root + "" (identity) in container_path_for.
 
         let fs = FsManager::new(cfg);
 

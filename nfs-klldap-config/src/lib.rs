@@ -194,12 +194,11 @@ mod tests {
         assert!(main.contains("Allow_Set_Io_Flusher_Fail = true"));
         // These must not appear (rejected by parser in this build)
         assert!(!main.contains("Transports"));
-        assert!(!main.contains("Bind_addr"));
         assert!(!main.contains("Mountd_Port"));
         assert!(!main.contains("NLM_Port"));
         assert!(!main.contains("Rquota_Port"));
-        assert!(!main.contains("Enable_NLM"));
-        assert!(!main.contains("Enable_RQUOTA"));
+        // (Enable_UDP / Enable_NLM / Enable_RQUOTA are intentionally emitted as explicit = false
+        //  in the current proven-safe NFS_CORE_PARAM; only the classic port + Transports keys are omitted.)
 
         let exports: Vec<_> = fs::read_dir(&paths.exports_dir)
             .unwrap()

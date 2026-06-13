@@ -29,7 +29,7 @@ pub fn generate_default_template() -> String {
 ldap_uri = "ldaps://kllap.example.com:6360"                     # Required - LLDAP default secure port. 3890 for LLDAP unencrypted (389, 636 for standard)
 
 [storage]
-container_root = "/export"                                      # Required - Where your Ganesha NFS shares mount at. Match docker -v ...:/export
+container_root = "/export"                                      # Required - Ganesha Path base. Use with share export_path (e.g. "/HDD-RAID/foo"). Bind a single host parent dir to this target (recommended).
 
 [management]
 # webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins

@@ -292,9 +292,15 @@ pub struct WebuiSection {
 pub struct Share {
     pub name: String,
     /// Absolute path on the Docker host (used for UI allow-list and direct chown/chmod).
-    /// Container view is `storage.container_root` + name.
+    /// Independent of container bind layout. The WebUI privileged operations (fs.rs/privileged.rs)
+    /// and allow-listing continue to key exclusively off host_path values.
     pub host_path: PathBuf,
-    /// Optional explicit NFS pseudo path. Defaults to "/" + name.
+    /// Optional explicit subtree path under storage.container_root.
+    /// Used for both the Ganesha EXPORT.Path (the real location inside the container) and
+    /// the NFSv4 Pseudo path (what clients mount as server:/this-path).
+    /// Defaults (via validation) to "/" + name. With a single root bind (e.g. host /media/ → /export)
+    /// set values such as "/HDD-RAID/media" so Ganesha sees Path=/export/HDD-RAID/media while the
+    /// host_path on disk can live at the corresponding location under the bound parent.
     pub export_path: Option<String>,
     pub security: Option<String>,
     pub rw: Option<bool>,

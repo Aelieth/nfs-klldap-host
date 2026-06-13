@@ -142,9 +142,9 @@ Do not set compose `user:` unless you have a specific reason — pid 1 must mana
 This project exports real directories from the Docker *host* via Ganesha VFS inside the container. The WebUI also performs direct recursive `chown`/`chmod` on those trees (as root, under an allow-list from `[[shares]].host_path`). The following is the distilled guidance after review of Ganesha container patterns, Fedora packaging, Ganesha core config man pages, and practical bind-mount/UID realities.
 
 ### Core contract (unchanged but worth repeating)
-- `host_path` values in `nfs-klldap.conf` (and the UI) are **absolute paths on the Docker host**.
-- Inside the container they are visible under `storage.container_root/<share_name>` (default `/export/<name>`).
-- Translation happens only at the syscall boundary (`FsManager` + `privileged.rs`).
+- `host_path` values in `nfs-klldap.conf` (and the UI) are **absolute paths on the Docker host** (unchanged by this layout).
+- Inside the container the data for a share is visible at `storage.container_root` + the share's `export_path` (defaults to `/<name>`). With a single root bind (e.g. host `/media/` → container `/export`) set `export_path = "/HDD-RAID/media"` etc. so Ganesha Path and the FS tree are clean native subpaths.
+- Translation (host_path → real container path for chown/chmod/readdir) happens only at the syscall boundary (`FsManager` + `privileged.rs`).
 - **Numeric UID/GID identity must be identical** on the host and inside the container for the bind-mounted trees. Do **not** use `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts. The on-disk owners written by the WebUI (and seen by NFS clients) are the raw numbers from LLDAP `uidNumber`/`gidNumber`.
 
 ### Recommended container flags
@@ -156,7 +156,7 @@ cap_add:
   - SYS_ADMIN
   - DAC_READ_SEARCH
 volumes:
-  - /real/host/data/tree:/export:rw   # or multiple per-share mounts
+  - /media/:/export:rw                # single root-level bind of the host parent (recommended for stability; avoids EOPNOTSUPP on overlays)
   - ./config:/config:rw
   - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 ```
@@ -221,7 +221,7 @@ If you have existing `sync = true` lines in `nfs-klldap.conf` they will continue
 - `read_ahead_kb` on the host block devices that back your shares remains a host-side tuning knob (outside the container) for sequential read workloads.
 
 ### Common failure modes and fixes
-- "No such file or directory" when mounting a VFS export, or Ganesha failing to traverse the tree → missing `SYS_ADMIN`/`DAC_READ_SEARCH` or the bind mount not actually visible at the expected `Path` inside the container.
+- "No such file or directory" when mounting a VFS export, or Ganesha failing to traverse the tree → missing `SYS_ADMIN`/`DAC_READ_SEARCH` or the bind mount not actually visible at the expected `Path` (container_root + share.export_path) inside the container.
 - WebUI "apply" fails with permission errors on subdirectories → numeric UIDs don't match across the host/container boundary, or the DAC cap is absent.
 - Ganesha fails to start with dbus/socket errors → the entrypoint dbus launch didn't produce `/run/dbus/system_bus_socket` in time (rare; the readiness loop helps), or the package was not present in an old image.
 - Kerberos principal / hostname mismatches → missing `--uts=host` (or `uts: host` in compose) and/or keytab principals that don't match the name the container sees.

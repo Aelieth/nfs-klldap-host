@@ -1,4 +1,9 @@
 //! Generate sssd.conf, krb5.conf, ganesha.conf and per-share exports.
+//!
+//! Share export layout: container_path_for (root + export_path) supplies the real
+//! filesystem Path= for Ganesha VFS; export_path (or its /name default) also supplies
+//! the client-visible Pseudo path. This enables a single root-level bind mount at
+//! storage.container_root (commonly /export) with rich subtrees under it.
 
 use std::fs;
 use std::path::Path;
@@ -434,7 +439,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
 
     for (i, share) in cfg.shares.iter().enumerate() {
         let export_id = derive_export_id(&share.name, 1000 + (i as u16 * 10));
-        let path = cfg.container_path_for(share);
+        let path = cfg.container_path_for(share); // follows export_path (rich subtree or /name)
         let default_pseudo = format!("/{}", share.name);
         let pseudo = share.export_path.as_deref().unwrap_or(&default_pseudo);
         let default_sec = &cfg.ganesha.default_security;

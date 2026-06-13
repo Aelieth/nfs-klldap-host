@@ -21,7 +21,9 @@ services:
       - DAC_READ_SEARCH
 
     volumes:
-      - /media/SSD-01:/export:rw
+      # Single root-level bind of the host parent dir is the stable model (avoids EOPNOTSUPP).
+      # host_path entries in config stay as real host paths; Ganesha + UI use container_root + export_path.
+      - /media/:/export:rw
       - ./config:/config:rw
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 

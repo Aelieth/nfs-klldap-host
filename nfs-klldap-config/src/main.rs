@@ -128,7 +128,7 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
         println!("shares:   {}", cfg.shares.len());
         for s in &cfg.shares {
             println!(
-                "  - {} → host:{}  container:{}",
+                "  - {} → host:{}  container(internal):{}",
                 s.name,
                 s.host_path.display(),
                 cfg.container_path_for(s)

@@ -1,9 +1,16 @@
 //! Generate sssd.conf, krb5.conf, ganesha.conf and per-share exports.
 //!
-//! Share export layout: container_path_for (root + export_path) supplies the real
-//! filesystem Path= for Ganesha VFS; export_path (or its /name default) also supplies
-//! the client-visible Pseudo path. This enables a single root-level bind mount at
-//! storage.container_root (commonly /export) with rich subtrees under it.
+//! Share export layout:
+//! - container_path_for now returns the *internal* container location. When storage.host_root
+//!   is set it is auto-derived as container_root + (host_path with host_root prefix removed).
+//!   This value supplies the real filesystem Path= for Ganesha VFS and the FsManager
+//!   translations (permission tree).
+//! - export_path (or its /name default) supplies the client-visible Pseudo path (external).
+//!   This can be set independently (shortened) in the Shares editor for nicer client mounts
+//!   while the internal stays correct for the bind.
+//!
+//! This enables a single root-level bind mount at storage.container_root (commonly /export)
+//! with rich subtrees under it, plus flexible external naming.
 
 use std::fs;
 use std::path::Path;
@@ -439,9 +446,9 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
 
     for (i, share) in cfg.shares.iter().enumerate() {
         let export_id = derive_export_id(&share.name, 1000 + (i as u16 * 10));
-        let path = cfg.container_path_for(share); // follows export_path (rich subtree or /name)
+        let path = cfg.container_path_for(share); // internal (host_root-derived when set, else export_path /name)
         let default_pseudo = format!("/{}", share.name);
-        let pseudo = share.export_path.as_deref().unwrap_or(&default_pseudo);
+        let pseudo = share.export_path.as_deref().unwrap_or(&default_pseudo); // external (can differ / be short)
         let default_sec = &cfg.ganesha.default_security;
         let sec = share.security.as_deref().unwrap_or(default_sec);
         let access = if share.rw.unwrap_or(true) { "RW" } else { "RO" };

@@ -38,6 +38,18 @@ pub struct NfsKlldapConfig {
 pub struct StorageSection {
     #[serde(default = "default_container_root")]
     pub container_root: String,
+    /// For the recommended single-root bind model (host parent dir bound to container_root, e.g.
+    /// `- /media/:/export`). The host-side source directory of that bind.
+    /// When set, per-share internal container locations (for Ganesha Path= and the WebUI
+    /// permission tree / FsManager translations) are *auto-derived* as:
+    ///   internal = container_root + (share.host_path with this host_root prefix removed)
+    /// This lets `export_path` (editable in System Settings → Shares) be used for external /
+    /// client Pseudo paths (and can be shortened) while the internal FS view stays correct
+    /// and independent.
+    /// When absent or empty, legacy behavior is used (export_path or /<name> drives the
+    /// container location too).
+    #[serde(default)]
+    pub host_root: Option<String>,
 }
 
 fn default_container_root() -> String {
@@ -295,12 +307,19 @@ pub struct Share {
     /// Independent of container bind layout. The WebUI privileged operations (fs.rs/privileged.rs)
     /// and allow-listing continue to key exclusively off host_path values.
     pub host_path: PathBuf,
-    /// Optional explicit subtree path under storage.container_root.
-    /// Used for both the Ganesha EXPORT.Path (the real location inside the container) and
-    /// the NFSv4 Pseudo path (what clients mount as server:/this-path).
-    /// Defaults (via validation) to "/" + name. With a single root bind (e.g. host /media/ → /export)
-    /// set values such as "/HDD-RAID/media" so Ganesha sees Path=/export/HDD-RAID/media while the
-    /// host_path on disk can live at the corresponding location under the bound parent.
+    /// Optional explicit subtree / name under storage.container_root (or, when storage.host_root
+    /// is set, used *only* for the client-visible NFS Pseudo path).
+    ///
+    /// Editable in System Settings → Shares as the "Export Path" field (for external access /
+    /// shortening the client mount point, e.g. server:/movies instead of server:/HDD-RAID/movies).
+    ///
+    /// - When storage.host_root is set: export_path controls only the external Pseudo (and the
+    ///   NFS mount hint cards). The real container location for Ganesha Path= and the permission
+    ///   tree is *auto-derived* from host_path + host_root + container_root (see StorageSection).
+    /// - When host_root is absent: legacy behavior (export_path or "/{name}" also drives the
+    ///   internal container path).
+    ///
+    /// Defaults (via validation) to "/" + name when absent.
     pub export_path: Option<String>,
     pub security: Option<String>,
     pub rw: Option<bool>,

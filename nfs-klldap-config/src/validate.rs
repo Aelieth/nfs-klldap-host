@@ -146,6 +146,11 @@ impl NfsKlldapConfig {
         if self.storage.container_root.trim().is_empty() {
             self.storage.container_root = "/export".to_string();
         }
+        // Normalize host_root (the bound source prefix for auto internal_path derivation).
+        // Empty → None so container_path_for falls back cleanly.
+        if self.storage.host_root.as_deref().is_some_and(|v| v.trim().is_empty()) {
+            self.storage.host_root = None;
+        }
 
         // Validate + derive per-share + uniqueness
         let mut seen = HashSet::new();
@@ -165,10 +170,13 @@ impl NfsKlldapConfig {
                     share.name
                 )));
             }
-            // Derive export_path if missing. This value now drives *both*:
-            // - the NFSv4 Pseudo path clients see (unchanged), and
-            // - the container-visible Ganesha Path (container_root joined with export_path).
-            // The default ("/" + name) preserves exact prior behavior for simple/legacy configs.
+            // Derive export_path if missing. With storage.host_root set this value is used
+            // *only* for the client-visible NFS Pseudo (external / "Export Path" in the Shares
+            // editor). The real container location (Ganesha Path + FsManager translation for
+            // the Share Permissions page) is auto-derived from host_path + host_root +
+            // container_root (see container_path_for and StorageSection.host_root docs).
+            // When host_root is absent we fall back to the classic behavior (export_path also
+            // supplies the internal sub-path). The "/" + name default preserves prior behavior.
             if share.export_path.is_none() {
                 share.export_path = Some(format!("/{}", share.name));
             }
@@ -322,6 +330,10 @@ impl NfsKlldapConfig {
                 self.storage.container_root = t.to_string();
             }
         }
+        if let Ok(v) = std::env::var("NFS_KLLDAP_STORAGE_HOST_ROOT") {
+            let t = v.trim();
+            self.storage.host_root = if t.is_empty() { None } else { Some(t.to_string()) };
+        }
 
         // [ganesha]
         if let Ok(v) = std::env::var("NFS_KLLDAP_GANESHA_DEFAULT_SECURITY") {
@@ -382,11 +394,51 @@ impl NfsKlldapConfig {
     }
 
     pub fn container_path_for(&self, share: &Share) -> String {
-        // The container-visible location for this share's tree (used for Ganesha Path= and
-        // for the WebUI FsManager host->container translation). With a single root-level
-        // bind (host parent:/export) this is container_root joined with the share's export_path
-        // (which may encode a rich subtree such as "/HDD-RAID/media").
+        // Returns the *internal* container-visible location for this share's tree.
+        // This is used for:
+        // - Ganesha EXPORT.Path (the real FS directory the VFS FSAL opens)
+        // - FsManager host_path → container path translation (permission tree, apply chown/chmod,
+        //   build_tree, list_children, etc. in the Share Permissions UI)
+        //
+        // Single-root bind model (recommended):
+        //   When storage.host_root is set (e.g. "/media" for a bind source:/media/ target:/export),
+        //   the location is auto-derived exactly as:
+        //     internal = container_root + (share.host_path with the bound source (host_root) prefix removed)
+        //   This keeps the internal view stable/sane regardless of what the user sets for
+        //   export_path (which can now be a short name used only for the client Pseudo / external).
+        //
+        // Legacy / no host_root:
+        //   Falls back to the previous behavior: container_root + (export_path or "/{name}").
+        //
+        // The derivation is intentionally *not* stored in the Share or [[shares]] TOML; it is
+        // computed on demand from the current [storage] + the share's host_path so the admin
+        // cannot accidentally desync the internal mapping by editing export_path in the UI.
         let root = self.storage.container_root.trim_end_matches('/');
+
+        // Try host_root-based auto derivation first (when configured for the single-bind model).
+        if let Some(hr) = &self.storage.host_root {
+            let hr_trim = hr.trim_end_matches('/');
+            let hp = share.host_path.to_string_lossy();
+            let hp_trim = hp.trim_end_matches('/');
+
+            if !hr_trim.is_empty() && hp_trim.starts_with(hr_trim) {
+                // Compute the suffix after the bound host prefix (the "host_path with the
+                // bound source prefix removed").
+                let rel = hp_trim.strip_prefix(hr_trim).unwrap_or("");
+                let rel = rel.trim_start_matches('/');
+                let sub = if rel.is_empty() {
+                    String::new()
+                } else {
+                    format!("/{}", rel)
+                };
+                return format!("{}{}", root, sub);
+            }
+            // If host_path does not start with host_root, fall through to legacy (export_path)
+            // so mixed or transitional configs continue to work.
+        }
+
+        // Legacy path (or host_root not usable for this share): container_root + export (or /name).
+        // This value drives both the Ganesha Path and the UI container translation.
         let ep_owned: String = share
             .export_path
             .as_deref()

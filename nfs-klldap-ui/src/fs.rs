@@ -1,5 +1,10 @@
 //! FsManager: allow-list (host_path from shares), host<->container path translation, WalkDir-based chown/chmod.
 //! Policy: follow_links(false), never descend symlinks, numeric ids only, refuse 0/set*id. Non-rec = dir+immediate files.
+//!
+//! Host<->container translation now supports storage.host_root for auto-deriving the internal
+//! container location (container_root + (host_path with bound host_root prefix removed)) so that
+//! the "Share Permissions" tree and applies are independent of the (editable) share.export_path
+//! used for external Pseudo names.
 
 #![deny(clippy::unwrap_used)]
 
@@ -235,12 +240,19 @@ impl FsManager {
             .map_err(|e| format!("apply failed: {}", e))
     }
 
-    /// host_path (from config/UI) → real path inside the container for the matching share.
-    /// The container base is derived from storage.container_root + the share's export_path
-    /// (see NfsKlldapConfig::container_path_for). The relative suffix under host_path is appended
-    /// unchanged. This supports both the classic flat "/export/<name>" layout and the new
-    /// single-root-bind model (host /media/ → /export with rich export_path subtrees such as
-    /// "/HDD-RAID/media").
+    /// host_path (from config/UI, logical/admin namespace) → real path inside the container
+    /// for the matching share.
+    ///
+    /// The container base comes from NfsKlldapConfig::container_path_for (which, when
+    /// storage.host_root is set, auto-derives as container_root + (host_path with the bound
+    /// host_root prefix removed) — exactly the "internal_path" formula). The relative suffix
+    /// under the share's host_path is appended unchanged.
+    ///
+    /// This supports:
+    /// - Classic layout.
+    /// - Single-root bind (host /media/ → /export) where export_path can be a short external
+    ///   name for Pseudo while the internal (for Ganesha Path + permission tree) stays
+    ///   correct via the host_root derivation.
     ///
     /// The single bind-mount contract used by both apply_permissions and build_tree.
     ///
@@ -517,6 +529,7 @@ mod tests {
         crate::config::Config {
             storage: nfs_klldap_config::StorageSection {
                 container_root: container_root.to_string(),
+                host_root: None,
             },
             shares: vec![nfs_klldap_config::Share {
                 name: share_name.to_string(),
@@ -686,6 +699,38 @@ mod tests {
             .host_path_to_container_path(Path::new("/media/HDD-RAID/media/videos/4k"))
             .unwrap();
         assert_eq!(sub, PathBuf::from("/export/HDD-RAID/media/videos/4k"));
+    }
+
+    #[test]
+    fn host_path_to_container_path_uses_host_root_derivation_independent_of_export_path() {
+        // With host_root set (the bound source prefix), container_path_for (and thus
+        // host→container translation) must auto-derive the internal location from
+        // host_path even when export_path is a short "external" name (for Pseudo only).
+        // internal = container_root + (host_path with host_root prefix removed)
+        let mut cfg = make_test_config_with_container_mapping(
+            "/media/HDD-RAID/media",
+            "/export",
+            "media",
+        );
+        cfg.storage.host_root = Some("/media".to_string());
+        // Short export for external/client Pseudo; should *not* affect the internal container dir.
+        cfg.shares[0].export_path = Some("/short-movies".to_string());
+
+        let fs = FsManager::new(cfg);
+
+        // Translation must still land on the real location dictated by the bind + host_path.
+        let root = fs
+            .host_path_to_container_path(Path::new("/media/HDD-RAID/media"))
+            .unwrap();
+        assert_eq!(root, PathBuf::from("/export/HDD-RAID/media"));
+
+        let sub = fs
+            .host_path_to_container_path(Path::new("/media/HDD-RAID/media/videos/4k"))
+            .unwrap();
+        assert_eq!(sub, PathBuf::from("/export/HDD-RAID/media/videos/4k"));
+
+        // A path under a different top-level (still under host_root) also works.
+        // (host_path prefix match happens on the share's host_path first.)
     }
 
     #[test]

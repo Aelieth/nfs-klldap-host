@@ -1,10 +1,10 @@
 //! FsManager: allow-list (host_path from shares), host<->container path translation, WalkDir-based chown/chmod.
 //! Policy: follow_links(false), never descend symlinks, numeric ids only, refuse 0/set*id. Non-rec = dir+immediate files.
 //!
-//! Host<->container translation now supports storage.host_root for auto-deriving the internal
-//! container location (container_root + (host_path with bound host_root prefix removed)) so that
-//! the "Share Permissions" tree and applies are independent of the (editable) share.export_path
-//! used for external Pseudo names.
+//! Host<->container translation derives the internal container base from the share's own
+//! host_path (first directory component after "/" is the implicit per-share bind root) +
+//! container_root. This keeps the permission tree and applies independent of the (editable)
+//! share.export_path that is used only for the external/client Pseudo name.
 
 #![deny(clippy::unwrap_used)]
 
@@ -243,16 +243,14 @@ impl FsManager {
     /// host_path (from config/UI, logical/admin namespace) → real path inside the container
     /// for the matching share.
     ///
-    /// The container base comes from NfsKlldapConfig::container_path_for (which, when
-    /// storage.host_root is set, auto-derives as container_root + (host_path with the bound
-    /// host_root prefix removed) — exactly the "internal_path" formula). The relative suffix
+    /// The container base comes from NfsKlldapConfig::container_path_for, which derives the
+    /// internal location from the share's own host_path (first directory component after the
+    /// leading "/" is the implicit per-share bind root) + container_root. The relative suffix
     /// under the share's host_path is appended unchanged.
     ///
-    /// This supports:
-    /// - Classic layout.
-    /// - Single-root bind (host /media/ → /export) where export_path can be a short external
-    ///   name for Pseudo while the internal (for Ganesha Path + permission tree) stays
-    ///   correct via the host_root derivation.
+    /// This supports classic layouts and the flexible single-root (or multi-root) bind model
+    /// where export_path (editable in Shares) can be a short external name for Pseudo while
+    /// the internal location for Ganesha Path + the permission tree is computed from host_path.
     ///
     /// The single bind-mount contract used by both apply_permissions and build_tree.
     ///
@@ -529,7 +527,6 @@ mod tests {
         crate::config::Config {
             storage: nfs_klldap_config::StorageSection {
                 container_root: container_root.to_string(),
-                host_root: None,
             },
             shares: vec![nfs_klldap_config::Share {
                 name: share_name.to_string(),
@@ -599,7 +596,9 @@ mod tests {
 
         // Logical host_path (what the admin puts in nfs-klldap.conf and sees in the UI)
         // is completely different from the container-visible location.
-        let logical_host_path = "/host/media/mydata";
+        // Under the implicit first-dir rule the tail after the first dir must produce the
+        // container subdir where the real tree was created ("mydata").
+        let logical_host_path = "/hostroot/mydata";
         let cfg = make_test_config_with_container_mapping(
             logical_host_path,
             container_root.to_str().unwrap(),
@@ -636,18 +635,18 @@ mod tests {
         std::fs::write(real_root.join("file.txt"), "data").unwrap();
         std::fs::create_dir_all(real_root.join("subdir")).unwrap();
 
-        // Make the translation land on the real_root we created:
-        // container_root = real_root, share.name = "" (push of empty does nothing harmful here
-        // because we only read the root itself in this test).
-        let mut cfg = make_test_config_with_shares(&[real_root.to_str().unwrap()]);
+        // Make the translation land on the real_root we created (identity for this test).
+        // With the implicit first-dir derivation we register a simple one-segment host_path
+        // whose strip produces empty tail, and point container_root at the real dir we populated.
+        let logical = Path::new("/rootbind");
+        let mut cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
         cfg.storage.container_root = real_root.to_string_lossy().into_owned();
-        // Force the single share's name to empty so container_root + name == real_root
         cfg.shares[0].name.clear();
 
         let fs = FsManager::new(cfg);
 
         let node = fs
-            .build_tree(real_root)
+            .build_tree(logical)
             .expect("root should resolve (translation is identity in this setup)");
         assert_eq!(node.children.len(), 1);
         assert_eq!(node.children[0].name, "subdir");
@@ -657,19 +656,22 @@ mod tests {
 
     #[test]
     fn host_path_to_container_path_exact_and_subpath() {
+        // Under the implicit first-dir rule the container subpath comes from the tail
+        // of host_path after its first directory component. We choose a host_path whose
+        // tail produces the "myshare" sub that the test previously obtained via name/export.
         let cfg = make_test_config_with_container_mapping(
-            "/host/data",
+            "/hostroot/myshare",
             "/container/root",
             "myshare",
         );
         let fs = FsManager::new(cfg);
 
         // Exact share root
-        let root = fs.host_path_to_container_path(Path::new("/host/data")).unwrap();
+        let root = fs.host_path_to_container_path(Path::new("/hostroot/myshare")).unwrap();
         assert_eq!(root, PathBuf::from("/container/root/myshare"));
 
         // Subdirectory
-        let sub = fs.host_path_to_container_path(Path::new("/host/data/sub/dir")).unwrap();
+        let sub = fs.host_path_to_container_path(Path::new("/hostroot/myshare/sub/dir")).unwrap();
         assert_eq!(sub, PathBuf::from("/container/root/myshare/sub/dir"));
     }
 
@@ -702,17 +704,20 @@ mod tests {
     }
 
     #[test]
-    fn host_path_to_container_path_uses_host_root_derivation_independent_of_export_path() {
-        // With host_root set (the bound source prefix), container_path_for (and thus
-        // host→container translation) must auto-derive the internal location from
-        // host_path even when export_path is a short "external" name (for Pseudo only).
-        // internal = container_root + (host_path with host_root prefix removed)
+    fn host_path_to_container_path_derives_internal_from_first_dir_of_host_path() {
+        // The internal container location is derived from the share's own host_path:
+        // first directory component after "/" is the implicit per-share bind root,
+        // the remainder is the tail under container_root. export_path (short name for
+        // Pseudo / external) must not affect it.
+        //
+        // Example from the request:
+        //   host_path = "/media/HDD-RAID/media" → first="/media", tail="HDD-RAID/media"
+        //   internal  = "/export/HDD-RAID/media" even if export_path is something short.
         let mut cfg = make_test_config_with_container_mapping(
             "/media/HDD-RAID/media",
             "/export",
             "media",
         );
-        cfg.storage.host_root = Some("/media".to_string());
         // Short export for external/client Pseudo; should *not* affect the internal container dir.
         cfg.shares[0].export_path = Some("/short-movies".to_string());
 
@@ -729,8 +734,7 @@ mod tests {
             .unwrap();
         assert_eq!(sub, PathBuf::from("/export/HDD-RAID/media/videos/4k"));
 
-        // A path under a different top-level (still under host_root) also works.
-        // (host_path prefix match happens on the share's host_path first.)
+        // Another share with a different first dir (multiple host roots) would work the same way.
     }
 
     #[test]
@@ -749,10 +753,11 @@ mod tests {
         std::fs::create_dir_all(real.join("a")).unwrap();
         std::fs::create_dir_all(real.join("b/c")).unwrap(); // deeper, should not appear
 
-        let cfg = make_test_config_with_container_mapping("/host/s1", container_root.to_str().unwrap(), "s1");
+        // Tail after first dir must be "s1" to land on the real dir we created under container_root.
+        let cfg = make_test_config_with_container_mapping("/hostroot/s1", container_root.to_str().unwrap(), "s1");
         let fs = FsManager::new(cfg);
 
-        let kids = fs.list_children(Path::new("/host/s1")).expect("allowed");
+        let kids = fs.list_children(Path::new("/hostroot/s1")).expect("allowed");
         assert_eq!(kids.len(), 2);
         let names: Vec<_> = kids.iter().map(|n| n.name.as_str()).collect();
         assert!(names.contains(&"a"));
@@ -774,11 +779,13 @@ mod tests {
             let _ = ufs::symlink("d1", root.join("link_to_d1"));
         }
 
-        let cfg = make_test_config_with_shares(&[root.to_str().unwrap()]);
+        let logical = Path::new("/rootbind");
+        let cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
         let mut cfg = cfg;
         cfg.storage.container_root = root.to_string_lossy().into_owned();
         cfg.shares[0].name.clear();
-        // name="" + export_path=None falls back to container_root + "" (identity) in container_path_for.
+        // One-segment host_path whose first-dir strip gives empty tail → internal identity
+        // with the container_root we set (the real dir tree we created for the test).
 
         let fs = FsManager::new(cfg);
 
@@ -805,11 +812,13 @@ mod tests {
         std::fs::write(root.join("top.txt"), "a").unwrap();
         std::fs::write(root.join("subdir/nested.txt"), "b").unwrap();
 
-        let cfg = make_test_config_with_shares(&[root.to_str().unwrap()]);
+        let logical = Path::new("/rootbind");
+        let cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
         let mut cfg = cfg;
         cfg.storage.container_root = root.to_string_lossy().into_owned();
         cfg.shares[0].name.clear();
-        // name="" + export_path=None falls back to container_root + "" (identity) in container_path_for.
+        // One-segment host_path whose first-dir strip gives empty tail → internal identity
+        // with the container_root we set (the real dir tree we created for the test).
 
         let fs = FsManager::new(cfg);
 

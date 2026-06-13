@@ -6,7 +6,7 @@ Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+de
 
 | Contract                  | Rule |
 |---------------------------|------|
-| `host_path` vs container  | UI + allow-list + ownership use the host-visible absolute path (unchanged). Ganesha Path and container-visible location = `storage.container_root` joined with share `export_path` (defaults to `/<name>` for compat). A single root bind (host parent dir → /export) is the stable long-term pattern. Translation only at the syscall boundary (`FsManager`). |
+| `host_path` vs container  | UI + allow-list + ownership use the host-visible absolute path (unchanged). The internal container location (Ganesha Path + FsManager translations) is derived as `storage.container_root` + (tail of share `host_path` after its first directory component). `export_path` (defaults to `/<name>`) controls *only* the client-visible Pseudo path. First dir component of `host_path` acts as the implicit per-share bind root. A single (or multiple) root bind(s) (host parent(s) → /export) is the stable pattern. Translation only at the syscall boundary (`FsManager`). |
 | Hostname                  | `get_consistent_hostname()` (hostname(1) == /proc/sys/kernel/hostname). Mismatch → loud diagnostic. `--uts=host` is the normal way to get the real name. |
 | Realm                     | Strictly required. No silent EXAMPLE.COM. Auto-derived from ldap_uri host or NFS_KLLDAP_KERBEROS_REALM. |
 | ldap_uri                  | DNS hostname only (IP rejected). Forward+reverse DNS required. Keytab: `nfs/<short>@REALM` and `nfs/<fqdn>@REALM` when they differ (`--uts=host`). |
@@ -17,7 +17,7 @@ Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+de
 
 ```yaml
 volumes:
-  - /media/:/export:rw                # Recommended: single root-level bind of the host parent. host_path values live under it; Ganesha paths use container_root + export_path.
+  - /media/:/export:rw                # Recommended: single (or multiple) root-level bind(s) of host parent dir(s). First dir of each share's host_path is the implicit bind root; tail becomes subpath under container_root. export_path is only for the client Pseudo (can be short).
   - ./config:/config:rw               # nfs-klldap.conf (single source)
   - ./krb5.keytab:/etc/krb5.keytab:ro
 ```

@@ -49,7 +49,6 @@
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
         <label>ldap_uri<br><input name="ldap_uri" value="{{ ldap_uri }}" style="width:100%" placeholder="ldaps://kllap.example.com:6360"></label>
         <label>storage.container_root<br><input name="storage_container_root" value="{{ storage_container_root }}" style="width:100%"></label>
-        <label>storage.host_root (single-bind source, e.g. /media for /media/:/export)<br><input name="storage_host_root" value="{{ storage_host_root }}" style="width:100%" placeholder="/media"></label>
         <label>server.hostname (optional)<br><input name="server_hostname" id="server_hostname" value="{{ server_hostname }}" style="width:100%" {% if !override_server_hostname %}disabled{% endif %}>
             <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_server_hostname" value="true" {% if override_server_hostname %}checked{% endif %}> override (persist explicit)</span>
         </label>
@@ -121,7 +120,7 @@
     <div style="display:flex;gap:6px;margin-bottom:1px;font-size:0.62em;color:var(--text-muted);font-weight:600;">
         <span style="width:115px">Name <span style="color:var(--warning-amber-text)">*</span></span>
         <span style="flex:1">Host Path <span style="color:var(--warning-amber-text)">*</span></span>
-        <span style="width:130px" title="Export Path (external): client-visible Pseudo / NFS mount path (server:/this). With host_root set in Core this can be shortened independently; the internal container location for Ganesha Path and the permission tree is auto-derived from host_path + host_root + container_root.">Export Path</span>
+        <span style="width:130px" title="Export Path (external): client-visible Pseudo / NFS mount path (server:/this). Can be a short/friendly name. The internal container location (Ganesha Path + permission tree) is derived from the first directory component of the share's Host Path (the implicit bind root) + the tail under container_root. This lets export_path be shortened independently.">Export Path</span>
         <span style="width:90px" title="per-share Kerberos security (leave default to use [ganesha] default_security)">Krb Security</span>
         <span style="width:65px">Access</span>
         <span style="width:50px" title="root_squash (instead of no_root_squash)">Root Squash</span>
@@ -134,7 +133,7 @@
         <div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
             <input name="share_name_{{ row.idx }}" value="{{ row.name }}" style="width:115px" placeholder="name">
             <input name="share_host_{{ row.idx }}" value="{{ row.host_path }}" style="flex:1" placeholder="host_path">
-            <input name="share_export_{{ row.idx }}" value="{{ row.export_path }}" style="width:130px" placeholder="e.g. /HDD-RAID/foo or /short" title="Export Path for external/Pseudo (shortenable when host_root is set)">
+            <input name="share_export_{{ row.idx }}" value="{{ row.export_path }}" style="width:130px" placeholder="e.g. /HDD-RAID/foo or /short" title="Export Path (external/Pseudo) — short/friendly client name. Internal container location is derived from Host Path first dir + tail (see column header).">
             <select name="share_security_{{ row.idx }}" style="width:90px">
                 <option value="">default</option>
                 <option value="krb5p" {% if row.security == "krb5p" %}selected{% endif %}>krb5p</option>
@@ -182,7 +181,7 @@ function addShareRow() {
     d.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;';
     d.innerHTML = `<input name="share_name_${idx}" placeholder="name" style="width:115px">
                    <input name="share_host_${idx}" placeholder="host_path" style="flex:1">
-                   <input name="share_export_${idx}" placeholder="export_path (external/Pseudo)" style="width:130px" title="Export Path for client Pseudo (can be short when host_root set in Core)">
+                   <input name="share_export_${idx}" placeholder="export_path (external/Pseudo)" style="width:130px" title="Export Path (external/Pseudo) — short/friendly client name. Internal container location is derived from Host Path first dir + tail under container_root.">
                    <select name="share_security_${idx}" style="width:90px">
                      <option value="">default</option>
                      <option value="krb5p">krb5p</option>

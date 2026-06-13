@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(c.effective_realm(), "TEST");
         assert!(c.sssd.port.is_some());
         assert_eq!(c.shares.len(), 2);
-        assert_eq!(c.container_path_for(&c.shares[0]), "/export/movies");
+        assert_eq!(c.container_path_for(&c.shares[0]), "/export/SSD/movies");
     }
 
     #[test]

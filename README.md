@@ -65,7 +65,11 @@ ldap_uri = "ldaps://kllap.example.com:6360"                     # LLDAP default 
 
 [storage]
 container_root = "/export"                                      # Anchor for Ganesha paths + UI container translation.
-host_root = "/media"                                            # Recommended with single-root bind (source of the bind, e.g. for /media/:/export). Enables auto-derived *internal* container locations (container_root + (host_path minus host_root prefix)) so share export_path can be used/shortened for external client Pseudo only. The Share Permissions tree stays sane.
+# No explicit host_root key. The first directory component of each share's host_path
+# (e.g. "media" from "/media/NVME-RAID/nvme") is the implicit per-share bind root.
+# The remainder of the host_path becomes the subpath under container_root.
+# This lets the editable "Export Path" (in [[shares]] or the Shares editor) be used
+# purely for the external/client Pseudo name while the internal stays correct.
 
 [management]
 # webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins
@@ -94,7 +98,7 @@ default_security = "krb5p"                                      # security, krb5
 # [[shares]]                                                    # shares section sample, shares can be added / edited via system settings
 # name = "movies"
 # host_path = "/home/user/nfs-data/movies"
-# export_path = "/movies"                                       # optional; with host_root set this is the *external* client Pseudo (short name OK). The internal container dir (Ganesha Path + permission tree) is auto-derived from host_path + host_root + container_root (see [storage]). Derives to /<name> when absent.
+# export_path = "/movies"                                       # optional; the *external* client Pseudo (short/friendly name OK). The internal container dir (Ganesha Path + permission tree) is auto-derived from host_path (its first dir component is the implicit bind root) + container_root. Derives to /<name> when absent.
 # security = "krb5p"                                            # optional per-share override (krb5p|krb5i|krb5); default from [ganesha]
 # rw = true                                                     # default RW; set false for RO
 ```

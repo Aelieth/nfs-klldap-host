@@ -21,10 +21,12 @@ services:
       - DAC_READ_SEARCH
 
     volumes:
-      # Single root-level bind of the host parent dir is the stable model (avoids EOPNOTSUPP).
-      # Set storage.host_root (e.g. "/media") in nfs-klldap.conf (or System Settings Core) so internal
-      # container locations (Ganesha Path + permission tree) are auto-derived from host_path. This lets
-      # per-share export_path (editable in Shares) be used/shortened for the external client Pseudo only.
+      # Single (or multiple) root-level bind(s) of host parent dir(s) is the stable model.
+      # The first directory component of each share's host_path is treated as the implicit
+      # per-share bind root (e.g. host_path starting with /media or /mount). The tail after
+      # that component becomes the subpath under container_root (/export). This lets the
+      # per-share "Export Path" (editable in System Settings → Shares) be used/shortened
+      # purely for the external/client Pseudo while the internal stays correct for the bind(s).
       - /media/:/export:rw
       - ./config:/config:rw
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro

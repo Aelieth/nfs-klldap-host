@@ -1,16 +1,16 @@
 //! Generate sssd.conf, krb5.conf, ganesha.conf and per-share exports.
 //!
 //! Share export layout:
-//! - container_path_for now returns the *internal* container location. When storage.host_root
-//!   is set it is auto-derived as container_root + (host_path with host_root prefix removed).
-//!   This value supplies the real filesystem Path= for Ganesha VFS and the FsManager
-//!   translations (permission tree).
+//! - container_path_for returns the *internal* container location, derived from the share's
+//!   own host_path (first directory component after "/" is the implicit per-share bind root)
+//!   + container_root. This supplies the real filesystem Path= for Ganesha VFS and the
+//!     FsManager translations (permission tree).
 //! - export_path (or its /name default) supplies the client-visible Pseudo path (external).
-//!   This can be set independently (shortened) in the Shares editor for nicer client mounts
-//!   while the internal stays correct for the bind.
+//!   This is the value editable as "Export Path" in the Shares editor; it can be shortened
+//!   for nicer client mounts while the internal location stays correct for the bind(s).
 //!
-//! This enables a single root-level bind mount at storage.container_root (commonly /export)
-//! with rich subtrees under it, plus flexible external naming.
+//! This enables (multiple) root-level bind mount(s) at storage.container_root (commonly /export)
+//! with rich or heterogeneous subtrees under it, plus flexible external naming.
 
 use std::fs;
 use std::path::Path;
@@ -446,7 +446,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
 
     for (i, share) in cfg.shares.iter().enumerate() {
         let export_id = derive_export_id(&share.name, 1000 + (i as u16 * 10));
-        let path = cfg.container_path_for(share); // internal (host_root-derived when set, else export_path /name)
+        let path = cfg.container_path_for(share); // internal (derived from share's host_path first dir + tail)
         let default_pseudo = format!("/{}", share.name);
         let pseudo = share.export_path.as_deref().unwrap_or(&default_pseudo); // external (can differ / be short)
         let default_sec = &cfg.ganesha.default_security;

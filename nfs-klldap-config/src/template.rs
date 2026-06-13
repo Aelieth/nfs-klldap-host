@@ -29,8 +29,7 @@ pub fn generate_default_template() -> String {
 ldap_uri = "ldaps://kllap.example.com:6360"                     # Required - LLDAP default secure port. 3890 for LLDAP unencrypted (389, 636 for standard)
 
 [storage]
-container_root = "/export"                                      # Required - Ganesha Path base. Bind a single host parent dir to this target (recommended, e.g. /media/:/export in compose).
-host_root = "/media"                                            # Optional but recommended with single-root bind: the *source* of the bind. Enables auto-derived internal container paths (container_root + (host_path with host_root prefix removed)) so export_path (in [[shares]]) can be a short external name only.
+container_root = "/export"                                      # Required - Ganesha Path base + UI translation root. Bind one or more host parent dirs to this target (e.g. /media/:/export and/or /mount/:/export). The first directory component of each share's host_path is treated as the implicit per-share bind root; the tail becomes the subpath under container_root. This lets export_path (below) be a short external name only.
 
 [management]
 # webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins

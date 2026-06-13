@@ -143,7 +143,7 @@ This project exports real directories from the Docker *host* via Ganesha VFS ins
 
 ### Core contract (unchanged but worth repeating)
 - `host_path` values in `nfs-klldap.conf` (and the UI) are **absolute paths on the Docker host** (unchanged by this layout).
-- Inside the container the data for a share is visible at `storage.container_root` + the share's `export_path` (defaults to `/<name>`). With a single root bind (e.g. host `/media/` → container `/export`) set `export_path = "/HDD-RAID/media"` etc. so Ganesha Path and the FS tree are clean native subpaths.
+- Inside the container the data for a share is visible at the *internal* location derived from `storage.container_root` + (tail of the share's `host_path` after its first directory component). The first dir component of `host_path` acts as the implicit per-share bind root (e.g. host `/media/NVME-RAID/nvme` → internal `/export/NVME-RAID/nvme`). `export_path` (editable in the Shares section; defaults to `/<name>`) is used *only* for the client-visible Pseudo path and can be a short/friendly name independently of the internal layout.
 - Translation (host_path → real container path for chown/chmod/readdir) happens only at the syscall boundary (`FsManager` + `privileged.rs`).
 - **Numeric UID/GID identity must be identical** on the host and inside the container for the bind-mounted trees. Do **not** use `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts. The on-disk owners written by the WebUI (and seen by NFS clients) are the raw numbers from LLDAP `uidNumber`/`gidNumber`.
 
@@ -156,7 +156,7 @@ cap_add:
   - SYS_ADMIN
   - DAC_READ_SEARCH
 volumes:
-  - /media/:/export:rw                # single root-level bind of the host parent (recommended for stability; avoids EOPNOTSUPP on overlays)
+  - /media/:/export:rw                # single (or multiple) root-level bind(s) of host parent dir(s). First dir component of each share's host_path is the implicit per-share bind root; the tail is the subpath under /export. export_path only controls the external Pseudo (can be short).
   - ./config:/config:rw
   - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 ```
@@ -221,7 +221,7 @@ If you have existing `sync = true` lines in `nfs-klldap.conf` they will continue
 - `read_ahead_kb` on the host block devices that back your shares remains a host-side tuning knob (outside the container) for sequential read workloads.
 
 ### Common failure modes and fixes
-- "No such file or directory" when mounting a VFS export, or Ganesha failing to traverse the tree → missing `SYS_ADMIN`/`DAC_READ_SEARCH` or the bind mount not actually visible at the expected `Path` (container_root + share.export_path) inside the container.
+- "No such file or directory" when mounting a VFS export, or Ganesha failing to traverse the tree → missing `SYS_ADMIN`/`DAC_READ_SEARCH` or the bind mount not actually visible at the expected internal Path (container_root + tail of host_path after its first dir component) inside the container. (export_path is only for the Pseudo; check that the first dir of the share's host_path matches the bind source you mounted.)
 - WebUI "apply" fails with permission errors on subdirectories → numeric UIDs don't match across the host/container boundary, or the DAC cap is absent.
 - Ganesha fails to start with dbus/socket errors → the entrypoint dbus launch didn't produce `/run/dbus/system_bus_socket` in time (rare; the readiness loop helps), or the package was not present in an old image.
 - Kerberos principal / hostname mismatches → missing `--uts=host` (or `uts: host` in compose) and/or keytab principals that don't match the name the container sees.

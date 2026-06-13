@@ -34,7 +34,6 @@ struct SettingsTemplate {
     // Raw TOML remains the full-fidelity path (comments, order, advanced fields).
     ldap_uri: String,
     storage_container_root: String,
-    storage_host_root: String,
     server_hostname: String,
     sssd_bind_dn: String,
     // bind_pw is *never* prefilled into the form (security + source visibility; raw textarea already shows it).
@@ -91,7 +90,6 @@ pub(crate) struct StructuredSettingsForm {
 
     // [storage]
     storage_container_root: Option<String>,
-    storage_host_root: Option<String>,
 
     // [server]
     server_hostname: Option<String>,
@@ -278,7 +276,6 @@ fn build_settings_template(
             .found_nfs_principals,
         ldap_uri: cfg.ldap_uri,
         storage_container_root: cfg.storage.container_root.clone(),
-        storage_host_root: cfg.storage.host_root.clone().unwrap_or_default(),
         server_hostname: cfg.server.hostname.clone().unwrap_or_default(),
         sssd_bind_dn: cfg.sssd.ldap_default_bind_dn.clone(),
         sssd_search_base: cfg.sssd.ldap_search_base.clone().unwrap_or_default(),
@@ -410,9 +407,6 @@ fn apply_structured_form_to_config(
     }
     if let Some(v) = form.storage_container_root.clone() {
         cfg.storage.container_root = v;
-    }
-    if let Some(v) = form.storage_host_root.clone() {
-        cfg.storage.host_root = if v.trim().is_empty() { None } else { Some(v) };
     }
     if form.override_server_hostname.unwrap_or(false) {
         if let Some(v) = form.server_hostname.clone() {
@@ -555,20 +549,6 @@ fn apply_structured_form_to_toml_doc(
         let item = doc.entry("storage").or_insert(toml_edit::table());
         if let Some(tbl) = item.as_table_mut() {
             tbl["container_root"] = toml_edit::value(v.clone());
-        }
-    }
-    if let Some(v) = &form.storage_host_root {
-        let item = doc.entry("storage").or_insert(toml_edit::table());
-        if let Some(tbl) = item.as_table_mut() {
-            if v.trim().is_empty() {
-                let _ = tbl.remove("host_root");
-            } else {
-                tbl["host_root"] = toml_edit::value(v.clone());
-            }
-        }
-    } else if let Some(item) = doc.get_mut("storage") {
-        if let Some(tbl) = item.as_table_mut() {
-            let _ = tbl.remove("host_root");
         }
     }
     if form.override_server_hostname.unwrap_or(false) {

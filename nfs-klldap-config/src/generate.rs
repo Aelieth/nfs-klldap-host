@@ -387,15 +387,23 @@ fn write_ganesha_main(
     let content = format!(
         r#"NFS_CORE_PARAM {{
     Protocols = 4;
+    Bind_addr = 0.0.0.0;
+    NFS_Port = 2049;
     Enable_UDP = false;
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
 }}
 
+DIRECTORY_SERVICES {{
+    Idmapped_user_time_validity = 600;
+    Idmapped_group_time_validity = 600;
+}}
+
 NFSV4 {{
-    Lease_Lifetime = 60;
-    Grace_Period = 3;
+    RecoveryBackend = fs;
+    Lease_Lifetime = 20;
+    Grace_Period = 20;
 }}
 
 EXPORT_DEFAULTS {{

@@ -127,7 +127,7 @@ fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
         }
     }
 
-    // Port connectivity test using nc (we now guarantee nmap-ncat is installed in the image)
+    // Port connectivity test using nc (we now guarantee netcat-openbsd (or equivalent) is installed in the image)
     let nc = Command::new("timeout")
         .args(["4", "nc", "-w", "3", "-zv", host, &port.to_string()])
         .output();

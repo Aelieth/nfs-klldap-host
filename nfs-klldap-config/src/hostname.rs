@@ -222,7 +222,7 @@ pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsist
                 secondary: None,
                 reason: format!("Failed to execute `hostname` command: {}", e),
                 remediation:
-                    "The container image must contain the `hostname` binary (installed via microdnf in the Fedora minimal base image in the Dockerfile)."
+                    "The container image must contain the `hostname` binary (provided by the runtime image packages; see Dockerfile)."
                         .to_string(),
                 detected_docker_default: false,
             });

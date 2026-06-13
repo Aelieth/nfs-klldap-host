@@ -89,8 +89,10 @@ dist: build-cross
 # -----------------------------------------------------------------------------
 # Container Image
 # -----------------------------------------------------------------------------
-# Base image is Fedora minimal (see Dockerfile ARG FEDORA_VERSION=44 by default;
-# supports 43+ and provides native nfs-ganesha for x86_64 + aarch64).
+# Runtime base is debian:13-slim (see Dockerfile). Build stages (chef/planner/builder)
+# remain on fedora-minimal:${FEDORA_VERSION} (ARG, default 44) for reliable Rust
+# cross-compilation and cargo-chef. Ganesha for runtime is pulled from Debian backports
+# (9.x series) for closer config option parity with prior Fedora-packaged Ganesha.
 .PHONY: docker
 docker:
 	@echo "==> Building container image for linux/amd64/v2..."

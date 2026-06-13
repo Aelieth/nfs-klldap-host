@@ -171,7 +171,7 @@ volumes:
 `--privileged` works but is overkill and not recommended. The two caps above are the minimal practical set for this workload.
 
 ### dbus-daemon and rpcbind (new in the image)
-- Ganesha on recent Fedora packages (including the native `nfs-ganesha` in F44) expects a D-Bus system bus (typically `/run/dbus/system_bus_socket`). The image now installs `dbus-daemon` and the entrypoint launches `dbus-daemon --system --nofork &` early, before `ganesha.nfsd`.
+- Ganesha (the packaged build used in this image, whether from Fedora or the Debian backports 9.x channel) expects a D-Bus system bus (typically `/run/dbus/system_bus_socket`). The image installs `dbus` (providing dbus-daemon) and the entrypoint launches `dbus-daemon --system --nofork &` early, before `ganesha.nfsd`.
 - `rpcbind` is also installed and started (best-effort). For pure NFSv4 (`Protocols = 4`) it is not strictly required, but:
   - Some tooling, `showmount`, older clients, or status scripts still reference the portmapper.
   - The user request explicitly asked for it "for good measure."
@@ -216,7 +216,7 @@ Per-export `Sync = true;` (or false) has been observed to be rejected or treated
 If you have existing `sync = true` lines in `nfs-klldap.conf` they will continue to produce the `Sync = true;` line until you re-save the share via the structured editor (or manually remove the key).
 
 ### SELinux, volume labeling, and other host notes
-- On enforcing hosts the `nfs-ganesha-selinux` package is already installed in the image. You will often still need the `:Z` (or `:z`) suffix on bind-mounted data volumes so that the content is labeled appropriately for container use (`container_file_t` etc.).
+- On enforcing SELinux hosts (e.g. Atomic Fedora), bind-mounted data volumes often still need the `:Z` (or `:z`) suffix so that the content is labeled appropriately for container use (`container_file_t` etc.). The image itself no longer includes a Fedora SELinux subpackage (runtime is Debian-based).
 - If you see denials related to dbus, rpc, or file labeling, the two caps + relabeling resolve the large majority of cases. Full `--privileged` is a last resort.
 - `read_ahead_kb` on the host block devices that back your shares remains a host-side tuning knob (outside the container) for sequential read workloads.
 

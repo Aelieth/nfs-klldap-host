@@ -50,23 +50,42 @@ RUN set -euxo pipefail && \
     cp "target/$TARGET/release/nfs-klldap-config" "target/$TARGET/release/nfs-klldap-startup" "target/$TARGET/release/nfs-klldap-ui" /output/ && \
     (strip /output/nfs-klldap-config /output/nfs-klldap-startup /output/nfs-klldap-ui || true)
 
-FROM registry.fedoraproject.org/fedora-minimal:${FEDORA_VERSION}
+# Runtime stage: Debian 13-slim for smaller image size and Ganesha packaging stability.
+# The build stages above remain on Fedora (reliable rustup + cargo-chef + cross-compilation
+# for the three Rust binaries). Only the final stage base + packages change.
+# Ganesha is deliberately taken from trixie-backports (9.x series) to provide configuration
+# option / parser compatibility as close as possible to the Ganesha currently packaged in
+# fedora-minimal:44 (targeting the 9.x line up to ~9.4 per guidance; avoids main 6.5 divergence
+# and bleeding-edge custom packages).
+FROM debian:13-slim
 
 LABEL maintainer="Aelieth" \
       version="0.8.6"
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 
-# Runtime: Ganesha (native Fedora packages) + SSSD + Kerberos + tools.
-# dbus-daemon: required by Ganesha (system bus for its internal features/monitoring).
-RUN microdnf install -y --assumeyes \
-        nfs-ganesha nfs-ganesha-vfs nfs-ganesha-utils nfs-ganesha-selinux \
-        sssd sssd-ldap openldap-clients \
-        krb5-workstation krb5-libs \
-        inotify-tools procps-ng iproute nmap-ncat \
-        strace less nano libcap ca-certificates sudo hostname openssl \
-        dbus-daemon rpcbind \
-    && microdnf clean all
+# Runtime: Ganesha (from backports for 9.x config parity) + SSSD + Kerberos + tools.
+# dbus + rpcbind for Ganesha prerequisites (system bus + portmapper compatibility).
+# libnss-sss + nsswitch adjustment for exact SSSD NSS behavior parity with current Fedora image.
+# Build stage (above) stays on Fedora; runtime deliberately uses Debian 13-slim.
+RUN apt-get update && \
+    echo 'deb http://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends -t trixie-backports \
+        nfs-ganesha nfs-ganesha-vfs && \
+    apt-get install -y --no-install-recommends \
+        sssd sssd-ldap libnss-sss \
+        krb5-user \
+        dbus rpcbind \
+        inotify-tools procps iproute2 netcat-openbsd \
+        ldap-utils \
+        strace less nano ca-certificates openssl sudo hostname && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    # Ensure NSS integration for SSSD matches the effective state provided by the current
+    # Fedora sssd packaging (so getent, Ganesha VFS uidmapping, and WebUI see LDAP users).
+    sed -i 's/^\(passwd:.*\)/\1 sss/' /etc/nsswitch.conf && \
+    sed -i 's/^\(group:.*\)/\1 sss/' /etc/nsswitch.conf && \
+    sed -i 's/^\(shadow:.*\)/\1 sss/' /etc/nsswitch.conf || true
 
 RUN mkdir -p \
     /etc/ganesha /etc/ganesha/exports.d /var/log/ganesha \

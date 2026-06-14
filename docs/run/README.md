@@ -204,7 +204,7 @@ NFS_CORE_PARAM {
 
 Each generated per-share EXPORT block (in `exports.d/NN-name.conf`) also includes:
 - `Protocols = 4; Transports = TCP;` (defensive per-export)
-- An explicit locking `CLIENT { Clients = *; Access_Type = RW|RO; SecType = krb5p|...; }` using the share's `rw` / `security` settings (or defaults). This pins the security flavor for the export and makes the "kerberos-only, no AUTH_SYS fallback" policy unambiguous for strict v4 deployments. Additional CLIENT blocks for specific nets can be added manually if needed (they survive only until the next regeneration from the TOML source of truth).
+- A `CLIENT{ clients = *; access_type = RW|RO; }` block using the share's `rw` setting from the Shares editor in System Settings (RW or RO). This is the mechanism that applies the access type selected in the WebUI. The generated CLIENT is intentionally minimal (full wildcard). SecType stays at the EXPORT level. Additional CLIENT blocks for specific nets can be added manually if needed (they are overwritten on next regeneration from the TOML source of truth).
 
 ### SELinux, volume labeling, and other host notes
 - On enforcing SELinux hosts (e.g. Atomic Fedora), bind-mounted data volumes often still need the `:Z` (or `:z`) suffix so that the content is labeled appropriately for container use (`container_file_t` etc.). The image itself no longer includes a Fedora SELinux subpackage (runtime is Debian-based).

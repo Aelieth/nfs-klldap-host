@@ -479,24 +479,29 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             .map(|v| format!("    PrefWrite = {};\n", v))
             .unwrap_or_default();
 
+        // CLIENT block provides the access_type (RO/RW) selected in the Shares editor.
+        // We use the minimal wildcard form for this version (clients = *).
+        let client_block = format!(
+            "    CLIENT{{\n        clients = *;\n        access_type = {};\n    }}\n\n",
+            access
+        );
+
         let block = format!(
             r#"# Generated from nfs-klldap.conf share "{}" (strict NFSv4+ only; no NFSv3)
 EXPORT {{
     Export_Id = {};
     Path = {};
     Pseudo = {};
-    Access_Type = {};
     SecType = {};
     Protocols = 4;
     Transports = TCP;
     Squash = {};
-{pref_read_line}{pref_write_line}
-    FSAL {{
+{pref_read_line}{pref_write_line}{client_block}    FSAL {{
         Name = VFS;
     }}
 }}
 "#,
-            share.name, export_id, path, pseudo, access, sec, squash, pref_read_line = pref_read_line, pref_write_line = pref_write_line
+            share.name, export_id, path, pseudo, sec, squash, pref_read_line = pref_read_line, pref_write_line = pref_write_line, client_block = client_block
         );
 
         let filename = fragment_basename(i, &share.name);
@@ -580,11 +585,11 @@ mod tests {
             frag
         );
         assert!(frag.contains("EXPORT {"));
-        assert!(frag.contains("Access_Type = RW;"));
+        assert!(frag.contains("access_type = RW;"), "CLIENT access_type should be RW");
+        assert!(frag.contains("CLIENT{"), "CLIENT block should be present (tight brace per generator)");
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(frag.contains("Protocols = 4;"));
-        assert!(!frag.contains("CLIENT {"));
-        // (omitted PrefRead case covered indirectly)
+        assert!(!frag.contains("Access_Type ="), "Access_Type must not be at EXPORT level anymore");
     }
 
     #[test]
@@ -644,10 +649,11 @@ mod tests {
             frag
         );
         assert!(frag.contains("EXPORT {"));
-        assert!(frag.contains("Access_Type = RW;"));
+        assert!(frag.contains("access_type = RW;"), "CLIENT access_type should be RW");
+        assert!(frag.contains("CLIENT{"), "CLIENT block should be present (tight brace per generator)");
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(frag.contains("Protocols = 4;"));
-        assert!(!frag.contains("CLIENT {"));
+        assert!(!frag.contains("Access_Type ="), "Access_Type must not be at EXPORT level anymore");
     }
 
     #[test]
@@ -696,9 +702,10 @@ mod tests {
             s
         });
 
-        assert!(frag.contains("Access_Type = RO;"), "EXPORT Access_Type should be RO");
+        assert!(frag.contains("access_type = RO;"), "CLIENT access_type should be RO");
+        assert!(frag.contains("CLIENT{"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5i;"), "EXPORT SecType should be krb5i");
         assert!(frag.contains("Protocols = 4;"));
-        assert!(!frag.contains("CLIENT {"));
+        assert!(!frag.contains("Access_Type ="), "Access_Type must not be at EXPORT level anymore");
     }
 }

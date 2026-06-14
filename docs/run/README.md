@@ -206,15 +206,6 @@ Each generated per-share EXPORT block (in `exports.d/NN-name.conf`) also include
 - `Protocols = 4; Transports = TCP;` (defensive per-export)
 - An explicit locking `CLIENT { Clients = *; Access_Type = RW|RO; SecType = krb5p|...; }` using the share's `rw` / `security` settings (or defaults). This pins the security flavor for the export and makes the "kerberos-only, no AUTH_SYS fallback" policy unambiguous for strict v4 deployments. Additional CLIENT blocks for specific nets can be added manually if needed (they survive only until the next regeneration from the TOML source of truth).
 
-### The "Sync" option (Ganesha 5+/VFS)
-Per-export `Sync = true;` (or false) has been observed to be rejected or treated as invalid/unknown by recent Ganesha + the VFS FSAL on Fedora-packaged builds. The underlying Linux filesystem already provides the desired durability semantics for most workloads.
-
-- New default in the model: `sync` omitted from `[[shares]]` → generator emits **no** `Sync =` line in the EXPORT block.
-- You can still force the Ganesha-level behavior by setting `sync = true` (or `false`) under a share in raw TOML, or by using the "Sync" checkbox in the WebUI structured editor (the checkbox now means "Force Ganesha-level Sync"; the label and generated fragments reflect the new semantics).
-- The WebUI card and tree labels show "default" for omitted shares (instead of the old "sync").
-
-If you have existing `sync = true` lines in `nfs-klldap.conf` they will continue to produce the `Sync = true;` line until you re-save the share via the structured editor (or manually remove the key).
-
 ### SELinux, volume labeling, and other host notes
 - On enforcing SELinux hosts (e.g. Atomic Fedora), bind-mounted data volumes often still need the `:Z` (or `:z`) suffix so that the content is labeled appropriately for container use (`container_file_t` etc.). The image itself no longer includes a Fedora SELinux subpackage (runtime is Debian-based).
 - If you see denials related to dbus, rpc, or file labeling, the two caps + relabeling resolve the large majority of cases. Full `--privileged` is a last resort.

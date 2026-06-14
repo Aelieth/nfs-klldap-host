@@ -319,9 +319,6 @@ pub struct Share {
     pub security: Option<String>,
     pub rw: Option<bool>,
     pub squash: Option<String>,
-    /// Whether to use synchronous writes for this share (default true for safety).
-    /// If None or true, the key is typically omitted from nfs-klldap.conf (default behavior).
-    pub sync: Option<bool>,
     /// Cache profile selector (preferred for UI-driven shares).
     /// Written as `cache_profile = "..."` inside [[shares]].
     /// When present and valid, the generator resolves it to Ganesha PrefRead/PrefWrite
@@ -350,7 +347,6 @@ impl Default for Share {
             security: None,
             rw: Some(true),
             squash: Some("no_root_squash".to_string()),
-            sync: None,
             cache_profile: Some("Default".to_string()),
             pref_read: None,
             pref_write: None,

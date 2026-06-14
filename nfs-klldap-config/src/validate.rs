@@ -165,14 +165,31 @@ impl NfsKlldapConfig {
                     share.name
                 )));
             }
-            // Derive export_path if missing. This value is used *only* for the client-visible
-            // NFS Pseudo (the "Export Path" editable in the Shares editor). The real internal
-            // container location (Ganesha Path + FsManager / permission tree) is always
-            // derived from the share's own host_path (first directory component as the
-            // implicit bind root + tail) + container_root. See container_path_for.
-            // The "/" + name default preserves prior behavior.
-            if share.export_path.is_none() {
-                share.export_path = Some(format!("/{}", share.name));
+            // Always ensure export_path is present and absolute (leading /). This value is
+            // used *only* for the client-visible NFS Pseudo (the "Export Path" editable in
+            // the Shares editor). Ganesha requires Pseudo paths to be absolute; a relative
+            // value produces "A Pseudo path must be an absolute path" at startup and the
+            // export is ignored. We coerce user input (from raw TOML or the Shares form)
+            // here so that (a) the in-memory Share after any load is always correct, and
+            // (b) the Shares editor + generator always see a usable absolute value.
+            // The real internal container location is always derived independently via
+            // container_path_for from host_path + container_root (see that fn).
+            {
+                let ep = share.export_path.take();
+                let normalized = match ep {
+                    Some(v) => {
+                        let t = v.trim();
+                        if t.is_empty() {
+                            format!("/{}", share.name)
+                        } else if t.starts_with('/') {
+                            t.to_string()
+                        } else {
+                            format!("/{}", t)
+                        }
+                    }
+                    None => format!("/{}", share.name),
+                };
+                share.export_path = Some(normalized);
             }
             // Validate per-share security if provided
             if let Some(ref sec) = share.security {

@@ -448,19 +448,18 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         let export_id = derive_export_id(&share.name, 1000 + (i as u16 * 10));
         let path = cfg.container_path_for(share); // internal (derived from share's host_path first dir + tail)
         let default_pseudo = format!("/{}", share.name);
-        let pseudo = share.export_path.as_deref().unwrap_or(&default_pseudo); // external (can differ / be short)
+        let pseudo_raw = share.export_path.as_deref().unwrap_or(&default_pseudo); // external (can differ / be short)
+        // Ganesha requires Pseudo to be absolute. validate_and_derive now guarantees it,
+        // but keep a cheap defensive absolutize for any direct construction or legacy raw.
+        let pseudo = if pseudo_raw.starts_with('/') {
+            pseudo_raw.to_string()
+        } else {
+            format!("/{}", pseudo_raw)
+        };
         let default_sec = &cfg.ganesha.default_security;
         let sec = share.security.as_deref().unwrap_or(default_sec);
         let access = if share.rw.unwrap_or(true) { "RW" } else { "RO" };
         let squash = share.squash.as_deref().unwrap_or("no_root_squash");
-
-        // Only emit Sync line when explicitly set (Ganesha 5+/VFS often treats Sync as invalid/undesired for host FS VFS exports).
-        // Default (None) = omit; admin can force via sync = true/false in [[shares]] or the WebUI checkbox.
-        let sync_line = if let Some(s) = share.sync {
-            format!("    Sync = {};\n", if s { "true" } else { "false" })
-        } else {
-            String::new()
-        };
 
         // Resolve Pref* from cache_profile or raw pref_* fallback.
         let (pref_r, pref_w) = if let Some(cp) = &share.cache_profile {
@@ -491,13 +490,13 @@ EXPORT {{
     Protocols = 4;
     Transports = TCP;
     Squash = {};
-{sync_line}{pref_read_line}{pref_write_line}
+{pref_read_line}{pref_write_line}
     FSAL {{
         Name = VFS;
     }}
 }}
 "#,
-            share.name, export_id, path, pseudo, access, sec, squash, sync_line = sync_line, pref_read_line = pref_read_line, pref_write_line = pref_write_line
+            share.name, export_id, path, pseudo, access, sec, squash, pref_read_line = pref_read_line, pref_write_line = pref_write_line
         );
 
         let filename = fragment_basename(i, &share.name);
@@ -544,7 +543,6 @@ mod tests {
                 host_path: "/media/stream".into(),
                 cache_profile: None, // force direct pref_read path (legacy numeric in source)
                 pref_read: Some(16 * 1024 * 1024),
-                sync: Some(true), // explicit to exercise Sync emission + keep assertion
                 ..Default::default()
             }],
             ..Default::default()
@@ -582,7 +580,6 @@ mod tests {
             frag
         );
         assert!(frag.contains("EXPORT {"));
-        assert!(frag.contains("Sync = true;"));
         assert!(frag.contains("Access_Type = RW;"));
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(frag.contains("Protocols = 4;"));
@@ -605,7 +602,6 @@ mod tests {
                 host_path: "/media/movies4k".into(),
                 cache_profile: Some("Read - Heavy".to_string()),
                 // No raw pref_*; profile supplies.
-                sync: Some(true), // explicit to exercise Sync emission + keep assertion
                 ..Default::default()
             }],
             ..Default::default()
@@ -648,7 +644,6 @@ mod tests {
             frag
         );
         assert!(frag.contains("EXPORT {"));
-        assert!(frag.contains("Sync = true;"));
         assert!(frag.contains("Access_Type = RW;"));
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(frag.contains("Protocols = 4;"));

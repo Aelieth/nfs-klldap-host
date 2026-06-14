@@ -49,7 +49,7 @@ pub(crate) struct DirNode {
 
 /// Display row for a share card on the Share Permissions page.
 /// Precomputes the client-visible NFS path (using the effective keytab hostname)
-/// and compact labels for the new attributes (RW/RO, squash, sync, cache profile).
+/// and compact labels for the attributes (RW/RO, squash, cache profile).
 #[derive(Debug, Clone)]
 struct ShareInfo {
     pub name: String,
@@ -60,8 +60,6 @@ struct ShareInfo {
     pub access: String,
     /// "no-squash" or "root-squash"
     pub squash_label: String,
-    /// "sync", "async", or "default" (when sync: None in source — generator omits the key)
-    pub sync_label: String,
     pub cache_profile: String,
 }
 
@@ -199,7 +197,7 @@ pub(crate) async fn index(
     // Build display-oriented share cards. Centralizes:
     // - Proper client NFS path using the same keytab_hostname the rest of the system uses
     //   (so it matches what clients should put in `server:/path` mount commands).
-    // - Compact labels for RW/RO, root-squash/no, sync/async, and cache profile.
+    // - Compact labels for RW/RO, root-squash/no, and cache profile.
     // This also eliminates the previous ad-hoc `ep` logic + double-slash bug in the template.
     let server = &state.keytab_hostname;
     let display_shares: Vec<ShareInfo> = state
@@ -233,12 +231,6 @@ pub(crate) async fn index(
                 "no-squash".to_string()
             };
 
-            let sync_label = match s.sync {
-                Some(true) => "sync".to_string(),
-                Some(false) => "async".to_string(),
-                None => "default".to_string(),
-            };
-
             let cache_profile = s
                 .cache_profile
                 .clone()
@@ -252,7 +244,6 @@ pub(crate) async fn index(
                 host_path: s.host_path.display().to_string(),
                 access,
                 squash_label,
-                sync_label,
                 cache_profile,
             }
         })

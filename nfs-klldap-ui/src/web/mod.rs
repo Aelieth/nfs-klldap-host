@@ -371,8 +371,8 @@ ldap_default_authtok = "sekret"
         let app = router(state);
 
         // Save share with empty export field (optional pseudo path).
-        // Include the new cache_profile field so collect + apply exercise the profile path.
-        let body = "share_name_0=data&share_host_0=%2Ftmp%2Fdata&share_export_0=&share_rw_0=true&share_sync_0=on&share_cache_profile_0=Default";
+        // Include the cache_profile field so collect + apply exercise the profile path.
+        let body = "share_name_0=data&share_host_0=%2Ftmp%2Fdata&share_export_0=&share_rw_0=true&share_cache_profile_0=Default";
         let req = Request::builder()
             .method("POST")
             .uri("/settings/save-shares")
@@ -487,8 +487,8 @@ default_security = "krb5p"
         let app = router(state);
 
         // Add two shares (exercises multiple [[shares]] and "comments must not appear after last share").
-        let body = "share_name_0=shares&share_host_0=%2Fvar%2Fhome%2Flocal%2FProjects%2Ftest-nfs-home%2Fshares%2F&share_rw_0=true&share_sync_0=on&share_cache_profile_0=Default\
-&share_name_1=documents&share_host_1=%2Fvar%2Fhome%2Flocal%2FProjects%2Ftest-nfs-home%2Fdocuments%2F&share_rw_0=true&share_sync_0=on&share_cache_profile_0=Default";
+        let body = "share_name_0=shares&share_host_0=%2Fvar%2Fhome%2Flocal%2FProjects%2Ftest-nfs-home%2Fshares%2F&share_rw_0=true&share_cache_profile_0=Default\
+&share_name_1=documents&share_host_1=%2Fvar%2Fhome%2Flocal%2FProjects%2Ftest-nfs-home%2Fdocuments%2F&share_rw_0=true&share_cache_profile_0=Default";
         let req = Request::builder()
             .method("POST")
             .uri("/settings/save-shares")
@@ -866,8 +866,8 @@ default_security = "krb5p"
             "share card must include Host: label"
         );
         assert!(
-            body_str.contains("rw · no-squash · default · default"),
-            "share card must render the compact rw/squash/sync/cache labels (using defaults from test config; sync defaults to 'default' label when omitted)"
+            body_str.contains("rw · no-squash · default"),
+            "share card must render the compact rw/squash/cache labels (using defaults from test config)"
         );
 
         // /dir-meta should succeed and return a fragment containing the path

@@ -143,7 +143,6 @@ struct ShareFormRow {
     security: Option<String>,
     rw: bool,
     root_squash: bool,
-    sync: bool,
     cache_profile: Option<String>,
     pref_read: Option<String>,  // legacy numeric support (still parsed if posted)
     pref_write: Option<String>,
@@ -159,7 +158,6 @@ struct ShareTemplateRow {
     security: String,
     rw: bool,
     root_squash: bool,
-    sync: bool,
     cache_profile: String,
 }
 
@@ -188,6 +186,9 @@ fn get_explicit_str(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> O
 
 /// Export path for the shares editor: only when `export_path` is explicit in raw [[shares]].
 /// Derived defaults from validate_and_derive (e.g. `/{name}`) must not appear in the form.
+/// The returned value is normalized to be absolute (leading /) so that even if the
+/// on-disk raw TOML contains a relative value the form pre-fills a correct Pseudo path;
+/// saving the shares form will then persist the absolute form.
 fn share_export_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize) -> String {
     let Some(arr) = doc.get("shares").and_then(|s| s.as_array_of_tables()) else {
         return String::new();
@@ -198,10 +199,18 @@ fn share_export_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize) -> Strin
     if tbl.get("export_path").is_none() {
         return String::new();
     }
-    tbl.get("export_path")
+    let raw = tbl.get("export_path")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let t = raw.trim();
+    if t.is_empty() {
+        String::new()
+    } else if t.starts_with('/') {
+        t.to_string()
+    } else {
+        format!("/{}", t)
+    }
 }
 
 /// Map legacy direct pref_read/pref_write numeric values (from older nfs-klldap.conf)
@@ -253,8 +262,6 @@ fn build_settings_template(
             security: s.security.clone().unwrap_or_default(),
             rw: s.rw.unwrap_or(true),
             root_squash: s.squash.as_deref() == Some("root_squash"),
-            // For UI: treat None (new omit-by-default) as visually unchecked. Checking the box forces explicit true.
-            sync: s.sync.unwrap_or(false),
             cache_profile: s
                 .cache_profile
                 .clone()
@@ -344,8 +351,6 @@ fn collect_shares_from_structured_form(
                     .map(|v| v.trim() == "true")
                     .unwrap_or(true);
                 let root_squash = extra.contains_key(&format!("share_root_squash_{}", idx));
-                // Checkbox presence means "Force Sync (explicit true)". Absence for a row = omit (new generator default).
-                let sync = extra.contains_key(&format!("share_sync_{}", idx));
                 let cache_profile = extra
                     .get(&format!("share_cache_profile_{}", idx))
                     .cloned()
@@ -366,7 +371,6 @@ fn collect_shares_from_structured_form(
                     security,
                     rw,
                     root_squash,
-                    sync,
                     cache_profile,
                     pref_read,
                     pref_write,
@@ -389,8 +393,6 @@ fn collect_shares_from_structured_form(
             } else {
                 None // omit default so it doesn't get written to raw toml
             },
-            // Only Some(true) when the "Force Sync" checkbox was submitted; otherwise None (omit in generator).
-            sync: if r.sync { Some(true) } else { None },
             cache_profile: r.cache_profile,
             pref_read: r.pref_read.and_then(|s| s.trim().parse::<u64>().ok()),
             pref_write: r.pref_write.and_then(|s| s.trim().parse::<u64>().ok()),
@@ -760,10 +762,6 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
             if sq != "no_root_squash" {
                 t["squash"] = toml_edit::value(sq.clone());
             }
-        }
-        // Write explicit sync only when the user made a choice (Some). None = omit (generator default for Ganesha 5+/VFS safety).
-        if let Some(sv) = s.sync {
-            t["sync"] = toml_edit::value(sv);
         }
         // Write cache_profile (the new primary field from the Cache Profile dropdown).
         // This is what gets stored in [[shares]] for the organized profile-driven path.

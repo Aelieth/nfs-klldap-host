@@ -104,6 +104,8 @@ mod tests {
             "NFS_KLLDAP_WEBUI_TLS",
             "NFS_KLLDAP_WEBUI_TLS_CERT",
             "NFS_KLLDAP_WEBUI_TLS_KEY",
+            // Debug toggles (bare names, not under the NFS_KLLDAP_ prefix)
+            "GANESHA_DEBUG",
         ];
         vars.iter().map(|&k| EnvGuard::remove(k)).collect()
     }
@@ -200,6 +202,16 @@ mod tests {
         // (Enable_UDP / Enable_NLM / Enable_RQUOTA are intentionally emitted as explicit = false
         //  in the current proven-safe NFS_CORE_PARAM; only the classic port + Transports keys are omitted.)
 
+        // GANESHA_DEBUG not set (clean env) => LOG block must be absent (centralized debug off by default)
+        assert!(
+            !main.contains("LOG {"),
+            "LOG debug block must not be present when GANESHA_DEBUG != TRUE"
+        );
+        assert!(
+            !main.contains("IDMAPPER = FULL_DEBUG"),
+            "component debug must be absent by default"
+        );
+
         let exports: Vec<_> = fs::read_dir(&paths.exports_dir)
             .unwrap()
             .map(|e| e.unwrap().file_name())
@@ -217,6 +229,54 @@ mod tests {
                 s
             });
         assert!(frag.contains("SecType = krb5i") || frag.contains("data"));
+    }
+
+    #[test]
+    fn ganesha_debug_log_block_emitted_only_when_env_true() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let _guards = clean_core_env();
+
+        // 1) Default (no GANESHA_DEBUG) - already covered by generate_produces_expected_artifacts,
+        // but double-check a fresh generation here too for the specific block.
+        let cfg = minimal_cfg();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = GenerationPaths {
+            sssd_conf: tmp.path().join("sssd.conf"),
+            krb5_conf: tmp.path().join("krb5.conf"),
+            ganesha_conf: tmp.path().join("ganesha.conf"),
+            exports_dir: tmp.path().join("exports.d"),
+        };
+        generate_all(&cfg, &paths).expect("generate default");
+        let main_default = fs::read_to_string(&paths.ganesha_conf).unwrap();
+        assert!(
+            !main_default.contains("LOG {"),
+            "debug LOG must be absent without GANESHA_DEBUG=TRUE"
+        );
+
+        // 2) With GANESHA_DEBUG=TRUE -> block must appear with exact keys
+        let _g = EnvGuard::set("GANESHA_DEBUG", "TRUE");
+        let cfg2 = minimal_cfg();
+        let tmp2 = tempfile::tempdir().unwrap();
+        let paths2 = GenerationPaths {
+            sssd_conf: tmp2.path().join("sssd.conf"),
+            krb5_conf: tmp2.path().join("krb5.conf"),
+            ganesha_conf: tmp2.path().join("ganesha.conf"),
+            exports_dir: tmp2.path().join("exports.d"),
+        };
+        generate_all(&cfg2, &paths2).expect("generate with debug");
+
+        let main_debug = fs::read_to_string(&paths2.ganesha_conf).unwrap();
+        assert!(
+            main_debug.contains("LOG {"),
+            "LOG block must be present when GANESHA_DEBUG=TRUE"
+        );
+        assert!(main_debug.contains("Default_Log_Level = DEBUG;"));
+        assert!(main_debug.contains("IDMAPPER = FULL_DEBUG;"));
+        assert!(main_debug.contains("FSAL = FULL_DEBUG;"));
+        assert!(main_debug.contains("NFS4 = FULL_DEBUG;"));
+        // Sanity: core config still there
+        assert!(main_debug.contains("Protocols = 4;"));
+        assert!(main_debug.contains("%include"));
     }
 
     #[test]

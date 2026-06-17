@@ -377,6 +377,12 @@ fn write_krb5_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
     Ok(())
 }
 
+fn ganesha_debug_enabled() -> bool {
+    std::env::var("GANESHA_DEBUG")
+        .map(|v| v.trim() == "TRUE")
+        .unwrap_or(false)
+}
+
 fn write_ganesha_main(
     cfg: &NfsKlldapConfig,
     out: &Path,
@@ -396,7 +402,7 @@ fn write_ganesha_main(
         })
         .collect();
 
-    let content = format!(
+    let mut content = format!(
         r#"NFS_CORE_PARAM {{
     Protocols = 4;
     Bind_addr = 0.0.0.0;
@@ -421,11 +427,30 @@ NFSV4 {{
 EXPORT_DEFAULTS {{
     SecType = {sec};
 }}
-
-{includes}"#,
+"#,
         sec = sec,
-        includes = includes,
     );
+
+    if ganesha_debug_enabled() {
+        content.push_str(
+            r#"LOG {
+    Default_Log_Level = DEBUG;
+    Components {
+        IDMAPPER = FULL_DEBUG;
+        FSAL = FULL_DEBUG;
+        NFS4 = FULL_DEBUG;
+    }
+}
+
+"#,
+        );
+    }
+
+    // Preserve the original (slightly odd) closing structure + includes for
+    // deterministic output and backward compatibility of emitted bytes when
+    // debug is not enabled.
+    content.push_str("}\n\n");
+    content.push_str(&includes);
 
     fs::write(out, content.as_bytes())?;
     Ok(())
@@ -482,7 +507,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         // CLIENT block provides the access_type (RO/RW) selected in the Shares editor.
         // We use the minimal wildcard form for this version (clients = *).
         let client_block = format!(
-            "    CLIENT{{\n        clients = *;\n        access_type = {};\n    }}\n\n",
+            "\n    CLIENT {{\n        Clients = *;\n        Access_type = {};\n    }}\n\n",
             access
         );
 
@@ -585,8 +610,8 @@ mod tests {
             frag
         );
         assert!(frag.contains("EXPORT {"));
-        assert!(frag.contains("access_type = RW;"), "CLIENT access_type should be RW");
-        assert!(frag.contains("CLIENT{"), "CLIENT block should be present (tight brace per generator)");
+        assert!(frag.contains("Access_type = RW;"), "CLIENT Access_type should be RW");
+        assert!(frag.contains("CLIENT {"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(frag.contains("Protocols = 4;"));
         assert!(!frag.contains("Access_Type ="), "Access_Type must not be at EXPORT level anymore");
@@ -649,8 +674,8 @@ mod tests {
             frag
         );
         assert!(frag.contains("EXPORT {"));
-        assert!(frag.contains("access_type = RW;"), "CLIENT access_type should be RW");
-        assert!(frag.contains("CLIENT{"), "CLIENT block should be present (tight brace per generator)");
+        assert!(frag.contains("Access_type = RW;"), "CLIENT Access_type should be RW");
+        assert!(frag.contains("CLIENT {"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(frag.contains("Protocols = 4;"));
         assert!(!frag.contains("Access_Type ="), "Access_Type must not be at EXPORT level anymore");
@@ -702,8 +727,8 @@ mod tests {
             s
         });
 
-        assert!(frag.contains("access_type = RO;"), "CLIENT access_type should be RO");
-        assert!(frag.contains("CLIENT{"), "CLIENT block should be present");
+        assert!(frag.contains("Access_type = RO;"), "CLIENT Access_type should be RO");
+        assert!(frag.contains("CLIENT {"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5i;"), "EXPORT SecType should be krb5i");
         assert!(frag.contains("Protocols = 4;"));
         assert!(!frag.contains("Access_Type ="), "Access_Type must not be at EXPORT level anymore");

@@ -60,14 +60,11 @@ RUN set -euxo pipefail && \
 FROM debian:13-slim
 
 LABEL maintainer="Aelieth" \
-      version="0.8.6"
+      version="0.8.x"
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 
-# Runtime: Ganesha (from backports for 9.x config parity) + SSSD + Kerberos + tools.
-# dbus + rpcbind for Ganesha prerequisites (system bus + portmapper compatibility).
-# libnss-sss + nsswitch adjustment for exact SSSD NSS behavior parity with current Fedora image.
-# Build stage (above) stays on Fedora; runtime deliberately uses Debian 13-slim.
+# Runtime: Ganesha (from backports for 9.x config parity)
 RUN apt-get update && \
     echo 'deb http://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list && \
     apt-get update && \

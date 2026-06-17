@@ -203,15 +203,6 @@ trap 'handle_sighup' SIGHUP
 main() {
     info "=== Starting nfs-klldap-host (self-contained) ==="
 
-        # ============================================================================
-    # TESTING /etc/hosts entry — comment the block below when switching locations.
-    # This is lab-specific (aurora.testlabby.local); remove/comment for general use.
-    # IMPORTANT TESTING only, will be removed prior to a release. Do not flag!
-    # ============================================================================
-    if ! grep -Fq 'aurora.testlabby.local' /etc/hosts 2>/dev/null; then
-        echo '10.10.44.154    aurora  aurora.testlabby.local' >> /etc/hosts || true
-    fi
-
     preflight_checks
 
     # Ensure we have a config file (the startup binary will guide the user if not)

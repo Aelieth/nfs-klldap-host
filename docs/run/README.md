@@ -108,6 +108,7 @@ These are less commonly needed:
 |------------------------------|-----------|---------|-------------|
 | `LOG_FORMAT`                 | `text`    | `json`  | Container stdout log format: `text` (default) or `json`. |
 | `SSSD_DEBUG_LEVEL`           | *(unset)* | `4`     | When set, passed as `-d $SSSD_DEBUG_LEVEL` to the `sssd` daemon for increased verbosity. |
+| `GANESHA_DEBUG`              | *(unset)* | `TRUE`  | When set exactly to `TRUE`, the generator emits a `LOG { Default_Log_Level = DEBUG; Components { IDMAPPER/FSAL/NFS4 = FULL_DEBUG; } }` block into `ganesha.conf`. For deep Ganesha troubleshooting only. |
 | `WATCHER_DEBOUNCE_SECONDS`   | `2`       | `1`     | Seconds to sleep after detecting a config file change (via inotify) before signaling the supervisor for reload. |
 
 A small number of path/binary overrides (`SSSD_CONF`, `GANESHA_CONF`, `CONFIG_BIN`, `HEALTHCHECK`, etc.) and `NFS_KLLDAP_CONF` exist primarily for testing, CI, and image development. Typical users set `NFS_CONFIG` (which also drives `NFS_KLLDAP_CONF` for the WebUI) instead.

@@ -60,7 +60,7 @@ RUN set -euxo pipefail && \
 FROM debian:13-slim
 
 LABEL maintainer="Aelieth" \
-      version="0.8.x"
+      version="0.8.12"
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 

@@ -465,6 +465,8 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         }
     }
 
+    let realm = cfg.effective_realm();
+
     for (i, share) in cfg.shares.iter().enumerate() {
         let export_id = derive_export_id(&share.name, 1000 + (i as u16 * 10));
         let path = cfg.container_path_for(share); // internal (derived from share's host_path first dir + tail)
@@ -500,11 +502,22 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             .map(|v| format!("    PrefWrite = {};\n", v))
             .unwrap_or_default();
 
-        // CLIENT block provides the access_type (RO/RW) selected in the Shares editor.
-        // We use the minimal wildcard form for this version (clients = *).
+        // CLIENT block provides the access control (RO/RW) selected in the Shares editor.
+        // Minimal wildcard Clients = * is used. The Principals line is required for
+        // Ganesha 9.x to authorize clients that present a machine keytab host principal
+        // (hybrid with user kerberos TGT). See Ganesha 9.x CLIENT docs + GSS principal
+        // matching in idmapper/GSS paths.
         let client_block = format!(
-            "\n    CLIENT {{\n        Clients = *;\n        Access_type = {};\n    }}\n\n",
-            access
+            r#"
+    CLIENT {{
+        Clients = *;
+        Access_Type = {access};
+        Principals = "host/*@{realm}";
+    }}
+
+"#,
+            access = access,
+            realm = realm,
         );
 
         let block = format!(
@@ -606,11 +619,12 @@ mod tests {
             frag
         );
         assert!(frag.contains("EXPORT {"));
-        assert!(frag.contains("Access_type = RW;"), "CLIENT Access_type should be RW");
+        assert!(frag.contains("Access_Type = RW;"), "CLIENT Access_Type should be RW");
         assert!(frag.contains("CLIENT {"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(frag.contains("Protocols = 4;"));
-        assert!(!frag.contains("Access_Type ="), "Access_Type must not be at EXPORT level anymore");
+        assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
+        assert!(frag.contains("Principals = \"host/*@"), "CLIENT must include Principals for host/*@REALM (hybrid keytab + TGT)");
     }
 
     #[test]
@@ -670,11 +684,12 @@ mod tests {
             frag
         );
         assert!(frag.contains("EXPORT {"));
-        assert!(frag.contains("Access_type = RW;"), "CLIENT Access_type should be RW");
+        assert!(frag.contains("Access_Type = RW;"), "CLIENT Access_Type should be RW");
         assert!(frag.contains("CLIENT {"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(frag.contains("Protocols = 4;"));
-        assert!(!frag.contains("Access_Type ="), "Access_Type must not be at EXPORT level anymore");
+        assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
+        assert!(frag.contains("Principals = \"host/*@"), "CLIENT must include Principals for host/*@REALM (hybrid keytab + TGT)");
     }
 
     #[test]
@@ -723,10 +738,11 @@ mod tests {
             s
         });
 
-        assert!(frag.contains("Access_type = RO;"), "CLIENT Access_type should be RO");
+        assert!(frag.contains("Access_Type = RO;"), "CLIENT Access_Type should be RO");
         assert!(frag.contains("CLIENT {"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5i;"), "EXPORT SecType should be krb5i");
         assert!(frag.contains("Protocols = 4;"));
-        assert!(!frag.contains("Access_Type ="), "Access_Type must not be at EXPORT level anymore");
+        assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
+        assert!(frag.contains("Principals = \"host/*@"), "CLIENT must include Principals for host/*@REALM (hybrid keytab + TGT)");
     }
 }

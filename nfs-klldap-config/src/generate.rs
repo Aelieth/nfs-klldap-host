@@ -446,10 +446,6 @@ EXPORT_DEFAULTS {{
         );
     }
 
-    // Preserve the original (slightly odd) closing structure + includes for
-    // deterministic output and backward compatibility of emitted bytes when
-    // debug is not enabled.
-    content.push_str("}\n\n");
     content.push_str(&includes);
 
     fs::write(out, content.as_bytes())?;

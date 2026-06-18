@@ -203,9 +203,7 @@ NFS_CORE_PARAM {
 - Other options (Transports, Bind_addr, Mountd_Port/NLM_Port/Rquota_Port, Enable_NLM, Enable_RQUOTA, etc.) are omitted because they are rejected by the parser in the packaged Ganesha build.
 - Explicit per-share `%include` lines are emitted for the fragments under `/etc/ganesha/exports.d/` (no glob).
 
-Each generated per-share EXPORT block (in `exports.d/NN-name.conf`) also includes:
-- `Protocols = 4; Transports = TCP;` (defensive per-export)
-- A `CLIENT{ clients = *; access_type = RW|RO; }` block using the share's `rw` setting from the Shares editor in System Settings (RW or RO). This is the mechanism that applies the access type selected in the WebUI. The generated CLIENT is intentionally minimal (full wildcard). SecType stays at the EXPORT level. Additional CLIENT blocks for specific nets can be added manually if needed (they are overwritten on next regeneration from the TOML source of truth).
+Each generated per-share EXPORT block (in `exports.d/NN-name.conf`) includes a minimal `CLIENT { Clients = *; Access_Type = RW|RO; Principals = "host/*@REALM"; }` block (using the share's `rw` setting and the Kerberos realm). This is the mechanism that applies the access type selected in the WebUI and supports hybrid user TGT + client machine keytab authentication. The generated CLIENT is intentionally minimal (full wildcard). SecType stays at the EXPORT level. Additional CLIENT blocks for specific nets can be added manually if needed (they are overwritten on next regeneration from the TOML source of truth).
 
 ### SELinux, volume labeling, and other host notes
 - On enforcing SELinux hosts (e.g. Atomic Fedora), bind-mounted data volumes often still need the `:Z` (or `:z`) suffix so that the content is labeled appropriately for container use (`container_file_t` etc.). The image itself no longer includes a Fedora SELinux subpackage (runtime is Debian-based).

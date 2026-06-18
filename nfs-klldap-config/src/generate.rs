@@ -389,6 +389,7 @@ fn write_ganesha_main(
     exports_dir: &Path,
 ) -> Result<(), ConfigError> {
     let sec = &cfg.ganesha.default_security;
+    let realm = cfg.effective_realm();
 
     // Explicit includes (no glob) for deterministic load order and to avoid
     // Ganesha startup races on container restart / image rebuild.
@@ -414,8 +415,9 @@ fn write_ganesha_main(
 }}
 
 DIRECTORY_SERVICES {{
-    Idmapped_user_time_validity = 600;
-    Idmapped_group_time_validity = 600;
+    DomainName = {realm};
+    Idmapped_User_Time_Validity = 600;
+    Idmapped_Group_Time_Validity = 600;
 }}
 
 NFSV4 {{
@@ -428,6 +430,7 @@ EXPORT_DEFAULTS {{
     SecType = {sec};
 }}
 "#,
+        realm = realm,
         sec = sec,
     );
 
@@ -505,8 +508,10 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         // CLIENT block provides the access control (RO/RW) selected in the Shares editor.
         // Minimal wildcard Clients = * is used. The Principals line is required for
         // Ganesha 9.x to authorize clients that present a machine keytab host principal
-        // (hybrid with user kerberos TGT). See Ganesha 9.x CLIENT docs + GSS principal
-        // matching in idmapper/GSS paths.
+        // (hybrid with user kerberos TGT). "host/*@REALM" matches client machine creds
+        // from /etc/krb5.keytab while normal user TGTs continue to work via the idmapper.
+        // See Ganesha 9.x CLIENT docs + GSS principal matching. (DIRECTORY_SERVICES
+        // Root_Kerberos_Principal defaults to "all" and already covers host/nfs/root.)
         let client_block = format!(
             r#"
     CLIENT {{
@@ -527,8 +532,6 @@ EXPORT {{
     Path = {};
     Pseudo = {};
     SecType = {};
-    Protocols = 4;
-    Transports = TCP;
     Squash = {};
 {pref_read_line}{pref_write_line}{client_block}    FSAL {{
         Name = VFS;
@@ -622,7 +625,6 @@ mod tests {
         assert!(frag.contains("Access_Type = RW;"), "CLIENT Access_Type should be RW");
         assert!(frag.contains("CLIENT {"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
-        assert!(frag.contains("Protocols = 4;"));
         assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
         assert!(frag.contains("Principals = \"host/*@"), "CLIENT must include Principals for host/*@REALM (hybrid keytab + TGT)");
     }
@@ -687,7 +689,6 @@ mod tests {
         assert!(frag.contains("Access_Type = RW;"), "CLIENT Access_Type should be RW");
         assert!(frag.contains("CLIENT {"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
-        assert!(frag.contains("Protocols = 4;"));
         assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
         assert!(frag.contains("Principals = \"host/*@"), "CLIENT must include Principals for host/*@REALM (hybrid keytab + TGT)");
     }
@@ -741,7 +742,6 @@ mod tests {
         assert!(frag.contains("Access_Type = RO;"), "CLIENT Access_Type should be RO");
         assert!(frag.contains("CLIENT {"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5i;"), "EXPORT SecType should be krb5i");
-        assert!(frag.contains("Protocols = 4;"));
         assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
         assert!(frag.contains("Principals = \"host/*@"), "CLIENT must include Principals for host/*@REALM (hybrid keytab + TGT)");
     }

@@ -1,16 +1,4 @@
-//! Generate sssd.conf, krb5.conf, ganesha.conf and per-share exports.
-//!
-//! Share export layout:
-//! - container_path_for returns the *internal* container location, derived from the share's
-//!   own host_path (first directory component after "/" is the implicit per-share bind root)
-//!   + container_root. This supplies the real filesystem Path= for Ganesha VFS and the
-//!     FsManager translations (permission tree).
-//! - export_path (or its /name default) supplies the client-visible Pseudo path (external).
-//!   This is the value editable as "Export Path" in the Shares editor; it can be shortened
-//!   for nicer client mounts while the internal location stays correct for the bind(s).
-//!
-//! This enables (multiple) root-level bind mount(s) at storage.container_root (commonly /export)
-//! with rich or heterogeneous subtrees under it, plus flexible external naming.
+//! Generate sssd.conf, krb5.conf, ganesha.conf and per-share export fragments.
 
 use std::fs;
 use std::path::Path;
@@ -408,16 +396,23 @@ fn write_ganesha_main(
     Protocols = 4;
     Bind_addr = 0.0.0.0;
     NFS_Port = 2049;
-    Enable_UDP = false;
+    # Enable_UDP = false;
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
+    Manage_Gids_Expiration = 600;
 }}
 
 DIRECTORY_SERVICES {{
     DomainName = {realm};
-    Idmapped_User_Time_Validity = 600;
-    Idmapped_Group_Time_Validity = 600;
+    Pwnam_Implementation = nsswitch;
+    Root_Kerberos_Principal = host, nfs;
+}}
+
+NFS_KRB5 {{
+    PrincipalName = "nfs";
+    KeytabPath = "/etc/krb5.keytab";
+    Active_krb5 = TRUE;
 }}
 
 NFSV4 {{
@@ -428,6 +423,7 @@ NFSV4 {{
 
 EXPORT_DEFAULTS {{
     SecType = {sec};
+    Protocols = 4;
 }}
 "#,
         realm = realm,
@@ -442,6 +438,8 @@ EXPORT_DEFAULTS {{
         IDMAPPER = FULL_DEBUG;
         FSAL = FULL_DEBUG;
         NFS4 = FULL_DEBUG;
+        CLIENTID = FULL_DEBUG;
+        SESSIONS = FULL_DEBUG;
     }
 }
 
@@ -467,8 +465,6 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             }
         }
     }
-
-    let realm = cfg.effective_realm();
 
     for (i, share) in cfg.shares.iter().enumerate() {
         let export_id = derive_export_id(&share.name, 1000 + (i as u16 * 10));
@@ -505,28 +501,24 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             .map(|v| format!("    PrefWrite = {};\n", v))
             .unwrap_or_default();
 
-        // CLIENT block provides the access control (RO/RW) selected in the Shares editor.
-        // Minimal wildcard Clients = * is used. The Principals line is required for
-        // Ganesha 9.x to authorize clients that present a machine keytab host principal
-        // (hybrid with user kerberos TGT). "host/*@REALM" matches client machine creds
-        // from /etc/krb5.keytab while normal user TGTs continue to work via the idmapper.
-        // See Ganesha 9.x CLIENT docs + GSS principal matching. (DIRECTORY_SERVICES
-        // Root_Kerberos_Principal defaults to "all" and already covers host/nfs/root.)
+        // CLIENT block (one per share) provides Access_Type (RW/RO) chosen for the share.
+        // Protocols = 4 keeps the configuration consistent with the NFSv4-only server.
+        // Additional CLIENT blocks may be appended manually after this one in the fragment
+        // (they are not preserved across regeneration).
         let client_block = format!(
             r#"
     CLIENT {{
         Clients = *;
         Access_Type = {access};
-        Principals = "host/*@{realm}";
+        Protocols = 4;
     }}
 
 "#,
             access = access,
-            realm = realm,
         );
 
         let block = format!(
-            r#"# Generated from nfs-klldap.conf share "{}" (strict NFSv4+ only; no NFSv3)
+            r#"# Generated from nfs-klldap.conf share "{}"
 EXPORT {{
     Export_Id = {};
     Path = {};
@@ -626,7 +618,7 @@ mod tests {
         assert!(frag.contains("CLIENT {"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
-        assert!(frag.contains("Principals = \"host/*@"), "CLIENT must include Principals for host/*@REALM (hybrid keytab + TGT)");
+        assert!(frag.contains("Protocols = 4;"), "CLIENT should explicitly list Protocols = 4 to avoid core/client mismatch warning");
     }
 
     #[test]
@@ -690,7 +682,7 @@ mod tests {
         assert!(frag.contains("CLIENT {"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
-        assert!(frag.contains("Principals = \"host/*@"), "CLIENT must include Principals for host/*@REALM (hybrid keytab + TGT)");
+        assert!(frag.contains("Protocols = 4;"), "CLIENT should explicitly list Protocols = 4 to avoid core/client mismatch warning");
     }
 
     #[test]
@@ -743,6 +735,6 @@ mod tests {
         assert!(frag.contains("CLIENT {"), "CLIENT block should be present");
         assert!(frag.contains("SecType = krb5i;"), "EXPORT SecType should be krb5i");
         assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
-        assert!(frag.contains("Principals = \"host/*@"), "CLIENT must include Principals for host/*@REALM (hybrid keytab + TGT)");
+        assert!(frag.contains("Protocols = 4;"), "CLIENT should explicitly list Protocols = 4 to avoid core/client mismatch warning");
     }
 }

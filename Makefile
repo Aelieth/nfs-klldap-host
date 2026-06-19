@@ -98,12 +98,11 @@ docker:
 	@echo "==> Building container image for linux/amd64/v2..."
 	$(BUILDX) build \
 		--platform linux/amd64/v2 \
-		--tag $(IMAGE_NAME):latest \
 		--tag $(FULL_IMAGE):$(VERSION) \
 		$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(FULL_IMAGE):latest,) \
 		$(if $(filter true,$(DOCKER_PUSH)),--push,--load) \
 		.
-
+#		--tag $(IMAGE_NAME):latest \
 
 .PHONY: docker-multi
 docker-multi:

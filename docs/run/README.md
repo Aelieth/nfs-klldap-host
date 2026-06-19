@@ -186,24 +186,46 @@ rpcbind (may daemonize)
 ganesha.nfsd ...
 ```
 
-### NFS_CORE_PARAM and the generated ganesha.conf
-The generator emits a minimal, proven-safe block for the Ganesha build in this image (see `write_ganesha_main` in nfs-klldap-config). Only options accepted by the parser in this build are emitted.
+### Generated ganesha.conf and exports
+
+The generator writes a minimal `ganesha.conf` plus one fragment per share under `/etc/ganesha/exports.d/`.
+
+Example top-level configuration emitted:
 
 ```
 NFS_CORE_PARAM {
     Protocols = 4;
     Enable_UDP = false;
     Allow_Set_Io_Flusher_Fail = true;
+    Manage_Gids_Expiration = 600;
+}
+
+DIRECTORY_SERVICES {
+    DomainName = REALM;
+    Root_Kerberos_Principal = all;
+}
+
+NFS_KRB5 {
+    PrincipalName = "nfs";
+    KeytabPath = "/etc/krb5.keytab";
+}
+
+EXPORT_DEFAULTS {
+    SecType = krb5p;
+    Protocols = 4;
 }
 ```
 
-- `Protocols = 4` restricts to NFSv4 (no NFSv3 negotiation).
-- `Enable_UDP = false` disables UDP listeners.
-- `Allow_Set_Io_Flusher_Fail = true` is a Linux/container compatibility tunable.
-- Other options (Transports, Bind_addr, Mountd_Port/NLM_Port/Rquota_Port, Enable_NLM, Enable_RQUOTA, etc.) are omitted because they are rejected by the parser in the packaged Ganesha build.
-- Explicit per-share `%include` lines are emitted for the fragments under `/etc/ganesha/exports.d/` (no glob).
+Key points:
+- `Protocols = 4` (also in EXPORT_DEFAULTS and per-share CLIENT blocks) for strict NFSv4.
+- `Manage_Gids_Expiration` in NFS_CORE_PARAM.
+- Kerberos configuration via NFS_KRB5 and Root_Kerberos_Principal.
+- Explicit `%include` lines (one per share fragment) for deterministic loading.
+- Other legacy options are omitted because they are not accepted by the parser.
 
-Each generated per-share EXPORT block (in `exports.d/NN-name.conf`) includes a minimal `CLIENT { Clients = *; Access_Type = RW|RO; Principals = "host/*@REALM"; }` block (using the share's `rw` setting and the Kerberos realm). This is the mechanism that applies the access type selected in the WebUI and supports hybrid user TGT + client machine keytab authentication. The generated CLIENT is intentionally minimal (full wildcard). SecType stays at the EXPORT level. Additional CLIENT blocks for specific nets can be added manually if needed (they are overwritten on next regeneration from the TOML source of truth).
+Each per-share fragment contains an EXPORT with Path (internal), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block for access control, and the VFS FSAL. Additional CLIENT blocks can be appended manually (they will be lost on regeneration).
+
+See also the reference shape in `examples/ganesha-exports.d/10-example.conf`.
 
 ### SELinux, volume labeling, and other host notes
 - On enforcing SELinux hosts (e.g. Atomic Fedora), bind-mounted data volumes often still need the `:Z` (or `:z`) suffix so that the content is labeled appropriately for container use (`container_file_t` etc.). The image itself no longer includes a Fedora SELinux subpackage (runtime is Debian-based).

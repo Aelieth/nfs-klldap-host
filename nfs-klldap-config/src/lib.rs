@@ -194,6 +194,10 @@ mod tests {
         assert!(main.contains("Protocols = 4;"));
         assert!(main.contains("Enable_UDP = false"));
         assert!(main.contains("Allow_Set_Io_Flusher_Fail = true"));
+        assert!(main.contains("Manage_Gids_Expiration = 600;"));
+        assert!(main.contains("NFS_KRB5 {"));
+        assert!(main.contains("Root_Kerberos_Principal = all;"));
+        assert!(main.contains("EXPORT_DEFAULTS {\n    SecType = krb5p;\n    Protocols = 4;"));
         // These must not appear (rejected by parser in this build)
         assert!(!main.contains("Transports"));
         assert!(!main.contains("Mountd_Port"));
@@ -211,6 +215,8 @@ mod tests {
             !main.contains("IDMAPPER = FULL_DEBUG"),
             "component debug must be absent by default"
         );
+        // Regression guard for CLIENT block parameters
+        assert!(!main.contains("Principals ="));
 
         let exports: Vec<_> = fs::read_dir(&paths.exports_dir)
             .unwrap()

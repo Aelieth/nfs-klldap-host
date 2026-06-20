@@ -416,6 +416,7 @@ NFS_KRB5 {{
 }}
 
 NFSV4 {{
+    Allow_Numeric_Owners = false;
     RecoveryBackend = fs;
     Lease_Lifetime = 20;
     Grace_Period = 20;

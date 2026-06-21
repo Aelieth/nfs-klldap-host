@@ -6,10 +6,12 @@
 # host/CLIENT@REALM). Ganesha's principal2uid code path execs "nfsidmap" (see
 # ganesha.log: "Get uid for ... using nfsidmap").
 #
-# This script is placed early in PATH only for the ganesha.nfsd process.
+# This script (installed as /usr/local/bin/nfsidmap-idhelper) is made visible
+# as the literal name 'nfsidmap' via symlink in the ganesha PATH prefix
+# (see Dockerfile + entrypoint.sh). This ensures that when Ganesha does
+# "Get uid for <principal> using nfsidmap", our wrapper is found first.
 # On hit (via idhelper) it returns the numeric id exactly as nfsidmap would.
-# On miss it transparently falls back to the real system nfsidmap so nothing
-# is broken for other code paths.
+# On miss it transparently falls back to the real /usr/sbin/nfsidmap.
 #
 # Only safe, documented 9.x behavior. No new Ganesha config options.
 #
@@ -22,7 +24,10 @@
 set -euo pipefail
 
 IDHELPER="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
-REAL_NFSIDMAP="/usr/sbin/nfsidmap"
+# Locate the real nfsidmap for fallback. In the container this will usually be
+# /usr/sbin/nfsidmap (from nfs-common or similar). We look dynamically so the
+# shim works even if the real binary moves between Debian/Fedora etc.
+REAL_NFSIDMAP="$(command -v nfsidmap 2>/dev/null || echo /usr/sbin/nfsidmap)"
 
 log() {
     # Only when debugging the shim (not normal op)

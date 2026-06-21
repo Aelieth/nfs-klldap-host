@@ -23,12 +23,13 @@ IDHELPER_BIN="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
 NSS_PASSWD="${NSS_PASSWD:-/var/lib/nfs-klldap/nss_passwd}"
 NSS_GROUP="${NSS_GROUP:-/var/lib/nfs-klldap/nss_group}"
 
-# Path prefix so ganesha.nfsd finds the nfsidmap-idhelper shim (container/scripts/).
-# The shim calls back into nfs-klldap-idhelper resolve for principals like
-# testuser1@REALM and host/CLIENT@REALM. This makes the server do the same
-# lookup clients expect (directly addresses principal2uid "using nfsidmap"
-# + "Could not map" failures in ganesha.log). Only ganesha's PATH is affected.
-# Must be ganesha 9.6 / trixie compatible (no behavior change for other stacks).
+# Path prefix so ganesha.nfsd finds our nfsidmap shim (which is a symlink to
+# nfsidmap-idhelper installed by the Dockerfile). Ganesha's ID MAPPER does
+# `Get uid ... using nfsidmap` for principals like testuser1@REALM.
+# By putting /usr/local/bin first, the literal name 'nfsidmap' resolves to
+# our script that delegates to the idhelper. This is the 9.6/trixie-specific
+# mechanism to give the server the same principal->uid view as clients.
+# Only affects the ganesha.nfsd process.
 GANESHA_PATH_PREFIX="/usr/local/bin"
 # Compute a best-effort path for libnss_wrapper.so on Debian multiarch.
 NSS_WRAPPER_SO="${NSS_WRAPPER_SO:-}"

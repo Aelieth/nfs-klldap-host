@@ -76,6 +76,12 @@ if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
         echo "  (no policy line yet or fragments not generated; will appear after generate)"
     fi
 fi
+# Confirm the nfsidmap shim name is present for ganesha PATH shadowing (9.6 principal mapping)
+if [ -e /usr/local/bin/nfsidmap ] || command -v nfsidmap >/dev/null 2>&1; then
+    echo "  OK: 'nfsidmap' name (shim or symlink) is visible for ganesha principal2uid interception"
+else
+    echo "  WARN: no 'nfsidmap' in early PATH; the idhelper shim may not intercept Ganesha's nfsidmap calls"
+fi
 
 echo
 echo "=== Verification complete ==="

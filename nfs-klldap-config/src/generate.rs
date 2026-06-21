@@ -449,11 +449,13 @@ EXPORT_DEFAULTS {{
             r#"LOG {
     Default_Log_Level = DEBUG;
     Components {
-        IDMAPPER = FULL_DEBUG;
-        FSAL = FULL_DEBUG;
-        NFS4 = FULL_DEBUG;
         CLIENTID = FULL_DEBUG;
         SESSIONS = FULL_DEBUG;
+        IDMAPPER = FULL_DEBUG;
+        RECOVERY = FULL_DEBUG;
+        NFS4 = DEBUG;
+        DISPATCH = DEBUG;
+        XPRT = DEBUG;
     }
 }
 
@@ -464,10 +466,10 @@ EXPORT_DEFAULTS {{
             r#"LOG {
     Default_Log_Level = INFO;
     Components {
-        CLIENTID = DEBUG;
-        SESSIONS = DEBUG;
-        NFS4 = EVENT;
+        CLIENTID = EVENT;
+        SESSIONS = EVENT;
         IDMAPPER = EVENT;
+        XPRT = EVENT;
     }
 }
 

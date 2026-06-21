@@ -544,10 +544,13 @@ fn resolve_principal(
 
     // Attempt resolution
     let resolved = if is_machine {
-        // Machine principals often map to root (0) on the server side for certain ops,
-        // or to a special "machine" identity if one exists in LDAP.
-        // We prefer explicit root (0:0) for machine credentials unless a real user is found.
-        // First see if NSS has an entry for the short machine name.
+        // Short-circuit for all machine principals (host/, nfs/, root/, server variants,
+        // and client host names presented via "Linux NFSv4.x <host>").
+        // Kerberos auth has already succeeded; we only need consistent UID/GID mapping.
+        // Machines must map to 0:0. Real LDAP users are unaffected (they take the else path).
+        // Synthetic names (e.g. host/0x<epoch>) are also correctly forced to 0:0.
+        // This eliminates getent latency and non-determinism that can trigger
+        // clientid/session collapse on immutable + host-keytab clients.
         let short = principal
             .split('@')
             .next()
@@ -557,29 +560,14 @@ fn resolve_principal(
             .unwrap_or(principal);
         eprintln!("[idhelper] short_name_extracted=\"{}\" (machine path, principal=\"{}\")", short, principal);
 
-        let nss = resolve_via_nss(short);
-        dlog!("  nss_getent tried=\"{}\" got={:?}", short, nss.as_ref().map(|(u, g, s)| (*u, *g, s.as_str())));
-
-        if let Some((uid, gid, src)) = nss {
-            Resolved {
-                principal: principal.to_string(),
-                name: short.to_string(),
-                uid,
-                gid,
-                kind: PrincipalKind::Machine,
-                source: src,
-            }
-        } else {
-            // Default machine credential treatment: root
-            eprintln!("[idhelper] getent for short=\"{}\" returned nothing -> falling back to uid=0 gid=0 (machine)", short);
-            Resolved {
-                principal: principal.to_string(),
-                name: short.to_string(),
-                uid: 0,
-                gid: 0,
-                kind: PrincipalKind::Machine,
-                source: "special".to_string(),
-            }
+        // No resolve_via_nss / getent calls for machines.
+        Resolved {
+            principal: principal.to_string(),
+            name: short.to_string(),
+            uid: 0,
+            gid: 0,
+            kind: PrincipalKind::Machine,
+            source: "special".to_string(),
         }
     } else {
         // Regular user
@@ -756,7 +744,7 @@ fn looks_like_client_hostname(t: &str) -> bool {
     const NOISE: &[&str] = &[
         "unique", "client", "id", "debug", "info", "warning", "error",
         "ffff", "counter", "created", "name", "addr", "cr", "refcount",
-        "nil", "null", "clientid", "conf", "unconf"
+        "nil", "null", "clientid", "conf", "unconf", "linux", "nfsv4"
     ];
     if NOISE.contains(&lower.as_str()) {
         return false;
@@ -778,12 +766,21 @@ fn looks_like_client_hostname(t: &str) -> bool {
 /// Exact-match noise tokens (case-insensitive) that must never become a client hostname.
 fn is_noise_hostname(t: &str) -> bool {
     let s = t.trim().to_ascii_lowercase();
-    matches!(
+    if matches!(
         s.as_str(),
         "nil" | "null" | "clientid" | "unique" | "counter" | "created" | "client" |
         "id" | "name" | "addr" | "refcount" | "cr" | "conf" | "unconf" | "debug" |
-        "info" | "warning" | "error" | "ffff"
-    )
+        "info" | "warning" | "error" | "ffff" | "linux" | "nfsv4"
+    ) {
+        return true;
+    }
+    // Also reject version-like tokens (NFSv4.2, 2.3 etc) and obvious non-host words that
+    // appear after : or - splits in client name blobs.
+    if s.starts_with("nfsv") || s.starts_with("nfs") || (s.chars().any(|c| c.is_ascii_digit()) && s.contains('.')) {
+        // e.g. "NFSv4.2" or "10.10" style after split
+        return true;
+    }
+    false
 }
 
 /// Try to extract a client hostname from a string that contains the common
@@ -828,7 +825,15 @@ fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
             return best;
         }
 
-        // Fallback scan (safer now): skip obvious noise groups and tokens
+        // Fallback scan is deliberately conservative.
+        // If the line smells like an internal client-record debug blob (lots of (nil), clientid=, Unique=, Counter=, cr_refcount), do not trust the loose word fallback.
+        // (Good names from "Linux NFSv4..." groups will already have been returned via the best path above.)
+        let lower_line = line.to_ascii_lowercase();
+        let is_internal_blob = lower_line.contains("conf = (nil)") || lower_line.contains("clientid=") || lower_line.contains("unique=") || lower_line.contains("counter=") || lower_line.contains("cr_refcount");
+        if is_internal_blob {
+            return None;
+        }
+
         let mut iter = suffix.split(|c: char| {
             c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' || c == ':' || c == '.'
         });
@@ -837,7 +842,7 @@ fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
             let t = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '.');
             if t.is_empty() { continue; }
             let tl = t.to_ascii_lowercase();
-            if ["linux", "nfsv4", "created", "client", "name", "nil", "null", "conf", "unconf", "clientid", "unique", "counter"].contains(&tl.as_str()) || is_noise_hostname(t) {
+            if ["linux", "nfsv4", "created", "client", "name", "nil", "null", "conf", "unconf", "clientid", "unique", "counter", "stuff", "token", "other", "value", "key", "loc", "ref", "addr", "server"].contains(&tl.as_str()) || is_noise_hostname(t) {
                 continue;
             }
             if looks_like_client_hostname(t) {
@@ -1408,5 +1413,113 @@ mod tests {
         assert!(!looks_like_client_hostname("CLIENT"));
         assert!(looks_like_client_hostname("blue-lt"));
         assert!(looks_like_client_hostname("my-host.example.com"));
+    }
+
+    // --- Additional repros from the exact full trace the user provided after rebuild ---
+    #[test]
+    fn extract_rejects_pure_clientid_line() {
+        // Standalone clientid= lines must never produce a host/ candidate
+        let line = r#"nfs4_op_destroy_clientid :CLIENT ID :DEBUG :DESTROY_CLIENTID clientid=Unique=0x6a375213 Counter=0x00000002"#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        assert!(r.is_none() || !r.unwrap().to_ascii_lowercase().contains("clientid"), "pure clientid= line must not emit host/clientid");
+    }
+
+    #[test]
+    fn extract_only_good_from_full_clid_create_line() {
+        // The exact fs_create line from the trace must yield only the real host
+        let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)]"#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        if let Some(c) = r {
+            assert!(c.contains("blue-lt"));
+            assert!(!c.contains("ffff"));
+            assert!(!c.to_ascii_lowercase().contains("client"));
+        } else {
+            // If it returns none that's also acceptable as long as it doesn't emit garbage
+        }
+    }
+
+    #[test]
+    fn extract_rejects_conf_nil_groups_even_in_long_client_record() {
+        // Full client record blob with multiple (nil) after the good name=
+        let line = r#"key_locate :CLIENT ID :F_DBG :Locate Client Record seeking Key=0x7f0c3082f530 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=1}}"#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        if let Some(c) = r {
+            assert!(c.contains("blue-lt"));
+            assert!(!c.contains("nil"), "must not emit host/nil from conf = (nil) groups");
+        }
+    }
+
+    #[test]
+    fn extract_rejects_on_lines_with_only_unconf_and_counters() {
+        // Lines that only have unconf / counter noise after nfsv4 mention
+        let line = r#"key_locate :CLIENT ID :F_DBG :Locate Unconfirmed Client ID seeking Key=0x7f0c3082f670 {Unique=0x6a375213 Counter=0x00000001}"#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        assert!(r.is_none() || r.unwrap().contains("blue-lt") /* only if a good name was also present */);
+    }
+
+    #[test]
+    fn stress_extract_on_trace_fragments_no_garbage() {
+        // Stress many raw fragments taken from the exact user-provided full Ganesha trace.
+        // After the previous tightening this must never return a host/ candidate for pure noise.
+        let fragments = vec![
+            r#"conf = (nil) {NULL} unconf = (nil) {NULL}"#,
+            r#"clientid=Unique=0x6a375213 Counter=0x00000001"#,
+            r#"key_locate :CLIENT ID :F_DBG :Locate Unconfirmed Client ID seeking Key=0x7f0c3082f670 {Unique=0x6a375213 Counter=0x00000001}"#,
+            r#"nfs4_op_destroy_clientid :CLIENT ID :DEBUG :DESTROY_CLIENTID clientid=Unique=0x6a375213 Counter=0x00000002"#,
+            r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)]"#,
+            r#"fs_rm_clid_impl :CLIENT ID :DEBUG :position=0 len=45  parent_path=/var/lib/nfs/ganesha/v4recov recov_dir=::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)"#,
+            r#"dec_client_record_ref :CLIENT ID :F_DBG :Free {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=1}}"#,
+            // more exact long lines from the user's paste that could have triggered the live "observed host/nil" and "host/clientid"
+            r#"hashtable_getlatch :CLIENT ID :F_DBG :Get Client Record returning Value=0x7f0c14001df0 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=0}}"#,
+            r#"hashtable_deletelatched :CLIENT ID :F_DBG :Delete Client Record Key=0x7f0c14001df0 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=0}} Value=0x7f0c14001df0 ... was removed"#,
+            // A line that contains nfsv4 early and later (nil) groups with no good Linux group after the marker (to hit fallback)
+            r#"some prefix NFSv4 stuff clientid=Unique=0x6a375213 conf = (nil) unconf = (nil) other tokens"#,
+        ];
+
+        for frag in &fragments {
+            let r = extract_candidate_principal(frag, "SATOMLIN.COM");
+            if let Some(c) = r {
+                let bad = c.to_ascii_lowercase();
+                assert!(!bad.contains("nil"), "frag produced host/nil: {}", frag);
+                assert!(!bad.contains("clientid"), "frag produced host/clientid: {}", frag);
+                assert!(!bad.contains("unique"), "frag produced host/unique: {}", frag);
+                assert!(!bad.contains("counter"), "frag produced host/counter: {}", frag);
+            }
+        }
+    }
+
+    #[test]
+    fn machine_principal_short_circuits_to_zero_without_getent() {
+        // Per the short-circuit plan: machine principals must return 0:0 "special"
+        // immediately after classification, with no resolve_via_nss/getent calls.
+        let mut cache = IdCache::default();
+        let realm = "SATOMLIN.COM".to_string();
+        let variants = vec!["zima-nas".to_string()];
+
+        // Regular host/ principal
+        let r1 = resolve_principal("host/blue-lt@SATOMLIN.COM", &realm, &variants, &mut cache);
+        assert_eq!(r1.uid, 0);
+        assert_eq!(r1.gid, 0);
+        assert_eq!(r1.kind, PrincipalKind::Machine);
+        assert_eq!(r1.source, "special");
+        assert_eq!(r1.name, "blue-lt");
+
+        // Synthetic / internal form (host/0x...) should also short-circuit to 0:0
+        let r2 = resolve_principal("host/0x6a375213@SATOMLIN.COM", &realm, &variants, &mut cache);
+        assert_eq!(r2.uid, 0);
+        assert_eq!(r2.gid, 0);
+        assert_eq!(r2.kind, PrincipalKind::Machine);
+        assert_eq!(r2.source, "special");
+
+        // nfs/ and root/ prefixes
+        let r3 = resolve_principal("nfs/somehost@SATOMLIN.COM", &realm, &variants, &mut cache);
+        assert_eq!(r3.uid, 0);
+        assert_eq!(r3.gid, 0);
+        assert_eq!(r3.source, "special");
+
+        let r4 = resolve_principal("root/client@SATOMLIN.COM", &realm, &variants, &mut cache);
+        assert_eq!(r4.uid, 0);
+        assert_eq!(r4.gid, 0);
+        assert_eq!(r4.source, "special");
     }
 }

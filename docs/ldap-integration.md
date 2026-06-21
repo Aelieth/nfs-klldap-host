@@ -74,7 +74,7 @@ When clients use Kerberos host keytabs (e.g. `/etc/krb5.keytab` on Fedora Immuta
 
 If Ganesha maps these inconsistently (or falls back to nobody/65534 for machine names), the client can see credential mixing that causes NFSv4 session teardown or permission failures.
 
-`nfs-klldap-idhelper` is the authoritative layer for this:
+`nfs-klldap-idhelper` (using structured LDAP resolution via shared IdLdapResolver for consistency with the UI LdapClient + its caches, plus getent for client parity) is the authoritative layer for this:
 
 - It classifies principals (machine vs. user) using `is_machine_principal`.
 - It resolves via NSS/SSSD (users) or forces uid/gid 0 (machines).

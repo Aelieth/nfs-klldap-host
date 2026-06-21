@@ -111,11 +111,14 @@ COPY container/scripts/nfs-klldap-conf-watcher /usr/local/bin/nfs-klldap-conf-wa
 COPY container/scripts/nfsidmap-idhelper /usr/local/bin/nfsidmap-idhelper
 COPY container/healthcheck.sh /container/healthcheck.sh
 RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /usr/local/bin/nfsidmap-idhelper /container/healthcheck.sh && \
-    # Create the literal 'nfsidmap' name in the early PATH so that when ganesha.nfsd
-    # execs "nfsidmap -u <principal>" (as seen in its ID MAPPER logs) our shim is found
-    # first. This is required for the principal2uid interception on 9.6/trixie.
-    # Symlink keeps the descriptive source filename while satisfying PATH lookup.
-    ln -sf nfsidmap-idhelper /usr/local/bin/nfsidmap
+    # Create the literal 'nfsidmap' name (both in PATH and /usr/sbin) so that when ganesha.nfsd
+    # execs "nfsidmap ..." (or absolute /usr/sbin/nfsidmap as seen in ID MAPPER "using nfsidmap" logs)
+    # our shim is found first. Backup original for fallback inside the shim.
+    # This ensures interception even for full-path calls in ganesha 9.6/trixie.
+    [ -f /usr/sbin/nfsidmap ] && mv /usr/sbin/nfsidmap /usr/sbin/nfsidmap.system || true; \
+    ln -sf /usr/local/bin/nfsidmap-idhelper /usr/local/bin/nfsidmap; \
+    ln -sf /usr/local/bin/nfsidmap-idhelper /usr/sbin/nfsidmap; \
+    true
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

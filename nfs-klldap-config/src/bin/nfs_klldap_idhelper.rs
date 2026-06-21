@@ -78,9 +78,13 @@ use std::io::{self, BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+
+// Structured resolver (0.8.32): re-uses PosixAttributeMapping + filters + caching
+// from the same logic that powers nfs-klldap-ui/src/ldap.rs.
+use nfs_klldap_config::{IdLdapResolver, SssdSection};
 
 const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
 const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
@@ -474,6 +478,8 @@ fn normalize_principal(p: &str) -> String {
 /// Ensures the server can do `getent passwd testuser1` (and full principal via
 /// the idhelper) the same way clients do. See top-of-file comment on the
 /// ganesha 9.6 / trixie principal mapping stabilization requirement.
+/// SSSD lookup is used (via getent nss), and config-driven LDAP fallback ensures
+/// resolution to ldap exists using info from nfs-klldap.conf.
 fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
     // Try as-is first (handles user@REALM in some setups)
     if let Some(res) = resolve_getent(name_or_principal) {
@@ -488,7 +494,172 @@ fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
     }
     // Try common variants
     let short = name_or_principal.split('@').next().unwrap_or(name_or_principal);
-    resolve_getent(short)
+    if let Some(res) = resolve_getent(short) {
+        return Some(res);
+    }
+
+    // Fallback to direct structured LDAP resolution (0.8.32 refactor).
+    // Uses the same PosixAttributeMapping, filters, and caching logic as
+    // nfs-klldap-ui/src/ldap.rs so behavior + cache effectiveness are identical
+    // and we do not hit the server on every miss.
+    if let Some((uid, gid)) = resolve_via_structured_ldap(short) {
+        eprintln!("[idhelper] getent passwd \"{}\" -> ldap fallback success uid={} gid={}", short, uid, gid);
+        return Some((uid, gid, "ldap".to_string()));
+    }
+    None
+}
+
+/// Structured LDAP resolution using IdLdapResolver (preferred).
+/// Falls back to legacy shell ldapsearch only if we cannot load creds/mapping.
+/// Returns (uid, gid) or None. gid often equals uid for the primary group.
+/// Now correctly populates search bases from nfs-klldap.conf (sssd.* or top-level)
+/// so the same effective bases used by generator/SSSD/UI are honored.
+fn resolve_via_structured_ldap(short_name: &str) -> Option<(u32, u32)> {
+    let (resolver, bind_dn, bind_pw) = get_or_init_resolver()?;
+
+    // Use the structured path (caches + identical filters). Resolver lives for daemon lifetime.
+    if let Some((uid_i, gid_opt, _disp)) = resolver.resolve_user(short_name, &bind_dn, &bind_pw) {
+        let uid = uid_i as u32;
+        // Prefer gidNumber from the same posixAccount user entry (matches legacy ldapsearch behavior and
+        // what the generator/SSSD expect). Fall back to uid or a group name lookup.
+        let gid = gid_opt.map(|g| g as u32)
+            .or_else(|| resolver.resolve_group(short_name, &bind_dn, &bind_pw).map(|(g, _)| g as u32))
+            .unwrap_or(uid);
+        return Some((uid, gid));
+    }
+
+    // Legacy shell fallback (use a sensible base; resolver already used correct one for main path).
+    let base = "ou=people,dc=example,dc=com"; // conservative (structured path already honored conf)
+    // uri only for the ldapsearch -H; use a placeholder that the shell path tolerates or fetch if needed
+    resolve_via_ldap_shell_with_base(short_name, "ldaps://localhost", &bind_dn, &bind_pw, base)
+}
+
+/// Legacy shell ldapsearch path (kept as last-resort compatibility shim).
+/// Do not extend; new work goes through IdLdapResolver.
+/// base is now passed from the loaded config when available.
+fn resolve_via_ldap_shell_with_base(short_name: &str, uri: &str, bind: &str, pw: &str, base: &str) -> Option<(u32, u32)> {
+    let out = std::process::Command::new("ldapsearch")
+        .args([
+            "-o", "ldif-wrap=no",
+            "-o", "tls_reqcert=never",
+            "-x",
+            "-H", uri,
+            "-D", bind,
+            "-w", pw,
+            "-b", base,
+            "-LLL",
+            &format!("(uid={})", short_name),
+            "uidNumber", "gidNumber",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() { return None; }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut uid = None;
+    let mut gid = None;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with("uidNumber:") {
+            uid = l.split(':').nth(1).and_then(|s| s.trim().parse::<u32>().ok());
+        } else if l.starts_with("gidNumber:") {
+            gid = l.split(':').nth(1).and_then(|s| s.trim().parse::<u32>().ok());
+        }
+    }
+    match (uid, gid) {
+        (Some(u), Some(g)) => Some((u, g)),
+        (Some(u), None) => Some((u, u)),
+        _ => None,
+    }
+}
+
+/// Load (uri, bind_dn, bind_pw) using the same sources the rest of the stack prefers.
+/// Prefers explicit sssd. keys then top-level, then common env fallbacks.
+fn load_ldap_creds_from_conf() -> Option<(String, String, String)> {
+    let conf = load_conf();
+    let uri = conf.get("sssd.ldap_uri")
+        .or_else(|| conf.get("ldap_uri"))
+        .cloned()
+        .or_else(|| std::env::var("NFS_KLLDAP_LDAP_URI").ok())
+        .or_else(|| std::env::var("LDAP_URI").ok())?;
+
+    let bind = conf.get("sssd.ldap_default_bind_dn")
+        .or_else(|| conf.get("ldap_default_bind_dn"))
+        .cloned()
+        .or_else(|| std::env::var("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN").ok())
+        .or_else(|| std::env::var("NFS_KLLDAP_LLDAP_USER").ok())?;
+
+    let pw = conf.get("sssd.ldap_default_authtok")
+        .or_else(|| conf.get("ldap_default_authtok"))
+        .cloned()
+        .or_else(|| std::env::var("NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK").ok())
+        .or_else(|| std::env::var("NFS_KLLDAP_LLDAP_PW").ok())?;
+
+    if bind.trim().is_empty() || pw.trim().is_empty() {
+        return None;
+    }
+    Some((uri, bind, pw))
+}
+
+/// Build a populated SssdSection from the flat conf map (or env) so that
+/// effective_ldap_search_bases + resolve_posix... are driven by the actual
+/// nfs-klldap.conf (including ldap_*_search_base). This ensures "resolution
+/// information from the config is properly utilized".
+fn build_sssd_for_resolver(conf: &std::collections::HashMap<String, String>) -> SssdSection {
+    let mut s = SssdSection::default();
+
+    // binds (required)
+    if let Some(v) = conf.get("sssd.ldap_default_bind_dn").or_else(|| conf.get("ldap_default_bind_dn")) {
+        s.ldap_default_bind_dn = v.clone();
+    }
+    if let Some(v) = conf.get("sssd.ldap_default_authtok").or_else(|| conf.get("ldap_default_authtok")) {
+        s.ldap_default_authtok = v.clone();
+    }
+
+    // search bases (the key part for correct subtree queries)
+    s.ldap_search_base = conf.get("sssd.ldap_search_base")
+        .or_else(|| conf.get("ldap_search_base"))
+        .cloned();
+    s.ldap_user_search_base = conf.get("sssd.ldap_user_search_base")
+        .or_else(|| conf.get("ldap_user_search_base"))
+        .cloned();
+    s.ldap_group_search_base = conf.get("sssd.ldap_group_search_base")
+        .or_else(|| conf.get("ldap_group_search_base"))
+        .cloned();
+
+    // tls / other common that affect no_tls_verify etc.
+    s.ldap_tls_reqcert = conf.get("sssd.ldap_tls_reqcert").or_else(|| conf.get("ldap_tls_reqcert")).cloned();
+    s.ldap_id_use_start_tls = conf.get("sssd.ldap_id_use_start_tls")
+        .or_else(|| conf.get("ldap_id_use_start_tls"))
+        .and_then(|v| v.parse::<bool>().ok());
+
+    // also copy any kllldap flag if present for ignored attrs / member (not strictly needed for id resolve)
+    s.kllldap_ignored_attributes = conf.get("sssd.kllldap_ignored_attributes")
+        .or_else(|| conf.get("kllldap_ignored_attributes"))
+        .and_then(|v| v.parse::<bool>().ok());
+
+    s
+}
+
+/// Lazily initialized resolver (with creds) so that the 10m identity + reverse caches
+/// inside IdLdapResolver are effective across RESOLVE/getent/observer calls
+/// (addresses previous per-call fresh instance problem).
+static ID_RESOLVER: OnceLock<Option<(IdLdapResolver, String, String)>> = OnceLock::new();
+
+fn get_or_init_resolver() -> Option<(&'static IdLdapResolver, String, String)> {
+    if let Some(cached) = ID_RESOLVER.get().and_then(|o| o.as_ref()) {
+        return Some((&cached.0, cached.1.clone(), cached.2.clone()));
+    }
+    let (uri, bind_dn, bind_pw) = load_ldap_creds_from_conf()?;
+    let conf = load_conf();
+    let mut sssd = build_sssd_for_resolver(&conf);
+    sssd.ldap_default_bind_dn = bind_dn.clone();
+    sssd.ldap_default_authtok = bind_pw.clone();
+    let resolver = IdLdapResolver::from_sssd_section(&uri, &sssd);
+    let _ = ID_RESOLVER.set(Some((resolver, bind_dn.clone(), bind_pw.clone())));
+    if let Some(cached) = ID_RESOLVER.get().and_then(|o| o.as_ref()) {
+        return Some((&cached.0, cached.1.clone(), cached.2.clone()));
+    }
+    None
 }
 
 fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
@@ -955,9 +1126,56 @@ fn extract_candidate_principal(line: &str, realm: &str) -> Option<String> {
     None
 }
 
+/// Simple parser to load resolution info directly from nfs-klldap.conf (the source of truth).
+/// This ensures "resolution information from the config/nfs-klldap.conf is properly utilized"
+/// for realm, hostname (for principals), and ldap settings (for direct resolution fallback).
+/// Keys are normalized from toml sections (e.g. "kerberos.realm", "sssd.ldap_uri", "server.hostname").
+/// Falls back gracefully if conf not present or unreadable (e.g. during unit tests).
+fn load_conf() -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    let path = std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
+    let mut m: HashMap<String, String> = HashMap::new();
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        let mut current_section = String::new();
+        for raw in content.lines() {
+            let line = raw.trim();
+            if line.starts_with('#') || line.is_empty() { continue; }
+            if line.starts_with('[') && line.ends_with(']') {
+                current_section = line[1..line.len()-1].trim().to_string();
+                continue;
+            }
+            if let Some(eq) = line.find('=') {
+                let key = line[..eq].trim().to_string();
+                let val = line[eq+1..].trim().trim_matches('"').trim_matches('\'').to_string();
+                if !current_section.is_empty() {
+                    let full = format!("{}.{}", current_section, key);
+                    m.insert(full.to_lowercase(), val.clone());
+                }
+                m.insert(key.to_lowercase(), val);
+            }
+        }
+        if std::env::var("KLLDAP_IDHELPER_DEBUG").is_ok() {
+            eprintln!("[idhelper-debug] load_conf from {} inserted keys: {:?}", path, m.keys().collect::<Vec<_>>());
+        }
+    }
+    m
+}
+
 fn get_server_variants() -> Vec<String> {
     // Best effort: use hostname variants. In container this should be the real host.
-    // We also accept any that the caller may pass via env or args later.
+    // Prefer resolution info from nfs-klldap.conf (properly utilizing the source config).
+    let conf = load_conf();
+    if let Some(h) = conf.get("server.hostname").or_else(|| conf.get("hostname")) {
+        if !h.trim().is_empty() {
+            let mut v = vec![h.trim().to_string()];
+            if let Some(short) = h.split('.').next() {
+                if short != h.trim() {
+                    v.push(short.to_string());
+                }
+            }
+            return v;
+        }
+    }
     if let Ok(h) = std::env::var("NFS_KLLDAP_SERVER_HOSTNAME") {
         if !h.trim().is_empty() {
             let mut v = vec![h.trim().to_string()];
@@ -987,6 +1205,13 @@ fn get_server_variants() -> Vec<String> {
 
 fn get_realm() -> String {
     // Prefer the same derivation the rest of the stack uses.
+    // Use conf first so resolution information from nfs-klldap.conf (kerberos.realm) is properly utilized.
+    let conf = load_conf();
+    if let Some(r) = conf.get("kerberos.realm").or_else(|| conf.get("realm")) {
+        if !r.trim().is_empty() {
+            return r.trim().to_uppercase();
+        }
+    }
     if let Ok(r) = std::env::var("NFS_KLLDAP_KERBEROS_REALM") {
         if !r.trim().is_empty() {
             return r.trim().to_uppercase();

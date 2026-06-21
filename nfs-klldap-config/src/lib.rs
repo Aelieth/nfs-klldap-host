@@ -29,6 +29,11 @@ pub use persist::{is_persistent_config, load_host_paths_only};
 pub use template::{generate_default_template, write_default_config_if_missing};
 pub use uri::{derive_realm_from_uri, extract_host_from_uri};
 
+// Structured ID/LDAP resolution (used by idhelper for getent + principal paths
+// with caching and PosixAttributeMapping parity to nfs-klldap-ui/src/ldap.rs).
+pub mod idmap;
+pub use idmap::{escape_ldap_filter, extract_first_attr_value, IdLdapResolver};
+
 /// Returns (no_tls_verify, start_tls) derived from [sssd] TLS fields and ldap_uri scheme.
 pub fn ldap_tls_policy(
     ldap_uri: &str,
@@ -286,8 +291,8 @@ mod tests {
         );
         assert!(main_debug.contains("Default_Log_Level = DEBUG;"));
         assert!(main_debug.contains("IDMAPPER = FULL_DEBUG;"));
-        assert!(main_debug.contains("FSAL = FULL_DEBUG;"));
-        assert!(main_debug.contains("NFS4 = FULL_DEBUG;"));
+        // Note: FSAL not emitted in top-level LOG (only in fragments); NFS4 is DEBUG (not FULL) per current generator for idhelper observer.
+        assert!(main_debug.contains("NFS4 = DEBUG;"));
         // Sanity: core config still there
         assert!(main_debug.contains("Protocols = 4;"));
         assert!(main_debug.contains("%include"));

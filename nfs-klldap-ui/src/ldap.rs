@@ -479,18 +479,9 @@ impl LdapClient {
     }
 
     fn escape_filter_value(s: &str) -> String {
-        let mut out = String::with_capacity(s.len() * 2);
-        for b in s.bytes() {
-            match b {
-                b'*' => out.push_str("\\2a"),
-                b'(' => out.push_str("\\28"),
-                b')' => out.push_str("\\29"),
-                b'\\' => out.push_str("\\5c"),
-                0..=31 | 127 => out.push_str(&format!("\\{:02x}", b)),
-                _ => out.push(b as char),
-            }
-        }
-        out
+        // Use the shared implementation (defined in nfs-klldap-config::idmap) to keep
+        // filter escaping identical between UI LdapClient and idhelper structured resolver.
+        nfs_klldap_config::escape_ldap_filter(s)
     }
 
     /// Strip permission-editor display values like `Alice (1000)` → `1000` or `Alice`.
@@ -641,14 +632,8 @@ impl LdapClient {
     }
 
     fn extract_first_attr(se: &SearchEntry, name: &str) -> Option<String> {
-        se.attrs
-            .get(name)
-            .and_then(|v| v.first().cloned())
-            .or_else(|| {
-                se.attrs
-                    .get(&name.to_lowercase())
-                    .and_then(|v| v.first().cloned())
-            })
+        // Shared helper for consistency with idhelper (see nfs-klldap-config idmap).
+        nfs_klldap_config::extract_first_attr_value(se, name)
     }
 
     fn extract_display_name(se: &SearchEntry, full_name_attr: &str, fallback: &str) -> String {

@@ -21,13 +21,32 @@
 # Output on success: decimal uid (or gid) on stdout, exit 0.
 #
 # Install: copied by Dockerfile; entrypoint launches ganesha with PATH override.
+#
+# 0.8.32 note: The idhelper now routes getent + principal resolution through the
+# structured LDAP capabilities + caches (see nfs-klldap-config/src/idmap.rs and
+# integration in the idhelper binary). This gives cache hits and parity with the
+# UI LdapClient. The shim remains required for ganesha 9.6/trixie-backports because
+# the ID MAPPER code path still execs the literal "nfsidmap" binary for some
+# principal2uid cases (visible in ganesha.log). When Ganesha or future config
+# makes the external path unnecessary the shim + PATH mangling can be removed
+# (the nss_wrapper/extrausers materialization + getent will be sufficient).
+# Retain the shim for strict Debian trixie + backported ganesha 9.6 compatibility.
 set -euo pipefail
 
 IDHELPER="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
-# Locate the real nfsidmap for fallback. In the container this will usually be
-# /usr/sbin/nfsidmap (from nfs-common or similar). We look dynamically so the
-# shim works even if the real binary moves between Debian/Fedora etc.
-REAL_NFSIDMAP="$(command -v nfsidmap 2>/dev/null || echo /usr/sbin/nfsidmap)"
+# Locate the real (system) nfsidmap for fallback. We installed our shim over
+# /usr/sbin/nfsidmap (with .system backup) and /usr/local/bin/nfsidmap so that
+# Ganesha's "using nfsidmap" path (even full-path execs) hits us for principal
+# mapping.
+# Prefer the explicit .system backup to avoid recursing into our own symlinks
+# (command -v in the PATH prefix for ganesha would otherwise find the shim).
+if [ -x /usr/sbin/nfsidmap.system ]; then
+    REAL_NFSIDMAP="/usr/sbin/nfsidmap.system"
+else
+    REAL_NFSIDMAP="$(command -v nfsidmap 2>/dev/null | head -1)"
+    # Last resort
+    [ -z "$REAL_NFSIDMAP" ] && REAL_NFSIDMAP="/usr/sbin/nfsidmap"
+fi
 
 log() {
     # Only when debugging the shim (not normal op)

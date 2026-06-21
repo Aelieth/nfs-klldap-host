@@ -196,9 +196,9 @@ Inside the container:
 - `ganesha-ctl id-resolve 'user@REALM'`
 - `ganesha-ctl id-check`
 
-The helper is intentionally slim (single binary, stdlib + getent) and participates in the mount path via the nss_wrapper bridge rather than by editing ganesha.conf.
+The helper is intentionally slim (single binary + getent primary, structured LDAP fallback via shared IdLdapResolver) and participates in the mount path via the nss_wrapper bridge + extrausers rather than by editing ganesha.conf. It now routes resolution through the same PosixAttributeMapping + filter + cache logic as the WebUI LdapClient (see nfs-klldap-config/src/idmap.rs) for consistency and to avoid repeated LDAP server hits.
 
-For ganesha 9.6 + Debian trixie (trixie-backports) the generated CLIENT blocks now include an explicit `Read_Access_Check_Policy = pre;` (plus the same in EXPORT_DEFAULTS) and a tiny nfsidmap shim is used (only for ganesha) so the server does the same principal-to-uid lookups clients expect (`getent passwd testuser1` + full `user@REALM` / `host/...` via idhelper). This directly addresses observed log failures around principal2uid, uid2grp, managed groups, and policy "(none/invalid)".
+For ganesha 9.6 + Debian trixie (trixie-backports) the generated CLIENT blocks now include an explicit `Read_Access_Check_Policy = pre;` (plus the same in EXPORT_DEFAULTS) and a tiny nfsidmap shim is used (only for ganesha) so the server does the same principal-to-uid lookups clients expect (`getent passwd testuser1` + full `user@REALM` / `host/...` via idhelper). The idhelper now uses structured LDAP (IdLdapResolver + caches) for its LDAP fallback, matching the UI's LdapClient. This directly addresses observed log failures around principal2uid, uid2grp, managed groups, and policy "(none/invalid)".
 
 The container image uses a split-stage strategy (build on Fedora minimal for the Rust binaries; runtime on Debian 13-slim) — see the Dockerfile for the exact comment and package choices.
 

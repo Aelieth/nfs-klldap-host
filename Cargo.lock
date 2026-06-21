@@ -1010,6 +1010,7 @@ dependencies = [
 name = "nfs-klldap-config"
 version = "0.8.12"
 dependencies = [
+ "ldap3",
  "serde",
  "tempfile",
  "toml",

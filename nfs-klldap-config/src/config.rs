@@ -102,6 +102,11 @@ pub struct SssdSection {
     pub krb5_kpasswd: Option<String>,
     pub krb5_validate: Option<bool>,
     pub krb5_store_password_if_offline: Option<bool>,
+
+    // Cache tuning for ample/quick UID/GID lookups (emitted to sssd.conf to minimize LDAP hits).
+    // Defaults chosen for "ample" behavior in getent/sssd paths without constant LDAP.
+    pub entry_cache_timeout: Option<u32>,
+    pub entry_negative_timeout: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

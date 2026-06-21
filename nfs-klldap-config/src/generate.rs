@@ -120,6 +120,11 @@ ldap_search_base = {search_base}
 ldap_default_bind_dn = {bind_dn}
 ldap_default_authtok = {bind_pw}
 cache_credentials = true
+# Ample ID cache settings (derived from nfs-klldap.conf or defaults) to ensure
+# quick getent/SSSD lookups for UID/GID without constantly hitting the LDAP server.
+# These are emitted so resolution info from the source conf is utilized for performance.
+entry_cache_timeout = {entry_cache_timeout}
+entry_negative_timeout = {entry_negative_timeout}
 "#,
         domain_name = domain_name,
         auth_provider = auth_provider,
@@ -127,6 +132,8 @@ cache_credentials = true
         search_base = search_base,
         bind_dn = cfg.sssd.ldap_default_bind_dn,
         bind_pw = cfg.sssd.ldap_default_authtok,
+        entry_cache_timeout = cfg.sssd.entry_cache_timeout.unwrap_or(3600),
+        entry_negative_timeout = cfg.sssd.entry_negative_timeout.unwrap_or(60),
     ));
 
     content.push_str(&build_ldap_domain_options(

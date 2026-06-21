@@ -45,10 +45,10 @@ RUN set -euxo pipefail && \
         *)       echo "Unsupported architecture: $(uname -m)" && exit 1 ;; \
     esac && \
     rm -rf target && \
-    cargo build --release --target "$TARGET" -p nfs-klldap-config --bin nfs-klldap-config --bin nfs-klldap-startup && \
+    cargo build --release --target "$TARGET" -p nfs-klldap-config --bin nfs-klldap-config --bin nfs-klldap-startup --bin nfs-klldap-idhelper && \
     cargo build --release --target "$TARGET" -p nfs-klldap-ui --bin nfs-klldap-ui && \
-    cp "target/$TARGET/release/nfs-klldap-config" "target/$TARGET/release/nfs-klldap-startup" "target/$TARGET/release/nfs-klldap-ui" /output/ && \
-    (strip /output/nfs-klldap-config /output/nfs-klldap-startup /output/nfs-klldap-ui || true)
+    cp "target/$TARGET/release/nfs-klldap-config" "target/$TARGET/release/nfs-klldap-startup" "target/$TARGET/release/nfs-klldap-idhelper" "target/$TARGET/release/nfs-klldap-ui" /output/ && \
+    (strip /output/nfs-klldap-config /output/nfs-klldap-startup /output/nfs-klldap-idhelper /output/nfs-klldap-ui || true)
 
 # Runtime stage: Debian 13-slim for smaller image size and Ganesha packaging stability.
 # The build stages above remain on Fedora (reliable rustup + cargo-chef + cross-compilation
@@ -87,14 +87,16 @@ RUN apt-get update && \
 RUN mkdir -p \
     /etc/ganesha /etc/ganesha/exports.d /var/log/ganesha \
     /etc/sssd /var/lib/sss /var/run/ganesha /var/run/sssd \
+    /var/lib/nfs-klldap /var/run/nfs-klldap \
     /var/lib/nfs-klldap/webui-certs /container/scripts /output \
     /run/dbus /run/rpcbind
 
 COPY --from=builder /output/ /output/
 RUN cp /output/nfs-klldap-config /usr/local/bin/ && \
     cp /output/nfs-klldap-startup /usr/local/bin/ && \
+    cp /output/nfs-klldap-idhelper /usr/local/bin/ && \
     cp /output/nfs-klldap-ui /usr/local/bin/ && \
-    chmod +x /usr/local/bin/nfs-klldap-config /usr/local/bin/nfs-klldap-startup /usr/local/bin/nfs-klldap-ui && \
+    chmod +x /usr/local/bin/nfs-klldap-config /usr/local/bin/nfs-klldap-startup /usr/local/bin/nfs-klldap-idhelper /usr/local/bin/nfs-klldap-ui && \
     rm -rf /output
 
 COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl

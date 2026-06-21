@@ -66,4 +66,26 @@ klist -k /etc/krb5.keytab
 
 Client `rpc.idmapd` (Method=sss) still helps pretty `ls` output on NFS clients.
 
+## Machine vs User Principals (Fedora Immutable + host keytabs)
+
+When clients use Kerberos host keytabs (e.g. `/etc/krb5.keytab` on Fedora Immutable) plus user TGTs, Ganesha receives both:
+- Machine principals: `host/CLIENT@REALM`, `nfs/CLIENT@REALM`, or root operations.
+- User principals: `alice@REALM` (resolved via SSSD + LLDAP POSIX attributes).
+
+The container runs `nfs-klldap-idhelper` as a persistent daemon. It:
+- Classifies principals (machine vs user).
+- Resolves them to the correct numeric uid/gid (or 0 for machine root-ish handling).
+- Maintains a fast in-memory + simple line-oriented cache file (`/var/lib/nfs-klldap/idmap.cache`) that is cheap to process even under 4K video workloads.
+- Exposes a unix socket for low-latency queries.
+
+Use from inside the container:
+```
+nfs-klldap-idhelper resolve 'host/myclient.example.com@MY.REALM'
+ganesha-ctl id-resolve 'alice@MY.REALM'
+```
+
+This translation layer is what prevents the repeated mount collapse / permission mangling between immutable clients and the Docker Ganesha stack. It does **not** inject untrusted data into `ganesha.conf` (Ganesha stays on a conservative static `Root_Kerberos_Principal` list).
+
+See the main README for more on the helper.
+
 See [README.md](../README.md) and [TESTING.md](../TESTING.md).

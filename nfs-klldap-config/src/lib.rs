@@ -196,7 +196,7 @@ mod tests {
         assert!(main.contains("Allow_Set_Io_Flusher_Fail = true"));
         assert!(main.contains("Manage_Gids_Expiration = 600;"));
         assert!(main.contains("NFS_KRB5 {"));
-        assert!(main.contains("Root_Kerberos_Principal = all;"));
+        assert!(main.contains("Root_Kerberos_Principal = host, nfs;"));
         assert!(main.contains("EXPORT_DEFAULTS {\n    SecType = krb5p;\n    Protocols = 4;"));
         // These must not appear (rejected by parser in this build)
         assert!(!main.contains("Transports"));

@@ -55,10 +55,21 @@ else
 fi
 
 echo
+echo "[6] Kerberos ID helper (machine vs user principal translator)..."
+if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
+    /usr/local/bin/nfs-klldap-idhelper explain || true
+    /usr/local/bin/nfs-klldap-idhelper check || true
+else
+    echo "  WARN: nfs-klldap-idhelper not present (mount stability for Kerberos clients may be impacted)"
+fi
+
+echo
 echo "=== Verification complete ==="
 echo
 echo "Next steps if things look wrong:"
 echo "  - Check container logs for sssd and ganesha.nfsd"
 echo "  - Run: ganesha-ctl show-exports"
+echo "  - Run: ganesha-ctl id-check   (or nfs-klldap-idhelper check)"
 echo "  - Verify users have posixAccount + uidNumber/gidNumber in LLDAP"
 echo "  - Confirm host filesystem ownership matches those numeric IDs"
+echo "  - For Fedora Immutable clients: use the idhelper to confirm machine principals map correctly"

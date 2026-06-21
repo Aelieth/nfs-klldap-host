@@ -175,10 +175,24 @@ These contracts are also documented in source comments in `nfs-klldap-ui/src/fs.
 
 ## Project Layout (workspace)
 
-- `nfs-klldap-config/` — lib + `nfs-klldap-config` (generate) + `nfs-klldap-startup` (TUI)
+- `nfs-klldap-config/` — lib + `nfs-klldap-config` (generate) + `nfs-klldap-startup` (TUI) + `nfs-klldap-idhelper` (daemon + CLI for Kerberos principal translation)
 - `nfs-klldap-ui/` — Axum WebUI (9630)
 - `entrypoint.sh` — thin pid-1 supervisor
 - `container/` — healthcheck + ganesha-ctl + conf-watcher (inotify → SIGHUP)
+
+### nfs-klldap-idhelper (Kerberos ID translator)
+
+Lightweight always-running daemon (started after SSSD) that distinguishes **machine principals** (`host/...`, `nfs/...`, client host keytab credentials) from **LDAP-authenticated users** and provides fast uid/gid resolution + a simple on-disk cache file.
+
+Essential for stable mounts from Fedora Immutable (and other) clients where permissions were previously mangled.
+
+Inside the container:
+- `nfs-klldap-idhelper resolve 'alice@REALM' --json`
+- `nfs-klldap-idhelper classify 'host/myfedora@REALM'`
+- `ganesha-ctl id-resolve 'user@REALM'`
+- `ganesha-ctl id-check`
+
+The helper uses a very small memory footprint and an efficient file-backed cache because it participates in the path for every mount and high-throughput file serving.
 
 The container image uses a split-stage strategy (build on Fedora minimal for the Rust binaries; runtime on Debian 13-slim) — see the Dockerfile for the exact comment and package choices.
 

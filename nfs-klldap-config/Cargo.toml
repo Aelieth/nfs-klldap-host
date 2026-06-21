@@ -19,6 +19,14 @@ path = "src/main.rs"
 name = "nfs-klldap-startup"
 path = "src/bin/nfs_klldap_startup.rs"
 
+# Lightweight always-running ID/Kerberos principal helper (daemon + CLI).
+# Classifies machine/root principals vs LDAP user principals, resolves to
+# POSIX uid/gid via NSS, and maintains a fast translation for stable NFS mounts.
+# Designed to be memory-efficient and in the path for every mount (esp. 4K workloads).
+[[bin]]
+name = "nfs-klldap-idhelper"
+path = "src/bin/nfs_klldap_idhelper.rs"
+
 [dependencies]
 serde = { workspace = true }
 toml = { workspace = true }

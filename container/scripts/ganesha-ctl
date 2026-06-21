@@ -28,7 +28,11 @@ Usage:
   remove-export <name>       # delete matching fragment
   show-exports               # list exports.d
   reload                     # bounce ganesha via supervisor
+  id-resolve <principal>     # resolve/classify a Kerberos principal via idhelper
+  id-check                   # quick health of the idhelper translator
 
+The idhelper daemon (nfs-klldap-idhelper) runs continuously to translate between
+machine principals (host/..., nfs/...) and LDAP users for stable mounts.
 Container watches config/exports.d; supervisor bounces on change.
 EOF
 }
@@ -145,6 +149,27 @@ case "$CMD" in
         log "Reload triggered (supervisor will respawn)."
         ;;
 
+    id-resolve)
+        P="${1:-}"
+        if [ -z "$P" ]; then
+            die "Usage: ganesha-ctl id-resolve <principal>"
+        fi
+        if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
+            /usr/local/bin/nfs-klldap-idhelper resolve "$P"
+        else
+            echo "idhelper not found; falling back to getent on short name"
+            SHORT=$(echo "$P" | sed 's/@.*//; s#.*/##')
+            getent passwd "$SHORT" || echo "no NSS entry for $SHORT"
+        fi
+        ;;
+    id-check)
+        if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
+            /usr/local/bin/nfs-klldap-idhelper check
+        else
+            echo "idhelper binary missing"
+            exit 1
+        fi
+        ;;
     *)
         usage
         exit 1

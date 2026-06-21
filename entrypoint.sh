@@ -15,6 +15,7 @@ STARTUP_BIN="${STARTUP_BIN:-/usr/local/bin/nfs-klldap-startup}"
 UI_BIN="${UI_BIN:-/usr/local/bin/nfs-klldap-ui}"
 WATCHER_BIN="${WATCHER_BIN:-/usr/local/bin/nfs-klldap-conf-watcher}"
 GANESHA_CTL="${GANESHA_CTL:-/usr/local/bin/ganesha-ctl}"
+IDHELPER_BIN="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
 # WebUI TLS certs are now handled internally by nfs-klldap-ui (rcgen self-signed
 # or user-provided via NFS_KLLDAP_WEBUI_TLS_*). The certs live under
 # /var/lib/nfs-klldap/webui-certs inside the container.
@@ -79,7 +80,7 @@ fix_derived_permissions() {
 preflight_checks() {
     local missing=0
 
-    for bin in "$CONFIG_BIN" "$STARTUP_BIN" "$UI_BIN" "$WATCHER_BIN" "$GANESHA_CTL"; do
+    for bin in "$CONFIG_BIN" "$STARTUP_BIN" "$UI_BIN" "$WATCHER_BIN" "$GANESHA_CTL" "$IDHELPER_BIN"; do
         if [ ! -x "$bin" ]; then
             error "Required binary missing or not executable: $bin"
             missing=1
@@ -111,6 +112,7 @@ GANESHA_PID=""
 WEBUI_PID=""
 DBUS_PID=""
 RPCBIND_PID=""
+IDHELPER_PID=""
 
 cleanup() {
     local reason="${1:-termination signal}"
@@ -120,7 +122,7 @@ cleanup() {
     trap - EXIT SIGTERM SIGINT
 
     # Prefer killing tracked PIDs when we have them
-    for pidvar in WEBUI_PID GANESHA_PID SSSD_PID WATCHER_PID DBUS_PID RPCBIND_PID; do
+    for pidvar in WEBUI_PID GANESHA_PID SSSD_PID WATCHER_PID DBUS_PID RPCBIND_PID IDHELPER_PID; do
         local pid="${!pidvar:-}"
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill -TERM "$pid" 2>/dev/null || true
@@ -133,6 +135,7 @@ cleanup() {
     pkill -TERM nfs-klldap-conf-watcher 2>/dev/null || true
     pkill -TERM dbus-daemon 2>/dev/null || true
     pkill -TERM rpcbind 2>/dev/null || true
+    pkill -TERM nfs-klldap-idhelper 2>/dev/null || true
 
     # Give processes a moment to exit cleanly
     sleep 1
@@ -173,6 +176,15 @@ handle_sighup() {
     sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} 2>/dev/null &
     SSSD_PID=$!
     info "SSSD restarted after config change"
+
+    # Recycle idhelper so it picks up any realm/hostname changes from regeneration.
+    if [ -n "${IDHELPER_PID:-}" ] && kill -0 "$IDHELPER_PID" 2>/dev/null; then
+        kill -TERM "$IDHELPER_PID" 2>/dev/null || true
+        sleep 0.2
+    fi
+    "$IDHELPER_BIN" daemon > >(tee -a /var/log/idhelper.log) 2>&1 &
+    IDHELPER_PID=$!
+    info "idhelper restarted"
 
     # WebUI cycle for share changes (FsManager allow roots loaded at start; shares need restart).
     if [ -n "${WEBUI_PID:-}" ] && kill -0 "$WEBUI_PID" 2>/dev/null; then
@@ -243,6 +255,22 @@ main() {
 
     if [ ! -S /var/lib/sss/pipes/nss ]; then
         die "SSSD NSS pipe did not appear. Check LLDAP connectivity and bind credentials."
+    fi
+
+    # Start the ID/Kerberos principal helper daemon.
+    # It must be running for the lifetime of the container because it is consulted
+    # (directly or via its fast cache file) for every mount to distinguish machine
+    # principals (host/..., nfs/...) from regular LDAP users and to provide fast
+    # uid/gid translation. This prevents the repeated mount collapse seen with
+    # Fedora Immutable clients.
+    info "Starting nfs-klldap-idhelper (Kerberos ID translator)..."
+    "$IDHELPER_BIN" daemon > >(tee -a /var/log/idhelper.log) 2>&1 &
+    IDHELPER_PID=$!
+    sleep 0.2
+    if ! kill -0 "$IDHELPER_PID" 2>/dev/null; then
+        warn "idhelper did not stay running; check /var/log/idhelper.log"
+    else
+        info "idhelper daemon started (pid $IDHELPER_PID)"
     fi
 
     # Ganesha prerequisites in the required order: rpcbind, dbus, wait for socket, then ganesha.

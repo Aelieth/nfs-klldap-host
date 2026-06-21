@@ -406,6 +406,12 @@ fn write_ganesha_main(
 DIRECTORY_SERVICES {{
     DomainName = {realm};
     Pwnam_Implementation = nsswitch;
+    # NOTE: Root_Kerberos_Principal remains a tiny safe static list.
+    # Live machine-vs-user principal distinction + uid/gid translation for
+    # clients (including Fedora Immutable) is performed by the always-running
+    # nfs-klldap-idhelper daemon (fast cache file + unix socket).
+    # We deliberately do not inject dynamic principal data here to avoid
+    # parser crashes in Ganesha.
     Root_Kerberos_Principal = host, nfs;
 }}
 

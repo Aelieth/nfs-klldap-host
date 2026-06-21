@@ -24,6 +24,13 @@
     {% endif %}
 </div>
 
+<div style="margin-top:8px; font-size:0.85em; opacity:0.9;">
+    <span class="state-label">Kerberos ID helper:</span>
+    <code>nfs-klldap-idhelper</code> is running as a daemon for machine vs. LDAP user principal translation.
+    Use <code>docker exec ... ganesha-ctl id-resolve 'user@REALM'</code> or <code>nfs-klldap-idhelper resolve ...</code> for diagnostics.
+    This is especially important for Fedora Immutable clients with host keytabs.
+</div>
+
 {% if let Some(msg) = message %}
     <div class="alert alert-success" style="margin:1rem 0;">
         {{ msg }}

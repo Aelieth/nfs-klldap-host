@@ -22,6 +22,14 @@ IDHELPER_BIN="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
 # decisions. Regular processes continue to use real SSSD users.
 NSS_PASSWD="${NSS_PASSWD:-/var/lib/nfs-klldap/nss_passwd}"
 NSS_GROUP="${NSS_GROUP:-/var/lib/nfs-klldap/nss_group}"
+
+# Path prefix so ganesha.nfsd finds the nfsidmap-idhelper shim (container/scripts/).
+# The shim calls back into nfs-klldap-idhelper resolve for principals like
+# testuser1@REALM and host/CLIENT@REALM. This makes the server do the same
+# lookup clients expect (directly addresses principal2uid "using nfsidmap"
+# + "Could not map" failures in ganesha.log). Only ganesha's PATH is affected.
+# Must be ganesha 9.6 / trixie compatible (no behavior change for other stacks).
+GANESHA_PATH_PREFIX="/usr/local/bin"
 # Compute a best-effort path for libnss_wrapper.so on Debian multiarch.
 NSS_WRAPPER_SO="${NSS_WRAPPER_SO:-}"
 if [ -z "${NSS_WRAPPER_SO}" ]; then
@@ -197,12 +205,14 @@ handle_sighup() {
     sleep 0.3
     info "Starting NFS-Ganesha (idhelper mappings via wrapper/extrausers)..."
     if [ "${USE_NSS_WRAPPER:-1}" = "1" ] || [ "${USE_NSS_WRAPPER:-1}" = "true" ]; then
+        PATH="${GANESHA_PATH_PREFIX}:$PATH" \
         NSS_WRAPPER_PASSWD="$NSS_PASSWD" \
         NSS_WRAPPER_GROUP="$NSS_GROUP" \
         LD_PRELOAD="${NSS_WRAPPER_SO}" \
             ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
     else
-        ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+        PATH="${GANESHA_PATH_PREFIX}:$PATH" \
+            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
     fi
     GANESHA_PID=$!
 
@@ -360,12 +370,14 @@ main() {
     # by setting USE_NSS_WRAPPER=0 if extrausers alone is sufficient.
     info "Starting NFS-Ganesha (idhelper mappings via wrapper/extrausers)..."
     if [ "${USE_NSS_WRAPPER:-1}" = "1" ] || [ "${USE_NSS_WRAPPER:-1}" = "true" ]; then
+        PATH="${GANESHA_PATH_PREFIX}:$PATH" \
         NSS_WRAPPER_PASSWD="$NSS_PASSWD" \
         NSS_WRAPPER_GROUP="$NSS_GROUP" \
         LD_PRELOAD="${NSS_WRAPPER_SO}" \
             ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
     else
-        ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+        PATH="${GANESHA_PATH_PREFIX}:$PATH" \
+            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
     fi
     GANESHA_PID=$!
 

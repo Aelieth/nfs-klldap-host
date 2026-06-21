@@ -30,6 +30,17 @@
 //! The goal is preventing immutable clients from tearing down sessions from
 //! mixing root and user credentials.
 //!
+//! Principal mapping parity requirement (ganesha 9.6 + trixie specific):
+//! The container (server) must be able to perform the *same* information lookup
+//! that a client does: `getent passwd testuser1` (and the full principal form
+//! via idhelper). Ganesha's internal mapper sometimes calls "nfsidmap" for
+//! "testuser1@REALM" (and host/... principals). The companion nfsidmap-idhelper
+//! shim (in PATH only for ganesha) + this binary ensure consistent uid/gid for
+//! both short names and full Kerberos principals. This was identified from
+//! ganesha.log lines containing "using nfsidmap", "Could not map principal",
+//! and uid2grp "Unsupported code path". Changes here must remain compatible
+//! with ganesha 9.6 parser/startup on Debian 13-slim trixie-backports.
+//!
 //! Cache file format (simple, robust, file-processing friendly):
 //!   # nfs-klldap-idhelper cache v1
 //!   # principal|uid|gid|kind|source
@@ -460,6 +471,9 @@ fn normalize_principal(p: &str) -> String {
 
 /// Try to resolve a name (possibly "user@REALM") to uid/gid via getent (NSS).
 /// This is the direct path used by both CLI and daemon on miss.
+/// Ensures the server can do `getent passwd testuser1` (and full principal via
+/// the idhelper) the same way clients do. See top-of-file comment on the
+/// ganesha 9.6 / trixie principal mapping stabilization requirement.
 fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
     // Try as-is first (handles user@REALM in some setups)
     if let Some(res) = resolve_getent(name_or_principal) {
@@ -479,6 +493,8 @@ fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
 
 fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
     // getent passwd <name> -> name:pass:uid:gid:...
+    // The short name path (testuser1) is the primary for "same lookup as client".
+    // Full principal is also attempted (by callers) for principal mapping.
     eprintln!("[idhelper] getent passwd \"{}\" called", name);
     let out = Command::new("getent")
         .args(["passwd", name])
@@ -631,7 +647,10 @@ fn resolve_principal(
         dlog!("  nss_wrapper_write err={}", e);
     }
 
-    // Optional: try to warm SSSD cache for the resolved name (non-blocking)
+    // Optional: try to warm SSSD cache for the resolved name (non-blocking).
+    // This helps both direct getent passwd testuser1 (short) and the full
+    // principal path (via shim + idhelper) see fresh data from LLDAP/SSSD.
+    // Must not change behavior for ganesha 9.6/trixie.
     if resolved.uid != 0 && resolved.uid != 65534 {
         let _ = Command::new("sss_cache")
             .args(["-u", &resolved.name])

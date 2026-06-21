@@ -86,8 +86,12 @@ Use from inside the container:
 ```
 nfs-klldap-idhelper resolve 'host/myclient.example.com@MY.REALM'
 ganesha-ctl id-resolve 'alice@MY.REALM'
+ganesha-ctl id-map-test testuser1
 cat /var/lib/nfs-klldap/nss_passwd   # what Ganesha sees for these names
+getent passwd testuser1
 ```
+
+The server must perform the same lookups clients do (`getent passwd testuser1` + principal forms). For ganesha 9.6 on Debian trixie, a small nfsidmap shim + explicit `Read_Access_Check_Policy = pre;` in CLIENT blocks (and EXPORT_DEFAULTS) were added to address mapping failures ("using nfsidmap", "Could not map", uid2grp unsupported, policy "(none/invalid)") seen in logs. The idhelper remains the authoritative classifier/resolver.
 
 This is what actually makes the idhelper work "in conjunction" with Ganesha and SSSD. It does **not** inject untrusted data into `ganesha.conf` (Ganesha stays on a conservative static `Root_Kerberos_Principal = host, nfs;` list; the live translation lives in the nss_wrapper view controlled by the idhelper).
 

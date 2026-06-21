@@ -433,6 +433,11 @@ NFSV4 {{
 EXPORT_DEFAULTS {{
     SecType = {sec};
     Protocols = 4;
+    # Explicit for ganesha 9.6 on Debian trixie (trixie-backports). Makes policy
+    # determinate for all derived CLIENTs/exports, eliminates "(none/invalid)"
+    # noise seen on internal pseudo root, and provides the documented pre-FSAL
+    # read check behavior (relaxed vs relying on parser defaults).
+    Read_Access_Check_Policy = pre;
 }}
 "#,
         realm = realm,
@@ -533,6 +538,9 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
 
         // CLIENT block (one per share) provides Access_Type (RW/RO) chosen for the share.
         // Protocols = 4 keeps the configuration consistent with the NFSv4-only server.
+        // Read_Access_Check_Policy = pre is explicit (ganesha 9.6 / trixie-backports only)
+        // to relax/determine access checks for Kerberos principal paths and avoid the
+        // "(none/invalid)" seen on pseudo-root + share exports in logs.
         // Additional CLIENT blocks may be appended manually after this one in the fragment
         // (they are not preserved across regeneration).
         let client_block = format!(
@@ -541,6 +549,9 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         Clients = *;
         Access_Type = {access};
         Protocols = 4;
+        # 9.6/trixie-specific: explicit to stabilize mount/ACCESS for krb5* creds
+        # (matches analyzed ganesha.log symptoms and manpage enum [pre,post,all]).
+        Read_Access_Check_Policy = pre;
     }}
 
 "#,
@@ -649,6 +660,7 @@ mod tests {
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
         assert!(frag.contains("Protocols = 4;"), "CLIENT should explicitly list Protocols = 4 to avoid core/client mismatch warning");
+        assert!(frag.contains("Read_Access_Check_Policy = pre;"), "CLIENT must declare Read_Access_Check_Policy = pre (ganesha 9.6/trixie specific for stable mounts)");
     }
 
     #[test]
@@ -713,6 +725,7 @@ mod tests {
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
         assert!(frag.contains("Protocols = 4;"), "CLIENT should explicitly list Protocols = 4 to avoid core/client mismatch warning");
+        assert!(frag.contains("Read_Access_Check_Policy = pre;"), "CLIENT must declare Read_Access_Check_Policy = pre (ganesha 9.6/trixie specific for stable mounts)");
     }
 
     #[test]
@@ -766,5 +779,6 @@ mod tests {
         assert!(frag.contains("SecType = krb5i;"), "EXPORT SecType should be krb5i");
         assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
         assert!(frag.contains("Protocols = 4;"), "CLIENT should explicitly list Protocols = 4 to avoid core/client mismatch warning");
+        assert!(frag.contains("Read_Access_Check_Policy = pre;"), "CLIENT must declare Read_Access_Check_Policy = pre (ganesha 9.6/trixie specific for stable mounts)");
     }
 }

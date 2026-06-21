@@ -1,0 +1,103 @@
+#!/bin/bash
+# nfsidmap-idhelper shim for nfs-klldap-host (ganesha 9.6 / Debian trixie specific)
+#
+# Purpose: Make the server perform the *same* principal-to-uid/gid lookup that
+# clients expect (getent + idhelper classification for testuser1@REALM and
+# host/CLIENT@REALM). Ganesha's principal2uid code path execs "nfsidmap" (see
+# ganesha.log: "Get uid for ... using nfsidmap").
+#
+# This script is placed early in PATH only for the ganesha.nfsd process.
+# On hit (via idhelper) it returns the numeric id exactly as nfsidmap would.
+# On miss it transparently falls back to the real system nfsidmap so nothing
+# is broken for other code paths.
+#
+# Only safe, documented 9.x behavior. No new Ganesha config options.
+#
+# Usage (as invoked by Ganesha idmapper):
+#   nfsidmap -u user@REALM
+#   nfsidmap -g user@REALM
+# Output on success: decimal uid (or gid) on stdout, exit 0.
+#
+# Install: copied by Dockerfile; entrypoint launches ganesha with PATH override.
+set -euo pipefail
+
+IDHELPER="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
+REAL_NFSIDMAP="/usr/sbin/nfsidmap"
+
+log() {
+    # Only when debugging the shim (not normal op)
+    if [ "${NFSIDMAP_IDHELPER_DEBUG:-0}" = "1" ]; then
+        echo "[nfsidmap-idhelper] $*" >&2
+    fi
+}
+
+# Minimal arg parsing for the forms Ganesha uses in the observed logs.
+# -u <name> or --user <name> for uid
+# -g <name> or --group <name> for gid
+# Also tolerate bare "principal" in some older call styles.
+mode="uid"
+principal=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -u|--user)
+            mode="uid"
+            shift
+            if [ $# -gt 0 ]; then principal="$1"; fi
+            ;;
+        -g|--group)
+            mode="gid"
+            shift
+            if [ $# -gt 0 ]; then principal="$1"; fi
+            ;;
+        -c|--clear|-C|--clear-all)
+            # Passthrough for cache ops; do not interfere.
+            exec "$REAL_NFSIDMAP" "$@"
+            ;;
+        -*)
+            # Unknown flag: let the real tool handle (or fail)
+            exec "$REAL_NFSIDMAP" "$@"
+            ;;
+        *)
+            # Bare arg is often the principal in simple calls.
+            if [ -z "$principal" ]; then
+                principal="$1"
+            fi
+            ;;
+    esac
+    shift
+done
+
+if [ -z "$principal" ]; then
+    # Nothing useful; delegate
+    exec "$REAL_NFSIDMAP" "$@"
+fi
+
+log "lookup mode=$mode principal=$principal"
+
+if [ -x "$IDHELPER" ]; then
+    # Use JSON for reliable parsing (no extra deps)
+    if json="$($IDHELPER resolve "$principal" --json 2>/dev/null || true)"; then
+        if [ -n "$json" ]; then
+            if [ "$mode" = "uid" ]; then
+                uid=$(printf '%s' "$json" | sed -n 's/.*"uid":\([0-9][0-9]*\).*/\1/p' | head -1)
+                if [ -n "$uid" ]; then
+                    log "resolved via idhelper -> uid=$uid"
+                    printf '%s\n' "$uid"
+                    exit 0
+                fi
+            else
+                gid=$(printf '%s' "$json" | sed -n 's/.*"gid":\([0-9][0-9]*\).*/\1/p' | head -1)
+                if [ -n "$gid" ]; then
+                    log "resolved via idhelper -> gid=$gid"
+                    printf '%s\n' "$gid"
+                    exit 0
+                fi
+            fi
+        fi
+    fi
+fi
+
+# Fallback: real nfsidmap (may use sss/winbind/nfsidmapd paths)
+log "falling back to $REAL_NFSIDMAP"
+exec "$REAL_NFSIDMAP" "$@"

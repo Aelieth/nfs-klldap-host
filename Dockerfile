@@ -108,8 +108,9 @@ RUN cp /output/nfs-klldap-config /usr/local/bin/ && \
 
 COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl
 COPY container/scripts/nfs-klldap-conf-watcher /usr/local/bin/nfs-klldap-conf-watcher
+COPY container/scripts/nfsidmap-idhelper /usr/local/bin/nfsidmap-idhelper
 COPY container/healthcheck.sh /container/healthcheck.sh
-RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /container/healthcheck.sh
+RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /usr/local/bin/nfsidmap-idhelper /container/healthcheck.sh
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

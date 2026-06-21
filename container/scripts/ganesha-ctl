@@ -30,6 +30,7 @@ Usage:
   reload                     # bounce ganesha via supervisor
   id-resolve <principal>     # resolve/classify a Kerberos principal via idhelper
   id-check                   # quick health of the idhelper translator
+  id-map-test [name]         # verify getent + principal mapping parity (testuser1 + host/...) for 9.6 mount stability
 
 The idhelper daemon (nfs-klldap-idhelper) is the authoritative principal
 classifier/resolver. It materializes mappings for Ganesha (via nss_wrapper files
@@ -170,6 +171,23 @@ case "$CMD" in
             echo "idhelper binary missing"
             exit 1
         fi
+        ;;
+    id-map-test)
+        # Exercise the "same information lookup as the client" contract.
+        # getent passwd testuser1 (short) + full principal via idhelper resolve.
+        # Also confirms CLIENT policy would be present in generated fragments.
+        # Specific to ganesha 9.6/trixie stabilization (see ganesha.log analysis).
+        TESTP="${1:-testuser1}"
+        echo "[ganesha-ctl] id-map-test for short name: getent passwd $TESTP"
+        getent passwd "$TESTP" || echo "  (getent short name returned non-zero; may be expected pre-user-create)"
+        if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
+            echo "[ganesha-ctl] id-map-test for principal form: $TESTP@ (via idhelper)"
+            /usr/local/bin/nfs-klldap-idhelper resolve "${TESTP}@" --json 2>/dev/null || /usr/local/bin/nfs-klldap-idhelper resolve "$TESTP" 2>/dev/null || true
+            echo "[ganesha-ctl] also testing a host principal form (common for clients):"
+            /usr/local/bin/nfs-klldap-idhelper resolve "host/localhost@" 2>/dev/null || true
+        fi
+        echo "[ganesha-ctl] fragment CLIENT policy check (if exports exist):"
+        grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep -E 'Read_Access_Check_Policy|CLIENT' || echo "  (no fragments or policy line not yet present)"
         ;;
     *)
         usage

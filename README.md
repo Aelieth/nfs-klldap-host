@@ -198,6 +198,8 @@ Inside the container:
 
 The helper is intentionally slim (single binary, stdlib + getent) and participates in the mount path via the nss_wrapper bridge rather than by editing ganesha.conf.
 
+For ganesha 9.6 + Debian trixie (trixie-backports) the generated CLIENT blocks now include an explicit `Read_Access_Check_Policy = pre;` (plus the same in EXPORT_DEFAULTS) and a tiny nfsidmap shim is used (only for ganesha) so the server does the same principal-to-uid lookups clients expect (`getent passwd testuser1` + full `user@REALM` / `host/...` via idhelper). This directly addresses observed log failures around principal2uid, uid2grp, managed groups, and policy "(none/invalid)".
+
 The container image uses a split-stage strategy (build on Fedora minimal for the Rust binaries; runtime on Debian 13-slim) — see the Dockerfile for the exact comment and package choices.
 
 ## License

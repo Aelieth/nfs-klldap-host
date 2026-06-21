@@ -66,12 +66,25 @@ else
 fi
 
 echo
+echo "[7] Principal mapping parity + CLIENT policy (getent testuser1 + id-map-test for 9.6 stabilization)..."
+ganesha-ctl id-map-test testuser1 2>/dev/null || echo "  id-map-test not available or failed (non-fatal during early verify)"
+# Quick extra confirmation that generated fragments carry the 9.6 policy (if any fragments exist)
+if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
+    if grep -q 'Read_Access_Check_Policy = pre' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
+        echo "  OK: Read_Access_Check_Policy = pre present in CLIENT block(s)"
+    else
+        echo "  (no policy line yet or fragments not generated; will appear after generate)"
+    fi
+fi
+
+echo
 echo "=== Verification complete ==="
 echo
 echo "Next steps if things look wrong:"
 echo "  - Check container logs for sssd and ganesha.nfsd"
 echo "  - Run: ganesha-ctl show-exports"
 echo "  - Run: ganesha-ctl id-check   (or nfs-klldap-idhelper check)"
+echo "  - Run: ganesha-ctl id-map-test testuser1   (verifies getent + principal mapping parity)"
 echo "  - Verify users have posixAccount + uidNumber/gidNumber in LLDAP"
 echo "  - Confirm host filesystem ownership matches those numeric IDs"
 echo "  - For Fedora Immutable clients: use the idhelper to confirm machine principals map correctly"

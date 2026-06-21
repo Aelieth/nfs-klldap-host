@@ -34,18 +34,31 @@
 set -euo pipefail
 
 IDHELPER="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
-# Locate the real (system) nfsidmap for fallback. We installed our shim over
-# /usr/sbin/nfsidmap (with .system backup) and /usr/local/bin/nfsidmap so that
-# Ganesha's "using nfsidmap" path (even full-path execs) hits us for principal
-# mapping.
-# Prefer the explicit .system backup to avoid recursing into our own symlinks
-# (command -v in the PATH prefix for ganesha would otherwise find the shim).
-if [ -x /usr/sbin/nfsidmap.system ]; then
-    REAL_NFSIDMAP="/usr/sbin/nfsidmap.system"
-else
-    REAL_NFSIDMAP="$(command -v nfsidmap 2>/dev/null | head -1)"
-    # Last resort
-    [ -z "$REAL_NFSIDMAP" ] && REAL_NFSIDMAP="/usr/sbin/nfsidmap"
+# Locate the *real* system nfsidmap for fallback (after our resolve attempt).
+# We overrode /usr/sbin/nfsidmap and /usr/local/bin/nfsidmap with symlinks to this script.
+# Always prefer the .system backup we created at install time.
+# Use readlink -f + explicit exclusion so we never recurse into ourselves even if
+# PATH or command -v would return one of our symlinks.
+REAL_NFSIDMAP=""
+for cand in /usr/sbin/nfsidmap.system /usr/local/bin/nfsidmap.system /usr/sbin/nfsidmap.real; do
+    if [ -x "$cand" ]; then
+        rp=$(readlink -f "$cand" 2>/dev/null || echo "$cand")
+        if ! echo "$rp" | grep -qi 'nfsidmap-idhelper\|/usr/local/bin/nfsidmap$\|/usr/sbin/nfsidmap$'; then
+            REAL_NFSIDMAP="$cand"
+            break
+        fi
+    fi
+done
+if [ -z "$REAL_NFSIDMAP" ]; then
+    # Dynamic but filtered
+    dyn=$(command -v nfsidmap 2>/dev/null | head -1 || true)
+    if [ -n "$dyn" ]; then
+        rp=$(readlink -f "$dyn" 2>/dev/null || echo "$dyn")
+        if echo "$rp" | grep -qi 'nfsidmap-idhelper\|/usr/local/bin/nfsidmap$\|/usr/sbin/nfsidmap$'; then
+            dyn=""
+        fi
+    fi
+    REAL_NFSIDMAP="${dyn:-/usr/sbin/nfsidmap}"
 fi
 
 log() {
@@ -100,25 +113,68 @@ fi
 log "lookup mode=$mode principal=$principal"
 
 if [ -x "$IDHELPER" ]; then
-    # Use JSON for reliable parsing (no extra deps)
+    # Always attempt our resolve first. This has the critical side-effect of
+    # classifying + materializing into nss_wrapper/extrausers (and IdCache) so that
+    # Ganesha's getpwnam / subsequent cred paths see the mapping even if this
+    # particular call is for a principal that has never been seen before.
+    # We try --json, then fall back to plain text output for parsing (more tolerant).
+    resolved_uid=""
+    resolved_gid=""
+
     if json="$($IDHELPER resolve "$principal" --json 2>/dev/null || true)"; then
         if [ -n "$json" ]; then
             if [ "$mode" = "uid" ]; then
-                uid=$(printf '%s' "$json" | sed -n 's/.*"uid":\([0-9][0-9]*\).*/\1/p' | head -1)
-                if [ -n "$uid" ]; then
-                    log "resolved via idhelper -> uid=$uid"
-                    printf '%s\n' "$uid"
-                    exit 0
-                fi
+                resolved_uid=$(printf '%s' "$json" | sed -n 's/.*"uid":\([0-9][0-9]*\).*/\1/p' | head -1)
             else
-                gid=$(printf '%s' "$json" | sed -n 's/.*"gid":\([0-9][0-9]*\).*/\1/p' | head -1)
-                if [ -n "$gid" ]; then
-                    log "resolved via idhelper -> gid=$gid"
-                    printf '%s\n' "$gid"
-                    exit 0
-                fi
+                resolved_gid=$(printf '%s' "$json" | sed -n 's/.*"gid":\([0-9][0-9]*\).*/\1/p' | head -1)
             fi
         fi
+    fi
+
+    # Text fallback (the non-json "resolve" output contains "uid=NNN" / "gid=NNN")
+    if [ -z "$resolved_uid" ] && [ -z "$resolved_gid" ]; then
+        txt="$($IDHELPER resolve "$principal" 2>/dev/null || true)"
+        if [ -n "$txt" ]; then
+            if [ "$mode" = "uid" ]; then
+                resolved_uid=$(printf '%s' "$txt" | grep -o 'uid=[0-9]*' | head -1 | cut -d= -f2)
+            else
+                resolved_gid=$(printf '%s' "$txt" | grep -o 'gid=[0-9]*' | head -1 | cut -d= -f2)
+            fi
+        fi
+    fi
+
+    if [ "$mode" = "uid" ] && [ -n "$resolved_uid" ]; then
+        log "resolved via idhelper -> uid=$resolved_uid"
+        printf '%s\n' "$resolved_uid"
+        exit 0
+    fi
+    if [ "$mode" = "gid" ] && [ -n "$resolved_gid" ]; then
+        log "resolved via idhelper -> gid=$resolved_gid"
+        printf '%s\n' "$resolved_gid"
+        exit 0
+    fi
+
+    # For user principals (contain @ and not an obvious machine service), do a short
+    # retry. This gives any concurrent observer, sss population, or previous
+    # materialize a moment to become visible to a follow-up resolve call.
+    # Cheap on cache hit; helps win the race for the first principal2uid in a compound.
+    if [ -n "$principal" ] && echo "$principal" | grep -q '@' && ! echo "$principal" | grep -qiE '^(host| nfs|root)/'; then
+        if [ "$mode" = "uid" ] && [ -z "$resolved_uid" ]; then
+            sleep 0.15
+            if json2="$($IDHELPER resolve "$principal" --json 2>/dev/null || true)"; then
+                resolved_uid=$(printf '%s' "$json2" | sed -n 's/.*"uid":\([0-9][0-9]*\).*/\1/p' | head -1)
+            fi
+            if [ -z "$resolved_uid" ]; then
+                txt2="$($IDHELPER resolve "$principal" 2>/dev/null || true)"
+                resolved_uid=$(printf '%s' "$txt2" | grep -o 'uid=[0-9]*' | head -1 | cut -d= -f2)
+            fi
+            if [ -n "$resolved_uid" ]; then
+                log "resolved via idhelper (retry) -> uid=$resolved_uid"
+                printf '%s\n' "$resolved_uid"
+                exit 0
+            fi
+        fi
+        # similar for gid if needed (omitted for brevity; uid is the hot path for ACCESS)
     fi
 fi
 

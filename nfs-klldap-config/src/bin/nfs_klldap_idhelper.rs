@@ -340,9 +340,14 @@ fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
         }
     }
 
-    // Always ensure at least a root group entry
+    // Always ensure at least a root group entry.
+    // For machine principals (uid/gid 0) we also synthesize a couple of
+    // common supplementals. This gives uid2grp_allocate_by_principal and
+    // set_extended_groups something to work with for root creds and reduces
+    // (but does not completely eliminate) the expected INFO noise for
+    // host/ nfs/ machine principals.
     if seen_gid.is_empty() || !seen_gid.contains(&0) {
-        group_lines.push("root:x:0:".to_string());
+        group_lines.push("root:x:0:root,daemon,bin".to_string());
     }
 
     // Write passwd atomically
@@ -826,7 +831,20 @@ fn resolve_principal(
         let _ = Command::new("sss_cache")
             .args(["-u", &resolved.name])
             .output();
+        // Also do a best-effort getent (via the shell helper) to encourage sss
+        // to cache the short name for the preload/extrausers path Ganesha may use.
+        let _ = Command::new("getent")
+            .args(["passwd", &resolved.name])
+            .output();
     }
+
+    // Distinct log line for correlation with Ganesha "Could not map" / nfs_req_creds failures.
+    // Helps operators see that our side of the mapping just became available for
+    // the next compound or retry.
+    eprintln!(
+        "[idhelper] MAPPED FOR GANESHA principal=\"{}\" uid={} gid={} source={}",
+        resolved.principal, resolved.uid, resolved.gid, resolved.source
+    );
 
     let elapsed = start.elapsed();
     dlog!("  elapsed={:?}", elapsed);
@@ -1046,6 +1064,41 @@ fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
 fn extract_candidate_principal(line: &str, realm: &str) -> Option<String> {
     let realm_lower = realm.to_ascii_lowercase();
 
+    // 0. High-signal early sighting: Ganesha is about to / is calling the idmapper for a principal.
+    //    "Get uid for testuser1@REALM using nfsidmap" tells us a user principal is needed *now*.
+    //    Extract and resolve immediately (observer background) so state may be ready or for retries/other threads.
+    if let Some(start) = line.find("Get uid for ") {
+        let rest = &line[start + "Get uid for ".len()..];
+        if let Some(end) = rest.find(|c: char| !c.is_alphanumeric() && c != '@' && c != '.' && c != '-' && c != '_') {
+            let cand = &rest[..end].trim();
+            if cand.contains('@') && cand.to_ascii_lowercase().contains(&realm_lower) {
+                // Only treat non-machine service forms as user candidates here.
+                if !cand.to_ascii_lowercase().starts_with("host/") && !cand.to_ascii_lowercase().starts_with("nfs/") && !cand.to_ascii_lowercase().starts_with("root/") {
+                    return Some(cand.to_string());
+                }
+            }
+        }
+    }
+
+    // 0b. Special high-signal case for our own mapping failures.
+    //    When Ganesha logs "Could not map principal ...", extract immediately.
+    if let Some(start) = line.find("Could not map principal ") {
+        let rest = &line[start + "Could not map principal ".len()..];
+        if let Some(end) = rest.find(|c: char| !c.is_alphanumeric() && c != '@' && c != '.' && c != '-' && c != '_') {
+            let cand = &rest[..end];
+            if cand.contains('@') && cand.to_ascii_lowercase().contains(&realm_lower) {
+                return Some(cand.to_string());
+            }
+        }
+        if let Some(at_pos) = rest.find('@') {
+            let cand = &rest[..at_pos+1 + rest[at_pos+1..].find(|c: char| !c.is_alphanumeric() && c != '.' && c != '-').unwrap_or(rest.len()-at_pos-1)];
+            let cand = cand.split_whitespace().next().unwrap_or(cand);
+            if cand.contains('@') && cand.to_ascii_lowercase().contains(&realm_lower) {
+                return Some(cand.to_string());
+            }
+        }
+    }
+
     // 1. Look for explicit Kerberos principals containing the realm (user@REALM or host/xxx@REALM).
     //    Keep relatively permissive for real principals, but still validate the local part.
     if let Some(at_pos) = line.find('@') {
@@ -1234,12 +1287,48 @@ fn get_realm() -> String {
     "EXAMPLE.COM".to_string()
 }
 
+/// Try to perform RESOLVE via the running daemon's unix socket.
+/// Returns Some(Resolved) on success (the daemon did the work + materialize).
+/// Falls back to local logic in the caller if this returns None.
+fn try_resolve_via_socket(principal: &str) -> Option<Resolved> {
+    let mut stream = UnixStream::connect(SOCKET_PATH).ok()?;
+    let req = format!("RESOLVE {}\n", principal);
+    stream.write_all(req.as_bytes()).ok()?;
+    let _ = stream.flush();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).ok()?;
+    let resp = line.trim();
+    if let Some(rest) = resp.strip_prefix("OK ") {
+        let parts: Vec<&str> = rest.split('|').collect();
+        if parts.len() == 5 {
+            if let (Ok(uid), Ok(gid)) = (parts[1].parse::<u32>(), parts[2].parse::<u32>()) {
+                let kind = match parts[3] {
+                    "machine" => PrincipalKind::Machine,
+                    "user" => PrincipalKind::User,
+                    _ => PrincipalKind::Unknown,
+                };
+                // Name computation is done by the daemon's resolve_principal for the reply.
+                // For CLI printing we use the local part (consistent with normal Resolved.name for users).
+                let name = parts[0].split('@').next().unwrap_or(parts[0]).to_string();
+                return Some(Resolved {
+                    principal: parts[0].to_string(),
+                    name,
+                    uid,
+                    gid,
+                    kind,
+                    source: parts[4].to_string(),
+                });
+            }
+        }
+    }
+    None
+}
+
 fn handle_cli(args: &[String]) {
     let cmd = args.first().map(|s| s.as_str()).unwrap_or("help");
     let realm = get_realm();
     let server_variants = get_server_variants();
-
-    let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
 
     match cmd {
         "resolve" => {
@@ -1249,9 +1338,17 @@ fn handle_cli(args: &[String]) {
                 std::process::exit(2);
             }
             dlog!("cli RESOLVE p=\"{}\"", p);
-            let json = args.iter().any(|a| a == "--json" || a == "-j");
-            let r = resolve_principal(p, &realm, &server_variants, &mut cache);
-            if json {
+            let json_flag = args.iter().any(|a| a == "--json" || a == "-j");
+
+            // Prefer live daemon cache/state via socket (observer results become immediately visible to shim/CLI).
+            let r = if let Some(r) = try_resolve_via_socket(p) {
+                r
+            } else {
+                let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
+                resolve_principal(p, &realm, &server_variants, &mut cache)
+            };
+
+            if json_flag {
                 println!(
                     r#"{{"principal":"{}","name":"{}","uid":{},"gid":{},"kind":"{}","source":"{}"}}"#,
                     r.principal, r.name, r.uid, r.gid, r.kind.as_str(), r.source
@@ -1278,7 +1375,8 @@ fn handle_cli(args: &[String]) {
             println!("server_variants: {:?}", server_variants);
             println!("cache file: {}", CACHE_PATH);
             println!("socket: {}", SOCKET_PATH);
-            // Quick self test
+            // Quick self test (local path)
+            let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
             let test_p = format!("user-test@{}", realm);
             let _ = resolve_principal(&test_p, &realm, &server_variants, &mut cache);
             println!("self-test resolve executed (may be unknown without real LDAP)");
@@ -1362,6 +1460,21 @@ fn run_daemon() {
 
     println!("[idhelper] daemon listening on {}", SOCKET_PATH);
     println!("[idhelper] realm={} variants={:?}", realm, server_variants);
+
+    // Optional pre-resolution at startup (for testing or known environments).
+    // Set e.g. NFS_KLLDAP_IDHELPER_PRERESOLVE="testuser1@REALM,alice@REALM"
+    // This forces early resolve + materialize so the *first* principal2uid/shim call
+    // for those users sees the mapping (helps the synchronous path before any log line).
+    if let Ok(list) = std::env::var("NFS_KLLDAP_IDHELPER_PRERESOLVE") {
+        for p in list.split(',') {
+            let p = p.trim();
+            if !p.is_empty() {
+                let mut guard = cache.lock().unwrap();
+                let _ = resolve_principal(p, &realm, &server_variants, &mut guard);
+                eprintln!("[idhelper] pre-resolved at startup: {}", p);
+            }
+        }
+    }
 
     // Start background log observer so we automatically see mount/auth activity
     // from Ganesha (client IDs, names like "Linux NFSv4.x <host>", any @REALM principals
@@ -1765,5 +1878,24 @@ mod tests {
         assert_eq!(r4.uid, 0);
         assert_eq!(r4.gid, 0);
         assert_eq!(r4.source, "special");
+    }
+
+    #[test]
+    fn extract_catches_could_not_map_line_for_user_principal() {
+        // This is the key new pattern for closing the first-use timing gap.
+        // Ganesha logs this when its principal2uid can't map during nfs_req_creds/ACCESS.
+        // We must extract the principal so the observer resolves it promptly.
+        let line = r#"nfs_req_creds :ID MAPPER :INFO :Could not map principal testuser1@SATOMLIN.COM to uid"#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        assert_eq!(r, Some("testuser1@SATOMLIN.COM".to_string()));
+    }
+
+    #[test]
+    fn extract_catches_get_uid_using_nfsidmap_line() {
+        // Early sighting: Ganesha announcing it is calling the mapper for a user principal.
+        // Extracting here allows the observer to resolve *before or during* the blocking shim call.
+        let line = r#"principal2uid : Get uid for testuser1@SATOMLIN.COM using nfsidmap"#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        assert_eq!(r, Some("testuser1@SATOMLIN.COM".to_string()));
     }
 }

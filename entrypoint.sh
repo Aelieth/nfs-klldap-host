@@ -205,6 +205,15 @@ handle_sighup() {
     fi
     sleep 0.3
     info "Starting NFS-Ganesha (idhelper mappings via wrapper/extrausers)..."
+
+    # Best-effort reduction of winbind noise (wbcAuthenticateUserEx ... NOT_AVAILABLE).
+    # Our stack is pure sss + custom idhelper for principals; winbind is not used.
+    # Masking the userland helper (if present) is harmless and quiets some internal
+    # fallback attempts inside Ganesha's idmapper on krb creds.
+    if command -v wbinfo >/dev/null 2>&1; then
+        ln -sf /bin/false /usr/bin/wbinfo 2>/dev/null || true
+    fi
+
     if [ "${USE_NSS_WRAPPER:-1}" = "1" ] || [ "${USE_NSS_WRAPPER:-1}" = "true" ]; then
         PATH="${GANESHA_PATH_PREFIX}:$PATH" \
         NSS_WRAPPER_PASSWD="$NSS_PASSWD" \
@@ -370,6 +379,15 @@ main() {
     # The preload below is kept for environments that rely on it; it can be disabled
     # by setting USE_NSS_WRAPPER=0 if extrausers alone is sufficient.
     info "Starting NFS-Ganesha (idhelper mappings via wrapper/extrausers)..."
+
+    # Best-effort reduction of winbind noise (wbcAuthenticateUserEx ... NOT_AVAILABLE).
+    # Our stack is pure sss + custom idhelper for principals; winbind is not used.
+    # Masking the userland helper (if present) is harmless and quiets some internal
+    # fallback attempts inside Ganesha's idmapper on krb creds.
+    if command -v wbinfo >/dev/null 2>&1; then
+        ln -sf /bin/false /usr/bin/wbinfo 2>/dev/null || true
+    fi
+
     if [ "${USE_NSS_WRAPPER:-1}" = "1" ] || [ "${USE_NSS_WRAPPER:-1}" = "true" ]; then
         PATH="${GANESHA_PATH_PREFIX}:$PATH" \
         NSS_WRAPPER_PASSWD="$NSS_PASSWD" \

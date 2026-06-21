@@ -79,6 +79,8 @@ fi
 # Confirm the nfsidmap shim name is present for ganesha (PATH + /usr/sbin for full path calls)
 if [ -e /usr/local/bin/nfsidmap ] || [ -e /usr/sbin/nfsidmap ] || [ -L /usr/sbin/nfsidmap ]; then
     echo "  OK: 'nfsidmap' (shim/symlink) visible in /usr/local/bin and/or /usr/sbin for principal2uid"
+    # The idhelper observer now also reacts to "Could not map principal ..." lines
+    # (the main remaining first-use timing symptom) and forces a resolve+materialize.
 else
     echo "  WARN: no 'nfsidmap' shim visible; interception may fail for Ganesha nfsidmap calls"
 fi

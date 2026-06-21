@@ -31,8 +31,9 @@ Usage:
   id-resolve <principal>     # resolve/classify a Kerberos principal via idhelper
   id-check                   # quick health of the idhelper translator
 
-The idhelper daemon (nfs-klldap-idhelper) runs continuously to translate between
-machine principals (host/..., nfs/...) and LDAP users for stable mounts.
+The idhelper daemon (nfs-klldap-idhelper) is the authoritative principal
+classifier/resolver. It materializes mappings for Ganesha (via nss_wrapper files
+that Ganesha is launched under). Use id-resolve / id-check for diagnostics.
 Container watches config/exports.d; supervisor bounces on change.
 EOF
 }

@@ -182,9 +182,13 @@ These contracts are also documented in source comments in `nfs-klldap-ui/src/fs.
 
 ### nfs-klldap-idhelper (Kerberos ID translator)
 
-Lightweight always-running daemon (started after SSSD) that distinguishes **machine principals** (`host/...`, `nfs/...`, client host keytab credentials) from **LDAP-authenticated users** and provides fast uid/gid resolution + a simple on-disk cache file.
+Lightweight always-running daemon (started after SSSD) that is the **authoritative classifier and resolver** for Kerberos principals:
 
-Essential for stable mounts from Fedora Immutable (and other) clients where permissions were previously mangled.
+- Distinguishes **machine principals** (`host/...`, `nfs/...`, `root/...` from client host keytabs on Fedora Immutable etc.) from **LDAP-authenticated users**.
+- Resolves them to uid/gid (machines → 0, users → real POSIX ids from SSSD/LLDAP).
+- On resolution, materializes the decision into nss_wrapper passwd/group files.
+- Ganesha is started under `LD_PRELOAD=libnss_wrapper.so` pointing at those files, so Ganesha's getpwnam path (Kerberos owner → uid for VFS) uses the idhelper's view. This is what prevents session teardown from mixed root/user credentials on immutable clients.
+- Also maintains the classic fast in-memory + on-disk cache + unix socket (used by ganesha-ctl, diagnostics, and the internal Ganesha log observer).
 
 Inside the container:
 - `nfs-klldap-idhelper resolve 'alice@REALM' --json`
@@ -192,7 +196,7 @@ Inside the container:
 - `ganesha-ctl id-resolve 'user@REALM'`
 - `ganesha-ctl id-check`
 
-The helper uses a very small memory footprint and an efficient file-backed cache because it participates in the path for every mount and high-throughput file serving.
+The helper is intentionally slim (single binary, stdlib + getent) and participates in the mount path via the nss_wrapper bridge rather than by editing ganesha.conf.
 
 The container image uses a split-stage strategy (build on Fedora minimal for the Rust binaries; runtime on Debian 13-slim) — see the Dockerfile for the exact comment and package choices.
 

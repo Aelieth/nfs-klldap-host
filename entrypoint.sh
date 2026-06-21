@@ -16,6 +16,36 @@ UI_BIN="${UI_BIN:-/usr/local/bin/nfs-klldap-ui}"
 WATCHER_BIN="${WATCHER_BIN:-/usr/local/bin/nfs-klldap-conf-watcher}"
 GANESHA_CTL="${GANESHA_CTL:-/usr/local/bin/ganesha-ctl}"
 IDHELPER_BIN="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
+# nss_wrapper integration: the idhelper materializes /var/lib/nfs-klldap/nss_{passwd,group}
+# containing classified machine (→ uid 0) and user principals. Only Ganesha is run under
+# the preload so its getpwnam (used for Kerberos NFSv4 owner mapping) sees the idhelper's
+# decisions. Regular processes continue to use real SSSD users.
+NSS_PASSWD="${NSS_PASSWD:-/var/lib/nfs-klldap/nss_passwd}"
+NSS_GROUP="${NSS_GROUP:-/var/lib/nfs-klldap/nss_group}"
+# Compute a best-effort path for libnss_wrapper.so on Debian multiarch.
+NSS_WRAPPER_SO="${NSS_WRAPPER_SO:-}"
+if [ -z "${NSS_WRAPPER_SO}" ]; then
+    # Try dpkg-architecture first (most reliable on Debian)
+    if command -v dpkg-architecture >/dev/null 2>&1; then
+        arch=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)
+        if [ -n "$arch" ] && [ -f "/usr/lib/$arch/libnss_wrapper.so" ]; then
+            NSS_WRAPPER_SO="/usr/lib/$arch/libnss_wrapper.so"
+        fi
+    fi
+fi
+if [ -z "${NSS_WRAPPER_SO}" ]; then
+    # Common fallbacks for x86_64 and aarch64
+    for cand in \
+        /usr/lib/x86_64-linux-gnu/libnss_wrapper.so \
+        /usr/lib/aarch64-linux-gnu/libnss_wrapper.so \
+        /usr/lib/libnss_wrapper.so
+    do
+        if [ -f "$cand" ]; then
+            NSS_WRAPPER_SO="$cand"
+            break
+        fi
+    done
+fi
 # WebUI TLS certs are now handled internally by nfs-klldap-ui (rcgen self-signed
 # or user-provided via NFS_KLLDAP_WEBUI_TLS_*). The certs live under
 # /var/lib/nfs-klldap/webui-certs inside the container.
@@ -165,8 +195,15 @@ handle_sighup() {
         pkill -TERM ganesha.nfsd 2>/dev/null || true
     fi
     sleep 0.3
-    info "Starting NFS-Ganesha..."
-    ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    info "Starting NFS-Ganesha (idhelper mappings via wrapper/extrausers)..."
+    if [ "${USE_NSS_WRAPPER:-1}" = "1" ] || [ "${USE_NSS_WRAPPER:-1}" = "true" ]; then
+        NSS_WRAPPER_PASSWD="$NSS_PASSWD" \
+        NSS_WRAPPER_GROUP="$NSS_GROUP" \
+        LD_PRELOAD="${NSS_WRAPPER_SO}" \
+            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    else
+        ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    fi
     GANESHA_PID=$!
 
     # SSSD almost always needs a full restart when its config changes (bind DN,
@@ -235,6 +272,9 @@ main() {
     fix_derived_permissions
 
     # --- Start core services (order matters for stable Ganesha bring-up) ---
+
+    # Ensure directories used by idhelper for its cache + nss_wrapper/extrausers materialization.
+    mkdir -p /var/lib/nfs-klldap /var/run/nfs-klldap /var/lib/extrausers
 
     # SSSD (provides NSS for POSIX identity from LLDAP). Start early; Ganesha
     # and the rest of the stack benefit from consistent UID/GID mapping.
@@ -314,8 +354,19 @@ main() {
     fi
 
     # Ganesha (the actual NFS server). Start only after rpcbind + dbus readiness checks.
-    info "Starting NFS-Ganesha..."
-    ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    # The idhelper materializes machine overrides (via nss_wrapper *and* extrausers).
+    # nsswitch is configured with extrausers so LDAP users remain visible via sss.
+    # The preload below is kept for environments that rely on it; it can be disabled
+    # by setting USE_NSS_WRAPPER=0 if extrausers alone is sufficient.
+    info "Starting NFS-Ganesha (idhelper mappings via wrapper/extrausers)..."
+    if [ "${USE_NSS_WRAPPER:-1}" = "1" ] || [ "${USE_NSS_WRAPPER:-1}" = "true" ]; then
+        NSS_WRAPPER_PASSWD="$NSS_PASSWD" \
+        NSS_WRAPPER_GROUP="$NSS_GROUP" \
+        LD_PRELOAD="${NSS_WRAPPER_SO}" \
+            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    else
+        ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    fi
     GANESHA_PID=$!
 
     # WebUI (HTTPS on 9630 via axum-server + rustls; self-signed unless NFS_KLLDAP_WEBUI_TLS_* set)

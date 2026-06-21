@@ -76,19 +76,26 @@ RUN apt-get update && \
         dbus rpcbind \
         inotify-tools procps iproute2 netcat-openbsd \
         ldap-utils \
+        libnss-wrapper libnss-extrausers \
         strace less nano ca-certificates openssl sudo hostname && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    # Ensure NSS integration for SSSD matches the effective state provided by the current
-    # Fedora sssd packaging (so getent, Ganesha VFS uidmapping, and WebUI see LDAP users).
+    # Ensure NSS integration:
+    # - sss for LDAP users/groups from LLDAP
+    # - extrausers after files so the idhelper can write machine principal overrides
+    #   (host/..., client names) that resolve to uid 0 without hiding real SSSD users.
     sed -i 's/^\(passwd:.*\)/\1 sss/' /etc/nsswitch.conf && \
     sed -i 's/^\(group:.*\)/\1 sss/' /etc/nsswitch.conf && \
-    sed -i 's/^\(shadow:.*\)/\1 sss/' /etc/nsswitch.conf || true
+    sed -i 's/^\(shadow:.*\)/\1 sss/' /etc/nsswitch.conf || true && \
+    # Insert extrausers between files and sss (idempotent best-effort).
+    sed -i '/^passwd:/ s/ sss/ extrausers sss/' /etc/nsswitch.conf && \
+    sed -i '/^group:/  s/ sss/ extrausers sss/' /etc/nsswitch.conf || true
 
 RUN mkdir -p \
     /etc/ganesha /etc/ganesha/exports.d /var/log/ganesha \
     /etc/sssd /var/lib/sss /var/run/ganesha /var/run/sssd \
     /var/lib/nfs-klldap /var/run/nfs-klldap \
     /var/lib/nfs-klldap/webui-certs /container/scripts /output \
+    /var/lib/extrausers \
     /run/dbus /run/rpcbind
 
 COPY --from=builder /output/ /output/

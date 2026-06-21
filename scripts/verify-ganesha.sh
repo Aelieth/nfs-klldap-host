@@ -59,6 +59,8 @@ echo "[6] Kerberos ID helper (machine vs user principal translator)..."
 if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
     /usr/local/bin/nfs-klldap-idhelper explain || true
     /usr/local/bin/nfs-klldap-idhelper check || true
+    echo "  idhelper override files (extrausers preferred, wrapper for preload):"
+    ls -l /var/lib/extrausers/passwd /var/lib/extrausers/group /var/lib/nfs-klldap/nss_passwd /var/lib/nfs-klldap/nss_group 2>/dev/null || echo "  (not materialized yet; will appear on first client name observe)"
 else
     echo "  WARN: nfs-klldap-idhelper not present (mount stability for Kerberos clients may be impacted)"
 fi

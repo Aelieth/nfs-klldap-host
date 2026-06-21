@@ -68,23 +68,28 @@ Client `rpc.idmapd` (Method=sss) still helps pretty `ls` output on NFS clients.
 
 ## Machine vs User Principals (Fedora Immutable + host keytabs)
 
-When clients use Kerberos host keytabs (e.g. `/etc/krb5.keytab` on Fedora Immutable) plus user TGTs, Ganesha receives both:
-- Machine principals: `host/CLIENT@REALM`, `nfs/CLIENT@REALM`, or root operations.
-- User principals: `alice@REALM` (resolved via SSSD + LLDAP POSIX attributes).
+When clients use Kerberos host keytabs (e.g. `/etc/krb5.keytab` on Fedora Immutable/Silverblue) plus user TGTs, Ganesha receives Kerberos-authenticated principals on NFSv4 compounds:
+- Machine principals: `host/CLIENT@REALM`, `nfs/CLIENT@REALM`, `root/...` (from the client's host keytab).
+- User principals: `alice@REALM` (from the user's TGT, resolved via SSSD + LLDAP POSIX attributes).
 
-The container runs `nfs-klldap-idhelper` as a persistent daemon. It:
-- Classifies principals (machine vs user).
-- Resolves them to the correct numeric uid/gid (or 0 for machine root-ish handling).
-- Maintains a fast in-memory + simple line-oriented cache file (`/var/lib/nfs-klldap/idmap.cache`) that is cheap to process even under 4K video workloads.
-- Exposes a unix socket for low-latency queries.
+If Ganesha maps these inconsistently (or falls back to nobody/65534 for machine names), the client can see credential mixing that causes NFSv4 session teardown or permission failures.
+
+`nfs-klldap-idhelper` is the authoritative layer for this:
+
+- It classifies principals (machine vs. user) using `is_machine_principal`.
+- It resolves via NSS/SSSD (users) or forces uid/gid 0 (machines).
+- On every resolution it materializes machine overrides (uid 0) into both the nss_wrapper files and `/var/lib/extrausers/{passwd,group}` (supplemental).
+- Ganesha either runs under the (optional) wrapper preload or (preferred) benefits from extrausers in nsswitch after "files". This ensures machine principals (from client names or host/...) map to 0 while normal LDAP users resolve via sss without being hidden. The idhelper's classification is what prevents the mixed-credential session teardown on immutable clients.
+- It also keeps its classic fast cache + unix socket (used by `ganesha-ctl id-resolve`, the log observer, and diagnostics).
 
 Use from inside the container:
 ```
 nfs-klldap-idhelper resolve 'host/myclient.example.com@MY.REALM'
 ganesha-ctl id-resolve 'alice@MY.REALM'
+cat /var/lib/nfs-klldap/nss_passwd   # what Ganesha sees for these names
 ```
 
-This translation layer is what prevents the repeated mount collapse / permission mangling between immutable clients and the Docker Ganesha stack. It does **not** inject untrusted data into `ganesha.conf` (Ganesha stays on a conservative static `Root_Kerberos_Principal` list).
+This is what actually makes the idhelper work "in conjunction" with Ganesha and SSSD. It does **not** inject untrusted data into `ganesha.conf` (Ganesha stays on a conservative static `Root_Kerberos_Principal = host, nfs;` list; the live translation lives in the nss_wrapper view controlled by the idhelper).
 
 See the main README for more on the helper.
 

@@ -206,15 +206,19 @@ mod tests {
         // (Enable_UDP / Enable_NLM / Enable_RQUOTA are intentionally emitted as explicit = false
         //  in the current proven-safe NFS_CORE_PARAM; only the classic port + Transports keys are omitted.)
 
-        // GANESHA_DEBUG not set (clean env) => LOG block must be absent (centralized debug off by default)
+        // A baseline (INFO/EVENT) LOG block is now always emitted so the idhelper
+        // observer has a better chance of seeing client/owner identity strings
+        // during normal (non-debug) mounts. Only the heavy FULL_DEBUG set is gated.
         assert!(
-            !main.contains("LOG {"),
-            "LOG debug block must not be present when GANESHA_DEBUG != TRUE"
+            main.contains("LOG {"),
+            "baseline LOG block should be present even without GANESHA_DEBUG"
         );
         assert!(
             !main.contains("IDMAPPER = FULL_DEBUG"),
-            "component debug must be absent by default"
+            "FULL_DEBUG must be absent by default"
         );
+        // The lighter components we care about for principal discovery should be present
+        assert!(main.contains("CLIENTID = DEBUG") || main.contains("IDMAPPER = EVENT"));
         // Regression guard for CLIENT block parameters
         assert!(!main.contains("Principals ="));
 
@@ -242,8 +246,8 @@ mod tests {
         let _env = ENV_LOCK.lock().unwrap();
         let _guards = clean_core_env();
 
-        // 1) Default (no GANESHA_DEBUG) - already covered by generate_produces_expected_artifacts,
-        // but double-check a fresh generation here too for the specific block.
+        // 1) Default (no GANESHA_DEBUG) - baseline LOG (with CLIENTID etc) is intentionally
+        //    always present now. Only the FULL_DEBUG variant is controlled by the env var.
         let cfg = minimal_cfg();
         let tmp = tempfile::tempdir().unwrap();
         let paths = GenerationPaths {
@@ -255,8 +259,12 @@ mod tests {
         generate_all(&cfg, &paths).expect("generate default");
         let main_default = fs::read_to_string(&paths.ganesha_conf).unwrap();
         assert!(
-            !main_default.contains("LOG {"),
-            "debug LOG must be absent without GANESHA_DEBUG=TRUE"
+            main_default.contains("LOG {"),
+            "baseline LOG must be present (no longer gated behind GANESHA_DEBUG)"
+        );
+        assert!(
+            !main_default.contains("IDMAPPER = FULL_DEBUG"),
+            "FULL_DEBUG must be absent without GANESHA_DEBUG=TRUE"
         );
 
         // 2) With GANESHA_DEBUG=TRUE -> block must appear with exact keys

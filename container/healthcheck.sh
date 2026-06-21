@@ -71,11 +71,16 @@ if command -v /usr/local/bin/ganesha-ctl >/dev/null 2>&1; then
     fi
 fi
 
-# ID helper presence (critical for Kerberos mount stability on Immutable clients)
+# ID helper presence + wrapper files (critical for Kerberos mount stability on Immutable clients)
 if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
     echo "OK: nfs-klldap-idhelper present"
 else
     echo "WARN: nfs-klldap-idhelper missing — Kerberos ID translation may be degraded"
+fi
+if [ -f /var/lib/nfs-klldap/nss_passwd ] || [ -f /var/lib/extrausers/passwd ]; then
+    echo "OK: idhelper machine overrides present (wrapper or extrausers)"
+else
+    echo "WARN: no idhelper override files yet (may appear after first client observes)"
 fi
 
 ok "Ganesha (2049) + SSSD + WebUI (9630) are healthy"

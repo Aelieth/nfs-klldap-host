@@ -16,9 +16,19 @@
 //! - Clear distinction between machine principals (host/, nfs/, root/, and
 //!   server/client host variants) and regular LDAP user principals.
 //! - Safe: does NOT inject arbitrary data into ganesha.conf. Ganesha config
-//!   generation stays conservative and parser-safe. Translation lives here.
+//!   generation stays conservative and parser-safe. Translation lives here
+//!   and is surfaced to Ganesha via nss_wrapper files (see below).
 //! - Can operate standalone (direct NSS resolution) when the daemon is not
 //!   reachable (early boot, diagnostics).
+//!
+//! Ganesha integration (the reason the idhelper exists):
+//! The idhelper materializes small nss_wrapper and extrausers passwd/group files.
+//! Ganesha is launched (when enabled) under LD_PRELOAD pointing at the wrapper,
+//! or benefits from extrausers in nsswitch. This supplies the classification
+//! (machine principals to uid 0, users to real LDAP ids) so that Ganesha's
+//! getpwnam path during Kerberos owner mapping sees correct stable values.
+//! The goal is preventing immutable clients from tearing down sessions from
+//! mixing root and user credentials.
 //!
 //! Cache file format (simple, robust, file-processing friendly):
 //!   # nfs-klldap-idhelper cache v1
@@ -44,21 +54,62 @@
 //!   nfs-klldap-idhelper classify 'host/foo@REALM'
 //!   nfs-klldap-idhelper check
 //!   nfs-klldap-idhelper daemon   # run the server (normally via entrypoint)
+//!
+//! Debug logging:
+//!   KLLDAP_IDHELPER_DEBUG=true   (enables detailed RESOLVE logs: normalized key,
+//!                                 cache hit/miss, classification, short name, getent
+//!                                 attempts, final result, elapsed, cache write)
 
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
 const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
 const CACHE_VERSION: &str = "1";
+
+// nss_wrapper files materialized by the idhelper so that the Ganesha process
+// (launched under LD_PRELOAD=libnss_wrapper.so) sees correct uid/gid for both
+// LDAP users and machine principals (host/..., nfs/..., root/...).
+// These are the mechanism that actually wires idhelper classification into
+// Ganesha's name-to-uid hot path for Kerberos owner strings.
+const NSS_PASSWD_PATH: &str = "/var/lib/nfs-klldap/nss_passwd";
+const NSS_GROUP_PATH: &str = "/var/lib/nfs-klldap/nss_group";
+
+// Supplemental extrausers (libnss-extrausers) location. When configured in
+// nsswitch (files extrausers sss) this lets us inject machine->root mappings
+// without replacing the entire user database or hiding SSSD/LDAP users.
+const EXTRAUSERS_PASSWD: &str = "/var/lib/extrausers/passwd";
+const EXTRAUSERS_GROUP: &str = "/var/lib/extrausers/group";
+
+/// Debug logging enabled via KLLDAP_IDHELPER_DEBUG=true (or 1/yes/on).
+static DEBUG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn debug_enabled() -> bool {
+    *DEBUG_ENABLED.get_or_init(|| {
+        std::env::var("KLLDAP_IDHELPER_DEBUG")
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                matches!(v.as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(false)
+    })
+}
+
+macro_rules! dlog {
+    ($fmt:literal $(, $arg:expr)* $(,)?) => {
+        if debug_enabled() {
+            eprintln!(concat!("[idhelper] ", $fmt) $(, $arg)*);
+        }
+    };
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrincipalKind {
@@ -122,9 +173,17 @@ impl IdCache {
                         "user" => PrincipalKind::User,
                         _ => PrincipalKind::Unknown,
                     };
+                    let local = parts[0].split('@').next().unwrap_or(parts[0]);
+                    // For host/... style principals prefer the short hostname part as the "name"
+                    // so that nss entries and FINAL logs use a clean short like "blue-lt" rather than "host/blue-lt".
+                    let name = if local.contains('/') {
+                        local.rsplit('/').next().unwrap_or(local).to_string()
+                    } else {
+                        local.to_string()
+                    };
                     let res = Resolved {
                         principal: parts[0].to_string(),
-                        name: parts[0].split('@').next().unwrap_or(parts[0]).to_string(),
+                        name,
                         uid,
                         gid,
                         kind,
@@ -161,6 +220,181 @@ impl IdCache {
         fs::rename(tmp, path)?;
         Ok(())
     }
+}
+
+// --- nss_wrapper materialization (the bridge that makes idhelper affect Ganesha) ---
+
+/// Sanitize a string for use as a passwd login name (allow alnum + _ - .).
+fn sanitize_for_nss(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push_str("unknown");
+    }
+    out
+}
+
+/// Build a passwd(5)-format line for a resolved principal.
+/// Uses the short name we already computed; machines always get uid/gid 0.
+fn passwd_line_for(r: &Resolved) -> String {
+    let login = sanitize_for_nss(&r.name);
+    // Gecos is purely informational here.
+    let gecos = format!("kll:{}:{}", r.kind.as_str(), r.principal);
+    // We use /nonexistent and nologin to be explicit these are not real local accounts.
+    format!(
+        "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
+        login, r.uid, r.gid, gecos
+    )
+}
+
+/// Build a minimal group(5) line for the primary gid of this resolved entry.
+/// We use a stable synthetic group name when we don't have a better one.
+fn group_line_for(r: &Resolved) -> String {
+    // Prefer a simple name; for uid==gid==0 we always ensure "root".
+    if r.gid == 0 {
+        "root:x:0:".to_string()
+    } else {
+        let gname = sanitize_for_nss(&r.name);
+        format!("{}:x:{}:", gname, r.gid)
+    }
+}
+
+/// Atomically write the nss_wrapper passwd and group files from the current cache.
+/// This is the key side-effect that makes Ganesha (under LD_PRELOAD) see our
+/// machine->root and user uid/gid decisions.
+fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
+    // Ensure parent exists (best effort, same as cache writer)
+    if let Some(parent) = Path::new(NSS_PASSWD_PATH).parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    // Collect stable ordered list of entries (sort by principal for determinism)
+    let mut items: Vec<_> = cache.entries.values().collect();
+    items.sort_by(|a, b| a.principal.cmp(&b.principal));
+
+    // Build passwd content. We dedup by login name (last wins for stability; tiny set).
+    let mut seen_login: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut passwd_lines: Vec<String> = Vec::new();
+    let mut group_lines: Vec<String> = Vec::new();
+    let mut seen_gid: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+    for r in &items {
+        let line = passwd_line_for(r);
+        // Extract login from the line we just built (before first ':')
+        if let Some(login) = line.split(':').next() {
+            if seen_login.insert(login.to_string()) {
+                passwd_lines.push(line);
+            }
+        }
+
+        // For machine principals (host/..., nfs/..., root/...) also emit an alias using the
+        // sanitized full local part (e.g. "host_blue-lt"). This helps when Ganesha's idmapper
+        // feeds getpwnam the service/name form instead of (or in addition to) the short host.
+        let local = r.principal.split('@').next().unwrap_or(&r.principal);
+        if local.contains('/') && (local.starts_with("host/") || local.starts_with("nfs/") || local.starts_with("root/")) {
+            let alias = sanitize_for_nss(local); // turns host/blue-lt into host_blue-lt etc.
+            if seen_login.insert(alias.clone()) {
+                let gecos = format!("kll:machine-alias:{}", r.principal);
+                passwd_lines.push(format!(
+                    "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
+                    alias, r.uid, r.gid, gecos
+                ));
+            }
+        }
+
+        // Groups
+        if seen_gid.insert(r.gid) {
+            group_lines.push(group_line_for(r));
+        }
+        // Also ensure the uid's primary group is represented if different (rare)
+        if r.uid != r.gid && seen_gid.insert(r.uid) {
+            // Use same simple rule; uid as fallback group name
+            if r.uid == 0 {
+                if seen_gid.insert(0) {
+                    // already handled
+                }
+            } else {
+                group_lines.push(format!("u{}:x:{}:", r.uid, r.uid));
+            }
+        }
+    }
+
+    // Always ensure at least a root group entry
+    if seen_gid.is_empty() || !seen_gid.contains(&0) {
+        group_lines.push("root:x:0:".to_string());
+    }
+
+    // Write passwd atomically
+    {
+        let tmp = Path::new(NSS_PASSWD_PATH).with_extension("tmp");
+        let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+        let mut w = BufWriter::new(f);
+        // Helpful header (nss_wrapper ignores comments? but # is conventional and harmless)
+        writeln!(w, "# nfs-klldap-idhelper nss_wrapper passwd (materialized)")?;
+        for l in &passwd_lines {
+            writeln!(w, "{}", l)?;
+        }
+        fs::rename(tmp, NSS_PASSWD_PATH)?;
+    }
+
+    // Write group atomically
+    {
+        let tmp = Path::new(NSS_GROUP_PATH).with_extension("tmp");
+        let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+        let mut w = BufWriter::new(f);
+        writeln!(w, "# nfs-klldap-idhelper nss_wrapper group (materialized)")?;
+        for l in &group_lines {
+            writeln!(w, "{}", l)?;
+        }
+        fs::rename(tmp, NSS_GROUP_PATH)?;
+    }
+
+    dlog!(
+        "nss_wrapper materialized passwd={} entries group={} entries",
+        passwd_lines.len(),
+        group_lines.len()
+    );
+
+    // --- Also write the same machine/user mappings into extrausers (supplemental) ---
+    // This is the preferred path for most deployments: extrausers sits between
+    // files and sss in nsswitch, so machines get 0 while real LDAP users resolve
+    // normally via sss even if the idhelper has never seen that user principal.
+    {
+        // Ensure dir (harmless if using the nss_wrapper paths under /var/lib/nfs-klldap too)
+        if let Some(p) = Path::new(EXTRAUSERS_PASSWD).parent() {
+            let _ = fs::create_dir_all(p);
+        }
+        // passwd
+        {
+            let tmp = Path::new(EXTRAUSERS_PASSWD).with_extension("tmp");
+            let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+            let mut w = BufWriter::new(f);
+            writeln!(w, "# nfs-klldap-idhelper extrausers (machine overrides + seen users)")?;
+            for l in &passwd_lines {
+                writeln!(w, "{}", l)?;
+            }
+            fs::rename(tmp, EXTRAUSERS_PASSWD)?;
+        }
+        // group
+        {
+            let tmp = Path::new(EXTRAUSERS_GROUP).with_extension("tmp");
+            let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+            let mut w = BufWriter::new(f);
+            writeln!(w, "# nfs-klldap-idhelper extrausers group")?;
+            for l in &group_lines {
+                writeln!(w, "{}", l)?;
+            }
+            fs::rename(tmp, EXTRAUSERS_GROUP)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Return true if this looks like a machine / host / root Kerberos principal.
@@ -245,11 +479,13 @@ fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
 
 fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
     // getent passwd <name> -> name:pass:uid:gid:...
+    eprintln!("[idhelper] getent passwd \"{}\" called", name);
     let out = Command::new("getent")
         .args(["passwd", name])
         .output()
         .ok()?;
     if !out.status.success() {
+        eprintln!("[idhelper] getent passwd \"{}\" -> failed (status={:?})", name, out.status.code());
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout);
@@ -257,9 +493,11 @@ fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
     let parts: Vec<&str> = line.split(':').collect();
     if parts.len() > 3 {
         if let (Ok(uid), Ok(gid)) = (parts[2].parse::<u32>(), parts[3].parse::<u32>()) {
+            eprintln!("[idhelper] getent passwd \"{}\" -> success uid={} gid={}", name, uid, gid);
             return Some((uid, gid, "sss".to_string()));
         }
     }
+    eprintln!("[idhelper] getent passwd \"{}\" -> malformed output", name);
     None
 }
 
@@ -271,14 +509,32 @@ fn resolve_principal(
     server_variants: &[String],
     cache: &mut IdCache,
 ) -> Resolved {
+    let start = Instant::now();
     let norm = normalize_principal(principal);
+
+    dlog!("RESOLVE principal=\"{}\"", principal);
+    dlog!("  normalized=\"{}\"", norm);
+
     if let Some(existing) = cache.get(&norm).cloned() {
         let mut e = existing;
         e.source = "cache".to_string();
+        eprintln!("[idhelper] cache=HIT key=\"{}\"", norm);
+        eprintln!(
+            "[idhelper] FINAL principal=\"{}\" name=\"{}\" uid={} gid={} kind={} source={} (cache hit)",
+            e.principal, e.name, e.uid, e.gid, e.kind.as_str(), e.source
+        );
+        let elapsed = start.elapsed();
+        dlog!(
+            "  result uid={} gid={} kind={} source={} elapsed={:?}",
+            e.uid, e.gid, e.kind.as_str(), e.source, elapsed
+        );
         return e;
     }
+    eprintln!("[idhelper] cache=MISS key=\"{}\"", norm);
 
-    let (is_machine, _reason) = is_machine_principal(principal, realm, server_variants);
+    let (is_machine, reason) = is_machine_principal(principal, realm, server_variants);
+    dlog!("  classify is_machine={} reason=\"{}\"", is_machine, reason);
+    eprintln!("[idhelper] CLASSIFY principal=\"{}\" -> {} (reason=\"{}\")", principal, if is_machine { "machine" } else { "user" }, reason);
 
     let kind = if is_machine {
         PrincipalKind::Machine
@@ -299,7 +555,12 @@ fn resolve_principal(
             .split('/')
             .next_back()
             .unwrap_or(principal);
-        if let Some((uid, gid, src)) = resolve_via_nss(short) {
+        eprintln!("[idhelper] short_name_extracted=\"{}\" (machine path, principal=\"{}\")", short, principal);
+
+        let nss = resolve_via_nss(short);
+        dlog!("  nss_getent tried=\"{}\" got={:?}", short, nss.as_ref().map(|(u, g, s)| (*u, *g, s.as_str())));
+
+        if let Some((uid, gid, src)) = nss {
             Resolved {
                 principal: principal.to_string(),
                 name: short.to_string(),
@@ -310,6 +571,7 @@ fn resolve_principal(
             }
         } else {
             // Default machine credential treatment: root
+            eprintln!("[idhelper] getent for short=\"{}\" returned nothing -> falling back to uid=0 gid=0 (machine)", short);
             Resolved {
                 principal: principal.to_string(),
                 name: short.to_string(),
@@ -321,7 +583,13 @@ fn resolve_principal(
         }
     } else {
         // Regular user
-        let looked = resolve_via_nss(principal).or_else(|| resolve_via_nss(principal.split('@').next().unwrap_or(principal)));
+        let first_try = principal;
+        let second_try = principal.split('@').next().unwrap_or(principal);
+        dlog!("  user_path first_try=\"{}\" second_try=\"{}\"", first_try, second_try);
+
+        let looked = resolve_via_nss(first_try).or_else(|| resolve_via_nss(second_try));
+        dlog!("  nss_getent final_got={:?}", looked.as_ref().map(|(u, g, s)| (*u, *g, s.as_str())));
+
         if let Some((uid, gid, src)) = looked {
             let name = principal.split('@').next().unwrap_or(principal).to_string();
             Resolved {
@@ -334,6 +602,7 @@ fn resolve_principal(
             }
         } else {
             // Unknown / unmapped -> nobody-ish but keep the info
+            eprintln!("[idhelper] getent for user principal=\"{}\" returned nothing -> falling back to 65534:65534", principal);
             let name = principal.split('@').next().unwrap_or(principal).to_string();
             Resolved {
                 principal: principal.to_string(),
@@ -346,11 +615,33 @@ fn resolve_principal(
         }
     };
 
+    dlog!(
+        "  resolved principal=\"{}\" name=\"{}\" uid={} gid={} kind={} source={}",
+        resolved.principal, resolved.name, resolved.uid, resolved.gid, resolved.kind.as_str(), resolved.source
+    );
+
+    eprintln!(
+        "[idhelper] FINAL principal=\"{}\" name=\"{}\" uid={} gid={} kind={} source={} (sent to ganesha)",
+        resolved.principal, resolved.name, resolved.uid, resolved.gid, resolved.kind.as_str(), resolved.source
+    );
+
     // Store
     cache.insert(resolved.clone());
 
     // Persist to the cache file (best effort, non-fatal)
-    let _ = cache.write_to_file(Path::new(CACHE_PATH));
+    let write_res = cache.write_to_file(Path::new(CACHE_PATH));
+    dlog!(
+        "  cache_write result={}",
+        if write_res.is_ok() { "ok" } else { "err" }
+    );
+
+    // Materialize nss_wrapper files so Ganesha (under LD_PRELOAD) sees our classification.
+    // This is the key "conjunction" point: idhelper decisions become visible to Ganesha's
+    // getpwnam calls for Kerberos principals (machine -> 0, users -> real ids from SSSD).
+    // Best effort, non-fatal.
+    if let Err(e) = materialize_nss_wrappers(cache) {
+        dlog!("  nss_wrapper_write err={}", e);
+    }
 
     // Optional: try to warm SSSD cache for the resolved name (non-blocking)
     if resolved.uid != 0 && resolved.uid != 65534 {
@@ -359,7 +650,285 @@ fn resolve_principal(
             .output();
     }
 
+    let elapsed = start.elapsed();
+    dlog!("  elapsed={:?}", elapsed);
+
     resolved
+}
+
+/// Start a background observer that tails Ganesha's log to "catch" mount/auth attempts.
+/// When lines containing client identities or possible principals appear, we extract
+/// candidates (e.g. host/<client>@REALM from client names, or explicit user@REALM) and
+/// feed them through resolve_principal. This makes the idhelper see activity even if
+/// nothing is explicitly calling the RESOLVE socket/CLI.
+fn start_ganesha_observer(realm: String, variants: Vec<String>, cache: Arc<Mutex<IdCache>>) {
+    let log_path = std::env::var("GANESHA_LOG_PATH")
+        .unwrap_or_else(|_| "/var/log/ganesha.log".to_string());
+    thread::spawn(move || {
+        observe_ganesha_log(&log_path, &realm, &variants, cache);
+    });
+}
+
+fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<Mutex<IdCache>>) {
+    // Simple per-candidate rate limit to avoid spamming "observed" + full resolve/materialize
+    // on every log line that matches the same client name (very common during a mount).
+    let mut recently: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
+    let dedup_window = Duration::from_secs(30);
+
+    loop {
+        match File::open(path) {
+            Ok(mut f) => {
+                // Only watch new data from now on
+                let _ = f.seek(SeekFrom::End(0));
+                let mut reader = BufReader::new(f);
+                let mut buf = String::new();
+                loop {
+                    buf.clear();
+                    match reader.read_line(&mut buf) {
+                        Ok(0) => {
+                            // No new data yet (regular file at EOF). Sleep briefly and retry
+                            // on the same fd -- appends by Ganesha will become visible.
+                            thread::sleep(Duration::from_millis(250));
+                            continue;
+                        }
+                        Ok(_) => {
+                            let line = buf.trim();
+                            if let Some(candidate) = extract_candidate_principal(line, realm) {
+                                let now = std::time::Instant::now();
+                                let is_fresh = recently
+                                    .get(&candidate)
+                                    .map(|last| now.duration_since(*last) >= dedup_window)
+                                    .unwrap_or(true);
+
+                                if is_fresh {
+                                    recently.insert(candidate.clone(), now);
+                                    // Opportunistic prune (tiny map in practice)
+                                    if recently.len() > 2048 {
+                                        recently.retain(|_, t| now.duration_since(*t) < dedup_window);
+                                    }
+
+                                    eprintln!("[idhelper] observed from ganesha log: {}", candidate);
+                                    {
+                                        let mut guard = cache.lock().unwrap();
+                                        // Resolve (and classify) the candidate. If KLLDAP_IDHELPER_DEBUG
+                                        // is set, full details (normalize, cache hit/miss, getent etc.)
+                                        // will be logged by the existing debug instrumentation.
+                                        let _ = resolve_principal(&candidate, realm, variants, &mut guard);
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            thread::sleep(Duration::from_millis(300));
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                // Log file may not exist yet at early startup
+                thread::sleep(Duration::from_secs(2));
+            }
+        }
+    }
+}
+
+/// Returns true only for tokens that look like real client hostnames
+/// (short name or fqdn) that we expect from "Linux NFSv4.x <host>" strings.
+/// Rejects log formatting noise such as "Unique", "CLIENT", "ID", "ffff", "Created", etc.
+fn looks_like_client_hostname(t: &str) -> bool {
+    let s = t.trim();
+    if s.len() < 2 || s.len() > 253 {
+        return false;
+    }
+    if !s.chars().any(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    let lower = s.to_ascii_lowercase();
+
+    // Strong early rejection of known log noise tokens that frequently appear near
+    // client records (prevents host/nil, host/clientid, host/Unique, host/ffff etc.)
+    if is_noise_hostname(s) {
+        return false;
+    }
+
+    // Reject common log noise and formatting tokens (case-insensitive)
+    const NOISE: &[&str] = &[
+        "unique", "client", "id", "debug", "info", "warning", "error",
+        "ffff", "counter", "created", "name", "addr", "cr", "refcount",
+        "nil", "null", "clientid", "conf", "unconf"
+    ];
+    if NOISE.contains(&lower.as_str()) {
+        return false;
+    }
+
+    // Hostname chars only
+    if !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
+        return false;
+    }
+
+    // Real client hostnames from these logs are almost always lowercase and/or contain dot/hyphen
+    if !s.chars().any(|c| c.is_ascii_lowercase()) && !s.contains('.') {
+        return false;
+    }
+
+    true
+}
+
+/// Exact-match noise tokens (case-insensitive) that must never become a client hostname.
+fn is_noise_hostname(t: &str) -> bool {
+    let s = t.trim().to_ascii_lowercase();
+    matches!(
+        s.as_str(),
+        "nil" | "null" | "clientid" | "unique" | "counter" | "created" | "client" |
+        "id" | "name" | "addr" | "refcount" | "cr" | "conf" | "unconf" | "debug" |
+        "info" | "warning" | "error" | "ffff"
+    )
+}
+
+/// Try to extract a client hostname from a string that contains the common
+/// Ganesha/Linux-NFS pattern "Linux NFSv4.<ver> <hostname>".
+/// Only return a token if it comes from a group that looks like the client name
+/// (contains "Linux" or the version+host pattern), skipping (nil), (NULL), clientid blobs.
+fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    let marker = "nfsv4";
+    if let Some(m) = lower.find(marker) {
+        let suffix = &line[m + marker.len()..];
+
+        // Prefer the group that contains the Linux NFS client string.
+        // Scan all (...) groups after the marker and pick the last plausible host
+        // only from a group that contains "linux" or looks like "(21:Linux..." or "-(21:Linux...".
+        let mut best: Option<String> = None;
+        let mut search = suffix;
+        while let Some(p) = search.find('(') {
+            let rest = &search[p + 1..];
+            if let Some(end) = rest.find(')') {
+                let inside = &rest[..end];
+                let group_lower = inside.to_ascii_lowercase();
+                let looks_like_client_group = group_lower.contains("linux") || group_lower.contains("nfsv4") || inside.contains("Linux NFS");
+                if looks_like_client_group {
+                    for token in inside.split_whitespace().rev() {
+                        let t = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '.');
+                        if looks_like_client_hostname(t)
+                            && !t.eq_ignore_ascii_case("linux")
+                            && !is_noise_hostname(t)
+                        {
+                            best = Some(t.to_string());
+                            break;
+                        }
+                    }
+                }
+                search = &rest[end + 1..];
+            } else {
+                break;
+            }
+        }
+        if best.is_some() {
+            return best;
+        }
+
+        // Fallback scan (safer now): skip obvious noise groups and tokens
+        let mut iter = suffix.split(|c: char| {
+            c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' || c == ':' || c == '.'
+        });
+        let _ = iter.next(); // skip version
+        for w in iter {
+            let t = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '.');
+            if t.is_empty() { continue; }
+            let tl = t.to_ascii_lowercase();
+            if ["linux", "nfsv4", "created", "client", "name", "nil", "null", "conf", "unconf", "clientid", "unique", "counter"].contains(&tl.as_str()) || is_noise_hostname(t) {
+                continue;
+            }
+            if looks_like_client_hostname(t) {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_candidate_principal(line: &str, realm: &str) -> Option<String> {
+    let realm_lower = realm.to_ascii_lowercase();
+
+    // 1. Look for explicit Kerberos principals containing the realm (user@REALM or host/xxx@REALM).
+    //    Keep relatively permissive for real principals, but still validate the local part.
+    if let Some(at_pos) = line.find('@') {
+        let before = &line[..at_pos];
+        let start = before
+            .rfind(|c: char| !c.is_alphanumeric() && c != '/' && c != '.' && c != '-' && c != '_' && c != ':')
+            .map_or(0, |p| p + 1);
+        let after = &line[at_pos..];
+        let end_rel = after
+            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_' && c != ':')
+            .unwrap_or(after.len());
+        let cand = &line[start..at_pos + end_rel];
+        if cand.contains('@') && cand.to_ascii_lowercase().contains(&realm_lower) {
+            // For host/ style we will normalize later; accept explicit @REALM as high-signal.
+            return Some(cand.to_string());
+        }
+    }
+
+    // 2. Primary reliable source: the "Linux NFSv4.x <hostname>" pattern.
+    //    This appears in name=(...), fs_create_clid_name "client name [...]",
+    //    and similar client record descriptions. Prefer this over blind word scanning.
+    if let Some(host) = extract_linux_nfs_hostname(line) {
+        if !host.eq_ignore_ascii_case("linux") && !host.eq_ignore_ascii_case("nfs") && !is_noise_hostname(&host) && looks_like_client_hostname(&host) {
+            // Emit the classic host/ form. Materialization will also create the bare alias.
+            return Some(format!("host/{}@{}", host, realm));
+        }
+    }
+
+    // 3. Legacy direct name=(21:Linux NFSv4.2 ...) support (still useful for some log lines)
+    if let Some(pos) = line.find("name=(") {
+        let rest = &line[pos + 6..];
+        if let Some(endp) = rest.find(')') {
+            let inside = &rest[..endp];
+            if let Some(last) = inside.split_whitespace().last() {
+                let token = last.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '.');
+                if looks_like_client_hostname(token) && !is_noise_hostname(token) {
+                    return Some(format!("host/{}@{}", token, realm));
+                }
+            }
+        }
+    }
+
+    // 4. Limited additional markers. Only accept tokens that pass the strict hostname check.
+    //    We deliberately avoid "clientid=" and "cr_refcount" because they contain counters
+    //    ("Unique=...", numbers), not hostnames.
+    for marker in &["fs_create_clid_name", "client addr="] {
+        if let Some(pos) = line.find(marker) {
+            let tail = &line[pos + marker.len()..];
+            for w in tail.split(|c: char| c.is_whitespace() || c == '=' || c == '(' || c == ')' || c == ':' || c == ',' || c == '[' || c == ']') {
+                let t = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '.');
+                if looks_like_client_hostname(t) && !is_noise_hostname(t) {
+                    return Some(format!("host/{}@{}", t, realm));
+                }
+            }
+        }
+    }
+
+    // 5. Fallback: explicit @REALM anywhere (already partially handled above).
+    //    Only return if the local part looks reasonable.
+    if line.to_ascii_lowercase().contains(&realm_lower) {
+        for word in line.split(|c: char| {
+            c.is_whitespace() || c == '=' || c == '(' || c == ')' || c == ':' || c == ',' || c == '[' || c == ']' || c == '"'
+        }) {
+            let w = word.trim();
+            if w.contains('@') && w.to_ascii_lowercase().contains(&realm_lower) {
+                // Accept explicit principals (they are usually the real thing).
+                // Guard: do not emit things like "nil@REALM" or "clientid@REALM" from noise.
+                if let Some(local) = w.split('@').next() {
+                    if is_noise_hostname(local) || !looks_like_client_hostname(local) {
+                        continue;
+                    }
+                }
+                return Some(w.to_string());
+            }
+        }
+    }
+
+    None
 }
 
 fn get_server_variants() -> Vec<String> {
@@ -430,6 +999,7 @@ fn handle_cli(args: &[String]) {
                 eprintln!("Usage: nfs-klldap-idhelper resolve <principal> [--json]");
                 std::process::exit(2);
             }
+            dlog!("cli RESOLVE p=\"{}\"", p);
             let json = args.iter().any(|a| a == "--json" || a == "-j");
             let r = resolve_principal(p, &realm, &server_variants, &mut cache);
             if json {
@@ -470,7 +1040,9 @@ fn handle_cli(args: &[String]) {
             println!("server host variants: {:?}", server_variants);
             println!("Cache lives at {} (simple | delimited, easy to process with grep/awk).", CACHE_PATH);
             println!("Daemon listens on {} (unix socket).", SOCKET_PATH);
-            println!("Important: Ganesha config is kept conservative. This helper does the translation.");
+            println!("NSS wrapper files (for Ganesha under libnss_wrapper): {} and {}", NSS_PASSWD_PATH, NSS_GROUP_PATH);
+            println!("Important: Ganesha config is kept conservative. This helper is the authoritative");
+            println!("classifier/resolver and materializes uid/gid mappings for Ganesha's getpwnam path.");
         }
         "daemon" => {
             run_daemon();
@@ -497,6 +1069,9 @@ Usage:
   nfs-klldap-idhelper explain
   nfs-klldap-idhelper daemon     # run the long-lived server (started by container)
 
+Debug: KLLDAP_IDHELPER_DEBUG=true   (logs RESOLVE, norm key, hit/miss, classify,
+       short name, getent details, result, elapsed, cache write, nss_wrapper writes)
+
 The daemon must be running for reliable mounts. It keeps an efficient in-memory
 + file-backed cache so that every mount can quickly obtain the correct uid/gid
 and know whether the credential is a machine (host/nfs/root) or regular user.
@@ -511,6 +1086,7 @@ fn run_daemon() {
     // Ensure runtime directories
     let _ = fs::create_dir_all("/var/run/nfs-klldap");
     let _ = fs::create_dir_all("/var/lib/nfs-klldap");
+    let _ = fs::create_dir_all("/var/lib/extrausers");
 
     // Remove stale socket
     let _ = fs::remove_file(SOCKET_PATH);
@@ -528,8 +1104,23 @@ fn run_daemon() {
 
     let cache = Arc::new(Mutex::new(IdCache::load_from_file(Path::new(CACHE_PATH))));
 
+    // Immediately materialize any cached principals into the nss_wrapper files.
+    // Ganesha may already be (or will soon be) running under LD_PRELOAD against these files.
+    {
+        let guard = cache.lock().unwrap();
+        let _ = materialize_nss_wrappers(&guard);
+    }
+
     println!("[idhelper] daemon listening on {}", SOCKET_PATH);
     println!("[idhelper] realm={} variants={:?}", realm, server_variants);
+
+    // Start background log observer so we automatically see mount/auth activity
+    // from Ganesha (client IDs, names like "Linux NFSv4.x <host>", any @REALM principals
+    // that appear in logs). Candidates are fed to resolve_principal for classification
+    // and caching. Detailed debug output (when KLLDAP_IDHELPER_DEBUG=true) will be
+    // emitted for the observed principals.
+    let cache_for_watcher = Arc::clone(&cache);
+    start_ganesha_observer(realm.clone(), server_variants.clone(), cache_for_watcher);
 
     for stream in listener.incoming() {
         match stream {
@@ -589,6 +1180,7 @@ fn handle_client(
             if arg.is_empty() {
                 out.push_str("ERR missing principal\n");
             } else {
+                dlog!("socket RESOLVE arg=\"{}\"", arg);
                 let mut guard = cache.lock().unwrap();
                 let r = resolve_principal(arg, realm, server_variants, &mut guard);
                 out.push_str(&format!(
@@ -669,5 +1261,152 @@ mod tests {
         let c2 = IdCache::load_from_file(&p);
         assert!(c2.get("bob@TEST").is_some());
         assert_eq!(c2.get("bob@TEST").unwrap().uid, 2001);
+    }
+
+    #[test]
+    fn extract_candidate_finds_explicit_principal() {
+        let r = extract_candidate_principal(
+            "some log with principal user@SATOMLIN.COM and other stuff",
+            "SATOMLIN.COM",
+        );
+        assert_eq!(r, Some("user@SATOMLIN.COM".to_string()));
+    }
+
+    #[test]
+    fn extract_candidate_finds_host_style() {
+        let r = extract_candidate_principal(
+            "name=(21:Linux NFSv4.2 blue-lt) client stuff",
+            "SATOMLIN.COM",
+        );
+        assert_eq!(r, Some("host/blue-lt@SATOMLIN.COM".to_string()));
+    }
+
+    #[test]
+    fn extract_candidate_finds_in_ganesha_client_id_lines() {
+        let line = r#"name=(21:Linux NFSv4.2 blue-lt) conf = 0x... server_addr = 172.17.0.2"#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        assert_eq!(r, Some("host/blue-lt@SATOMLIN.COM".to_string()));
+    }
+
+    #[test]
+    fn extract_candidate_ignores_irrelevant() {
+        let r = extract_candidate_principal("just some random log without principals", "SATOMLIN.COM");
+        assert!(r.is_none());
+    }
+
+    // --- Regression tests for bogus tokens seen in real Ganesha logs ---
+    #[test]
+    fn extract_rejects_unique_counter() {
+        let line = r#"key_locate :CLIENT ID :F_DBG :Locate Unconfirmed Client ID seeking Key=0x... {Unique=0x6a374e99 Counter=0x00000001}"#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        assert!(r.is_none() || !r.unwrap().contains("Unique"), "must not turn Unique= counter into a host principal");
+    }
+
+    #[test]
+    fn extract_rejects_ffff_from_ipv6() {
+        let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)]"#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        // It should find the real "blue-lt", never "ffff"
+        if let Some(c) = r {
+            assert!(c.contains("blue-lt"), "should still find the real hostname");
+            assert!(!c.contains("ffff"), "must not emit host/ffff from IPv6 literal");
+        }
+    }
+
+    #[test]
+    fn extract_rejects_client_literal() {
+        let line = "nfs4_op_destroy_clientid :CLIENT ID :DEBUG :DESTROY_CLIENTID clientid=...";
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        // Should not turn the word "CLIENT" into host/CLIENT
+        if let Some(c) = r {
+            assert!(!c.to_ascii_lowercase().contains("client"), "must ignore literal CLIENT word");
+        }
+    }
+
+    #[test]
+    fn extract_still_finds_good_name_even_with_noise() {
+        let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)] clientid=Unique=..."#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        assert_eq!(r, Some("host/blue-lt@SATOMLIN.COM".to_string()));
+    }
+
+    #[test]
+    fn materialize_writes_machine_as_root() {
+        let _tmp = tempfile::tempdir().unwrap();
+        // Temporarily override the const paths by using a temp dir and monkey-patch via env is hard;
+        // instead directly test the line builders and a small manual cache write.
+        let mut c = IdCache::default();
+        let machine = Resolved {
+            principal: "host/blue-lt@EXAMPLE.COM".into(),
+            name: "blue-lt".into(),
+            uid: 0,
+            gid: 0,
+            kind: PrincipalKind::Machine,
+            source: "special".into(),
+        };
+        c.insert(machine);
+        // We can't easily redirect const paths here without changing API.
+        // Test the formatting helpers in isolation.
+        let line = passwd_line_for(c.get("host/blue-lt@EXAMPLE.COM").unwrap());
+        assert!(line.starts_with("blue-lt:x:0:0:"));
+        assert!(line.contains("kll:machine:"));
+        let gline = group_line_for(c.get("host/blue-lt@EXAMPLE.COM").unwrap());
+        assert!(gline.starts_with("root:x:0:"));
+    }
+
+    #[test]
+    fn materialize_writes_user_with_real_ids() {
+        let mut c = IdCache::default();
+        let user = Resolved {
+            principal: "alice@EXAMPLE.COM".into(),
+            name: "alice".into(),
+            uid: 1005,
+            gid: 100,
+            kind: PrincipalKind::User,
+            source: "sss".into(),
+        };
+        c.insert(user);
+        let line = passwd_line_for(c.get("alice@EXAMPLE.COM").unwrap());
+        assert!(line.starts_with("alice:x:1005:100:"));
+        let gline = group_line_for(c.get("alice@EXAMPLE.COM").unwrap());
+        assert!(gline.contains(":100:"));
+    }
+
+    #[test]
+    fn sanitize_for_nss_is_safe() {
+        assert_eq!(sanitize_for_nss("host/foo.bar-baz"), "host_foo.bar-baz");
+        assert_eq!(sanitize_for_nss("weird name!@#"), "weird_name___");
+        assert_eq!(sanitize_for_nss(""), "unknown");
+    }
+
+    #[test]
+    fn extract_rejects_nil_from_conf_group() {
+        // Lines often contain conf = (nil) after a good name= group; must never emit host/nil
+        let line = r#"key_locate :CLIENT ID :F_DBG :Locate Client Record seeking Key=... {{... name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} ...}}"#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        if let Some(c) = r {
+            assert!(c.contains("blue-lt"), "should find real host");
+            assert!(!c.contains("nil"), "must never emit host/nil");
+        }
+    }
+
+    #[test]
+    fn extract_rejects_clientid_token() {
+        let line = r#"nfs4_op_exchange_id ... clientid=Unique=0x6a375213 Counter=0x00000001 name=(21:Linux NFSv4.2 blue-lt)"#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        if let Some(c) = r {
+            assert!(c.contains("blue-lt"));
+            assert!(!c.to_ascii_lowercase().contains("clientid"), "must not emit host/clientid");
+        }
+    }
+
+    #[test]
+    fn looks_like_rejects_noise_tokens() {
+        assert!(!looks_like_client_hostname("nil"));
+        assert!(!looks_like_client_hostname("clientid"));
+        assert!(!looks_like_client_hostname("Unique"));
+        assert!(!looks_like_client_hostname("CLIENT"));
+        assert!(looks_like_client_hostname("blue-lt"));
+        assert!(looks_like_client_hostname("my-host.example.com"));
     }
 }

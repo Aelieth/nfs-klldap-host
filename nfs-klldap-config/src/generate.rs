@@ -407,11 +407,13 @@ DIRECTORY_SERVICES {{
     DomainName = {realm};
     Pwnam_Implementation = nsswitch;
     # NOTE: Root_Kerberos_Principal remains a tiny safe static list.
-    # Live machine-vs-user principal distinction + uid/gid translation for
-    # clients (including Fedora Immutable) is performed by the always-running
-    # nfs-klldap-idhelper daemon (fast cache file + unix socket).
-    # We deliberately do not inject dynamic principal data here to avoid
-    # parser crashes in Ganesha.
+    # The nfs-klldap-idhelper is the authoritative classifier/resolver for
+    # machine principals (host/..., nfs/..., root/...) vs LDAP users.
+    # It materializes uid/gid mappings into nss_wrapper files. Ganesha is
+    # launched (by entrypoint) under LD_PRELOAD=libnss_wrapper.so pointing
+    # at those files so its getpwnam path (used for Kerberos owner mapping)
+    # sees correct stable uids (0 for machines, real POSIX for users).
+    # We deliberately do not inject dynamic principal data into this file.
     Root_Kerberos_Principal = host, nfs;
 }}
 
@@ -437,6 +439,11 @@ EXPORT_DEFAULTS {{
         sec = sec,
     );
 
+    // Always emit a baseline LOG block with elevated visibility for identity/client
+    // related components. This gives the idhelper observer (and operators) a much
+    // better chance of seeing client records, session setup, and owner/principal
+    // strings during the real authenticated mount phases without requiring the
+    // heavy GANESHA_DEBUG=TRUE mode.
     if ganesha_debug_enabled() {
         content.push_str(
             r#"LOG {
@@ -447,6 +454,20 @@ EXPORT_DEFAULTS {{
         NFS4 = FULL_DEBUG;
         CLIENTID = FULL_DEBUG;
         SESSIONS = FULL_DEBUG;
+    }
+}
+
+"#,
+        );
+    } else {
+        content.push_str(
+            r#"LOG {
+    Default_Log_Level = INFO;
+    Components {
+        CLIENTID = DEBUG;
+        SESSIONS = DEBUG;
+        NFS4 = EVENT;
+        IDMAPPER = EVENT;
     }
 }
 

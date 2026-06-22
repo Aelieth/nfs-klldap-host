@@ -514,6 +514,9 @@ DIRECTORY_SERVICES {{
     Pwnam_Implementation = {pwnam};
     # Ganesha 9.6 trixie only. idhelper (not this file) owns principal->uid classification.
     Root_Kerberos_Principal = {root_krb};
+    # Replaces deprecated Manage_Gids_Expiration guidance (keep in sync with NFS_CORE_PARAM).
+    idmapped_user_time_validity = 600;
+    idmapped_group_time_validity = 600;
 }}
 
 NFS_KRB5 {{

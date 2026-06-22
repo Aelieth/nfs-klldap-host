@@ -190,38 +190,67 @@ ganesha.nfsd ...
 
 The generator writes a minimal `ganesha.conf` plus one fragment per share under `/etc/ganesha/exports.d/`.
 
-Example top-level configuration emitted:
+Example top-level configuration emitted (exact form for ganesha 9.6 on Debian trixie / trixie-backports; only these options are used to avoid parser crashes):
 
 ```
 NFS_CORE_PARAM {
     Protocols = 4;
-    Enable_UDP = false;
+    Bind_addr = 0.0.0.0;
+    NFS_Port = 2049;
+    # Enable_UDP = false;
+    Enable_RQUOTA = false;
+    Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
     Manage_Gids_Expiration = 600;
 }
 
 DIRECTORY_SERVICES {
-    DomainName = REALM;
-    Root_Kerberos_Principal = all;
+    DomainName = SATOMLIN.COM;
+    Pwnam_Implementation = nsswitch;
+    # NOTE: Root_Kerberos_Principal remains a tiny safe static list.
+    # The nfs-klldap-idhelper is the authoritative classifier/resolver for
+    # machine principals (host/..., nfs/..., root/...) vs LDAP users.
+    # It materializes uid/gid mappings into nss_wrapper files. Ganesha is
+    # launched (by entrypoint) under LD_PRELOAD=libnss_wrapper.so pointing
+    # at those files so its getpwnam path (used for Kerberos owner mapping)
+    # sees correct stable uids (0 for machines, real POSIX for users).
+    # We deliberately do not inject dynamic principal data into this file.
+    Root_Kerberos_Principal = host, nfs;
 }
 
 NFS_KRB5 {
     PrincipalName = "nfs";
     KeytabPath = "/etc/krb5.keytab";
+    Active_krb5 = TRUE;
+}
+
+NFSV4 {
+    Allow_Numeric_Owners = false;
+    RecoveryBackend = fs;
+    Lease_Lifetime = 20;
+    Grace_Period = 20;
 }
 
 EXPORT_DEFAULTS {
     SecType = krb5p;
     Protocols = 4;
+    # Explicit for ganesha 9.6 on Debian trixie (trixie-backports). Makes policy
+    # determinate for all derived CLIENTs/exports, eliminates "(none/invalid)"
+    # noise seen on internal pseudo root, and provides the documented pre-FSAL
+    # read check behavior (relaxed vs relying on parser defaults).
+    Read_Access_Check_Policy = pre;
 }
 ```
+
+(See the full generated /etc/ganesha/ganesha.conf and per-share CLIENT blocks with the same Read_Access_Check_Policy = pre; inside the container for the complete safe set. No IdmapConf or other idmap keys are emitted in ganesha.conf.)
 
 Key points:
 - `Protocols = 4` (also in EXPORT_DEFAULTS and per-share CLIENT blocks) for strict NFSv4.
 - `Manage_Gids_Expiration` in NFS_CORE_PARAM.
-- Kerberos configuration via NFS_KRB5 and Root_Kerberos_Principal.
+- Kerberos configuration via NFS_KRB5 and a minimal Root_Kerberos_Principal (host, nfs).
 - Explicit `%include` lines (one per share fragment) for deterministic loading.
-- Other legacy options are omitted because they are not accepted by the parser.
+- `Read_Access_Check_Policy = pre;` in EXPORT_DEFAULTS and every CLIENT (ganesha 9.6 / trixie-backports specific).
+- Only the options above + safe NFSV4/EXPORT_DEFAULTS are emitted. Idmap* keys are deliberately not present in ganesha.conf (use the idhelper + shim + /etc/idmapd.conf + nss materialization instead; see man nfsidmap / idmapd.conf). Other legacy options are omitted because they are not accepted by the ganesha 9.6 parser on trixie-backports.
 
 Each per-share fragment contains an EXPORT with Path (internal), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block for access control, and the VFS FSAL. Additional CLIENT blocks can be appended manually (they will be lost on regeneration).
 

@@ -66,7 +66,7 @@ else
 fi
 
 echo
-echo "[7] Principal mapping parity + CLIENT policy (getent testuser1 + id-map-test for 9.6 stabilization)..."
+echo "[7] Principal mapping parity + CLIENT policy (getent + id-map-test for ganesha 9.6 trixie)..."
 ganesha-ctl id-map-test testuser1 2>/dev/null || echo "  id-map-test not available or failed (non-fatal during early verify)"
 # Quick extra confirmation that generated fragments carry the 9.6 policy (if any fragments exist)
 if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
@@ -83,6 +83,21 @@ if [ -e /usr/local/bin/nfsidmap ] || [ -e /usr/sbin/nfsidmap ] || [ -L /usr/sbin
     # (the main remaining first-use timing symptom) and forces a resolve+materialize.
 else
     echo "  WARN: no 'nfsidmap' shim visible; interception may fail for Ganesha nfsidmap calls"
+fi
+
+# Confirm no Idmap* keys are emitted in ganesha.conf (must not be present for 9.6/trixie safety)
+if ! grep -qi 'idmapconf\|idmapd.conf\|UseGetpwnam\|Idmapping' /etc/ganesha/ganesha.conf 2>/dev/null; then
+    echo "  OK: no Idmap* keys in ganesha.conf (safe for 9.6 trixie-backports)"
+else
+    echo "  WARN: unexpected idmap keys found in ganesha.conf"
+fi
+
+# Confirm short names for a user + machine are materialized (the nss/extrausers path Ganesha uses)
+if getent passwd testuser1 >/dev/null 2>&1 || grep -q '^testuser1:' /var/lib/extrausers/passwd /var/lib/nfs-klldap/nss_passwd 2>/dev/null; then
+    echo "  OK: user short name materialization visible"
+fi
+if grep -q '^root:' /var/lib/extrausers/passwd /var/lib/nfs-klldap/nss_passwd 2>/dev/null; then
+    echo "  OK: root (uid 0 for machines) present in materialized files"
 fi
 
 echo

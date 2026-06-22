@@ -238,6 +238,7 @@ mod tests {
             group_name: "cn".to_string(),
             group_gid_number: "gidNumber".to_string(),
             group_member: "member".to_string(),
+            user_principal_name: "krbPrincipalName".to_string(),
         };
         let lldap = Arc::new(Mutex::new(LdapClient::new_with_attributes(
             "ldaps://localhost:6360",
@@ -457,6 +458,7 @@ default_security = "krb5p"
             group_name: "cn".to_string(),
             group_gid_number: "gidNumber".to_string(),
             group_member: "member".to_string(),
+            user_principal_name: "krbPrincipalName".to_string(),
         };
         let lldap = Arc::new(Mutex::new(LdapClient::new_with_attributes(
             "ldaps://kllap.test:6360",

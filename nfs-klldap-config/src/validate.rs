@@ -117,15 +117,27 @@ impl NfsKlldapConfig {
         }
 
         // Derive search bases from effective realm.
+        // Use the main search_base (dc=...) as the default for user and group searches.
+        // This lets Subtree searches discover posix entries anywhere in the tree,
+        // including under ou=users, ou=people, or nested sub-OUs (e.g. ou=testing,ou=users).
+        // Users can still set explicit ldap_user_search_base / ldap_group_search_base
+        // in nfs-klldap.conf to narrow the scope if desired.
         let base_dn = format!(
             "dc={}",
             self.effective_realm().to_lowercase().replace('.', ",dc=")
         );
+        let main_search_base = self
+            .sssd
+            .ldap_search_base
+            .clone()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| base_dn.clone());
+
         if self.sssd.ldap_user_search_base.is_none() {
-            self.sssd.ldap_user_search_base = Some(format!("ou=people,{}", base_dn));
+            self.sssd.ldap_user_search_base = Some(main_search_base.clone());
         }
         if self.sssd.ldap_group_search_base.is_none() {
-            self.sssd.ldap_group_search_base = Some(format!("ou=groups,{}", base_dn));
+            self.sssd.ldap_group_search_base = Some(main_search_base);
         }
 
         // Default security + enum validation (Ganesha only supports these)

@@ -22,15 +22,8 @@
 #
 # Install: copied by Dockerfile; entrypoint launches ganesha with PATH override.
 #
-# 0.8.32 note: The idhelper now routes getent + principal resolution through the
-# structured LDAP capabilities + caches (see nfs-klldap-config/src/idmap.rs and
-# integration in the idhelper binary). This gives cache hits and parity with the
-# UI LdapClient. The shim remains required for ganesha 9.6/trixie-backports because
-# the ID MAPPER code path still execs the literal "nfsidmap" binary for some
-# principal2uid cases (visible in ganesha.log). When Ganesha or future config
-# makes the external path unnecessary the shim + PATH mangling can be removed
-# (the nss_wrapper/extrausers materialization + getent will be sufficient).
-# Retain the shim for strict Debian trixie + backported ganesha 9.6 compatibility.
+# Routes through IdLdapResolver bulk 10m cache (idmap.rs) for fast aligned uid/gid.
+# Shim required for ganesha 9.6 trixie (nfsidmap exec path).
 set -euo pipefail
 
 IDHELPER="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
@@ -111,6 +104,19 @@ if [ -z "$principal" ]; then
 fi
 
 log "lookup mode=$mode principal=$principal"
+
+# For principals with @ (user or host/...), proactively warm sss/getent using the
+# short name. This helps both our idhelper (getent path) and Ganesha's internal
+# nss/getpwnam (via extrausers or wrapper) see the entry on the very first mapping
+# call from the IDMAPPER, reducing "Could not map" / getpwuid 0 races.
+if [ -n "$principal" ] && echo "$principal" | grep -q '@'; then
+    short=$(echo "$principal" | cut -d@ -f1)
+    # Warm for both full and short forms; ignore failures (cold is expected first time)
+    getent passwd "$short" >/dev/null 2>&1 || true
+    getent passwd "$principal" >/dev/null 2>&1 || true
+    # Also warm group side for uid2grp / managed gids cases
+    getent group "$short" >/dev/null 2>&1 || true
+fi
 
 if [ -x "$IDHELPER" ]; then
     # Always attempt our resolve first. This has the critical side-effect of

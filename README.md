@@ -20,6 +20,7 @@ nfs-klldap-config (validate + derive + generate)
         │
         ├── /etc/sssd/sssd.conf   (root:root 0600)
         ├── /etc/krb5.conf
+        ├── /etc/idmapd.conf      (Domain + Method derived from nfs-klldap.conf + [sssd])
         └── /etc/ganesha/exports.d/*.conf
         │
         ▼ (inotify / SIGHUP)
@@ -28,7 +29,7 @@ entrypoint (pid 1) → restart/reload daemons
         └── nfs-klldap-ui (9630, HTTPS, root) ──direct──> chown/chmod on bind-mounted host_path trees
 ```
 
-One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. Use `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN strongly suggested).
+One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, /etc/idmapd.conf (standardized NFSv4 Domain for idhelper/shim/clients), and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. Use `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN strongly suggested).
 
 ## Quick Start
 
@@ -80,7 +81,7 @@ container_root = "/export"                                      # Anchor for Gan
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
 ldap_default_authtok = "strong-secret"
-# ldap_user_search_base = "ou=people,dc=example,dc=com"         # Default - Edit this if your base user OU differs
+# ldap_user_search_base = "ou=users,dc=example,dc=com"          # Optional - defaults to dc=... (Subtree) for nested-OU support
 # ldap_group_search_base = "ou=groups,dc=example,dc=com"        # Default - Edit this if your base user OU differs 
 kllldap_ignored_attributes = true                               # KLLDAP specific - improves lookup time, prevents attribute spam
 
@@ -105,7 +106,7 @@ default_security = "krb5p"                                      # security, krb5
 
 ## [[shares]] sections are optional for first-run.
 
-The generator derives ports, search bases, sssd.conf, krb5.conf, and Ganesha fragments. `kllldap_ignored_attributes = true` (default) emits recommended server-side ignore lists.
+The generator derives ports, search bases, sssd.conf, krb5.conf, /etc/idmapd.conf (following [sssd] + realm), and Ganesha fragments. `kllldap_ignored_attributes = true` (default) emits recommended server-side ignore lists.
 
 Per-share Ganesha options (in [[shares]]) include `cache_profile` (see below) and the advanced/raw `pref_read` / `pref_write` (bytes). The recommended way is the **Cache Profile** dropdown in the WebUI (stored as e.g. `cache_profile = "Read - Heavy"` under the share). The generator always resolves the profile (or falls back to explicit pref_* for power users) when (re)writing Ganesha EXPORT fragments. See the table below and the WebUI shares editor. Raw TOML always supports any valid Ganesha EXPORT key as fallback.
 

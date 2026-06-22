@@ -479,8 +479,6 @@ impl LdapClient {
     }
 
     fn escape_filter_value(s: &str) -> String {
-        // Use the shared implementation (defined in nfs-klldap-config::idmap) to keep
-        // filter escaping identical between UI LdapClient and idhelper structured resolver.
         nfs_klldap_config::escape_ldap_filter(s)
     }
 
@@ -632,7 +630,6 @@ impl LdapClient {
     }
 
     fn extract_first_attr(se: &SearchEntry, name: &str) -> Option<String> {
-        // Shared helper for consistency with idhelper (see nfs-klldap-config idmap).
         nfs_klldap_config::extract_first_attr_value(se, name)
     }
 
@@ -1271,6 +1268,7 @@ mod list_search_tests {
                 group_name: "cn".into(),
                 group_gid_number: "gidNumber".into(),
                 group_member: "member".into(),
+                user_principal_name: "krbPrincipalName".into(),
             },
             true,
             false,

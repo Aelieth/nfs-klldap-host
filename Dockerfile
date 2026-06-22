@@ -50,13 +50,10 @@ RUN set -euxo pipefail && \
     cp "target/$TARGET/release/nfs-klldap-config" "target/$TARGET/release/nfs-klldap-startup" "target/$TARGET/release/nfs-klldap-idhelper" "target/$TARGET/release/nfs-klldap-ui" /output/ && \
     (strip /output/nfs-klldap-config /output/nfs-klldap-startup /output/nfs-klldap-idhelper /output/nfs-klldap-ui || true)
 
-# Runtime stage: Debian 13-slim for smaller image size and Ganesha packaging stability.
-# The build stages above remain on Fedora (reliable rustup + cargo-chef + cross-compilation
-# for the three Rust binaries). Only the final stage base + packages change.
-# Ganesha is deliberately taken from trixie-backports (9.x series) to provide configuration
-# option / parser compatibility as close as possible to the Ganesha currently packaged in
-# fedora-minimal:44 (targeting the 9.x line up to ~9.4 per guidance; avoids main 6.5 divergence
-# and bleeding-edge custom packages).
+# Runtime stage: Debian 13-slim (trixie) + Ganesha 9.6 from trixie-backports.
+# ONLY config directives known to be valid for ganesha 9.6 on Debian trixie are emitted.
+# Outdated keys will crash the parser at ganesha startup.
+# Build remains on Fedora for rustup/cargo-chef reliability.
 FROM debian:13-slim
 
 LABEL maintainer="Aelieth" \
@@ -64,7 +61,7 @@ LABEL maintainer="Aelieth" \
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 
-# Runtime: Ganesha (from backports for 9.x config parity)
+# Runtime: Ganesha 9.6 (trixie-backports). Config is strictly limited to supported 9.6 options.
 RUN apt-get update && \
     echo 'deb http://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list && \
     apt-get update && \
@@ -114,7 +111,7 @@ RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /
     # Create the literal 'nfsidmap' name (both in PATH and /usr/sbin) so that when ganesha.nfsd
     # execs "nfsidmap ..." (or absolute /usr/sbin/nfsidmap as seen in ID MAPPER "using nfsidmap" logs)
     # our shim is found first. Backup original for fallback inside the shim.
-    # This ensures interception even for full-path calls in ganesha 9.6/trixie.
+    # This ensures interception even for full-path calls in ganesha 9.6 on trixie-backports.
     [ -f /usr/sbin/nfsidmap ] && mv /usr/sbin/nfsidmap /usr/sbin/nfsidmap.system || true; \
     ln -sf /usr/local/bin/nfsidmap-idhelper /usr/local/bin/nfsidmap; \
     ln -sf /usr/local/bin/nfsidmap-idhelper /usr/sbin/nfsidmap; \

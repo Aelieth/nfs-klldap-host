@@ -103,6 +103,11 @@ pub struct SssdSection {
     pub krb5_validate: Option<bool>,
     pub krb5_store_password_if_offline: Option<bool>,
 
+    /// Optional attribute holding the Kerberos principal (e.g. krbPrincipalName or userPrincipalName).
+    /// When set, the IdLdapResolver will use it for direct principal-form lookups in addition to name match.
+    /// Default in resolver is "krbPrincipalName".
+    pub ldap_user_principal_name: Option<String>,
+
     // Cache tuning for ample/quick UID/GID lookups (emitted to sssd.conf to minimize LDAP hits).
     // Defaults chosen for "ample" behavior in getent/sssd paths without constant LDAP.
     pub entry_cache_timeout: Option<u32>,
@@ -122,6 +127,9 @@ pub struct PosixAttributeMapping {
     pub group_name: String,
     pub group_gid_number: String,
     pub group_member: String,
+    /// Attribute for the full Kerberos principal (e.g. "krbPrincipalName").
+    /// Used for direct lookup when resolving full "user@REALM" principals.
+    pub user_principal_name: String,
 }
 
 /// Resolves POSIX attribute names from [sssd] overrides (or built-in defaults).
@@ -217,6 +225,13 @@ pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapp
             }
         });
 
+    let u_principal = sssd
+        .ldap_user_principal_name
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "krbPrincipalName".to_string());
+
     PosixAttributeMapping {
         user_object_class: user_obj,
         group_object_class: group_obj,
@@ -229,32 +244,35 @@ pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapp
         group_name: g_name,
         group_gid_number: g_gid,
         group_member: g_member,
+        user_principal_name: u_principal,
     }
 }
 
 /// Effective user/group search bases (Subtree) from [sssd] overrides or realm-derived defaults.
 pub fn effective_ldap_search_bases(sssd: &SssdSection, realm: &str) -> (String, String) {
+    // Main search base (usually dc=... or explicit ldap_search_base).
+    // When no specific user/group base is given we use this directly.
+    // Combined with Scope::Subtree in the resolver (and sssd defaults) this
+    // discovers users/groups in any nesting, e.g. under ou=users/testing or
+    // ou=people/anything, without requiring the admin to guess the exact ou.
     let search_base = sssd
         .ldap_search_base
         .clone()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| format!("dc={}", realm.to_lowercase().replace('.', ",dc=")));
 
-    let default_user_base = format!("ou=people,{}", search_base);
-    let default_group_base = format!("ou=groups,{}", search_base);
-
     let user_base = sssd
         .ldap_user_search_base
         .as_deref()
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or(&default_user_base)
+        .unwrap_or(&search_base)
         .to_string();
 
     let group_base = sssd
         .ldap_group_search_base
         .as_deref()
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or(&default_group_base)
+        .unwrap_or(&search_base)
         .to_string();
 
     (user_base, group_base)
@@ -366,6 +384,10 @@ pub struct GenerationPaths {
     pub krb5_conf: PathBuf,
     pub ganesha_conf: PathBuf,
     pub exports_dir: PathBuf,
+    /// Standardized idmap configuration (Domain + Method) derived from kerberos.realm + [sssd] policy.
+    /// Written to the canonical Debian location so Ganesha 9.x (IdmapConf default), nfsidmap shim,
+    /// and rpc.idmapd clients see the same NFSv4 domain as SSSD/ganesha DomainName.
+    pub idmap_conf: PathBuf,
 }
 
 impl Default for GenerationPaths {
@@ -375,6 +397,7 @@ impl Default for GenerationPaths {
             krb5_conf: PathBuf::from("/etc/krb5.conf"),
             ganesha_conf: PathBuf::from("/etc/ganesha/ganesha.conf"),
             exports_dir: PathBuf::from("/etc/ganesha/exports.d"),
+            idmap_conf: PathBuf::from("/etc/idmapd.conf"),
         }
     }
 }

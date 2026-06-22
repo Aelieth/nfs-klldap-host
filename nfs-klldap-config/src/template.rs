@@ -40,8 +40,8 @@ container_root = "/export"                                      # Required - Gan
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"  # Required - LDAP bind DN
 ldap_default_authtok = "strong-secret"                          # Required - LDAP bind password
-# ldap_user_search_base = "ou=people,dc=example,dc=com"         # Default - Edit this if your base user OU differs
-# ldap_group_search_base = "ou=groups,dc=example,dc=com"        # Default - Edit this if your base user OU differs
+# ldap_user_search_base = "ou=users,dc=example,dc=com"          # Optional - defaults to dc=... (Subtree) for nested-OU discovery; set explicit to narrow
+# ldap_group_search_base = "ou=groups,dc=example,dc=com"        # Optional - defaults to dc=... (Subtree) for nested-OU discovery
 kllldap_ignored_attributes = true                               # KLLDAP specific - improves lookup time, prevents attribute spam
 
 # ldap_tls_reqcert = "never"                                    # auto-dervived - typical for internal/self-signed

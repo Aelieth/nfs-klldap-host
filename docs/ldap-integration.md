@@ -24,7 +24,7 @@ Edit [sssd] in `nfs-klldap.conf`. The generator writes `/etc/sssd/sssd.conf` wit
 | `auth_provider` | `ldap` | yes (`krb5` optional) |
 | `access_provider` | `permit` | yes |
 | POSIX attribute names | uid, uidNumber, gidNumber, … | yes (overridable per field) |
-| Search bases | `ou=people,dc=<realm>` etc. | derived from realm |
+| Search bases | `dc=<realm>` (realm-derived) + Subtree scope; explicit `ldap_user_search_base` etc. allowed (e.g. `ou=users,...`) | derived or explicit; always Subtree |
 | `ldap_tls_reqcert` | not set for ldaps | only if set in TOML |
 | `ldap_auth_disable_tls_never_use_in_production` | `true` for `ldap://` only | conditional |
 
@@ -64,7 +64,7 @@ klist -k /etc/krb5.keytab
 - Permission denied with correct IDs → host ownership ≠ LDAP IDs, or SELinux on bind mounts.
 - LDAP/TLS noise → enable KLLDAP ignores; avoid `enumerate=true` with dirsync-style binds.
 
-Client `rpc.idmapd` (Method=sss) still helps pretty `ls` output on NFS clients.
+Client `rpc.idmapd` (Method=sss or nsswitch) still helps pretty `ls` output on NFS clients. The generator now also writes `/etc/idmapd.conf` (Domain = effective realm from [kerberos], Method = nsswitch) directly from the same nfs-klldap.conf + [sssd] info used for sssd.conf and ganesha DomainName. This ensures consistent NFSv4 name-to-id expectations for the nfsidmap shim (ganesha 9.6 "using nfsidmap" path), fallback nfsidmap, and clients. The authoritative live mapping for Kerberos principals remains the nfs-klldap-idhelper (IdLdapResolver + getent + nss_wrapper/extrausers materialization).
 
 ## Machine vs User Principals (Fedora Immutable + host keytabs)
 
@@ -74,7 +74,7 @@ When clients use Kerberos host keytabs (e.g. `/etc/krb5.keytab` on Fedora Immuta
 
 If Ganesha maps these inconsistently (or falls back to nobody/65534 for machine names), the client can see credential mixing that causes NFSv4 session teardown or permission failures.
 
-`nfs-klldap-idhelper` (using structured LDAP resolution via shared IdLdapResolver for consistency with the UI LdapClient + its caches, plus getent for client parity) is the authoritative layer for this:
+`nfs-klldap-idhelper` (using structured LDAP resolution via shared IdLdapResolver for consistency with the UI LdapClient + its caches, plus getent for client parity) is the authoritative layer for this. At daemon start it eagerly inits the resolver (the "ldap cache") and pre-resolves server host principals + forces a root uid0 entry so nsswitch (sss + extrausers + wrapper for ganesha) has user/machine info *immediately* after startup, avoiding cold first-access races ("Could not map", getpwuid 0 fails for host/ principals).
 
 - It classifies principals (machine vs. user) using `is_machine_principal`.
 - It resolves via NSS/SSSD (users) or forces uid/gid 0 (machines).

@@ -32,7 +32,7 @@ pub use uri::{derive_realm_from_uri, extract_host_from_uri};
 // Structured ID/LDAP resolution (used by idhelper for getent + principal paths
 // with caching and PosixAttributeMapping parity to nfs-klldap-ui/src/ldap.rs).
 pub mod idmap;
-pub use idmap::{escape_ldap_filter, extract_first_attr_value, IdLdapResolver};
+pub use idmap::{escape_ldap_filter, extract_first_attr_value, parse_getent_group, parse_getent_passwd, IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry};
 
 /// Returns (no_tls_verify, start_tls) derived from [sssd] TLS fields and ldap_uri scheme.
 pub fn ldap_tls_policy(
@@ -169,6 +169,7 @@ mod tests {
             krb5_conf: tmp.path().join("krb5.conf"),
             ganesha_conf: tmp.path().join("ganesha.conf"),
             exports_dir: tmp.path().join("exports.d"),
+            idmap_conf: tmp.path().join("idmapd.conf"),
         };
         generate_all(&cfg, &paths).expect("generate");
 
@@ -203,17 +204,17 @@ mod tests {
         assert!(main.contains("NFS_KRB5 {"));
         assert!(main.contains("Root_Kerberos_Principal = host, nfs;"));
         assert!(main.contains("EXPORT_DEFAULTS {\n    SecType = krb5p;\n    Protocols = 4;"));
-        // These must not appear (rejected by parser in this build)
+        // Ganesha 9.6 trixie-backports: only these blocks are emitted.
+        // Classic port/Transports/Idmap keys are fatal at parser time.
         assert!(!main.contains("Transports"));
         assert!(!main.contains("Mountd_Port"));
         assert!(!main.contains("NLM_Port"));
         assert!(!main.contains("Rquota_Port"));
-        // (Enable_UDP / Enable_NLM / Enable_RQUOTA are intentionally emitted as explicit = false
-        //  in the current proven-safe NFS_CORE_PARAM; only the classic port + Transports keys are omitted.)
+        assert!(!main.contains("IdmapConf"));
+        assert!(!main.contains("UseGetpwnam"));
+        // Enable_*=false are safe and explicit; the dangerous keys above are omitted.
 
-        // A baseline (INFO/EVENT) LOG block is now always emitted so the idhelper
-        // observer has a better chance of seeing client/owner identity strings
-        // during normal (non-debug) mounts. Only the heavy FULL_DEBUG set is gated.
+        // Baseline LOG always emitted (idhelper + operators need visibility on IDMAPPER).
         assert!(
             main.contains("LOG {"),
             "baseline LOG block should be present even without GANESHA_DEBUG"
@@ -260,6 +261,7 @@ mod tests {
             krb5_conf: tmp.path().join("krb5.conf"),
             ganesha_conf: tmp.path().join("ganesha.conf"),
             exports_dir: tmp.path().join("exports.d"),
+            idmap_conf: tmp.path().join("idmapd.conf"),
         };
         generate_all(&cfg, &paths).expect("generate default");
         let main_default = fs::read_to_string(&paths.ganesha_conf).unwrap();
@@ -281,6 +283,7 @@ mod tests {
             krb5_conf: tmp2.path().join("krb5.conf"),
             ganesha_conf: tmp2.path().join("ganesha.conf"),
             exports_dir: tmp2.path().join("exports.d"),
+            idmap_conf: tmp2.path().join("idmapd.conf"),
         };
         generate_all(&cfg2, &paths2).expect("generate with debug");
 
@@ -525,6 +528,7 @@ mod tests {
             krb5_conf: tmp.path().join("krb5.conf"),
             ganesha_conf: tmp.path().join("ganesha.conf"),
             exports_dir: tmp.path().join("exports.d"),
+            idmap_conf: tmp.path().join("idmapd.conf"),
         };
         generate_all(&c, &paths).expect("generate with tls");
 
@@ -549,6 +553,7 @@ mod tests {
             krb5_conf: tmp.path().join("krb5.conf"),
             ganesha_conf: tmp.path().join("ganesha.conf"),
             exports_dir: tmp.path().join("exports.d"),
+            idmap_conf: tmp.path().join("idmapd.conf"),
         };
         generate_all(&c, &paths).expect("generate with kll=false");
 

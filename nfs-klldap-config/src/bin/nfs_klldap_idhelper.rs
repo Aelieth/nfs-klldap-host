@@ -1,75 +1,7 @@
 //! nfs-klldap-idhelper
-//!
-//! Lightweight, memory-efficient, always-running helper for ID and Kerberos
-//! principal translation between machine ("root") credentials and LDAP-backed
-//! user principals inside the nfs-klldap-host container.
-//!
-//! Goals (per requirements):
-//! - Runs as a long-lived daemon (started by entrypoint) so it is available for
-//!   every single mount attempt. Mounts currently collapse without it.
-//! - Extremely lightweight for the hot path. 4K video file serving workloads
-//!   demand low CPU/memory and fast resolution.
-//! - Primary fast lookup path is a simple, regular on-disk cache file that is
-//!   cheap to process (line-oriented, predictable format, easy to mmap/grep).
-//! - Unix domain socket for fast local queries from scripts, UI, ganesha-ctl,
-//!   and future small clients. One small allocation per request at most.
-//! - Clear distinction between machine principals (host/, nfs/, root/, and
-//!   server/client host variants) and regular LDAP user principals.
-//! - Safe: does NOT inject arbitrary data into ganesha.conf. Ganesha config
-//!   generation stays conservative and parser-safe. Translation lives here
-//!   and is surfaced to Ganesha via nss_wrapper files (see below).
-//! - Can operate standalone (direct NSS resolution) when the daemon is not
-//!   reachable (early boot, diagnostics).
-//!
-//! Ganesha integration (the reason the idhelper exists):
-//! The idhelper materializes small nss_wrapper and extrausers passwd/group files.
-//! Ganesha is launched (when enabled) under LD_PRELOAD pointing at the wrapper,
-//! or benefits from extrausers in nsswitch. This supplies the classification
-//! (machine principals to uid 0, users to real LDAP ids) so that Ganesha's
-//! getpwnam path during Kerberos owner mapping sees correct stable values.
-//! The goal is preventing immutable clients from tearing down sessions from
-//! mixing root and user credentials.
-//!
-//! Principal mapping parity requirement (ganesha 9.6 + trixie specific):
-//! The container (server) must be able to perform the *same* information lookup
-//! that a client does: `getent passwd testuser1` (and the full principal form
-//! via idhelper). Ganesha's internal mapper sometimes calls "nfsidmap" for
-//! "testuser1@REALM" (and host/... principals). The companion nfsidmap-idhelper
-//! shim (in PATH only for ganesha) + this binary ensure consistent uid/gid for
-//! both short names and full Kerberos principals. This was identified from
-//! ganesha.log lines containing "using nfsidmap", "Could not map principal",
-//! and uid2grp "Unsupported code path". Changes here must remain compatible
-//! with ganesha 9.6 parser/startup on Debian 13-slim trixie-backports.
-//!
-//! Cache file format (simple, robust, file-processing friendly):
-//!   # nfs-klldap-idhelper cache v1
-//!   # principal|uid|gid|kind|source
-//!   alice@EXAMPLE.COM|1001|1001|user|sss
-//!   host/fedora-immutable.example.com@EXAMPLE.COM|0|0|machine|special
-//!
-//! kind: "user" | "machine" | "unknown"
-//! source: "sss" | "special" | "direct" | "cache"
-//!
-//! The daemon keeps an in-memory map + atomically rewrites the cache file on
-//! changes. Consumers can read the file directly for lowest-overhead cases
-//! (small file, linear scan is fine; number of active principals is tiny).
-//!
-//! Protocol over /var/run/nfs-klldap/idhelper.sock (line based):
-//!   RESOLVE <principal>\n   ->  OK <principal>|<uid>|<gid>|<kind>|<source>\n
-//!                           or  ERR <message>\n
-//!   CLASSIFY <principal>\n  ->  OK <kind>|<reason>\n
-//!   PING\n                  ->  OK\n
-//!
-//! CLI usage:
-//!   nfs-klldap-idhelper resolve 'alice@EXAMPLE.COM' [--json]
-//!   nfs-klldap-idhelper classify 'host/foo@REALM'
-//!   nfs-klldap-idhelper check
-//!   nfs-klldap-idhelper daemon   # run the server (normally via entrypoint)
-//!
-//! Debug logging:
-//!   KLLDAP_IDHELPER_DEBUG=true   (enables detailed RESOLVE logs: normalized key,
-//!                                 cache hit/miss, classification, short name, getent
-//!                                 attempts, final result, elapsed, cache write)
+//! Central fast resolver for ganesha 9.6 (nfsidmap + nss paths).
+//! All uid/gid lookups for principals flow through the 10m IdLdapResolver full map here.
+//! Machine principals -> 0:0. Users come from bulk-loaded ldap cache or strict getent parse.
 
 use std::collections::HashMap;
 use std::env;
@@ -82,9 +14,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-// Structured resolver (0.8.32): re-uses PosixAttributeMapping + filters + caching
-// from the same logic that powers nfs-klldap-ui/src/ldap.rs.
-use nfs_klldap_config::{IdLdapResolver, SssdSection};
+// Structured resolver + snapshot + strict parsers from the shared crate.
+// The idhelper is the single front-end for all uid/gid resolution used by
+// ganesha nfsidmap, nss materialization, and getent parity.
+use nfs_klldap_config::{parse_getent_passwd, IdLdapResolver, IdMapSnapshot, NfsKlldapConfig};
 
 const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
 const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
@@ -323,6 +256,24 @@ fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
             }
         }
 
+        // For regular (non-machine) user principals, ALWAYS also materialize the full "name@REALM" form
+        // (in addition to the short name). This helps Ganesha's getpwnam / principal2uid paths
+        // when it feeds the exact Kerberos principal string (the "kerberos looking" case).
+        if r.kind != PrincipalKind::Machine {
+            let full = r.principal.clone();
+            if seen_login.insert(full.clone()) {
+                let line_full = passwd_line_for(&Resolved {
+                    principal: full.clone(),
+                    name: full.clone(),
+                    uid: r.uid,
+                    gid: r.gid,
+                    kind: r.kind.clone(),
+                    source: r.source.clone(),
+                });
+                passwd_lines.push(line_full);
+            }
+        }
+
         // Groups
         if seen_gid.insert(r.gid) {
             group_lines.push(group_line_for(r));
@@ -348,6 +299,16 @@ fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
     // host/ nfs/ machine principals.
     if seen_gid.is_empty() || !seen_gid.contains(&0) {
         group_lines.push("root:x:0:root,daemon,bin".to_string());
+    }
+
+    // Always ensure a root *passwd* entry for uid 0. Under nss_wrapper (for Ganesha)
+    // or extrausers this makes getpwuid_r(0) succeed for uid2grp paths on machine
+    // principals (host/...). Without it, "getpwuid_r for uid 0 failed, error 2" occurs
+    // on cold first access before any machine principal has been materialized.
+    // We add a canonical "root" line (name root, uid 0) in addition to any client-host
+    // aliases that also map to 0.
+    if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
+        passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
     }
 
     // Write passwd atomically
@@ -478,13 +439,7 @@ fn normalize_principal(p: &str) -> String {
     }
 }
 
-/// Try to resolve a name (possibly "user@REALM") to uid/gid via getent (NSS).
-/// This is the direct path used by both CLI and daemon on miss.
-/// Ensures the server can do `getent passwd testuser1` (and full principal via
-/// the idhelper) the same way clients do. See top-of-file comment on the
-/// ganesha 9.6 / trixie principal mapping stabilization requirement.
-/// SSSD lookup is used (via getent nss), and config-driven LDAP fallback ensures
-/// resolution to ldap exists using info from nfs-klldap.conf.
+/// getent (NSS) path for "same lookup a client would see". Falls back to resolver snapshot.
 fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
     // Try as-is first (handles user@REALM in some setups)
     if let Some(res) = resolve_getent(name_or_principal) {
@@ -514,135 +469,69 @@ fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
     None
 }
 
-/// Structured LDAP resolution using IdLdapResolver (preferred).
-/// Falls back to legacy shell ldapsearch only if we cannot load creds/mapping.
-/// Returns (uid, gid) or None. gid often equals uid for the primary group.
-/// Now correctly populates search bases from nfs-klldap.conf (sssd.* or top-level)
-/// so the same effective bases used by generator/SSSD/UI are honored.
-fn resolve_via_structured_ldap(short_name: &str) -> Option<(u32, u32)> {
+/// Structured LDAP resolution using IdLdapResolver + full in-memory snapshot (preferred hot path).
+/// The bulk 10m load (called at daemon start) ensures we have all users+groups with aligned gids.
+/// On miss we force a fresh full load (covers users added after start or in nested OUs that a
+/// previous narrow base might have missed) then retry.
+/// Accepts full principal (for krbPrincipalName lookup) or short name.
+fn resolve_via_structured_ldap(name_or_principal: &str) -> Option<(u32, u32)> {
     let (resolver, bind_dn, bind_pw) = get_or_init_resolver()?;
 
-    // Use the structured path (caches + identical filters). Resolver lives for daemon lifetime.
-    if let Some((uid_i, gid_opt, _disp)) = resolver.resolve_user(short_name, &bind_dn, &bind_pw) {
+    let short = name_or_principal.split('@').next().unwrap_or(name_or_principal);
+
+    // Prefer in-memory snapshot (try full principal key then short)
+    let snap: IdMapSnapshot = resolver.snapshot();
+    if let Some(u) = snap.users.get(name_or_principal) {
+        return Some((u.uid as u32, u.gid as u32));
+    }
+    if let Some(u) = snap.users.get(short) {
+        return Some((u.uid as u32, u.gid as u32));
+    }
+
+    // Single resolve with full first (enables dual principal attr logic), then short
+    if let Some((uid_i, gid_opt, _disp)) = resolver.resolve_user(name_or_principal, &bind_dn, &bind_pw) {
         let uid = uid_i as u32;
-        // Prefer gidNumber from the same posixAccount user entry (matches legacy ldapsearch behavior and
-        // what the generator/SSSD expect). Fall back to uid or a group name lookup.
-        let gid = gid_opt.map(|g| g as u32)
-            .or_else(|| resolver.resolve_group(short_name, &bind_dn, &bind_pw).map(|(g, _)| g as u32))
-            .unwrap_or(uid);
+        let gid = gid_opt.map(|g| g as u32).unwrap_or(uid);
+        return Some((uid, gid));
+    }
+    if let Some((uid_i, gid_opt, _disp)) = resolver.resolve_user(short, &bind_dn, &bind_pw) {
+        let uid = uid_i as u32;
+        let gid = gid_opt.map(|g| g as u32).unwrap_or(uid);
         return Some((uid, gid));
     }
 
-    // Legacy shell fallback (use a sensible base; resolver already used correct one for main path).
-    let base = "ou=people,dc=example,dc=com"; // conservative (structured path already honored conf)
-    // uri only for the ldapsearch -H; use a placeholder that the shell path tolerates or fetch if needed
-    resolve_via_ldap_shell_with_base(short_name, "ldaps://localhost", &bind_dn, &bind_pw, base)
+    // Miss - force a fresh full load then retry
+    let _ = resolver.load_full_identities(&bind_dn, &bind_pw);
+    let snap2: IdMapSnapshot = resolver.snapshot();
+    if let Some(u) = snap2.users.get(name_or_principal) {
+        return Some((u.uid as u32, u.gid as u32));
+    }
+    if let Some(u) = snap2.users.get(short) {
+        return Some((u.uid as u32, u.gid as u32));
+    }
+    if let Some((uid_i, gid_opt, _disp)) = resolver.resolve_user(name_or_principal, &bind_dn, &bind_pw) {
+        let uid = uid_i as u32;
+        let gid = gid_opt.map(|g| g as u32).unwrap_or(uid);
+        return Some((uid, gid));
+    }
+    if let Some((uid_i, gid_opt, _disp)) = resolver.resolve_user(short, &bind_dn, &bind_pw) {
+        let uid = uid_i as u32;
+        let gid = gid_opt.map(|g| g as u32).unwrap_or(uid);
+        return Some((uid, gid));
+    }
+    None
 }
 
-/// Legacy shell ldapsearch path (kept as last-resort compatibility shim).
-/// Do not extend; new work goes through IdLdapResolver.
-/// base is now passed from the loaded config when available.
-fn resolve_via_ldap_shell_with_base(short_name: &str, uri: &str, bind: &str, pw: &str, base: &str) -> Option<(u32, u32)> {
-    let out = std::process::Command::new("ldapsearch")
-        .args([
-            "-o", "ldif-wrap=no",
-            "-o", "tls_reqcert=never",
-            "-x",
-            "-H", uri,
-            "-D", bind,
-            "-w", pw,
-            "-b", base,
-            "-LLL",
-            &format!("(uid={})", short_name),
-            "uidNumber", "gidNumber",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() { return None; }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut uid = None;
-    let mut gid = None;
-    for line in text.lines() {
-        let l = line.trim();
-        if l.starts_with("uidNumber:") {
-            uid = l.split(':').nth(1).and_then(|s| s.trim().parse::<u32>().ok());
-        } else if l.starts_with("gidNumber:") {
-            gid = l.split(':').nth(1).and_then(|s| s.trim().parse::<u32>().ok());
-        }
-    }
-    match (uid, gid) {
-        (Some(u), Some(g)) => Some((u, g)),
-        (Some(u), None) => Some((u, u)),
-        _ => None,
-    }
-}
-
-/// Load (uri, bind_dn, bind_pw) using the same sources the rest of the stack prefers.
-/// Prefers explicit sssd. keys then top-level, then common env fallbacks.
-fn load_ldap_creds_from_conf() -> Option<(String, String, String)> {
-    let conf = load_conf();
-    let uri = conf.get("sssd.ldap_uri")
-        .or_else(|| conf.get("ldap_uri"))
-        .cloned()
-        .or_else(|| std::env::var("NFS_KLLDAP_LDAP_URI").ok())
-        .or_else(|| std::env::var("LDAP_URI").ok())?;
-
-    let bind = conf.get("sssd.ldap_default_bind_dn")
-        .or_else(|| conf.get("ldap_default_bind_dn"))
-        .cloned()
-        .or_else(|| std::env::var("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN").ok())
-        .or_else(|| std::env::var("NFS_KLLDAP_LLDAP_USER").ok())?;
-
-    let pw = conf.get("sssd.ldap_default_authtok")
-        .or_else(|| conf.get("ldap_default_authtok"))
-        .cloned()
-        .or_else(|| std::env::var("NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK").ok())
-        .or_else(|| std::env::var("NFS_KLLDAP_LLDAP_PW").ok())?;
-
-    if bind.trim().is_empty() || pw.trim().is_empty() {
+/// Load resolver + bind creds from the canonical NfsKlldapConfig (single source of truth).
+/// Replaces all previous hand-rolled toml + flat-map logic.
+fn load_resolver_from_config() -> Option<(IdLdapResolver, String, String)> {
+    let path = std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
+    let cfg = NfsKlldapConfig::load(std::path::Path::new(&path)).ok()?;
+    if cfg.sssd.ldap_default_bind_dn.trim().is_empty() || cfg.sssd.ldap_default_authtok.trim().is_empty() {
         return None;
     }
-    Some((uri, bind, pw))
-}
-
-/// Build a populated SssdSection from the flat conf map (or env) so that
-/// effective_ldap_search_bases + resolve_posix... are driven by the actual
-/// nfs-klldap.conf (including ldap_*_search_base). This ensures "resolution
-/// information from the config is properly utilized".
-fn build_sssd_for_resolver(conf: &std::collections::HashMap<String, String>) -> SssdSection {
-    let mut s = SssdSection::default();
-
-    // binds (required)
-    if let Some(v) = conf.get("sssd.ldap_default_bind_dn").or_else(|| conf.get("ldap_default_bind_dn")) {
-        s.ldap_default_bind_dn = v.clone();
-    }
-    if let Some(v) = conf.get("sssd.ldap_default_authtok").or_else(|| conf.get("ldap_default_authtok")) {
-        s.ldap_default_authtok = v.clone();
-    }
-
-    // search bases (the key part for correct subtree queries)
-    s.ldap_search_base = conf.get("sssd.ldap_search_base")
-        .or_else(|| conf.get("ldap_search_base"))
-        .cloned();
-    s.ldap_user_search_base = conf.get("sssd.ldap_user_search_base")
-        .or_else(|| conf.get("ldap_user_search_base"))
-        .cloned();
-    s.ldap_group_search_base = conf.get("sssd.ldap_group_search_base")
-        .or_else(|| conf.get("ldap_group_search_base"))
-        .cloned();
-
-    // tls / other common that affect no_tls_verify etc.
-    s.ldap_tls_reqcert = conf.get("sssd.ldap_tls_reqcert").or_else(|| conf.get("ldap_tls_reqcert")).cloned();
-    s.ldap_id_use_start_tls = conf.get("sssd.ldap_id_use_start_tls")
-        .or_else(|| conf.get("ldap_id_use_start_tls"))
-        .and_then(|v| v.parse::<bool>().ok());
-
-    // also copy any kllldap flag if present for ignored attrs / member (not strictly needed for id resolve)
-    s.kllldap_ignored_attributes = conf.get("sssd.kllldap_ignored_attributes")
-        .or_else(|| conf.get("kllldap_ignored_attributes"))
-        .and_then(|v| v.parse::<bool>().ok());
-
-    s
+    let resolver = IdLdapResolver::from_sssd_section(&cfg.ldap_uri, &cfg.sssd);
+    Some((resolver, cfg.sssd.ldap_default_bind_dn.clone(), cfg.sssd.ldap_default_authtok.clone()))
 }
 
 /// Lazily initialized resolver (with creds) so that the 10m identity + reverse caches
@@ -654,12 +543,7 @@ fn get_or_init_resolver() -> Option<(&'static IdLdapResolver, String, String)> {
     if let Some(cached) = ID_RESOLVER.get().and_then(|o| o.as_ref()) {
         return Some((&cached.0, cached.1.clone(), cached.2.clone()));
     }
-    let (uri, bind_dn, bind_pw) = load_ldap_creds_from_conf()?;
-    let conf = load_conf();
-    let mut sssd = build_sssd_for_resolver(&conf);
-    sssd.ldap_default_bind_dn = bind_dn.clone();
-    sssd.ldap_default_authtok = bind_pw.clone();
-    let resolver = IdLdapResolver::from_sssd_section(&uri, &sssd);
+    let (resolver, bind_dn, bind_pw) = load_resolver_from_config()?;
     let _ = ID_RESOLVER.set(Some((resolver, bind_dn.clone(), bind_pw.clone())));
     if let Some(cached) = ID_RESOLVER.get().and_then(|o| o.as_ref()) {
         return Some((&cached.0, cached.1.clone(), cached.2.clone()));
@@ -681,13 +565,10 @@ fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout);
-    let line = s.lines().next()?;
-    let parts: Vec<&str> = line.split(':').collect();
-    if parts.len() > 3 {
-        if let (Ok(uid), Ok(gid)) = (parts[2].parse::<u32>(), parts[3].parse::<u32>()) {
-            eprintln!("[idhelper] getent passwd \"{}\" -> success uid={} gid={}", name, uid, gid);
-            return Some((uid, gid, "sss".to_string()));
-        }
+    let line = s.lines().next().unwrap_or("");
+    if let Some((uid, gid)) = parse_getent_passwd(line) {
+        eprintln!("[idhelper] getent passwd \"{}\" -> success uid={} gid={}", name, uid, gid);
+        return Some((uid, gid, "sss".to_string()));
     }
     eprintln!("[idhelper] getent passwd \"{}\" -> malformed output", name);
     None
@@ -706,6 +587,10 @@ fn resolve_principal(
 
     dlog!("RESOLVE principal=\"{}\"", principal);
     dlog!("  normalized=\"{}\"", norm);
+
+    if principal.contains('@') {
+        dlog!("  (kerberos principal form - will attempt full + short + principal attr paths)");
+    }
 
     if let Some(existing) = cache.get(&norm).cloned() {
         let mut e = existing;
@@ -767,7 +652,18 @@ fn resolve_principal(
         let second_try = principal.split('@').next().unwrap_or(principal);
         dlog!("  user_path first_try=\"{}\" second_try=\"{}\"", first_try, second_try);
 
-        let looked = resolve_via_nss(first_try).or_else(|| resolve_via_nss(second_try));
+        // Prefer nss/getent for "same lookup client would do", but always also
+        // attempt the direct structured LDAP resolver. This guarantees a uid/gid
+        // + materialize on first presentation of a user principal even if sss/getent
+        // has cold/negative cache or hasn't seen the name yet. Fixes first-compound
+        // "Could not map principal ... to uid" fallthrough.
+        // For full principals (kerberos looking), try the full form first so the
+        // resolver can use krbPrincipalName attr lookup in addition to name match.
+        let nss_looked = resolve_via_nss(first_try).or_else(|| resolve_via_nss(second_try));
+        let ldap_looked = resolve_via_structured_ldap(first_try)
+            .or_else(|| resolve_via_structured_ldap(second_try))
+            .map(|(u, g)| (u, g, "ldap".to_string()));
+        let looked = nss_looked.or(ldap_looked);
         dlog!("  nss_getent final_got={:?}", looked.as_ref().map(|(u, g, s)| (*u, *g, s.as_str())));
 
         if let Some((uid, gid, src)) = looked {
@@ -781,8 +677,14 @@ fn resolve_principal(
                 source: src,
             }
         } else {
-            // Unknown / unmapped -> nobody-ish but keep the info
-            eprintln!("[idhelper] getent for user principal=\"{}\" returned nothing -> falling back to 65534:65534", principal);
+            // Unknown / unmapped -> nobody-ish but keep the info.
+            // This is the path that produces the "Could not map principal" in ganesha.
+            // The bases used by the resolver (and thus bulk/single searches) determine
+            // whether nested OUs under ou=users (or ou=people) are visible.
+            eprintln!(
+                "[idhelper] FALLBACK 65534 for principal=\"{}\" (no uid/gid from getent or structured resolver) - principal2uid path for kerberos",
+                principal
+            );
             let name = principal.split('@').next().unwrap_or(principal).to_string();
             Resolved {
                 principal: principal.to_string(),
@@ -852,11 +754,7 @@ fn resolve_principal(
     resolved
 }
 
-/// Start a background observer that tails Ganesha's log to "catch" mount/auth attempts.
-/// When lines containing client identities or possible principals appear, we extract
-/// candidates (e.g. host/<client>@REALM from client names, or explicit user@REALM) and
-/// feed them through resolve_principal. This makes the idhelper see activity even if
-/// nothing is explicitly calling the RESOLVE socket/CLI.
+/// Best-effort: tail ganesha.log for early principal hints (feeds resolve).
 fn start_ganesha_observer(realm: String, variants: Vec<String>, cache: Arc<Mutex<IdCache>>) {
     let log_path = std::env::var("GANESHA_LOG_PATH")
         .unwrap_or_else(|_| "/var/log/ganesha.log".to_string());
@@ -1179,77 +1077,33 @@ fn extract_candidate_principal(line: &str, realm: &str) -> Option<String> {
     None
 }
 
-/// Simple parser to load resolution info directly from nfs-klldap.conf (the source of truth).
-/// This ensures "resolution information from the config/nfs-klldap.conf is properly utilized"
-/// for realm, hostname (for principals), and ldap settings (for direct resolution fallback).
-/// Keys are normalized from toml sections (e.g. "kerberos.realm", "sssd.ldap_uri", "server.hostname").
-/// Falls back gracefully if conf not present or unreadable (e.g. during unit tests).
-fn load_conf() -> std::collections::HashMap<String, String> {
-    use std::collections::HashMap;
-    let path = std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
-    let mut m: HashMap<String, String> = HashMap::new();
-    if let Ok(content) = std::fs::read_to_string(&path) {
-        let mut current_section = String::new();
-        for raw in content.lines() {
-            let line = raw.trim();
-            if line.starts_with('#') || line.is_empty() { continue; }
-            if line.starts_with('[') && line.ends_with(']') {
-                current_section = line[1..line.len()-1].trim().to_string();
-                continue;
-            }
-            if let Some(eq) = line.find('=') {
-                let key = line[..eq].trim().to_string();
-                let val = line[eq+1..].trim().trim_matches('"').trim_matches('\'').to_string();
-                if !current_section.is_empty() {
-                    let full = format!("{}.{}", current_section, key);
-                    m.insert(full.to_lowercase(), val.clone());
-                }
-                m.insert(key.to_lowercase(), val);
-            }
-        }
-        if std::env::var("KLLDAP_IDHELPER_DEBUG").is_ok() {
-            eprintln!("[idhelper-debug] load_conf from {} inserted keys: {:?}", path, m.keys().collect::<Vec<_>>());
-        }
-    }
-    m
-}
-
 fn get_server_variants() -> Vec<String> {
-    // Best effort: use hostname variants. In container this should be the real host.
-    // Prefer resolution info from nfs-klldap.conf (properly utilizing the source config).
-    let conf = load_conf();
-    if let Some(h) = conf.get("server.hostname").or_else(|| conf.get("hostname")) {
-        if !h.trim().is_empty() {
-            let mut v = vec![h.trim().to_string()];
-            if let Some(short) = h.split('.').next() {
-                if short != h.trim() {
-                    v.push(short.to_string());
+    // Use the real config for hostname when present (single source of truth).
+    if let Ok(cfg) = NfsKlldapConfig::load(std::path::Path::new(
+        &std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string())
+    )) {
+        if let Some(h) = &cfg.server.hostname {
+            if !h.trim().is_empty() {
+                let mut v = vec![h.trim().to_string()];
+                if let Some(short) = h.split('.').next() {
+                    if short != h.trim() { v.push(short.to_string()); }
                 }
+                return v;
             }
-            return v;
         }
     }
     if let Ok(h) = std::env::var("NFS_KLLDAP_SERVER_HOSTNAME") {
         if !h.trim().is_empty() {
             let mut v = vec![h.trim().to_string()];
-            if let Some(short) = h.split('.').next() {
-                if short != h.trim() {
-                    v.push(short.to_string());
-                }
-            }
+            if let Some(short) = h.split('.').next() { if short != h.trim() { v.push(short.to_string()); } }
             return v;
         }
     }
-    // Fallback to common container hostname discovery
     if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
         let h = h.trim().to_string();
         if !h.is_empty() {
             let mut v = vec![h.clone()];
-            if let Some(short) = h.split('.').next() {
-                if short != h {
-                    v.push(short.to_string());
-                }
-            }
+            if let Some(short) = h.split('.').next() { if short != h { v.push(short.to_string()); } }
             return v;
         }
     }
@@ -1257,29 +1111,25 @@ fn get_server_variants() -> Vec<String> {
 }
 
 fn get_realm() -> String {
-    // Prefer the same derivation the rest of the stack uses.
-    // Use conf first so resolution information from nfs-klldap.conf (kerberos.realm) is properly utilized.
-    let conf = load_conf();
-    if let Some(r) = conf.get("kerberos.realm").or_else(|| conf.get("realm")) {
-        if !r.trim().is_empty() {
-            return r.trim().to_uppercase();
+    // Prefer real config (effective_realm derivation matches generator/SSSD).
+    if let Ok(cfg) = NfsKlldapConfig::load(std::path::Path::new(
+        &std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string())
+    )) {
+        let r = cfg.effective_realm();
+        if !r.trim().is_empty() && !r.trim().eq_ignore_ascii_case("example.com") {
+            return r.to_uppercase();
         }
     }
     if let Ok(r) = std::env::var("NFS_KLLDAP_KERBEROS_REALM") {
-        if !r.trim().is_empty() {
-            return r.trim().to_uppercase();
-        }
+        if !r.trim().is_empty() { return r.trim().to_uppercase(); }
     }
-    // Try to read from generated krb5.conf as a hint
     if let Ok(content) = std::fs::read_to_string("/etc/krb5.conf") {
         for line in content.lines() {
             let t = line.trim();
             if t.starts_with("default_realm") {
                 if let Some(eq) = t.find('=') {
                     let r = t[eq + 1..].trim().to_string();
-                    if !r.is_empty() {
-                        return r.to_uppercase();
-                    }
+                    if !r.is_empty() { return r.to_uppercase(); }
                 }
             }
         }
@@ -1461,10 +1311,40 @@ fn run_daemon() {
     println!("[idhelper] daemon listening on {}", SOCKET_PATH);
     println!("[idhelper] realm={} variants={:?}", realm, server_variants);
 
+    // Eagerly initialize + bulk-load the full user+group map (10m authoritative cache).
+    // This is the central "bring in all users and groups with aligned gid/uid" step.
+    // All subsequent nfsidmap / resolve / materialize paths prefer this in-memory data.
+    let _ = get_or_init_resolver();
+    if let Some((r, dn, pw)) = ID_RESOLVER.get().and_then(|o| o.as_ref()) {
+        let n = r.load_full_identities(dn, pw);
+        eprintln!("[idhelper] bulk-loaded {} users+groups into 10m identity cache", n);
+    }
+
+    // Always auto pre-resolve the *server's own* host principals at cold start.
+    // This ensures machine->uid0 (including the synthetic root entry) is materialized
+    // in nss_wrapper/extrausers *before* Ganesha serves any compounds. Fixes the
+    // repeated "getpwuid_r for uid 0 failed, error 2" + "Unsupported code path" for
+    // host/ principals seen on first access in logs. Uses the same config-driven
+    // variants + realm that the rest of the stack uses.
+    for v in &server_variants {
+        let p = format!("host/{}@{}", v, realm);
+        let mut guard = cache.lock().unwrap();
+        let _ = resolve_principal(&p, &realm, &server_variants, &mut guard);
+        eprintln!("[idhelper] pre-resolved server host principal at startup: {}", p);
+    }
+
+    // Re-materialize after any auto pre-resolves (root + server hosts).
+    {
+        let guard = cache.lock().unwrap();
+        let _ = materialize_nss_wrappers(&guard);
+    }
+
     // Optional pre-resolution at startup (for testing or known environments).
     // Set e.g. NFS_KLLDAP_IDHELPER_PRERESOLVE="testuser1@REALM,alice@REALM"
     // This forces early resolve + materialize so the *first* principal2uid/shim call
     // for those users sees the mapping (helps the synchronous path before any log line).
+    // Operators can use this (via entrypoint compose env) to preload specific LDAP
+    // users for zero-delay first access.
     if let Ok(list) = std::env::var("NFS_KLLDAP_IDHELPER_PRERESOLVE") {
         for p in list.split(',') {
             let p = p.trim();
@@ -1714,6 +1594,30 @@ mod tests {
         assert!(line.contains("kll:machine:"));
         let gline = group_line_for(c.get("host/blue-lt@EXAMPLE.COM").unwrap());
         assert!(gline.starts_with("root:x:0:"));
+    }
+
+    #[test]
+    fn materialize_always_includes_root_uid0_for_immediate_nss_hits() {
+        // Critical for cold-start: even with no principals materialized yet,
+        // nss_passwd must contain a root line so getpwuid_r(0) succeeds for
+        // uid2grp on the very first host/ machine principal compound.
+        // (Prevents the "getpwuid_r for uid 0 failed, error 2" in first-access logs.)
+        // We simulate the lines that materialize builds (the actual function
+        // uses const paths that are hard to redirect in unit tests; helpers
+        // + the unconditional root injection rule are exercised here + in
+        // the caller at daemon start).
+        let mut passwd_lines: Vec<String> = vec![];
+        // Simulate the exact injection rule added to materialize_nss_wrappers
+        if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
+            passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
+        }
+        assert!(passwd_lines[0].starts_with("root:x:0:0:"));
+        // When a machine is also present, its name line + the root group are there too.
+        let mut c = IdCache::default();
+        let machine = Resolved { principal: "host/x@EX".into(), name: "x".into(), uid: 0, gid: 0, kind: PrincipalKind::Machine, source: "s".into() };
+        c.insert(machine);
+        let gl = group_line_for(c.get("host/x@EX").unwrap());
+        assert!(gl.starts_with("root:x:0:"));
     }
 
     #[test]

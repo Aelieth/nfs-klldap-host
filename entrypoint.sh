@@ -8,6 +8,7 @@ SSSD_CONF="${SSSD_CONF:-/etc/sssd/sssd.conf}"
 KRB5_CONF="${KRB5_CONF:-/etc/krb5.conf}"
 GANESHA_CONF="${GANESHA_CONF:-/etc/ganesha/ganesha.conf}"
 EXPORTS_DIR="${EXPORTS_DIR:-/etc/ganesha/exports.d}"
+IDMAP_CONF="${IDMAP_CONF:-/etc/idmapd.conf}"
 
 # Binaries (override only if you know what you are doing)
 CONFIG_BIN="${CONFIG_BIN:-/usr/local/bin/nfs-klldap-config}"
@@ -103,6 +104,11 @@ fix_derived_permissions() {
     # krb5.conf can be world-readable.
     chown root:root "$KRB5_CONF" 2>/dev/null || true
     chmod 644 "$KRB5_CONF" 2>/dev/null || true
+
+    # idmapd.conf (standardized Domain/Method from nfs-klldap.conf + sssd info)
+    # is consumed by nfsidmap/libnfsidmap (shim fallback) and Ganesha default IdmapConf.
+    chown root:root "$IDMAP_CONF" 2>/dev/null || true
+    chmod 644 "$IDMAP_CONF" 2>/dev/null || true
 
     # Ganesha fragments must be readable by the daemon.
     chown -R root:root "$EXPORTS_DIR" 2>/dev/null || true
@@ -317,6 +323,25 @@ main() {
         die "SSSD NSS pipe did not appear. Check LLDAP connectivity and bind credentials."
     fi
 
+    # Preload server host principals (and thus root uid0) into the idhelper so that
+    # machine mappings (host/...@REALM -> uid 0) and getpwuid_r(0) are available
+    # *immediately* when Ganesha starts. Combined with the always-root line in
+    # idhelper materialize, this eliminates the cold-start "getpwuid_r for uid 0
+    # failed, error 2", "Unsupported code path", and first-user "Could not map"
+    # races seen in logs. nss (under preload + extrausers) + sss will hit fast.
+    # The value augments any operator-provided NFS_KLLDAP_IDHELPER_PRERESOLVE.
+    _H=$(hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || echo "localhost")
+    _R=$(awk '/default_realm/ {print $3; exit}' /etc/krb5.conf 2>/dev/null || echo "${NFS_KLLDAP_KERBEROS_REALM:-EXAMPLE.COM}")
+    _PRE="${NFS_KLLDAP_IDHELPER_PRERESOLVE:-}"
+    for _V in "$_H" "$(echo "$_H" | cut -d. -f1)"; do
+        _P="host/${_V}@${_R}"
+        case ",${_PRE}," in
+            *",${_P},"*) ;;
+            *) _PRE="${_PRE:+$_PRE,}$_P" ;;
+        esac
+    done
+    export NFS_KLLDAP_IDHELPER_PRERESOLVE="$_PRE"
+
     # Start the ID/Kerberos principal helper daemon.
     # It must be running for the lifetime of the container because it is consulted
     # (directly or via its fast cache file) for every mount to distinguish machine
@@ -332,6 +357,20 @@ main() {
     else
         info "idhelper daemon started (pid $IDHELPER_PID)"
     fi
+
+    # Brief readiness for preload: wait until the forced root uid0 entry (and server
+    # host machines) are in the nss files. This makes nsswitch (and Ganesha under
+    # preload) see the info immediately. Keeps cold-start user ldap/sss cache paths
+    # (IdLdapResolver + getent) fast and consistent.
+    info "Waiting for idhelper preload (root + server host principals)..."
+    for _ in $(seq 1 30); do
+        if grep -q '^root:' /var/lib/nfs-klldap/nss_passwd 2>/dev/null || \
+           grep -q '^root:' /var/lib/extrausers/passwd 2>/dev/null; then
+            info "idhelper preload ready (root uid0 present)"
+            break
+        fi
+        sleep 0.1
+    done
 
     # Ganesha prerequisites in the required order: rpcbind, dbus, wait for socket, then ganesha.
     # rpcbind (tooling/compatibility; Ganesha itself is strict NFSv4+).

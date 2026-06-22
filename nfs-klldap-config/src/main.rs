@@ -125,6 +125,7 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
         }
 
         println!("realm:    {}", cfg.effective_realm());
+        println!("idmap domain (would use /etc/idmapd.conf): {}", cfg.effective_realm());
         println!("shares:   {}", cfg.shares.len());
         for s in &cfg.shares {
             println!(
@@ -143,6 +144,7 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
     println!("Generated configs from {}", path.display());
     println!("  sssd:    {}", paths.sssd_conf.display());
     println!("  krb5:    {}", paths.krb5_conf.display());
+    println!("  idmap:   {}", paths.idmap_conf.display());
     println!("  ganesha: {}", paths.ganesha_conf.display());
     println!(
         "  exports: {} ({} share fragments)",

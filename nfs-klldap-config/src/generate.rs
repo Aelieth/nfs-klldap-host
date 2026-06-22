@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::ignored_attributes;
 
 use crate::{
-    config::resolve_posix_attribute_mapping, ConfigError, GenerationPaths, NfsKlldapConfig,
+    config::resolve_posix_attribute_mapping, constants, ConfigError, GenerationPaths, NfsKlldapConfig,
 };
 
 
@@ -454,14 +454,18 @@ Domain = {realm}
 Local-Realms = {realm}
 
 [Mapping]
-Nobody-User = nobody
-Nobody-Group = nogroup
+Nobody-User = {nobody_u}
+Nobody-Group = {nobody_g}
 
 [Translation]
-Method = nsswitch
-GSS-Methods = nsswitch
+Method = {method}
+GSS-Methods = {gss}
 "#,
         realm = realm,
+        nobody_u = constants::IDMAPD_NOBODY_USER,
+        nobody_g = constants::IDMAPD_NOBODY_GROUP,
+        method = constants::IDMAPD_TRANSLATION_METHOD,
+        gss = constants::IDMAPD_GSS_METHODS,
     );
 
     fs::write(out, content.as_bytes())?;
@@ -501,7 +505,7 @@ fn write_ganesha_main(
 
     let mut content = format!(
         r#"NFS_CORE_PARAM {{
-    Protocols = 4;
+    Protocols = {proto};
     Bind_addr = 0.0.0.0;
     NFS_Port = 2049;
     # Enable_UDP = false;
@@ -513,9 +517,9 @@ fn write_ganesha_main(
 
 DIRECTORY_SERVICES {{
     DomainName = {realm};
-    Pwnam_Implementation = nsswitch;
+    Pwnam_Implementation = {pwnam};
     # Ganesha 9.6 trixie only. idhelper (not this file) owns principal->uid classification.
-    Root_Kerberos_Principal = host, nfs;
+    Root_Kerberos_Principal = {root_krb};
 }}
 
 NFS_KRB5 {{
@@ -533,14 +537,18 @@ NFSV4 {{
 
 EXPORT_DEFAULTS {{
     SecType = {sec};
-    Protocols = 4;
+    Protocols = {proto};
     # Valid for ganesha 9.6 on Debian trixie (trixie-backports) only. Do not add keys.
     # Read_Access_Check_Policy=pre stabilizes krb5* ACCESS checks.
-    Read_Access_Check_Policy = pre;
+    Read_Access_Check_Policy = {read_pol};
 }}
 "#,
         realm = realm,
         sec = sec,
+        proto = constants::GANESHA_PROTOCOLS,
+        pwnam = constants::GANESHA_PWNAM_IMPL,
+        root_krb = constants::GANESHA_ROOT_KRB_PRINCIPALS,
+        read_pol = constants::GANESHA_READ_ACCESS_CHECK_POLICY,
     );
 
     // Always emit a baseline LOG block with elevated visibility for identity/client

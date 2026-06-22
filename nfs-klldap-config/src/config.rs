@@ -3,6 +3,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::constants::{
+    DEFAULT_GROUP_GID_ATTR, DEFAULT_GROUP_NAME_ATTR, DEFAULT_GROUP_OBJECT_CLASS,
+    DEFAULT_USER_FULLNAME_ATTR, DEFAULT_USER_GID_ATTR, DEFAULT_USER_HOME_ATTR,
+    DEFAULT_USER_NAME_ATTR, DEFAULT_USER_OBJECT_CLASS, DEFAULT_USER_PRINCIPAL_ATTR,
+    DEFAULT_USER_SHELL_ATTR, DEFAULT_USER_UID_ATTR,
+};
+
 /// Top-level config (nfs-klldap.conf)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NfsKlldapConfig {
@@ -143,70 +150,70 @@ pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapp
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "posixAccount".to_string());
+        .unwrap_or_else(|| DEFAULT_USER_OBJECT_CLASS.to_string());
 
     let group_obj = sssd
         .ldap_group_object_class
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "posixGroup".to_string());
+        .unwrap_or_else(|| DEFAULT_GROUP_OBJECT_CLASS.to_string());
 
     let u_name = sssd
         .ldap_user_name
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "uid".to_string());
+        .unwrap_or_else(|| DEFAULT_USER_NAME_ATTR.to_string());
 
     let u_uid = sssd
         .ldap_user_uid_number
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "uidNumber".to_string());
+        .unwrap_or_else(|| DEFAULT_USER_UID_ATTR.to_string());
 
     let u_gid = sssd
         .ldap_user_gid_number
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "gidNumber".to_string());
+        .unwrap_or_else(|| DEFAULT_USER_GID_ATTR.to_string());
 
     let u_home = sssd
         .ldap_user_home_directory
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "homeDirectory".to_string());
+        .unwrap_or_else(|| DEFAULT_USER_HOME_ATTR.to_string());
 
     let u_shell = sssd
         .ldap_user_shell
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "loginShell".to_string());
+        .unwrap_or_else(|| DEFAULT_USER_SHELL_ATTR.to_string());
 
     let u_full = sssd
         .ldap_user_fullname
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "displayName".to_string());
+        .unwrap_or_else(|| DEFAULT_USER_FULLNAME_ATTR.to_string());
 
     let g_name = sssd
         .ldap_group_name
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "cn".to_string());
+        .unwrap_or_else(|| DEFAULT_GROUP_NAME_ATTR.to_string());
 
     let g_gid = sssd
         .ldap_group_gid_number
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "gidNumber".to_string());
+        .unwrap_or_else(|| DEFAULT_GROUP_GID_ATTR.to_string());
 
     // For KLLDAP (when using the recommended ignored attributes feature, which
     // is active by default), we prefer the modern "member" attribute (DNs) over
@@ -223,9 +230,9 @@ pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapp
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| {
             if kllldap_mode {
-                "member".to_string()
+                crate::constants::DEFAULT_GROUP_MEMBER_ATTR_KLLDAP.to_string()
             } else {
-                "memberUid".to_string()
+                crate::constants::DEFAULT_GROUP_MEMBER_ATTR_LEGACY.to_string()
             }
         });
 
@@ -234,7 +241,7 @@ pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapp
         .as_ref()
         .filter(|v| !v.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "krbPrincipalName".to_string());
+        .unwrap_or_else(|| DEFAULT_USER_PRINCIPAL_ATTR.to_string());
 
     PosixAttributeMapping {
         user_object_class: user_obj,

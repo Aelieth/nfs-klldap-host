@@ -1,6 +1,7 @@
 //! nfs-klldap-config: TOML validation, derivation, and generation of sssd.conf, krb5.conf, ganesha exports.
 
 mod config;
+mod constants;
 mod error;
 mod generate;
 mod hostname;
@@ -32,7 +33,19 @@ pub use uri::{derive_realm_from_uri, extract_host_from_uri};
 // Structured ID/LDAP resolution (used by idhelper for getent + principal paths
 // with caching and PosixAttributeMapping parity to nfs-klldap-ui/src/ldap.rs).
 pub mod idmap;
-pub use idmap::{escape_ldap_filter, extract_first_attr_value, parse_getent_group, parse_getent_passwd, IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry};
+pub use idmap::{classify_principal, escape_ldap_filter, extract_first_attr_value, parse_getent_group, parse_getent_passwd, IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry};
+
+// Centralized constants (Ganesha 9.6 trixie + hybrid principal + POSIX + idmapd).
+pub use constants::{
+    DEFAULT_GROUP_GID_ATTR, DEFAULT_GROUP_NAME_ATTR, DEFAULT_GROUP_OBJECT_CLASS,
+    DEFAULT_USER_FULLNAME_ATTR, DEFAULT_USER_GID_ATTR, DEFAULT_USER_HOME_ATTR,
+    DEFAULT_USER_NAME_ATTR, DEFAULT_USER_OBJECT_CLASS, DEFAULT_USER_PRINCIPAL_ATTR,
+    DEFAULT_USER_SHELL_ATTR, DEFAULT_USER_UID_ATTR, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
+    GANESHA_DEFAULT_SECTYPE, GANESHA_PROTOCOLS, GANESHA_PWNAM_IMPL, GANESHA_READ_ACCESS_CHECK_POLICY,
+    GANESHA_ROOT_KRB_PRINCIPALS, IDMAPD_GSS_METHODS, IDMAPD_NOBODY_GROUP, IDMAPD_NOBODY_USER,
+    IDMAPD_TRANSLATION_METHOD, LOG_NOISE_TOKENS, MACHINE_GID, MACHINE_PRINCIPAL_PREFIXES, MACHINE_UID,
+    DEFAULT_GROUP_MEMBER_ATTR_KLLDAP, DEFAULT_GROUP_MEMBER_ATTR_LEGACY,
+};
 
 /// Returns (no_tls_verify, start_tls) derived from [sssd] TLS fields and ldap_uri scheme.
 pub fn ldap_tls_policy(

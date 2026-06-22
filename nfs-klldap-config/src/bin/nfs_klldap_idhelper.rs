@@ -17,7 +17,9 @@ use std::time::{Duration, Instant};
 // Structured resolver + snapshot + strict parsers from the shared crate.
 // The idhelper is the single front-end for all uid/gid resolution used by
 // ganesha nfsidmap, nss materialization, and getent parity.
-use nfs_klldap_config::{parse_getent_passwd, IdLdapResolver, IdMapSnapshot, NfsKlldapConfig};
+use nfs_klldap_config::{
+    parse_getent_passwd, IdLdapResolver, IdMapSnapshot, NfsKlldapConfig, MACHINE_PRINCIPAL_PREFIXES,
+};
 
 const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
 const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
@@ -245,7 +247,7 @@ fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
         // sanitized full local part (e.g. "host_blue-lt"). This helps when Ganesha's idmapper
         // feeds getpwnam the service/name form instead of (or in addition to) the short host.
         let local = r.principal.split('@').next().unwrap_or(&r.principal);
-        if local.contains('/') && (local.starts_with("host/") || local.starts_with("nfs/") || local.starts_with("root/")) {
+        if local.contains('/') && MACHINE_PRINCIPAL_PREFIXES.iter().any(|p| local.starts_with(p)) {
             let alias = sanitize_for_nss(local); // turns host/blue-lt into host_blue-lt etc.
             if seen_login.insert(alias.clone()) {
                 let gecos = format!("kll:machine-alias:{}", r.principal);
@@ -382,49 +384,10 @@ fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
 /// Matches common patterns used by clients with host keytabs (Fedora Immutable etc.)
 /// as well as the server's own NFS service principals.
 pub fn is_machine_principal(principal: &str, realm: &str, server_variants: &[String]) -> (bool, String) {
-    let p = principal.trim();
-    let lower = p.to_ascii_lowercase();
-    let realm_lower = realm.to_ascii_lowercase();
-
-    // Strip realm for matching if present
-    let local = if let Some(at) = lower.rfind('@') {
-        &lower[..at]
-    } else {
-        &lower
-    };
-
-    if local.starts_with("host/") || local.starts_with("nfs/") || local.starts_with("root/") {
-        return (true, format!("matches well-known machine prefix in {}", local));
-    }
-
-    // Match server host principals (e.g. nfs/aurora or host/aurora)
-    for v in server_variants {
-        let v_l = v.to_ascii_lowercase();
-        if local == format!("host/{}", v_l) || local == format!("nfs/{}", v_l) {
-            return (true, format!("matches server host principal for {}", v));
-        }
-    }
-
-    // If the bare local part (without service/) equals a server variant and there is a service prefix
-    // already handled above, but also catch things like "host-foo" style if ever presented.
-    // Also treat anything that looks like a host credential from a client keytab.
-    // A simple heuristic: if it contains a / and the right side looks like a hostname, treat as machine.
-    if local.contains('/') {
-        let after_slash = local.split('/').nth(1).unwrap_or("");
-        if !after_slash.is_empty() && (after_slash.chars().any(|c| c.is_ascii_alphanumeric()) || after_slash.contains('.')) {
-            // Additional signal: if it ends with our known realm or is presented as host-like
-            if lower.ends_with(&format!("@{}", realm_lower)) || lower.contains("host") || lower.contains("nfs") {
-                return (true, "contains host/service prefix and hostname-like component".to_string());
-            }
-        }
-    }
-
-    // Explicit machine-like names sometimes used for the NFS client host credential.
-    if local == "host" || local == "nfs" || local == "root" {
-        return (true, "bare machine service name".to_string());
-    }
-
-    (false, "treated as regular user principal".to_string())
+    // Delegate to the shared implementation (centralized prefixes + logic) for
+    // unification and to guarantee idhelper + any future users have identical
+    // classification for hybrid machine (host/nfs/root) vs user TGT principals.
+    nfs_klldap_config::classify_principal(principal, realm, server_variants)
 }
 
 /// Normalize a principal for cache key and lookup.
@@ -847,11 +810,9 @@ fn looks_like_client_hostname(t: &str) -> bool {
     }
 
     // Reject common log noise and formatting tokens (case-insensitive)
-    const NOISE: &[&str] = &[
-        "unique", "client", "id", "debug", "info", "warning", "error",
-        "ffff", "counter", "created", "name", "addr", "cr", "refcount",
-        "nil", "null", "clientid", "conf", "unconf", "linux", "nfsv4"
-    ];
+    // Source the common noise list (Ganesha log hygiene for hybrid principal observer).
+    // Keep local name for readability; values centralized for idhelper + future.
+    const NOISE: &[&str] = nfs_klldap_config::LOG_NOISE_TOKENS;
     if NOISE.contains(&lower.as_str()) {
         return false;
     }
@@ -971,7 +932,7 @@ fn extract_candidate_principal(line: &str, realm: &str) -> Option<String> {
             let cand = &rest[..end].trim();
             if cand.contains('@') && cand.to_ascii_lowercase().contains(&realm_lower) {
                 // Only treat non-machine service forms as user candidates here.
-                if !cand.to_ascii_lowercase().starts_with("host/") && !cand.to_ascii_lowercase().starts_with("nfs/") && !cand.to_ascii_lowercase().starts_with("root/") {
+                if !MACHINE_PRINCIPAL_PREFIXES.iter().any(|p| cand.to_ascii_lowercase().starts_with(p)) {
                     return Some(cand.to_string());
                 }
             }

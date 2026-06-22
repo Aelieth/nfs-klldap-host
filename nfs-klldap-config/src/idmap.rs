@@ -35,7 +35,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::{effective_ldap_search_bases, resolve_posix_attribute_mapping, PosixAttributeMapping, SssdSection};
+use crate::{
+    effective_ldap_search_bases, resolve_posix_attribute_mapping, PosixAttributeMapping, SssdSection,
+};
 
 /// Small sync resolver used by nfs-klldap-idhelper (and diagnostics).
 /// Not the full async web-oriented LdapClient; focused on uid/gid + name resolution.
@@ -755,6 +757,48 @@ pub fn parse_getent_group(line: &str) -> Option<u32> {
     parts[2].trim().parse::<u32>().ok()
 }
 
+/// Pure machine principal classification using the centralized prefix list.
+/// Returns (is_machine, reason). Mirrors the core prefix + bare service logic
+/// used by the idhelper for hybrid user-TGT + client-host-keytab Kerberos.
+/// Exported for reuse, diagnostics, and to reduce hard-coded prefixes.
+pub fn classify_principal(principal: &str, realm: &str, server_variants: &[String]) -> (bool, String) {
+    let p = principal.trim();
+    let lower = p.to_ascii_lowercase();
+    let realm_lower = realm.to_ascii_lowercase();
+
+    let local = if let Some(at) = lower.rfind('@') {
+        &lower[..at]
+    } else {
+        &lower
+    };
+
+    if crate::MACHINE_PRINCIPAL_PREFIXES.iter().any(|pref| local.starts_with(pref)) {
+        return (true, format!("matches well-known machine prefix in {}", local));
+    }
+
+    for v in server_variants {
+        let v_l = v.to_ascii_lowercase();
+        if local == format!("host/{}", v_l) || local == format!("nfs/{}", v_l) {
+            return (true, format!("matches server host principal for {}", v));
+        }
+    }
+
+    if local.contains('/') {
+        let after = local.split('/').nth(1).unwrap_or("");
+        if !after.is_empty() && (after.chars().any(|c| c.is_ascii_alphanumeric()) || after.contains('.')) {
+            if lower.ends_with(&format!("@{}", realm_lower)) || lower.contains("host") || lower.contains("nfs") {
+                return (true, "contains host/service prefix and hostname-like component".to_string());
+            }
+        }
+    }
+
+    if local == "host" || local == "nfs" || local == "root" {
+        return (true, "bare machine service name".to_string());
+    }
+
+    (false, "treated as regular user principal".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -861,11 +905,11 @@ mod tests {
     fn principal_attr_default_is_krb_principal_name_and_dual_lookup_works_in_mapping() {
         let s = SssdSection::default();
         let mapping = resolve_posix_attribute_mapping(&s);
-        assert_eq!(mapping.user_principal_name, "krbPrincipalName");
+        assert_eq!(mapping.user_principal_name, crate::DEFAULT_USER_PRINCIPAL_ATTR);
 
         // The resolver accepts full principal and will attempt principal attr search
         // (tested via construction; runtime dual logic exercised in resolve_user).
         let r = IdLdapResolver::from_sssd_section("ldaps://ex", &s);
-        assert_eq!(r.posix_attributes.user_principal_name, "krbPrincipalName");
+        assert_eq!(r.posix_attributes.user_principal_name, crate::DEFAULT_USER_PRINCIPAL_ATTR);
     }
 }

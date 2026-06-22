@@ -53,9 +53,23 @@ pub(crate) fn group_line_for(r: &Resolved) -> String {
     }
 }
 
-/// Seed IdCache from the LDAP bulk snapshot so ganesha.nfsd (nss_wrapper preload) can
-/// resolve user principals on the first principal2uid call via libnfsidmap getpwnam.
-/// Returns the number of distinct users inserted.
+/// Replace all user cache entries from the current LDAP snapshot (prune then seed).
+/// Pruning removes stale/deleted LDAP users from IdCache before re-inserting the
+/// live directory view. Machine principals are preserved.
+/// Returns the number of users inserted from the snapshot.
+pub(crate) fn sync_user_cache_from_snapshot(
+    snap: &IdMapSnapshot,
+    realm: &str,
+    cache: &mut IdCache,
+) -> usize {
+    let pruned = cache.prune_non_machine_users();
+    if pruned > 0 {
+        dlog!("sync_user_cache pruned {} stale non-machine entries", pruned);
+    }
+    seed_cache_and_nss_from_snapshot(snap, realm, cache)
+}
+
+/// Insert LDAP users from snapshot into cache (caller may prune first via sync_*).
 pub(crate) fn seed_cache_and_nss_from_snapshot(
     snap: &IdMapSnapshot,
     realm: &str,

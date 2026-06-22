@@ -10,12 +10,61 @@ use std::thread;
 use std::time::Duration;
 
 use crate::common::{
-    get_realm, get_server_variants, is_machine_principal, IdCache, CACHE_PATH, SOCKET_PATH,
+    get_realm, get_server_variants, is_machine_principal, IdCache, BULK_SEED_MARKER, CACHE_PATH,
+    DEFAULT_REBULK_INTERVAL_SECS, SOCKET_PATH,
 };
-use crate::common::BULK_SEED_MARKER;
-use crate::materialize::{materialize_nss_wrappers, seed_cache_and_nss_from_snapshot};
+use crate::materialize::{materialize_nss_wrappers, sync_user_cache_from_snapshot};
 use crate::observer::start_ganesha_observer;
 use crate::resolve::{get_or_init_resolver, resolve_principal, ID_RESOLVER};
+
+/// Reload LDAP identities and rewrite nss_wrapper user mappings (machines preserved).
+fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usize> {
+    let (r, dn, pw) = ID_RESOLVER.get().and_then(|o| o.as_ref())?;
+    let loaded = r.load_full_identities(dn, pw);
+    let snap = r.snapshot();
+    let synced = sync_user_cache_from_snapshot(&snap, realm, cache);
+    if let Err(e) = materialize_nss_wrappers(cache) {
+        eprintln!("[idhelper] WARN: rebulk nss materialize failed: {}", e);
+        return None;
+    }
+    let _ = cache.write_to_file(Path::new(CACHE_PATH));
+    let _ = fs::write(BULK_SEED_MARKER, format!("{}\n", synced));
+    eprintln!(
+        "[idhelper] rebulk: ldap_loaded={} users_synced={} (nss_passwd refreshed)",
+        loaded, synced
+    );
+    Some(synced)
+}
+
+fn rebulk_interval_secs() -> u64 {
+    std::env::var("NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(DEFAULT_REBULK_INTERVAL_SECS)
+}
+
+fn start_periodic_rebulk(cache: Arc<Mutex<IdCache>>, realm: String) {
+    let secs = rebulk_interval_secs();
+    if secs == 0 {
+        eprintln!(
+            "[idhelper] periodic LDAP rebulk disabled (NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS=0)"
+        );
+        return;
+    }
+    eprintln!(
+        "[idhelper] periodic LDAP rebulk every {}s (NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS)",
+        secs
+    );
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs(secs));
+            let _ = get_or_init_resolver();
+            if let Ok(mut guard) = cache.lock() {
+                let _ = rebulk_ldap_users(&mut guard, &realm);
+            }
+        }
+    });
+}
 
 pub(crate) fn run_daemon() {
     let realm = get_realm();
@@ -40,50 +89,26 @@ pub(crate) fn run_daemon() {
     // Make socket world-accessible inside container (root only usage is also fine)
     let _ = fs::set_permissions(SOCKET_PATH, std::os::unix::fs::PermissionsExt::from_mode(0o666));
 
+    // Load persisted cache (machines + any prior resolves). User rows are replaced
+    // on first LDAP sync below — do not materialize stale users to nss_passwd yet.
     let cache = Arc::new(Mutex::new(IdCache::load_from_file(Path::new(CACHE_PATH))));
-
-    // Immediately materialize any cached principals into the nss_wrapper files.
-    // Ganesha may already be (or will soon be) running under LD_PRELOAD against these files.
-    {
-        let guard = cache.lock().unwrap();
-        let _ = materialize_nss_wrappers(&guard);
-    }
 
     println!("[idhelper] daemon listening on {}", SOCKET_PATH);
     println!("[idhelper] realm={} variants={:?}", realm, server_variants);
 
     // Eagerly initialize + bulk-load the full user+group map (10m authoritative cache).
-    // This is the central "bring in all users and groups with aligned gid/uid" step.
-    // All subsequent nfsidmap / resolve / materialize paths prefer this in-memory data.
     let _ = get_or_init_resolver();
-    if let Some((r, dn, pw)) = ID_RESOLVER.get().and_then(|o| o.as_ref()) {
-        let n = r.load_full_identities(dn, pw);
-        eprintln!("[idhelper] bulk-loaded {} users+groups into 10m identity cache", n);
-
-        // Seed nss_wrapper/extrausers with every LDAP user so Ganesha's in-process
-        // libnfsidmap principal2uid path (getpwnam under LD_PRELOAD) succeeds on the
-        // first krb5 compound — the nfsidmap binary shim is not on that code path.
-        let snap = r.snapshot();
+    {
         let mut guard = cache.lock().unwrap();
-        let seeded = seed_cache_and_nss_from_snapshot(&snap, &realm, &mut guard);
-        if let Err(e) = materialize_nss_wrappers(&guard) {
-            eprintln!("[idhelper] WARN: bulk nss materialize failed: {}", e);
-        } else {
+        if let Some(seeded) = rebulk_ldap_users(&mut guard, &realm) {
             eprintln!(
-                "[idhelper] bulk-seeded {} users into nss_wrapper (principal2uid/libnfsidmap path)",
+                "[idhelper] initial sync: {} LDAP users in nss_wrapper (principal2uid/libnfsidmap path)",
                 seeded
             );
-            let _ = fs::write(BULK_SEED_MARKER, format!("{}\n", seeded));
         }
-        drop(guard);
     }
 
     // Always auto pre-resolve the *server's own* host principals at cold start.
-    // This ensures machine->uid0 (including the synthetic root entry) is materialized
-    // in nss_wrapper/extrausers *before* Ganesha serves any compounds. Fixes the
-    // repeated "getpwuid_r for uid 0 failed, error 2" + "Unsupported code path" for
-    // host/ principals seen on first access in logs. Uses the same config-driven
-    // variants + realm that the rest of the stack uses.
     for v in &server_variants {
         let p = format!("host/{}@{}", v, realm);
         let mut guard = cache.lock().unwrap();
@@ -91,17 +116,11 @@ pub(crate) fn run_daemon() {
         eprintln!("[idhelper] pre-resolved server host principal at startup: {}", p);
     }
 
-    // Re-materialize after any auto pre-resolves (root + server hosts).
     {
         let guard = cache.lock().unwrap();
         let _ = materialize_nss_wrappers(&guard);
     }
 
-    // Optional pre-resolution at startup (for testing or known environments).
-    // Set e.g. NFS_KLLDAP_IDHELPER_PRERESOLVE="testuser1@REALM,alice@REALM"
-    // Optional extra pre-resolve for known users (bulk seed already covers LDAP users).
-    // Operators can use this (via entrypoint compose env) to preload specific LDAP
-    // users for zero-delay first access.
     if let Ok(list) = std::env::var("NFS_KLLDAP_IDHELPER_PRERESOLVE") {
         for p in list.split(',') {
             let p = p.trim();
@@ -113,13 +132,10 @@ pub(crate) fn run_daemon() {
         }
     }
 
-    // Start background log observer so we automatically see mount/auth activity
-    // from Ganesha (client IDs, names like "Linux NFSv4.x <host>", any @REALM principals
-    // that appear in logs). Candidates are fed to resolve_principal for classification
-    // and caching. Detailed debug output (when KLLDAP_IDHELPER_DEBUG=true) will be
-    // emitted for the observed principals.
     let cache_for_watcher = Arc::clone(&cache);
     start_ganesha_observer(realm.clone(), server_variants.clone(), cache_for_watcher);
+
+    start_periodic_rebulk(Arc::clone(&cache), realm.clone());
 
     for stream in listener.incoming() {
         match stream {
@@ -129,7 +145,6 @@ pub(crate) fn run_daemon() {
                 let cache = Arc::clone(&cache);
                 thread::spawn(move || {
                     if let Err(e) = handle_client(s, &realm, &variants, &cache) {
-                        // best effort logging
                         eprintln!("[idhelper] client error: {}", e);
                     }
                 });
@@ -186,6 +201,13 @@ fn handle_client(
                     "OK {}|{}|{}|{}|{}\n",
                     r.principal, r.uid, r.gid, r.kind.as_str(), r.source
                 ));
+            }
+        }
+        "REBULK" => {
+            let mut guard = cache.lock().unwrap();
+            match rebulk_ldap_users(&mut guard, realm) {
+                Some(n) => out.push_str(&format!("OK {}\n", n)),
+                None => out.push_str("ERR rebulk failed\n"),
             }
         }
         _ => {

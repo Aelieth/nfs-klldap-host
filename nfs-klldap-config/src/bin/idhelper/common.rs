@@ -28,6 +28,9 @@ pub(crate) const EXTRAUSERS_GROUP: &str = "/var/lib/extrausers/group";
 /// Written after LDAP bulk-seed into nss_wrapper; entrypoint waits on this before Ganesha.
 pub(crate) const BULK_SEED_MARKER: &str = "/var/lib/nfs-klldap/.bulk_seed_done";
 
+/// Default periodic LDAP→nss_wrapper sync interval (matches IdLdapResolver 10m TTL).
+pub(crate) const DEFAULT_REBULK_INTERVAL_SECS: u64 = 10 * 60;
+
 /// Debug logging enabled via KLLDAP_IDHELPER_DEBUG=true (or 1/yes/on).
 static DEBUG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
@@ -92,6 +95,15 @@ impl IdCache {
     pub(crate) fn insert(&mut self, r: Resolved) {
         let key = normalize_principal(&r.principal);
         self.entries.insert(key, r);
+    }
+
+    /// Remove user and unknown entries; keep machine principals (host/, nfs/, etc.).
+    /// Returns the number of entries removed.
+    pub(crate) fn prune_non_machine_users(&mut self) -> usize {
+        let before = self.entries.len();
+        self.entries
+            .retain(|_, r| r.kind == PrincipalKind::Machine);
+        before.saturating_sub(self.entries.len())
     }
 
     pub fn load_from_file(path: &Path) -> Self {

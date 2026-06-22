@@ -215,7 +215,7 @@ ganesha-ctl id-check
 
 See [docs/ldap-integration.md](docs/ldap-integration.md) for SSSD/POSIX requirements, TLS behavior, idhelper architecture, and verification commands.
 
-Ganesha 9.6 on Debian trixie-backports uses explicit `Read_Access_Check_Policy = pre;` in CLIENT blocks. At startup the idhelper bulk-seeds all LDAP users into `nss_passwd` so the first krb5 compound avoids `principal2uid` WARN (`err: -2`). The log observer still resolves newly seen principals for later retries.
+Ganesha 9.6 on Debian trixie-backports uses explicit `Read_Access_Check_Policy = pre;` in CLIENT blocks. The idhelper syncs all LDAP users into `nss_passwd` at startup and every 10 minutes (pruning deleted users and refreshing uid/gid changes). Set `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS=0` to disable periodic sync. The log observer still resolves newly seen principals between syncs.
 
 The container image uses a split-stage strategy (build on Fedora minimal for the Rust binaries; runtime on Debian 13-slim) — see the Dockerfile for package choices.
 

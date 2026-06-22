@@ -24,6 +24,7 @@ use daemon::run_daemon;
 #[cfg(test)]
 use materialize::{
     group_line_for, passwd_line_for, sanitize_for_nss, seed_cache_and_nss_from_snapshot,
+    sync_user_cache_from_snapshot,
 };
 #[cfg(test)]
 use nfs_klldap_config::{IdMapSnapshot, PosixUserEntry};
@@ -132,8 +133,11 @@ fn handle_cli(args: &[String]) {
             println!("Cache lives at {} (simple | delimited, easy to process with grep/awk).", CACHE_PATH);
             println!("Daemon listens on {} (unix socket).", SOCKET_PATH);
             println!("NSS wrapper files (for Ganesha under libnss_wrapper): {} and {}", NSS_PASSWD_PATH, NSS_GROUP_PATH);
-            println!("Important: Ganesha config is kept conservative. This helper is the authoritative");
-            println!("classifier/resolver and materializes uid/gid mappings for Ganesha's getpwnam path.");
+            println!("LDAP sync: startup + every {}s (NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS, 0=off)",
+                crate::common::DEFAULT_REBULK_INTERVAL_SECS);
+            println!("Socket REBULK: printf 'REBULK\\n' | nc -U {}  (prune stale users, reload LDAP→nss_passwd)",
+                SOCKET_PATH);
+            println!("Important: Ganesha principal2uid uses libnfsidmap+getpwnam under nss_wrapper.");
         }
         "daemon" => {
             run_daemon();
@@ -163,9 +167,9 @@ Usage:
 Debug: KLLDAP_IDHELPER_DEBUG=true   (logs RESOLVE, norm key, hit/miss, classify,
        short name, getent details, result, elapsed, cache write, nss_wrapper writes)
 
-The daemon must be running for reliable mounts. It keeps an efficient in-memory
-+ file-backed cache so that every mount can quickly obtain the correct uid/gid
-and know whether the credential is a machine (host/nfs/root) or regular user.
+The daemon must be running for reliable mounts. It syncs LDAP users into nss_passwd
+at startup and periodically (pruning deleted users). Socket commands: RESOLVE,
+CLASSIFY, REBULK (force LDAP refresh).
 "#
     );
 }
@@ -365,6 +369,44 @@ mod tests {
         assert!(line.starts_with("alice:x:1005:100:"));
         let gline = group_line_for(c.get("alice@EXAMPLE.COM").unwrap());
         assert!(gline.contains(":100:"));
+    }
+
+    #[test]
+    fn sync_user_cache_prunes_stale_users_before_reseed() {
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "deleted@EX.COM".into(),
+            name: "deleted".into(),
+            uid: 9999,
+            gid: 9999,
+            kind: PrincipalKind::User,
+            source: "old".into(),
+        });
+        cache.insert(Resolved {
+            principal: "host/client@EX.COM".into(),
+            name: "client".into(),
+            uid: 0,
+            gid: 0,
+            kind: PrincipalKind::Machine,
+            source: "special".into(),
+        });
+
+        let mut snap = IdMapSnapshot::default();
+        snap.users.insert(
+            "alice".to_string(),
+            PosixUserEntry {
+                uid: 1001,
+                gid: 1001,
+                display: "Alice".to_string(),
+            },
+        );
+        snap.by_uid.insert(1001, "alice".to_string());
+
+        let n = sync_user_cache_from_snapshot(&snap, "EX.COM", &mut cache);
+        assert_eq!(n, 1);
+        assert!(cache.get("deleted@EX.COM").is_none());
+        assert!(cache.get("host/client@EX.COM").is_some());
+        assert!(cache.get("alice@EX.COM").is_some());
     }
 
     #[test]

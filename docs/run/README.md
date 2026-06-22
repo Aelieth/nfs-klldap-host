@@ -234,22 +234,19 @@ NFSV4 {
 EXPORT_DEFAULTS {
     SecType = krb5p;
     Protocols = 4;
-    # Explicit for ganesha 9.6 on Debian trixie (trixie-backports). Makes policy
-    # determinate for all derived CLIENTs/exports, eliminates "(none/invalid)"
-    # noise seen on internal pseudo root, and provides the documented pre-FSAL
-    # read check behavior (relaxed vs relying on parser defaults).
-    Read_Access_Check_Policy = pre;
+    # (Read_Access_Check_Policy intentionally omitted here for Ganesha 9.6 trixie-backports
+    # parser compatibility; default "pre" applies. It is emitted only inside per-CLIENT blocks.)
 }
 ```
 
-(See the full generated /etc/ganesha/ganesha.conf and per-share CLIENT blocks with the same Read_Access_Check_Policy = pre; inside the container for the complete safe set. No IdmapConf or other idmap keys are emitted in ganesha.conf.)
+(See the full generated /etc/ganesha/ganesha.conf (no Read_Access_Check_Policy at EXPORT_DEFAULTS) and per-share CLIENT blocks containing Read_Access_Check_Policy = pre; inside the container for the complete safe set. No IdmapConf or other idmap keys are emitted in ganesha.conf.)
 
 Key points:
 - `Protocols = 4` (also in EXPORT_DEFAULTS and per-share CLIENT blocks) for strict NFSv4.
 - `Manage_Gids_Expiration` in NFS_CORE_PARAM.
 - Kerberos configuration via NFS_KRB5 and a minimal Root_Kerberos_Principal (host, nfs).
 - Explicit `%include` lines (one per share fragment) for deterministic loading.
-- `Read_Access_Check_Policy = pre;` in EXPORT_DEFAULTS and every CLIENT (ganesha 9.6 / trixie-backports specific).
+- `Read_Access_Check_Policy = pre;` only inside every CLIENT block (ganesha 9.6 / trixie-backports specific; we omit from EXPORT_DEFAULTS because the 9.6 parser on trixie-backports emits "Unknown parameter" for it there, even though upstream docs list the location; default pre is used instead).
 - Only the options above + safe NFSV4/EXPORT_DEFAULTS are emitted. Idmap* keys are deliberately not present in ganesha.conf (use the idhelper + shim + /etc/idmapd.conf + nss materialization instead; see man nfsidmap / idmapd.conf). Other legacy options are omitted because they are not accepted by the ganesha 9.6 parser on trixie-backports.
 
 Each per-share fragment contains an EXPORT with Path (internal), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block for access control, and the VFS FSAL. Additional CLIENT blocks can be appended manually (they will be lost on regeneration).

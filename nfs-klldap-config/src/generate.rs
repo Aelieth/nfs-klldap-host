@@ -538,9 +538,10 @@ NFSV4 {{
 EXPORT_DEFAULTS {{
     SecType = {sec};
     Protocols = {proto};
-    # Valid for ganesha 9.6 on Debian trixie (trixie-backports) only. Do not add keys.
-    # Read_Access_Check_Policy=pre stabilizes krb5* ACCESS checks.
-    Read_Access_Check_Policy = {read_pol};
+    # Read_Access_Check_Policy intentionally omitted from EXPORT_DEFAULTS.
+    # Default is "pre" (per ganesha-export-config.8 for 9.x). Emitting it here
+    # produces "Unknown parameter" on Ganesha 9.6 from trixie-backports.
+    # The policy (when desired) is only placed inside CLIENT blocks below.
 }}
 "#,
         realm = realm,
@@ -548,7 +549,6 @@ EXPORT_DEFAULTS {{
         proto = constants::GANESHA_PROTOCOLS,
         pwnam = constants::GANESHA_PWNAM_IMPL,
         root_krb = constants::GANESHA_ROOT_KRB_PRINCIPALS,
-        read_pol = constants::GANESHA_READ_ACCESS_CHECK_POLICY,
     );
 
     // Always emit a baseline LOG block with elevated visibility for identity/client
@@ -643,7 +643,9 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             .map(|v| format!("    PrefWrite = {};\n", v))
             .unwrap_or_default();
 
-        // CLIENT block: Protocols=4 + Read_Access_Check_Policy=pre (ganesha 9.6 trixie only).
+        // CLIENT block: Protocols=4 + explicit Read_Access_Check_Policy=pre.
+        // Placed only inside CLIENT (inside EXPORT) for parser compatibility on
+        // Ganesha 9.6 Debian trixie-backports (EXPORT_DEFAULTS rejects the key).
         // Additional CLIENT blocks may be appended manually (not preserved on regen).
         let client_block = format!(
             r#"
@@ -651,8 +653,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         Clients = *;
         Access_Type = {access};
         Protocols = 4;
-        # Valid for ganesha 9.6 trixie-backports only.
-        # (matches analyzed ganesha.log symptoms and manpage enum [pre,post,all]).
+        # Valid for ganesha 9.6 trixie-backports (manpage enum [pre,post,all]).
         Read_Access_Check_Policy = pre;
     }}
 
@@ -933,5 +934,9 @@ mod tests {
         let ganesha = std::fs::read_to_string(&paths.ganesha_conf).unwrap_or_default();
         assert!(!ganesha.contains("IdmapConf"));
         assert!(!ganesha.contains("idmapd.conf"));
+        // Read_Access_Check_Policy assignment must be absent from main ganesha.conf (EXPORT_DEFAULTS level)
+        // on trixie-backports Ganesha 9.6 (parser rejects it there). It remains only in CLIENT
+        // blocks inside the generated export fragments. Match the active assignment form, not comments.
+        assert!(!ganesha.contains("Read_Access_Check_Policy ="), "Read_Access_Check_Policy = must not appear in main ganesha.conf (EXPORT_DEFAULTS level)");
     }
 }

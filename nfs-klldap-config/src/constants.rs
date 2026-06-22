@@ -53,6 +53,10 @@ pub const DEFAULT_GROUP_MEMBER_ATTR_LEGACY: &str = "memberUid";
 
 /// Ganesha 9.6 / trixie specific safe values.
 /// These are emitted verbatim; adding other keys may be fatal at parser time.
+/// Note: Read_Access_Check_Policy must only be placed inside CLIENT (or EXPORT)
+/// blocks on Debian trixie-backports Ganesha 9.6 (the parser rejects it under
+/// EXPORT_DEFAULTS even though upstream man pages list it as supported there).
+/// We rely on the documented default ("pre").
 pub const GANESHA_PROTOCOLS: &str = "4";
 pub const GANESHA_PWNAM_IMPL: &str = "nsswitch";
 pub const GANESHA_ROOT_KRB_PRINCIPALS: &str = "host, nfs";

@@ -785,10 +785,11 @@ pub fn classify_principal(principal: &str, realm: &str, server_variants: &[Strin
 
     if local.contains('/') {
         let after = local.split('/').nth(1).unwrap_or("");
-        if !after.is_empty() && (after.chars().any(|c| c.is_ascii_alphanumeric()) || after.contains('.')) {
-            if lower.ends_with(&format!("@{}", realm_lower)) || lower.contains("host") || lower.contains("nfs") {
-                return (true, "contains host/service prefix and hostname-like component".to_string());
-            }
+        if !after.is_empty()
+            && (after.chars().any(|c| c.is_ascii_alphanumeric()) || after.contains('.'))
+            && (lower.ends_with(&format!("@{}", realm_lower)) || lower.contains("host") || lower.contains("nfs"))
+        {
+            return (true, "contains host/service prefix and hostname-like component".to_string());
         }
     }
 

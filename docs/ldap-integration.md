@@ -92,7 +92,7 @@ cat /var/lib/nfs-klldap/nss_passwd   # what Ganesha sees for these names
 getent passwd testuser1
 ```
 
-The server must perform the same lookups clients do (`getent passwd testuser1` + principal forms). For ganesha 9.6 on Debian trixie, a small nfsidmap shim + explicit `Read_Access_Check_Policy = pre;` in CLIENT blocks (and EXPORT_DEFAULTS) address mapping failures. The observer now also reacts to Ganesha "Could not map principal X@REALM" lines so first-use user principals self-heal quickly for subsequent compounds/ACCESS. Machine principals map to 0; some group-fetch INFO for uid 0 and winbind noise are expected. The idhelper (IdLdapResolver + getent) is authoritative.
+The server must perform the same lookups clients do (`getent passwd testuser1` + principal forms). For ganesha 9.6 on Debian trixie, a small nfsidmap shim + explicit `Read_Access_Check_Policy = pre;` inside CLIENT blocks addresses mapping/ACCESS failures for krb5 compounds (we rely on the documented default of pre at the EXPORT_DEFAULTS level to avoid parser "Unknown parameter" on trixie-backports builds). The observer now also reacts to Ganesha "Could not map principal X@REALM" lines so first-use user principals self-heal quickly for subsequent compounds/ACCESS. Machine principals map to 0; some group-fetch INFO for uid 0 and winbind noise are expected. The idhelper (IdLdapResolver + getent) is authoritative.
 
 This is what actually makes the idhelper work "in conjunction" with Ganesha and SSSD. It does **not** inject untrusted data into `ganesha.conf` (Ganesha stays on a conservative static `Root_Kerberos_Principal = host, nfs;` list; the live translation lives in the nss_wrapper view controlled by the idhelper).
 

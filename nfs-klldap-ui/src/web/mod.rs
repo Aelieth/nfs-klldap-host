@@ -612,6 +612,17 @@ default_security = "krb5p"
             .unwrap();
         let resp = app.clone().oneshot(login_req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        // Explicitly assert both the redirect target and that our session cookie
+        // header is present on the response (the explicit attachment change in
+        // auth.rs guarantees this even through the full server stack).
+        assert!(
+            resp.headers().get(LOCATION).is_some(),
+            "login success must include Location"
+        );
+        assert!(
+            resp.headers().get(SET_COOKIE).is_some(),
+            "login success must include Set-Cookie for the new session"
+        );
 
         let login_token = session_token_from_response(&resp);
 

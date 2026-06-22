@@ -143,7 +143,14 @@ pub async fn login(
                 });
             }
 
-            (response_headers, Redirect::to("/")).into_response()
+            // Build the redirect response first, then explicitly attach the
+            // Set-Cookie we prepared. This is more defensive than the tuple
+            // (HeaderMap, Redirect) form when going through axum-server +
+            // rustls + real browser 303 handling (especially with Secure cookies
+            // and self-signed cert bypass flows common in docker usage).
+            let mut response = Redirect::to("/").into_response();
+            response.headers_mut().extend(response_headers);
+            response
         }
         Err(e) => {
             let first_run = !state.auth.has_simple_password();
@@ -217,7 +224,11 @@ pub async fn setup_password(
                 });
             }
 
-            (response_headers, Redirect::to("/?first_run=1")).into_response()
+            // Build the redirect response first, then explicitly attach the
+            // Set-Cookie we prepared (see comment in the normal login path).
+            let mut response = Redirect::to("/?first_run=1").into_response();
+            response.headers_mut().extend(response_headers);
+            response
         }
         Err(e) => {
             let html = LoginTemplate {
@@ -243,7 +254,11 @@ pub async fn logout(State(state): State<super::AppState>, headers: HeaderMap) ->
 
     let mut h = HeaderMap::new();
     insert_session_clear_cookie(&state, &headers, &mut h);
-    (h, Redirect::to("/login")).into_response()
+
+    // Explicit attachment for consistency with the login success paths.
+    let mut response = Redirect::to("/login").into_response();
+    response.headers_mut().extend(h);
+    response
 }
 
 /// Map ?error= query values to user-visible login messages.
@@ -289,6 +304,14 @@ fn insert_session_cookie(
     let set = build_session_cookie(state, req_headers, token);
     headers.insert(SET_COOKIE, set.parse().expect("valid Set-Cookie"));
 }
+
+// NOTE on redirect + cookie responses:
+// Success paths (login, setup) and logout now build the Redirect response
+// first and then explicitly extend its headers with the prepared Set-Cookie
+// (or clear). This is more robust than the (HeaderMap, Redirect) tuple across
+// the full axum + axum-server + browser 303 redirect path (especially when
+// Secure cookies meet self-signed cert "proceed" flows). The cookie building
+// logic itself (Lax, Path=/, Secure via is_https, 12h) is unchanged.
 
 fn insert_session_clear_cookie(
     state: &super::AppState,

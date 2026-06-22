@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 //! nfs-klldap-idhelper
 //! Central fast resolver for ganesha 9.6 (nfsidmap + nss paths).
 

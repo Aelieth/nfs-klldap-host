@@ -651,11 +651,12 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         Access_Type = {access};
         Protocols = 4;
         # Valid for ganesha 9.6 trixie-backports (manpage enum [pre,post,all]).
-        Read_Access_Check_Policy = pre;
+        Read_Access_Check_Policy = {read_access_policy};
     }}
 
 "#,
             access = access,
+            read_access_policy = constants::GANESHA_READ_ACCESS_CHECK_POLICY,
         );
 
         let block = format!(

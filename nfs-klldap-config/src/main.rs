@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 //! nfs-klldap-config CLI. Subcommands: init | generate | validate.
 //! generate drives the watcher + WebUI save path (root execution required for 0600 files).
 

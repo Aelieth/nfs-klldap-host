@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 //! Minimal shared LDAP + Kerberos identity resolution for nfs-klldap-host.
 //!
 //! Dependency-light crate used by nfs-klldap-config, nfs-klldap-idhelper, and

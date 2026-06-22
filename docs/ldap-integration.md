@@ -2,6 +2,8 @@
 
 SSSD (LDAP provider) supplies `uidNumber`/`gidNumber` from LLDAP/KLLDAP to Ganesha. The WebUI applies chown/chmod on bind-mounted host paths inside the container.
 
+Shared LDAP resolution (`IdLdapResolver`, POSIX attribute mapping, principal classification) lives in the **`nfs-klldap-identity`** crate (`nfs-klldap-identity/src/ldap/resolver.rs`). The config crate, idhelper, and WebUI `LdapClient` all use it for consistent behavior and caching.
+
 ## LLDAP Requirements
 
 Users (`ou=people`): `posixAccount` + `uid`, `uidNumber`, `gidNumber`, `homeDirectory`, `loginShell`.
@@ -96,6 +98,4 @@ The server must perform the same lookups clients do (`getent passwd testuser1` +
 
 This is what actually makes the idhelper work "in conjunction" with Ganesha and SSSD. It does **not** inject untrusted data into `ganesha.conf` (Ganesha stays on a conservative static `Root_Kerberos_Principal = host, nfs;` list; the live translation lives in the nss_wrapper view controlled by the idhelper).
 
-See the main README for more on the helper.
-
-See [README.md](../README.md) and [TESTING.md](../TESTING.md).
+See [README.md](../README.md) (Identity & Kerberos section) and [TESTING.md](../TESTING.md).

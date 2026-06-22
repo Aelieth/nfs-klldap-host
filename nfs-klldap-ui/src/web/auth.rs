@@ -21,16 +21,7 @@ pub(crate) struct LoginTemplate {
     pub keytab_alert: Option<String>,
 }
 
-// NOTE on keytab_alert usage here:
-// The keytab principal/hostname mismatch (see web/keytab.rs + main.rs bg task) is
-// intentionally a *display-only* warning banner. It is *never* passed to
-// LoginTemplate (pre-auth login/first-run forms) so that a misconfigured
-// Kerberos keytab (hostname vs. nfs/* principal) cannot interfere with
-// completing WebUI login for administration or LDAP (webui_admin_group) auth.
-// Once logged in, the banner appears on Share Permissions and System Settings.
-// The presence or absence of an alert value must never affect the localhost
-// simple-pw path, the LLDAP+webui_admin_group path, session creation,
-// or redirects. See the AppState docs for the invariant.
+// keytab_alert is never passed to LoginTemplate; see keytab.rs.
 
 /// Shared form for both normal login and first-run setup.
 #[derive(Deserialize)]
@@ -78,12 +69,7 @@ pub async fn login_page(
     .into_response()
 }
 
-/// POST /login — the main authentication entry point.
-/// On success: creates privileged session + sets properly-formed cookie + redirects.
-/// On failure: re-renders login page with error.
-///
-/// (keytab principal mismatch warning, if any, is only carried into the re-rendered
-/// template for display; it does not change success/failure or the created session.)
+/// POST /login — on success: session cookie + redirect; on failure: re-render with error.
 pub async fn login(
     State(state): State<super::AppState>,
     headers: HeaderMap,
@@ -143,11 +129,7 @@ pub async fn login(
                 });
             }
 
-            // Build the redirect response first, then explicitly attach the
-            // Set-Cookie we prepared. This is more defensive than the tuple
-            // (HeaderMap, Redirect) form when going through axum-server +
-            // rustls + real browser 303 handling (especially with Secure cookies
-            // and self-signed cert bypass flows common in docker usage).
+            // Attach Set-Cookie explicitly on the Redirect (robust through 303 + Secure cookies).
             let mut response = Redirect::to("/").into_response();
             response.headers_mut().extend(response_headers);
             response
@@ -224,8 +206,7 @@ pub async fn setup_password(
                 });
             }
 
-            // Build the redirect response first, then explicitly attach the
-            // Set-Cookie we prepared (see comment in the normal login path).
+            // Attach Set-Cookie explicitly on the Redirect (see login path).
             let mut response = Redirect::to("/?first_run=1").into_response();
             response.headers_mut().extend(response_headers);
             response
@@ -304,14 +285,6 @@ fn insert_session_cookie(
     let set = build_session_cookie(state, req_headers, token);
     headers.insert(SET_COOKIE, set.parse().expect("valid Set-Cookie"));
 }
-
-// NOTE on redirect + cookie responses:
-// Success paths (login, setup) and logout now build the Redirect response
-// first and then explicitly extend its headers with the prepared Set-Cookie
-// (or clear). This is more robust than the (HeaderMap, Redirect) tuple across
-// the full axum + axum-server + browser 303 redirect path (especially when
-// Secure cookies meet self-signed cert "proceed" flows). The cookie building
-// logic itself (Lax, Path=/, Secure via is_https, 12h) is unchanged.
 
 fn insert_session_clear_cookie(
     state: &super::AppState,
@@ -419,12 +392,7 @@ pub(crate) fn validate_session_in_headers(
 #[derive(Clone)]
 pub struct AuthUser(pub String);
 
-/// Guard used by (almost) every protected route handler.
-///
-/// Key point for the principal-mismatch requirement: this (and validate_session_in_headers)
-/// only look at session cookies + the AuthManager. keytab_alert (the NFS hostname vs.
-/// keytab principal warning) lives in AppState only for template rendering and has no
-/// effect on authentication decisions or on whether modifications are allowed.
+/// Guard for protected routes; keytab_alert does not affect auth (see keytab.rs).
 pub async fn require_auth(
     state: &super::AppState,
     headers: &HeaderMap,

@@ -44,7 +44,7 @@ ldap_default_authtok = "strong-secret"                          # Required - LDA
 # ldap_group_search_base = "ou=groups,dc=example,dc=com"        # Optional - defaults to dc=... (Subtree) for nested-OU discovery
 kllldap_ignored_attributes = true                               # KLLDAP specific - improves lookup time, prevents attribute spam
 
-# ldap_tls_reqcert = "never"                                    # auto-dervived - typical for internal/self-signed
+# ldap_tls_reqcert = "never"                                    # auto-derived - typical for internal/self-signed
 # ldap_tls_cacert = "/path/to/ca.pem"                           # when using custom CA instead of never
 # ldap_id_use_start_tls = true                                  # only with ldap:// + STARTTLS (not ldaps://)
 
@@ -55,7 +55,7 @@ kllldap_ignored_attributes = true                               # KLLDAP specifi
 default_security = "krb5p"                                      # Security, krb5p (default) | krb5i | krb5
 
 [webui]
-# webui_tls = false                                             # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
+# tls = false                                                   # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
 # tls_cert = "/config/webui.crt"                                # optional custom cert (NFS_KLLDAP_WEBUI_TLS_CERT env wins)
 # tls_key = "/config/webui.key"                                 # optional custom key (NFS_KLLDAP_WEBUI_TLS_KEY env wins; 0600)
 

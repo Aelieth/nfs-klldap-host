@@ -30,14 +30,10 @@ struct SettingsTemplate {
     /// NFS principals found in the keytab (for display + matching underline in template).
     keytab_found_principals: Vec<String>,
 
-    // === Structured editor prefill (populated from on-disk nfs-klldap.conf on every render) ===
-    // Raw TOML remains the full-fidelity path (comments, order, advanced fields).
     ldap_uri: String,
     storage_container_root: String,
     server_hostname: String,
     sssd_bind_dn: String,
-    // bind_pw is *never* prefilled into the form (security + source visibility; raw textarea already shows it).
-    // Submit non-empty value to change it.
     sssd_search_base: String,
     sssd_user_base: String,
     sssd_group_base: String,
@@ -49,10 +45,7 @@ struct SettingsTemplate {
     ganesha_default_security: String,
     kllldap_ignored_attributes: bool,
 
-    // Override flags (from explicit presence in raw source TOML, not derivation).
-    // These control whether structured save will write the value as an override
-    // or omit it (allowing derivation on next load/generate). Key fields (ldap_uri,
-    // container_root, bind_* , kllldap_ignored_attributes) have no override flag.
+    // true when the key is explicitly present in raw TOML (structured save writes override vs omit).
     override_server_hostname: bool,
     override_kerberos_realm: bool,
     override_ganesha_default_security: bool,
@@ -822,23 +815,13 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
         doc["shares"] = shares_item;
     }
 
-    // --- Post-serialization safety net for first-add from the default template ---
-    // An empty [webui] whose only content is comments often has those comments stored
-    // as document trailing trivia by toml_edit rather than decor on the table item.
-    // The key-reordering and trailing restore cannot pull them forward. For the narrow
-    // first-add-via-editor case we do a final textual correction: collect every [[shares]]
-    // block, remove them from the text, then re-insert the collected shares text
-    // immediately after the [webui] stanza (header + its following comment/blank lines).
-    // This guarantees the on-disk order the user expects from the generated template.
+    // toml_edit may park [webui] comments as trailing trivia after [[shares]] on first-add;
+    // peel/reinsert after [webui] so order matches the default template (see shares-order test).
     if !had_shares {
         let mut full = doc.to_string();
 
-        // Collect the entire tail starting at the first [[shares]]. Because the shares-save
-        // path writes only shares (and any trivia that toml_edit put after them), this tail
-        // may contain both the [[shares]] tables *and* webui comments that were trailing.
         let shares_tail = if let Some(start) = full.find("[[shares]]") {
             let t = full[start..].trim_end().to_string();
-            // Excise it so the prefix is clean for re-insertion.
             full = full[..start].to_string();
             Some(t)
         } else {
@@ -846,10 +829,6 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
         };
 
         if let Some(tail) = shares_tail {
-            // Peel any trailing comment/blank suffix off the tail; those are the webui comments
-            // that toml_edit placed after the shares. We want them to live with [webui].
-            // Walk backward from the collected tail and peel any suffix of blank/# lines
-            // (these are the webui comments that toml_edit put after the shares in the bad case).
             let lines: Vec<&str> = tail.lines().collect();
             let mut peel_count = 0usize;
             for line in lines.iter().rev() {
@@ -870,8 +849,6 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
             };
             let shares_text = shares_part_owned.trim().to_string();
 
-            // Find [webui] in the shares-free prefix and insert after its stanza
-            // (header line + any comments/blanks that were already there).
             if let Some(wstart) = full.find("[webui]") {
                 let mut insert_at = wstart;
                 if let Some(nl) = full[insert_at..].find('\n') {
@@ -879,7 +856,6 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
                 } else {
                     insert_at = full.len();
                 }
-                // Include blanks/# that already follow [webui] in the prefix.
                 let tail_after = &full[insert_at..];
                 let mut consumed = 0usize;
                 for line in tail_after.lines() {
@@ -895,7 +871,6 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
                 let before = &full[..insert_at];
                 let after = &full[insert_at..];
 
-                // Place any peeled webui comments right after the webui stanza, then the shares.
                 let mut middle = String::new();
                 if !peeled_comments.is_empty() {
                     middle.push('\n');
@@ -1292,28 +1267,8 @@ pub(crate) async fn restart_status() -> impl IntoResponse {
 
 // === Graceful "Restart and apply" (from System Settings) ===
 
-/// POST /settings/restart
-/// Requires auth (like every other settings action).
-/// Immediately returns a standalone restarting page (the HTML is delivered before we pull the rug).
-/// Then, after a short delay, sends SIGHUP to pid 1. The entrypoint's handle_sighup runs the
-/// Rust generator (if needed), fixes permissions, and bounces exactly the services that must
-/// see the new config:
-///   - Ganesha (to pick up new/changed [[shares]] export fragments + ganesha.conf)
-///   - SSSD (to pick up sssd.conf changes: binds, search bases, schema, krb5 bits, etc.)
-///   - WebUI (to re-load the central Config + rebuild FsManager with the current shares list
-///     so the permission tree / allowed roots / dir editor see new shares)
-///
-/// Kerberos (krb5.conf) changes are picked up by the freshly-started processes that use the
-/// Kerberos libs.
-///
-/// The supervisor (entrypoint) itself stays alive; only the three children are cycled.
-/// This is "restart the services we need" rather than a full container death + runtime
-/// restart policy cycle (although a real `docker/podman restart` or TERM to pid 1 still does
-/// the full thing for recovery/crash cases).
-///
-/// A one-shot guard (restart_requested in AppState) ensures that only the first request
-/// schedules the delayed HUP; later POSTs (double-click, F5 on the result URL, etc.)
-/// just re-serve the restarting page without additional side effects.
+/// POST /settings/restart — returns restarting page, then SIGHUP pid 1 to recycle
+/// Ganesha, SSSD, and WebUI (entrypoint handle_sighup). One-shot via restart_requested.
 pub(crate) async fn system_restart(
     State(state): State<AppState>,
     headers: HeaderMap,

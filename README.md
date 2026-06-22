@@ -10,6 +10,14 @@ Debian 13-slim runtime (Rust build stages remain on Fedora minimal) providing a 
   width="50%"
 />
 
+## Documentation
+
+- [Running & deployment](docs/run/README.md)
+- [LDAP / SSSD / Kerberos integration](docs/ldap-integration.md)
+- [Ganesha architecture & contracts](docs/ganesha-architecture.md)
+- [WebUI security model](nfs-klldap-ui/docs/security.md)
+- [Testing](TESTING.md)
+
 ## Architecture
 
 ```
@@ -31,7 +39,17 @@ entrypoint (pid 1) → restart/reload daemons
 
 One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, /etc/idmapd.conf (standardized NFSv4 Domain + Local-Realms + GSS-Methods for idhelper/shim/clients + Kerberos realm handling), and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. Use `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN strongly suggested).
 
+See [docs/ganesha-architecture.md](docs/ganesha-architecture.md) for the `host_path` / `export_path` / bind-mount contract table.
+
 ## Quick Start
+
+**Recommended:** use [examples/docker-compose.yml](examples/docker-compose.yml) with `network_mode: host` and `uts: host` so NFS and Kerberos see the real host identity. Port mapping in a bridged `docker run` can work for lab use but host networking is the supported production pattern.
+
+```bash
+docker compose -f examples/docker-compose.yml up -d
+```
+
+**Alternative** (port-mapped lab deploy):
 
 ```bash
 docker run -d \
@@ -46,16 +64,15 @@ docker run -d \
   ghcr.io/aelieth/nfs-klldap-host:latest
 ```
 
-First run writes a default `nfs-klldap.conf`. 
-A console guided TUI will do basic diagnostics via a loop and look for 3 key, important working options in the nfs-klldap.conf
+First run writes a default `nfs-klldap.conf`. A console guided TUI will do basic diagnostics via a loop and look for 3 key, important working options in the nfs-klldap.conf:
+
 1. Mount point for config to persist
 2. ldap_uri
 3. sssd - ldap_default_bind_dn and ldap_default_authtok
 
 Edit nfs-klldap.conf in container or via mounted directory. The watcher + entrypoint handle regeneration and reload.
 
-
-See [docs/run/README.md](docs/run/README.md) for compose examples and TLS notes.
+See [docs/run/README.md](docs/run/README.md) for compose examples, env vars, TLS/proxy notes, and troubleshooting.
 
 ## Configuration
 
@@ -92,7 +109,7 @@ kllldap_ignored_attributes = true                               # KLLDAP specifi
 default_security = "krb5p"                                      # security, krb5p (default) | krb5i | krb5
 
 [webui]
-# webui_tls = false                                             # commented (tls on by default). Set tls=false (or NFS_KLLDAP_WEBUI_TLS=off env) for reverse proxy.
+# tls = false                                                   # commented (tls on by default). Set tls=false (or NFS_KLLDAP_WEBUI_TLS=off env) for reverse proxy.
 # tls_cert = "/config/webui.crt"
 # tls_key = "/config/webui.key"
 
@@ -111,9 +128,11 @@ The generator derives ports, search bases, sssd.conf, krb5.conf, /etc/idmapd.con
 Per-share Ganesha options (in [[shares]]) include `cache_profile` (see below) and the advanced/raw `pref_read` / `pref_write` (bytes). The recommended way is the **Cache Profile** dropdown in the WebUI (stored as e.g. `cache_profile = "Read - Heavy"` under the share). The generator always resolves the profile (or falls back to explicit pref_* for power users) when (re)writing Ganesha EXPORT fragments. See the table below and the WebUI shares editor. Raw TOML always supports any valid Ganesha EXPORT key as fallback.
 
 ### Cache Profiles (Shares tuning)
+
 In **System Settings → Shares** the former "PrefRd" numeric input is now a **Cache Profile** dropdown with five curated options. The chosen profile name is written into the `[[shares]]` table (e.g. `cache_profile = "Read - Heavy"`) and becomes the source of truth for that share.
 
 On every `generate` (container start, config watcher, "Restart and apply", or explicit HUP) the following are *rewritten* from the profiles in `nfs-klldap.conf`:
+
 - Ganesha `EXPORT` blocks (`PrefRead` + `PrefWrite` values for the share's export).
 - Ganesha I/O sizing via the Cache Profile dropdown (see below).
 
@@ -131,7 +150,7 @@ Note: to optimize performance for sequential workloads, set read_ahead_kb on the
 
 ## Environment Variables
 
-Environment variables are available to those that prefer them, but not necessary to run nfs-klldap-host (walk through the TUI or use a pre-configured nfs-klldap.conf). 
+Environment variables are available to those that prefer them, but not necessary to run nfs-klldap-host (walk through the TUI or use a pre-configured nfs-klldap.conf).
 
 Not every advanced `[sssd]` option is exposed via env. The core options (LDAP URI + binds, realm, hostname, storage root, Ganesha default security, WebUI admin group, KLLDAP ignored attributes, SSSD TLS fields, and `[webui]`) can be supplied or overridden using `NFS_KLLDAP_*` variables (only prefixed forms are available). Environment variables always win and allow omitting the corresponding keys from `nfs-klldap.conf` in many cases.
 
@@ -146,7 +165,7 @@ environment:
   NFS_KLLDAP_WEBUI_TLS: "off"
 ```
 
-See [docs/run/README.md](docs/run/README.md) for environment variables and reverse-proxy setup, `NFS_KLLDAP_WEBUI_TLS=off` behavior, and compose examples.
+See [docs/run/README.md](docs/run/README.md) for the full env var table, reverse-proxy setup, and compose examples.
 
 ## WebUI (9630)
 
@@ -163,7 +182,7 @@ All owner/group/mode changes performed by the WebUI go through `FsManager` + `pr
 - **UID/GID are numeric only on disk**: The engine and WebUI always write raw `u32` values (sourced from LLDAP `uidNumber`/`gidNumber` or direct numeric entry in the editor). Friendly names are resolved only for display.
 - **Bind-mount UID namespace assumption**: The container must run as real root with the data directories bind-mounted such that the numeric UIDs written *inside* the container are exactly the IDs visible on the Docker host filesystem. `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts will cause the on-disk owners to be wrong from the host/NFS client perspective.
 
-These contracts are also documented in source comments in `nfs-klldap-ui/src/fs.rs` and `privileged.rs`.
+See [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md) for the full security model.
 
 ## Prerequisites
 
@@ -173,37 +192,41 @@ These contracts are also documented in source comments in `nfs-klldap-ui/src/fs.
 - `ldap_uri` host must resolve (DNS, not IP). Forward + reverse DNS required for the NFS principal.
 - Bind-mounted data directories on attached/media storage (numeric uid/gid must match KLLDAP posixAccount/posixGroup).
 
-
 ## Project Layout (workspace)
 
-- `nfs-klldap-config/` — lib + `nfs-klldap-config` (generate) + `nfs-klldap-startup` (TUI) + `nfs-klldap-idhelper` (daemon + CLI for Kerberos principal translation)
+- `nfs-klldap-identity/` — shared LDAP/Kerberos/NSS primitives (`IdLdapResolver`, POSIX mapping, hostname/keytab helpers)
+- `nfs-klldap-config/` — lib + `nfs-klldap-config` (generate) + `nfs-klldap-startup` (TUI) + `nfs-klldap-idhelper` (daemon + CLI)
 - `nfs-klldap-ui/` — Axum WebUI (9630)
 - `entrypoint.sh` — thin pid-1 supervisor
-- `container/` — healthcheck + ganesha-ctl + conf-watcher (inotify → SIGHUP)
+- `container/` — healthcheck, conf-watcher, ganesha-ctl helper scripts
 
-### nfs-klldap-idhelper (Kerberos ID translator)
+## Identity & Kerberos (idhelper)
 
-Lightweight always-running daemon (started after SSSD) that is the **authoritative classifier and resolver** for Kerberos principals:
-
-- Distinguishes **machine principals** (`host/...`, `nfs/...`, `root/...` from client host keytabs on Fedora Immutable etc.) from **LDAP-authenticated users**.
-- Resolves them to uid/gid (machines → 0, users → real POSIX ids from SSSD/LLDAP).
-- On resolution, materializes the decision into nss_wrapper passwd/group files.
-- Ganesha is started under `LD_PRELOAD=libnss_wrapper.so` pointing at those files, so Ganesha's getpwnam path (Kerberos owner → uid for VFS) uses the idhelper's view. This is what prevents session teardown from mixed root/user credentials on immutable clients.
-- Also maintains the classic fast in-memory + on-disk cache + unix socket (used by ganesha-ctl, diagnostics, and the internal Ganesha log observer).
+`nfs-klldap-idhelper` classifies Kerberos principals (machine `host/`/`nfs/` vs LDAP users), resolves them to uid/gid via SSSD/getent with structured LDAP fallback (`nfs-klldap-identity`), and materializes decisions for Ganesha via nss_wrapper + extrausers. Ganesha runs with an nfsidmap shim delegating to idhelper so server-side principal→uid mapping matches clients (including Fedora Immutable).
 
 Inside the container:
-- `nfs-klldap-idhelper resolve 'alice@REALM' --json`
-- `nfs-klldap-idhelper classify 'host/myfedora@REALM'`
-- `ganesha-ctl id-resolve 'user@REALM'`
-- `ganesha-ctl id-check`
 
-The helper is intentionally slim (single binary + getent primary, structured LDAP fallback via shared IdLdapResolver) and participates in the mount path via the nss_wrapper bridge + extrausers rather than by editing ganesha.conf. It now routes resolution through the same PosixAttributeMapping + filter + cache logic as the WebUI LdapClient (see nfs-klldap-config/src/idmap.rs) for consistency and to avoid repeated LDAP server hits.
+```bash
+nfs-klldap-idhelper resolve 'alice@REALM' --json
+nfs-klldap-idhelper classify 'host/myfedora@REALM'
+ganesha-ctl id-resolve 'user@REALM'
+ganesha-ctl id-check
+```
 
-For ganesha 9.6 + Debian trixie (trixie-backports) the generated CLIENT blocks now include an explicit `Read_Access_Check_Policy = pre;` (omitted from EXPORT_DEFAULTS to satisfy the parser; default "pre" is relied upon) and a tiny nfsidmap shim is used (only for ganesha) so the server does the same principal-to-uid lookups clients expect (`getent passwd testuser1` + full `user@REALM` / `host/...` via idhelper). The idhelper now uses structured LDAP (IdLdapResolver + caches) for its LDAP fallback, matching the UI's LdapClient.
+See [docs/ldap-integration.md](docs/ldap-integration.md) for SSSD/POSIX requirements, TLS behavior, idhelper architecture, and verification commands.
 
-The observer also reacts to Ganesha's own "Could not map principal ... to uid" lines (the main first-use symptom for user principals during nfs_req_creds/ACCESS). This self-heals for retries/next compounds. Some machine uid2grp INFO for uid 0 and winbind noise (when not using winbind) are expected.
+Ganesha 9.6 on Debian trixie-backports uses explicit `Read_Access_Check_Policy = pre;` in CLIENT blocks and an nfsidmap shim. The idhelper observer reacts to Ganesha "Could not map principal ... to uid" log lines for self-healing on retries.
 
-The container image uses a split-stage strategy (build on Fedora minimal for the Rust binaries; runtime on Debian 13-slim) — see the Dockerfile for the exact comment and package choices.
+The container image uses a split-stage strategy (build on Fedora minimal for the Rust binaries; runtime on Debian 13-slim) — see the Dockerfile for package choices.
+
+## Development & testing
+
+```bash
+make test
+# or: cargo test --workspace
+```
+
+See [TESTING.md](TESTING.md) for coverage map and patterns.
 
 ## License
 

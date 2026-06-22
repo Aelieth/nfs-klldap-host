@@ -165,20 +165,13 @@ async fn main() {
     let admin_group = config.management.webui_admin_group.clone();
     let auth = Arc::new(crate::auth::AuthManager::new(&config_path, admin_group));
 
-    // Keytab principal/hostname mismatch alert is *display-only* (affects only the
-    // warning banner shown on post-auth pages via base.html + settings "current-state").
-    // It must never prevent the listener from coming up or block localhost /
-    // webui_admin_group logins + modifications (the login form is intentionally
-    // kept free of this banner so a bad keytab/hostname never interferes with
-    // admin access for fixing config). Compute it in a background task so even a
-    // pathological hang in klist(1) cannot make the WebUI unreachable for auth.
+    // Display-only keytab banner; computed off-thread so klist cannot block startup (see keytab.rs).
     let keytab_alert: Arc<StdMutex<Option<String>>> = Arc::new(StdMutex::new(None));
     {
         let alert_slot = keytab_alert.clone();
         let h = keytab_host.clone();
         let r = keytab_realm.clone();
         tokio::spawn(async move {
-            // compute_keytab_alert shells out to klist -k; do it off the main thread.
             let alert = crate::web::compute_keytab_alert(&h, &r);
             if let Some(ref msg) = alert {
                 eprintln!("WARNING: {}", msg);
@@ -191,8 +184,7 @@ async fn main() {
 
     // NFS_KLLDAP_WEBUI_BIND is used for both TLS and plain-http (reverse proxy) modes.
     let addr = std::env::var("NFS_KLLDAP_WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
-    // Compute TLS mode with env precedence (NFS_KLLDAP_WEBUI_TLS=off/false etc.) then [webui] tls from nfs-klldap.conf.
-    // Env handling lives here (and in certs). Only NFS_KLLDAP_* prefixed forms are supported.
+    // TLS: env `NFS_KLLDAP_WEBUI_TLS` wins, then [webui] tls (see certs.rs).
     let webui_tls_off = if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
         let t = v.trim().to_ascii_lowercase();
         t == "off" || t == "false" || t == "0" || t == "no"
@@ -219,8 +211,7 @@ async fn main() {
     let app = crate::web::router(state);
 
     if webui_tls_off {
-        // plain HTTP path (do NOT call ensure_webui_tls_certs).
-        // webui_tls_off computed above with env (NFS_KLLDAP_WEBUI_TLS=off/false/...) precedence then config.webui.tls.
+        // Plain HTTP — do not call ensure_webui_tls_certs.
         println!("\nTLS: disabled (reverse proxy mode)");
         println!("Listening on http://{addr}");
         let listener = tokio::net::TcpListener::bind(&addr)

@@ -16,18 +16,14 @@ use tower_http::normalize_path::NormalizePathLayer;
 
 use crate::{auth::AuthManager, config::Config, fs::FsManager, ldap::LdapClient};
 
-// Declare submodules (the actual logic lives here).
 mod auth;
 mod keytab;
 mod permission_tree;
 mod settings;
 
-// Re-exports needed by main.rs (and for the router assembly below).
 pub use keytab::{compute_keytab_alert, get_keytab_info};
 
-// Re-export handlers as pub(crate) so that the integration tests (which live
-// inside this module) can use `use super::*;` in a natural way (keeps the
-// port of the large test module as mechanical as possible).
+// pub(crate) re-exports for router assembly and in-module integration tests.
 pub(crate) use auth::{login, login_page, logout, require_auth, setup_password};
 pub(crate) use permission_tree::{
     apply_permissions, apply_progress, cancel_apply, dir_editor, dir_meta, fs_children, index,
@@ -39,8 +35,6 @@ pub(crate) use settings::{
     system_restart,
 };
 
-// pub(crate) re-exports: short names for router + accessible to integration tests in this module.
-
 /// Shared state for all handlers.
 #[derive(Clone)]
 pub struct AppState {
@@ -48,31 +42,10 @@ pub struct AppState {
     pub lldap: Arc<Mutex<LdapClient>>,
     pub config: Arc<Config>,
     pub auth: Arc<AuthManager>,
-    /// Absolute path to the nfs-klldap.conf file being edited (same one the container uses).
-    /// Needed for raw TOML view + save, and for System Settings.
     pub config_path: PathBuf,
-    /// The exact hostname that must appear in the nfs/<this>@REALM principal in the keytab.
-    /// Computed once at startup using the same two-tier consistent logic (or explicit override)
-    /// as the container's own startup banner. Guarantees the WebUI always shows the value
-    /// that the running container actually requires.
     pub keytab_hostname: String,
-    /// Kerberos realm for the NFS principal (derived/validated at startup, same as krb5.conf generator).
     pub keytab_realm: String,
-    /// Human-readable status about whether the on-disk /etc/krb5.keytab actually contains
-    /// the expected NFS service principal (the "kerberos ticket principal does not match
-    /// the hostname expectation" condition).
-    ///
-    /// This is populated best-effort by a background task in main.rs after the HTTP
-    /// listener is brought up. It is *display-only*: presence of a value (or a transient
-    /// None while the check runs) must never gate authentication (localhost sidecar or
-    /// LLDAP+webui_admin_group), session creation, require_auth, or any modification path.
-    /// The only effect is rendering the warning banner on authenticated pages
-    /// (Share Permissions + System Settings). The pre-auth /login form deliberately
-    /// receives no keytab_alert so a hostname/keytab mismatch never interferes with
-    /// admin or LDAP login for recovery.
-    ///
-    /// See nfs-klldap-ui/src/web/keytab.rs (compute_keytab_alert) and the two-tier
-    /// hostname logic in the nfs_klldap_config crate.
+    /// Display-only keytab mismatch banner; see `keytab.rs` for the invariant.
     pub keytab_alert: Arc<StdMutex<Option<String>>>,
     /// Shared state for an in-flight (recursive or non-recursive) permission apply.
     /// Populated when /apply starts the background task; read by /apply-progress for the
@@ -83,20 +56,12 @@ pub struct AppState {
     /// refresh of the /settings/restart result "page"). Once set we just re-serve the
     /// standalone restarting.html without side-effects.
     pub restart_requested: Arc<Mutex<bool>>,
-    /// Whether the WebUI is serving its own TLS (affects default Secure cookie policy
-    /// and is_https() helper). false when NFS_KLLDAP_WEBUI_TLS=off (reverse-proxy mode).
+    /// true when WebUI terminates TLS; false when `NFS_KLLDAP_WEBUI_TLS=off` (proxy mode).
     pub direct_tls: bool,
 }
 
 impl AppState {
-    /// Returns whether the effective (client-visible) connection is HTTPS.
-    /// Used exclusively to decide the `Secure` flag on session cookies.
-    ///
-    /// - `true` if `direct_tls` (we are the TLS terminator, NFS_KLLDAP_WEBUI_TLS not "off")
-    /// - OR the incoming request carried `X-Forwarded-Proto: https` (case-insensitive)
-    ///   (set by the reverse proxy when NFS_KLLDAP_WEBUI_TLS=off).
-    ///
-    /// X-Forwarded-Host is inspected by the middleware layer but not required here.
+    /// true when direct TLS or `X-Forwarded-Proto: https` (drives cookie `Secure` flag).
     pub fn is_https(&self, headers: &HeaderMap) -> bool {
         self.direct_tls
             || headers
@@ -123,19 +88,13 @@ pub struct KeytabDisplayContext {
     pub alert: Option<String>,
 }
 
-/// Per-request effective scheme derived from direct_tls + X-Forwarded-* headers.
-/// Stored in request extensions by the middleware layer (for "stores effective scheme"
-/// requirement) and used to drive cookie Secure decisions via AppState::is_https.
+/// Per-request HTTPS flag from `direct_tls` + `X-Forwarded-Proto`.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct EffectiveScheme {
     #[allow(dead_code)]
     pub https: bool,
-    // X-Forwarded-Host is read by the layer (per spec) but not needed for is_https today.
 }
 
-/// Lightweight middleware that reads X-Forwarded-Proto / X-Forwarded-Host (as requested),
-/// combines with the AppState's direct_tls flag, and stores EffectiveScheme in extensions.
-/// Combined with NormalizePathLayer this satisfies the tower-http dep + custom header layer ask.
 async fn detect_effective_scheme(
     direct_tls: bool,
     mut req: Request<Body>,
@@ -155,12 +114,6 @@ async fn detect_effective_scheme(
     next.run(req).await
 }
 
-/// Assembles all routes (public + protected).
-/// Routes grouped; handlers in submodules (auth, permission_tree, settings, keytab).
-///
-/// Layers (NormalizePath + scheme detection from X-Forwarded-*) are applied
-/// after with_state; they wrap the stateful service. The scheme layer stores
-/// EffectiveScheme in extensions (and we snapshot direct_tls for it).
 pub fn router(state: AppState) -> Router {
     let direct_tls = state.direct_tls;
     let app = Router::new()
@@ -451,7 +404,7 @@ kllldap_ignored_attributes = true
 default_security = "krb5p"
 
 [webui]
-# webui_tls = false                                             # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
+# tls = false                                                   # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
 # tls_cert = "/config/webui.crt"                                # optional custom cert (NFS_KLLDAP_WEBUI_TLS_CERT env wins)
 # tls_key = "/config/webui.key"                                 # optional custom key (NFS_KLLDAP_WEBUI_TLS_KEY env wins; 0600)
 "#;
@@ -537,7 +490,7 @@ default_security = "krb5p"
         );
 
         // At least one distinctive webui comment must appear after [webui] and before the first [[shares]].
-        let webui_comment_pos = written.find("# webui_tls = false");
+        let webui_comment_pos = written.find("# tls = false");
         assert!(
             webui_comment_pos.is_some() && webui_comment_pos.unwrap() > webui_pos && webui_comment_pos.unwrap() < first_shares_pos,
             "webui comment must remain with [webui] section before [[shares]]; got written:\n{}",
@@ -560,11 +513,7 @@ default_security = "krb5p"
         assert!(written.contains("cache_profile = \"Default\""));
     }
 
-    /// Exercises the complete localhost first-run + normal login + session + protected route flow.
-    /// This is the primary self-contained authentication path that does not require a live LLDAP.
-    ///
-    /// Updated during refactor: SameSite assertion changed from Strict → Lax to match
-    /// the deliberate security improvement (Lax is required for reliable POST→303 redirect login).
+    /// Localhost first-run, login (SameSite=Lax), redirect follow, protected route, logout, re-login.
     #[tokio::test]
     async fn full_localhost_first_run_login_session_and_protected_route_flow() {
         let (state, _tmp) = make_test_state_with_temp_config();
@@ -573,7 +522,6 @@ default_security = "krb5p"
         // Router is cheap to clone for multi-request flows
         let app = router(state);
 
-        // === Phase 1: First-run state ===
         assert!(
             !auth.has_simple_password(),
             "fresh AuthManager must report no simple password"
@@ -588,9 +536,6 @@ default_security = "krb5p"
         let resp = app.clone().oneshot(login_page_req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        // === Phase 2: First-run password setup ===
-        // The form (and LoginForm deserializer) expects both fields, even though
-        // the setup handler conceptually only cares about the password.
         let setup_body = "username=localhost&password=initialStrongPass123";
         let setup_req = Request::builder()
             .method("POST")
@@ -619,7 +564,6 @@ default_security = "krb5p"
             "sidecar password file must now exist after setup"
         );
 
-        // === Phase 3: Normal login as localhost with the password we just set ===
         let login_body = "username=localhost&password=initialStrongPass123";
         let login_req = Request::builder()
             .method("POST")
@@ -629,9 +573,6 @@ default_security = "krb5p"
             .unwrap();
         let resp = app.clone().oneshot(login_req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-        // Explicitly assert both the redirect target and that our session cookie
-        // header is present on the response (the explicit attachment change in
-        // auth.rs guarantees this even through the full server stack).
         assert!(
             resp.headers().get(LOCATION).is_some(),
             "login success must include Location"
@@ -643,11 +584,7 @@ default_security = "krb5p"
 
         let login_token = session_token_from_response(&resp);
 
-        // === Phase 3b (NEW): Follow the *actual* login redirect using the real Set-Cookie ===
-        // This is the critical missing coverage for the original bug: "login handler returns 303 + cookie,
-        // but the subsequent GET to the Location (with the cookie the browser would have received) was
-        // never exercised." Manual add_session_cookie bypass hid exactly the symptom (Secure, Max-Age,
-        // SameSite propagation, require_auth on the real redirect target).
+        // Follow the login redirect with the real Set-Cookie (browser behavior).
         let login_location = resp
             .headers()
             .get(LOCATION)
@@ -655,7 +592,6 @@ default_security = "krb5p"
             .to_str()
             .expect("Location must be valid UTF-8");
 
-        // Cookie header the browser would send after accepting Set-Cookie.
         let real_cookie_header = format!("session={}", login_token);
 
         let follow_req = Request::builder()
@@ -671,7 +607,6 @@ default_security = "krb5p"
             "following the login redirect with the real emitted cookie must reach the protected page (not redirect back to /login)"
         );
 
-        // === Phase 4: Use the session to access a protected route (existing manual path kept for coverage) ===
         let protected_req = Request::builder()
             .method("GET")
             .uri("/settings")
@@ -680,10 +615,8 @@ default_security = "krb5p"
         let protected_req = add_session_cookie(protected_req, &login_token);
 
         let resp = app.clone().oneshot(protected_req).await.unwrap();
-        // Should reach the handler (200), not be redirected to /login
         assert_eq!(resp.status(), StatusCode::OK);
 
-        // === Phase 5: Logout clears the session ===
         let logout_req = Request::builder()
             .method("POST")
             .uri("/logout")
@@ -703,7 +636,6 @@ default_security = "krb5p"
             "logout should clear session cookie"
         );
 
-        // === Phase 5b: Log in again after logout (regression: stale cookie must not block re-auth) ===
         let login_again_req = Request::builder()
             .method("POST")
             .uri("/login")
@@ -790,12 +722,7 @@ default_security = "krb5p"
         );
     }
 
-    /// Regression test for the core requirement: a keytab principal/hostname mismatch
-    /// (the "kerberos ticket principal does not match" case) produces only a display
-    /// warning (keytab_alert = Some(...)) on *post-auth* pages. It must not prevent
-    /// session creation, require_auth, or reaching protected routes / apply. The
-    /// pre-auth login form never receives the alert. Localhost and (in real deploys)
-    /// webui_admin_group LDAP logins must still fully work for modifications.
+    /// keytab_alert is display-only; must not block auth or protected routes (see keytab.rs).
     #[tokio::test]
     async fn keytab_mismatch_alert_does_not_break_auth_or_protected_actions() {
         let (state, _tmp) = make_test_state_with_temp_config();
@@ -807,10 +734,6 @@ default_security = "krb5p"
         let token = auth.create_privileged_session("testadmin"); // same as real login success path
         let app = router(state);
 
-        // Pre-auth login form must never surface the keytab mismatch banner (this is the
-        // core of the resolution: a "kerberos ticket mismatch" / hostname-vs-principal
-        // condition must not pollute or interfere with reaching the login form or
-        // completing auth for admin / LDAP users).
         let login_req = Request::builder()
             .method("GET")
             .uri("/login")
@@ -825,7 +748,6 @@ default_security = "krb5p"
             "keytab mismatch banner must not appear on the unauthenticated /login form (would interfere with admin/LDAP login)"
         );
 
-        // Protected page must be reachable (no redirect to /login).
         let req = Request::builder()
             .method("GET")
             .uri("/settings")
@@ -835,8 +757,6 @@ default_security = "krb5p"
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "mismatch alert must not cause require_auth to reject a valid session");
 
-        // An apply POST must also be accepted by the auth layer (may 200 "apply failed in test env"
-        // or the new applying placeholder, but must never 3xx back to login).
         let body = "path=%2Ftmp%2Fdata&owner_user=1000&owner_group=1000&mode=755&recursive=false&owner_user_uid=1000&owner_group_gid=1000";
         let req = Request::builder()
             .method("POST")
@@ -853,17 +773,13 @@ default_security = "krb5p"
         );
     }
 
-    /// Exercises the new inline tree meta + editor routes introduced for the
-    /// directory permissions UI refresh. Uses a real temp dir so get_dir_meta
-    /// has something to stat.
+    /// /dir-meta and /dir-editor with a real temp dir; also checks share card labels on /.
     #[tokio::test]
     async fn dir_meta_and_dir_editor_routes_work_with_real_fs_node() {
         let (state, tmp) = make_test_state_with_temp_config();
         let auth = state.auth.clone();
         let token = auth.create_privileged_session("testadmin");
 
-        // Create a real subdirectory under one of the allowed host_paths so
-        // the UI routes have something to stat.
         let host_root = tmp.path().join("allowed");
         std::fs::create_dir_all(&host_root).unwrap();
         let sub = host_root.join("mysubdir");
@@ -871,8 +787,6 @@ default_security = "krb5p"
 
         let app = router(state);
 
-        // Also exercise the main Share Permissions page (/) to verify the updated share cards
-        // (proper NFS client path using keytab_hostname + the compact new attribute labels).
         let index_req = Request::builder()
             .method("GET")
             .uri("/")
@@ -927,13 +841,7 @@ default_security = "krb5p"
         assert!(body_str.contains("dir-edit-form") || body_str.contains("Owner"), "editor should render the form");
     }
 
-    /// Regression test for the directory edit "Apply" button (POST /apply).
-    /// The dir-editor form *always* emits hidden owner_user_uid / owner_group_gid fields,
-    /// frequently with empty value (value=""). This previously caused
-    /// "Failed to deserialize form body: cannot parse integer from empty string" (422).
-    /// We submit exactly that shape (empty hiddens + numeric strings in the visible fields)
-    /// and assert we get a 2xx response (the handler returns HTML status or error box on
-    /// chown failure in the test env; the important thing is no deserializer 422).
+    /// POST /apply accepts empty hidden uid/gid fields from dir-editor (no 422 deserialize error).
     #[tokio::test]
     async fn apply_permissions_accepts_empty_hidden_uid_fields_from_dir_editor() {
         let (state, tmp) = make_test_state_with_temp_config();
@@ -947,9 +855,6 @@ default_security = "krb5p"
 
         let app = router(state);
 
-        // Simulate the exact form body the dir-editor.html produces on submit when
-        // no suggestion was clicked (hiddens empty, visible fields contain the prefilled
-        // numeric owner/group strings from FS stat).
         let path = sub.to_str().unwrap();
         let body = format!(
             "path={}&owner_user=1000&owner_group=1000&mode=755&recursive=false&owner_user_uid=&owner_group_gid=",
@@ -965,21 +870,13 @@ default_security = "krb5p"
         let req = add_session_cookie(req, &token);
 
         let resp = app.oneshot(req).await.unwrap();
-        // Must not be 422 (Unprocessable Content) from serde failure.
         assert!(
             resp.status().is_success() || resp.status() == StatusCode::UNPROCESSABLE_ENTITY,
             "apply must not hard-fail on empty uid hiddens; got {}",
             resp.status()
         );
-        // In this test env the actual chown will typically fail (non-root), so handler
-        // returns a friendly 200 error box. If it somehow succeeds we also accept 200.
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body_str = String::from_utf8_lossy(&body);
-        // With the async apply path the immediate response is the applying placeholder
-        // (dir-meta-inner + data-applying) + oob Apply Log status (contains the Command).
-        // The final Result text and real meta arrive later via the poller + final /dir-meta.
-        // The old sync "Result:" or "dir-meta" (final) may appear for the oob status or in
-        // other code paths; we accept the new applying shape as success for the test.
         assert!(
             body_str.contains("dir-meta") ||
             body_str.contains("Apply failed") ||

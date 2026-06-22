@@ -122,8 +122,7 @@ impl FsManager {
         Some(node)
     }
 
-    /// Lightweight stat-only lookup for a single directory (owner, group, masked mode).
-    /// (lazy 1-level; avoids full subtree walks)
+    /// Stat-only lookup for one directory (lazy, no subtree walk).
     pub fn get_dir_meta(&self, path: &Path) -> Option<(u32, u32, u32)> {
         let normalized = self.normalize_for_matching(path);
         if !self.is_allowed(&normalized) {
@@ -136,10 +135,7 @@ impl FsManager {
         Some((meta.uid(), meta.gid(), mode))
     }
 
-    /// Lightweight, non-recursive listing of *immediate* child directories only.
-    /// (for /fs/children HTMX; O(1) lazy expand)
-    ///
-    /// Returns nodes with `.children == vec![]`. Logical paths synthesized like build_tree.
+    /// Immediate child directories only (/fs/children HTMX lazy expand).
     pub fn list_children(&self, path: &Path) -> Option<Vec<DirectoryNode>> {
         let normalized = self.normalize_for_matching(path);
         if !self.is_allowed(&normalized) {
@@ -240,23 +236,7 @@ impl FsManager {
             .map_err(|e| format!("apply failed: {}", e))
     }
 
-    /// host_path (from config/UI, logical/admin namespace) → real path inside the container
-    /// for the matching share.
-    ///
-    /// The container base comes from NfsKlldapConfig::container_path_for, which derives the
-    /// internal location from the share's own host_path (first directory component after the
-    /// leading "/" is the implicit per-share bind root) + container_root. The relative suffix
-    /// under the share's host_path is appended unchanged.
-    ///
-    /// This supports classic layouts and the flexible single-root (or multi-root) bind model
-    /// where export_path (editable in Shares) can be a short external name for Pseudo while
-    /// the internal location for Ganesha Path + the permission tree is computed from host_path.
-    ///
-    /// The single bind-mount contract used by both apply_permissions and build_tree.
-    ///
-    /// This is the authoritative translation. All security decisions (is_allowed) are
-    /// performed in the logical host namespace; only the final syscall boundary translates.
-    /// See the module-level docs for the "bind-mount UID namespace" assumption.
+    /// host_path → container path for the matching share (see module docs for bind-root model).
     pub(crate) fn host_path_to_container_path(&self, host_path: &Path) -> Result<PathBuf, String> {
         let normalized = self.normalize_for_matching(host_path);
 
@@ -493,8 +473,9 @@ impl FsManager {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)] // Tests legitimately use unwrap for brevity on TempDir / setup
+#[allow(clippy::unwrap_used)]
 mod tests {
+    // Translation tests: host_path first dir = implicit bind root; tail maps under container_root.
     use super::*;
     use tempfile::TempDir;
 
@@ -513,12 +494,6 @@ mod tests {
         }
     }
 
-    /// Helper that creates a config exercising the host_path → container translation.
-    /// The real on-disk tree lives under container_root joined with the share's (derived or
-    /// explicit) export_path (via container_path_for). With ..Default the export_path is None
-    /// and falls back to "/<name>" so classic tests continue to assert container_root + name.
-    /// Calls to build_tree use the `host_path` (logical) and must return nodes
-    /// whose .path values stay in the logical host namespace.
     fn make_test_config_with_container_mapping(
         host_path: &str,
         container_root: &str,
@@ -574,12 +549,7 @@ mod tests {
 
     #[test]
     fn build_tree_walks_only_directories_and_respects_shares() {
-        // This test now exercises the real host_path → container translation
-        // that the WebUI tree browser relies on inside the container.
         let tmp = TempDir::new().unwrap();
-
-        // Real tree lives under container_root + effective export subtree (here derived to
-        // /mydata via export_path fallback). Simulates the bind mount layout the container sees.
         let container_root = tmp.path().join("container-root");
         let real_share_dir = container_root.join("mydata");
         std::fs::create_dir_all(&real_share_dir).unwrap();
@@ -594,10 +564,6 @@ mod tests {
         ];
         create_temp_tree(&real_share_dir, &tree).unwrap();
 
-        // Logical host_path (what the admin puts in nfs-klldap.conf and sees in the UI)
-        // is completely different from the container-visible location.
-        // Under the implicit first-dir rule the tail after the first dir must produce the
-        // container subdir where the real tree was created ("mydata").
         let logical_host_path = "/hostroot/mydata";
         let cfg = make_test_config_with_container_mapping(
             logical_host_path,
@@ -606,18 +572,14 @@ mod tests {
         );
         let fs = FsManager::new(cfg);
 
-        // We ask for the logical root; build_tree must translate internally to the real dir.
         let root_node = fs
             .build_tree(Path::new(logical_host_path))
             .expect("root should be allowed and visible via translation");
 
-        // Returned node uses the logical path + its basename for display
         assert_eq!(root_node.path, Path::new(logical_host_path));
         assert_eq!(root_node.name, "mydata");
         assert_eq!(root_node.children.len(), 2); // movies + backups
 
-        // Children must also be reported with logical paths (host namespace) so the UI
-        // can send them back in subsequent /tree and /fs/children requests.
         let movies = root_node
             .children
             .iter()
@@ -635,9 +597,6 @@ mod tests {
         std::fs::write(real_root.join("file.txt"), "data").unwrap();
         std::fs::create_dir_all(real_root.join("subdir")).unwrap();
 
-        // Make the translation land on the real_root we created (identity for this test).
-        // With the implicit first-dir derivation we register a simple one-segment host_path
-        // whose strip produces empty tail, and point container_root at the real dir we populated.
         let logical = Path::new("/rootbind");
         let mut cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
         cfg.storage.container_root = real_root.to_string_lossy().into_owned();
@@ -652,13 +611,8 @@ mod tests {
         assert_eq!(node.children[0].name, "subdir");
     }
 
-    // Additional policy + translation tests:
-
     #[test]
     fn host_path_to_container_path_exact_and_subpath() {
-        // Under the implicit first-dir rule the container subpath comes from the tail
-        // of host_path after its first directory component. We choose a host_path whose
-        // tail produces the "myshare" sub that the test previously obtained via name/export.
         let cfg = make_test_config_with_container_mapping(
             "/hostroot/myshare",
             "/container/root",
@@ -677,15 +631,11 @@ mod tests {
 
     #[test]
     fn host_path_to_container_path_respects_explicit_export_path() {
-        // Exercise the new single-root-bind model: rich export_path (subtree under /export)
-        // produces a different container location than name, while host_path stays the
-        // real on-disk host location. UI allow-list + ops remain host_path based.
         let mut cfg = make_test_config_with_container_mapping(
             "/media/HDD-RAID/media",
             "/export",
             "media",
         );
-        // Override the default-derived export_path for this share to the rich value.
         cfg.shares[0].export_path = Some("/HDD-RAID/media".to_string());
 
         let fs = FsManager::new(cfg);
@@ -705,25 +655,15 @@ mod tests {
 
     #[test]
     fn host_path_to_container_path_derives_internal_from_first_dir_of_host_path() {
-        // The internal container location is derived from the share's own host_path:
-        // first directory component after "/" is the implicit per-share bind root,
-        // the remainder is the tail under container_root. export_path (short name for
-        // Pseudo / external) must not affect it.
-        //
-        // Example from the request:
-        //   host_path = "/media/HDD-RAID/media" → first="/media", tail="HDD-RAID/media"
-        //   internal  = "/export/HDD-RAID/media" even if export_path is something short.
         let mut cfg = make_test_config_with_container_mapping(
             "/media/HDD-RAID/media",
             "/export",
             "media",
         );
-        // Short export for external/client Pseudo; should *not* affect the internal container dir.
         cfg.shares[0].export_path = Some("/short-movies".to_string());
 
         let fs = FsManager::new(cfg);
 
-        // Translation must still land on the real location dictated by the bind + host_path.
         let root = fs
             .host_path_to_container_path(Path::new("/media/HDD-RAID/media"))
             .unwrap();
@@ -734,7 +674,6 @@ mod tests {
             .unwrap();
         assert_eq!(sub, PathBuf::from("/export/HDD-RAID/media/videos/4k"));
 
-        // Another share with a different first dir (multiple host roots) would work the same way.
     }
 
     #[test]
@@ -753,7 +692,6 @@ mod tests {
         std::fs::create_dir_all(real.join("a")).unwrap();
         std::fs::create_dir_all(real.join("b/c")).unwrap(); // deeper, should not appear
 
-        // Tail after first dir must be "s1" to land on the real dir we created under container_root.
         let cfg = make_test_config_with_container_mapping("/hostroot/s1", container_root.to_str().unwrap(), "s1");
         let fs = FsManager::new(cfg);
 

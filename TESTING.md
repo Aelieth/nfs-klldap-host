@@ -1,6 +1,6 @@
 # Testing
 
-`cargo test --workspace` (or `make test` + `make clippy`).
+`cargo test --workspace` (or `make test` + `make clippy`). Workspace crates: `nfs-klldap-identity`, `nfs-klldap-config`, `nfs-klldap-ui`.
 
 ## Strategy
 

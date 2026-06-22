@@ -61,10 +61,8 @@ fi
 # /var/lib/nfs-klldap/webui-certs inside the container.
 HEALTHCHECK="${HEALTHCHECK:-/container/healthcheck.sh}"
 
-# Logging
 LOG_FORMAT="${LOG_FORMAT:-text}"   # text | json
 
-# Logging (text or json)
 _log_ts() {
     date -u '+%Y-%m-%dT%H:%M:%S.%3NZ'
 }
@@ -93,6 +91,29 @@ error() { log "ERROR" "$@"; }
 die() {
     log "FATAL" "$*"
     exit 1
+}
+
+# Mask winbind helper — stack uses sss + idhelper, not winbind.
+quiet_winbind() {
+    if command -v wbinfo >/dev/null 2>&1; then
+        ln -sf /bin/false /usr/bin/wbinfo 2>/dev/null || true
+    fi
+}
+
+# Start ganesha.nfsd with nfsidmap shim PATH; optional nss_wrapper preload.
+start_ganesha() {
+    quiet_winbind
+    if [ "${USE_NSS_WRAPPER:-1}" = "1" ] || [ "${USE_NSS_WRAPPER:-1}" = "true" ]; then
+        PATH="${GANESHA_PATH_PREFIX}:$PATH" \
+        NSS_WRAPPER_PASSWD="$NSS_PASSWD" \
+        NSS_WRAPPER_GROUP="$NSS_GROUP" \
+        LD_PRELOAD="${NSS_WRAPPER_SO}" \
+            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    else
+        PATH="${GANESHA_PATH_PREFIX}:$PATH" \
+            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
+    fi
+    GANESHA_PID=$!
 }
 
 # Permission hygiene (root:root 0600 for sssd.conf is mandatory)
@@ -212,26 +233,7 @@ handle_sighup() {
     fi
     sleep 0.3
     info "Starting NFS-Ganesha (idhelper mappings via wrapper/extrausers)..."
-
-    # Best-effort reduction of winbind noise (wbcAuthenticateUserEx ... NOT_AVAILABLE).
-    # Our stack is pure sss + custom idhelper for principals; winbind is not used.
-    # Masking the userland helper (if present) is harmless and quiets some internal
-    # fallback attempts inside Ganesha's idmapper on krb creds.
-    if command -v wbinfo >/dev/null 2>&1; then
-        ln -sf /bin/false /usr/bin/wbinfo 2>/dev/null || true
-    fi
-
-    if [ "${USE_NSS_WRAPPER:-1}" = "1" ] || [ "${USE_NSS_WRAPPER:-1}" = "true" ]; then
-        PATH="${GANESHA_PATH_PREFIX}:$PATH" \
-        NSS_WRAPPER_PASSWD="$NSS_PASSWD" \
-        NSS_WRAPPER_GROUP="$NSS_GROUP" \
-        LD_PRELOAD="${NSS_WRAPPER_SO}" \
-            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
-    else
-        PATH="${GANESHA_PATH_PREFIX}:$PATH" \
-            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
-    fi
-    GANESHA_PID=$!
+    start_ganesha
 
     # SSSD almost always needs a full restart when its config changes (bind DN,
     # search bases, schema/ignores, krb5 provider bits, etc.).
@@ -324,13 +326,7 @@ main() {
         die "SSSD NSS pipe did not appear. Check LLDAP connectivity and bind credentials."
     fi
 
-    # Preload server host principals (and thus root uid0) into the idhelper so that
-    # machine mappings (host/...@REALM -> uid 0) and getpwuid_r(0) are available
-    # *immediately* when Ganesha starts. Combined with the always-root line in
-    # idhelper materialize, this eliminates the cold-start "getpwuid_r for uid 0
-    # failed, error 2", "Unsupported code path", and first-user "Could not map"
-    # races seen in logs. nss (under preload + extrausers) + sss will hit fast.
-    # The value augments any operator-provided NFS_KLLDAP_IDHELPER_PRERESOLVE.
+    # Preload host/*@REALM + root uid0 before Ganesha to avoid cold-start principal-map races.
     _H=$(hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || echo "localhost")
     _R=$(awk '/default_realm/ {print $3; exit}' /etc/krb5.conf 2>/dev/null || echo "${NFS_KLLDAP_KERBEROS_REALM:-EXAMPLE.COM}")
     _PRE="${NFS_KLLDAP_IDHELPER_PRERESOLVE:-}"
@@ -343,12 +339,6 @@ main() {
     done
     export NFS_KLLDAP_IDHELPER_PRERESOLVE="$_PRE"
 
-    # Start the ID/Kerberos principal helper daemon.
-    # It must be running for the lifetime of the container because it is consulted
-    # (directly or via its fast cache file) for every mount to distinguish machine
-    # principals (host/..., nfs/...) from regular LDAP users and to provide fast
-    # uid/gid translation. This prevents the repeated mount collapse seen with
-    # Fedora Immutable clients.
     info "Starting nfs-klldap-idhelper (Kerberos ID translator)..."
     "$IDHELPER_BIN" daemon > >(tee -a /var/log/idhelper.log) 2>&1 &
     IDHELPER_PID=$!
@@ -359,10 +349,6 @@ main() {
         info "idhelper daemon started (pid $IDHELPER_PID)"
     fi
 
-    # Brief readiness for preload: wait until the forced root uid0 entry (and server
-    # host machines) are in the nss files. This makes nsswitch (and Ganesha under
-    # preload) see the info immediately. Keeps cold-start user ldap/sss cache paths
-    # (IdLdapResolver + getent) fast and consistent.
     info "Waiting for idhelper preload (root + server host principals)..."
     for _ in $(seq 1 30); do
         if grep -q '^root:' /var/lib/nfs-klldap/nss_passwd 2>/dev/null || \
@@ -413,32 +399,8 @@ main() {
         warn "D-Bus system bus socket did not appear; Ganesha may have limited management features."
     fi
 
-    # Ganesha (the actual NFS server). Start only after rpcbind + dbus readiness checks.
-    # The idhelper materializes machine overrides (via nss_wrapper *and* extrausers).
-    # nsswitch is configured with extrausers so LDAP users remain visible via sss.
-    # The preload below is kept for environments that rely on it; it can be disabled
-    # by setting USE_NSS_WRAPPER=0 if extrausers alone is sufficient.
     info "Starting NFS-Ganesha (idhelper mappings via wrapper/extrausers)..."
-
-    # Best-effort reduction of winbind noise (wbcAuthenticateUserEx ... NOT_AVAILABLE).
-    # Our stack is pure sss + custom idhelper for principals; winbind is not used.
-    # Masking the userland helper (if present) is harmless and quiets some internal
-    # fallback attempts inside Ganesha's idmapper on krb creds.
-    if command -v wbinfo >/dev/null 2>&1; then
-        ln -sf /bin/false /usr/bin/wbinfo 2>/dev/null || true
-    fi
-
-    if [ "${USE_NSS_WRAPPER:-1}" = "1" ] || [ "${USE_NSS_WRAPPER:-1}" = "true" ]; then
-        PATH="${GANESHA_PATH_PREFIX}:$PATH" \
-        NSS_WRAPPER_PASSWD="$NSS_PASSWD" \
-        NSS_WRAPPER_GROUP="$NSS_GROUP" \
-        LD_PRELOAD="${NSS_WRAPPER_SO}" \
-            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
-    else
-        PATH="${GANESHA_PATH_PREFIX}:$PATH" \
-            ganesha.nfsd -f "$GANESHA_CONF" -L /var/log/ganesha.log &
-    fi
-    GANESHA_PID=$!
+    start_ganesha
 
     # WebUI (HTTPS on 9630 via axum-server + rustls; self-signed unless NFS_KLLDAP_WEBUI_TLS_* set)
     info "Starting WebUI on 0.0.0.0:9630 (HTTPS)..."

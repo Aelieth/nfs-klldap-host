@@ -32,6 +32,8 @@ The WebUI always serves on `NFS_KLLDAP_WEBUI_BIND` (default `0.0.0.0:9630`).
 
 The `NFS_KLLDAP_WEBUI_COOKIE_SECURE=false` override is honored when present (forces non-Secure regardless of TLS/headers).
 
+`NFS_KLLDAP_WEBUI_BIND` (default `0.0.0.0:9630`) is a runtime-only setting read by `nfs-klldap-ui`; it is not validated by the TOML config crate.
+
 Login, first-run setup, redirects, logout, and all session validation are identical in both modes. The large in-tree auth flow tests cover the cookie emission paths for both direct-TLS and proxied cases.
 
 #### Recommended proxy snippets
@@ -264,9 +266,18 @@ See also the reference shape in `examples/ganesha-exports.d/10-example.conf`.
 - Ganesha fails to start with dbus/socket errors → the entrypoint dbus launch didn't produce `/run/dbus/system_bus_socket` in time (rare; the readiness loop helps), or the package was not present in an old image.
 - Kerberos principal / hostname mismatches → missing `--uts=host` (or `uts: host` in compose) and/or keytab principals that don't match the name the container sees.
 - UDP clients or legacy `showmount` tools complain → we disable UDP by default in CORE_PARAM and ship rpcbind anyway; open the ports you actually need.
-- Mounts repeatedly fail / get torn down with Fedora Immutable clients (host keytab + user TGT) → the `nfs-klldap-idhelper` daemon must be running (started automatically after SSSD) and Ganesha must have been launched under the nss_wrapper environment (see entrypoint.sh). The idhelper classifies principals and materializes uid/gid into the wrapper files that Ganesha's getpwnam sees. Use `ganesha-ctl id-check`, `ganesha-ctl id-resolve '<principal>'`, and inspect `/var/lib/nfs-klldap/nss_passwd` (under the preload env) to verify. Without the wrapper bridge the classification is never visible to Ganesha.
+- Mounts repeatedly fail / get torn down with Fedora Immutable clients (host keytab + user TGT) → the `nfs-klldap-idhelper` daemon must be running (started automatically after SSSD). Ganesha uses nss_wrapper preload by default (`USE_NSS_WRAPPER=1`); set `USE_NSS_WRAPPER=0` to rely on extrausers alone. Use `ganesha-ctl id-check`, `ganesha-ctl id-resolve '<principal>'`, and inspect `/var/lib/nfs-klldap/nss_passwd` to verify. See [docs/ldap-integration.md](../ldap-integration.md).
 
 ### Security model recap (WebUI FS changes)
-All owner/group/mode mutations still go exclusively through `FsManager` (allow-list from configured `host_path` entries, WalkDir with `follow_links(false)`, never descend symlinks for mutation, refuse uid/gid 0 and set*id bits). The caps are additive for traversal and Ganesha VFS reliability; they do not relax the allow-list or symlink policy. See `nfs-klldap-ui/src/fs.rs`, `privileged.rs`, and `ui/docs/security.md`.
+All owner/group/mode mutations still go exclusively through `FsManager` (allow-list from configured `host_path` entries, WalkDir with `follow_links(false)`, never descend symlinks for mutation, refuse uid/gid 0 and set*id bits). The caps are additive for traversal and Ganesha VFS reliability; they do not relax the allow-list or symlink policy. See `nfs-klldap-ui/src/fs.rs`, `privileged.rs`, and [nfs-klldap-ui/docs/security.md](../../nfs-klldap-ui/docs/security.md).
 
 This combination (bind mounts + root inside + the two caps + `--uts=host` + explicit CORE_PARAM + dbus in the image) is the practical, supportable way to run this Ganesha-based appliance while giving the WebUI safe direct control over the host's exported trees.
+
+### Verification
+
+```bash
+/container/healthcheck.sh
+scripts/verify-ganesha.sh    # in-container Ganesha/export checks (see scripts/)
+ganesha-ctl show-exports
+getent passwd <user>
+```

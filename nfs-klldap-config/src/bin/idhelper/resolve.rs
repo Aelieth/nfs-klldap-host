@@ -34,7 +34,7 @@ fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
         return Some(res);
     }
 
-    // Fallback to direct structured LDAP resolution (0.8.32 refactor).
+    // Fallback to structured LDAP resolution via IdLdapResolver.
     // Uses the same PosixAttributeMapping, filters, and caching logic as
     // nfs-klldap-ui/src/ldap.rs so behavior + cache effectiveness are identical
     // and we do not hit the server on every miss.

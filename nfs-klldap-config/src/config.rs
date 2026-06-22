@@ -102,18 +102,11 @@ pub struct SssdSection {
     pub krb5_kpasswd: Option<String>,
     pub krb5_validate: Option<bool>,
     pub krb5_store_password_if_offline: Option<bool>,
-    // Note: krb5_realm is always the effective realm (no separate override);
-    // krb5_server + krb5_kpasswd are auto-derived from ldap_uri host in the generator
-    // (with these fields as overrides). This provides the Kerberos equivalent of
-    // the auto ldap_ configuration for co-located LDAP+KDC deployments.
-
     /// Optional attribute holding the Kerberos principal (e.g. krbPrincipalName or userPrincipalName).
     /// When set, the IdLdapResolver will use it for direct principal-form lookups in addition to name match.
     /// Default in resolver is "krbPrincipalName".
     pub ldap_user_principal_name: Option<String>,
 
-    // Cache tuning for ample/quick UID/GID lookups (emitted to sssd.conf to minimize LDAP hits).
-    // Defaults chosen for "ample" behavior in getent/sssd paths without constant LDAP.
     pub entry_cache_timeout: Option<u32>,
     pub entry_negative_timeout: Option<u32>,
 }
@@ -171,30 +164,10 @@ pub struct WebuiSection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Share {
     pub name: String,
-    /// Absolute path on the Docker host (used for UI allow-list and direct chown/chmod).
-    /// Independent of container bind layout. The WebUI privileged operations (fs.rs/privileged.rs)
-    /// and allow-listing continue to key exclusively off host_path values.
+    /// Host-visible path for allow-list and chown/chmod (see docs/ganesha-architecture.md).
     pub host_path: PathBuf,
-    /// Optional explicit name/subtree used for the *client-visible* NFSv4 Pseudo path
-    /// (what clients put after the server name in mount commands, e.g. server:/movies).
-    ///
-    /// Editable in System Settings → Shares as the "Export Path" field. This is the
-    /// external / shortenable name. It no longer affects the real container location.
-    ///
-    /// The real internal container location (used for Ganesha EXPORT.Path and for the
-    /// WebUI FsManager / permission tree translations) is always derived from the share's
-    /// own host_path + container_root:
-    ///
-    ///   - Take the first directory component of host_path after the leading "/" as the
-    ///     implicit per-share "bind root" (e.g. host_path="/media/NVME-RAID/nvme" → "/media").
-    ///   - Strip that prefix; the remaining tail becomes the subpath under container_root.
-    ///   - Example: host_path="/media/NVME-RAID/nvme" + container_root="/export" →
-    ///     internal = "/export/NVME-RAID/nvme".
-    ///
-    /// This supports multiple different host bind roots naturally (no global host_root
-    /// setting required) while letting export_path be used purely for nice client names.
-    ///
-    /// Defaults (via validation) to "/" + name when absent.
+    /// Client-visible NFSv4 Pseudo path only; internal Ganesha/FsManager path comes from host_path.
+    /// Defaults to `/<name>` when absent.
     pub export_path: Option<String>,
     pub security: Option<String>,
     pub rw: Option<bool>,

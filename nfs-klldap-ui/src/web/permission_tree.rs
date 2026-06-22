@@ -15,8 +15,6 @@ use crate::fs::ApplyProgress;
 
 use super::{AppState, require_auth};
 
-// === Templates (private to this module) ===
-
 #[derive(Template)]
 #[template(path = "index.html")]
 struct IndexTemplate {
@@ -63,7 +61,6 @@ struct ShareInfo {
     pub cache_profile: String,
 }
 
-// New inline fragments (the current UX model).
 #[derive(Template)]
 #[template(path = "dir_meta.html")]
 struct DirMetaTemplate {

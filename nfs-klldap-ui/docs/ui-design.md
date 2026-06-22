@@ -1,6 +1,6 @@
 # UI Notes
 
-Axum + HTMX + server templates. Pages: / (tree browser + user/group search + direct apply), /settings (raw TOML + structured editor for fields+shares, LLDAP reload/clear, restart).
+Axum + HTMX + server templates. Pages: / (tree browser + user/group search + direct apply), /settings (raw TOML + structured editor for fields+shares, LLDAP reload/clear, restart). First-run: `/login` + `POST /setup-password` when no `webui-password` sidecar exists.
 
 Auth: webui-password sidecar (localhost) or LLDAP in webui_admin_group.
 

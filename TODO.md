@@ -3,5 +3,6 @@
 - Slight decoupling of LLDAP code for simply NFS share management for those that want it
 - Integration into KLLDAP for quick deployment with built-in keytab
 
-## Known bugs
-- Unknown at the moment as of first release of 0.8.6
+## Known issues / tracking
+- Track regressions via `cargo test --workspace` and [TESTING.md](TESTING.md) living spec.
+- File operational bugs in issue tracker as they are discovered (workspace version 0.8.12).

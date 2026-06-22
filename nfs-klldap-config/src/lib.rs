@@ -28,12 +28,20 @@ pub use hostname::{
 };
 pub use persist::{is_persistent_config, load_host_paths_only};
 pub use template::{generate_default_template, write_default_config_if_missing};
-pub use uri::{derive_realm_from_uri, extract_host_from_uri};
+pub use uri::{derive_realm_from_uri, extract_host_from_uri, host_is_ip};
+pub use nfs_klldap_identity::{
+    get_keytab_info, parse_klist_nfs_hosts, parse_klist_nfs_principals, read_keytab_nfs_principals,
+    KeytabInfo,
+};
 
 // Structured ID/LDAP resolution (used by idhelper for getent + principal paths
 // with caching and PosixAttributeMapping parity to nfs-klldap-ui/src/ldap.rs).
 pub mod idmap;
-pub use idmap::{classify_principal, escape_ldap_filter, extract_first_attr_value, parse_getent_group, parse_getent_passwd, IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry};
+pub use idmap::{
+    classify_principal, escape_ldap_filter, extract_first_attr_value, from_sssd_section,
+    parse_getent_group, parse_getent_passwd, IdLdapResolver, IdMapSnapshot, PosixGroupEntry,
+    PosixUserEntry,
+};
 
 // Centralized constants (Ganesha 9.6 trixie + hybrid principal + POSIX + idmapd).
 pub use constants::{

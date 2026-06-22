@@ -1,0 +1,219 @@
+//! NSS wrapper + extrausers materialization from the idhelper cache.
+
+use crate::dlog;
+use std::fs::{self, OpenOptions};
+use std::io::{self, BufWriter, Write};
+use std::path::Path;
+
+use nfs_klldap_config::MACHINE_PRINCIPAL_PREFIXES;
+
+use crate::common::{
+    IdCache, PrincipalKind, Resolved, EXTRAUSERS_GROUP, EXTRAUSERS_PASSWD, NSS_GROUP_PATH,
+    NSS_PASSWD_PATH,
+};
+
+/// Sanitize a string for use as a passwd login name (allow alnum + _ - .).
+pub(crate) fn sanitize_for_nss(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push_str("unknown");
+    }
+    out
+}
+
+/// Build a passwd(5)-format line for a resolved principal.
+/// Uses the short name we already computed; machines always get uid/gid 0.
+pub(crate) fn passwd_line_for(r: &Resolved) -> String {
+    let login = sanitize_for_nss(&r.name);
+    // Gecos is purely informational here.
+    let gecos = format!("kll:{}:{}", r.kind.as_str(), r.principal);
+    // We use /nonexistent and nologin to be explicit these are not real local accounts.
+    format!(
+        "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
+        login, r.uid, r.gid, gecos
+    )
+}
+
+/// Build a minimal group(5) line for the primary gid of this resolved entry.
+/// We use a stable synthetic group name when we don't have a better one.
+pub(crate) fn group_line_for(r: &Resolved) -> String {
+    // Prefer a simple name; for uid==gid==0 we always ensure "root".
+    if r.gid == 0 {
+        "root:x:0:".to_string()
+    } else {
+        let gname = sanitize_for_nss(&r.name);
+        format!("{}:x:{}:", gname, r.gid)
+    }
+}
+
+/// Atomically write the nss_wrapper passwd and group files from the current cache.
+/// This is the key side-effect that makes Ganesha (under LD_PRELOAD) see our
+/// machine->root and user uid/gid decisions.
+pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
+    // Ensure parent exists (best effort, same as cache writer)
+    if let Some(parent) = Path::new(NSS_PASSWD_PATH).parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    // Collect stable ordered list of entries (sort by principal for determinism)
+    let mut items: Vec<_> = cache.entries.values().collect();
+    items.sort_by(|a, b| a.principal.cmp(&b.principal));
+
+    // Build passwd content. We dedup by login name (last wins for stability; tiny set).
+    let mut seen_login: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut passwd_lines: Vec<String> = Vec::new();
+    let mut group_lines: Vec<String> = Vec::new();
+    let mut seen_gid: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+    for r in &items {
+        let line = passwd_line_for(r);
+        // Extract login from the line we just built (before first ':')
+        if let Some(login) = line.split(':').next() {
+            if seen_login.insert(login.to_string()) {
+                passwd_lines.push(line);
+            }
+        }
+
+        // For machine principals (host/..., nfs/..., root/...) also emit an alias using the
+        // sanitized full local part (e.g. "host_blue-lt"). This helps when Ganesha's idmapper
+        // feeds getpwnam the service/name form instead of (or in addition to) the short host.
+        let local = r.principal.split('@').next().unwrap_or(&r.principal);
+        if local.contains('/') && MACHINE_PRINCIPAL_PREFIXES.iter().any(|p| local.starts_with(p)) {
+            let alias = sanitize_for_nss(local); // turns host/blue-lt into host_blue-lt etc.
+            if seen_login.insert(alias.clone()) {
+                let gecos = format!("kll:machine-alias:{}", r.principal);
+                passwd_lines.push(format!(
+                    "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
+                    alias, r.uid, r.gid, gecos
+                ));
+            }
+        }
+
+        // For regular (non-machine) user principals, ALWAYS also materialize the full "name@REALM" form
+        // (in addition to the short name). This helps Ganesha's getpwnam / principal2uid paths
+        // when it feeds the exact Kerberos principal string (the "kerberos looking" case).
+        if r.kind != PrincipalKind::Machine {
+            let full = r.principal.clone();
+            if seen_login.insert(full.clone()) {
+                let line_full = passwd_line_for(&Resolved {
+                    principal: full.clone(),
+                    name: full.clone(),
+                    uid: r.uid,
+                    gid: r.gid,
+                    kind: r.kind.clone(),
+                    source: r.source.clone(),
+                });
+                passwd_lines.push(line_full);
+            }
+        }
+
+        // Groups
+        if seen_gid.insert(r.gid) {
+            group_lines.push(group_line_for(r));
+        }
+        // Also ensure the uid's primary group is represented if different (rare)
+        if r.uid != r.gid && seen_gid.insert(r.uid) {
+            // Use same simple rule; uid as fallback group name
+            if r.uid == 0 {
+                if seen_gid.insert(0) {
+                    // already handled
+                }
+            } else {
+                group_lines.push(format!("u{}:x:{}:", r.uid, r.uid));
+            }
+        }
+    }
+
+    // Always ensure at least a root group entry.
+    // For machine principals (uid/gid 0) we also synthesize a couple of
+    // common supplementals. This gives uid2grp_allocate_by_principal and
+    // set_extended_groups something to work with for root creds and reduces
+    // (but does not completely eliminate) the expected INFO noise for
+    // host/ nfs/ machine principals.
+    if seen_gid.is_empty() || !seen_gid.contains(&0) {
+        group_lines.push("root:x:0:root,daemon,bin".to_string());
+    }
+
+    // Always ensure a root *passwd* entry for uid 0. Under nss_wrapper (for Ganesha)
+    // or extrausers this makes getpwuid_r(0) succeed for uid2grp paths on machine
+    // principals (host/...). Without it, "getpwuid_r for uid 0 failed, error 2" occurs
+    // on cold first access before any machine principal has been materialized.
+    // We add a canonical "root" line (name root, uid 0) in addition to any client-host
+    // aliases that also map to 0.
+    if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
+        passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
+    }
+
+    // Write passwd atomically
+    {
+        let tmp = Path::new(NSS_PASSWD_PATH).with_extension("tmp");
+        let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+        let mut w = BufWriter::new(f);
+        // Helpful header (nss_wrapper ignores comments? but # is conventional and harmless)
+        writeln!(w, "# nfs-klldap-idhelper nss_wrapper passwd (materialized)")?;
+        for l in &passwd_lines {
+            writeln!(w, "{}", l)?;
+        }
+        fs::rename(tmp, NSS_PASSWD_PATH)?;
+    }
+
+    // Write group atomically
+    {
+        let tmp = Path::new(NSS_GROUP_PATH).with_extension("tmp");
+        let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+        let mut w = BufWriter::new(f);
+        writeln!(w, "# nfs-klldap-idhelper nss_wrapper group (materialized)")?;
+        for l in &group_lines {
+            writeln!(w, "{}", l)?;
+        }
+        fs::rename(tmp, NSS_GROUP_PATH)?;
+    }
+
+    dlog!(
+        "nss_wrapper materialized passwd={} entries group={} entries",
+        passwd_lines.len(),
+        group_lines.len()
+    );
+
+    // --- Also write the same machine/user mappings into extrausers (supplemental) ---
+    // This is the preferred path for most deployments: extrausers sits between
+    // files and sss in nsswitch, so machines get 0 while real LDAP users resolve
+    // normally via sss even if the idhelper has never seen that user principal.
+    {
+        // Ensure dir (harmless if using the nss_wrapper paths under /var/lib/nfs-klldap too)
+        if let Some(p) = Path::new(EXTRAUSERS_PASSWD).parent() {
+            let _ = fs::create_dir_all(p);
+        }
+        // passwd
+        {
+            let tmp = Path::new(EXTRAUSERS_PASSWD).with_extension("tmp");
+            let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+            let mut w = BufWriter::new(f);
+            writeln!(w, "# nfs-klldap-idhelper extrausers (machine overrides + seen users)")?;
+            for l in &passwd_lines {
+                writeln!(w, "{}", l)?;
+            }
+            fs::rename(tmp, EXTRAUSERS_PASSWD)?;
+        }
+        // group
+        {
+            let tmp = Path::new(EXTRAUSERS_GROUP).with_extension("tmp");
+            let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+            let mut w = BufWriter::new(f);
+            writeln!(w, "# nfs-klldap-idhelper extrausers group")?;
+            for l in &group_lines {
+                writeln!(w, "{}", l)?;
+            }
+            fs::rename(tmp, EXTRAUSERS_GROUP)?;
+        }
+    }
+
+    Ok(())
+}

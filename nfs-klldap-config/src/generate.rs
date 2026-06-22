@@ -341,13 +341,7 @@ access_provider = {access}"#,
         out.push_str(&format!("\nldap_user_fullname = {}", v.trim()));
     }
 
-    // Advanced krb5 knobs
-    if let Some(v) = s.krb5_server.as_ref().filter(|v| !v.trim().is_empty()) {
-        out.push_str(&format!("\nkrb5_server = {}", v.trim()));
-    }
-    if let Some(v) = s.krb5_kpasswd.as_ref().filter(|v| !v.trim().is_empty()) {
-        out.push_str(&format!("\nkrb5_kpasswd = {}", v.trim()));
-    }
+    // Advanced krb5 knobs (krb5_server/krb5_kpasswd emitted above with auto-derived defaults)
     if let Some(v) = s.krb5_validate {
         out.push_str(&format!(
             "\nkrb5_validate = {}",

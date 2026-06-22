@@ -3,13 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::constants::{
-    DEFAULT_GROUP_GID_ATTR, DEFAULT_GROUP_NAME_ATTR, DEFAULT_GROUP_OBJECT_CLASS,
-    DEFAULT_USER_FULLNAME_ATTR, DEFAULT_USER_GID_ATTR, DEFAULT_USER_HOME_ATTR,
-    DEFAULT_USER_NAME_ATTR, DEFAULT_USER_OBJECT_CLASS, DEFAULT_USER_PRINCIPAL_ATTR,
-    DEFAULT_USER_SHELL_ATTR, DEFAULT_USER_UID_ATTR,
-};
-
 /// Top-level config (nfs-klldap.conf)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NfsKlldapConfig {
@@ -125,168 +118,21 @@ pub struct SssdSection {
     pub entry_negative_timeout: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PosixAttributeMapping {
-    pub user_object_class: String,
-    pub group_object_class: String,
-    pub user_name: String,
-    pub user_uid_number: String,
-    pub user_gid_number: String,
-    pub user_home_directory: String,
-    pub user_shell: String,
-    pub user_full_name: String,
-    pub group_name: String,
-    pub group_gid_number: String,
-    pub group_member: String,
-    /// Attribute for the full Kerberos principal (e.g. "krbPrincipalName").
-    /// Used for direct lookup when resolving full "user@REALM" principals.
-    pub user_principal_name: String,
-}
+pub use nfs_klldap_identity::PosixAttributeMapping;
 
 /// Resolves POSIX attribute names from [sssd] overrides (or built-in defaults).
 pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapping {
-    let user_obj = sssd
-        .ldap_user_object_class
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| DEFAULT_USER_OBJECT_CLASS.to_string());
-
-    let group_obj = sssd
-        .ldap_group_object_class
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| DEFAULT_GROUP_OBJECT_CLASS.to_string());
-
-    let u_name = sssd
-        .ldap_user_name
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| DEFAULT_USER_NAME_ATTR.to_string());
-
-    let u_uid = sssd
-        .ldap_user_uid_number
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| DEFAULT_USER_UID_ATTR.to_string());
-
-    let u_gid = sssd
-        .ldap_user_gid_number
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| DEFAULT_USER_GID_ATTR.to_string());
-
-    let u_home = sssd
-        .ldap_user_home_directory
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| DEFAULT_USER_HOME_ATTR.to_string());
-
-    let u_shell = sssd
-        .ldap_user_shell
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| DEFAULT_USER_SHELL_ATTR.to_string());
-
-    let u_full = sssd
-        .ldap_user_fullname
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| DEFAULT_USER_FULLNAME_ATTR.to_string());
-
-    let g_name = sssd
-        .ldap_group_name
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| DEFAULT_GROUP_NAME_ATTR.to_string());
-
-    let g_gid = sssd
-        .ldap_group_gid_number
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| DEFAULT_GROUP_GID_ATTR.to_string());
-
-    // For KLLDAP (when using the recommended ignored attributes feature, which
-    // is active by default), we prefer the modern "member" attribute (DNs) over
-    // the legacy "memberUid" (which KLLDAP does not synthesize by default).
-    // This works excellently with ldap_schema = rfc2307bis.
-    // Users can still force the old behavior by setting ldap_group_member explicitly
-    // or by disabling kllldap_ignored_attributes.
-    let kllldap_mode = sssd.kllldap_ignored_attributes.unwrap_or(true);
-
-    let g_member = sssd
-        .ldap_group_member
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| {
-            if kllldap_mode {
-                crate::constants::DEFAULT_GROUP_MEMBER_ATTR_KLLDAP.to_string()
-            } else {
-                crate::constants::DEFAULT_GROUP_MEMBER_ATTR_LEGACY.to_string()
-            }
-        });
-
-    let u_principal = sssd
-        .ldap_user_principal_name
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| DEFAULT_USER_PRINCIPAL_ATTR.to_string());
-
-    PosixAttributeMapping {
-        user_object_class: user_obj,
-        group_object_class: group_obj,
-        user_name: u_name,
-        user_uid_number: u_uid,
-        user_gid_number: u_gid,
-        user_home_directory: u_home,
-        user_shell: u_shell,
-        user_full_name: u_full,
-        group_name: g_name,
-        group_gid_number: g_gid,
-        group_member: g_member,
-        user_principal_name: u_principal,
-    }
+    nfs_klldap_identity::resolve_posix_attribute_mapping(&crate::idmap::posix_mapping_input_from_sssd(
+        sssd,
+    ))
 }
 
 /// Effective user/group search bases (Subtree) from [sssd] overrides or realm-derived defaults.
 pub fn effective_ldap_search_bases(sssd: &SssdSection, realm: &str) -> (String, String) {
-    // Main search base (usually dc=... or explicit ldap_search_base).
-    // When no specific user/group base is given we use this directly.
-    // Combined with Scope::Subtree in the resolver (and sssd defaults) this
-    // discovers users/groups in any nesting, e.g. under ou=users/testing or
-    // ou=people/anything, without requiring the admin to guess the exact ou.
-    let search_base = sssd
-        .ldap_search_base
-        .clone()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| format!("dc={}", realm.to_lowercase().replace('.', ",dc=")));
-
-    let user_base = sssd
-        .ldap_user_search_base
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or(&search_base)
-        .to_string();
-
-    let group_base = sssd
-        .ldap_group_search_base
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or(&search_base)
-        .to_string();
-
-    (user_base, group_base)
+    nfs_klldap_identity::effective_ldap_search_bases(
+        &crate::idmap::search_bases_input_from_sssd(sssd),
+        realm,
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

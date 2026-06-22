@@ -1,0 +1,11 @@
+[package]
+name = "nfs-klldap-identity"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Minimal shared LDAP + Kerberos identity resolution for nfs-klldap-host (Ganesha 9.6 hybrid principals)"
+
+[dependencies]
+ldap3 = { workspace = true, features = ["sync", "tls-rustls-ring"] }

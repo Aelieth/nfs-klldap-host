@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "nfs-klldap-identity",
     "nfs-klldap-config",
     "nfs-klldap-ui",
 ]

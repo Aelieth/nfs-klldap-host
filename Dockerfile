@@ -23,18 +23,40 @@ RUN cargo install cargo-chef --locked
 FROM chef AS planner
 WORKDIR /build
 COPY --chown=nfs:nfs Cargo.toml Cargo.lock ./
+COPY --chown=nfs:nfs nfs-klldap-identity/Cargo.toml ./nfs-klldap-identity/
 COPY --chown=nfs:nfs nfs-klldap-config/Cargo.toml ./nfs-klldap-config/
 COPY --chown=nfs:nfs nfs-klldap-ui/Cargo.toml ./nfs-klldap-ui/
+# cargo metadata (used by cargo-chef) requires every manifest target path to exist.
+RUN mkdir -p nfs-klldap-identity/src \
+        nfs-klldap-config/src/bin/idhelper \
+        nfs-klldap-ui/src && \
+    printf '%s\n' 'pub fn _chef_dummy() {}' > nfs-klldap-identity/src/lib.rs && \
+    printf '%s\n' 'pub fn _chef_dummy() {}' > nfs-klldap-config/src/lib.rs && \
+    printf '%s\n' 'fn main() {}' > nfs-klldap-config/src/main.rs && \
+    printf '%s\n' 'fn main() {}' > nfs-klldap-config/src/bin/nfs_klldap_startup.rs && \
+    printf '%s\n' 'fn main() {}' > nfs-klldap-config/src/bin/idhelper/main.rs && \
+    printf '%s\n' 'fn main() {}' > nfs-klldap-ui/src/main.rs
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 COPY --from=planner --chown=nfs:nfs /build/recipe.json /build/recipe.json
 WORKDIR /build
 COPY --chown=nfs:nfs Cargo.toml Cargo.lock ./
+COPY --chown=nfs:nfs nfs-klldap-identity/Cargo.toml ./nfs-klldap-identity/
 COPY --chown=nfs:nfs nfs-klldap-config/Cargo.toml ./nfs-klldap-config/
 COPY --chown=nfs:nfs nfs-klldap-ui/Cargo.toml ./nfs-klldap-ui/
+RUN mkdir -p nfs-klldap-identity/src \
+        nfs-klldap-config/src/bin/idhelper \
+        nfs-klldap-ui/src && \
+    printf '%s\n' 'pub fn _chef_dummy() {}' > nfs-klldap-identity/src/lib.rs && \
+    printf '%s\n' 'pub fn _chef_dummy() {}' > nfs-klldap-config/src/lib.rs && \
+    printf '%s\n' 'fn main() {}' > nfs-klldap-config/src/main.rs && \
+    printf '%s\n' 'fn main() {}' > nfs-klldap-config/src/bin/nfs_klldap_startup.rs && \
+    printf '%s\n' 'fn main() {}' > nfs-klldap-config/src/bin/idhelper/main.rs && \
+    printf '%s\n' 'fn main() {}' > nfs-klldap-ui/src/main.rs
 RUN cargo chef cook --release --recipe-path recipe.json
 
+COPY --chown=nfs:nfs nfs-klldap-identity /build/nfs-klldap-identity
 COPY --chown=nfs:nfs nfs-klldap-config /build/nfs-klldap-config
 COPY --chown=nfs:nfs nfs-klldap-ui /build/nfs-klldap-ui
 

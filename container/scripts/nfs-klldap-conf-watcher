@@ -44,14 +44,6 @@ while true; do
                 log "ERROR: Generator failed for $CONFIG_PATH (see above for details from the binary)"
             fi
         fi
-
-        # Ganesha-ctl / pkill will be handled inside the supervisor's SIGHUP handler.
-        # We still give ganesha an extra prod in case the supervisor path is slow.
-        if command -v /usr/local/bin/ganesha-ctl >/dev/null 2>&1; then
-            /usr/local/bin/ganesha-ctl reload || true
-        else
-            pkill -HUP ganesha.nfsd 2>/dev/null || true
-        fi
     else
         log "inotifywait error, retrying in 3s..."
         sleep 3

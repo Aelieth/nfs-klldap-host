@@ -1,0 +1,817 @@
+//! Sync LDAP-backed ID resolution (idhelper + shared UI fallback path).
+
+use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use crate::constants::IDENTITY_CACHE_TTL_SECS;
+use crate::ldap::filter::escape_ldap_filter;
+use crate::ldap::posix::{
+    effective_ldap_search_bases, resolve_posix_attribute_mapping, LdapSearchBasesInput,
+    PosixAttributeMapping, PosixMappingInput,
+};
+
+const IDENTITY_CACHE_TTL: Duration = Duration::from_secs(IDENTITY_CACHE_TTL_SECS);
+
+/// Inputs for constructing an IdLdapResolver without TOML/serde dependencies.
+#[derive(Debug, Clone, Default)]
+pub struct LdapResolverInputs {
+    pub ldap_uri: String,
+    pub realm: String,
+    pub search_bases: LdapSearchBasesInput,
+    pub posix_mapping: PosixMappingInput,
+    pub ldap_tls_reqcert: Option<String>,
+    pub ldap_id_use_start_tls: Option<bool>,
+}
+
+/// Small sync resolver used by nfs-klldap-idhelper (and diagnostics).
+pub struct IdLdapResolver {
+    ldap_uri: String,
+    user_base: String,
+    group_base: String,
+    posix_attributes: PosixAttributeMapping,
+    no_tls_verify: bool,
+    start_tls: bool,
+
+    user_cache: Mutex<HashMap<String, CachedUser>>,
+    group_cache: Mutex<HashMap<String, CachedGroup>>,
+    user_by_uid_cache: Mutex<HashMap<i32, CachedUser>>,
+    group_by_gid_cache: Mutex<HashMap<i32, CachedGroup>>,
+
+    cache_hits: AtomicU64,
+    cache_misses: AtomicU64,
+}
+
+impl std::fmt::Debug for IdLdapResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdLdapResolver")
+            .field("ldap_uri", &self.ldap_uri)
+            .field("user_base", &self.user_base)
+            .field("group_base", &self.group_base)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedUser {
+    id: String,
+    uid_number: Option<i32>,
+    primary_gid: Option<i32>,
+    display_name: String,
+    fetched_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct CachedGroup {
+    id: String,
+    gid_number: Option<i32>,
+    display_name: String,
+    fetched_at: Instant,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IdMapSnapshot {
+    pub users: HashMap<String, PosixUserEntry>,
+    pub groups: HashMap<String, PosixGroupEntry>,
+    pub by_uid: HashMap<i32, String>,
+    pub by_gid: HashMap<i32, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PosixUserEntry {
+    pub uid: i32,
+    pub gid: i32,
+    pub display: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PosixGroupEntry {
+    pub gid: i32,
+    pub display: String,
+}
+
+impl IdLdapResolver {
+    pub fn new(
+        ldap_uri: &str,
+        user_base: &str,
+        group_base: &str,
+        posix_attributes: PosixAttributeMapping,
+        no_tls_verify: bool,
+        start_tls: bool,
+    ) -> Self {
+        Self {
+            ldap_uri: ldap_uri.to_string(),
+            user_base: user_base.to_string(),
+            group_base: group_base.to_string(),
+            posix_attributes,
+            no_tls_verify,
+            start_tls,
+            user_cache: Mutex::new(HashMap::new()),
+            group_cache: Mutex::new(HashMap::new()),
+            user_by_uid_cache: Mutex::new(HashMap::new()),
+            group_by_gid_cache: Mutex::new(HashMap::new()),
+            cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
+        }
+    }
+
+    pub fn from_inputs(inputs: &LdapResolverInputs) -> Self {
+        let (user_base, group_base) =
+            effective_ldap_search_bases(&inputs.search_bases, &inputs.realm);
+        let attrs = resolve_posix_attribute_mapping(&inputs.posix_mapping);
+
+        let no_tls_verify = inputs
+            .ldap_tls_reqcert
+            .as_deref()
+            .map(|v| v.eq_ignore_ascii_case("never"))
+            .unwrap_or_else(|| inputs.ldap_uri.starts_with("ldaps://"));
+
+        let start_tls = inputs.ldap_id_use_start_tls.unwrap_or(false);
+
+        Self::new(
+            &inputs.ldap_uri,
+            &user_base,
+            &group_base,
+            attrs,
+            no_tls_verify,
+            start_tls,
+        )
+    }
+
+    pub fn user_base(&self) -> &str {
+        &self.user_base
+    }
+
+    pub fn posix_attributes(&self) -> &PosixAttributeMapping {
+        &self.posix_attributes
+    }
+
+    fn build_conn_settings(&self) -> LdapConnSettings {
+        let mut s = LdapConnSettings::new();
+        if self.start_tls {
+            s = s.set_starttls(true);
+        }
+        if self.no_tls_verify {
+            s = s.set_no_tls_verify(true);
+        }
+        s
+    }
+
+    fn evict_expired(&self) {
+        let now = Instant::now();
+        self.user_cache
+            .lock()
+            .unwrap()
+            .retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
+        self.group_cache
+            .lock()
+            .unwrap()
+            .retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
+        self.user_by_uid_cache
+            .lock()
+            .unwrap()
+            .retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
+        self.group_by_gid_cache
+            .lock()
+            .unwrap()
+            .retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
+    }
+
+    fn extract_first_attr(se: &SearchEntry, name: &str) -> Option<String> {
+        se.attrs
+            .get(name)
+            .and_then(|v| v.first().cloned())
+            .or_else(|| {
+                se.attrs
+                    .get(&name.to_lowercase())
+                    .and_then(|v| v.first().cloned())
+            })
+    }
+
+    fn extract_display_name(se: &SearchEntry, full_name_attr: &str, fallback: &str) -> String {
+        Self::extract_first_attr(se, full_name_attr)
+            .or_else(|| Self::extract_first_attr(se, "displayName"))
+            .or_else(|| Self::extract_first_attr(se, "cn"))
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
+    fn dc_base_from(&self, base: &str) -> String {
+        if let Some(pos) = base.to_ascii_lowercase().find("dc=") {
+            base[pos..].to_string()
+        } else {
+            base.to_string()
+        }
+    }
+
+    fn service_search(
+        &self,
+        base: &str,
+        filter: &str,
+        attrs: Vec<String>,
+        bind_dn: &str,
+        bind_pw: &str,
+    ) -> Result<Vec<SearchEntry>, String> {
+        let uri = self.ldap_uri.clone();
+        let settings = self.build_conn_settings();
+        let base = base.to_string();
+        let filter = filter.to_string();
+        let attrs = attrs.clone();
+        let dn = bind_dn.to_string();
+        let pw = bind_pw.to_string();
+
+        for attempt in 0..3 {
+            let uri2 = uri.clone();
+            let settings2 = settings.clone();
+            let base2 = base.clone();
+            let filter2 = filter.clone();
+            let attrs2 = attrs.clone();
+            let dn2 = dn.clone();
+            let pw2 = pw.clone();
+
+            let res = std::thread::spawn(move || {
+                let mut ldap = LdapConn::with_settings(settings2, &uri2)
+                    .map_err(|e| format!("connect: {}", e))?;
+
+                let op = (|| -> Result<Vec<SearchEntry>, String> {
+                    ldap.simple_bind(&dn2, &pw2)
+                        .map_err(|e| format!("bind: {}", e))?
+                        .success()
+                        .map_err(|e| format!("bind success: {:?}", e))?;
+
+                    let (rs, _res) = ldap
+                        .search(&base2, Scope::Subtree, &filter2, attrs2)
+                        .map_err(|e| format!("search: {}", e))?
+                        .success()
+                        .map_err(|e| format!("search success: {:?}", e))?;
+
+                    Ok(rs.into_iter().map(SearchEntry::construct).collect())
+                })();
+
+                let _ = ldap.unbind();
+                op
+            })
+            .join();
+
+            match res {
+                Ok(Ok(entries)) => return Ok(entries),
+                Ok(Err(e)) => {
+                    if attempt == 2 {
+                        return Err(e);
+                    }
+                    std::thread::sleep(Duration::from_millis(200 * (attempt + 1) as u64));
+                }
+                Err(e) => {
+                    if attempt == 2 {
+                        return Err(format!("join: {:?}", e));
+                    }
+                    std::thread::sleep(Duration::from_millis(200 * (attempt + 1) as u64));
+                }
+            }
+        }
+        Err("exhausted retries".into())
+    }
+
+    pub fn resolve_user(
+        &self,
+        name: &str,
+        bind_dn: &str,
+        bind_pw: &str,
+    ) -> Option<(i32, Option<i32>, String)> {
+        self.evict_expired();
+        if let Some(hit) = self.user_cache.lock().unwrap().get(name).cloned() {
+            if let Some(uid) = hit.uid_number {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                return Some((uid, hit.primary_gid, hit.display_name.clone()));
+            }
+        }
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+
+        let uid_attr = self.posix_attributes.user_uid_number.clone();
+        let gid_attr = self.posix_attributes.user_gid_number.clone();
+        let name_attr = self.posix_attributes.user_name.clone();
+        let obj = self.posix_attributes.user_object_class.clone();
+        let full_attr = self.posix_attributes.user_full_name.clone();
+        let principal_attr = self.posix_attributes.user_principal_name.clone();
+
+        let name_filter = format!(
+            "(&(objectClass={})({}={}))",
+            obj,
+            name_attr,
+            escape_ldap_filter(name)
+        );
+        let attrs: Vec<String> = vec![
+            name_attr.clone(),
+            uid_attr.clone(),
+            gid_attr.clone(),
+            "cn".into(),
+            "displayName".into(),
+            full_attr.clone(),
+            principal_attr.clone(),
+        ];
+
+        let bases = {
+            let mut v = vec![self.user_base.clone()];
+            let dc = self.dc_base_from(&self.user_base);
+            if dc != self.user_base {
+                v.push(dc);
+            }
+            v
+        };
+
+        for base in &bases {
+            if let Ok(entries) = self.service_search(base, &name_filter, attrs.clone(), bind_dn, bind_pw)
+            {
+                for se in entries {
+                    let display = Self::extract_display_name(&se, &full_attr, name);
+                    if let Some(uid_str) = Self::extract_first_attr(&se, &uid_attr) {
+                        if let Ok(u) = uid_str.parse::<i32>() {
+                            let g = Self::extract_first_attr(&se, &gid_attr)
+                                .and_then(|s| s.trim().parse::<i32>().ok());
+                            let user = CachedUser {
+                                id: name.to_string(),
+                                uid_number: Some(u),
+                                primary_gid: g,
+                                display_name: display.clone(),
+                                fetched_at: Instant::now(),
+                            };
+                            self.user_cache
+                                .lock()
+                                .unwrap()
+                                .insert(name.to_string(), user.clone());
+                            if let Some(uid) = user.uid_number {
+                                self.user_by_uid_cache.lock().unwrap().insert(uid, user);
+                            }
+                            return Some((u, g, display));
+                        }
+                    }
+                }
+            }
+        }
+
+        if name.contains('@') {
+            let p_filter = format!(
+                "(&(objectClass={})({}={}))",
+                obj,
+                principal_attr,
+                escape_ldap_filter(name)
+            );
+            for base in &bases {
+                if let Ok(entries) =
+                    self.service_search(base, &p_filter, attrs.clone(), bind_dn, bind_pw)
+                {
+                    for se in entries {
+                        let display = Self::extract_display_name(&se, &full_attr, name);
+                        if let Some(uid_str) = Self::extract_first_attr(&se, &uid_attr) {
+                            if let Ok(u) = uid_str.parse::<i32>() {
+                                let g = Self::extract_first_attr(&se, &gid_attr)
+                                    .and_then(|s| s.trim().parse::<i32>().ok());
+                                let short = name.split('@').next().unwrap_or(name).to_string();
+                                let user = CachedUser {
+                                    id: short.clone(),
+                                    uid_number: Some(u),
+                                    primary_gid: g,
+                                    display_name: display.clone(),
+                                    fetched_at: Instant::now(),
+                                };
+                                self.user_cache
+                                    .lock()
+                                    .unwrap()
+                                    .insert(short.clone(), user.clone());
+                                if let Some(uid) = user.uid_number {
+                                    self.user_by_uid_cache.lock().unwrap().insert(uid, user);
+                                }
+                                return Some((u, g, display));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn resolve_group(&self, name: &str, bind_dn: &str, bind_pw: &str) -> Option<(i32, String)> {
+        self.evict_expired();
+        if let Some(hit) = self.group_cache.lock().unwrap().get(name).cloned() {
+            if let Some(gid) = hit.gid_number {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                return Some((gid, hit.display_name.clone()));
+            }
+        }
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+
+        let gid_attr = self.posix_attributes.group_gid_number.clone();
+        let name_attr = self.posix_attributes.group_name.clone();
+        let obj = self.posix_attributes.group_object_class.clone();
+
+        let filter = format!(
+            "(&(objectClass={})({}={}))",
+            obj,
+            name_attr,
+            escape_ldap_filter(name)
+        );
+        let attrs: Vec<String> = vec![
+            name_attr.clone(),
+            gid_attr.clone(),
+            "cn".into(),
+            "displayName".into(),
+        ];
+
+        let entries = self
+            .service_search(&self.group_base, &filter, attrs, bind_dn, bind_pw)
+            .ok()?;
+
+        for se in entries {
+            let display = Self::extract_display_name(&se, &name_attr, name);
+            if let Some(gid_str) = Self::extract_first_attr(&se, &gid_attr) {
+                if let Ok(g) = gid_str.parse::<i32>() {
+                    let group = CachedGroup {
+                        id: name.to_string(),
+                        gid_number: Some(g),
+                        display_name: display.clone(),
+                        fetched_at: Instant::now(),
+                    };
+                    self.group_cache
+                        .lock()
+                        .unwrap()
+                        .insert(name.to_string(), group.clone());
+                    if let Some(gid) = group.gid_number {
+                        self.group_by_gid_cache.lock().unwrap().insert(gid, group);
+                    }
+                    return Some((g, display));
+                }
+            }
+        }
+        None
+    }
+
+    pub fn resolve_user_by_uid(
+        &self,
+        uid: i32,
+        bind_dn: &str,
+        bind_pw: &str,
+    ) -> Option<(String, String)> {
+        self.evict_expired();
+        if let Some(hit) = self.user_by_uid_cache.lock().unwrap().get(&uid).cloned() {
+            if hit.uid_number.is_some() {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                return Some((hit.id.clone(), hit.display_name.clone()));
+            }
+        }
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+
+        let uid_attr = self.posix_attributes.user_uid_number.clone();
+        let name_attr = self.posix_attributes.user_name.clone();
+        let obj = self.posix_attributes.user_object_class.clone();
+        let full_attr = self.posix_attributes.user_full_name.clone();
+        let gid_attr = self.posix_attributes.user_gid_number.clone();
+
+        let filter = format!("(&(objectClass={})({}={}))", obj, uid_attr, uid);
+        let attrs: Vec<String> = vec![
+            name_attr.clone(),
+            uid_attr.clone(),
+            gid_attr.clone(),
+            "cn".into(),
+            "displayName".into(),
+            full_attr.clone(),
+        ];
+
+        let entries = self
+            .service_search(&self.user_base, &filter, attrs, bind_dn, bind_pw)
+            .ok()?;
+
+        for se in entries {
+            let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_else(|| uid.to_string());
+            let display = Self::extract_display_name(&se, &full_attr, &id);
+            if let Some(uid_str) = Self::extract_first_attr(&se, &uid_attr) {
+                if let Ok(u) = uid_str.parse::<i32>() {
+                    if u == uid {
+                        let cu = CachedUser {
+                            id: id.clone(),
+                            uid_number: Some(u),
+                            primary_gid: Self::extract_first_attr(&se, &gid_attr)
+                                .and_then(|s| s.trim().parse::<i32>().ok()),
+                            display_name: display.clone(),
+                            fetched_at: Instant::now(),
+                        };
+                        self.user_cache.lock().unwrap().insert(id.clone(), cu.clone());
+                        self.user_by_uid_cache.lock().unwrap().insert(uid, cu);
+                        return Some((id, display));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn resolve_group_by_gid(
+        &self,
+        gid: i32,
+        bind_dn: &str,
+        bind_pw: &str,
+    ) -> Option<(String, String)> {
+        self.evict_expired();
+        if let Some(hit) = self.group_by_gid_cache.lock().unwrap().get(&gid).cloned() {
+            if hit.gid_number.is_some() {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                return Some((hit.id.clone(), hit.display_name.clone()));
+            }
+        }
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+
+        let gid_attr = self.posix_attributes.group_gid_number.clone();
+        let name_attr = self.posix_attributes.group_name.clone();
+        let obj = self.posix_attributes.group_object_class.clone();
+
+        let filter = format!("(&(objectClass={})({}={}))", obj, gid_attr, gid);
+        let attrs: Vec<String> = vec![
+            name_attr.clone(),
+            gid_attr.clone(),
+            "cn".into(),
+            "displayName".into(),
+        ];
+
+        let entries = self
+            .service_search(&self.group_base, &filter, attrs, bind_dn, bind_pw)
+            .ok()?;
+
+        for se in entries {
+            let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_else(|| gid.to_string());
+            let display = Self::extract_display_name(&se, &name_attr, &id);
+            if let Some(gid_str) = Self::extract_first_attr(&se, &gid_attr) {
+                if let Ok(g) = gid_str.parse::<i32>() {
+                    if g == gid {
+                        let cg = CachedGroup {
+                            id: id.clone(),
+                            gid_number: Some(g),
+                            display_name: display.clone(),
+                            fetched_at: Instant::now(),
+                        };
+                        self.group_cache.lock().unwrap().insert(id.clone(), cg.clone());
+                        self.group_by_gid_cache.lock().unwrap().insert(gid, cg);
+                        return Some((id, display));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn cache_stats(&self) -> (u64, u64) {
+        (
+            self.cache_hits.load(Ordering::Relaxed),
+            self.cache_misses.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn load_full_identities(&self, bind_dn: &str, bind_pw: &str) -> usize {
+        self.evict_expired();
+
+        let uid_attr = self.posix_attributes.user_uid_number.clone();
+        let gid_attr = self.posix_attributes.user_gid_number.clone();
+        let name_attr = self.posix_attributes.user_name.clone();
+        let user_obj = self.posix_attributes.user_object_class.clone();
+        let full_attr = self.posix_attributes.user_full_name.clone();
+        let group_gid_attr = self.posix_attributes.group_gid_number.clone();
+        let group_name_attr = self.posix_attributes.group_name.clone();
+        let group_obj = self.posix_attributes.group_object_class.clone();
+        let principal_attr = self.posix_attributes.user_principal_name.clone();
+
+        let user_filter = format!("(objectClass={})", user_obj);
+        let group_filter = format!("(objectClass={})", group_obj);
+
+        let user_attrs: Vec<String> = vec![
+            name_attr.clone(),
+            uid_attr.clone(),
+            gid_attr.clone(),
+            "cn".into(),
+            "displayName".into(),
+            full_attr.clone(),
+        ];
+        let group_attrs: Vec<String> = vec![
+            group_name_attr.clone(),
+            group_gid_attr.clone(),
+            "cn".into(),
+            "displayName".into(),
+        ];
+
+        let mut loaded = 0usize;
+
+        let user_bases = {
+            let mut v = vec![self.user_base.clone()];
+            let dc = self.dc_base_from(&self.user_base);
+            if dc != self.user_base {
+                v.push(dc);
+            }
+            v
+        };
+        for base in &user_bases {
+            if let Ok(entries) =
+                self.service_search(base, &user_filter, user_attrs.clone(), bind_dn, bind_pw)
+            {
+                for se in entries {
+                    let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
+                    if id.is_empty() {
+                        continue;
+                    }
+                    if let Some(uid_str) = Self::extract_first_attr(&se, &uid_attr) {
+                        if let Ok(u) = uid_str.parse::<i32>() {
+                            let g = Self::extract_first_attr(&se, &gid_attr)
+                                .and_then(|s| s.trim().parse::<i32>().ok())
+                                .unwrap_or(u);
+                            let display = Self::extract_display_name(&se, &full_attr, &id);
+                            let cu = CachedUser {
+                                id: id.clone(),
+                                uid_number: Some(u),
+                                primary_gid: Some(g),
+                                display_name: display.clone(),
+                                fetched_at: Instant::now(),
+                            };
+                            self.user_cache.lock().unwrap().insert(id.clone(), cu.clone());
+                            self.user_by_uid_cache.lock().unwrap().insert(u, cu);
+                            loaded += 1;
+
+                            if let Some(pval) = Self::extract_first_attr(&se, &principal_attr) {
+                                if !pval.is_empty() && pval != id {
+                                    let cu2 = CachedUser {
+                                        id: pval.clone(),
+                                        uid_number: Some(u),
+                                        primary_gid: Some(g),
+                                        display_name: display.clone(),
+                                        fetched_at: Instant::now(),
+                                    };
+                                    self.user_cache
+                                        .lock()
+                                        .unwrap()
+                                        .insert(pval.clone(), cu2);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let group_bases = {
+            let mut v = vec![self.group_base.clone()];
+            let dc = self.dc_base_from(&self.group_base);
+            if dc != self.group_base {
+                v.push(dc);
+            }
+            v
+        };
+        for base in &group_bases {
+            if let Ok(entries) =
+                self.service_search(base, &group_filter, group_attrs.clone(), bind_dn, bind_pw)
+            {
+                for se in entries {
+                    let id = Self::extract_first_attr(&se, &group_name_attr).unwrap_or_default();
+                    if id.is_empty() {
+                        continue;
+                    }
+                    if let Some(g_str) = Self::extract_first_attr(&se, &group_gid_attr) {
+                        if let Ok(g) = g_str.parse::<i32>() {
+                            let display = Self::extract_display_name(&se, &group_name_attr, &id);
+                            let cg = CachedGroup {
+                                id: id.clone(),
+                                gid_number: Some(g),
+                                display_name: display.clone(),
+                                fetched_at: Instant::now(),
+                            };
+                            self.group_cache.lock().unwrap().insert(id.clone(), cg.clone());
+                            self.group_by_gid_cache.lock().unwrap().insert(g, cg);
+                        }
+                    }
+                }
+            }
+        }
+
+        loaded
+    }
+
+    pub fn snapshot(&self) -> IdMapSnapshot {
+        self.evict_expired();
+        let mut snap = IdMapSnapshot::default();
+
+        for (name, cu) in self.user_cache.lock().unwrap().iter() {
+            if let Some(uid) = cu.uid_number {
+                let gid = cu.primary_gid.unwrap_or(uid);
+                snap.users.insert(
+                    name.clone(),
+                    PosixUserEntry {
+                        uid,
+                        gid,
+                        display: cu.display_name.clone(),
+                    },
+                );
+                snap.by_uid.insert(uid, name.clone());
+            }
+        }
+        for (name, cg) in self.group_cache.lock().unwrap().iter() {
+            if let Some(gid) = cg.gid_number {
+                snap.groups.insert(
+                    name.clone(),
+                    PosixGroupEntry {
+                        gid,
+                        display: cg.display_name.clone(),
+                    },
+                );
+                snap.by_gid.insert(gid, name.clone());
+            }
+        }
+        snap
+    }
+
+    #[cfg(test)]
+    fn insert_test_user(&self, name: &str, uid: i32, gid: i32, display: &str) {
+        let cu = CachedUser {
+            id: name.to_string(),
+            uid_number: Some(uid),
+            primary_gid: Some(gid),
+            display_name: display.to_string(),
+            fetched_at: Instant::now(),
+        };
+        self.user_cache
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), cu.clone());
+        self.user_by_uid_cache.lock().unwrap().insert(uid, cu);
+    }
+}
+
+/// Best-effort first attribute extraction (handles case variants).
+pub fn extract_first_attr_value(se: &SearchEntry, name: &str) -> Option<String> {
+    IdLdapResolver::extract_first_attr(se, name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::DEFAULT_USER_PRINCIPAL_ATTR;
+
+    #[test]
+    fn resolver_constructs_from_minimal_inputs() {
+        let r = IdLdapResolver::from_inputs(&LdapResolverInputs {
+            ldap_uri: "ldaps://ldap.example:636".into(),
+            realm: "ex.com".into(),
+            search_bases: LdapSearchBasesInput {
+                ldap_user_search_base: Some("ou=people,dc=ex,dc=com".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(r.user_base().contains("people"));
+    }
+
+    #[test]
+    fn snapshot_default_is_empty() {
+        let s = IdMapSnapshot::default();
+        assert!(s.users.is_empty());
+        assert!(s.groups.is_empty());
+    }
+
+    #[test]
+    fn nested_ou_user_base_constructs() {
+        let r = IdLdapResolver::from_inputs(&LdapResolverInputs {
+            ldap_uri: "ldaps://ldap.example:636".into(),
+            realm: "example.com".into(),
+            search_bases: LdapSearchBasesInput {
+                ldap_user_search_base: Some("ou=testing,ou=users,dc=example,dc=com".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(r.user_base().contains("testing"));
+    }
+
+    #[test]
+    fn snapshot_populates_uid_and_gid_from_user_entry() {
+        let r = IdLdapResolver::from_inputs(&LdapResolverInputs {
+            ldap_uri: "ldaps://ldap.example:636".into(),
+            realm: "ex.com".into(),
+            search_bases: LdapSearchBasesInput {
+                ldap_user_search_base: Some("ou=users,dc=ex,dc=com".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        r.insert_test_user("nesteduser", 12345, 12345, "Nested User");
+
+        let snap = r.snapshot();
+        let entry = snap.users.get("nesteduser").expect("nested user in snapshot");
+        assert_eq!(entry.uid, 12345);
+        assert_eq!(entry.gid, 12345);
+    }
+
+    #[test]
+    fn principal_attr_default_in_resolver() {
+        let r = IdLdapResolver::from_inputs(&LdapResolverInputs::default());
+        assert_eq!(
+            r.posix_attributes().user_principal_name,
+            DEFAULT_USER_PRINCIPAL_ATTR
+        );
+    }
+}

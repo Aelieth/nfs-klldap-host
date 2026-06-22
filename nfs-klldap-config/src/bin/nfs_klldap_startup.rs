@@ -19,7 +19,7 @@ use std::time::Duration;
 use nfs_klldap_config::{
     derive_realm_from_uri, extract_host_from_uri, format_nfs_principal_list,
     get_consistent_hostname, is_persistent_config, nfs_keytab_host_matches,
-    resolve_posix_attribute_mapping, ConfigError, NfsKlldapConfig,
+    parse_klist_nfs_hosts, resolve_posix_attribute_mapping, ConfigError, NfsKlldapConfig,
 };
 
 fn main() {
@@ -778,23 +778,7 @@ fn print_keytab_hostname_alignment() {
         }
     };
 
-    // Parse nfs/ principals from klist output
-    let mut kt_hosts: Vec<String> = Vec::new();
-    for line in klist_out.lines() {
-        if line.contains("nfs/") {
-            if let Some(princ) = line.split_whitespace().nth(1) {
-                if let Some(after_slash) = princ.split('/').nth(1) {
-                    let host = after_slash.split('@').next().unwrap_or("");
-                    if !host.is_empty() {
-                        kt_hosts.push(host.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    kt_hosts.sort();
-    kt_hosts.dedup();
+    let kt_hosts = parse_klist_nfs_hosts(&klist_out);
 
     if kt_hosts.is_empty() {
         println!("             WARNING: keytab exists but contains no nfs/* service principals");

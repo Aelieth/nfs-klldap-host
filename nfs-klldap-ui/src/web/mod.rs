@@ -104,6 +104,23 @@ impl AppState {
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|s| s.eq_ignore_ascii_case("https"))
     }
+
+    /// Snapshot of keytab display fields for settings/permission templates.
+    pub fn keytab_display(&self) -> KeytabDisplayContext {
+        KeytabDisplayContext {
+            hostname: self.keytab_hostname.clone(),
+            realm: self.keytab_realm.clone(),
+            alert: self.keytab_alert.lock().unwrap().clone(),
+        }
+    }
+}
+
+/// Keytab hostname/realm/alert bundle passed into settings templates.
+#[derive(Clone, Debug)]
+pub struct KeytabDisplayContext {
+    pub hostname: String,
+    pub realm: String,
+    pub alert: Option<String>,
 }
 
 /// Per-request effective scheme derived from direct_tls + X-Forwarded-* headers.

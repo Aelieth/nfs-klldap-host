@@ -9,7 +9,7 @@ use axum::{
 use serde::Deserialize;
 use std::path::PathBuf;
 
-use super::{get_keytab_info, AppState, require_auth};
+use super::{get_keytab_info, AppState, KeytabDisplayContext, require_auth};
 
 // === Template ===
 
@@ -236,9 +236,7 @@ fn build_settings_template(
     current_user: Option<String>,
     config_path: impl AsRef<std::path::Path>,
     message: Option<String>,
-    keytab_hostname: String,
-    keytab_realm: String,
-    keytab_alert: Option<String>,
+    keytab: KeytabDisplayContext,
 ) -> SettingsTemplate {
     let p = config_path.as_ref();
     let raw_toml = std::fs::read_to_string(p)
@@ -276,10 +274,10 @@ fn build_settings_template(
         raw_toml,
         config_path: p.display().to_string(),
         message,
-        effective_hostname: keytab_hostname.clone(),
-        effective_realm: keytab_realm.clone(),
-        keytab_alert: keytab_alert.clone(),
-        keytab_found_principals: get_keytab_info(&keytab_hostname, &keytab_realm)
+        effective_hostname: keytab.hostname.clone(),
+        effective_realm: keytab.realm.clone(),
+        keytab_alert: keytab.alert.clone(),
+        keytab_found_principals: get_keytab_info(&keytab.hostname, &keytab.realm)
             .found_nfs_principals,
         ldap_uri: cfg.ldap_uri,
         storage_container_root: cfg.storage.container_root.clone(),
@@ -489,20 +487,11 @@ fn make_settings_error_template(
     current_user: Option<String>,
     config_path: impl AsRef<std::path::Path>,
     message: String,
-    keytab_hostname: String,
-    keytab_realm: String,
-    keytab_alert: Option<String>,
+    keytab: KeytabDisplayContext,
 ) -> SettingsTemplate {
     // Always re-read current on-disk state for prefilled structured fields + raw.
     // On structured validation error the file on disk is unchanged.
-    build_settings_template(
-        current_user,
-        config_path,
-        Some(message),
-        keytab_hostname,
-        keytab_realm,
-        keytab_alert,
-    )
+    build_settings_template(current_user, config_path, Some(message), keytab)
 }
 
 fn atomic_write_config(path: &std::path::Path, content: &str) -> Result<(), String> {
@@ -524,19 +513,10 @@ fn make_settings_success_template(
     current_user: Option<String>,
     config_path: impl AsRef<std::path::Path>,
     message: String,
-    keytab_hostname: String,
-    keytab_realm: String,
-    keytab_alert: Option<String>,
+    keytab: KeytabDisplayContext,
 ) -> SettingsTemplate {
     // Re-read after successful write so structured pre-fills reflect the just-saved state.
-    build_settings_template(
-        current_user,
-        config_path,
-        Some(message),
-        keytab_hostname,
-        keytab_realm,
-        keytab_alert,
-    )
+    build_settings_template(current_user, config_path, Some(message), keytab)
 }
 
 fn apply_structured_form_to_toml_doc(
@@ -952,9 +932,7 @@ pub(crate) async fn settings_page(
         Some(user.0),
         &state.config_path,
         None,
-        state.keytab_hostname.clone(),
-        state.keytab_realm.clone(),
-        state.keytab_alert.lock().unwrap().clone(),
+        state.keytab_display(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -987,9 +965,7 @@ pub(crate) async fn settings_save_raw(
         Some(user.0),
         &state.config_path,
         "Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into(),
-        state.keytab_hostname.clone(),
-        state.keytab_realm.clone(),
-        state.keytab_alert.lock().unwrap().clone(),
+        state.keytab_display(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -1014,9 +990,7 @@ pub(crate) async fn settings_save_structured(
             Some(user.0.clone()),
             &state.config_path,
             msg,
-            state.keytab_hostname.clone(),
-            state.keytab_realm.clone(),
-            state.keytab_alert.lock().unwrap().clone(),
+            state.keytab_display(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1034,9 +1008,7 @@ pub(crate) async fn settings_save_structured(
             Some(user.0.clone()),
             &state.config_path,
             msg,
-            state.keytab_hostname.clone(),
-            state.keytab_realm.clone(),
-            state.keytab_alert.lock().unwrap().clone(),
+            state.keytab_display(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1045,9 +1017,7 @@ pub(crate) async fn settings_save_structured(
         Some(user.0),
         &state.config_path,
         "Structured settings saved (shares left untouched in TOML). Container will regenerate configs shortly.".into(),
-        state.keytab_hostname.clone(),
-        state.keytab_realm.clone(),
-        state.keytab_alert.lock().unwrap().clone(),
+        state.keytab_display(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -1075,9 +1045,7 @@ pub(crate) async fn settings_save_shares(
             Some(user.0.clone()),
             &state.config_path,
             msg,
-            state.keytab_hostname.clone(),
-            state.keytab_realm.clone(),
-            state.keytab_alert.lock().unwrap().clone(),
+            state.keytab_display(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1095,9 +1063,7 @@ pub(crate) async fn settings_save_shares(
             Some(user.0.clone()),
             &state.config_path,
             msg,
-            state.keytab_hostname.clone(),
-            state.keytab_realm.clone(),
-            state.keytab_alert.lock().unwrap().clone(),
+            state.keytab_display(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1106,9 +1072,7 @@ pub(crate) async fn settings_save_shares(
         Some(user.0),
         &state.config_path,
         "Shares saved (SSSD and other sections left untouched in TOML). The config watcher (or Restart and apply) will make Ganesha + WebUI see them shortly.".into(),
-        state.keytab_hostname.clone(),
-        state.keytab_realm.clone(),
-        state.keytab_alert.lock().unwrap().clone(),
+        state.keytab_display(),
     );
     Ok(Html(tpl.render().unwrap()))
 }

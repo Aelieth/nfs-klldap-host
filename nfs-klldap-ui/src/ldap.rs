@@ -1,12 +1,12 @@
-//! LdapClient: short-lived ldap3 conns + unbind (KLLDAP/rustls compat).
-//! Shares PosixAttributeMapping + search bases with generator/SSSD.
-//! 10m identity + 2m search caches; memberOf fastpath for admin verify.
+//! LdapClient: async wrapper over shared IdLdapResolver + UI-only LDAP paths.
+//! POSIX uid/gid resolution delegates to nfs-klldap-identity (via nfs-klldap-config).
+//! UI retains: 2m search caches, memberOf admin verify, list autocomplete, DN fetch.
 
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
-use nfs_klldap_config::PosixAttributeMapping;
+use nfs_klldap_config::{escape_ldap_filter, IdLdapResolver, PosixAttributeMapping};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -60,6 +60,9 @@ pub struct LdapClient {
     cache_misses: AtomicU64,
     cache_clears: AtomicU64,
     last_cache_clear: Mutex<Option<Instant>>,
+
+    /// Shared sync resolver (10m identity caches); rebuilt on clear_cache().
+    identity_resolver: Arc<Mutex<IdLdapResolver>>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +136,14 @@ impl LdapClient {
         no_tls_verify: bool,
         start_tls: bool,
     ) -> Self {
+        let identity_resolver = Arc::new(Mutex::new(IdLdapResolver::new(
+            ldap_uri,
+            user_base,
+            group_base,
+            posix_attributes.clone(),
+            no_tls_verify,
+            start_tls,
+        )));
         Self {
             ldap_uri: ldap_uri.to_string(),
             user_base: user_base.to_string(),
@@ -144,7 +155,6 @@ impl LdapClient {
             posix_attributes,
             no_tls_verify,
             start_tls,
-            // caches start empty
             user_cache: Mutex::new(HashMap::new()),
             group_cache: Mutex::new(HashMap::new()),
             user_by_uid_cache: Mutex::new(HashMap::new()),
@@ -157,7 +167,51 @@ impl LdapClient {
             cache_misses: AtomicU64::new(0),
             cache_clears: AtomicU64::new(0),
             last_cache_clear: Mutex::new(None),
+            identity_resolver,
         }
+    }
+
+    fn build_identity_resolver(&self) -> IdLdapResolver {
+        IdLdapResolver::new(
+            &self.ldap_uri,
+            &self.user_base,
+            &self.group_base,
+            self.posix_attributes.clone(),
+            self.no_tls_verify,
+            self.start_tls,
+        )
+    }
+
+    fn service_bind_creds(&self) -> Option<(String, String)> {
+        match (&self.username, &self.password) {
+            (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+            _ => None,
+        }
+    }
+
+    async fn with_identity<T, F>(&self, f: F) -> Option<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&IdLdapResolver, &str, &str) -> Option<T> + Send + 'static,
+    {
+        let (bind_dn, bind_pw) = self.service_bind_creds()?;
+        let inner = Arc::clone(&self.identity_resolver);
+        tokio::task::spawn_blocking(move || {
+            let resolver = inner.lock().unwrap();
+            f(&resolver, &bind_dn, &bind_pw)
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    async fn fetch_entry_dn(&self, base: &str, filter: &str) -> Option<String> {
+        let name_attr = self.posix_attributes.user_name.clone();
+        let entries = self
+            .service_search(base, filter, vec![name_attr])
+            .await
+            .ok()?;
+        entries.into_iter().next().map(|se| se.dn)
     }
 
     // connection settings (sync ldap3)
@@ -339,6 +393,7 @@ impl LdapClient {
         self.recent_group_searches.lock().unwrap().clear();
         *self.last_verified_memberofs.lock().unwrap() = None;
         *self.admin_group_dn.lock().unwrap() = None;
+        *self.identity_resolver.lock().unwrap() = self.build_identity_resolver();
         self.cache_clears.fetch_add(1, Ordering::Relaxed);
         *self.last_cache_clear.lock().unwrap() = Some(Instant::now());
     }
@@ -479,7 +534,25 @@ impl LdapClient {
     }
 
     fn escape_filter_value(s: &str) -> String {
-        nfs_klldap_config::escape_ldap_filter(s)
+        escape_ldap_filter(s)
+    }
+
+    fn user_filter_by_name(&self, name: &str) -> String {
+        format!(
+            "(&(objectClass={})({}={}))",
+            self.posix_attributes.user_object_class,
+            self.posix_attributes.user_name,
+            Self::escape_filter_value(name)
+        )
+    }
+
+    fn group_filter_by_name(&self, name: &str) -> String {
+        format!(
+            "(&(objectClass={})({}={}))",
+            self.posix_attributes.group_object_class,
+            self.posix_attributes.group_name,
+            Self::escape_filter_value(name)
+        )
     }
 
     /// Strip permission-editor display values like `Alice (1000)` → `1000` or `Alice`.
@@ -674,70 +747,40 @@ impl LdapClient {
             }
         }
 
-        let uid_attr = self.posix_attributes.user_uid_number.clone();
-        let name_attr = self.posix_attributes.user_name.clone();
-        let obj = self.posix_attributes.user_object_class.clone();
+        let name_owned = name.to_string();
+        let filter = self.user_filter_by_name(name);
+        let user_base = self.user_base.clone();
+        let resolved = self
+            .with_identity(move |resolver, bind_dn, bind_pw| {
+                resolver.resolve_user(&name_owned, bind_dn, bind_pw)
+            })
+            .await?;
 
-        let filter = format!(
-            "(&(objectClass={})({}={}))",
-            obj,
-            name_attr,
-            Self::escape_filter_value(name)
-        );
-        let full_attr = self.posix_attributes.user_full_name.clone();
-        let attrs: Vec<String> = vec![
-            name_attr.clone(),
-            uid_attr.clone(),
-            "cn".into(),
-            "displayName".into(),
-            full_attr.clone(),
-        ];
+        let (uid, _, display) = resolved;
+        let dn = self
+            .fetch_entry_dn(&user_base, &filter)
+            .await
+            .unwrap_or_default();
 
-        let entries = match self.service_search(&self.user_base, &filter, attrs).await {
-            Ok(e) => e,
-            Err(_) => return None,
+        let user = User {
+            id: name.to_string(),
+            dn,
+            display_name: Some(display.clone()),
+            uid_number: Some(uid),
         };
-
-        for se in entries {
-            let display = Self::extract_display_name(&se, &full_attr, name);
-
-            if let Some(uid_str) = Self::extract_first_attr(&se, &uid_attr) {
-                if let Ok(u) = uid_str.parse::<i32>() {
-                    let user = User {
-                        id: name.to_string(),
-                        dn: se.dn.clone(),
-                        display_name: Some(display.clone()),
-                        uid_number: Some(u),
-                    };
-                    self.cache_put_user(name, &user);
-                    return Some((u, display));
-                }
-            }
-        }
-        None
+        self.cache_put_user(name, &user);
+        Some((uid, display))
     }
 
     pub async fn resolve_user_dn(&self, name: &str) -> Option<String> {
         if let Some(hit) = self.cache_get_user(name) {
-            return Some(hit.dn);
+            if !hit.dn.is_empty() {
+                return Some(hit.dn);
+            }
         }
 
-        let name_attr = self.posix_attributes.user_name.clone();
-        let obj = self.posix_attributes.user_object_class.clone();
-
-        let filter = format!(
-            "(&(objectClass={})({}={}))",
-            obj,
-            name_attr,
-            Self::escape_filter_value(name)
-        );
-
-        let entries = match self.service_search(&self.user_base, &filter, vec![name_attr]).await {
-            Ok(e) => e,
-            Err(_) => return None,
-        };
-
-        entries.into_iter().next().map(|se| se.dn)
+        let filter = self.user_filter_by_name(name);
+        self.fetch_entry_dn(&self.user_base, &filter).await
     }
 
     // list/resolve (Subtree + shared PosixAttributeMapping)
@@ -749,44 +792,29 @@ impl LdapClient {
             }
         }
 
-        let gid_attr = self.posix_attributes.group_gid_number.clone();
-        let name_attr = self.posix_attributes.group_name.clone();
-        let obj = self.posix_attributes.group_object_class.clone();
+        let name_owned = name.to_string();
+        let filter = self.group_filter_by_name(name);
+        let group_base = self.group_base.clone();
+        let resolved = self
+            .with_identity(move |resolver, bind_dn, bind_pw| {
+                resolver.resolve_group(&name_owned, bind_dn, bind_pw)
+            })
+            .await?;
 
-        let filter = format!(
-            "(&(objectClass={})({}={}))",
-            obj,
-            name_attr,
-            Self::escape_filter_value(name)
-        );
-        let attrs: Vec<String> = vec![
-            name_attr.clone(),
-            gid_attr.clone(),
-            "cn".into(),
-            "displayName".into(),
-        ];
+        let (gid, display) = resolved;
+        let dn = self
+            .fetch_entry_dn(&group_base, &filter)
+            .await
+            .unwrap_or_default();
 
-        let entries = self
-            .ldap_search_entries(&self.group_base, &filter, attrs)
-            .await;
-
-        for se in entries {
-            let display = Self::extract_display_name(&se, &name_attr, name);
-
-            if let Some(gid_str) = Self::extract_first_attr(&se, &gid_attr) {
-                if let Ok(g) = gid_str.parse::<i32>() {
-                    let group = Group {
-                        id: name.to_string(),
-                        dn: se.dn.clone(),
-                        display_name: Some(display.clone()),
-                        gid_number: Some(g),
-                    };
-                    self.cache_put_group(name, &group);
-                    return Some((g, display));
-                }
-            }
-        }
-        None
+        let group = Group {
+            id: name.to_string(),
+            dn,
+            display_name: Some(display.clone()),
+            gid_number: Some(gid),
+        };
+        self.cache_put_group(name, &group);
+        Some((gid, display))
     }
 
     /// Reverse lookup: uidNumber → (uid/name, display_name). Uses dedicated 10m cache.
@@ -798,51 +826,32 @@ impl LdapClient {
             }
         }
 
-        let uid_attr = self.posix_attributes.user_uid_number.clone();
-        let name_attr = self.posix_attributes.user_name.clone();
-        let obj = self.posix_attributes.user_object_class.clone();
-        let full_attr = self.posix_attributes.user_full_name.clone();
-
         let filter = format!(
             "(&(objectClass={})({}={}))",
-            obj,
-            uid_attr,
-            uid
+            self.posix_attributes.user_object_class, self.posix_attributes.user_uid_number, uid
         );
-        let attrs: Vec<String> = vec![
-            name_attr.clone(),
-            uid_attr.clone(),
-            "cn".into(),
-            "displayName".into(),
-            full_attr.clone(),
-        ];
+        let user_base = self.user_base.clone();
+        let resolved = self
+            .with_identity(move |resolver, bind_dn, bind_pw| {
+                resolver.resolve_user_by_uid(uid, bind_dn, bind_pw)
+            })
+            .await?;
 
-        let entries = match self.service_search(&self.user_base, &filter, attrs).await {
-            Ok(e) => e,
-            Err(_) => return None,
+        let (id, display) = resolved;
+        let dn = self
+            .fetch_entry_dn(&user_base, &filter)
+            .await
+            .unwrap_or_default();
+
+        let user = User {
+            id: id.clone(),
+            dn,
+            display_name: Some(display.clone()),
+            uid_number: Some(uid),
         };
-
-        for se in entries {
-            let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_else(|| uid.to_string());
-            let display = Self::extract_display_name(&se, &full_attr, &id);
-
-            if let Some(uid_str) = Self::extract_first_attr(&se, &uid_attr) {
-                if let Ok(u) = uid_str.parse::<i32>() {
-                    if u == uid {
-                        let user = User {
-                            id: id.clone(),
-                            dn: se.dn.clone(),
-                            display_name: Some(display.clone()),
-                            uid_number: Some(u),
-                        };
-                        self.cache_put_user(&id, &user);           // forward
-                        self.cache_put_user_by_uid(uid, &user);    // reverse
-                        return Some((id, display));
-                    }
-                }
-            }
-        }
-        None
+        self.cache_put_user(&id, &user);
+        self.cache_put_user_by_uid(uid, &user);
+        Some((id, display))
     }
 
     /// Reverse lookup: gidNumber → (cn/name, display_name). Uses dedicated 10m cache.
@@ -853,48 +862,32 @@ impl LdapClient {
             }
         }
 
-        let gid_attr = self.posix_attributes.group_gid_number.clone();
-        let name_attr = self.posix_attributes.group_name.clone();
-        let obj = self.posix_attributes.group_object_class.clone();
-
         let filter = format!(
             "(&(objectClass={})({}={}))",
-            obj,
-            gid_attr,
-            gid
+            self.posix_attributes.group_object_class, self.posix_attributes.group_gid_number, gid
         );
-        let attrs: Vec<String> = vec![
-            name_attr.clone(),
-            gid_attr.clone(),
-            "cn".into(),
-            "displayName".into(),
-        ];
+        let group_base = self.group_base.clone();
+        let resolved = self
+            .with_identity(move |resolver, bind_dn, bind_pw| {
+                resolver.resolve_group_by_gid(gid, bind_dn, bind_pw)
+            })
+            .await?;
 
-        let entries = self
-            .ldap_search_entries(&self.group_base, &filter, attrs)
-            .await;
+        let (id, display) = resolved;
+        let dn = self
+            .fetch_entry_dn(&group_base, &filter)
+            .await
+            .unwrap_or_default();
 
-        for se in entries {
-            let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_else(|| gid.to_string());
-            let display = Self::extract_display_name(&se, &name_attr, &id);
-
-            if let Some(gid_str) = Self::extract_first_attr(&se, &gid_attr) {
-                if let Ok(g) = gid_str.parse::<i32>() {
-                    if g == gid {
-                        let group = Group {
-                            id: id.clone(),
-                            dn: se.dn.clone(),
-                            display_name: Some(display.clone()),
-                            gid_number: Some(g),
-                        };
-                        self.cache_put_group(&id, &group);
-                        self.cache_put_group_by_gid(gid, &group);
-                        return Some((id, display));
-                    }
-                }
-            }
-        }
-        None
+        let group = Group {
+            id: id.clone(),
+            dn,
+            display_name: Some(display.clone()),
+            gid_number: Some(gid),
+        };
+        self.cache_put_group(&id, &group);
+        self.cache_put_group_by_gid(gid, &group);
+        Some((id, display))
     }
 
     pub async fn list_users(&self, filter: Option<&str>) -> Vec<User> {

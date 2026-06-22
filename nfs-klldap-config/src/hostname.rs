@@ -1,57 +1,10 @@
 //! Two-tier hostname: hostname(1) must match /proc/sys/kernel/hostname after normalization.
 //! Mismatch -> rich diagnostic (used for keytab + cert SANs).
 
-/// Short and FQDN host variants for NFS service principals in the keytab.
-/// When the hostname contains a dot, returns `[short, fqdn]`; otherwise a single entry.
-pub fn nfs_keytab_host_variants(host: &str) -> Vec<String> {
-    let h = host.trim().trim_matches('.');
-    if h.is_empty() {
-        return vec![];
-    }
-    let short = h.split('.').next().unwrap_or(h).to_string();
-    if short.eq_ignore_ascii_case(h) {
-        vec![h.to_string()]
-    } else {
-        vec![short, h.to_string()]
-    }
-}
-
-/// Formats recommended `nfs/<host>@REALM` principals for operator messaging.
-pub fn format_nfs_principal_list(host: &str, realm: &str) -> String {
-    nfs_keytab_host_variants(host)
-        .into_iter()
-        .map(|h| format!("nfs/{}@{}", h, realm))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// True if `keytab_host` (from klist) matches the container hostname (short or FQDN).
-pub fn nfs_keytab_host_matches(keytab_host: &str, container_host: &str) -> bool {
-    let k = keytab_host.trim().to_lowercase();
-    let c = container_host.trim().to_lowercase();
-    if k.is_empty() || c.is_empty() {
-        return false;
-    }
-    if k == c {
-        return true;
-    }
-    let k_short = k.split('.').next().unwrap_or(&k);
-    let c_short = c.split('.').next().unwrap_or(&c);
-    k_short == c_short
-}
-
-/// Returns true for 8-20 hex digits with no dot (typical Docker short container ID).
-pub fn looks_like_docker_default_hostname(h: &str) -> bool {
-    let h = h.trim();
-    if h.contains('.') {
-        return false;
-    }
-    let len = h.len();
-    if !(8..=20).contains(&len) {
-        return false;
-    }
-    h.chars().all(|c| c.is_ascii_hexdigit())
-}
+pub use nfs_klldap_identity::{
+    format_nfs_principal_list, looks_like_docker_default_hostname, nfs_keytab_host_matches,
+    nfs_keytab_host_variants,
+};
 
 use std::process::Command;
 

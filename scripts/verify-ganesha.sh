@@ -92,9 +92,19 @@ else
     echo "  WARN: unexpected idmap keys found in ganesha.conf"
 fi
 
-# Confirm short names for a user + machine are materialized (the nss/extrausers path Ganesha uses)
+# Confirm bulk LDAP seed + machine materialization (nss_passwd is what ganesha.nfsd sees under nss_wrapper)
+if [ -f /var/lib/nfs-klldap/.bulk_seed_done ]; then
+    _bulk_n=$(cat /var/lib/nfs-klldap/.bulk_seed_done 2>/dev/null | tr -d '[:space:]')
+    echo "  OK: idhelper bulk-seed marker present (${_bulk_n} users)"
+else
+    echo "  WARN: bulk-seed marker missing (principal2uid may WARN on first user compound)"
+fi
 if getent passwd testuser1 >/dev/null 2>&1 || grep -q '^testuser1:' /var/lib/extrausers/passwd /var/lib/nfs-klldap/nss_passwd 2>/dev/null; then
     echo "  OK: user short name materialization visible"
+fi
+_REALM=$(awk '/default_realm/ {print $3; exit}' /etc/krb5.conf 2>/dev/null || echo "")
+if [ -n "$_REALM" ] && grep -q '^testuser1:' /var/lib/nfs-klldap/nss_passwd 2>/dev/null; then
+    echo "  OK: testuser1 short name in nss_passwd (libnfsidmap strips principal to this for getpwnam)"
 fi
 if grep -q '^root:' /var/lib/extrausers/passwd /var/lib/nfs-klldap/nss_passwd 2>/dev/null; then
     echo "  OK: root (uid 0 for machines) present in materialized files"

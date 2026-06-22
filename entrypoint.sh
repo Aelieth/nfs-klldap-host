@@ -24,13 +24,10 @@ IDHELPER_BIN="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
 NSS_PASSWD="${NSS_PASSWD:-/var/lib/nfs-klldap/nss_passwd}"
 NSS_GROUP="${NSS_GROUP:-/var/lib/nfs-klldap/nss_group}"
 
-# Path prefix so ganesha.nfsd finds our nfsidmap shim (which is a symlink to
-# nfsidmap-idhelper installed by the Dockerfile). Ganesha's ID MAPPER does
-# `Get uid ... using nfsidmap` for principals like testuser1@REALM.
-# By putting /usr/local/bin first, the literal name 'nfsidmap' resolves to
-# our script that delegates to the idhelper. This is the 9.6/trixie-specific
-# mechanism to give the server the same principal->uid view as clients.
-# Only affects the ganesha.nfsd process.
+# PATH prefix so operator/rpc.idmapd-style nfsidmap binary calls hit our shim.
+# Ganesha 9.6 principal2uid uses in-process libnfsidmap + getpwnam under
+# LD_PRELOAD=nss_wrapper (nss_passwd bulk-seeded by idhelper). The shim does
+# not intercept that path. Only affects ganesha.nfsd PATH for fallback execs.
 GANESHA_PATH_PREFIX="/usr/local/bin"
 # Compute a best-effort path for libnss_wrapper.so on Debian multiarch.
 NSS_WRAPPER_SO="${NSS_WRAPPER_SO:-}"
@@ -349,15 +346,20 @@ main() {
         info "idhelper daemon started (pid $IDHELPER_PID)"
     fi
 
-    info "Waiting for idhelper preload (root + server host principals)..."
-    for _ in $(seq 1 30); do
-        if grep -q '^root:' /var/lib/nfs-klldap/nss_passwd 2>/dev/null || \
-           grep -q '^root:' /var/lib/extrausers/passwd 2>/dev/null; then
-            info "idhelper preload ready (root uid0 present)"
+    info "Waiting for idhelper preload (bulk LDAP users + root + server host principals)..."
+    BULK_SEED_MARKER="/var/lib/nfs-klldap/.bulk_seed_done"
+    for _ in $(seq 1 60); do
+        if [ -f "$BULK_SEED_MARKER" ] && \
+           grep -q '^root:' /var/lib/nfs-klldap/nss_passwd 2>/dev/null; then
+            _n=$(cat "$BULK_SEED_MARKER" 2>/dev/null | tr -d '[:space:]' || echo "?")
+            info "idhelper preload ready (bulk-seeded ${_n} users + root uid0 in nss_passwd)"
             break
         fi
-        sleep 0.1
+        sleep 0.2
     done
+    if [ ! -f "$BULK_SEED_MARKER" ]; then
+        warn "idhelper bulk-seed marker missing; Ganesha may log principal2uid WARN on first user mount"
+    fi
 
     # Ganesha prerequisites in the required order: rpcbind, dbus, wait for socket, then ganesha.
     # rpcbind (tooling/compatibility; Ganesha itself is strict NFSv4+).

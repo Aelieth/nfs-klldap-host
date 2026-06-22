@@ -1,10 +1,11 @@
 #!/bin/bash
 # nfsidmap-idhelper shim for nfs-klldap-host (ganesha 9.6 / Debian trixie specific)
 #
-# Purpose: Make the server perform the *same* principal-to-uid/gid lookup that
-# clients expect (getent + idhelper classification for testuser1@REALM and
-# host/CLIENT@REALM). Ganesha's principal2uid code path execs "nfsidmap" (see
-# ganesha.log: "Get uid for ... using nfsidmap").
+# Purpose: Fallback for the nfsidmap *binary* (operator tooling, rpc.idmapd-style
+# calls). Ganesha 9.6 principal2uid uses in-process libnfsidmap (nfs4_gss_princ_to_ids)
+# and getpwnam under nss_wrapper — NOT this script. User mappings must be bulk-seeded
+# into /var/lib/nfs-klldap/nss_passwd by nfs-klldap-idhelper before Ganesha starts.
+# Log line "Get uid for ... using nfsidmap" labels that libnfsidmap branch.
 #
 # This script (installed as /usr/local/bin/nfsidmap-idhelper) is made visible
 # as the literal name 'nfsidmap' via symlink in the ganesha PATH prefix

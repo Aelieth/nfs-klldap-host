@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
-use nfs_klldap_config::MACHINE_PRINCIPAL_PREFIXES;
+use nfs_klldap_config::{IdMapSnapshot, MACHINE_PRINCIPAL_PREFIXES};
 
 use crate::common::{
     IdCache, PrincipalKind, Resolved, EXTRAUSERS_GROUP, EXTRAUSERS_PASSWD, NSS_GROUP_PATH,
@@ -51,6 +51,51 @@ pub(crate) fn group_line_for(r: &Resolved) -> String {
         let gname = sanitize_for_nss(&r.name);
         format!("{}:x:{}:", gname, r.gid)
     }
+}
+
+/// Seed IdCache from the LDAP bulk snapshot so ganesha.nfsd (nss_wrapper preload) can
+/// resolve user principals on the first principal2uid call via libnfsidmap getpwnam.
+/// Returns the number of distinct users inserted.
+pub(crate) fn seed_cache_and_nss_from_snapshot(
+    snap: &IdMapSnapshot,
+    realm: &str,
+    cache: &mut IdCache,
+) -> usize {
+    let mut seeded = 0usize;
+    let mut seen_short: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for (_uid_i, short_name) in &snap.by_uid {
+        if short_name.contains('/')
+            && MACHINE_PRINCIPAL_PREFIXES
+                .iter()
+                .any(|p| short_name.starts_with(p))
+        {
+            continue;
+        }
+        if !seen_short.insert(short_name.clone()) {
+            continue;
+        }
+        let Some(entry) = snap.users.get(short_name) else {
+            continue;
+        };
+        let uid = entry.uid as u32;
+        let gid = entry.gid as u32;
+        if uid == 0 {
+            continue;
+        }
+        let principal = format!("{}@{}", short_name, realm);
+        cache.insert(Resolved {
+            principal,
+            name: short_name.clone(),
+            uid,
+            gid,
+            kind: PrincipalKind::User,
+            source: "bulk".to_string(),
+        });
+        seeded += 1;
+    }
+
+    seeded
 }
 
 /// Atomically write the nss_wrapper passwd and group files from the current cache.

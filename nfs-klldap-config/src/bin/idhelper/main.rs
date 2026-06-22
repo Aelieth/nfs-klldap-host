@@ -1,7 +1,7 @@
 #![deny(unsafe_code)]
 
 //! nfs-klldap-idhelper
-//! Central fast resolver for ganesha 9.6 (nfsidmap + nss paths).
+//! Central fast resolver for ganesha 9.6 (libnfsidmap getpwnam + nss_wrapper paths).
 
 mod common;
 mod daemon;
@@ -22,7 +22,11 @@ use common::{
 use common::normalize_principal;
 use daemon::run_daemon;
 #[cfg(test)]
-use materialize::{group_line_for, passwd_line_for, sanitize_for_nss};
+use materialize::{
+    group_line_for, passwd_line_for, sanitize_for_nss, seed_cache_and_nss_from_snapshot,
+};
+#[cfg(test)]
+use nfs_klldap_config::{IdMapSnapshot, PosixUserEntry};
 #[cfg(test)]
 use observer::{extract_candidate_principal, looks_like_client_hostname};
 use resolve::resolve_principal;
@@ -361,6 +365,44 @@ mod tests {
         assert!(line.starts_with("alice:x:1005:100:"));
         let gline = group_line_for(c.get("alice@EXAMPLE.COM").unwrap());
         assert!(gline.contains(":100:"));
+    }
+
+    #[test]
+    fn bulk_seed_populates_cache_with_short_and_principal_forms() {
+        let mut snap = IdMapSnapshot::default();
+        snap.users.insert(
+            "testuser1".to_string(),
+            PosixUserEntry {
+                uid: 1001,
+                gid: 1001,
+                display: "Test User".to_string(),
+            },
+        );
+        snap.by_uid.insert(1001, "testuser1".to_string());
+
+        let mut cache = IdCache::default();
+        let n = seed_cache_and_nss_from_snapshot(&snap, "SATOMLIN.COM", &mut cache);
+        assert_eq!(n, 1);
+
+        let r = cache.get("testuser1@SATOMLIN.COM").expect("principal key");
+        assert_eq!(r.name, "testuser1");
+        assert_eq!(r.uid, 1001);
+        assert_eq!(r.gid, 1001);
+        assert_eq!(r.kind, PrincipalKind::User);
+        assert_eq!(r.source, "bulk");
+
+        let short_line = passwd_line_for(r);
+        assert!(short_line.starts_with("testuser1:x:1001:1001:"));
+        let full_line = passwd_line_for(&Resolved {
+            principal: "testuser1@SATOMLIN.COM".into(),
+            name: "testuser1@SATOMLIN.COM".into(),
+            uid: 1001,
+            gid: 1001,
+            kind: PrincipalKind::User,
+            source: "bulk".into(),
+        });
+        // sanitize_for_nss maps '@' to '_' in passwd login names
+        assert!(full_line.starts_with("testuser1_SATOMLIN.COM:x:1001:1001:"));
     }
 
     #[test]

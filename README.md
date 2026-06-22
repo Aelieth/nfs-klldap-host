@@ -202,7 +202,7 @@ See [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md) for the ful
 
 ## Identity & Kerberos (idhelper)
 
-`nfs-klldap-idhelper` classifies Kerberos principals (machine `host/`/`nfs/` vs LDAP users), resolves them to uid/gid via SSSD/getent with structured LDAP fallback (`nfs-klldap-identity`), and materializes decisions for Ganesha via nss_wrapper + extrausers. Ganesha runs with an nfsidmap shim delegating to idhelper so server-side principal→uid mapping matches clients (including Fedora Immutable).
+`nfs-klldap-idhelper` classifies Kerberos principals (machine `host/`/`nfs/` vs LDAP users), resolves them to uid/gid via SSSD/getent with structured LDAP fallback (`nfs-klldap-identity`), and bulk-seeds/materializes decisions into nss_wrapper + extrausers before Ganesha starts. Ganesha 9.6 `principal2uid` uses in-process libnfsidmap (`nfs4_gss_princ_to_ids` → `getpwnam` under `LD_PRELOAD=nss_wrapper`), not the nfsidmap binary; the shim remains for operator/rpc.idmapd-style fallback calls.
 
 Inside the container:
 
@@ -215,7 +215,7 @@ ganesha-ctl id-check
 
 See [docs/ldap-integration.md](docs/ldap-integration.md) for SSSD/POSIX requirements, TLS behavior, idhelper architecture, and verification commands.
 
-Ganesha 9.6 on Debian trixie-backports uses explicit `Read_Access_Check_Policy = pre;` in CLIENT blocks and an nfsidmap shim. The idhelper observer reacts to Ganesha "Could not map principal ... to uid" log lines for self-healing on retries.
+Ganesha 9.6 on Debian trixie-backports uses explicit `Read_Access_Check_Policy = pre;` in CLIENT blocks. At startup the idhelper bulk-seeds all LDAP users into `nss_passwd` so the first krb5 compound avoids `principal2uid` WARN (`err: -2`). The log observer still resolves newly seen principals for later retries.
 
 The container image uses a split-stage strategy (build on Fedora minimal for the Rust binaries; runtime on Debian 13-slim) — see the Dockerfile for package choices.
 

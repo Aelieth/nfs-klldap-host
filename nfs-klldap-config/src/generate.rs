@@ -420,7 +420,8 @@ fn write_krb5_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
 /// nsswitch/GSS-Methods for Ganesha 9.6 trixie + libnfsidmap fallback + client rpc.idmapd.
 /// No Idmap* keys are ever emitted into ganesha.conf (deprecated for 9.x).
 fn write_idmap_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError> {
-    let realm = cfg.effective_realm();
+    // Kerberos principals use uppercase realms; libnfsidmap Local-Realms match is case-sensitive.
+    let realm = cfg.effective_realm().to_ascii_uppercase();
 
     let content = format!(
         r#"# =============================================================================
@@ -428,18 +429,15 @@ fn write_idmap_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError
 # Source: nfs-klldap.conf (edit that file; watcher/SIGHUP regenerates this).
 # Follows [kerberos] realm + [sssd] configuration (posix attrs, search bases,
 # ldap_id_mapping=false, entry caches, nsswitch path) for full stack consistency.
-# Provides the NFSv4 Domain expected by Ganesha 9.6 IDMAPPER (default IdmapConf),
-# the nfsidmap-idhelper shim (for "using nfsidmap" principal resolution), and
-# client rpc.idmapd (Method=sss or nsswitch). The nfs-klldap-idhelper remains
-# authoritative for machine vs user principal classification and uid/gid materialization.
+# Provides the NFSv4 Domain expected by Ganesha 9.6 IDMAPPER (default IdmapConf=/etc/idmapd.conf)
+# and client rpc.idmapd. Ganesha principal2uid uses in-process libnfsidmap (nfs4_gss_princ_to_ids),
+# not the nfsidmap binary; uid/gid come from getpwnam inside ganesha.nfsd under nss_wrapper.
+# The nfs-klldap-idhelper bulk-seeds nss_passwd before Ganesha starts.
 #
 # Kerberos hybrid (user TGT + machine principals) notes (Ganesha 9.6 / trixie):
-# - Local-Realms tells libnfsidmap/nfsidmap that @REALM principals belong to our
-#   NFSv4 domain (so "alice@REALM" and "host/client@REALM" are not treated as
-#   foreign-domain and dropped to nobody).
+# - Local-Realms (uppercase) tells libnfsidmap that @REALM principals belong to our domain.
 # - GSS-Methods covers the GSS-authenticated name path used for Kerberos creds.
-# - Actual uid/gid decisions (especially host/...@REALM -> 0:0) live in the
-#   idhelper + nss_wrapper/extrausers materialization + Pwnam_Implementation=nsswitch.
+# - Actual uid/gid decisions live in idhelper nss_wrapper/extrausers materialization.
 # =============================================================================
 
 [General]
@@ -936,5 +934,42 @@ mod tests {
         // on trixie-backports Ganesha 9.6 (parser rejects it there). It remains only in CLIENT
         // blocks inside the generated export fragments. Match the active assignment form, not comments.
         assert!(!ganesha.contains("Read_Access_Check_Policy ="), "Read_Access_Check_Policy = must not appear in main ganesha.conf (EXPORT_DEFAULTS level)");
+    }
+
+    #[test]
+    fn idmap_conf_uppercases_realm_for_local_realms_match() {
+        let mut cfg = crate::NfsKlldapConfig {
+            ldap_uri: "ldaps://k.example:6360".into(),
+            kerberos: crate::KerberosSection {
+                realm: Some("satomlin.com".into()),
+                ..Default::default()
+            },
+            sssd: crate::SssdSection {
+                ldap_default_bind_dn: "uid=admin,ou=people,dc=satomlin,dc=com".into(),
+                ldap_default_authtok: "sekret".into(),
+                ..Default::default()
+            },
+            shares: vec![crate::Share {
+                name: "data".into(),
+                host_path: "/media/data".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        cfg.validate_and_derive().expect("valid test config");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = crate::GenerationPaths {
+            sssd_conf: tmp.path().join("sssd.conf"),
+            krb5_conf: tmp.path().join("krb5.conf"),
+            ganesha_conf: tmp.path().join("ganesha.conf"),
+            exports_dir: tmp.path().join("exports.d"),
+            idmap_conf: tmp.path().join("idmapd.conf"),
+        };
+        crate::generate_all(&cfg, &paths).expect("generate");
+
+        let idmap = std::fs::read_to_string(&paths.idmap_conf).unwrap();
+        assert!(idmap.contains("Domain = SATOMLIN.COM"));
+        assert!(idmap.contains("Local-Realms = SATOMLIN.COM"));
     }
 }

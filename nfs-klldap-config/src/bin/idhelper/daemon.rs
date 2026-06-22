@@ -12,7 +12,8 @@ use std::time::Duration;
 use crate::common::{
     get_realm, get_server_variants, is_machine_principal, IdCache, CACHE_PATH, SOCKET_PATH,
 };
-use crate::materialize::materialize_nss_wrappers;
+use crate::common::BULK_SEED_MARKER;
+use crate::materialize::{materialize_nss_wrappers, seed_cache_and_nss_from_snapshot};
 use crate::observer::start_ganesha_observer;
 use crate::resolve::{get_or_init_resolver, resolve_principal, ID_RESOLVER};
 
@@ -58,6 +59,23 @@ pub(crate) fn run_daemon() {
     if let Some((r, dn, pw)) = ID_RESOLVER.get().and_then(|o| o.as_ref()) {
         let n = r.load_full_identities(dn, pw);
         eprintln!("[idhelper] bulk-loaded {} users+groups into 10m identity cache", n);
+
+        // Seed nss_wrapper/extrausers with every LDAP user so Ganesha's in-process
+        // libnfsidmap principal2uid path (getpwnam under LD_PRELOAD) succeeds on the
+        // first krb5 compound — the nfsidmap binary shim is not on that code path.
+        let snap = r.snapshot();
+        let mut guard = cache.lock().unwrap();
+        let seeded = seed_cache_and_nss_from_snapshot(&snap, &realm, &mut guard);
+        if let Err(e) = materialize_nss_wrappers(&guard) {
+            eprintln!("[idhelper] WARN: bulk nss materialize failed: {}", e);
+        } else {
+            eprintln!(
+                "[idhelper] bulk-seeded {} users into nss_wrapper (principal2uid/libnfsidmap path)",
+                seeded
+            );
+            let _ = fs::write(BULK_SEED_MARKER, format!("{}\n", seeded));
+        }
+        drop(guard);
     }
 
     // Always auto pre-resolve the *server's own* host principals at cold start.
@@ -81,8 +99,7 @@ pub(crate) fn run_daemon() {
 
     // Optional pre-resolution at startup (for testing or known environments).
     // Set e.g. NFS_KLLDAP_IDHELPER_PRERESOLVE="testuser1@REALM,alice@REALM"
-    // This forces early resolve + materialize so the *first* principal2uid/shim call
-    // for those users sees the mapping (helps the synchronous path before any log line).
+    // Optional extra pre-resolve for known users (bulk seed already covers LDAP users).
     // Operators can use this (via entrypoint compose env) to preload specific LDAP
     // users for zero-delay first access.
     if let Ok(list) = std::env::var("NFS_KLLDAP_IDHELPER_PRERESOLVE") {

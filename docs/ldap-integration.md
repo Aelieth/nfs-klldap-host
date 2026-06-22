@@ -25,6 +25,7 @@ Edit [sssd] in `nfs-klldap.conf`. The generator writes `/etc/sssd/sssd.conf` wit
 | `access_provider` | `permit` | yes |
 | POSIX attribute names | uid, uidNumber, gidNumber, … | yes (overridable per field) |
 | Search bases | `dc=<realm>` (realm-derived) + Subtree scope; explicit `ldap_user_search_base` etc. allowed (e.g. `ou=users,...`) | derived or explicit; always Subtree |
+| Kerberos KDC (krb5_*) | Auto-derived from ldap_uri host + realm (co-located KDC case) | krb5_realm, krb5_server, krb5_kpasswd always emitted (explicit krb5_server/kpasswd override) |
 | `ldap_tls_reqcert` | not set for ldaps | only if set in TOML |
 | `ldap_auth_disable_tls_never_use_in_production` | `true` for `ldap://` only | conditional |
 
@@ -64,7 +65,7 @@ klist -k /etc/krb5.keytab
 - Permission denied with correct IDs → host ownership ≠ LDAP IDs, or SELinux on bind mounts.
 - LDAP/TLS noise → enable KLLDAP ignores; avoid `enumerate=true` with dirsync-style binds.
 
-Client `rpc.idmapd` (Method=sss or nsswitch) still helps pretty `ls` output on NFS clients. The generator now also writes `/etc/idmapd.conf` (Domain = effective realm from [kerberos], Method = nsswitch) directly from the same nfs-klldap.conf + [sssd] info used for sssd.conf and ganesha DomainName. This ensures consistent NFSv4 name-to-id expectations for the nfsidmap shim (ganesha 9.6 "using nfsidmap" path), fallback nfsidmap, and clients. The authoritative live mapping for Kerberos principals remains the nfs-klldap-idhelper (IdLdapResolver + getent + nss_wrapper/extrausers materialization).
+Client `rpc.idmapd` (Method=nsswitch) still helps pretty `ls` output on NFS clients. The generator also writes `/etc/idmapd.conf` (Domain + Local-Realms from the Kerberos realm, Method + GSS-Methods = nsswitch) directly from the same nfs-klldap.conf + [sssd] info used for sssd.conf and ganesha DomainName. In sssd.conf it now auto-derives krb5_realm/krb5_server/krb5_kpasswd (same host as ldap_uri, same realm) — the "kerberos format" of the ldap auto values — for co-located KDC setups. Ganesha krb5* security (default krb5p) works with default auth_provider=ldap (sufficient); these settings make the domain Kerberos-aware for resolution. The authoritative live mapping + machine-vs-user classification for hybrid Kerberos principals remains the nfs-klldap-idhelper (IdLdapResolver + getent + nss_wrapper/extrausers materialization).
 
 ## Machine vs User Principals (Fedora Immutable + host keytabs)
 

@@ -102,6 +102,10 @@ pub struct SssdSection {
     pub krb5_kpasswd: Option<String>,
     pub krb5_validate: Option<bool>,
     pub krb5_store_password_if_offline: Option<bool>,
+    // Note: krb5_realm is always the effective realm (no separate override);
+    // krb5_server + krb5_kpasswd are auto-derived from ldap_uri host in the generator
+    // (with these fields as overrides). This provides the Kerberos equivalent of
+    // the auto ldap_ configuration for co-located LDAP+KDC deployments.
 
     /// Optional attribute holding the Kerberos principal (e.g. krbPrincipalName or userPrincipalName).
     /// When set, the IdLdapResolver will use it for direct principal-form lookups in addition to name match.
@@ -384,9 +388,11 @@ pub struct GenerationPaths {
     pub krb5_conf: PathBuf,
     pub ganesha_conf: PathBuf,
     pub exports_dir: PathBuf,
-    /// Standardized idmap configuration (Domain + Method) derived from kerberos.realm + [sssd] policy.
-    /// Written to the canonical Debian location so Ganesha 9.x (IdmapConf default), nfsidmap shim,
-    /// and rpc.idmapd clients see the same NFSv4 domain as SSSD/ganesha DomainName.
+    /// Standardized idmap configuration (Domain + Local-Realms + Method + GSS-Methods)
+    /// derived from kerberos.realm + [sssd] policy. Written to the canonical Debian location
+    /// so Ganesha 9.x (default IdmapConf=/etc/idmapd.conf), the nfsidmap shim, fallback
+    /// libnfsidmap, and client rpc.idmapd see consistent NFSv4 domain + Kerberos realm
+    /// handling matching DIRECTORY_SERVICES.DomainName.
     pub idmap_conf: PathBuf,
 }
 

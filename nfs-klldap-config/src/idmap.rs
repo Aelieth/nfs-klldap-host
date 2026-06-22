@@ -4,9 +4,10 @@
 //! nfs-klldap-ui/src/ldap.rs, made available to the lightweight idhelper daemon.
 //!
 //! The generated /etc/idmapd.conf (see generate.rs + GenerationPaths) supplies the
-//! standardized Domain (from kerberos.realm / effective_realm) and nsswitch Method
-//! so ganesha's IDMAPPER (via nfsidmap shim) + clients see the same mapping policy
-//! that [sssd] + idhelper already follow. The fast cached resolution (IdLdapResolver
+//! standardized Domain + Local-Realms (from kerberos.realm / effective_realm) and
+//! nsswitch/GSS-Methods so ganesha's IDMAPPER (via nfsidmap shim) + clients see the
+//! same mapping policy (including Kerberos principal realm handling) that [sssd] +
+//! idhelper already follow. The fast cached resolution (IdLdapResolver
 //! 10m identity caches + IdCache) + getent primary path remain in the idhelper.
 //!
 //! Goals (0.8.32 refactor):

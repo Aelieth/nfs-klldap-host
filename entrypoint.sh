@@ -105,8 +105,9 @@ fix_derived_permissions() {
     chown root:root "$KRB5_CONF" 2>/dev/null || true
     chmod 644 "$KRB5_CONF" 2>/dev/null || true
 
-    # idmapd.conf (standardized Domain/Method from nfs-klldap.conf + sssd info)
-    # is consumed by nfsidmap/libnfsidmap (shim fallback) and Ganesha default IdmapConf.
+    # idmapd.conf (standardized Domain + Local-Realms + Method + GSS-Methods from
+    # nfs-klldap.conf + sssd info) is consumed by nfsidmap/libnfsidmap (shim fallback),
+    # Ganesha default IdmapConf, and client rpc.idmapd.
     chown root:root "$IDMAP_CONF" 2>/dev/null || true
     chmod 644 "$IDMAP_CONF" 2>/dev/null || true
 

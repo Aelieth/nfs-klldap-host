@@ -20,7 +20,7 @@ nfs-klldap-config (validate + derive + generate)
         │
         ├── /etc/sssd/sssd.conf   (root:root 0600)
         ├── /etc/krb5.conf
-        ├── /etc/idmapd.conf      (Domain + Method derived from nfs-klldap.conf + [sssd])
+        ├── /etc/idmapd.conf      (Domain + Local-Realms + Method + GSS-Methods derived from nfs-klldap.conf + [sssd])
         └── /etc/ganesha/exports.d/*.conf
         │
         ▼ (inotify / SIGHUP)
@@ -29,7 +29,7 @@ entrypoint (pid 1) → restart/reload daemons
         └── nfs-klldap-ui (9630, HTTPS, root) ──direct──> chown/chmod on bind-mounted host_path trees
 ```
 
-One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, /etc/idmapd.conf (standardized NFSv4 Domain for idhelper/shim/clients), and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. Use `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN strongly suggested).
+One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, /etc/idmapd.conf (standardized NFSv4 Domain + Local-Realms + GSS-Methods for idhelper/shim/clients + Kerberos realm handling), and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. Use `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN strongly suggested).
 
 ## Quick Start
 

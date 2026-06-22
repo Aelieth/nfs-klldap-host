@@ -185,6 +185,11 @@ mod tests {
         assert_eq!(sssd.matches("ldap_pwd_policy = none").count(), 1);
         assert!(sssd.contains("ignored_user_attributes"));
 
+        // Auto-derived Kerberos KDC settings (co-located, same host/realm as ldap + krb5.conf)
+        assert!(sssd.contains("krb5_realm = TEST"));
+        assert!(sssd.contains("krb5_server = kllap.test"));
+        assert!(sssd.contains("krb5_kpasswd = kllap.test"));
+
         let krb = fs::read_to_string(&paths.krb5_conf).unwrap();
         assert!(krb.contains("default_realm = TEST"));
         assert!(

@@ -91,6 +91,13 @@ fn write_sssd_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
 # ldap_group_member={member}, access_provider=permit, ldap_pwd_policy=none
 # kllldap_ignored_attributes={ignores}
 #
+# Kerberos (co-located KDC): krb5_realm + krb5_server + krb5_kpasswd are
+# auto-derived from ldap_uri host (different protocol) + effective realm.
+# This is the "kerberos format" counterpart to the auto ldap_ values.
+# Ganesha krb5* security (krb5p default) works with default auth_provider=ldap
+# (sufficient for id resolution); the krb5_* lines make the domain aware.
+# Explicit krb5_server/krb5_kpasswd in [sssd] override the derived values.
+#
 # ldaps:// without ldap_tls_reqcert: uses system/OpenLDAP TLS defaults — for
 #   self-signed LLDAP/KLLDAP set ldap_tls_reqcert = "never" in nfs-klldap.conf.
 # =============================================================================
@@ -276,6 +283,39 @@ access_provider = {access}"#,
         }
     }
 
+    // Auto-derived Kerberos (KDC) settings for the co-located LDAP+KDC case.
+    // The host is taken from ldap_uri (different protocol/port than LDAP) and
+    // the realm matches the rest of the stack (kerberos.realm / effective_realm).
+    // This gives the sssd [domain] the "kerberos format" equivalent of the
+    // auto-derived ldap values. Explicit [sssd] krb5_* values override.
+    // Ganesha krb5* SecType (krb5p default) still works with auth_provider=ldap
+    // (the default); these lines make the domain properly Kerberos-aware for
+    // resolution alongside the idhelper.
+    let kdc_host = crate::extract_host_from_uri(&cfg.ldap_uri);
+    let realm = cfg.effective_realm();  // safe: called after validate_and_derive
+
+    // krb5_realm: always the effective realm (same as kerberos.realm and krb5.conf).
+    // No separate override field needed in this design (realm is single source).
+    out.push_str(&format!("\nkrb5_realm = {}", realm));
+
+    let krb5_server_val = s
+        .krb5_server
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string())
+        .unwrap_or_else(|| kdc_host.clone());
+
+    out.push_str(&format!("\nkrb5_server = {}", krb5_server_val));
+
+    // kpasswd: auto to same host (common for co-located) unless explicitly set
+    let krb5_kpasswd_val = s
+        .krb5_kpasswd
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string())
+        .unwrap_or_else(|| kdc_host.clone());
+    out.push_str(&format!("\nkrb5_kpasswd = {}", krb5_kpasswd_val));
+
     // Optional fields — only emit when explicitly set
     if let Some(v) = &s.ldap_tls_reqcert {
         if !v.trim().is_empty() {
@@ -378,11 +418,13 @@ fn write_krb5_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
 }
 
 /// Write a standardized /etc/idmapd.conf (or equivalent path) driven by the central
-/// nfs-klldap.conf. Domain is taken from effective_realm() (same source as
+/// nfs-klldap.conf. Domain + Local-Realms taken from effective_realm() (same source as
 /// ganesha DIRECTORY_SERVICES.DomainName and krb5 default_realm). Method = nsswitch
-/// because we use direct POSIX (ldap_id_mapping=false in generated sssd) + our
-/// idhelper for Kerberos principals. Consistent Domain + nsswitch for ganesha 9.6 trixie.
-/// No Idmap* keys are ever emitted into ganesha.conf.
+/// (plus explicit GSS-Methods) because we use direct POSIX (ldap_id_mapping=false in
+/// generated sssd) + our idhelper for Kerberos principals (user TGTs + machine
+/// host/nfs/ principals from client host keytabs). Consistent Domain/Local-Realms +
+/// nsswitch/GSS-Methods for Ganesha 9.6 trixie + libnfsidmap fallback + client rpc.idmapd.
+/// No Idmap* keys are ever emitted into ganesha.conf (deprecated for 9.x).
 fn write_idmap_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError> {
     let realm = cfg.effective_realm();
 
@@ -396,11 +438,20 @@ fn write_idmap_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError
 # the nfsidmap-idhelper shim (for "using nfsidmap" principal resolution), and
 # client rpc.idmapd (Method=sss or nsswitch). The nfs-klldap-idhelper remains
 # authoritative for machine vs user principal classification and uid/gid materialization.
+#
+# Kerberos hybrid (user TGT + machine principals) notes (Ganesha 9.6 / trixie):
+# - Local-Realms tells libnfsidmap/nfsidmap that @REALM principals belong to our
+#   NFSv4 domain (so "alice@REALM" and "host/client@REALM" are not treated as
+#   foreign-domain and dropped to nobody).
+# - GSS-Methods covers the GSS-authenticated name path used for Kerberos creds.
+# - Actual uid/gid decisions (especially host/...@REALM -> 0:0) live in the
+#   idhelper + nss_wrapper/extrausers materialization + Pwnam_Implementation=nsswitch.
 # =============================================================================
 
 [General]
 Verbosity = 0
 Domain = {realm}
+Local-Realms = {realm}
 
 [Mapping]
 Nobody-User = nobody
@@ -408,6 +459,7 @@ Nobody-Group = nogroup
 
 [Translation]
 Method = nsswitch
+GSS-Methods = nsswitch
 "#,
         realm = realm,
     );
@@ -865,7 +917,9 @@ mod tests {
         assert!(idmap.contains("Source: nfs-klldap.conf"));
         assert!(idmap.contains("[sssd]") || idmap.contains("sssd"));
         assert!(idmap.contains("Domain = TEST"));
+        assert!(idmap.contains("Local-Realms = TEST"));
         assert!(idmap.contains("Method = nsswitch"));
+        assert!(idmap.contains("GSS-Methods = nsswitch"));
         assert!(idmap.contains("Nobody-User = nobody"));
         // Ensure we did not pollute ganesha.conf with idmap keys
         let ganesha = std::fs::read_to_string(&paths.ganesha_conf).unwrap_or_default();

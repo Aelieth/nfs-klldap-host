@@ -474,7 +474,12 @@ GSS-Methods = {gss}
 
 fn ganesha_debug_enabled() -> bool {
     std::env::var("GANESHA_DEBUG")
-        .map(|v| v.trim() == "TRUE")
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -507,7 +512,6 @@ fn write_ganesha_main(
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
-    Manage_Gids_Expiration = 600;
 }}
 
 DIRECTORY_SERVICES {{
@@ -515,7 +519,7 @@ DIRECTORY_SERVICES {{
     Pwnam_Implementation = {pwnam};
     # Ganesha 9.6 trixie only. idhelper (not this file) owns principal->uid classification.
     Root_Kerberos_Principal = {root_krb};
-    # Replaces deprecated Manage_Gids_Expiration guidance (keep in sync with NFS_CORE_PARAM).
+    # Ganesha 9.6 trixie: idmapped_* validity belongs here (NFS_CORE_PARAM gids expiry is deprecated).
     idmapped_user_time_validity = 600;
     idmapped_group_time_validity = 600;
 }}
@@ -646,9 +650,9 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             .map(|_| "    Disable_ACL = true;\n")
             .unwrap_or_default();
 
-        // CLIENT block: Protocols=4 + explicit Read_Access_Check_Policy=pre.
-        // Placed only inside CLIENT (inside EXPORT) for parser compatibility on
-        // Ganesha 9.6 Debian trixie-backports (EXPORT_DEFAULTS rejects the key).
+        // CLIENT block: Protocols=4 only. Read_Access_Check_Policy is intentionally
+        // omitted — Ganesha 9.6 trixie-backports rejects it in EXPORT_DEFAULTS and
+        // CLIENT blocks ("Unknown parameter"); the built-in default is pre.
         // Additional CLIENT blocks may be appended manually (not preserved on regen).
         let client_block = format!(
             r#"
@@ -656,13 +660,10 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         Clients = *;
         Access_Type = {access};
         Protocols = 4;
-        # Valid for ganesha 9.6 trixie-backports (manpage enum [pre,post,all]).
-        Read_Access_Check_Policy = {read_access_policy};
     }}
 
 "#,
             access = access,
-            read_access_policy = constants::GANESHA_READ_ACCESS_CHECK_POLICY,
         );
 
         let block = format!(
@@ -768,7 +769,10 @@ mod tests {
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
         assert!(frag.contains("Protocols = 4;"), "CLIENT should explicitly list Protocols = 4 to avoid core/client mismatch warning");
-        assert!(frag.contains("Read_Access_Check_Policy = pre;"), "CLIENT must declare Read_Access_Check_Policy = pre (ganesha 9.6 trixie-backports)");
+        assert!(
+            !frag.contains("Read_Access_Check_Policy"),
+            "Read_Access_Check_Policy must not appear in CLIENT blocks (ganesha 9.6 trixie-backports rejects it)"
+        );
     }
 
     #[test]
@@ -834,7 +838,10 @@ mod tests {
         assert!(frag.contains("SecType = krb5p;"), "default SecType should appear in EXPORT block");
         assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
         assert!(frag.contains("Protocols = 4;"), "CLIENT should explicitly list Protocols = 4 to avoid core/client mismatch warning");
-        assert!(frag.contains("Read_Access_Check_Policy = pre;"), "CLIENT must declare Read_Access_Check_Policy = pre (ganesha 9.6 trixie-backports)");
+        assert!(
+            !frag.contains("Read_Access_Check_Policy"),
+            "Read_Access_Check_Policy must not appear in CLIENT blocks (ganesha 9.6 trixie-backports rejects it)"
+        );
     }
 
     #[test]
@@ -970,7 +977,10 @@ mod tests {
         assert!(frag.contains("SecType = krb5i;"), "EXPORT SecType should be krb5i");
         assert!(!frag.contains("\n    Access_Type ="), "Access_Type must not be at EXPORT level (4-space indent) anymore");
         assert!(frag.contains("Protocols = 4;"), "CLIENT should explicitly list Protocols = 4 to avoid core/client mismatch warning");
-        assert!(frag.contains("Read_Access_Check_Policy = pre;"), "CLIENT must declare Read_Access_Check_Policy = pre (ganesha 9.6 trixie-backports)");
+        assert!(
+            !frag.contains("Read_Access_Check_Policy"),
+            "Read_Access_Check_Policy must not appear in CLIENT blocks (ganesha 9.6 trixie-backports rejects it)"
+        );
     }
 
     #[test]
@@ -1019,10 +1029,18 @@ mod tests {
         let ganesha = std::fs::read_to_string(&paths.ganesha_conf).unwrap_or_default();
         assert!(!ganesha.contains("IdmapConf"));
         assert!(!ganesha.contains("idmapd.conf"));
-        // Read_Access_Check_Policy assignment must be absent from main ganesha.conf (EXPORT_DEFAULTS level)
-        // on trixie-backports Ganesha 9.6 (parser rejects it there). It remains only in CLIENT
-        // blocks inside the generated export fragments. Match the active assignment form, not comments.
-        assert!(!ganesha.contains("Read_Access_Check_Policy ="), "Read_Access_Check_Policy = must not appear in main ganesha.conf (EXPORT_DEFAULTS level)");
+        // Read_Access_Check_Policy is rejected by trixie-backports Ganesha 9.6 everywhere;
+        // rely on the built-in default (pre). Must not appear in main or fragment configs.
+        assert!(
+            !ganesha.contains("Read_Access_Check_Policy ="),
+            "Read_Access_Check_Policy = must not appear in main ganesha.conf"
+        );
+        let frag_path = exports_dir.join("10-data.conf");
+        let frag = std::fs::read_to_string(frag_path).unwrap_or_default();
+        assert!(
+            !frag.contains("Read_Access_Check_Policy"),
+            "Read_Access_Check_Policy must not appear in export fragments"
+        );
     }
 
     #[test]

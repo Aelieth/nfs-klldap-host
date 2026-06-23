@@ -70,10 +70,10 @@ echo "[7] Principal mapping parity + CLIENT policy (getent + id-map-test for gan
 ganesha-ctl id-map-test testuser1 2>/dev/null || echo "  id-map-test not available or failed (non-fatal during early verify)"
 # Quick extra confirmation that generated fragments carry the 9.6 policy (if any fragments exist)
 if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
-    if grep -q 'Read_Access_Check_Policy = pre' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
-        echo "  OK: Read_Access_Check_Policy = pre present in CLIENT block(s)"
+    if grep -q 'Read_Access_Check_Policy' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
+        echo "  WARN: Read_Access_Check_Policy present — trixie-backports Ganesha 9.6 rejects this key (regenerate config)"
     else
-        echo "  (no policy line yet or fragments not generated; will appear after generate)"
+        echo "  OK: Read_Access_Check_Policy omitted (ganesha 9.6 trixie default pre applies)"
     fi
 fi
 # Confirm the nfsidmap shim name is present for ganesha (PATH + /usr/sbin for full path calls)

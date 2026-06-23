@@ -215,8 +215,7 @@ pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
         let tmp = Path::new(NSS_PASSWD_PATH).with_extension("tmp");
         let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
         let mut w = BufWriter::new(f);
-        // Helpful header (nss_wrapper ignores comments? but # is conventional and harmless)
-        writeln!(w, "# nfs-klldap-idhelper nss_wrapper passwd (materialized)")?;
+        // nss_wrapper (Debian trixie) rejects '#' comment lines — emit entries only.
         for l in &passwd_lines {
             writeln!(w, "{}", l)?;
         }
@@ -228,7 +227,6 @@ pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
         let tmp = Path::new(NSS_GROUP_PATH).with_extension("tmp");
         let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
         let mut w = BufWriter::new(f);
-        writeln!(w, "# nfs-klldap-idhelper nss_wrapper group (materialized)")?;
         for l in &group_lines {
             writeln!(w, "{}", l)?;
         }

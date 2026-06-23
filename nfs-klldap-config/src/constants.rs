@@ -13,6 +13,7 @@ pub use nfs_klldap_identity::{
 pub const GANESHA_PROTOCOLS: &str = "4";
 pub const GANESHA_PWNAM_IMPL: &str = "nsswitch";
 pub const GANESHA_ROOT_KRB_PRINCIPALS: &str = "host, nfs";
+/// Ganesha 9.6 trixie-backports default; not emitted (parser rejects the key).
 pub const GANESHA_READ_ACCESS_CHECK_POLICY: &str = "pre";
 pub const GANESHA_DEFAULT_SECTYPE: &str = "krb5p";
 

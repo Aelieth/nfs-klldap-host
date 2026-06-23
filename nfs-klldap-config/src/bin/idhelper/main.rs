@@ -1,4 +1,4 @@
-#![deny(unsafe_code)]
+#![deny(unsafe_code, dead_code)]
 
 //! nfs-klldap-idhelper
 //! Central fast resolver for ganesha 9.6 (libnfsidmap getpwnam + nss_wrapper paths).

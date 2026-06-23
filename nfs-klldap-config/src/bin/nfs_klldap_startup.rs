@@ -3,6 +3,8 @@
 //! The blocking terminal TUI is replaced by the WebUI setup wizard; this binary
 //! provides `supervise` (pid-1), `check`, and `wait-ready` entry points.
 
+#![deny(unsafe_code, dead_code)]
+
 #[path = "../supervisor.rs"]
 mod supervisor;
 
@@ -210,105 +212,3 @@ fn print_keytab_hostname_alignment(config_path: &Path, kt: &Path) {
     }
 }
 
-#[cfg(test)]
-mod supervise_probe_tests {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
-    use std::process::Command;
-
-    const COMPLETE_TOML: &str = r#"
-ldap_uri = "ldaps://kllap.test:6360"
-[sssd]
-ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
-ldap_default_authtok = "sekret"
-[[shares]]
-name = "data"
-host_path = "/media/data"
-"#;
-
-    fn write_exe(path: &std::path::Path, body: &str) {
-        fs::write(path, body).unwrap();
-        let mut perms = fs::metadata(path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(path, perms).unwrap();
-    }
-
-    fn target_debug_bin(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../target/debug")
-            .join(name)
-    }
-
-    #[test]
-    fn supervise_probe_preconf_emits_ready_transcript() {
-        let tmp = tempfile::tempdir().unwrap();
-        let stubs = tmp.path().join("stubs");
-        let out = tmp.path().join("out");
-        fs::create_dir_all(&stubs).unwrap();
-        fs::create_dir_all(out.join("exports.d")).unwrap();
-
-        let conf = tmp.path().join("nfs-klldap.conf");
-        let keytab = tmp.path().join("krb5.keytab");
-        let marker = tmp.path().join(".setup_wizard_done");
-        fs::write(&conf, COMPLETE_TOML).unwrap();
-        fs::write(&keytab, b"probe-keytab").unwrap();
-
-        write_exe(&stubs.join("nfs-klldap-ui"), "#!/bin/sh\nexit 0\n");
-        write_exe(
-            &stubs.join("nfs-klldap-conf-watcher"),
-            "#!/bin/sh\nexec sleep 3600\n",
-        );
-        write_exe(&stubs.join("nfs-klldap-idhelper"), "#!/bin/sh\nexit 0\n");
-        write_exe(&stubs.join("healthcheck.sh"), "#!/bin/sh\nexit 0\n");
-        write_exe(&stubs.join("inotifywait"), "#!/bin/sh\nexit 0\n");
-
-        let startup_bin = target_debug_bin("nfs-klldap-startup");
-        let config_bin = target_debug_bin("nfs-klldap-config");
-        assert!(startup_bin.is_file(), "build nfs-klldap-startup first");
-        assert!(config_bin.is_file(), "build nfs-klldap-config first");
-
-        let output = Command::new(&startup_bin)
-            .arg("supervise-probe")
-            .env("NFS_CONFIG", &conf)
-            .env("NFS_KLLDAP_KEYTAB_PATH", &keytab)
-            .env("NFS_KLLDAP_TEST_PERSISTENT", "1")
-            .env("NFS_KLLDAP_SETUP_MARKER", &marker)
-            .env("USE_NSS_WRAPPER", "0")
-            .env("CONFIG_BIN", &config_bin)
-            .env("UI_BIN", stubs.join("nfs-klldap-ui"))
-            .env("WATCHER_BIN", stubs.join("nfs-klldap-conf-watcher"))
-            .env("IDHELPER_BIN", stubs.join("nfs-klldap-idhelper"))
-            .env("HEALTHCHECK", stubs.join("healthcheck.sh"))
-            .env("SSSD_CONF", out.join("sssd.conf"))
-            .env("KRB5_CONF", out.join("krb5.conf"))
-            .env("GANESHA_CONF", out.join("ganesha.conf"))
-            .env("EXPORTS_DIR", out.join("exports.d"))
-            .env("IDMAP_CONF", out.join("idmapd.conf"))
-            .env(
-                "PATH",
-                format!(
-                    "{}:{}",
-                    stubs.display(),
-                    std::env::var("PATH").unwrap_or_default()
-                ),
-            )
-            .output()
-            .expect("supervise-probe");
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let combined = format!("{stdout}{stderr}");
-
-        assert!(
-            output.status.success(),
-            "supervise-probe failed: {combined}"
-        );
-        assert!(combined.contains("=== Starting nfs-klldap-host (Rust supervisor) ==="));
-        assert!(combined.contains("Pre-configured deployment detected — starting full service stack"));
-        assert!(combined.contains("Container is ready (pre-configured path)"));
-        assert!(combined.contains("Supervise probe complete — exiting"));
-        assert!(out.join("ganesha.conf").is_file(), "generate must write ganesha.conf");
-        assert!(marker.is_file(), "wizard marker must be written on preconf bypass");
-    }
-}

@@ -10,6 +10,7 @@ services:
     image: nfs-klldap-host:latest
     container_name: nfs-klldap-host
 
+    # Host networking required: NFS + Kerberos need host-reachable addresses (not 172.17.x.x bridge).
     network_mode: host
     uts: host
 

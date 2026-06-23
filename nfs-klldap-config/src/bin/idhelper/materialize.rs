@@ -78,7 +78,7 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
     let mut seeded = 0usize;
     let mut seen_short: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for (_uid_i, short_name) in &snap.by_uid {
+    for short_name in snap.by_uid.values() {
         if short_name.contains('/')
             && MACHINE_PRINCIPAL_PREFIXES
                 .iter()

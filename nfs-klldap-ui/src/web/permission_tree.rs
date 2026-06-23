@@ -59,6 +59,7 @@ struct ShareInfo {
     /// "no-squash" or "root-squash"
     pub squash_label: String,
     pub cache_profile: String,
+    pub warning: Option<String>,
 }
 
 #[derive(Template)]
@@ -201,7 +202,8 @@ pub(crate) async fn index(
         .config
         .shares
         .iter()
-        .map(|s| {
+        .enumerate()
+        .map(|(idx, s)| {
             let pseudo = s
                 .export_path
                 .as_deref()
@@ -235,6 +237,13 @@ pub(crate) async fn index(
                 .unwrap_or_else(|| "Default".to_string())
                 .to_lowercase();
 
+            let warning = nfs_klldap_config::ShareFieldWarning::for_share(
+                &state.config.share_warnings,
+                idx,
+                &s.name,
+            )
+            .map(|w| w.display_message());
+
             ShareInfo {
                 name: s.name.clone(),
                 nfs_path,
@@ -242,6 +251,7 @@ pub(crate) async fn index(
                 access,
                 squash_label,
                 cache_profile,
+                warning,
             }
         })
         .collect();

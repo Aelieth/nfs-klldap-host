@@ -292,6 +292,7 @@ fn run_guided_startup(config_path: &Path) -> Result<(), ConfigError> {
 
         if step == StartupStep::Ready {
             println!("\n[OK] All startup requirements satisfied. Proceeding to service start...\n");
+            print_network_diagnostics();
             print_runtime_diagnostics();
             return Ok(());
         }
@@ -684,9 +685,20 @@ fn run_one_shot_diagnostics(config_path: &Path) -> Result<(), ConfigError> {
     }
 
     println!();
+    print_network_diagnostics();
     print_runtime_diagnostics();
 
     Ok(())
+}
+
+fn print_network_diagnostics() {
+    if let Some(ip) = nfs_klldap_config::container_primary_ipv4() {
+        if nfs_klldap_config::is_docker_bridge_ipv4(&ip) {
+            println!("  [NETWORK] WARNING: container primary IPv4 is {} (Docker bridge range)", ip);
+            println!("             NFSv4 + Kerberos expect host-reachable addresses.");
+            println!("             Use --network=host (docker run) or network_mode: host (compose).");
+        }
+    }
 }
 
 /// Port of the shell check_runtime_permissions + check_keytab_hostname_match.

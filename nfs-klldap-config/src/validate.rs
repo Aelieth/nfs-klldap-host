@@ -3,7 +3,52 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::{ConfigError, NfsKlldapConfig, Share};
+use crate::{
+    config::{ShareFieldWarning, SHARE_KNOWN_KEYS},
+    ConfigError, NfsKlldapConfig, Share,
+};
+
+fn log_share_warnings(warnings: &[ShareFieldWarning]) {
+    for w in warnings {
+        eprintln!("WARN [nfs-klldap-config] {}", w.display_message());
+    }
+}
+
+/// Scan raw TOML for unrecognized keys in `[[shares]]` tables.
+pub fn detect_share_unknown_keys(contents: &str) -> Vec<ShareFieldWarning> {
+    let root: toml::Value = match toml::from_str(contents) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let Some(shares) = root.get("shares").and_then(|s| s.as_array()) else {
+        return vec![];
+    };
+
+    let mut warnings = Vec::new();
+    for (idx, entry) in shares.iter().enumerate() {
+        let Some(table) = entry.as_table() else {
+            continue;
+        };
+        let unknown_keys: Vec<String> = table
+            .keys()
+            .filter(|k| !SHARE_KNOWN_KEYS.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        if unknown_keys.is_empty() {
+            continue;
+        }
+        let share_name = table
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        warnings.push(ShareFieldWarning {
+            share_index: idx,
+            share_name,
+            unknown_keys,
+        });
+    }
+    warnings
+}
 
 fn normalize_blank(field: &mut Option<String>) {
     if let Some(v) = field {
@@ -25,6 +70,8 @@ impl NfsKlldapConfig {
         })?;
 
         cfg.validate_and_derive()?;
+        cfg.share_warnings = detect_share_unknown_keys(&contents);
+        log_share_warnings(&cfg.share_warnings);
         Ok(cfg)
     }
 

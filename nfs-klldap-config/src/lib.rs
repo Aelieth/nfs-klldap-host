@@ -7,6 +7,7 @@ mod constants;
 mod error;
 mod generate;
 mod hostname;
+mod network;
 mod persist;
 mod template;
 mod uri;
@@ -14,10 +15,14 @@ mod validate;
 
 pub use config::{
     effective_ldap_search_bases, resolve_cache_profile, resolve_posix_attribute_mapping,
-    CACHE_PROFILES, GaneshaSection, GenerationPaths, KerberosSection, ManagementSection,
-    NfsKlldapConfig, PosixAttributeMapping, ServerSection, Share, SssdSection, StorageSection,
-    WebuiSection,
+    ShareFieldWarning, CACHE_PROFILES, GaneshaSection, GenerationPaths, KerberosSection,
+    ManagementSection, NfsKlldapConfig, PosixAttributeMapping, ServerSection, Share,
+    SssdSection, StorageSection, WebuiSection, SHARE_KNOWN_KEYS,
 };
+pub use network::{
+    container_primary_ipv4, extract_server_addr_from_ganesha_line, is_docker_bridge_ipv4,
+};
+pub use validate::detect_share_unknown_keys;
 
 pub mod ignored_attributes;
 pub use error::ConfigError;
@@ -326,6 +331,10 @@ mod tests {
         assert!(main_debug.contains("IDMAPPER = FULL_DEBUG;"));
         // Note: FSAL not emitted in top-level LOG (only in fragments); NFS4 is DEBUG (not FULL) per current generator for idhelper observer.
         assert!(main_debug.contains("NFS4 = DEBUG;"));
+        assert!(
+            !main_debug.contains("RECOVERY"),
+            "RECOVERY is not a valid LOG component on Ganesha 9.6 trixie-backports"
+        );
         // Sanity: core config still there
         assert!(main_debug.contains("Protocols = 4;"));
         assert!(main_debug.contains("%include"));
@@ -392,6 +401,50 @@ mod tests {
                 prof
             );
         }
+    }
+
+    #[test]
+    fn share_unknown_keys_warn_but_config_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("warn.conf");
+        let toml = r#"
+            ldap_uri = "ldaps://kllap.test:6360"
+            [sssd]
+            ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+            ldap_default_authtok = "sekret"
+            [[shares]]
+            name = "movies"
+            host_path = "/media/movies"
+            disable_acll = true
+        "#;
+        fs::write(&path, toml).unwrap();
+
+        let cfg = NfsKlldapConfig::load(&path).expect("must load despite unknown key");
+        assert_eq!(cfg.shares.len(), 1);
+        assert_eq!(cfg.share_warnings.len(), 1);
+        assert_eq!(cfg.share_warnings[0].unknown_keys, vec!["disable_acll"]);
+        assert_eq!(cfg.share_warnings[0].share_name.as_deref(), Some("movies"));
+    }
+
+    #[test]
+    fn share_disable_acl_valid_no_warnings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ok.conf");
+        let toml = r#"
+            ldap_uri = "ldaps://kllap.test:6360"
+            [sssd]
+            ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+            ldap_default_authtok = "sekret"
+            [[shares]]
+            name = "movies"
+            host_path = "/media/movies"
+            disable_acl = true
+        "#;
+        fs::write(&path, toml).unwrap();
+
+        let cfg = NfsKlldapConfig::load(&path).expect("load");
+        assert!(cfg.share_warnings.is_empty());
+        assert_eq!(cfg.shares[0].disable_acl, Some(true));
     }
 
     #[test]

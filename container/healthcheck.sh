@@ -83,4 +83,13 @@ else
     echo "WARN: no idhelper override files yet (may appear after first client observes)"
 fi
 
+# Advisory: Docker bridge networking breaks NFSv4 client records (server_addr = 172.17.x.x).
+if command -v ip >/dev/null 2>&1; then
+    _BRIDGE_IP=$(ip -4 -o addr show scope global 2>/dev/null | awk '/inet / {split($4,a,"/"); print a[1]; exit}')
+    if [ -n "${_BRIDGE_IP:-}" ] && [[ "$_BRIDGE_IP" == 172.17.* ]]; then
+        echo "WARN: container primary IPv4 is $_BRIDGE_IP (Docker bridge 172.17.0.0/16)"
+        echo "WARN: use --network=host (docker run) or network_mode: host (compose) for production NFS"
+    fi
+fi
+
 ok "Ganesha (2049) + SSSD + WebUI (9630) are healthy"

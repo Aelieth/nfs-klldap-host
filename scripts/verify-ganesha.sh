@@ -111,6 +111,21 @@ if grep -q '^root:' /var/lib/extrausers/passwd /var/lib/nfs-klldap/nss_passwd 2>
 fi
 
 echo
+echo "[8] Network mode check..."
+if command -v ip >/dev/null 2>&1; then
+    _BRIDGE_IP=$(ip -4 -o addr show scope global 2>/dev/null | awk '/inet / {split($4,a,"/"); print a[1]; exit}')
+    if [ -n "${_BRIDGE_IP:-}" ] && [[ "$_BRIDGE_IP" == 172.17.* ]]; then
+        echo "  WARN: container primary IPv4 is $_BRIDGE_IP (Docker bridge 172.17.0.0/16)"
+        echo "        NFSv4 + Kerberos expect host-reachable addresses."
+        echo "        Use --network=host (docker run) or network_mode: host (compose)."
+    else
+        echo "  OK: primary IPv4 is not in default Docker bridge range (${_BRIDGE_IP:-unknown})"
+    fi
+else
+    echo "  WARN: ip command not available — skipping bridge network check"
+fi
+
+echo
 echo "=== Verification complete ==="
 echo
 echo "Next steps if things look wrong:"

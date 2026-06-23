@@ -49,15 +49,14 @@ See [docs/ganesha-architecture.md](docs/ganesha-architecture.md) for the `host_p
 docker compose -f examples/docker-compose.yml up -d
 ```
 
-**Alternative** (port-mapped lab deploy):
+**Alternative** (`docker run` with host networking — required for NFS + Kerberos):
 
 ```bash
 docker run -d \
   --name nfs-klldap \
+  --network=host \
   --uts=host \
   --cap-add SYS_ADMIN --cap-add DAC_READ_SEARCH \
-  -p 2049:2049/tcp -p 2049:2049/udp \
-  -p 9630:9630/tcp \
   -v /path/to/config:/config \
   -v /media/:/export \
   -v /secure/krb5.keytab:/etc/krb5.keytab:ro \
@@ -119,13 +118,14 @@ default_security = "krb5p"                                      # security, krb5
 # export_path = "/movies"                                       # optional; the *external* client Pseudo (short/friendly name OK). The internal container dir (Ganesha Path + permission tree) is auto-derived from host_path (its first dir component is the implicit bind root) + container_root. Derives to /<name> when absent.
 # security = "krb5p"                                            # optional per-share override (krb5p|krb5i|krb5); default from [ganesha]
 # rw = true                                                     # default RW; set false for RO
+# disable_acl = true                                            # optional; emit Disable_ACL = true in Ganesha EXPORT
 ```
 
 ## [[shares]] sections are optional for first-run.
 
 The generator derives ports, search bases, sssd.conf, krb5.conf, /etc/idmapd.conf (following [sssd] + realm), and Ganesha fragments. `kllldap_ignored_attributes = true` (default) emits recommended server-side ignore lists.
 
-Per-share Ganesha options (in [[shares]]) include `cache_profile` (see below) and the advanced/raw `pref_read` / `pref_write` (bytes). The recommended way is the **Cache Profile** dropdown in the WebUI (stored as e.g. `cache_profile = "Read - Heavy"` under the share). The generator always resolves the profile (or falls back to explicit pref_* for power users) when (re)writing Ganesha EXPORT fragments. See the table below and the WebUI shares editor. Raw TOML always supports any valid Ganesha EXPORT key as fallback.
+Per-share Ganesha options (in [[shares]]) include `cache_profile` (see below), `disable_acl`, and the advanced/raw `pref_read` / `pref_write` (bytes). The recommended way is the **Cache Profile** dropdown in the WebUI (stored as e.g. `cache_profile = "Read - Heavy"` under the share). The generator always resolves the profile (or falls back to explicit pref_* for power users) when (re)writing Ganesha EXPORT fragments. See the table below and the WebUI shares editor. Only recognized `[[shares]]` keys are honored; unrecognized keys are ignored but surfaced as warnings in logs and the Share Permissions UI.
 
 ### Cache Profiles (Shares tuning)
 

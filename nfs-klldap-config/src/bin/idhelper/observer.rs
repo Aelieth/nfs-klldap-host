@@ -28,6 +28,8 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
     // Simple per-candidate rate limit to avoid spamming "observed" + full resolve/materialize
     // on every log line that matches the same client name (very common during a mount).
     let mut recently: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
+    let mut bridge_warned: std::collections::HashMap<String, std::time::Instant> =
+        std::collections::HashMap::new();
     let dedup_window = Duration::from_secs(30);
 
     loop {
@@ -48,6 +50,11 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                         }
                         Ok(_) => {
                             let line = buf.trim();
+                            maybe_warn_bridge_server_addr(
+                                line,
+                                &mut bridge_warned,
+                                dedup_window,
+                            );
                             if let Some(candidate) = extract_candidate_principal(line, realm) {
                                 let now = std::time::Instant::now();
                                 let is_fresh = recently
@@ -96,6 +103,13 @@ pub(crate) fn looks_like_client_hostname(t: &str) -> bool {
     if s.len() < 2 || s.len() > 253 {
         return false;
     }
+    // Ganesha epoch / pointer tokens: 0x6a375213, 0x7f0c3082f530, 0x10000
+    if s.len() >= 3 && s.starts_with("0x") {
+        let hex = &s[2..];
+        if !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return false;
+        }
+    }
     if !s.chars().any(|c| c.is_ascii_alphabetic()) {
         return false;
     }
@@ -129,8 +143,41 @@ pub(crate) fn looks_like_client_hostname(t: &str) -> bool {
 }
 
 /// Exact-match noise tokens (case-insensitive) that must never become a client hostname.
+fn maybe_warn_bridge_server_addr(
+    line: &str,
+    bridge_warned: &mut std::collections::HashMap<String, std::time::Instant>,
+    dedup_window: Duration,
+) {
+    let Some(addr) = nfs_klldap_config::extract_server_addr_from_ganesha_line(line) else {
+        return;
+    };
+    if !nfs_klldap_config::is_docker_bridge_ipv4(&addr) {
+        return;
+    }
+    if extract_linux_nfs_hostname(line).is_none() {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let is_fresh = bridge_warned
+        .get(&addr)
+        .map(|last| now.duration_since(*last) >= dedup_window)
+        .unwrap_or(true);
+    if !is_fresh {
+        return;
+    }
+    bridge_warned.insert(addr.clone(), now);
+    eprintln!(
+        "[idhelper] WARN: Ganesha CLIENT record server_addr={} is a Docker bridge address; \
+         clients may fail to reconnect. Use --network=host (or network_mode: host).",
+        addr
+    );
+}
+
 fn is_noise_hostname(t: &str) -> bool {
     let s = t.trim().to_ascii_lowercase();
+    if s.starts_with("0x") {
+        return true;
+    }
     if matches!(
         s.as_str(),
         "nil" | "null" | "clientid" | "unique" | "counter" | "created" | "client" |

@@ -164,6 +164,7 @@ volumes:
   - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 ```
 
+- `network_mode: host` / `--network=host` — **required for production NFS + Kerberos.** Default Docker bridge networking assigns the container a `172.17.0.0/16` address; Ganesha stores this as `server_addr` in NFSv4 CLIENT records, which breaks client reconnects and complicates identity when clients mount from external hosts. Port mapping (`-p 2049:2049`) does **not** substitute for host networking.
 - `uts: host` — makes the container see the real hostname so that the keytab principals (`nfs/<short>@REALM` and `nfs/<fqdn>@REALM`) match what clients and Kerberos expect. This has always been the documented recommendation.
 - `SYS_ADMIN` — provides the broad capabilities Ganesha VFS containers commonly need for certain namespace, mount, and process-control operations when exporting host paths. Many community Ganesha images (e.g. patterns derived from janeczku/nfs-ganesha and similar) document this cap.
 - `DAC_READ_SEARCH` — allows bypassing normal directory traversal permission checks. This is important for:
@@ -265,6 +266,7 @@ See also the reference shape in `examples/ganesha-exports.d/10-example.conf`.
 - WebUI "apply" fails with permission errors on subdirectories → numeric UIDs don't match across the host/container boundary, or the DAC cap is absent.
 - Ganesha fails to start with dbus/socket errors → the entrypoint dbus launch didn't produce `/run/dbus/system_bus_socket` in time (rare; the readiness loop helps), or the package was not present in an old image.
 - Kerberos principal / hostname mismatches → missing `--uts=host` (or `uts: host` in compose) and/or keytab principals that don't match the name the container sees.
+- Ganesha CLIENT records show `server_addr = 172.17.x.x` while clients connect from external addresses → container is on Docker bridge networking instead of host mode. Restart with `network_mode: host` / `--network=host`. `verify-ganesha.sh` and `nfs-klldap-startup check` warn when the container primary IPv4 is in `172.17.0.0/16`.
 - UDP clients or legacy `showmount` tools complain → we disable UDP by default in CORE_PARAM and ship rpcbind anyway; open the ports you actually need.
 - Mounts repeatedly fail / get torn down with Fedora Immutable clients (host keytab + user TGT) → the `nfs-klldap-idhelper` daemon must be running (started automatically after SSSD). Ganesha uses nss_wrapper preload by default (`USE_NSS_WRAPPER=1`); set `USE_NSS_WRAPPER=0` to rely on extrausers alone. Use `ganesha-ctl id-check`, `ganesha-ctl id-resolve '<principal>'`, and inspect `/var/lib/nfs-klldap/nss_passwd` to verify. See [docs/ldap-integration.md](../ldap-integration.md).
 
@@ -277,7 +279,7 @@ This combination (bind mounts + root inside + the two caps + `--uts=host` + expl
 
 ```bash
 /container/healthcheck.sh
-scripts/verify-ganesha.sh    # in-container Ganesha/export checks (see scripts/)
+verify-ganesha.sh            # in-container Ganesha/export + network checks (/usr/local/bin/)
 ganesha-ctl show-exports
 getent passwd <user>
 ```

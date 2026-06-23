@@ -481,8 +481,18 @@ mod tests {
         assert!(!looks_like_client_hostname("clientid"));
         assert!(!looks_like_client_hostname("Unique"));
         assert!(!looks_like_client_hostname("CLIENT"));
+        assert!(!looks_like_client_hostname("0x6a375213"));
+        assert!(!looks_like_client_hostname("0x7f0c3082f530"));
+        assert!(!looks_like_client_hostname("0x10000"));
         assert!(looks_like_client_hostname("blue-lt"));
         assert!(looks_like_client_hostname("my-host.example.com"));
+    }
+
+    #[test]
+    fn extract_rejects_nfsv4_line_with_only_hex_tokens() {
+        let line = r#"NFSv4 seeking Key=0x7f0c3082f670 {0x6a375213 other tokens}"#;
+        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        assert!(r.is_none() || !r.unwrap().contains("0x"));
     }
 
     // --- Additional repros from the exact full trace the user provided after rebuild ---
@@ -554,6 +564,7 @@ mod tests {
                 assert!(!bad.contains("clientid"), "frag produced host/clientid: {}", frag);
                 assert!(!bad.contains("unique"), "frag produced host/unique: {}", frag);
                 assert!(!bad.contains("counter"), "frag produced host/counter: {}", frag);
+                assert!(!bad.contains("0x"), "frag produced host/0x epoch: {}", frag);
             }
         }
     }

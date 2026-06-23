@@ -38,6 +38,9 @@ pub(crate) fn fragment_basename(index: usize, name: &str) -> String {
 
 
 pub fn generate_all(cfg: &NfsKlldapConfig, paths: &GenerationPaths) -> Result<(), ConfigError> {
+    for w in &cfg.share_warnings {
+        eprintln!("WARN [nfs-klldap-config] {}", w.display_message());
+    }
     fs::create_dir_all(&paths.exports_dir)?;
     write_sssd_conf(cfg, &paths.sssd_conf)?;
     write_krb5_conf(cfg, &paths.krb5_conf)?;
@@ -559,7 +562,6 @@ EXPORT_DEFAULTS {{
         CLIENTID = FULL_DEBUG;
         SESSIONS = FULL_DEBUG;
         IDMAPPER = FULL_DEBUG;
-        RECOVERY = FULL_DEBUG;
         NFS4 = DEBUG;
         DISPATCH = DEBUG;
         XPRT = DEBUG;
@@ -638,6 +640,12 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             .map(|v| format!("    PrefWrite = {};\n", v))
             .unwrap_or_default();
 
+        let disable_acl_line = share
+            .disable_acl
+            .filter(|&v| v)
+            .map(|_| "    Disable_ACL = true;\n")
+            .unwrap_or_default();
+
         // CLIENT block: Protocols=4 + explicit Read_Access_Check_Policy=pre.
         // Placed only inside CLIENT (inside EXPORT) for parser compatibility on
         // Ganesha 9.6 Debian trixie-backports (EXPORT_DEFAULTS rejects the key).
@@ -665,12 +673,12 @@ EXPORT {{
     Pseudo = {};
     SecType = {};
     Squash = {};
-{pref_read_line}{pref_write_line}{client_block}    FSAL {{
+{disable_acl_line}{pref_read_line}{pref_write_line}{client_block}    FSAL {{
         Name = VFS;
     }}
 }}
 "#,
-            share.name, export_id, path, pseudo, sec, squash, pref_read_line = pref_read_line, pref_write_line = pref_write_line, client_block = client_block
+            share.name, export_id, path, pseudo, sec, squash, disable_acl_line = disable_acl_line, pref_read_line = pref_read_line, pref_write_line = pref_write_line, client_block = client_block
         );
 
         let filename = fragment_basename(i, &share.name);
@@ -830,6 +838,87 @@ mod tests {
     }
 
     #[test]
+    fn disable_acl_emitted_when_true() {
+        let mut cfg = crate::NfsKlldapConfig {
+            ldap_uri: "ldaps://k.test:6360".into(),
+            sssd: crate::SssdSection {
+                ldap_default_bind_dn: "uid=admin,ou=people,dc=test,dc=com".into(),
+                ldap_default_authtok: "sekret".into(),
+                ..Default::default()
+            },
+            shares: vec![crate::Share {
+                name: "noacl".into(),
+                host_path: "/media/noacl".into(),
+                disable_acl: Some(true),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        cfg.validate_and_derive().expect("valid test config");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let exports_dir = tmp.path().join("exports.d");
+        let paths = crate::GenerationPaths {
+            sssd_conf: tmp.path().join("sssd.conf"),
+            krb5_conf: tmp.path().join("krb5.conf"),
+            ganesha_conf: tmp.path().join("ganesha.conf"),
+            exports_dir: exports_dir.clone(),
+            idmap_conf: tmp.path().join("idmapd.conf"),
+        };
+        crate::generate_all(&cfg, &paths).expect("generate");
+
+        let frag = std::fs::read_to_string(exports_dir.join("10-noacl.conf")).unwrap();
+        assert!(frag.contains("Disable_ACL = true;"));
+    }
+
+    #[test]
+    fn disable_acl_omitted_when_false_or_absent() {
+        let mut cfg = crate::NfsKlldapConfig {
+            ldap_uri: "ldaps://k.test:6360".into(),
+            sssd: crate::SssdSection {
+                ldap_default_bind_dn: "uid=admin,ou=people,dc=test,dc=com".into(),
+                ldap_default_authtok: "sekret".into(),
+                ..Default::default()
+            },
+            shares: vec![
+                crate::Share {
+                    name: "acl-off".into(),
+                    host_path: "/media/acl-off".into(),
+                    disable_acl: Some(false),
+                    ..Default::default()
+                },
+                crate::Share {
+                    name: "acl-default".into(),
+                    host_path: "/media/acl-default".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        cfg.validate_and_derive().expect("valid test config");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let exports_dir = tmp.path().join("exports.d");
+        let paths = crate::GenerationPaths {
+            sssd_conf: tmp.path().join("sssd.conf"),
+            krb5_conf: tmp.path().join("krb5.conf"),
+            ganesha_conf: tmp.path().join("ganesha.conf"),
+            exports_dir: exports_dir.clone(),
+            idmap_conf: tmp.path().join("idmapd.conf"),
+        };
+        crate::generate_all(&cfg, &paths).expect("generate");
+
+        for name in ["10-acl-off.conf", "11-acl-default.conf"] {
+            let frag = std::fs::read_to_string(exports_dir.join(name)).unwrap();
+            assert!(
+                !frag.contains("Disable_ACL"),
+                "Disable_ACL must be absent in {}",
+                name
+            );
+        }
+    }
+
+    #[test]
     fn per_share_export_respects_rw_and_security_overrides() {
         // Exercise non-defaults: RO + krb5i security -> EXPORT must reflect them
         let mut cfg = crate::NfsKlldapConfig {
@@ -942,7 +1031,6 @@ mod tests {
             ldap_uri: "ldaps://k.example:6360".into(),
             kerberos: crate::KerberosSection {
                 realm: Some("satomlin.com".into()),
-                ..Default::default()
             },
             sssd: crate::SssdSection {
                 ldap_default_bind_dn: "uid=admin,ou=people,dc=satomlin,dc=com".into(),

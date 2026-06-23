@@ -32,6 +32,58 @@ pub struct NfsKlldapConfig {
 
     #[serde(default)]
     pub shares: Vec<Share>,
+
+    /// Populated at load time from raw TOML (not serialized).
+    #[serde(skip)]
+    pub share_warnings: Vec<ShareFieldWarning>,
+}
+
+/// Recognized keys inside each `[[shares]]` table in nfs-klldap.conf.
+pub const SHARE_KNOWN_KEYS: &[&str] = &[
+    "name",
+    "host_path",
+    "export_path",
+    "security",
+    "rw",
+    "squash",
+    "cache_profile",
+    "pref_read",
+    "pref_write",
+    "disable_acl",
+];
+
+/// Warning for unrecognized keys in a `[[shares]]` table (config still loads).
+#[derive(Debug, Clone)]
+pub struct ShareFieldWarning {
+    pub share_index: usize,
+    pub share_name: Option<String>,
+    pub unknown_keys: Vec<String>,
+}
+
+impl ShareFieldWarning {
+    /// Find a warning for a loaded share (match by index, then by name).
+    pub fn for_share<'a>(
+        warnings: &'a [Self],
+        share_index: usize,
+        share_name: &str,
+    ) -> Option<&'a Self> {
+        warnings
+            .iter()
+            .find(|w| w.share_index == share_index || w.share_name.as_deref() == Some(share_name))
+    }
+
+    pub fn display_message(&self) -> String {
+        let label = self
+            .share_name
+            .as_deref()
+            .map(|n| format!("\"{}\"", n))
+            .unwrap_or_else(|| format!("index {}", self.share_index));
+        format!(
+            "share {} (index {}): unrecognized [[shares]] key(s) {:?} — ignored by generator. \
+             Remove from nfs-klldap.conf or delete this share and re-add via System Settings → Shares.",
+            label, self.share_index, self.unknown_keys
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -189,6 +241,8 @@ pub struct Share {
     /// Optional PrefWrite size in bytes (Ganesha EXPORT.PrefWrite). Advanced/raw use.
     /// Symmetric to pref_read; usually resolved from cache_profile in normal operation.
     pub pref_write: Option<u64>,
+    /// When true, emit `Disable_ACL = true;` in the Ganesha EXPORT block.
+    pub disable_acl: Option<bool>,
 }
 
 impl Default for Share {
@@ -203,6 +257,7 @@ impl Default for Share {
             cache_profile: Some("Default".to_string()),
             pref_read: None,
             pref_write: None,
+            disable_acl: None,
         }
     }
 }

@@ -72,10 +72,15 @@ async fn main() {
     };
 
     println!("Configured shares: {}", config.shares.len());
-    for s in &config.shares {
+    for (idx, s) in config.shares.iter().enumerate() {
         let default_ep = format!("/{}", s.name);
         let ep = s.export_path.as_deref().unwrap_or(&default_ep);
         println!("  - {} → {} (host: {})", s.name, ep, s.host_path.display());
+        if let Some(w) =
+            nfs_klldap_config::ShareFieldWarning::for_share(&config.share_warnings, idx, &s.name)
+        {
+            println!("    WARN: {}", w.display_message());
+        }
     }
 
     // Keytab host: prefer explicit [server], else two-tier consistent hostname (emits diag on mismatch).

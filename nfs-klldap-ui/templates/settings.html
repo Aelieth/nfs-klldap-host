@@ -136,6 +136,12 @@
     </div>
     <div id="shares-container">
         {% for row in current_shares %}
+        <div class="share-row-block" style="margin-bottom:8px;">
+        {% if let Some(warn) = row.warning %}
+        <div class="alert alert-warning" style="margin:0 0 4px 0;font-size:0.75em;padding:6px 8px;">
+            {{ warn }}
+        </div>
+        {% endif %}
         <div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
             <input name="share_name_{{ row.idx }}" value="{{ row.name }}" style="width:115px" placeholder="name">
             <input name="share_host_{{ row.idx }}" value="{{ row.host_path }}" style="flex:1" placeholder="host_path">
@@ -158,7 +164,8 @@
                 <option value="Mixed Use" {% if row.cache_profile == "Mixed Use" %}selected{% endif %}>Mixed Use</option>
                 <option value="Write - Heavy" {% if row.cache_profile == "Write - Heavy" %}selected{% endif %}>Write - Heavy</option>
             </select>
-            <button type="button" onclick="this.closest('.share-row').remove()">×</button>
+            <button type="button" onclick="this.closest('.share-row-block').remove()">×</button>
+        </div>
         </div>
         {% endfor %}
         {% if current_shares.is_empty() %}

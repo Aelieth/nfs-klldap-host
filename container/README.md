@@ -12,5 +12,8 @@ The container includes dbus-daemon (launched by entrypoint before Ganesha) and r
 | `scripts/nfs-klldap-conf-watcher` | `/usr/local/bin/nfs-klldap-conf-watcher` | inotify on nfs-klldap.conf → SIGHUP |
 | `scripts/ganesha-ctl` | `/usr/local/bin/ganesha-ctl` | Export reload + idhelper diagnostics |
 | `scripts/nfsidmap-idhelper` | nfsidmap shim | Principal→uid via idhelper |
+| `scripts/verify-ganesha.sh` | `/usr/local/bin/verify-ganesha.sh` | Extended Ganesha/export verification |
 
-See also [scripts/verify-ganesha.sh](../scripts/verify-ganesha.sh) for in-container export verification.
+**Networking:** run with `network_mode: host` (compose) or `--network=host` (`docker run`) — see [docs/run/README.md](../docs/run/README.md).
+
+See also `verify-ganesha.sh` inside the container for export verification.

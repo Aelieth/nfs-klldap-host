@@ -152,6 +152,7 @@ struct ShareTemplateRow {
     rw: bool,
     root_squash: bool,
     cache_profile: String,
+    warning: Option<String>,
 }
 
 /// Key present in raw source (used to decide override checkboxes; core keys always explicit).
@@ -258,6 +259,12 @@ fn build_settings_template(
                 .clone()
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| infer_profile_from_prefs(s.pref_read, s.pref_write)),
+            warning: nfs_klldap_config::ShareFieldWarning::for_share(
+                &cfg.share_warnings,
+                idx,
+                &s.name,
+            )
+            .map(|w| w.display_message()),
         })
         .collect();
     let next_share_idx = current_shares.len();
@@ -387,6 +394,7 @@ fn collect_shares_from_structured_form(
             cache_profile: r.cache_profile,
             pref_read: r.pref_read.and_then(|s| s.trim().parse::<u64>().ok()),
             pref_write: r.pref_write.and_then(|s| s.trim().parse::<u64>().ok()),
+            disable_acl: None,
         })
         .collect()
 }

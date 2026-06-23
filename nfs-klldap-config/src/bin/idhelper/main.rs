@@ -410,6 +410,27 @@ mod tests {
     }
 
     #[test]
+    fn bulk_seed_includes_users_keyed_by_upn_only() {
+        let mut snap = IdMapSnapshot::default();
+        snap.users.insert(
+            "alice@EX.COM".to_string(),
+            PosixUserEntry {
+                uid: 1002,
+                gid: 1002,
+                display: "Alice".to_string(),
+            },
+        );
+        snap.by_uid.insert(1002, "alice@EX.COM".to_string());
+
+        let mut cache = IdCache::default();
+        let n = seed_cache_and_nss_from_snapshot(&snap, "EX.COM", &mut cache);
+        assert_eq!(n, 1);
+        let r = cache.get("alice@EX.COM").expect("principal key");
+        assert_eq!(r.name, "alice");
+        assert_eq!(r.uid, 1002);
+    }
+
+    #[test]
     fn bulk_seed_populates_cache_with_short_and_principal_forms() {
         let mut snap = IdMapSnapshot::default();
         snap.users.insert(

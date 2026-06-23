@@ -8,9 +8,9 @@ pub use nfs_klldap_identity::{
     PosixGroupEntry, PosixMappingInput, PosixUserEntry,
 };
 
-/// Build IdLdapResolver from ldap_uri + [sssd].
-pub fn from_sssd_section(ldap_uri: &str, sssd: &SssdSection) -> IdLdapResolver {
-    IdLdapResolver::from_inputs(&resolver_inputs_from_sssd(ldap_uri, sssd))
+/// Build IdLdapResolver from ldap_uri + [sssd] + Kerberos realm (not ldap_search_base RDN).
+pub fn from_sssd_section(ldap_uri: &str, sssd: &SssdSection, realm: &str) -> IdLdapResolver {
+    IdLdapResolver::from_inputs(&resolver_inputs_from_sssd(ldap_uri, sssd, realm))
 }
 
 pub(crate) fn posix_mapping_input_from_sssd(sssd: &SssdSection) -> PosixMappingInput {
@@ -39,17 +39,10 @@ pub(crate) fn search_bases_input_from_sssd(sssd: &SssdSection) -> LdapSearchBase
     }
 }
 
-fn resolver_inputs_from_sssd(ldap_uri: &str, sssd: &SssdSection) -> LdapResolverInputs {
-    let realm = sssd
-        .ldap_search_base
-        .as_deref()
-        .and_then(|s| s.split(',').next().and_then(|p| p.strip_prefix("dc=")))
-        .map(|d| d.to_string())
-        .unwrap_or_else(|| "example.com".to_string());
-
+fn resolver_inputs_from_sssd(ldap_uri: &str, sssd: &SssdSection, realm: &str) -> LdapResolverInputs {
     LdapResolverInputs {
         ldap_uri: ldap_uri.to_string(),
-        realm,
+        realm: realm.to_string(),
         search_bases: search_bases_input_from_sssd(sssd),
         posix_mapping: posix_mapping_input_from_sssd(sssd),
         ldap_tls_reqcert: sssd.ldap_tls_reqcert.clone(),
@@ -70,7 +63,7 @@ mod tests {
             ldap_user_search_base: Some("ou=people,dc=ex,dc=com".into()),
             ..Default::default()
         };
-        let r = from_sssd_section("ldaps://ldap.example:636", &s);
+        let r = from_sssd_section("ldaps://ldap.example:636", &s, "ex.com");
         assert!(r.user_base().contains("people"));
     }
 
@@ -82,8 +75,24 @@ mod tests {
                 ldap_user_search_base: Some("ou=testing,ou=users,dc=example,dc=com".into()),
                 ..SssdSection::default()
             },
+            "example.com",
         );
         assert!(r.user_base().contains("testing"));
+    }
+
+    #[test]
+    fn explicit_realm_drives_default_search_base_not_first_rdn() {
+        let r = from_sssd_section(
+            "ldaps://ldap.example:636",
+            &SssdSection {
+                ldap_user_search_base: Some("ou=testing,ou=users,dc=example,dc=com".into()),
+                ..SssdSection::default()
+            },
+            "my.corp",
+        );
+        assert!(r.user_base().contains("testing"));
+        let r2 = from_sssd_section("ldaps://ex", &SssdSection::default(), "my.corp");
+        assert_eq!(r2.user_base(), "dc=my,dc=corp");
     }
 
     #[test]
@@ -92,7 +101,7 @@ mod tests {
         let mapping = resolve_posix_attribute_mapping(&s);
         assert_eq!(mapping.user_principal_name, DEFAULT_USER_PRINCIPAL_ATTR);
 
-        let r = from_sssd_section("ldaps://ex", &s);
+        let r = from_sssd_section("ldaps://ex", &s, "ex.com");
         assert_eq!(
             r.posix_attributes().user_principal_name,
             DEFAULT_USER_PRINCIPAL_ATTR

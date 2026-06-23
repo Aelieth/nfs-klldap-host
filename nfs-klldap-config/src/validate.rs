@@ -187,18 +187,18 @@ impl NfsKlldapConfig {
             self.sssd.ldap_group_search_base = Some(main_search_base);
         }
 
-        // Default security + enum validation (Ganesha only supports these)
+        // Default security + enum validation (Ganesha 9.6 trixie krb5* only).
         if self.ganesha.default_security.trim().is_empty() {
-            self.ganesha.default_security = "krb5p".to_string();
+            self.ganesha.default_security = crate::constants::GANESHA_DEFAULT_SECTYPE.to_string();
         }
+        if !crate::constants::GANESHA_ALLOWED_SECTYPES
+            .contains(&self.ganesha.default_security.as_str())
         {
-            const ALLOWED: &[&str] = &["krb5p", "krb5i", "krb5"];
-            if !ALLOWED.contains(&self.ganesha.default_security.as_str()) {
-                return Err(ConfigError::Validation(format!(
-                    "ganesha.default_security must be one of krb5p, krb5i, krb5 (got '{}')",
-                    self.ganesha.default_security
-                )));
-            }
+            return Err(ConfigError::Validation(format!(
+                "ganesha.default_security must be one of {} (got '{}')",
+                crate::constants::GANESHA_ALLOWED_SECTYPES.join(", "),
+                self.ganesha.default_security
+            )));
         }
 
         // Default storage root
@@ -243,13 +243,23 @@ impl NfsKlldapConfig {
                 };
                 share.export_path = Some(normalized);
             }
-            // Validate per-share security if provided
             if let Some(ref sec) = share.security {
-                const ALLOWED: &[&str] = &["krb5p", "krb5i", "krb5"];
-                if !ALLOWED.contains(&sec.as_str()) {
+                if !crate::constants::GANESHA_ALLOWED_SECTYPES.contains(&sec.as_str()) {
                     return Err(ConfigError::Validation(format!(
-                        "share '{}' security must be one of krb5p, krb5i, krb5 (got '{}')",
-                        share.name, sec
+                        "share '{}' security must be one of {} (got '{}')",
+                        share.name,
+                        crate::constants::GANESHA_ALLOWED_SECTYPES.join(", "),
+                        sec
+                    )));
+                }
+            }
+            if let Some(ref sq) = share.squash {
+                if !crate::constants::GANESHA_ALLOWED_SQUASH.contains(&sq.as_str()) {
+                    return Err(ConfigError::Validation(format!(
+                        "share '{}' squash must be one of {} (got '{}')",
+                        share.name,
+                        crate::constants::GANESHA_ALLOWED_SQUASH.join(", "),
+                        sq
                     )));
                 }
             }
@@ -317,6 +327,11 @@ impl NfsKlldapConfig {
             .realm
             .clone()
             .expect("effective_realm called on config that did not pass validation")
+    }
+
+    /// Uppercase NFSv4 domain for ganesha.conf DomainName and idmapd.conf (libnfsidmap is case-sensitive).
+    pub fn nfsv4_domain(&self) -> String {
+        self.effective_realm().to_ascii_uppercase()
     }
 
     /// Realm for banners (real after validation; placeholder otherwise).

@@ -127,7 +127,7 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
         }
 
         println!("realm:    {}", cfg.effective_realm());
-        println!("idmap domain (would use /etc/idmapd.conf): {}", cfg.effective_realm());
+        println!("idmap domain (would use /etc/idmapd.conf): {}", cfg.nfsv4_domain());
         println!("shares:   {}", cfg.shares.len());
         for s in &cfg.shares {
             println!(

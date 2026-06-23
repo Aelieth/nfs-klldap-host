@@ -78,17 +78,20 @@ RUN set -euxo pipefail && \
 # Build remains on Fedora for rustup/cargo-chef reliability.
 FROM debian:13-slim
 
+ARG GANESHA_VERSION=9.6-1~bpo13+1
+
 LABEL maintainer="Aelieth" \
-      version="0.8.12"
+      version="0.8.52"
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 
 # Runtime: Ganesha 9.6 (trixie-backports). Config is strictly limited to supported 9.6 options.
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
-    echo 'deb http://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list && \
+    echo 'deb https://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends -t trixie-backports \
-        nfs-ganesha nfs-ganesha-vfs && \
+        nfs-ganesha=${GANESHA_VERSION} nfs-ganesha-vfs=${GANESHA_VERSION} && \
     apt-get install -y --no-install-recommends \
         sssd sssd-ldap libnss-sss \
         krb5-user \
@@ -96,7 +99,7 @@ RUN apt-get update && \
         inotify-tools procps iproute2 netcat-openbsd \
         ldap-utils \
         libnss-wrapper libnss-extrausers \
-        strace less nano ca-certificates openssl sudo hostname && \
+        ca-certificates openssl hostname && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
     # Ensure NSS integration:
     # - sss for LDAP users/groups from LLDAP
@@ -129,8 +132,10 @@ COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl
 COPY container/scripts/nfs-klldap-conf-watcher /usr/local/bin/nfs-klldap-conf-watcher
 COPY container/scripts/nfsidmap-idhelper /usr/local/bin/nfsidmap-idhelper
 COPY container/healthcheck.sh /container/healthcheck.sh
+COPY container/scripts/check-common.sh /container/scripts/check-common.sh
 COPY scripts/verify-ganesha.sh /usr/local/bin/verify-ganesha.sh
-RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /usr/local/bin/nfsidmap-idhelper /container/healthcheck.sh /usr/local/bin/verify-ganesha.sh && \
+RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /usr/local/bin/nfsidmap-idhelper \
+        /container/healthcheck.sh /container/scripts/check-common.sh /usr/local/bin/verify-ganesha.sh && \
     # Create the literal 'nfsidmap' name (both in PATH and /usr/sbin) so that when ganesha.nfsd
     # execs "nfsidmap ..." (or absolute /usr/sbin/nfsidmap as seen in ID MAPPER "using nfsidmap" logs)
     # our shim is found first. Backup original for fallback inside the shim.
@@ -147,8 +152,9 @@ RUN chown root:root /etc/sssd && chmod 755 /etc/sssd && \
     chmod 775 /etc/ganesha/exports.d && \
     chmod 755 /container /container/scripts
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=25s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=150s --retries=3 \
     CMD /container/healthcheck.sh || exit 1
 
-EXPOSE 2049/tcp 2049/udp 111/tcp 111/udp
+# NFSv4 TCP only (Enable_UDP=false); 111 kept for rpcbind compatibility tooling.
+EXPOSE 2049/tcp 111/tcp 111/udp
 ENTRYPOINT ["/entrypoint.sh"]

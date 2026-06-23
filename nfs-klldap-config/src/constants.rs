@@ -14,6 +14,16 @@ pub const GANESHA_PROTOCOLS: &str = "4";
 pub const GANESHA_PWNAM_IMPL: &str = "nsswitch";
 pub const GANESHA_ROOT_KRB_PRINCIPALS: &str = "host, nfs";
 pub const GANESHA_DEFAULT_SECTYPE: &str = "krb5p";
+pub const GANESHA_DEFAULT_SQUASH: &str = "no_root_squash";
+pub const GANESHA_ALLOWED_SECTYPES: &[&str] = &["krb5p", "krb5i", "krb5"];
+pub const GANESHA_ALLOWED_SQUASH: &[&str] = &[
+    "no_root_squash",
+    "root_squash",
+    "root_id_squash",
+    "all_squash",
+    "all_root_squash",
+    "all_root_id_squash",
+];
 
 /// idmapd.conf values for Ganesha 9.6 + libnfsidmap shim.
 pub const IDMAPD_TRANSLATION_METHOD: &str = "nsswitch";

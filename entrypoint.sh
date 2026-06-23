@@ -156,6 +156,14 @@ preflight_checks() {
         missing=1
     fi
 
+    # Ganesha Kerberos owner mapping requires nss_wrapper preload unless explicitly disabled.
+    if [ "${USE_NSS_WRAPPER:-1}" = "1" ] || [ "${USE_NSS_WRAPPER:-1}" = "true" ]; then
+        if [ -z "${NSS_WRAPPER_SO:-}" ] || [ ! -f "$NSS_WRAPPER_SO" ]; then
+            error "libnss_wrapper.so not found (set NSS_WRAPPER_SO or install libnss-wrapper)"
+            missing=1
+        fi
+    fi
+
     if [ "$missing" -ne 0 ]; then
         die "Preflight failed — container image is incomplete or corrupted"
     fi
@@ -205,44 +213,140 @@ cleanup() {
 trap 'cleanup "termination signal"' SIGTERM SIGINT
 trap 'cleanup "exit"' EXIT
 
-handle_sighup() {
-    info "SIGHUP received — reloading configuration via Rust generator..."
+BULK_SEED_MARKER="/var/lib/nfs-klldap/.bulk_seed_done"
 
-    "$CONFIG_BIN" generate --config "$NFS_CONFIG" || {
-        error "Rust config generator failed during SIGHUP reload"
-        return 1
-    }
-
-    fix_derived_permissions
-
-    # Restart Ganesha: ganesha-ctl reload (pkill) or direct pkill, then start_ganesha.
-    if [ -x "$GANESHA_CTL" ]; then
-        "$GANESHA_CTL" reload 2>/dev/null || pkill -TERM ganesha.nfsd 2>/dev/null || true
-    else
-        pkill -TERM ganesha.nfsd 2>/dev/null || true
+# Stop ganesha.nfsd before identity recycle (matches stable cold-boot ordering).
+stop_ganesha() {
+    if [ -n "${GANESHA_PID:-}" ] && kill -0 "$GANESHA_PID" 2>/dev/null; then
+        kill -TERM "$GANESHA_PID" 2>/dev/null || true
     fi
+    pkill -TERM ganesha.nfsd 2>/dev/null || true
     sleep 0.3
-    info "Starting NFS-Ganesha (idhelper mappings via nss_wrapper preload)..."
-    start_ganesha
+    GANESHA_PID=""
+}
 
-    # SSSD almost always needs a full restart when its config changes (bind DN,
-    # search bases, schema/ignores, krb5 provider bits, etc.).
+# Append host/FQDN host/*@REALM principals to NFS_KLLDAP_IDHELPER_PRERESOLVE.
+refresh_idhelper_preresolve() {
+    local _H _R _PRE _V _P
+    _H=$(hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || echo "localhost")
+    _R=$(awk '/default_realm/ {print $3; exit}' /etc/krb5.conf 2>/dev/null || echo "${NFS_KLLDAP_KERBEROS_REALM:-EXAMPLE.COM}")
+    _PRE="${NFS_KLLDAP_IDHELPER_PRERESOLVE:-}"
+    for _V in "$_H" "$(echo "$_H" | cut -d. -f1)"; do
+        _P="host/${_V}@${_R}"
+        case ",${_PRE}," in
+            *",${_P},"*) ;;
+            *) _PRE="${_PRE:+$_PRE,}$_P" ;;
+        esac
+    done
+    export NFS_KLLDAP_IDHELPER_PRERESOLVE="$_PRE"
+}
+
+# SSSD restart + NSS pipe readiness (required before idhelper/Ganesha).
+restart_sssd_and_wait() {
+    if [ -n "${SSSD_PID:-}" ] && kill -0 "$SSSD_PID" 2>/dev/null; then
+        kill -TERM "$SSSD_PID" 2>/dev/null || true
+    fi
     pkill -TERM sssd 2>/dev/null || true
     sleep 0.5
-    sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} 2>/dev/null &
-    SSSD_PID=$!
-    info "SSSD restarted after config change"
 
-    # Recycle idhelper so it picks up any realm/hostname changes from regeneration.
+    info "Starting SSSD..."
+    sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} &
+    SSSD_PID=$!
+
+    info "Waiting for SSSD NSS responder..."
+    local ready=0
+    for _ in {1..60}; do
+        if [ -S /var/lib/sss/pipes/nss ]; then
+            info "SSSD ready"
+            ready=1
+            break
+        fi
+        sleep 0.3
+    done
+
+    if [ "$ready" -ne 1 ]; then
+        warn "SSSD NSS pipe did not appear after reload — identity mapping may be degraded"
+    fi
+}
+
+# idhelper restart + bulk LDAP preload before Ganesha (same gate as cold boot).
+restart_idhelper_and_wait_bulk() {
+    refresh_idhelper_preresolve
+
     if [ -n "${IDHELPER_PID:-}" ] && kill -0 "$IDHELPER_PID" 2>/dev/null; then
         kill -TERM "$IDHELPER_PID" 2>/dev/null || true
         sleep 0.2
     fi
+    pkill -TERM nfs-klldap-idhelper 2>/dev/null || true
+    sleep 0.2
+
+    info "Starting nfs-klldap-idhelper (Kerberos ID translator)..."
     "$IDHELPER_BIN" daemon > >(tee -a /var/log/idhelper.log) 2>&1 &
     IDHELPER_PID=$!
-    info "idhelper restarted"
+    sleep 0.2
+    if ! kill -0 "$IDHELPER_PID" 2>/dev/null; then
+        warn "idhelper did not stay running; check /var/log/idhelper.log"
+    else
+        info "idhelper daemon started (pid $IDHELPER_PID)"
+    fi
 
-    # WebUI cycle for share changes (FsManager allow roots loaded at start; shares need restart).
+    info "Waiting for idhelper preload (bulk LDAP users + root + server host principals)..."
+    local seeded=0
+    for _ in $(seq 1 60); do
+        if [ -f "$BULK_SEED_MARKER" ] && \
+           grep -q '^root:' /var/lib/nfs-klldap/nss_passwd 2>/dev/null; then
+            local _n
+            _n=$(cat "$BULK_SEED_MARKER" 2>/dev/null | tr -d '[:space:]' || echo "?")
+            info "idhelper preload ready (bulk-seeded ${_n} users + root uid0 in nss_passwd)"
+            seeded=1
+            break
+        fi
+        sleep 0.2
+    done
+    if [ "$seeded" -ne 1 ]; then
+        warn "idhelper bulk-seed marker missing after reload; Ganesha may log principal2uid WARN on first user mount"
+    fi
+}
+
+# rpcbind + dbus prerequisites for ganesha.nfsd (idempotent on reload).
+ensure_ganesha_prereqs() {
+    if command -v rpcbind >/dev/null 2>&1; then
+        if ! pgrep -x rpcbind >/dev/null 2>&1; then
+            info "Starting rpcbind..."
+            rpcbind -w 2>/dev/null || rpcbind 2>/dev/null || true
+        fi
+    fi
+
+    mkdir -p /run/dbus
+    rm -f /run/dbus/pid
+
+    if ! pgrep -x dbus-daemon >/dev/null 2>&1; then
+        info "Starting dbus-daemon (system bus)..."
+        dbus-daemon --system --nofork &
+        DBUS_PID=$!
+        sleep 0.5
+    fi
+
+    info "Waiting for D-Bus system bus socket..."
+    local dbus_ready=0
+    for _ in {1..50}; do
+        if [ -S /run/dbus/system_bus_socket ]; then
+            if dbus-send --system --print-reply --dest=org.freedesktop.DBus \
+                /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1; then
+                info "D-Bus system bus is ready"
+                dbus_ready=1
+                break
+            fi
+        fi
+        sleep 0.2
+    done
+
+    if [ "$dbus_ready" -ne 1 ]; then
+        warn "D-Bus system bus socket did not appear; Ganesha may have limited management features."
+    fi
+}
+
+restart_webui() {
     if [ -n "${WEBUI_PID:-}" ] && kill -0 "$WEBUI_PID" 2>/dev/null; then
         kill -TERM "$WEBUI_PID" 2>/dev/null || true
         sleep 0.3
@@ -257,6 +361,33 @@ handle_sighup() {
         warn "WebUI process exited quickly after reload — last log lines:"
         tail -n 20 /var/log/webui.log 2>/dev/null || true
     fi
+}
+
+# Shared recycle path: identity stack first, then Ganesha + WebUI (matches cold boot).
+recycle_services_after_config() {
+    mkdir -p /var/lib/nfs-klldap /var/run/nfs-klldap /var/lib/extrausers
+
+    stop_ganesha
+    restart_sssd_and_wait
+    restart_idhelper_and_wait_bulk
+    ensure_ganesha_prereqs
+
+    info "Starting NFS-Ganesha (idhelper mappings via nss_wrapper preload)..."
+    start_ganesha
+
+    restart_webui
+}
+
+handle_sighup() {
+    info "SIGHUP received — reloading configuration via Rust generator..."
+
+    "$CONFIG_BIN" generate --config "$NFS_CONFIG" || {
+        error "Rust config generator failed during SIGHUP reload"
+        return 1
+    }
+
+    fix_derived_permissions
+    recycle_services_after_config
 
     info "Ganesha, SSSD, idhelper, and WebUI recycled after config apply."
     # Create the marker *after* the declaration. The /restart-status handler
@@ -291,124 +422,20 @@ main() {
     fix_derived_permissions
 
     # --- Start core services (order matters for stable Ganesha bring-up) ---
-
-    # Ensure directories used by idhelper for its cache + nss_wrapper/extrausers materialization.
     mkdir -p /var/lib/nfs-klldap /var/run/nfs-klldap /var/lib/extrausers
 
-    # SSSD (provides NSS for POSIX identity from LLDAP). Start early; Ganesha
-    # and the rest of the stack benefit from consistent UID/GID mapping.
-    info "Starting SSSD..."
-    # Do not fully silence stderr here — early SSSD errors (config, permissions, etc.)
-    # are valuable in the primary container logs for quick diagnosis.
-    sssd -i --logger=files ${SSSD_DEBUG_LEVEL:+-d $SSSD_DEBUG_LEVEL} &
-    SSSD_PID=$!
-
-    info "Waiting for SSSD NSS responder..."
-    for _ in {1..60}; do
-        if [ -S /var/lib/sss/pipes/nss ]; then
-            info "SSSD ready"
-            break
-        fi
-        sleep 0.3
-    done
-
+    restart_sssd_and_wait
     if [ ! -S /var/lib/sss/pipes/nss ]; then
         die "SSSD NSS pipe did not appear. Check LLDAP connectivity and bind credentials."
     fi
 
-    # Append host/FQDN host/*@REALM principals unless already listed in PRERESOLVE.
-    _H=$(hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || echo "localhost")
-    _R=$(awk '/default_realm/ {print $3; exit}' /etc/krb5.conf 2>/dev/null || echo "${NFS_KLLDAP_KERBEROS_REALM:-EXAMPLE.COM}")
-    _PRE="${NFS_KLLDAP_IDHELPER_PRERESOLVE:-}"
-    for _V in "$_H" "$(echo "$_H" | cut -d. -f1)"; do
-        _P="host/${_V}@${_R}"
-        case ",${_PRE}," in
-            *",${_P},"*) ;;
-            *) _PRE="${_PRE:+$_PRE,}$_P" ;;
-        esac
-    done
-    export NFS_KLLDAP_IDHELPER_PRERESOLVE="$_PRE"
-
-    info "Starting nfs-klldap-idhelper (Kerberos ID translator)..."
-    "$IDHELPER_BIN" daemon > >(tee -a /var/log/idhelper.log) 2>&1 &
-    IDHELPER_PID=$!
-    sleep 0.2
-    if ! kill -0 "$IDHELPER_PID" 2>/dev/null; then
-        warn "idhelper did not stay running; check /var/log/idhelper.log"
-    else
-        info "idhelper daemon started (pid $IDHELPER_PID)"
-    fi
-
-    info "Waiting for idhelper preload (bulk LDAP users + root + server host principals)..."
-    BULK_SEED_MARKER="/var/lib/nfs-klldap/.bulk_seed_done"
-    for _ in $(seq 1 60); do
-        if [ -f "$BULK_SEED_MARKER" ] && \
-           grep -q '^root:' /var/lib/nfs-klldap/nss_passwd 2>/dev/null; then
-            _n=$(cat "$BULK_SEED_MARKER" 2>/dev/null | tr -d '[:space:]' || echo "?")
-            info "idhelper preload ready (bulk-seeded ${_n} users + root uid0 in nss_passwd)"
-            break
-        fi
-        sleep 0.2
-    done
-    if [ ! -f "$BULK_SEED_MARKER" ]; then
-        warn "idhelper bulk-seed marker missing; Ganesha may log principal2uid WARN on first user mount"
-    fi
-
-    # --- Ganesha prerequisites: rpcbind, dbus, then ganesha.nfsd ---
-    # rpcbind has no RPCBIND_PID tracking; cleanup relies on pkill -TERM rpcbind.
-    if command -v rpcbind >/dev/null 2>&1; then
-        if ! pgrep -x rpcbind >/dev/null 2>&1; then
-            info "Starting rpcbind..."
-            rpcbind -w 2>/dev/null || rpcbind 2>/dev/null || true
-        fi
-    fi
-
-    # dbus system bus (required for Ganesha 9.6 runtime/management on this image).
-    mkdir -p /run/dbus
-
-    # Clean stale pid file (very common cause of "Failed to start message bus")
-    rm -f /run/dbus/pid
-
-    if ! pgrep -x dbus-daemon >/dev/null 2>&1; then
-        info "Starting dbus-daemon (system bus)..."
-        dbus-daemon --system --nofork &
-        DBUS_PID=$!
-        sleep 0.5
-    fi
-
-    # Wait for the system bus socket + functional responsiveness
-    info "Waiting for D-Bus system bus socket..."
-    for _ in {1..50}; do
-        if [ -S /run/dbus/system_bus_socket ]; then
-            # Functional test — this catches the case where the socket exists but the daemon isn't ready
-            if dbus-send --system --print-reply --dest=org.freedesktop.DBus \
-                /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1; then
-                info "D-Bus system bus is ready"
-                break
-            fi
-        fi
-        sleep 0.2
-    done
-
-    if [ ! -S /run/dbus/system_bus_socket ]; then
-        warn "D-Bus system bus socket did not appear; Ganesha may have limited management features."
-    fi
+    restart_idhelper_and_wait_bulk
+    ensure_ganesha_prereqs
 
     info "Starting NFS-Ganesha (idhelper mappings via nss_wrapper preload)..."
     start_ganesha
 
-    # WebUI (HTTPS on 9630 via axum-server + rustls; self-signed unless NFS_KLLDAP_WEBUI_TLS_* set)
-    info "Starting WebUI on 0.0.0.0:9630 (HTTPS)..."
-    NFS_KLLDAP_CONF="$NFS_CONFIG" \
-    "$UI_BIN" --config "$NFS_CONFIG" \
-        > >(tee -a /var/log/webui.log) 2>&1 &
-    WEBUI_PID=$!
-
-    sleep 1.5
-    if ! kill -0 "$WEBUI_PID" 2>/dev/null; then
-        warn "WebUI process exited quickly — last log lines:"
-        tail -n 30 /var/log/webui.log 2>/dev/null || true
-    fi
+    restart_webui
 
     info "All services launched. Supervisor (this process) remains as pid 1."
     # Ensure no stale apply marker from a previous container run (the button

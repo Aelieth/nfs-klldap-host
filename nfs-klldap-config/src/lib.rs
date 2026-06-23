@@ -55,8 +55,9 @@ pub use constants::{
     DEFAULT_USER_FULLNAME_ATTR, DEFAULT_USER_GID_ATTR, DEFAULT_USER_HOME_ATTR,
     DEFAULT_USER_NAME_ATTR, DEFAULT_USER_OBJECT_CLASS, DEFAULT_USER_PRINCIPAL_ATTR,
     DEFAULT_USER_SHELL_ATTR, DEFAULT_USER_UID_ATTR, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
-    GANESHA_DEFAULT_SECTYPE, GANESHA_PROTOCOLS, GANESHA_PWNAM_IMPL,
-    GANESHA_ROOT_KRB_PRINCIPALS, IDMAPD_GSS_METHODS, IDMAPD_NOBODY_GROUP, IDMAPD_NOBODY_USER,
+    GANESHA_ALLOWED_SECTYPES, GANESHA_ALLOWED_SQUASH, GANESHA_DEFAULT_SECTYPE,
+    GANESHA_DEFAULT_SQUASH, GANESHA_PROTOCOLS, GANESHA_PWNAM_IMPL, GANESHA_ROOT_KRB_PRINCIPALS,
+    IDMAPD_GSS_METHODS, IDMAPD_NOBODY_GROUP, IDMAPD_NOBODY_USER,
     IDMAPD_TRANSLATION_METHOD, LOG_NOISE_TOKENS, MACHINE_GID, MACHINE_PRINCIPAL_PREFIXES, MACHINE_UID,
     DEFAULT_GROUP_MEMBER_ATTR_KLLDAP, DEFAULT_GROUP_MEMBER_ATTR_LEGACY,
 };
@@ -366,6 +367,19 @@ mod tests {
         let mut c2 = minimal_cfg();
         c2.shares[0].security = Some("aes-256".into());
         assert!(c2.validate_and_derive().is_err());
+    }
+
+    #[test]
+    fn invalid_squash_rejected() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let _guards = clean_core_env();
+        let mut c = minimal_cfg();
+        c.shares[0].squash = Some("invalid_squash".into());
+        assert!(c.validate_and_derive().is_err());
+
+        let mut c2 = minimal_cfg();
+        c2.shares[0].squash = Some("root_squash".into());
+        assert!(c2.validate_and_derive().is_ok());
     }
 
     #[test]

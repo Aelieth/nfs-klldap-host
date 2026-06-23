@@ -1,9 +1,9 @@
 #!/bin/bash
-# Ganesha helper (show-exports/reload/remove via inotify + SIGHUP to supervisor).
-# The container provides a system bus (dbus-daemon) for Ganesha's own use, but this
-# helper (and the supervisor) manage exports/reloads via fragments + HUP (no DBUS RPCs to ganesha).
-# See container/README.md. Writes go to exports.d/; supervisor + watcher handle reloads.
-# add-export is deprecated/no-op.
+# Ganesha helper: diagnostics + supervisor-triggered reload (SIGHUP to pid 1).
+# Export fragments are generated from nfs-klldap.conf by nfs-klldap-config; the
+# conf-watcher signals pid 1 on TOML changes. reload/remove-export also signal pid 1.
+# The container dbus bus is for Ganesha internals only (no DBUS export RPCs here).
+# See container/README.md.
 #
 
 set -euo pipefail
@@ -21,13 +21,14 @@ die() {
 
 usage() {
     cat <<EOF
-ganesha-ctl - NFS-Ganesha helper (inotify + supervisor HUP; container bus is for Ganesha internals)
+ganesha-ctl - NFS-Ganesha helper (supervisor SIGHUP; container bus is for Ganesha internals)
 
 Usage:
-  add-export <file> [name]   # (no-op / deprecated; watcher-driven)
-  remove-export <name>       # delete matching fragment
-  show-exports               # list exports.d
-  reload                     # bounce ganesha via supervisor
+  add-export <file> [name]   # (no-op / deprecated; edit nfs-klldap.conf instead)
+  remove-export <name>       # delete matching fragment + signal supervisor reload
+  show-fragments             # list on-disk exports.d fragments (not live D-Bus state)
+  show-exports               # alias for show-fragments (deprecated)
+  reload                     # signal supervisor (regenerate + full service recycle)
   id-resolve <principal>     # resolve/classify a Kerberos principal via idhelper
   id-check                   # quick health of the idhelper translator
   id-map-test [name]         # verify getent + principal mapping parity (testuser1 + host/...) for 9.6 mount stability
@@ -35,8 +36,17 @@ Usage:
 The idhelper daemon (nfs-klldap-idhelper) is the authoritative principal
 classifier/resolver. It materializes mappings for Ganesha (via nss_wrapper files
 that Ganesha is launched under). Use id-resolve / id-check for diagnostics.
-Container watches config/exports.d; supervisor bounces on change.
+Container watches nfs-klldap.conf; supervisor regenerates exports.d on SIGHUP.
 EOF
+}
+
+# Ask pid 1 to regenerate config and recycle SSSD, idhelper, Ganesha, and WebUI.
+signal_supervisor_reload() {
+    if kill -HUP 1 2>/dev/null; then
+        log "Signaled supervisor (pid 1) for privileged regeneration + service recycle"
+        return 0
+    fi
+    die "Could not signal supervisor (pid 1) — run from inside the container"
 }
 
 # Best-effort mapping from a user-supplied name/id to a fragment filename.
@@ -81,7 +91,7 @@ shift || true
 
 case "$CMD" in
     add-export)
-        # Deprecated/no-op: write directly to bind-mounted exports.d; watcher + supervisor pick up.
+        # Deprecated/no-op: exports are generated from nfs-klldap.conf [[shares]].
         FILE="${1:-}"
         if [ -z "$FILE" ]; then
             die "Usage: ganesha-ctl add-export <file-in-exports.d> [name]"
@@ -93,7 +103,7 @@ case "$CMD" in
                 die "Fragment file not found: $FILE (write it into ${EXPORTS_DIR})"
             fi
         fi
-        log "add-export (no-op): $FILE will be picked up by watcher + HUP"
+        log "add-export (no-op): edit nfs-klldap.conf [[shares]] and apply via WebUI or kill -HUP 1"
         ;;
 
     remove-export)
@@ -116,13 +126,16 @@ case "$CMD" in
         log "Removing fragment: $FRAG"
         rm -f "$FRAG" || die "Failed to remove $FRAG"
 
-        log "Fragment removed. Triggering reload so ganesha drops the export..."
-        pkill -TERM ganesha.nfsd 2>/dev/null || true
-        log "Done. ganesha will restart and the export will be gone."
+        log "Fragment removed. Signaling supervisor reload..."
+        log "NOTE: if the share still exists in nfs-klldap.conf, regeneration will recreate this fragment."
+        signal_supervisor_reload
         ;;
 
-    show-exports)
-        log "Current export fragments in ${EXPORTS_DIR}:"
+    show-fragments|show-exports)
+        if [ "$CMD" = "show-exports" ]; then
+            log "show-exports is deprecated; use show-fragments"
+        fi
+        log "Export fragments in ${EXPORTS_DIR} (on-disk; not live D-Bus state):"
 
         shopt -s nullglob
         files=( "${EXPORTS_DIR}"/*.conf "${EXPORTS_DIR}"/*.cfg )
@@ -140,15 +153,12 @@ case "$CMD" in
             cat -n "$f"
         done
         echo ""
-        log "These fragments are the source of truth. Ganesha is (re)started by the internal watcher when they change."
+        log "These are on-disk fragments from nfs-klldap-config. Apply nfs-klldap.conf changes via kill -HUP 1."
         ;;
 
     reload)
-        log "Requesting Ganesha restart (self-contained)..."
-        # Supervisor HUP does pkill + respawn (SSSD/WebUI too for full apply).
-        # (The container now has a system bus; this path does not use DBUS for management.)
-        pkill -TERM ganesha.nfsd 2>/dev/null || true
-        log "Reload triggered (supervisor will respawn)."
+        log "Requesting supervisor reload (regenerate + recycle SSSD/idhelper/Ganesha/WebUI)..."
+        signal_supervisor_reload
         ;;
 
     id-resolve)

@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use nfs_klldap_config::{
     from_sssd_section, parse_getent_passwd, IdLdapResolver, IdMapSnapshot, NfsKlldapConfig,
+    FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
 };
 
 use crate::common::{
@@ -105,7 +106,7 @@ fn load_resolver_from_config() -> Option<(IdLdapResolver, String, String)> {
     if cfg.sssd.ldap_default_bind_dn.trim().is_empty() || cfg.sssd.ldap_default_authtok.trim().is_empty() {
         return None;
     }
-    let resolver = from_sssd_section(&cfg.ldap_uri, &cfg.sssd);
+    let resolver = from_sssd_section(&cfg.ldap_uri, &cfg.sssd, &cfg.effective_realm());
     Some((resolver, cfg.sssd.ldap_default_bind_dn.clone(), cfg.sssd.ldap_default_authtok.clone()))
 }
 
@@ -222,12 +223,8 @@ pub(crate) fn resolve_principal(
         let second_try = principal.split('@').next().unwrap_or(principal);
         dlog!("  user_path first_try=\"{}\" second_try=\"{}\"", first_try, second_try);
 
-        // Try NSS/getent first; on miss fall back to structured LDAP (covers cold SSSD cache).
-        let nss_looked = resolve_via_nss(first_try).or_else(|| resolve_via_nss(second_try));
-        let ldap_looked = resolve_via_structured_ldap(first_try)
-            .or_else(|| resolve_via_structured_ldap(second_try))
-            .map(|(u, g)| (u, g, "ldap".to_string()));
-        let looked = nss_looked.or(ldap_looked);
+        // getent then LDAP (resolve_via_nss already chains structured LDAP on miss).
+        let looked = resolve_via_nss(first_try).or_else(|| resolve_via_nss(second_try));
         dlog!("  nss_getent final_got={:?}", looked.as_ref().map(|(u, g, s)| (*u, *g, s.as_str())));
 
         if let Some((uid, gid, src)) = looked {
@@ -241,20 +238,17 @@ pub(crate) fn resolve_principal(
                 source: src,
             }
         } else {
-            // Unknown / unmapped -> nobody-ish but keep the info.
-            // This is the path that produces the "Could not map principal" in ganesha.
-            // The bases used by the resolver (and thus bulk/single searches) determine
-            // whether nested OUs under ou=users (or ou=people) are visible.
+            // Nobody fallback: materialize into nss_passwd so Ganesha getpwnam under nss_wrapper can resolve it.
             eprintln!(
-                "[idhelper] FALLBACK 65534 for principal=\"{}\" (no uid/gid from getent or structured resolver) - principal2uid path for kerberos",
-                principal
+                "[idhelper] FALLBACK {} for principal=\"{}\" (no uid/gid from getent or structured resolver)",
+                FALLBACK_NOBODY_UID, principal
             );
             let name = principal.split('@').next().unwrap_or(principal).to_string();
             Resolved {
                 principal: principal.to_string(),
                 name,
-                uid: 65534,
-                gid: 65534,
+                uid: FALLBACK_NOBODY_UID,
+                gid: FALLBACK_NOBODY_GID,
                 kind: PrincipalKind::Unknown,
                 source: "direct".to_string(),
             }
@@ -293,7 +287,7 @@ pub(crate) fn resolve_principal(
     // This helps both direct getent passwd testuser1 (short) and the full
     // principal path (via shim + idhelper) see fresh data from LLDAP/SSSD.
     // Must not change behavior for ganesha 9.6/trixie.
-    if resolved.uid != 0 && resolved.uid != 65534 {
+    if resolved.uid != 0 && resolved.uid != FALLBACK_NOBODY_UID {
         let _ = Command::new("sss_cache")
             .args(["-u", &resolved.name])
             .output();

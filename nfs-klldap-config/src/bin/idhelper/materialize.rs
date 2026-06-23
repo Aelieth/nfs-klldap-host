@@ -5,7 +5,9 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
-use nfs_klldap_config::{IdMapSnapshot, MACHINE_PRINCIPAL_PREFIXES};
+use nfs_klldap_config::{
+    IdMapSnapshot, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID, MACHINE_PRINCIPAL_PREFIXES,
+};
 
 use crate::common::{
     IdCache, PrincipalKind, Resolved, EXTRAUSERS_GROUP, EXTRAUSERS_PASSWD, NSS_GROUP_PATH,
@@ -76,31 +78,38 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
     cache: &mut IdCache,
 ) -> usize {
     let mut seeded = 0usize;
-    let mut seen_short: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut best_per_uid: std::collections::HashMap<i32, (String, u32, u32)> =
+        std::collections::HashMap::new();
 
-    for short_name in snap.by_uid.values() {
-        if short_name.contains('/')
-            && MACHINE_PRINCIPAL_PREFIXES
-                .iter()
-                .any(|p| short_name.starts_with(p))
-        {
-            continue;
-        }
-        if !seen_short.insert(short_name.clone()) {
-            continue;
-        }
-        let Some(entry) = snap.users.get(short_name) else {
-            continue;
-        };
-        let uid = entry.uid as u32;
-        let gid = entry.gid as u32;
+    // One entry per LDAP uid: prefer short posix names over UPN keys in snap.users.
+    for (key, entry) in &snap.users {
+        let uid = entry.uid;
         if uid == 0 {
             continue;
         }
+        if key.contains('/')
+            && MACHINE_PRINCIPAL_PREFIXES.iter().any(|p| key.starts_with(p))
+        {
+            continue;
+        }
+        let short = key.split('@').next().unwrap_or(key.as_str()).to_string();
+        let uid_u = uid as u32;
+        let gid_u = entry.gid as u32;
+        best_per_uid
+            .entry(uid)
+            .and_modify(|(name, _, _)| {
+                if !key.contains('@') && name.contains('@') {
+                    *name = short.clone();
+                }
+            })
+            .or_insert((short, uid_u, gid_u));
+    }
+
+    for (short_name, uid, gid) in best_per_uid.into_values() {
         let principal = format!("{}@{}", short_name, realm);
         cache.insert(Resolved {
             principal,
-            name: short_name.clone(),
+            name: short_name,
             uid,
             gid,
             kind: PrincipalKind::User,
@@ -200,9 +209,15 @@ pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
         group_lines.push("root:x:0:root,daemon,bin".to_string());
     }
 
-    // Ensure root:x:0:0 in nss_passwd so getpwuid_r(0) succeeds for machine principals on cold start.
+    // root + nobody lines let Ganesha getpwuid_r(0) and unknown-principal fallback succeed under nss_wrapper.
     if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
         passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
+    }
+    if !passwd_lines.iter().any(|l| l.starts_with("nobody:")) {
+        passwd_lines.push(format!(
+            "nobody:x:{}:{}:nfs-klldap fallback:/nonexistent:/usr/sbin/nologin",
+            FALLBACK_NOBODY_UID, FALLBACK_NOBODY_GID
+        ));
     }
 
     // Write passwd atomically

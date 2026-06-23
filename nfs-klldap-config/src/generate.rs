@@ -40,9 +40,6 @@ pub(crate) fn fragment_basename(index: usize, name: &str) -> String {
 
 
 pub fn generate_all(cfg: &NfsKlldapConfig, paths: &GenerationPaths) -> Result<(), ConfigError> {
-    for w in &cfg.share_warnings {
-        eprintln!("WARN [nfs-klldap-config] {}", w.display_message());
-    }
     fs::create_dir_all(&paths.exports_dir)?;
     write_sssd_conf(cfg, &paths.sssd_conf)?;
     write_krb5_conf(cfg, &paths.krb5_conf)?;
@@ -411,8 +408,7 @@ fn write_krb5_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
 
 /// Write /etc/idmapd.conf: Domain/Local-Realms from effective_realm(), Method/GSS = nsswitch.
 fn write_idmap_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError> {
-    // Kerberos principals use uppercase realms; libnfsidmap Local-Realms match is case-sensitive.
-    let realm = cfg.effective_realm().to_ascii_uppercase();
+    let realm = cfg.nfsv4_domain();
 
     let content = format!(
         r#"# =============================================================================
@@ -477,7 +473,7 @@ fn write_ganesha_main(
     exports_dir: &Path,
 ) -> Result<(), ConfigError> {
     let sec = &cfg.ganesha.default_security;
-    let realm = cfg.effective_realm();
+    let realm = cfg.nfsv4_domain();
 
     // Explicit includes (no glob) for deterministic load order and to avoid
     // Ganesha startup races on container restart / image rebuild.
@@ -496,7 +492,7 @@ fn write_ganesha_main(
     Protocols = {proto};
     Bind_addr = 0.0.0.0;
     NFS_Port = 2049;
-    # Enable_UDP = false;
+    Enable_UDP = false;
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
@@ -606,7 +602,10 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         let default_sec = &cfg.ganesha.default_security;
         let sec = share.security.as_deref().unwrap_or(default_sec);
         let access = if share.rw.unwrap_or(true) { "RW" } else { "RO" };
-        let squash = share.squash.as_deref().unwrap_or("no_root_squash");
+        let squash = share
+            .squash
+            .as_deref()
+            .unwrap_or(constants::GANESHA_DEFAULT_SQUASH);
 
         // Resolve Pref* from cache_profile or raw pref_* fallback.
         let (pref_r, pref_w) = if let Some(cp) = &share.cache_profile {
@@ -641,11 +640,12 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
     CLIENT {{
         Clients = *;
         Access_Type = {access};
-        Protocols = 4;
+        Protocols = {proto};
     }}
 
 "#,
             access = access,
+            proto = constants::GANESHA_PROTOCOLS,
         );
 
         let block = format!(
@@ -1059,5 +1059,37 @@ mod tests {
         let idmap = std::fs::read_to_string(&paths.idmap_conf).unwrap();
         assert!(idmap.contains("Domain = SATOMLIN.COM"));
         assert!(idmap.contains("Local-Realms = SATOMLIN.COM"));
+
+        let ganesha = std::fs::read_to_string(&paths.ganesha_conf).unwrap();
+        assert!(
+            ganesha.contains("DomainName = SATOMLIN.COM;"),
+            "ganesha DomainName must match uppercase idmapd Domain"
+        );
+    }
+
+    #[test]
+    fn export_fragment_emits_validated_squash() {
+        let mut cfg = crate::NfsKlldapConfig {
+            ldap_uri: "ldaps://k.test:6360".into(),
+            sssd: crate::SssdSection {
+                ldap_default_bind_dn: "uid=admin,ou=people,dc=test,dc=com".into(),
+                ldap_default_authtok: "sekret".into(),
+                ..Default::default()
+            },
+            shares: vec![crate::Share {
+                name: "data".into(),
+                host_path: "/media/data".into(),
+                squash: Some("root_squash".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        cfg.validate_and_derive().expect("valid");
+        let tmp = tempfile::tempdir().unwrap();
+        let exports_dir = tmp.path().join("exports.d");
+        std::fs::create_dir_all(&exports_dir).unwrap();
+        write_export_fragments(&cfg, &exports_dir).expect("fragments");
+        let frag = std::fs::read_to_string(exports_dir.join("10-data.conf")).unwrap();
+        assert!(frag.contains("Squash = root_squash;"));
     }
 }

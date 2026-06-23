@@ -57,7 +57,7 @@ Copy `ignored_user_attributes` / `ignored_group_attributes` from the generated s
 ```bash
 /container/healthcheck.sh
 getent passwd alice && id alice
-ganesha-ctl show-exports
+ganesha-ctl show-fragments
 klist -k /etc/krb5.keytab
 ```
 

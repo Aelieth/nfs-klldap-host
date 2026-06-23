@@ -4,10 +4,9 @@ use crate::constants::MACHINE_PRINCIPAL_PREFIXES;
 
 /// Classify a Kerberos principal as machine (host/nfs/root service) or user.
 /// Returns `(is_machine, reason)`.
-pub fn classify_principal(principal: &str, realm: &str, server_variants: &[String]) -> (bool, String) {
+pub fn classify_principal(principal: &str, _realm: &str, server_variants: &[String]) -> (bool, String) {
     let p = principal.trim();
     let lower = p.to_ascii_lowercase();
-    let realm_lower = realm.to_ascii_lowercase();
 
     let local = if let Some(at) = lower.rfind('@') {
         &lower[..at]
@@ -26,21 +25,6 @@ pub fn classify_principal(principal: &str, realm: &str, server_variants: &[Strin
         let v_l = v.to_ascii_lowercase();
         if local == format!("host/{}", v_l) || local == format!("nfs/{}", v_l) {
             return (true, format!("matches server host principal for {}", v));
-        }
-    }
-
-    if local.contains('/') {
-        let after = local.split('/').nth(1).unwrap_or("");
-        if !after.is_empty()
-            && (after.chars().any(|c| c.is_ascii_alphanumeric()) || after.contains('.'))
-            && (lower.ends_with(&format!("@{}", realm_lower))
-                || lower.contains("host")
-                || lower.contains("nfs"))
-        {
-            return (
-                true,
-                "contains host/service prefix and hostname-like component".to_string(),
-            );
         }
     }
 
@@ -88,5 +72,11 @@ mod tests {
             let (is_machine, _) = classify_principal(name, "REALM", &[]);
             assert!(is_machine, "expected machine for {}", name);
         }
+    }
+
+    #[test]
+    fn host_substring_in_username_does_not_classify_as_machine() {
+        let (is_machine, _) = classify_principal("app/hostbackup@REALM", "REALM", &[]);
+        assert!(!is_machine);
     }
 }

@@ -179,7 +179,7 @@ volumes:
 ### dbus-daemon and rpcbind
 - Ganesha 9.6 (Debian trixie-backports) expects a D-Bus system bus (`/run/dbus/system_bus_socket`). The entrypoint launches `dbus-daemon --system --nofork &` before `ganesha.nfsd`.
 - `rpcbind` is installed and started (best-effort). For pure NFSv4 (`Protocols = 4`) it is not strictly required; some tooling and status scripts still reference the portmapper.
-- The supervisor and `ganesha-ctl` management path remain "DBUS-free" (we use export fragments on disk + SIGHUP to pid 1 + pkill/respawn). The bus is present for Ganesha's internal/monitoring use.
+- The supervisor and `ganesha-ctl` management path remain "DBUS-free" (export fragments on disk + SIGHUP to pid 1 for full recycle). The bus is present for Ganesha's internal/monitoring use.
 
 In the container you should see the socket and processes:
 ```
@@ -200,25 +200,18 @@ NFS_CORE_PARAM {
     Protocols = 4;
     Bind_addr = 0.0.0.0;
     NFS_Port = 2049;
-    # Enable_UDP = false;
+    Enable_UDP = false;
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
-    Manage_Gids_Expiration = 600;
 }
 
 DIRECTORY_SERVICES {
     DomainName = EXAMPLE.COM;
     Pwnam_Implementation = nsswitch;
-    # NOTE: Root_Kerberos_Principal remains a tiny safe static list.
-    # The nfs-klldap-idhelper is the authoritative classifier/resolver for
-    # machine principals (host/..., nfs/..., root/...) vs LDAP users.
-    # It materializes uid/gid mappings into nss_wrapper files. Ganesha is
-    # launched (by entrypoint) under LD_PRELOAD=libnss_wrapper.so pointing
-    # at those files so its getpwnam path (used for Kerberos owner mapping)
-    # sees correct stable uids (0 for machines, real POSIX for users).
-    # We deliberately do not inject dynamic principal data into this file.
     Root_Kerberos_Principal = host, nfs;
+    idmapped_user_time_validity = 600;
+    idmapped_group_time_validity = 600;
 }
 
 NFS_KRB5 {
@@ -237,13 +230,24 @@ NFSV4 {
 EXPORT_DEFAULTS {
     SecType = krb5p;
     Protocols = 4;
-    # (Read_Access_Check_Policy intentionally omitted — trixie Ganesha 9.6 rejects the key; default "pre" applies.)
+}
+
+LOG {
+    Default_Log_Level = INFO;
+    Components {
+        CLIENTID = EVENT;
+        SESSIONS = EVENT;
+        IDMAPPER = EVENT;
+        XPRT = EVENT;
+    }
 }
 ```
 
 Key points:
 - `Protocols = 4` (also in EXPORT_DEFAULTS and per-share CLIENT blocks) for strict NFSv4.
-- `Manage_Gids_Expiration` in NFS_CORE_PARAM.
+- `Enable_UDP = false` (NFSv4-only; verified on trixie-backports Ganesha 9.6).
+- `idmapped_user_time_validity` / `idmapped_group_time_validity` in `DIRECTORY_SERVICES` (not deprecated `Manage_Gids_Expiration` in `NFS_CORE_PARAM`).
+- `DomainName` is uppercase `effective_realm()` (matches `/etc/idmapd.conf` Domain).
 - Kerberos configuration via NFS_KRB5 and a minimal Root_Kerberos_Principal (host, nfs).
 - Explicit `%include` lines (one per share fragment) for deterministic loading.
 - `Read_Access_Check_Policy` omitted everywhere (trixie Ganesha 9.6 rejects it; built-in default `pre` applies).
@@ -264,7 +268,7 @@ See also the reference shape in `examples/ganesha-exports.d/10-example.conf`.
 - Ganesha fails to start with dbus/socket errors → the entrypoint dbus launch didn't produce `/run/dbus/system_bus_socket` in time (rare; the readiness loop helps), or the package was not present in an old image.
 - Kerberos principal / hostname mismatches → missing `--uts=host` (or `uts: host` in compose) and/or keytab principals that don't match the name the container sees.
 - Ganesha CLIENT records show `server_addr = 172.17.x.x` while clients connect from external addresses → container is on Docker bridge networking instead of host mode. Restart with `network_mode: host` / `--network=host`. `verify-ganesha.sh` and `nfs-klldap-startup check` warn when the container primary IPv4 is in `172.17.0.0/16`.
-- UDP clients or legacy `showmount` tools complain → we disable UDP by default in CORE_PARAM and ship rpcbind anyway; open the ports you actually need.
+- UDP clients or legacy `showmount` tools complain → `Enable_UDP = false` in `NFS_CORE_PARAM` (NFSv4 TCP only); rpcbind is still present for compatibility; open the ports you actually need.
 - Mounts repeatedly fail / get torn down with Fedora Immutable clients (host keytab + user TGT) → the `nfs-klldap-idhelper` daemon must be running (started automatically after SSSD). Ganesha uses nss_wrapper preload by default (`USE_NSS_WRAPPER=1`); set `USE_NSS_WRAPPER=0` to rely on extrausers alone. Use `ganesha-ctl id-check`, `ganesha-ctl id-resolve '<principal>'`, and inspect `/var/lib/nfs-klldap/nss_passwd` to verify. See [docs/ldap-integration.md](../ldap-integration.md).
 
 ### Security model recap (WebUI FS changes)
@@ -277,6 +281,6 @@ This combination (bind mounts + root inside + the two caps + `--uts=host` + expl
 ```bash
 /container/healthcheck.sh
 verify-ganesha.sh            # in-container Ganesha/export + network checks (/usr/local/bin/)
-ganesha-ctl show-exports
+ganesha-ctl show-fragments
 getent passwd <user>
 ```

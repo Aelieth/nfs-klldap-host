@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Tiny type-safe TOML config loader + generator for nfs-klldap-host (bundled in container)"
+autobins = false
 
 [lib]
 path = "src/lib.rs"
@@ -14,7 +15,7 @@ path = "src/lib.rs"
 name = "nfs-klldap-config"
 path = "src/main.rs"
 
-# Startup/orchestration binary (guided first-run TUI + reachability + diagnostics).
+# Startup/orchestration binary (pid-1 supervise + non-interactive diagnostics).
 [[bin]]
 name = "nfs-klldap-startup"
 path = "src/bin/nfs_klldap_startup.rs"

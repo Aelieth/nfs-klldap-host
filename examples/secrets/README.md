@@ -7,6 +7,6 @@ Run the container with **host networking** (`--network=host` or compose `network
 - `nfs/myhost@REALM`
 - `nfs/myhost.example.com@REALM`
 
-The startup TUI and WebUI verify alignment with the two-tier hostname check (`hostname` vs `/proc/sys/kernel/hostname`).
+The WebUI setup wizard and System Settings verify alignment with the two-tier hostname check (`hostname` vs `/proc/sys/kernel/hostname`).
 
 Never commit real keytabs.

@@ -2,7 +2,7 @@
 ARG FEDORA_VERSION=44
 FROM registry.fedoraproject.org/fedora-minimal:${FEDORA_VERSION} AS chef
 
-# Build deps for Rust (openldap-clients for ldapsearch is in runtime only; used by startup TUI probes)
+# Build deps for Rust (openldap-clients for ldapsearch is in runtime only; used by setup wizard probes)
 RUN microdnf install -y --assumeyes \
         shadow-utils pkgconf openssl-devel gcc make perl curl gzip krb5-devel \
     && microdnf clean all

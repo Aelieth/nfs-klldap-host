@@ -7,9 +7,7 @@ use crate::ConfigError;
 /// Returns true if the given config path is on a persistent volume (i.e. a real
 /// host bind mount) rather than living inside the container's own filesystem layer.
 ///
-/// This is used for the guided first-run experience: we refuse to do meaningful
-/// work until the user has mounted a real volume at /config (or wherever
-/// NFS_CONFIG points).
+/// Used by the WebUI setup wizard: refuse meaningful work until /config is a real bind mount.
 #[cfg(unix)]
 pub fn is_persistent_config(path: &Path) -> bool {
     if !path.exists() {

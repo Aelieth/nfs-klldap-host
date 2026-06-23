@@ -209,6 +209,7 @@ async fn main() {
         apply_progress: Arc::new(Mutex::new(None)),
         restart_requested: Arc::new(Mutex::new(false)),
         direct_tls: !webui_tls_off,
+        setup_marker_override: None,
     };
 
     let app = crate::web::router(state);

@@ -46,6 +46,13 @@ pub async fn login_page(
     headers: HeaderMap,
     Query(q): Query<LoginQuery>,
 ) -> impl IntoResponse {
+    if super::setup::setup_wizard_required_with_marker(
+        &state.config_path,
+        state.setup_marker_override.as_deref(),
+    ) {
+        return Redirect::to(&super::setup::setup_redirect_for_step(&state.config_path))
+            .into_response();
+    }
     if validate_session_in_headers(&state, &headers).is_some() {
         return Redirect::to("/").into_response();
     }
@@ -158,6 +165,13 @@ pub async fn setup_password(
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> impl IntoResponse {
+    if super::setup::setup_wizard_required_with_marker(
+        &state.config_path,
+        state.setup_marker_override.as_deref(),
+    ) {
+        return Redirect::to(&super::setup::setup_redirect_for_step(&state.config_path))
+            .into_response();
+    }
     if state.auth.has_simple_password() {
         let html = LoginTemplate {
             error: Some(

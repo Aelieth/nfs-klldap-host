@@ -131,7 +131,7 @@ Use one of the two supported ways to give the container a stable hostname:
    nfs-klldap.conf (the override takes precedence for keytab reminders).
 
 After fixing the container invocation, restart and verify that both sources
-now report the identical name in the startup TUI and WebUI logs.";
+now report the identical name in the setup wizard and WebUI logs.";
 
         return Err(HostnameInconsistency {
             primary: Some(primary_obs),

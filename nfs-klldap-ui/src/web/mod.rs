@@ -3,8 +3,10 @@
 
 use axum::{
     body::Body,
+    extract::State,
     http::{HeaderMap, Request, Response},
     middleware::{self, Next},
+    response::{IntoResponse, Redirect},
     routing::{get, post},
     Router,
 };
@@ -20,6 +22,7 @@ mod auth;
 mod keytab;
 mod permission_tree;
 mod settings;
+mod setup;
 
 pub use keytab::{compute_keytab_alert, get_keytab_info};
 
@@ -58,6 +61,8 @@ pub struct AppState {
     pub restart_requested: Arc<Mutex<bool>>,
     /// true when WebUI terminates TLS; false when `NFS_KLLDAP_WEBUI_TLS=off` (proxy mode).
     pub direct_tls: bool,
+    /// Test-only: when set, gates setup completion on this marker path instead of the default.
+    pub setup_marker_override: Option<PathBuf>,
 }
 
 impl AppState {
@@ -95,6 +100,31 @@ pub(crate) struct EffectiveScheme {
     pub https: bool,
 }
 
+/// Redirect to the setup wizard when first-run steps are incomplete.
+async fn require_setup_complete(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response<Body> {
+    let path = req.uri().path();
+    if path.starts_with("/setup")
+        || path == "/login"
+        || path == "/setup-password"
+        || path == "/restart-status"
+        || path == "/logout"
+    {
+        return next.run(req).await;
+    }
+    if setup::setup_wizard_required_with_marker(
+        &state.config_path,
+        state.setup_marker_override.as_deref(),
+    ) {
+        let target = setup::setup_redirect_for_step(&state.config_path);
+        return Redirect::to(&target).into_response();
+    }
+    next.run(req).await
+}
+
 async fn detect_effective_scheme(
     direct_tls: bool,
     mut req: Request<Body>,
@@ -116,6 +146,7 @@ async fn detect_effective_scheme(
 
 pub fn router(state: AppState) -> Router {
     let direct_tls = state.direct_tls;
+    let setup_gate_state = state.clone();
     let app = Router::new()
         // === Public (no auth) ===
         .route("/login", get(login_page).post(login))
@@ -123,6 +154,16 @@ pub fn router(state: AppState) -> Router {
         .route("/logout", get(logout).post(logout))
         // Public status for the post-restart poller (no auth; used by restarting.html)
         .route("/restart-status", get(restart_status))
+        // === Public: first-run setup wizard (replaces terminal TUI) ===
+        .route("/setup", get(setup::setup_redirect))
+        .route("/setup/1", get(setup::setup_step1))
+        .route("/setup/1/verify", post(setup::setup_step1_verify))
+        .route("/setup/2", get(setup::setup_step2))
+        .route("/setup/2/save", post(setup::setup_step2_save))
+        .route("/setup/2/verify", post(setup::setup_step2_verify))
+        .route("/setup/3", get(setup::setup_step3))
+        .route("/setup/3/save", post(setup::setup_step3_save))
+        .route("/setup/3/verify", post(setup::setup_step3_verify))
 
         // === Protected: Main permission tree UI (/) ===
         .route("/", get(index))
@@ -149,11 +190,15 @@ pub fn router(state: AppState) -> Router {
 
         .with_state(state);
 
-    app.layer(NormalizePathLayer::trim_trailing_slash())
-        .layer(middleware::from_fn(move |req, next| {
-            let d = direct_tls;
-            async move { detect_effective_scheme(d, req, next).await }
-        }))
+    app.layer(middleware::from_fn_with_state(
+        setup_gate_state,
+        require_setup_complete,
+    ))
+    .layer(NormalizePathLayer::trim_trailing_slash())
+    .layer(middleware::from_fn(move |req, next| {
+        let d = direct_tls;
+        async move { detect_effective_scheme(d, req, next).await }
+    }))
 }
 
 // Integration tests (auth flows, settings, apply, cookie policy).
@@ -175,6 +220,8 @@ mod tests {
     fn make_test_state_with_temp_config() -> (AppState, TempDir) {
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("test-nfs-klldap.conf");
+        let setup_marker = tmp.path().join(".setup_wizard_done");
+        std::fs::write(&setup_marker, "ok\n").unwrap();
 
         // Write a minimal valid config
         let minimal = r#"
@@ -233,6 +280,7 @@ mod tests {
             apply_progress: Arc::new(Mutex::new(None)),
             restart_requested: Arc::new(Mutex::new(false)),
             direct_tls: true,
+            setup_marker_override: Some(setup_marker),
         };
 
         (state, tmp)
@@ -409,6 +457,8 @@ default_security = "krb5p"
 # tls_key = "/config/webui.key"                                 # optional custom key (NFS_KLLDAP_WEBUI_TLS_KEY env wins; 0600)
 "#;
         std::fs::write(&config_path, initial).unwrap();
+        let setup_marker = tmp.path().join(".setup_wizard_done");
+        std::fs::write(&setup_marker, "ok\n").unwrap();
 
         let config = Arc::new(
             nfs_klldap_config::NfsKlldapConfig::load(&config_path).expect("valid test config"),
@@ -453,6 +503,7 @@ default_security = "krb5p"
             apply_progress: Arc::new(Mutex::new(None)),
             restart_requested: Arc::new(Mutex::new(false)),
             direct_tls: true,
+            setup_marker_override: Some(setup_marker),
         };
 
         let token = auth.create_privileged_session("testadmin");

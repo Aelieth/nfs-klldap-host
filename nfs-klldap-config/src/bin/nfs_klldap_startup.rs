@@ -1,53 +1,58 @@
-//! nfs-klldap-startup — Guided first-run TUI + reachability diagnostics (runs as root).
+//! nfs-klldap-startup — container bring-up supervisor + non-interactive diagnostics.
 //!
-//! 3-step state machine that blocks until:
-//!   1. Persistent /config volume
-//!   2. ldap_uri (DNS name) reachable
-//!   3. Bind credentials work
-//!
-//! (Shares are optional at startup and may be added later.)
-//!
-//! Emits the required `nfs/<host>@REALM` principal banner using the two-tier
-//! hostname contract. Entry point remains a thin pid-1 supervisor.
+//! The blocking terminal TUI is replaced by the WebUI setup wizard; this binary
+//! provides `supervise` (pid-1), `check`, and `wait-ready` entry points.
+
+#[path = "../supervisor.rs"]
+mod supervisor;
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{exit, Command};
 use std::thread;
 use std::time::Duration;
 
 use nfs_klldap_config::{
-    derive_realm_from_uri, extract_host_from_uri, format_nfs_principal_list,
-    get_consistent_hostname, is_persistent_config, nfs_keytab_host_matches,
-    parse_klist_nfs_hosts, resolve_posix_attribute_mapping, ConfigError, NfsKlldapConfig,
+    check_persistent_writable, compute_startup_step, default_config_path, effective_startup_step,
+    format_nfs_principal_list, get_consistent_hostname, is_persistent_config,
+    is_preconfigured_deployment, nfs_keytab_host_matches, parse_klist_nfs_hosts,
+    resolve_keytab_path, startup_step_hint, StartupStep, NfsKlldapConfig,
 };
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let config_path = PathBuf::from(
-        env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string()),
-    );
-
-    let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("run");
+    let config_path = default_config_path();
+    let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("supervise");
 
     match cmd {
-        "run" | "startup" => {
-            if let Err(e) = run_guided_startup(&config_path) {
-                eprintln!("FATAL: {}", e);
+        "supervise" | "run" | "startup" => {
+            if let Err(e) = supervisor::run_supervisor(&config_path) {
+                eprintln!("FATAL: {e}");
+                exit(2);
+            }
+        }
+        "supervise-probe" => {
+            std::env::set_var("NFS_KLLDAP_SUPERVISE_PROBE", "1");
+            if let Err(e) = supervisor::run_supervisor(&config_path) {
+                eprintln!("FATAL: {e}");
                 exit(2);
             }
         }
         "check" => {
             if let Err(e) = run_one_shot_diagnostics(&config_path) {
-                eprintln!("ERROR: {}", e);
+                eprintln!("ERROR: {e}");
                 exit(2);
             }
         }
-        "help" | "--help" | "-h" => {
-            print_help();
+        "wait-ready" => {
+            if let Err(e) = wait_until_ready(&config_path) {
+                eprintln!("ERROR: {e}");
+                exit(2);
+            }
         }
+        "help" | "--help" | "-h" => print_help(),
         _ => {
-            eprintln!("Unknown command: {}", cmd);
+            eprintln!("Unknown command: {cmd}");
             print_help();
             exit(1);
         }
@@ -56,610 +61,58 @@ fn main() {
 
 fn print_help() {
     eprintln!(
-        "nfs-klldap-startup v{} — guided container bring-up (3-step TUI; entrypoint orchestrates services)
+        "nfs-klldap-startup v{} — container supervisor + diagnostics
 
 Usage:
-  nfs-klldap-startup run      Run the full guided 3-step waiting TUI until ready
-  nfs-klldap-startup check    Run diagnostics once and exit
+  nfs-klldap-startup supervise       Run pid-1 supervisor (default; replaces entrypoint logic)
+  nfs-klldap-startup supervise-probe One-shot supervise path for CI (probe mode, then exit)
+  nfs-klldap-startup check           One-shot diagnostics and exit
+  nfs-klldap-startup wait-ready      Poll until setup steps pass (no UI)
 
-Hostname / keytab:
-  Use --uts=host so the container sees the real Docker host hostname.
-  The TUI shows nfs/<hostname>@REALM using that name (short + FQDN principals
-  when the hostname contains a dot). You may pass --hostname to override.
+First-run setup is handled by the WebUI wizard at https://<host>:9630/setup
 ",
         env!("CARGO_PKG_VERSION")
     );
 }
 
-// Hostname: get_consistent_hostname() — `hostname` and /proc must agree.
-
-/// Enhanced persistent volume check + writability test.
-/// Gives the user immediate, actionable feedback instead of mysterious later failures.
-fn check_persistent_writable_config(path: &Path) -> bool {
-    if !is_persistent_config(path) {
-        return false;
-    }
-
-    // Verify we can actually write to the location (as root during startup)
-    let parent = path.parent().unwrap_or(Path::new("/config"));
-    let test_file = parent.join(".nfs-klldap-persist-test");
-
-    let can_write = std::fs::File::create(&test_file).is_ok();
-    if can_write {
-        let _ = std::fs::remove_file(&test_file);
-    }
-    can_write
-}
-
-/// Rich result for LDAP server reachability diagnostics (much better than bool).
-#[derive(Debug)]
-enum LdapReachability {
-    Reachable,
-    DnsFailure { detail: String },
-    Unreachable { detail: String },
-}
-
-/// Performs a thorough reachability check using tools available in the image
-/// (getent + nc + timeout) to give the user excellent diagnostic messages.
-fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
-    let port: u16 = uri
-        .split(':')
-        .next_back()
-        .and_then(|s| {
-            s.trim_end_matches(|c: char| !c.is_ascii_digit())
-                .parse()
-                .ok()
-        })
-        .unwrap_or(636);
-
-    // DNS resolution test (very important to distinguish from port issues)
-    let dns = Command::new("getent").args(["hosts", host]).output();
-    if let Ok(out) = dns {
-        if !out.status.success() {
-            let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            return LdapReachability::DnsFailure {
-                detail: if msg.is_empty() {
-                    "Host not found in DNS".to_string()
-                } else {
-                    msg
-                },
-            };
-        }
-    }
-
-    // Port connectivity test using nc (we now guarantee netcat-openbsd (or equivalent) is installed in the image)
-    let nc = Command::new("timeout")
-        .args(["4", "nc", "-w", "3", "-zv", host, &port.to_string()])
-        .output();
-
-    match nc {
-        Ok(out) => {
-            let combined = format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            )
-            .trim()
-            .to_string();
-
-            if out.status.success() {
-                LdapReachability::Reachable
-            } else {
-                LdapReachability::Unreachable {
-                    detail: if combined.is_empty() {
-                        "Connection failed with no specific error from nc".to_string()
-                    } else {
-                        combined
-                    },
-                }
-            }
-        }
-        Err(e) => LdapReachability::Unreachable {
-            detail: format!("Failed to execute timeout/nc: {}", e),
-        },
-    }
-}
-
-/// LDAP bind probe via ldapsearch: base search on the bind DN with the same
-/// POSIX attribute list SSSD/WebUI will use (from resolve_posix_attribute_mapping).
-fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
-    let uri = &cfg.ldap_uri;
-    let dn = &cfg.sssd.ldap_default_bind_dn;
-    let pw = &cfg.sssd.ldap_default_authtok;
-
-    let is_ldaps = uri.starts_with("ldaps://");
-
-    // Resolve the same POSIX attribute mapping that SSSD and the WebUI will use.
-    // Even a very early/partial config still produces sensible defaults
-    // (uidNumber, gidNumber, homeDirectory, loginShell, etc.).
-    let mapping = resolve_posix_attribute_mapping(&cfg.sssd);
-
-    // Build an explicit, narrow attribute list for this probe.
-    // We request the core identity attributes for the bind DN itself (a base
-    // search on its own entry) plus objectClass. This is deliberately the same
-    // set of names the rest of the system will use.
-    let mut attrs: Vec<&str> = vec![
-        &mapping.user_name,
-        &mapping.user_uid_number,
-        &mapping.user_gid_number,
-        &mapping.user_home_directory,
-        &mapping.user_shell,
-        "objectClass",
-    ];
-    if let Some(f) = cfg
-        .sssd
-        .ldap_user_fullname
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-    {
-        let f = f.trim();
-        if !attrs.iter().any(|a| a.eq_ignore_ascii_case(f)) {
-            attrs.push(f);
-        }
-    }
-    // Dedup while preserving order (simple and sufficient here).
-    let mut seen = std::collections::HashSet::new();
-    let attr_list: Vec<&str> = attrs.into_iter().filter(|a| seen.insert(*a)).collect();
-
-    let mut cmd = Command::new("timeout");
-    cmd.args(["10", "ldapsearch"]).args([
-        "-H",
-        uri,
-        "-D",
-        dn,
-        "-w",
-        pw,
-        "-s",
-        "base",
-        "-b",
-        dn, // Search the bind DN's own entry (narrow, like future SSSD lookups)
-        "-o",
-        "nettimeout=5",
-    ]);
-
-    // Append the narrow attribute list.
-    for a in &attr_list {
-        cmd.arg(a);
-    }
-
-    // Auto TLS handling based on URI scheme
-    if is_ldaps {
-        // Pragmatic default for LLDAP / internal self-signed certs.
-        cmd.env("LDAPTLS_REQCERT", "never");
-    }
-
-    let output = match cmd.output() {
-        Ok(o) => o,
-        Err(e) => return Err(format!("Could not execute ldapsearch: {}", e)),
-    };
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let raw = if !stderr.is_empty() { stderr } else { stdout };
-
-        let friendly = if raw.contains("Invalid credentials") || raw.contains("(49)") {
-            format!("BIND FAILED: Invalid credentials (error 49).\n             → Double-check ldap_default_bind_dn and ldap_default_authtok.\n             Raw ldapsearch output: {}", raw)
-        } else if raw.contains("Can't contact LDAP server")
-            || raw.contains("(-1)")
-            || raw.contains("TLS")
-            || raw.contains("certificate")
-        {
-            format!("BIND FAILED: Cannot contact LDAP server or TLS/certificate issue.\n             → Common causes: wrong port, self-signed cert (we set LDAPTLS_REQCERT=never for ldaps), or firewall.\n             Raw: {}", raw)
-        } else {
-            format!("BIND FAILED:\n             {}", raw)
-        };
-
-        Err(friendly)
-    }
-}
-
-// Persistent-volume and tolerant config helpers come from nfs_klldap_config::persist.
-
-/// Guided first-run loop (3 steps: volume, ldap_uri, bind creds).
-///
-/// The 3 steps are:
-///   1. Persistent volume at $NFS_CONFIG (different device from container root)
-///   2. ldap_uri present + TCP reachable (must be DNS name, not IP)
-///   3. Bind DN + password present and ldapsearch succeeds
-///
-/// (A [[shares]] section is no longer required to reach Ready; shares may be
-/// added later via the WebUI or config edit.)
-///
-/// Steps are marked [✓] as soon as they are satisfied (see is_step_complete).
-fn run_guided_startup(config_path: &Path) -> Result<(), ConfigError> {
-    println!("\x1b[2J\x1b[H"); // Clear screen + home for the TUI
-
+/// Poll until compute_startup_step returns Ready (used by tests and automation).
+fn wait_until_ready(config_path: &Path) -> Result<(), String> {
     loop {
-        // Small delay to let recent writes to the bind-mounted config file become
-        // visible inside the container (some Docker storage drivers / filesystems
-        // have slight propagation delay on host -> container updates).
-        thread::sleep(Duration::from_millis(250));
-
-        print_header(config_path);
-        let step = compute_current_step(config_path);
-
-        print_step_status(&step);
-
+        let step = compute_startup_step(config_path);
         if step == StartupStep::Ready {
-            println!("\n[OK] All startup requirements satisfied. Proceeding to service start...\n");
-            print_network_diagnostics();
-            print_runtime_diagnostics();
             return Ok(());
         }
-
-        println!(
-            "\n[WAITING] Edit the config file — the container will auto-continue when ready.\n"
+        eprintln!(
+            "[wait-ready] {} — {}",
+            step.label(),
+            startup_step_hint(step)
         );
-        thread::sleep(Duration::from_secs(8));
-        print!("\x1b[2J\x1b[H"); // Clear for next iteration (simple TUI refresh)
+        thread::sleep(Duration::from_secs(2));
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum StartupStep {
-    WaitForPersistentVolume,
-    SetLdapUri,
-    AddBindCredentials,
-    Ready,
-}
-
-fn print_header(config_path: &Path) {
-    // Two-tier consistent retrieval (hostname command + /proc confirmation).
-    // Both sources must agree. If they don't, we surface a loud, actionable error.
-    let (hostname, consistency_note) = match get_consistent_hostname() {
-        Ok(c) => (c.hostname, " (confirmed by `hostname` + /proc)".to_string()),
-        Err(e) => {
-            eprintln!("\n{}", e);
-            // Still allow the TUI to continue (operator may need to edit config first),
-            // but use a clear placeholder so the rest of the banner is still useful.
-            (
-                "<INCONSISTENT — see error above>".to_string(),
-                String::new(),
-            )
-        }
-    };
-
-    let realm_display = attempt_realm_for_display(config_path)
-        .unwrap_or_else(|| "YOUR.REALM (set ldap_uri to auto-derive)".to_string());
-
-    let principal_list = format_nfs_principal_list(&hostname, &realm_display);
-
-    println!("╔══════════════════════════════════════════════════════════════════════════════╗");
-    println!("║  nfs-klldap-host — FIRST RUN SETUP (Step-by-Step)  [Rust guided mode]        ║");
-    println!("╠══════════════════════════════════════════════════════════════════════════════╣");
-    println!("║  Container hostname: {:<55} ║", hostname);
-    if !consistency_note.is_empty() {
-        println!("║  {:<76} ║", consistency_note);
-    }
-    println!("║  Keytab should include:                                                      ║");
-    for line in wrap_banner_lines(&principal_list, 74) {
-        println!("║  {:<76} ║", line);
-    }
-    println!("║  Use --uts=host so the hostname above is your real Docker host name.         ║");
-    println!("║  Optional: [server] hostname or --hostname to override.                      ║");
-    println!("╚══════════════════════════════════════════════════════════════════════════════╝\n");
-}
-
-fn wrap_banner_lines(text: &str, width: usize) -> Vec<String> {
-    if text.len() <= width {
-        return vec![text.to_string()];
-    }
-    let mut lines = Vec::new();
-    let mut rest = text;
-    while !rest.is_empty() {
-        if rest.len() <= width {
-            lines.push(rest.to_string());
-            break;
-        }
-        let split_at = rest[..width].rfind(", ").map(|i| i + 2).unwrap_or(width);
-        lines.push(rest[..split_at].trim_end().to_string());
-        rest = rest[split_at..].trim_start();
-    }
-    lines
-}
-
-/// Tolerantly extract ldap_uri from the config file (even if incomplete) and
-/// derive a realm for display in the startup banner. Does not require full
-/// validation or bind credentials.
-fn attempt_realm_for_display(config_path: &Path) -> Option<String> {
-    if !config_path.exists() {
-        return None;
-    }
-    let contents = std::fs::read_to_string(config_path).ok()?;
-    // Very small tolerant parse: look for ldap_uri = "..." or ldap_uri = '...'
-    for line in contents.lines() {
-        let t = line.trim();
-        if let Some(rest) = t.strip_prefix("ldap_uri") {
-            // Accept optional whitespace, =, and optional quotes
-            if let Some(eq_pos) = rest.find('=') {
-                let val = rest[eq_pos + 1..]
-                    .trim()
-                    .trim_matches(|c| c == '"' || c == '\'');
-                if !val.is_empty() && (val.starts_with("ldap://") || val.starts_with("ldaps://")) {
-                    if let Some(r) = derive_realm_from_uri(val) {
-                        // Never surface the placeholder as a success
-                        if !r.eq_ignore_ascii_case("EXAMPLE.COM")
-                            && !r.eq_ignore_ascii_case("EXAMPLE")
-                        {
-                            return Some(r);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-fn print_step_status(current: &StartupStep) {
-    let steps = [
-        (
-            StartupStep::WaitForPersistentVolume,
-            "STEP 1/3",
-            "Mount a persistent config volume (REQUIRED)",
-        ),
-        (
-            StartupStep::SetLdapUri,
-            "STEP 2/3",
-            "Set ldap_uri in nfs-klldap.conf (DNS name only)",
-        ),
-        (
-            StartupStep::AddBindCredentials,
-            "STEP 3/3",
-            "Add LLDAP bind credentials in [sssd] section",
-        ),
-    ];
-
-    for (step, label, desc) in &steps {
-        if *step == *current {
-            println!("  [ ] {}  {}", label, desc);
-            // Print extra guidance for the current step
-            print_current_step_guidance(current);
-        } else if is_step_complete(step, current) {
-            println!("  [✓] {}  {}", label, desc);
-        } else {
-            println!("  [ ] {}  {}", label, desc);
-        }
-    }
-}
-
-/// Returns true if `step` has been completed given that we are now at `current`.
-/// Ordering: WaitForPersistentVolume < SetLdapUri < AddBindCredentials < Ready
-fn is_step_complete(step: &StartupStep, current: &StartupStep) -> bool {
-    if *step == *current {
-        return false;
-    }
-    // Ready means everything before it is done
-    if *current == StartupStep::Ready {
-        return true;
-    }
-    match (step, current) {
-        // Step 1 is complete once we are past it
-        (
-            StartupStep::WaitForPersistentVolume,
-            StartupStep::SetLdapUri | StartupStep::AddBindCredentials,
-        ) => true,
-        // Step 2 is complete once we are past it
-        (StartupStep::SetLdapUri, StartupStep::AddBindCredentials) => true,
-        // Step 3 is complete once we reach Ready (handled above)
-        _ => false,
-    }
-}
-
-fn print_current_step_guidance(current: &StartupStep) {
-    match current {
-        StartupStep::WaitForPersistentVolume => {
-            println!("             -v /path/on/your/host:/config");
-            println!();
-            println!("             [TROUBLESHOOTING]");
-            println!("             The config file is currently inside the container's ephemeral overlay.");
-            println!("             Any changes will be lost when the container restarts.");
-            println!("             You MUST bind-mount a real host directory at /config.");
-            println!("             Example:  -v /home/user/nfs-config:/config");
-        }
-
-        StartupStep::SetLdapUri => {
-            // Always show current value first (if present), then a clearly labeled example
-            println!("             Current value in config:");
-
-            let config_path_str = std::env::var("NFS_CONFIG")
-                .unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
-            let mut current_val: Option<String> = None;
-
-            if let Ok(contents) = std::fs::read_to_string(&config_path_str) {
-                for line in contents.lines() {
-                    let t = line.trim();
-                    if t.starts_with("ldap_uri") {
-                        if let Some(eq) = t.find('=') {
-                            let val = t[eq + 1..].trim().trim_matches(|c| c == '"' || c == '\'');
-                            if !val.is_empty()
-                                && (val.starts_with("ldap://") || val.starts_with("ldaps://"))
-                            {
-                                println!("             {}", t);
-                                current_val = Some(val.to_string());
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-
-            if current_val.is_none() {
-                println!("             (not yet set)");
-            }
-
-            println!();
-            println!("             Example (copy-paste ready):");
-            println!("             ldap_uri = \"ldaps://lldap.yourdomain.com:6360\"");
-            println!("             (must be a real DNS name — IP addresses are rejected)");
-            println!();
-
-            // Real reachability diagnostics only when we have a value
-            if let Some(val) = current_val {
-                let host = extract_host_from_uri(&val);
-                let port: u16 = val
-                    .split(':')
-                    .next_back()
-                    .and_then(|s| {
-                        s.trim_end_matches(|c: char| !c.is_ascii_digit())
-                            .parse()
-                            .ok()
-                    })
-                    .unwrap_or(636);
-
-                println!(
-                    "             [TROUBLESHOOTING] Testing reachability of {}:{}",
-                    host, port
-                );
-
-                match check_ldap_reachability(&host, &val) {
-                    LdapReachability::DnsFailure { detail, .. } => {
-                        println!("             ❌ DNS FAILURE");
-                        println!("                Could not resolve hostname '{}'", host);
-                        println!("                Detail: {}", detail);
-                        println!("                → Common fixes:");
-                        println!(
-                            "                  - Check spelling / DNS records on the Docker host"
-                        );
-                        println!(
-                            "                  - Container may need --network=host or --dns=..."
-                        );
-                        println!("                  - Test from host: getent hosts {}", host);
-                    }
-                    LdapReachability::Unreachable { detail, .. } => {
-                        println!("             ❌ PORT UNREACHABLE (resolved successfully)");
-                        println!("                Detail: {}", detail);
-                        println!("                → Common fixes:");
-                        println!("                  - Is the port correct? (ldaps usually 636, ldap usually 389)");
-                        println!(
-                            "                  - Firewall / SELinux blocking from Docker host?"
-                        );
-                        println!(
-                            "                  - Try from the Docker host:  nc -zv {} {}",
-                            host, port
-                        );
-                    }
-                    LdapReachability::Reachable => {
-                        println!("             ✓ Basic TCP reachability OK (DNS + port open)");
-                    }
-                }
-            }
-        }
-
-        StartupStep::AddBindCredentials => {
-            println!("             Current values from config:");
-
-            let config_path = std::env::var("NFS_CONFIG")
-                .unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
-
-            if let Ok(cfg) = NfsKlldapConfig::load(Path::new(&config_path)) {
-                let dn = if cfg.sssd.ldap_default_bind_dn.trim().is_empty() {
-                    "(not set)".to_string()
-                } else {
-                    cfg.sssd.ldap_default_bind_dn.clone()
-                };
-                let pw_masked = if cfg.sssd.ldap_default_authtok.trim().is_empty() {
-                    "(not set)".to_string()
-                } else {
-                    "********".to_string()
-                };
-
-                println!("             ldap_default_bind_dn  = \"{}\"", dn);
-                println!("             ldap_default_authtok = \"{}\"", pw_masked);
-            } else {
-                println!("             ldap_default_bind_dn  = \"(config not loadable)\"");
-                println!("             ldap_default_authtok = \"(config not loadable)\"");
-            }
-
-            println!();
-            println!("             [TROUBLESHOOTING] Testing LDAP bind...");
-
-            if let Ok(cfg) = NfsKlldapConfig::load(Path::new(&config_path)) {
-                match check_ldap_bind(&cfg) {
-                    Ok(_) => {
-                        println!("             ✓ Bind successful!");
-                    }
-                    Err(err) => {
-                        println!("             {}", err);
-                        println!("             → Verify the DN exactly matches what is in your LDAP server.");
-                        println!("             → Make sure the password has no extra spaces or newlines.");
-                    }
-                }
-                let mapping = resolve_posix_attribute_mapping(&cfg.sssd);
-                println!();
-                println!("             [SSSD] After startup, see /etc/sssd/sssd.conf (from this file).");
-                println!("             Defaults: ldap_schema=rfc2307bis, enumerate=false, ldap_id_mapping=false");
-                println!("             POSIX attrs: uid={}, uidNumber={}, gidNumber={}, member={}",
-                    mapping.user_name, mapping.user_uid_number, mapping.user_gid_number, mapping.group_member);
-                if cfg.ldap_uri.starts_with("ldaps://") && cfg.sssd.ldap_tls_reqcert.is_none() {
-                    println!("             For self-signed LLDAP/KLLDAP certs add to [sssd]:");
-                    println!("               ldap_tls_reqcert = \"never\"");
-                }
-                if cfg.sssd.enumerate == Some(true) {
-                    println!("             WARNING: enumerate=true can overload KLLDAP — default is false.");
-                }
-            }
-        }
-
-        StartupStep::Ready => {}
-    }
-}
-
-/// Current startup step from volume, ldap_uri reachability, and bind probe.
-fn compute_current_step(config_path: &Path) -> StartupStep {
-    // Step 1: Persistent volume?
-    if !check_persistent_writable_config(config_path) {
-        return StartupStep::WaitForPersistentVolume;
-    }
-
-    // Try to load the config. If it fails basic parsing we treat it as "not ready yet".
-    let cfg = match NfsKlldapConfig::load(config_path) {
-        Ok(c) => c,
-        Err(_) => {
-            // Still missing critical fields or not parseable → we need at least ldap_uri
-            // Fall through to step 2 guidance.
-            return StartupStep::SetLdapUri;
-        }
-    };
-
-    // Step 2: ldap_uri present and server reachable?
-    if cfg.ldap_uri.trim().is_empty() {
-        return StartupStep::SetLdapUri;
-    }
-
-    let host = extract_host_from_uri(&cfg.ldap_uri);
-    match check_ldap_reachability(&host, &cfg.ldap_uri) {
-        LdapReachability::Reachable => {}
-        _ => return StartupStep::SetLdapUri,
-    }
-
-    // Step 3: Bind credentials present and working?
-    if cfg.sssd.ldap_default_bind_dn.trim().is_empty()
-        || cfg.sssd.ldap_default_authtok.trim().is_empty()
-    {
-        return StartupStep::AddBindCredentials;
-    }
-
-    if check_ldap_bind(&cfg).is_err() {
-        return StartupStep::AddBindCredentials;
-    }
-
-    // Ready once bind credentials are present and working.
-    // Shares ([[shares]]) are optional for initial startup and may be configured
-    // later (via WebUI System Settings or direct edit + container restart).
-    StartupStep::Ready
-}
-
-
-
-/// One-shot diagnostics for nfs-klldap-startup check.
-fn run_one_shot_diagnostics(config_path: &Path) -> Result<(), ConfigError> {
+/// One-shot diagnostics for `nfs-klldap-startup check`.
+fn run_one_shot_diagnostics(config_path: &Path) -> Result<(), nfs_klldap_config::ConfigError> {
     println!("=== nfs-klldap-startup diagnostics ===");
     println!("Config: {}", config_path.display());
     println!("Persistent volume: {}", is_persistent_config(config_path));
+    println!("Writable persistent: {}", check_persistent_writable(config_path));
+
+    let kt = resolve_keytab_path();
+    let probe_step = compute_startup_step(config_path);
+    let effective = effective_startup_step(config_path, &kt);
+    println!(
+        "Startup step (live probes): {} ({})",
+        probe_step.label(),
+        startup_step_hint(probe_step)
+    );
+    println!(
+        "Effective startup state: {} ({})",
+        effective.label(),
+        startup_step_hint(effective)
+    );
+    let preconf = is_preconfigured_deployment(config_path, &kt);
+    println!("Pre-configured bypass: {preconf} (keytab + complete conf skips wizard)");
 
     match NfsKlldapConfig::load(config_path) {
         Ok(cfg) => {
@@ -667,131 +120,75 @@ fn run_one_shot_diagnostics(config_path: &Path) -> Result<(), ConfigError> {
             println!("realm    : {}", cfg.effective_realm());
             println!("shares   : {}", cfg.shares.len());
         }
-        Err(e) => {
-            println!("Config load error: {}", e);
-        }
+        Err(e) => println!("Config load error: {e}"),
     }
 
     println!();
     print_network_diagnostics();
-    print_runtime_diagnostics();
-
+    print_runtime_diagnostics(config_path);
     Ok(())
 }
 
 fn print_network_diagnostics() {
     if let Some(ip) = nfs_klldap_config::container_primary_ipv4() {
         if nfs_klldap_config::is_docker_bridge_ipv4(&ip) {
-            println!("  [NETWORK] WARNING: container primary IPv4 is {} (Docker bridge range)", ip);
+            println!("  [NETWORK] WARNING: container primary IPv4 is {ip} (Docker bridge range)");
             println!("             NFSv4 + Kerberos expect host-reachable addresses.");
             println!("             Use --network=host (docker run) or network_mode: host (compose).");
         }
     }
 }
 
-/// Advisory keytab, writable runtime dirs, and hostname alignment checks.
-fn print_runtime_diagnostics() {
-    println!("  [RUNTIME PERMISSIONS] Checking keytab readability and runtime dirs...");
+fn print_runtime_diagnostics(config_path: &Path) {
+    println!("  [RUNTIME] keytab and hostname alignment...");
 
-    let kt = "/etc/krb5.keytab";
-    let kt_path = Path::new(kt);
-
-    if kt_path.exists() {
-        // As root we can always read it here, but we still show ls -l for the user
-        if let Ok(output) = Command::new("ls").arg("-l").arg(kt).output() {
+    let kt = resolve_keytab_path();
+    if kt.is_file() {
+        if let Ok(output) = Command::new("ls").arg("-l").arg(&kt).output() {
             let ls = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            println!("             Current: {}", ls);
+            println!("             keytab ({}): {ls}", kt.display());
         }
-        println!("             [OK] keytab is readable by current user (root during setup)");
     } else {
         println!(
-            "             (no keytab at {} — Kerberos NFS will not work until provided)",
-            kt
+            "             (no keytab at {} — mount /etc/krb5.keytab for Kerberos NFS)",
+            kt.display()
         );
     }
 
-    // Writable runtime dirs test (same dirs as the old shell logic)
-    let runtime_dirs = [
-        "/var/log/ganesha",
-        "/var/lib/sss",
-        "/var/run/ganesha",
-        "/var/run/sssd",
-        "/etc/ganesha/exports.d",
-    ];
-
-    for d in &runtime_dirs {
-        let dir = Path::new(d);
-        if dir.is_dir() {
-            let test_file = dir.join(".write-test-rust-$$");
-            if std::fs::File::create(&test_file).is_ok() {
-                let _ = std::fs::remove_file(&test_file);
-            } else {
-                println!(
-                    "             [ACTION REQUIRED] {} is not writable by current user",
-                    d
-                );
-                println!("                    Fix on host (or add --user root temporarily for debugging):");
-                println!(
-                    "                      # Determine the runtime 'nfs' UID inside the image:"
-                );
-                println!("                      NFS_UID=$(docker run --rm --entrypoint id $d -u nfs 2>/dev/null | tr -cd 0-9)");
-                println!("                      sudo chown -R $NFS_UID:$NFS_UID {}   # (use the real container nfs uid)", d);
-            }
-        }
-    }
-
-    // Hostname / keytab principal alignment (non-blocking)
-    print_keytab_hostname_alignment();
+    print_keytab_hostname_alignment(config_path, &kt);
 }
 
-fn print_keytab_hostname_alignment() {
-    println!("  [KEYTAB/HOSTNAME] Checking keytab principal alignment...");
-
-    let kt = "/etc/krb5.keytab";
-    let kt_path = Path::new(kt);
-
-    if !kt_path.exists() {
-        println!("             (no keytab mounted at {} yet — Kerberos NFS will not work until provided)", kt);
+fn print_keytab_hostname_alignment(config_path: &Path, kt: &Path) {
+    if !kt.is_file() {
         return;
     }
 
-    let klist_out = match Command::new("klist").args(["-k", kt]).output() {
+    let kt_str = kt.to_string_lossy();
+    let klist_out = match Command::new("klist").args(["-k", kt_str.as_ref()]).output() {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         _ => {
-            println!("             (klist not available or failed — skipping detailed principal check; keytab file is present)");
+            println!("             (klist unavailable — keytab file is present)");
             return;
         }
     };
 
-    // Use the same two-tier confirmed value that the TUI banner used.
-    // This guarantees the alignment check and the early banner can never disagree.
     let current_host = match get_consistent_hostname() {
         Ok(c) => c.hostname,
-        Err(_) => {
-            // Fall back to the old direct call only for the (rare) case where we are
-            // already in a bad state; the loud warning was already emitted earlier.
-            Command::new("hostname")
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_else(|_| "unknown".to_string())
-        }
+        Err(_) => Command::new("hostname")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string()),
     };
 
     let kt_hosts = parse_klist_nfs_hosts(&klist_out);
-
     if kt_hosts.is_empty() {
-        println!("             WARNING: keytab exists but contains no nfs/* service principals");
-        println!("                      (hostname and keytab: no nfs principals found)");
+        println!("             WARNING: keytab has no nfs/* principals");
         return;
     }
 
-    let kt_str = kt_hosts.join(" ");
-
-    let realm_hint = std::env::var("NFS_CONFIG")
-        .ok()
-        .and_then(|p| NfsKlldapConfig::load(Path::new(&p)).ok())
+    let realm_hint = NfsKlldapConfig::load(config_path)
         .map(|c| c.display_realm())
-        .unwrap_or_else(|| "YOUR.REALM".to_string());
+        .unwrap_or_else(|_| "YOUR.REALM".to_string());
 
     let aligned = kt_hosts
         .iter()
@@ -799,18 +196,119 @@ fn print_keytab_hostname_alignment() {
 
     if aligned {
         println!(
-            "             (hostname and keytab: aligned)   hostname={}   keytab={}",
-            current_host, kt_str
+            "             hostname/keytab aligned: host={current_host} nfs={}",
+            kt_hosts.join(" ")
         );
     } else {
-        println!("             WARNING: hostname and keytab nfs/* principals do not match.");
-        println!("                      Container hostname : {}", current_host);
+        println!("             WARNING: hostname and keytab nfs/* principals differ.");
+        println!("                      hostname: {current_host}");
         println!(
-            "                      Expected (best practice): {}",
+            "                      expected: {}",
             format_nfs_principal_list(&current_host, &realm_hint)
         );
-        println!("                      nfs/ principals in keytab : {}", kt_str);
-        println!("                      Use --uts=host and recreate keytab with short + FQDN principals.");
-        println!("                      Services will continue; see WebUI System Settings for status.");
+        println!("                      keytab: {}", kt_hosts.join(" "));
+    }
+}
+
+#[cfg(test)]
+mod supervise_probe_tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    const COMPLETE_TOML: &str = r#"
+ldap_uri = "ldaps://kllap.test:6360"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "data"
+host_path = "/media/data"
+"#;
+
+    fn write_exe(path: &std::path::Path, body: &str) {
+        fs::write(path, body).unwrap();
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).unwrap();
+    }
+
+    fn target_debug_bin(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/debug")
+            .join(name)
+    }
+
+    #[test]
+    fn supervise_probe_preconf_emits_ready_transcript() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stubs = tmp.path().join("stubs");
+        let out = tmp.path().join("out");
+        fs::create_dir_all(&stubs).unwrap();
+        fs::create_dir_all(out.join("exports.d")).unwrap();
+
+        let conf = tmp.path().join("nfs-klldap.conf");
+        let keytab = tmp.path().join("krb5.keytab");
+        let marker = tmp.path().join(".setup_wizard_done");
+        fs::write(&conf, COMPLETE_TOML).unwrap();
+        fs::write(&keytab, b"probe-keytab").unwrap();
+
+        write_exe(&stubs.join("nfs-klldap-ui"), "#!/bin/sh\nexit 0\n");
+        write_exe(
+            &stubs.join("nfs-klldap-conf-watcher"),
+            "#!/bin/sh\nexec sleep 3600\n",
+        );
+        write_exe(&stubs.join("nfs-klldap-idhelper"), "#!/bin/sh\nexit 0\n");
+        write_exe(&stubs.join("healthcheck.sh"), "#!/bin/sh\nexit 0\n");
+        write_exe(&stubs.join("inotifywait"), "#!/bin/sh\nexit 0\n");
+
+        let startup_bin = target_debug_bin("nfs-klldap-startup");
+        let config_bin = target_debug_bin("nfs-klldap-config");
+        assert!(startup_bin.is_file(), "build nfs-klldap-startup first");
+        assert!(config_bin.is_file(), "build nfs-klldap-config first");
+
+        let output = Command::new(&startup_bin)
+            .arg("supervise-probe")
+            .env("NFS_CONFIG", &conf)
+            .env("NFS_KLLDAP_KEYTAB_PATH", &keytab)
+            .env("NFS_KLLDAP_TEST_PERSISTENT", "1")
+            .env("NFS_KLLDAP_SETUP_MARKER", &marker)
+            .env("USE_NSS_WRAPPER", "0")
+            .env("CONFIG_BIN", &config_bin)
+            .env("UI_BIN", stubs.join("nfs-klldap-ui"))
+            .env("WATCHER_BIN", stubs.join("nfs-klldap-conf-watcher"))
+            .env("IDHELPER_BIN", stubs.join("nfs-klldap-idhelper"))
+            .env("HEALTHCHECK", stubs.join("healthcheck.sh"))
+            .env("SSSD_CONF", out.join("sssd.conf"))
+            .env("KRB5_CONF", out.join("krb5.conf"))
+            .env("GANESHA_CONF", out.join("ganesha.conf"))
+            .env("EXPORTS_DIR", out.join("exports.d"))
+            .env("IDMAP_CONF", out.join("idmapd.conf"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    stubs.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .output()
+            .expect("supervise-probe");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let combined = format!("{stdout}{stderr}");
+
+        assert!(
+            output.status.success(),
+            "supervise-probe failed: {combined}"
+        );
+        assert!(combined.contains("=== Starting nfs-klldap-host (Rust supervisor) ==="));
+        assert!(combined.contains("Pre-configured deployment detected — starting full service stack"));
+        assert!(combined.contains("Container is ready (pre-configured path)"));
+        assert!(combined.contains("Supervise probe complete — exiting"));
+        assert!(out.join("ganesha.conf").is_file(), "generate must write ganesha.conf");
+        assert!(marker.is_file(), "wizard marker must be written on preconf bypass");
     }
 }

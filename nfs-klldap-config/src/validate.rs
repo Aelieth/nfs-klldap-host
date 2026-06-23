@@ -369,7 +369,7 @@ impl NfsKlldapConfig {
             }
         }
 
-        // [sssd] bind creds — core + secret path (NFS_KLLDAP_LLDAP_* supported for UI/compat + generate/TUI)
+        // [sssd] bind creds — core + secret path (NFS_KLLDAP_LLDAP_* supported for UI/compat + generate)
         if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN") {
             let t = v.trim();
             if !t.is_empty() {

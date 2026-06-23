@@ -22,7 +22,7 @@ Usage:
   nfs-klldap-config validate --config <path>
 
 Companion binary:
-  nfs-klldap-startup         (guided container startup / orchestration TUI; entrypoint.sh calls it for 3-step readiness)
+  nfs-klldap-startup         (pid-1 supervise + diagnostics; entrypoint.sh execs it)
 
 The binaries are intended to be called by the container entrypoint and the host UI.",
         env!("CARGO_PKG_VERSION")
@@ -112,7 +112,7 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
             cfg.effective_hostname()
         );
 
-        // Two-tier runtime hostname (TUI/UI use this for keytab; CI/sanity aid).
+        // Two-tier runtime hostname (setup wizard/UI use this for keytab; CI/sanity aid).
         match get_consistent_hostname() {
             Ok(c) => {
                 println!(
@@ -140,7 +140,20 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
         return Ok(());
     }
 
-    let paths = GenerationPaths::default();
+    let paths = GenerationPaths::from_env();
+    if !dry_run {
+        for p in [
+            &paths.sssd_conf,
+            &paths.krb5_conf,
+            &paths.ganesha_conf,
+            &paths.idmap_conf,
+        ] {
+            if let Some(parent) = p.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+        let _ = std::fs::create_dir_all(&paths.exports_dir);
+    }
     generate_all(&cfg, &paths)?;
 
     println!("Generated configs from {}", path.display());

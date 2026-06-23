@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>First-run setup <span style="font-size:0.75em; color:var(--text-muted);">Step 2 of 3</span></h2>
+
+<ul style="font-size:0.9em; color:var(--text-muted); list-style:none; padding:0;">
+    <li>{% if step1_done %}<span style="color:var(--success-text);">[✓]</span>{% else %}[ ]{% endif %} Persistent config volume</li>
+    <li><span style="color:var(--accent);">[→]</span> LDAP server (ldap_uri)</li>
+    <li>[ ] LLDAP bind credentials</li>
+</ul>
+
+<div class="settings-group">
+    <h4>Hostname &amp; keytab reminder</h4>
+    <p style="margin:0.25rem 0; font-size:0.9em;">
+        Container hostname: <strong>{{ hostname }}</strong><br>
+        Keytab should include: <code>{{ principals }}</code>
+    </p>
+</div>
+
+<div class="settings-group">
+    <h4>LDAP URI (DNS hostname required)</h4>
+    <form method="post" action="/setup/2/save" style="margin-bottom:0.75rem;">
+        <label>ldap_uri<br>
+            <input type="text" name="ldap_uri" value="{{ ldap_uri }}" required
+                   placeholder="ldaps://lldap.yourdomain.com:6360"
+                   style="width:100%; max-width:520px; padding:8px;">
+        </label>
+        <div style="margin-top:0.5rem;">
+            <button type="submit" class="btn">Save ldap_uri</button>
+        </div>
+    </form>
+    <form method="post" action="/setup/2/verify">
+        <button type="submit" class="btn btn-primary">Verify reachability &amp; continue</button>
+    </form>
+    <p style="margin:0.75rem 0 0; font-size:0.85em; color:var(--text-light);">
+        Tests DNS resolution and TCP connectivity (getent + nc).
+    </p>
+</div>
+
+{% if let Some(msg) = message %}
+<p class="alert alert-success">{{ msg }}</p>
+{% endif %}
+{% if let Some(err) = error %}
+<p class="alert alert-danger">{{ err }}</p>
+{% endif %}
+{% endblock %}

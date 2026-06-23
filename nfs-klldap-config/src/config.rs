@@ -271,12 +271,24 @@ pub struct GenerationPaths {
 
 impl Default for GenerationPaths {
     fn default() -> Self {
+        Self::from_env()
+    }
+}
+
+impl GenerationPaths {
+    /// Resolve output paths from env (SSSD_CONF, GANESHA_CONF, …) or container defaults.
+    pub fn from_env() -> Self {
+        let env_path = |key: &str, default: &str| -> PathBuf {
+            std::env::var(key)
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(default))
+        };
         Self {
-            sssd_conf: PathBuf::from("/etc/sssd/sssd.conf"),
-            krb5_conf: PathBuf::from("/etc/krb5.conf"),
-            ganesha_conf: PathBuf::from("/etc/ganesha/ganesha.conf"),
-            exports_dir: PathBuf::from("/etc/ganesha/exports.d"),
-            idmap_conf: PathBuf::from("/etc/idmapd.conf"),
+            sssd_conf: env_path("SSSD_CONF", "/etc/sssd/sssd.conf"),
+            krb5_conf: env_path("KRB5_CONF", "/etc/krb5.conf"),
+            ganesha_conf: env_path("GANESHA_CONF", "/etc/ganesha/ganesha.conf"),
+            exports_dir: env_path("EXPORTS_DIR", "/etc/ganesha/exports.d"),
+            idmap_conf: env_path("IDMAP_CONF", "/etc/idmapd.conf"),
         }
     }
 }

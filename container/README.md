@@ -1,8 +1,8 @@
 # Container Internals
 
-Thin shell (entrypoint, healthcheck, watcher, ganesha-ctl) + Rust binaries (`nfs-klldap-config`, `nfs-klldap-startup`, `nfs-klldap-idhelper`, `nfs-klldap-ui`) run as root inside the container. Privileged work (0600 derived files, direct chown/chmod on bind-mounted host_paths) happens here only. See [entrypoint.sh](../entrypoint.sh) and source for flow.
+Thin shell (entrypoint exec, healthcheck, watcher, ganesha-ctl) + Rust binaries. `entrypoint.sh` only execs `nfs-klldap-startup supervise`; orchestration (preflight, SSSD/idhelper waits, Ganesha recycle, SIGHUP) lives in Rust. Privileged work (0600 derived files, direct chown/chmod on bind-mounted host_paths) happens here only.
 
-The container includes dbus-daemon (launched by entrypoint before Ganesha) and rpcbind for Ganesha/runtime compatibility. Export fragments under `/etc/ganesha/exports.d/` are generated from `nfs-klldap.conf` by `nfs-klldap-config`; reload is triggered via SIGHUP to pid 1 (conf-watcher, WebUI apply, or `ganesha-ctl reload`), not D-Bus RPCs to Ganesha.
+The container includes dbus-daemon (launched by the supervisor before Ganesha) and rpcbind for Ganesha/runtime compatibility. Export fragments under `/etc/ganesha/exports.d/` are generated from `nfs-klldap.conf` by `nfs-klldap-config`; reload is triggered via SIGHUP to pid 1 (conf-watcher, WebUI apply, or `ganesha-ctl reload`), not D-Bus RPCs to Ganesha.
 
 ## Scripts
 

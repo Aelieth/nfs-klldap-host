@@ -32,9 +32,9 @@ nfs-klldap-config (validate + derive + generate)
         └── /etc/ganesha/exports.d/*.conf
         │
         ▼ (inotify / SIGHUP)
-entrypoint (pid 1) → restart/reload daemons
+entrypoint → nfs-klldap-startup supervise (pid 1) → restart/reload daemons
         │
-        └── nfs-klldap-ui (9630, HTTPS, root) ──direct──> chown/chmod on bind-mounted host_path trees
+        └── nfs-klldap-ui (9630, HTTPS) ──direct──> chown/chmod on bind-mounted host_path trees
 ```
 
 One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, /etc/idmapd.conf (standardized NFSv4 Domain + Local-Realms + GSS-Methods for idhelper/shim/clients + Kerberos realm handling), and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. Use `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN strongly suggested).
@@ -63,13 +63,15 @@ docker run -d \
   ghcr.io/aelieth/nfs-klldap-host:latest
 ```
 
-First run writes a default `nfs-klldap.conf`. A console guided TUI will do basic diagnostics via a loop and look for 3 key, important working options in the nfs-klldap.conf:
+First run writes a default `nfs-klldap.conf` and starts the WebUI immediately. Open **https://\<host\>:9630/setup** for the 3-step wizard (replaces the old terminal TUI):
 
-1. Mount point for config to persist
-2. ldap_uri
-3. sssd - ldap_default_bind_dn and ldap_default_authtok
+1. Persistent `/config` bind mount (writable volume check)
+2. `ldap_uri` present + DNS/TCP reachability verified
+3. `[sssd]` bind DN + password present + `ldapsearch` bind verified
 
-Edit nfs-klldap.conf in container or via mounted directory. The watcher + entrypoint handle regeneration and reload.
+After step 3, set the localhost admin password at `/login`. The supervisor then generates derived configs and starts Ganesha/SSSD.
+
+**Pre-configured deploy:** mount a complete `nfs-klldap.conf` plus `/etc/krb5.keytab` at startup — the wizard is skipped and you go straight to `/login` (or the main UI if the password sidecar already exists).
 
 See [docs/run/README.md](docs/run/README.md) for compose examples, env vars, TLS/proxy notes, and troubleshooting.
 
@@ -150,7 +152,7 @@ Note: to optimize performance for sequential workloads, set read_ahead_kb on the
 
 ## Environment Variables
 
-Environment variables are available to those that prefer them, but not necessary to run nfs-klldap-host (walk through the TUI or use a pre-configured nfs-klldap.conf).
+Environment variables are available to those that prefer them, but not necessary to run nfs-klldap-host (use the WebUI setup wizard or a pre-configured nfs-klldap.conf + keytab).
 
 Not every advanced `[sssd]` option is exposed via env. The core options (LDAP URI + binds, realm, hostname, storage root, Ganesha default security, WebUI admin group, KLLDAP ignored attributes, SSSD TLS fields, and `[webui]`) can be supplied or overridden using `NFS_KLLDAP_*` variables (only prefixed forms are available). Environment variables always win and allow omitting the corresponding keys from `nfs-klldap.conf` in many cases.
 
@@ -169,6 +171,8 @@ See [docs/run/README.md](docs/run/README.md) for the full env var table, reverse
 
 ## WebUI (9630)
 
+- `/setup/1` … `/setup/3` — First-run wizard (volume, ldap_uri, bind creds); each step verifies before continuing.
+- `/login` — localhost password (first run) or LLDAP admin login.
 - `/` — Live FS tree browser (under shares) + KLLDAP user/group search + direct recursive chown/chmod.
 - `/settings` — Raw + structured TOML editor + current LLDAP bind identity + "Reload NFS client" + "Clear identity cache" (10 min user/group + 2 min search cache; stats shown).
 
@@ -195,9 +199,9 @@ See [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md) for the ful
 ## Project Layout (workspace)
 
 - `nfs-klldap-identity/` — shared LDAP/Kerberos/NSS primitives (`IdLdapResolver`, POSIX mapping, hostname/keytab helpers)
-- `nfs-klldap-config/` — lib + `nfs-klldap-config` (generate) + `nfs-klldap-startup` (TUI) + `nfs-klldap-idhelper` (daemon + CLI)
-- `nfs-klldap-ui/` — Axum WebUI (9630)
-- `entrypoint.sh` — thin pid-1 supervisor
+- `nfs-klldap-config/` — lib (`startup` step machine + probes) + `nfs-klldap-config` (generate) + `nfs-klldap-startup` (supervise/check) + `nfs-klldap-idhelper` (daemon + CLI)
+- `nfs-klldap-ui/` — Axum WebUI (9630) including `/setup` wizard
+- `entrypoint.sh` — exec wrapper → `nfs-klldap-startup supervise`
 - `container/` — healthcheck, conf-watcher, ganesha-ctl helper scripts
 
 ## Identity & Kerberos (idhelper)

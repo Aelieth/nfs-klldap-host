@@ -15,6 +15,17 @@ See [examples/docker-compose.yml](../../examples/docker-compose.yml). The exampl
 - Port must be in `ldap_uri` (not only `[sssd] port`, which is derived for reference).
 - Forward + reverse DNS are required for Kerberos NFS.
 
+## First-run setup (WebUI wizard)
+
+On a fresh container the supervisor starts the WebUI immediately and polls until setup is complete.
+
+1. **https://\<host\>:9630/setup/1** — verify a persistent `/config` bind mount.
+2. **/setup/2** — set `ldap_uri` (DNS name) and verify TCP reachability.
+3. **/setup/3** — set `[sssd]` bind DN/password and verify `ldapsearch`.
+4. **/login** — create the localhost admin password (`webui-password` sidecar).
+
+**Pre-configured bypass:** mount a valid `nfs-klldap.conf` and `/etc/krb5.keytab` before start — steps 1–3 are skipped; go directly to `/login`.
+
 ## WebUI (9630)
 
 HTTPS by default (axum-server + rustls, self-signed or via `NFS_KLLDAP_WEBUI_TLS_CERT` / `NFS_KLLDAP_WEBUI_TLS_KEY`).
@@ -86,7 +97,7 @@ Core `nfs-klldap.conf` options (not every advanced `[sssd]` field) plus select r
 | `NFS_KLLDAP_LDAP_URI`                      | *(required)*                     | `ldaps://kllap.example.com:6360`             | LDAP(S) server URI. **Must** include port and use a resolvable DNS hostname (IPs are rejected for Kerberos reasons). |
 | `NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN`     | *(required)*                     | `uid=admin,ou=people,dc=example,dc=com`      | Full bind DN (or identity) used by SSSD for LDAP lookups. |
 | `NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK`     | *(required)*                     | `strong-secret`                              | Bind password / authentication token for the above DN. |
-| `NFS_KLLDAP_LLDAP_USER`                    | *(compat alias)*                 | `uid=admin,ou=people,dc=example,dc=com`      | Alias that also sets the bind DN. Honored by the WebUI for live directory queries (in addition to generate/TUI). |
+| `NFS_KLLDAP_LLDAP_USER`                    | *(compat alias)*                 | `uid=admin,ou=people,dc=example,dc=com`      | Alias that also sets the bind DN. Honored by the WebUI for live directory queries (in addition to generate/setup). |
 | `NFS_KLLDAP_LLDAP_PW`                      | *(compat alias)*                 | `strong-secret`                              | Alias that also sets the bind password. |
 | `NFS_KLLDAP_KERBEROS_REALM`                | *(derived from `ldap_uri` host)* | `EXAMPLE.COM`                                | Kerberos realm. Overrides automatic derivation from the LDAP URI hostname. |
 | `NFS_KLLDAP_SERVER_HOSTNAME`               | *(container hostname)*           | `myhost.example.com`                         | Optional override for the hostname used when matching keytab `nfs/<host>` principals. Strongly prefer `docker run --uts=host`. |
@@ -117,7 +128,7 @@ These are less commonly needed:
 
 A small number of path/binary overrides (`SSSD_CONF`, `GANESHA_CONF`, `CONFIG_BIN`, `HEALTHCHECK`, etc.) and `NFS_KLLDAP_CONF` exist primarily for testing, CI, and image development. Typical users set `NFS_CONFIG` (which also drives `NFS_KLLDAP_CONF` for the WebUI) instead.
 
-After load/validate, `NfsKlldapConfig` reflects the effective (env-applied) values for generate, TUI, and UI.
+After load/validate, `NfsKlldapConfig` reflects the effective (env-applied) values for generate, setup wizard, and UI.
 
 ## Keytab
 
@@ -132,7 +143,7 @@ addprinc -randkey nfs/aurora.example.com@EXAMPLE.COM
 ktadd -k /tmp/keytab nfs/aurora@EXAMPLE.COM nfs/aurora.example.com@EXAMPLE.COM
 ```
 
-The startup TUI and WebUI System Settings page compare `hostname` with `/proc/sys/kernel/hostname` and check the mounted keytab.
+The WebUI setup wizard and System Settings page compare `hostname` with `/proc/sys/kernel/hostname` and check the mounted keytab.
 
 ## Troubleshooting at Start
 

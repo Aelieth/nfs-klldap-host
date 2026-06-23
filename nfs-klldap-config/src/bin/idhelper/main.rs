@@ -539,8 +539,7 @@ mod tests {
 
     #[test]
     fn stress_extract_on_trace_fragments_no_garbage() {
-        // Stress many raw fragments taken from the exact user-provided full Ganesha trace.
-        // After the previous tightening this must never return a host/ candidate for pure noise.
+        // Regression: Ganesha log fragments must not yield host/nil, host/clientid, etc.
         let fragments = vec![
             r#"conf = (nil) {NULL} unconf = (nil) {NULL}"#,
             r#"clientid=Unique=0x6a375213 Counter=0x00000001"#,
@@ -549,7 +548,7 @@ mod tests {
             r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)]"#,
             r#"fs_rm_clid_impl :CLIENT ID :DEBUG :position=0 len=45  parent_path=/var/lib/nfs/ganesha/v4recov recov_dir=::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)"#,
             r#"dec_client_record_ref :CLIENT ID :F_DBG :Free {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=1}}"#,
-            // more exact long lines from the user's paste that could have triggered the live "observed host/nil" and "host/clientid"
+            // Long CLIENT ID lines with server_addr on Docker bridge
             r#"hashtable_getlatch :CLIENT ID :F_DBG :Get Client Record returning Value=0x7f0c14001df0 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=0}}"#,
             r#"hashtable_deletelatched :CLIENT ID :F_DBG :Delete Client Record Key=0x7f0c14001df0 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=0}} Value=0x7f0c14001df0 ... was removed"#,
             // A line that contains nfsv4 early and later (nil) groups with no good Linux group after the marker (to hit fallback)
@@ -571,8 +570,7 @@ mod tests {
 
     #[test]
     fn machine_principal_short_circuits_to_zero_without_getent() {
-        // Per the short-circuit plan: machine principals must return 0:0 "special"
-        // immediately after classification, with no resolve_via_nss/getent calls.
+        // Machine principals return 0:0 without getent.
         let mut cache = IdCache::default();
         let realm = "SATOMLIN.COM".to_string();
         let variants = vec!["zima-nas".to_string()];

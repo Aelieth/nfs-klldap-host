@@ -78,8 +78,7 @@ impl FsManager {
     }
 
     /// Build tree using logical host_path namespace (for UI + is_allowed).
-    /// Translation to real container path occurs only at the privileged operation boundary
-    /// (see `privileged.rs`).
+    /// Translation to container path happens in `host_path_to_container_path` before privileged ops.
     pub fn build_tree(&self, root: &Path) -> Option<DirectoryNode> {
         // Normalize early so trailing slashes don't break matching or child synthesis.
         let normalized = self.normalize_for_matching(root);
@@ -164,7 +163,7 @@ impl FsManager {
         Some(out)
     }
 
-    /// Optional hook for background cache invalidation after apply (no-op today).
+    /// No-op; reserved for post-apply cache invalidation.
     /// The web handler spawns a call to exercise the path; a real cache can be
     /// plugged in here later with no other changes.
     pub fn invalidate_path(&self, _path: &Path) {}
@@ -304,13 +303,7 @@ impl FsManager {
         let walker = WalkDir::new(root)
             .follow_links(false)
             .max_depth(max_d)
-            .into_iter()
-            .filter_entry(|e: &DirEntry| {
-                if e.file_type().is_symlink() {
-                    return true;
-                }
-                true
-            });
+            .into_iter();
 
         let mut count = 0usize;
         for entry_res in walker {
@@ -334,14 +327,7 @@ impl FsManager {
         Ok(count)
     }
 
-    /// Core tree-walking permission application using WalkDir (iterative, policy-driven).
-    /// Core impl (non-progress apply_tree delegates for tests/compat).
-    ///
-    /// In addition to the classic guarantees, this version:
-    /// - updates all progress atomics (processed/changed/skipped/error_count)
-    /// - records last_path before operating on an entry (for "Cancelled after ..." UX)
-    /// - checks the cancelled flag between entries and aborts the walk early
-    /// - always sets finished=true on the way out
+    /// WalkDir apply with progress atomics, cancel, and finished flag.
     fn apply_tree_with_progress(
         &self,
         root: &Path,
@@ -358,13 +344,7 @@ impl FsManager {
         let walker = WalkDir::new(root)
             .follow_links(false)
             .max_depth(max_d)
-            .into_iter()
-            .filter_entry(|e: &DirEntry| {
-                if e.file_type().is_symlink() {
-                    return true;
-                }
-                true
-            });
+            .into_iter();
 
         for entry_res in walker {
             if progress.cancelled.load(Ordering::Relaxed) {

@@ -200,12 +200,7 @@ pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
         group_lines.push("root:x:0:root,daemon,bin".to_string());
     }
 
-    // Always ensure a root *passwd* entry for uid 0. Under nss_wrapper (for Ganesha)
-    // or extrausers this makes getpwuid_r(0) succeed for uid2grp paths on machine
-    // principals (host/...). Without it, "getpwuid_r for uid 0 failed, error 2" occurs
-    // on cold first access before any machine principal has been materialized.
-    // We add a canonical "root" line (name root, uid 0) in addition to any client-host
-    // aliases that also map to 0.
+    // Ensure root:x:0:0 in nss_passwd so getpwuid_r(0) succeeds for machine principals on cold start.
     if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
         passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
     }

@@ -1,5 +1,5 @@
 #!/bin/bash
-# pid-1 supervisor (thin). Rust bins do heavy lifting (startup TUI + generate). On HUP/watcher/config-apply we bounce Ganesha+SSSD+WebUI. Simple loop for traps; TERM does full cleanup. No complex child-death exit logic.
+# PID-1 supervisor: Rust tools generate config; this script starts services, handles signals, and reaps children.
 set -euo pipefail
 
 # Paths (override for CI/test)
@@ -17,17 +17,11 @@ UI_BIN="${UI_BIN:-/usr/local/bin/nfs-klldap-ui}"
 WATCHER_BIN="${WATCHER_BIN:-/usr/local/bin/nfs-klldap-conf-watcher}"
 GANESHA_CTL="${GANESHA_CTL:-/usr/local/bin/ganesha-ctl}"
 IDHELPER_BIN="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
-# nss_wrapper integration: the idhelper materializes /var/lib/nfs-klldap/nss_{passwd,group}
-# containing classified machine (→ uid 0) and user principals. Only Ganesha is run under
-# the preload so its getpwnam (used for Kerberos NFSv4 owner mapping) sees the idhelper's
-# decisions. Regular processes continue to use real SSSD users.
+# idhelper writes nss_passwd/group; only ganesha.nfsd runs with LD_PRELOAD=nss_wrapper for Kerberos owner mapping.
 NSS_PASSWD="${NSS_PASSWD:-/var/lib/nfs-klldap/nss_passwd}"
 NSS_GROUP="${NSS_GROUP:-/var/lib/nfs-klldap/nss_group}"
 
-# PATH prefix so operator/rpc.idmapd-style nfsidmap binary calls hit our shim.
-# Ganesha 9.6 principal2uid uses in-process libnfsidmap + getpwnam under
-# LD_PRELOAD=nss_wrapper (nss_passwd bulk-seeded by idhelper). The shim does
-# not intercept that path. Only affects ganesha.nfsd PATH for fallback execs.
+# Prepend GANESHA_PATH_PREFIX so fallback nfsidmap execs hit our shim (not in-process libnfsidmap path).
 GANESHA_PATH_PREFIX="/usr/local/bin"
 # Compute a best-effort path for libnss_wrapper.so on Debian multiarch.
 NSS_WRAPPER_SO="${NSS_WRAPPER_SO:-}"
@@ -97,7 +91,7 @@ quiet_winbind() {
     fi
 }
 
-# Start ganesha.nfsd with nfsidmap shim PATH; optional nss_wrapper preload.
+# Start ganesha.nfsd with nfsidmap shim PATH; LD_PRELOAD nss_wrapper unless USE_NSS_WRAPPER=0.
 start_ganesha() {
     quiet_winbind
     if [ "${USE_NSS_WRAPPER:-1}" = "1" ] || [ "${USE_NSS_WRAPPER:-1}" = "true" ]; then
@@ -113,7 +107,7 @@ start_ganesha() {
     GANESHA_PID=$!
 }
 
-# Permission hygiene (root:root 0600 for sssd.conf is mandatory)
+# Fix ownership/modes on derived configs (sssd.conf must be root:root 0600).
 fix_derived_permissions() {
     # sssd.conf is extremely picky about ownership (root:root 0600).
     chown root:root "$SSSD_CONF" 2>/dev/null || true
@@ -140,7 +134,7 @@ fix_derived_permissions() {
     fi
 }
 
-# Preflight (fail fast)
+# --- Preflight (fail fast) ---
 preflight_checks() {
     local missing=0
 
@@ -185,7 +179,7 @@ cleanup() {
     # Prevent re-entrancy on EXIT trap (avoids duplicate shutdown logs).
     trap - EXIT SIGTERM SIGINT
 
-    # Prefer killing tracked PIDs when we have them
+    # Terminate tracked child PIDs (rpcbind is only stopped via pkill fallback).
     for pidvar in WEBUI_PID GANESHA_PID SSSD_PID WATCHER_PID DBUS_PID RPCBIND_PID IDHELPER_PID; do
         local pid="${!pidvar:-}"
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
@@ -221,15 +215,14 @@ handle_sighup() {
 
     fix_derived_permissions
 
-    # Ganesha restart (management via pkill + respawn from supervisor; system bus is now present
-    # inside the container for any D-Bus features Ganesha itself may use).
+    # Restart Ganesha: ganesha-ctl reload (pkill) or direct pkill, then start_ganesha.
     if [ -x "$GANESHA_CTL" ]; then
         "$GANESHA_CTL" reload 2>/dev/null || pkill -TERM ganesha.nfsd 2>/dev/null || true
     else
         pkill -TERM ganesha.nfsd 2>/dev/null || true
     fi
     sleep 0.3
-    info "Starting NFS-Ganesha (idhelper mappings via wrapper/extrausers)..."
+    info "Starting NFS-Ganesha (idhelper mappings via nss_wrapper preload)..."
     start_ganesha
 
     # SSSD almost always needs a full restart when its config changes (bind DN,
@@ -265,7 +258,7 @@ handle_sighup() {
         tail -n 20 /var/log/webui.log 2>/dev/null || true
     fi
 
-    info "Services (Ganesha + SSSD + WebUI) recycled in place for config apply."
+    info "Ganesha, SSSD, idhelper, and WebUI recycled after config apply."
     # Create the marker *after* the declaration. The /restart-status handler
     # (polled by restarting.html) will only return 200 for a recent marker.
     # This is the signal the client waits for before redirecting to /login.
@@ -323,7 +316,7 @@ main() {
         die "SSSD NSS pipe did not appear. Check LLDAP connectivity and bind credentials."
     fi
 
-    # Preload host/*@REALM + root uid0 before Ganesha to avoid cold-start principal-map races.
+    # Append host/FQDN host/*@REALM principals unless already listed in PRERESOLVE.
     _H=$(hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || echo "localhost")
     _R=$(awk '/default_realm/ {print $3; exit}' /etc/krb5.conf 2>/dev/null || echo "${NFS_KLLDAP_KERBEROS_REALM:-EXAMPLE.COM}")
     _PRE="${NFS_KLLDAP_IDHELPER_PRERESOLVE:-}"
@@ -361,8 +354,8 @@ main() {
         warn "idhelper bulk-seed marker missing; Ganesha may log principal2uid WARN on first user mount"
     fi
 
-    # Ganesha prerequisites in the required order: rpcbind, dbus, wait for socket, then ganesha.
-    # rpcbind (tooling/compatibility; Ganesha itself is strict NFSv4+).
+    # --- Ganesha prerequisites: rpcbind, dbus, then ganesha.nfsd ---
+    # rpcbind has no RPCBIND_PID tracking; cleanup relies on pkill -TERM rpcbind.
     if command -v rpcbind >/dev/null 2>&1; then
         if ! pgrep -x rpcbind >/dev/null 2>&1; then
             info "Starting rpcbind..."
@@ -370,7 +363,7 @@ main() {
         fi
     fi
 
-    # dbus system bus (Ganesha on Fedora builds uses it for monitoring/management features).
+    # dbus system bus (required for Ganesha 9.6 runtime/management on this image).
     mkdir -p /run/dbus
 
     # Clean stale pid file (very common cause of "Failed to start message bus")
@@ -401,7 +394,7 @@ main() {
         warn "D-Bus system bus socket did not appear; Ganesha may have limited management features."
     fi
 
-    info "Starting NFS-Ganesha (idhelper mappings via wrapper/extrausers)..."
+    info "Starting NFS-Ganesha (idhelper mappings via nss_wrapper preload)..."
     start_ganesha
 
     # WebUI (HTTPS on 9630 via axum-server + rustls; self-signed unless NFS_KLLDAP_WEBUI_TLS_* set)
@@ -423,23 +416,17 @@ main() {
     # has an age check).
     rm -f /tmp/.nfs-klldap-services-recycled 2>/dev/null || true
 
-    # Config watcher (inotify on the mounted source nfs-klldap.conf). It signals
-    # pid 1 (HUP) so the privileged supervisor can run the generator (ensuring
-    # 0600 root:root sssd.conf etc.) and bounce services. We start it *late*
-    # (after Ganesha + WebUI are up) so inotify events during the critical
-    # early bring-up on container start / image rebuild cannot race with the
-    # first ganesha.nfsd launch or the dbus/rpc readiness waits. Once running
-    # it provides the documented live-edit experience for the source config.
+    # Start config watcher last so early bring-up cannot race Ganesha/dbus readiness;
+    # inotify → SIGHUP → generate + service recycle.
     info "Starting config watcher..."
     "$WATCHER_BIN" "$NFS_CONFIG" &
     WATCHER_PID=$!
 
     info "Container is ready."
 
-    # Supervisor loop (simple pid1): reaps, stays up. HUP path does bounces; only TERM/INT/EXIT exits us.
-    # (No liveness false-positives, no "child death exits supervisor". Crashed services stay down until HUP/restart.)
+    # Supervisor loop: reap children; do not auto-respawn crashed daemons (HUP = config reload; full restart = new container).
     while true; do
-        wait -n 2>/dev/null || true   # reap any exited children promptly
+        wait -n 2>/dev/null || true   # wait -n reaps one child; sleep avoids tight spin when none exit
         sleep 5
     done
 }

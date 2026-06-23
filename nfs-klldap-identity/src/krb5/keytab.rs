@@ -28,7 +28,7 @@ pub fn parse_klist_nfs_principals(stdout: &str) -> Vec<String> {
     found
 }
 
-/// Extract unique host portions from nfs/<host>@REALM principals (startup TUI style).
+/// Extract host portion from nfs/<host>@REALM principals.
 pub fn parse_klist_nfs_hosts(stdout: &str) -> Vec<String> {
     let mut hosts: Vec<String> = parse_klist_nfs_principals(stdout)
         .into_iter()

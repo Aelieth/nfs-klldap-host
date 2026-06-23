@@ -8,7 +8,7 @@ pub use nfs_klldap_identity::{
     PosixGroupEntry, PosixMappingInput, PosixUserEntry,
 };
 
-/// Build an IdLdapResolver from ldap_uri + [sssd] (same behavior as pre-0.8.12 idmap.rs).
+/// Build IdLdapResolver from ldap_uri + [sssd].
 pub fn from_sssd_section(ldap_uri: &str, sssd: &SssdSection) -> IdLdapResolver {
     IdLdapResolver::from_inputs(&resolver_inputs_from_sssd(ldap_uri, sssd))
 }

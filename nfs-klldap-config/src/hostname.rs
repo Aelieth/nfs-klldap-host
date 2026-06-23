@@ -146,7 +146,7 @@ now report the identical name in the startup TUI and WebUI logs.";
     Ok(primary)
 }
 
-/// Returns hostname after requiring `hostname(1)` output == /proc/sys/kernel/hostname exactly.
+/// Returns hostname when `hostname(1)` and /proc/sys/kernel/hostname agree after trim/trailing-dot normalization.
 pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsistency> {
     let primary = match Command::new("hostname").output() {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
@@ -237,8 +237,8 @@ pub fn get_consistent_hostname_from_values(
 }
 
 pub(crate) mod internal {
+    /// Best-effort hostname for effective_hostname() fallback (not two-tier validated).
     pub fn get() -> Result<std::ffi::OsString, std::io::Error> {
-        // Simple /proc/sys/kernel/hostname or env fallback
         if let Ok(h) = std::env::var("HOSTNAME") {
             return Ok(h.into());
         }

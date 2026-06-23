@@ -173,10 +173,7 @@ case "$CMD" in
         fi
         ;;
     id-map-test)
-        # Exercise the "same information lookup as the client" contract.
-        # getent passwd testuser1 (short) + full principal via idhelper resolve.
-        # Also confirms CLIENT policy would be present in generated fragments.
-        # Specific to ganesha 9.6/trixie stabilization (see ganesha.log analysis).
+        # Exercise client-parity lookups: getent short name + idhelper principal resolve.
         TESTP="${1:-testuser1}"
         echo "[ganesha-ctl] id-map-test for short name: getent passwd $TESTP"
         getent passwd "$TESTP" || echo "  (getent short name returned non-zero; may be expected pre-user-create)"
@@ -186,8 +183,12 @@ case "$CMD" in
             echo "[ganesha-ctl] also testing a host principal form (common for clients):"
             /usr/local/bin/nfs-klldap-idhelper resolve "host/localhost@" 2>/dev/null || true
         fi
-        echo "[ganesha-ctl] fragment CLIENT policy check (if exports exist):"
-        grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep -E 'Read_Access_Check_Policy|CLIENT' || echo "  (no fragments or policy line not yet present)"
+        echo "[ganesha-ctl] fragment CLIENT block check (if exports exist):"
+        if grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep -q 'Read_Access_Check_Policy' 2>/dev/null; then
+            echo "  WARN: Read_Access_Check_Policy present — trixie Ganesha 9.6 rejects this key"
+        else
+            grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep 'CLIENT' || echo "  (no fragments yet)"
+        fi
         ;;
     *)
         usage

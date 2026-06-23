@@ -10,6 +10,7 @@ use crate::{
 };
 
 
+/// Sanitize share name for export fragment filenames.
 pub(crate) fn sanitize_name(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -22,6 +23,7 @@ pub(crate) fn sanitize_name(s: &str) -> String {
         .collect()
 }
 
+/// Stable Export_Id from share name (FNV-1a + base offset).
 pub(crate) fn derive_export_id(name: &str, base: u16) -> u16 {
     let mut h: u32 = 0x811c9dc5;
     for b in name.as_bytes() {
@@ -286,16 +288,9 @@ access_provider = {access}"#,
         }
     }
 
-    // Auto-derived Kerberos (KDC) settings for the co-located LDAP+KDC case.
-    // The host is taken from ldap_uri (different protocol/port than LDAP) and
-    // the realm matches the rest of the stack (kerberos.realm / effective_realm).
-    // This gives the sssd [domain] the "kerberos format" equivalent of the
-    // auto-derived ldap values. Explicit [sssd] krb5_* values override.
-    // Ganesha krb5* SecType (krb5p default) still works with auth_provider=ldap
-    // (the default); these lines make the domain properly Kerberos-aware for
-    // resolution alongside the idhelper.
+    // krb5_realm/server/kpasswd: derived from effective_realm + ldap_uri host unless [sssd] overrides.
     let kdc_host = crate::extract_host_from_uri(&cfg.ldap_uri);
-    let realm = cfg.effective_realm();  // safe: called after validate_and_derive
+    let realm = cfg.effective_realm(); // caller must have run validate_and_derive (or load)
 
     // krb5_realm: always the effective realm (same as kerberos.realm and krb5.conf).
     // No separate override field needed in this design (realm is single source).
@@ -414,14 +409,7 @@ fn write_krb5_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
     Ok(())
 }
 
-/// Write a standardized /etc/idmapd.conf (or equivalent path) driven by the central
-/// nfs-klldap.conf. Domain + Local-Realms taken from effective_realm() (same source as
-/// ganesha DIRECTORY_SERVICES.DomainName and krb5 default_realm). Method = nsswitch
-/// (plus explicit GSS-Methods) because we use direct POSIX (ldap_id_mapping=false in
-/// generated sssd) + our idhelper for Kerberos principals (user TGTs + machine
-/// host/nfs/ principals from client host keytabs). Consistent Domain/Local-Realms +
-/// nsswitch/GSS-Methods for Ganesha 9.6 trixie + libnfsidmap fallback + client rpc.idmapd.
-/// No Idmap* keys are ever emitted into ganesha.conf (deprecated for 9.x).
+/// Write /etc/idmapd.conf: Domain/Local-Realms from effective_realm(), Method/GSS = nsswitch.
 fn write_idmap_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError> {
     // Kerberos principals use uppercase realms; libnfsidmap Local-Realms match is case-sensitive.
     let realm = cfg.effective_realm().to_ascii_uppercase();
@@ -540,10 +528,8 @@ NFSV4 {{
 EXPORT_DEFAULTS {{
     SecType = {sec};
     Protocols = {proto};
-    # Read_Access_Check_Policy intentionally omitted from EXPORT_DEFAULTS.
-    # Default is "pre" (per ganesha-export-config.8 for 9.x). Emitting it here
-    # produces "Unknown parameter" on Ganesha 9.6 from trixie-backports.
-    # The policy (when desired) is only placed inside CLIENT blocks below.
+    # Read_Access_Check_Policy intentionally omitted (ganesha 9.6 trixie-backports
+    # rejects the key; built-in default is pre).
 }}
 "#,
         realm = realm,
@@ -553,11 +539,7 @@ EXPORT_DEFAULTS {{
         root_krb = constants::GANESHA_ROOT_KRB_PRINCIPALS,
     );
 
-    // Always emit a baseline LOG block with elevated visibility for identity/client
-    // related components. This gives the idhelper observer (and operators) a much
-    // better chance of seeing client records, session setup, and owner/principal
-    // strings during the real authenticated mount phases without requiring the
-    // heavy GANESHA_DEBUG=TRUE mode.
+    // Baseline LOG (CLIENTID/SESSIONS/IDMAPPER) for operator + idhelper observer; GANESHA_DEBUG upgrades to FULL_DEBUG.
     if ganesha_debug_enabled() {
         content.push_str(
             r#"LOG {

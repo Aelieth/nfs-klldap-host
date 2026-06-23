@@ -1,6 +1,5 @@
 #!/bin/bash
-# Docker HEALTHCHECK: ganesha.nfsd + 2049 + SSSD NSS + WebUI 9630. See container/README.md.
-#
+# Docker HEALTHCHECK: ganesha.nfsd:2049, SSSD NSS pipe, WebUI:9630 (hard fail). Extra checks emit WARN only.
 set -euo pipefail
 
 fail() {
@@ -20,6 +19,7 @@ if ! pgrep -x ganesha.nfsd >/dev/null 2>&1; then
     fail "ganesha.nfsd process is not running"
 fi
 
+# Prefer ss -tlnp; fall back to bash /dev/tcp when ss is absent.
 # Check listening on 2049 (NFSv4)
 listening_2049=false
 if command -v ss >/dev/null 2>&1; then
@@ -44,7 +44,7 @@ if [ ! -S /var/lib/sss/pipes/nss ]; then
 fi
 
 # -------------------------------------------------------------------------
-# 3. WebUI HTTPS listener on 9630 (in-container management)
+# 3. WebUI listener on TCP 9630 (HTTPS or HTTP per TLS mode)
 # -------------------------------------------------------------------------
 listening_9630=false
 if command -v ss >/dev/null 2>&1; then
@@ -62,8 +62,7 @@ if [ "$listening_9630" != true ]; then
 fi
 
 # -------------------------------------------------------------------------
-# Optional: quick sanity that we have at least one export configured.
-# This is best-effort and does not fail the healthcheck.
+# Optional: warn if show-exports fails (non-fatal, e.g. early startup).
 # -------------------------------------------------------------------------
 if command -v /usr/local/bin/ganesha-ctl >/dev/null 2>&1; then
     if ! /usr/local/bin/ganesha-ctl show-exports >/dev/null 2>&1; then
@@ -71,7 +70,8 @@ if command -v /usr/local/bin/ganesha-ctl >/dev/null 2>&1; then
     fi
 fi
 
-# ID helper presence + wrapper files (critical for Kerberos mount stability on Immutable clients)
+# --- 4. idhelper + override files (advisory) ---
+# idhelper binary + nss_passwd/extrausers files (daemon liveness not verified here).
 if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
     echo "OK: nfs-klldap-idhelper present"
 else
@@ -80,7 +80,7 @@ fi
 if [ -f /var/lib/nfs-klldap/nss_passwd ] || [ -f /var/lib/extrausers/passwd ]; then
     echo "OK: idhelper machine overrides present (wrapper or extrausers)"
 else
-    echo "WARN: no idhelper override files yet (may appear after first client observes)"
+    echo "WARN: no idhelper override files yet (may be missing if bulk-seed has not finished)"
 fi
 
 # Advisory: Docker bridge networking breaks NFSv4 client records (server_addr = 172.17.x.x).

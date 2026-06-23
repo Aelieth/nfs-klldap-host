@@ -142,7 +142,28 @@ pub(crate) fn looks_like_client_hostname(t: &str) -> bool {
     true
 }
 
-/// Exact-match noise tokens (case-insensitive) that must never become a client hostname.
+/// Extra hostname rejection beyond LOG_NOISE_TOKENS (0x…, nfsv4.x, version-like tokens).
+fn is_noise_hostname(t: &str) -> bool {
+    let s = t.trim().to_ascii_lowercase();
+    if s.starts_with("0x") {
+        return true;
+    }
+    if matches!(
+        s.as_str(),
+        "nil" | "null" | "clientid" | "unique" | "counter" | "created" | "client" |
+        "id" | "name" | "addr" | "refcount" | "cr" | "conf" | "unconf" | "debug" |
+        "info" | "warning" | "error" | "ffff" | "linux" | "nfsv4"
+    ) {
+        return true;
+    }
+    // Also reject version-like tokens (NFSv4.2, 2.3 etc) and obvious non-host words that
+    // appear after : or - splits in client name blobs.
+    if s.starts_with("nfsv") || s.starts_with("nfs") || (s.chars().any(|c| c.is_ascii_digit()) && s.contains('.')) {
+        return true;
+    }
+    false
+}
+
 fn maybe_warn_bridge_server_addr(
     line: &str,
     bridge_warned: &mut std::collections::HashMap<String, std::time::Instant>,
@@ -171,28 +192,6 @@ fn maybe_warn_bridge_server_addr(
          clients may fail to reconnect. Use --network=host (or network_mode: host).",
         addr
     );
-}
-
-fn is_noise_hostname(t: &str) -> bool {
-    let s = t.trim().to_ascii_lowercase();
-    if s.starts_with("0x") {
-        return true;
-    }
-    if matches!(
-        s.as_str(),
-        "nil" | "null" | "clientid" | "unique" | "counter" | "created" | "client" |
-        "id" | "name" | "addr" | "refcount" | "cr" | "conf" | "unconf" | "debug" |
-        "info" | "warning" | "error" | "ffff" | "linux" | "nfsv4"
-    ) {
-        return true;
-    }
-    // Also reject version-like tokens (NFSv4.2, 2.3 etc) and obvious non-host words that
-    // appear after : or - splits in client name blobs.
-    if s.starts_with("nfsv") || s.starts_with("nfs") || (s.chars().any(|c| c.is_ascii_digit()) && s.contains('.')) {
-        // e.g. "NFSv4.2" or "10.10" style after split
-        return true;
-    }
-    false
 }
 
 /// Try to extract a client hostname from a string that contains the common

@@ -2,6 +2,8 @@
 # Single source of truth: nfs-klldap.conf. In-container WebUI on HTTPS port 9630.
 # cap_add for SYS_ADMIN + DAC_READ_SEARCH is strongly recommended (see docs/run/README.md).
 
+# Compose service name is nfs-kerb; container_name is nfs-klldap-host (use either in docker commands).
+
 services:
   nfs-kerb:
     build:
@@ -22,12 +24,7 @@ services:
       - DAC_READ_SEARCH
 
     volumes:
-      # Single (or multiple) root-level bind(s) of host parent dir(s) is the stable model.
-      # The first directory component of each share's host_path is treated as the implicit
-      # per-share bind root (e.g. host_path starting with /media or /mount). The tail after
-      # that component becomes the subpath under container_root (/export). This lets the
-      # per-share "Export Path" (editable in System Settings → Shares) be used/shortened
-      # purely for the external/client Pseudo while the internal stays correct for the bind(s).
+      # Bind host parent dir(s) to container_root; see docs/ganesha-architecture.md for host_path mapping.
       - /media/:/export:rw
       - ./config:/config:rw
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro

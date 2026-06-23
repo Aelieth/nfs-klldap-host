@@ -22,8 +22,6 @@ fn resolve_runtime_hostname_for_banner() -> String {
     match get_consistent_hostname() {
         Ok(c) => c.hostname,
         Err(e) => {
-            // (ensures we surface real vs. docker-id mismatch)
-
             eprintln!("\n{}", e);
             eprintln!("WARNING: Using best-effort fallback for keytab reminder because the two hostname sources disagreed.");
             // Best-effort fallback so the UI can still start (the operator can still edit config)

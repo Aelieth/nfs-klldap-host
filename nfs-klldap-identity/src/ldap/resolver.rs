@@ -117,6 +117,7 @@ impl IdLdapResolver {
         }
     }
 
+    /// TLS: reqcert=never or ldaps:// without explicit policy disables verify.
     pub fn from_inputs(inputs: &LdapResolverInputs) -> Self {
         let (user_base, group_base) =
             effective_ldap_search_bases(&inputs.search_bases, &inputs.realm);
@@ -197,6 +198,7 @@ impl IdLdapResolver {
             .unwrap_or_else(|| fallback.to_string())
     }
 
+    /// Fallback search base: suffix from first dc= (covers principal-style lookups).
     fn dc_base_from(&self, base: &str) -> String {
         if let Some(pos) = base.to_ascii_lowercase().find("dc=") {
             base[pos..].to_string()
@@ -205,6 +207,7 @@ impl IdLdapResolver {
         }
     }
 
+    /// Sync LDAP op in worker thread; 3 attempts with backoff.
     fn service_search(
         &self,
         base: &str,
@@ -350,6 +353,7 @@ impl IdLdapResolver {
             }
         }
 
+        // If username looks like UPN, retry search on krbPrincipalName.
         if name.contains('@') {
             let p_filter = format!(
                 "(&(objectClass={})({}={}))",
@@ -566,6 +570,7 @@ impl IdLdapResolver {
         )
     }
 
+    /// Preload all posix users/groups into caches; index UPN aliases when present.
     pub fn load_full_identities(&self, bind_dn: &str, bind_pw: &str) -> usize {
         self.evict_expired();
 

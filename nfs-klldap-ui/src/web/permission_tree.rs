@@ -196,7 +196,7 @@ pub(crate) async fn index(
     // - Proper client NFS path using the same keytab_hostname the rest of the system uses
     //   (so it matches what clients should put in `server:/path` mount commands).
     // - Compact labels for RW/RO, root-squash/no, and cache profile.
-    // This also eliminates the previous ad-hoc `ep` logic + double-slash bug in the template.
+    // Build share cards: NFS path from keytab hostname + export pseudo; RW/squash/cache labels.
     let server = &state.keytab_hostname;
     let display_shares: Vec<ShareInfo> = state
         .config
@@ -301,7 +301,7 @@ pub(crate) async fn tree_fragment(
         }
     }
 
-    // Helpful diagnostic (the previous silent empty list was the main complaint).
+    // Return diagnostic HTML when tree build fails (bind mount / path translation).
     let safe_path = params
         .path
         .replace('&', "&amp;")

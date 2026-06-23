@@ -41,8 +41,7 @@ pub use nfs_klldap_identity::{
     KeytabInfo,
 };
 
-// Structured ID/LDAP resolution (used by idhelper for getent + principal paths
-// with caching and PosixAttributeMapping parity to nfs-klldap-ui/src/ldap.rs).
+// Structured LDAP resolution (IdLdapResolver); shared with nfs-klldap-identity / WebUI LDAP client.
 pub mod idmap;
 pub use idmap::{
     classify_principal, escape_ldap_filter, extract_first_attr_value, from_sssd_section,
@@ -56,7 +55,7 @@ pub use constants::{
     DEFAULT_USER_FULLNAME_ATTR, DEFAULT_USER_GID_ATTR, DEFAULT_USER_HOME_ATTR,
     DEFAULT_USER_NAME_ATTR, DEFAULT_USER_OBJECT_CLASS, DEFAULT_USER_PRINCIPAL_ATTR,
     DEFAULT_USER_SHELL_ATTR, DEFAULT_USER_UID_ATTR, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
-    GANESHA_DEFAULT_SECTYPE, GANESHA_PROTOCOLS, GANESHA_PWNAM_IMPL, GANESHA_READ_ACCESS_CHECK_POLICY,
+    GANESHA_DEFAULT_SECTYPE, GANESHA_PROTOCOLS, GANESHA_PWNAM_IMPL,
     GANESHA_ROOT_KRB_PRINCIPALS, IDMAPD_GSS_METHODS, IDMAPD_NOBODY_GROUP, IDMAPD_NOBODY_USER,
     IDMAPD_TRANSLATION_METHOD, LOG_NOISE_TOKENS, MACHINE_GID, MACHINE_PRINCIPAL_PREFIXES, MACHINE_UID,
     DEFAULT_GROUP_MEMBER_ATTR_KLLDAP, DEFAULT_GROUP_MEMBER_ATTR_LEGACY,

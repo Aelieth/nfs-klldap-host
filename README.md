@@ -97,8 +97,8 @@ container_root = "/export"                                      # Anchor for Gan
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
 ldap_default_authtok = "strong-secret"
-# ldap_user_search_base = "ou=users,dc=example,dc=com"          # Optional - defaults to dc=... (Subtree) for nested-OU support
-# ldap_group_search_base = "ou=groups,dc=example,dc=com"        # Default - Edit this if your base user OU differs 
+# ldap_user_search_base = "ou=people,dc=example,dc=com"         # Optional - defaults to dc=<realm> (Subtree)
+# ldap_group_search_base = "ou=people,dc=example,dc=com"        # Optional - defaults to dc=<realm> (Subtree)
 kllldap_ignored_attributes = true                               # KLLDAP specific - improves lookup time, prevents attribute spam
 
 [kerberos]
@@ -125,11 +125,11 @@ default_security = "krb5p"                                      # security, krb5
 
 The generator derives ports, search bases, sssd.conf, krb5.conf, /etc/idmapd.conf (following [sssd] + realm), and Ganesha fragments. `kllldap_ignored_attributes = true` (default) emits recommended server-side ignore lists.
 
-Per-share Ganesha options (in [[shares]]) include `cache_profile` (see below), `disable_acl`, and the advanced/raw `pref_read` / `pref_write` (bytes). The recommended way is the **Cache Profile** dropdown in the WebUI (stored as e.g. `cache_profile = "Read - Heavy"` under the share). The generator always resolves the profile (or falls back to explicit pref_* for power users) when (re)writing Ganesha EXPORT fragments. See the table below and the WebUI shares editor. Only recognized `[[shares]]` keys are honored; unrecognized keys are ignored but surfaced as warnings in logs and the Share Permissions UI.
+Per-share Ganesha options include `cache_profile` (recommended), `disable_acl`, and raw `pref_read` / `pref_write`. The WebUI **Cache Profile** dropdown writes e.g. `cache_profile = "Read - Heavy"`; the generator resolves it on every regen. Unrecognized `[[shares]]` keys are ignored and surfaced as warnings.
 
 ### Cache Profiles (Shares tuning)
 
-In **System Settings → Shares** the former "PrefRd" numeric input is now a **Cache Profile** dropdown with five curated options. The chosen profile name is written into the `[[shares]]` table (e.g. `cache_profile = "Read - Heavy"`) and becomes the source of truth for that share.
+**System Settings → Shares** uses a **Cache Profile** dropdown (five options). The chosen name is the source of truth for that share's `PrefRead`/`PrefWrite` emission.
 
 On every `generate` (container start, config watcher, "Restart and apply", or explicit HUP) the following are *rewritten* from the profiles in `nfs-klldap.conf`:
 
@@ -215,7 +215,7 @@ ganesha-ctl id-check
 
 See [docs/ldap-integration.md](docs/ldap-integration.md) for SSSD/POSIX requirements, TLS behavior, idhelper architecture, and verification commands.
 
-Ganesha 9.6 on Debian trixie-backports uses explicit `Read_Access_Check_Policy = pre;` in CLIENT blocks. The idhelper syncs all LDAP users into `nss_passwd` at startup and every 10 minutes (pruning deleted users and refreshing uid/gid changes). Set `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS=0` to disable periodic sync. The log observer still resolves newly seen principals between syncs.
+Ganesha 9.6 trixie-backports omits `Read_Access_Check_Policy` (parser rejects it; default `pre` applies). The idhelper syncs LDAP users into `nss_passwd` at startup and every 10 minutes (pruning deletions, refreshing uid/gid). Set `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS=0` to disable periodic sync; the log observer still resolves new principals between syncs.
 
 The container image uses a split-stage strategy (build on Fedora minimal for the Rust binaries; runtime on Debian 13-slim) — see the Dockerfile for package choices.
 

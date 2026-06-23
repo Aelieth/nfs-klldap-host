@@ -112,6 +112,8 @@ These are less commonly needed:
 | `SSSD_DEBUG_LEVEL`           | *(unset)* | `4`     | When set, passed as `-d $SSSD_DEBUG_LEVEL` to the `sssd` daemon for increased verbosity. |
 | `GANESHA_DEBUG`              | *(unset)* | `TRUE`  | When set exactly to `TRUE`, the generator emits a `LOG { Default_Log_Level = DEBUG; Components { IDMAPPER/FSAL/NFS4 = FULL_DEBUG; } }` block into `ganesha.conf`. For deep Ganesha troubleshooting only. |
 | `WATCHER_DEBOUNCE_SECONDS`   | `2`       | `1`     | Seconds to sleep after detecting a config file change (via inotify) before signaling the supervisor for reload. |
+| `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS` | `600` | `0` | Seconds between idhelper LDAP→nss_passwd syncs (`0` disables periodic rebulk). |
+| `NFS_KLLDAP_WEBUI_COOKIE_SECURE` | *(derived)* | `false` | Force non-Secure session cookies regardless of TLS mode or `X-Forwarded-Proto`. |
 
 A small number of path/binary overrides (`SSSD_CONF`, `GANESHA_CONF`, `CONFIG_BIN`, `HEALTHCHECK`, etc.) and `NFS_KLLDAP_CONF` exist primarily for testing, CI, and image development. Typical users set `NFS_CONFIG` (which also drives `NFS_KLLDAP_CONF` for the WebUI) instead.
 
@@ -174,11 +176,9 @@ volumes:
 
 `--privileged` works but is overkill and not recommended. The two caps above are the minimal practical set for this workload.
 
-### dbus-daemon and rpcbind (new in the image)
-- Ganesha (the packaged build used in this image, whether from Fedora or the Debian backports 9.x channel) expects a D-Bus system bus (typically `/run/dbus/system_bus_socket`). The image installs `dbus` (providing dbus-daemon) and the entrypoint launches `dbus-daemon --system --nofork &` early, before `ganesha.nfsd`.
-- `rpcbind` is also installed and started (best-effort). For pure NFSv4 (`Protocols = 4`) it is not strictly required, but:
-  - Some tooling, `showmount`, older clients, or status scripts still reference the portmapper.
-  - The user request explicitly asked for it "for good measure."
+### dbus-daemon and rpcbind
+- Ganesha 9.6 (Debian trixie-backports) expects a D-Bus system bus (`/run/dbus/system_bus_socket`). The entrypoint launches `dbus-daemon --system --nofork &` before `ganesha.nfsd`.
+- `rpcbind` is installed and started (best-effort). For pure NFSv4 (`Protocols = 4`) it is not strictly required; some tooling and status scripts still reference the portmapper.
 - The supervisor and `ganesha-ctl` management path remain "DBUS-free" (we use export fragments on disk + SIGHUP to pid 1 + pkill/respawn). The bus is present for Ganesha's internal/monitoring use.
 
 In the container you should see the socket and processes:
@@ -208,7 +208,7 @@ NFS_CORE_PARAM {
 }
 
 DIRECTORY_SERVICES {
-    DomainName = SATOMLIN.COM;
+    DomainName = EXAMPLE.COM;
     Pwnam_Implementation = nsswitch;
     # NOTE: Root_Kerberos_Principal remains a tiny safe static list.
     # The nfs-klldap-idhelper is the authoritative classifier/resolver for
@@ -237,19 +237,16 @@ NFSV4 {
 EXPORT_DEFAULTS {
     SecType = krb5p;
     Protocols = 4;
-    # (Read_Access_Check_Policy intentionally omitted here for Ganesha 9.6 trixie-backports
-    # parser compatibility; default "pre" applies. It is emitted only inside per-CLIENT blocks.)
+    # (Read_Access_Check_Policy intentionally omitted — trixie Ganesha 9.6 rejects the key; default "pre" applies.)
 }
 ```
-
-(See the full generated /etc/ganesha/ganesha.conf (no Read_Access_Check_Policy at EXPORT_DEFAULTS) and per-share CLIENT blocks containing Read_Access_Check_Policy = pre; inside the container for the complete safe set. No IdmapConf or other idmap keys are emitted in ganesha.conf.)
 
 Key points:
 - `Protocols = 4` (also in EXPORT_DEFAULTS and per-share CLIENT blocks) for strict NFSv4.
 - `Manage_Gids_Expiration` in NFS_CORE_PARAM.
 - Kerberos configuration via NFS_KRB5 and a minimal Root_Kerberos_Principal (host, nfs).
 - Explicit `%include` lines (one per share fragment) for deterministic loading.
-- `Read_Access_Check_Policy = pre;` only inside every CLIENT block (ganesha 9.6 / trixie-backports specific; we omit from EXPORT_DEFAULTS because the 9.6 parser on trixie-backports emits "Unknown parameter" for it there, even though upstream docs list the location; default pre is used instead).
+- `Read_Access_Check_Policy` omitted everywhere (trixie Ganesha 9.6 rejects it; built-in default `pre` applies).
 - Only the options above + safe NFSV4/EXPORT_DEFAULTS are emitted. Idmap* keys are deliberately not present in ganesha.conf (use the idhelper + shim + /etc/idmapd.conf + nss materialization instead; see man nfsidmap / idmapd.conf). Other legacy options are omitted because they are not accepted by the ganesha 9.6 parser on trixie-backports.
 
 Each per-share fragment contains an EXPORT with Path (internal), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block for access control, and the VFS FSAL. Additional CLIENT blocks can be appended manually (they will be lost on regeneration).

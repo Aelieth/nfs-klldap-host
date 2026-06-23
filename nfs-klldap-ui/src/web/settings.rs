@@ -207,10 +207,7 @@ fn share_export_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize) -> Strin
     }
 }
 
-/// Map legacy direct pref_read/pref_write numeric values (from older nfs-klldap.conf)
-/// back to one of the 5 canonical profile names for dropdown pre-selection.
-/// This provides a smooth migration experience when the user first opens /settings
-/// after the PrefRd → Cache Profile change. Exact byte matches only.
+/// Maps legacy pref_read/pref_write byte pairs to canonical cache profile names for dropdown prefill.
 fn infer_profile_from_prefs(pref_read: Option<u64>, pref_write: Option<u64>) -> String {
     match (pref_read, pref_write) {
         (Some(1048576), Some(1048576)) => "Default".to_string(),
@@ -297,10 +294,7 @@ fn build_settings_template(
         // Computed from *raw source presence* (not from derived cfg values).
         override_server_hostname: has_explicit(&doc, "server", "hostname"),
         override_kerberos_realm: has_explicit(&doc, "kerberos", "realm"),
-        // Special for ganesha: treat explicit "krb5p" the same as absent (the non-override default state).
-        // Only if the source has a non-krb5p value do we consider it an active override.
-        // Combined with the writer always ensuring "krb5p" when !override, this keeps the
-        // default materialized in the conf without the checkbox appearing "stuck" on for the default.
+        // Treat explicit krb5p as non-override; writer always materializes krb5p when override is off.
         override_ganesha_default_security: get_explicit_str(&doc, "ganesha", "default_security")
             .is_some_and(|v| v != "krb5p"),
         override_sssd_search_base: has_explicit(&doc, "sssd", "ldap_search_base"),
@@ -714,10 +708,9 @@ fn apply_structured_form_to_toml_doc(
 /// Write (or replace) only the [[shares]] array in the raw TOML doc.
 /// Used exclusively by the dedicated shares-save path so that saving shares
 /// never touches [sssd], [server], etc. (and vice-versa for settings save).
-/// Mirrors the emission that used to live inside apply_structured_form_to_toml_doc.
+/// Writes/replaces only `[[shares]]`; settings save does not touch other sections.
 fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_klldap_config::Share]) {
-    // Shares: submitted rows (now pre-populated on load) are always authoritative.
-    // We replace [[shares]] even if the submitted list is empty (user explicitly removed all rows).
+    // Submitted share rows replace [[shares]] entirely (empty list = user removed all shares).
     let had_shares = doc.get("shares").is_some();
     // Remove first so we can control insertion position for the first-add case.
     let _ = doc.as_table_mut().remove("shares");

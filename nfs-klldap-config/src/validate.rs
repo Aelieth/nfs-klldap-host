@@ -224,15 +224,8 @@ impl NfsKlldapConfig {
                     share.name
                 )));
             }
-            // Always ensure export_path is present and absolute (leading /). This value is
-            // used *only* for the client-visible NFS Pseudo (the "Export Path" editable in
-            // the Shares editor). Ganesha requires Pseudo paths to be absolute; a relative
-            // value produces "A Pseudo path must be an absolute path" at startup and the
-            // export is ignored. We coerce user input (from raw TOML or the Shares form)
-            // here so that (a) the in-memory Share after any load is always correct, and
-            // (b) the Shares editor + generator always see a usable absolute value.
-            // The real internal container location is always derived independently via
-            // container_path_for from host_path + container_root (see that fn).
+            // Normalize export_path to an absolute NFSv4 Pseudo (Ganesha requires leading /).
+            // Internal EXPORT.Path still comes from container_path_for(host_path).
             {
                 let ep = share.export_path.take();
                 let normalized = match ep {
@@ -421,7 +414,7 @@ impl NfsKlldapConfig {
             self.sssd.kllldap_ignored_attributes = Some(t == "true" || t == "1" || t == "yes" || t == "on");
         }
 
-        // [sssd] TLS cert/ssl options ("cert options for ssl")
+        // [sssd] TLS options (ldap_tls_reqcert, ldap_tls_cacert, ldap_id_use_start_tls)
         if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT") {
             let t = v.trim();
             if !t.is_empty() {
@@ -459,36 +452,10 @@ impl NfsKlldapConfig {
         }
     }
 
+    /// Internal Ganesha/FsManager path: container_root + tail of host_path after its first segment.
+    /// Example: host_path `/media/NVME/nvme`, container_root `/export` → `/export/NVME/nvme`.
+    /// export_path is client Pseudo only; see docs/ganesha-architecture.md.
     pub fn container_path_for(&self, share: &Share) -> String {
-        // Returns the *internal* container-visible location for this share's tree.
-        // This is used for:
-        // - Ganesha EXPORT.Path (the real FS directory the VFS FSAL opens)
-        // - FsManager host_path → container path translation (permission tree, apply chown/chmod,
-        //   build_tree, list_children, etc. in the Share Permissions UI)
-        //
-        // The location is derived purely from the share's own host_path + container_root.
-        // The first directory component of host_path (after the leading "/") is treated as
-        // the implicit per-share "bind root" — the host-side directory that was (or will be)
-        // bind-mounted as the source for a subtree under container_root (commonly /export).
-        //
-        // Example (user's stated convention):
-        //   host_path = "/media/NVME-RAID/nvme"  → first dir "/media"
-        //   tail after strip = "NVME-RAID/nvme"
-        //   internal = container_root + "/NVME-RAID/nvme"   (e.g. "/export/NVME-RAID/nvme")
-        //
-        // Another share can use a completely different first dir:
-        //   host_path = "/mount/SDA1/stuff" → internal = "/export/SDA1/stuff"
-        //
-        // This removes any need for an explicit host_root setting and naturally supports
-        // multiple different host bind roots while letting export_path (editable in the
-        // Shares editor) be used only for the external/client Pseudo path.
-        //
-        // The derivation is intentionally *not* stored in the Share or [[shares]] TOML; it
-        // is computed on demand from host_path so editing export_path cannot desync the
-        // internal FS mapping seen by Ganesha or the permission tree.
-        //
-        // Degenerate host_path ("/" or no usable segments) falls back to the classic
-        // export_path (or "/{name}") logic for that share.
         let root = self.storage.container_root.trim_end_matches('/');
 
         let hp = share.host_path.to_string_lossy();

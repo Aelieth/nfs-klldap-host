@@ -160,14 +160,8 @@ fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
     }
 }
 
-/// Attempts LDAP bind and returns rich error information for the user.
-///
-/// This now performs a *narrow* search using exactly the same attribute names
-/// that will later be used by the WebUI's LLDAP client (and documented in the
-/// generated sssd.conf comments). The actual probe now performs a narrow base
-/// search on the bind DN using only those mapped attributes. This keeps the
-/// early handshake consistent with the rest of the system and avoids feeding
-/// LLDAP extra attribute names during the first bind.
+/// LDAP bind probe via ldapsearch: base search on the bind DN with the same
+/// POSIX attribute list SSSD/WebUI will use (from resolve_posix_attribute_mapping).
 fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     let uri = &cfg.ldap_uri;
     let dn = &cfg.sssd.ldap_default_bind_dn;
@@ -231,7 +225,6 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     // Auto TLS handling based on URI scheme
     if is_ldaps {
         // Pragmatic default for LLDAP / internal self-signed certs.
-        // We can make this configurable later via a dedicated config option.
         cmd.env("LDAPTLS_REQCERT", "never");
     }
 
@@ -263,7 +256,7 @@ fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     }
 }
 
-// is_persistent_config (and tolerant load helpers) below are used by both the TUI and the WebUI.
+// Persistent-volume and tolerant config helpers come from nfs_klldap_config::persist.
 
 /// Guided first-run loop (3 steps: volume, ldap_uri, bind creds).
 ///
@@ -319,8 +312,6 @@ fn print_header(config_path: &Path) {
     let (hostname, consistency_note) = match get_consistent_hostname() {
         Ok(c) => (c.hostname, " (confirmed by `hostname` + /proc)".to_string()),
         Err(e) => {
-            // Print the full rich diagnostic immediately — this is the moment
-            // Hostname mismatch is now visible.
             eprintln!("\n{}", e);
             // Still allow the TUI to continue (operator may need to edit config first),
             // but use a clear placeholder so the rest of the banner is still useful.
@@ -617,9 +608,7 @@ fn print_current_step_guidance(current: &StartupStep) {
     }
 }
 
-/// Compute which step we are currently on by running the various checks.
-/// This is the Rust version of the big if-chain that used to live in
-/// print_current_step_guidance + the various test_* shell functions.
+/// Current startup step from volume, ldap_uri reachability, and bind probe.
 fn compute_current_step(config_path: &Path) -> StartupStep {
     // Step 1: Persistent volume?
     if !check_persistent_writable_config(config_path) {
@@ -666,8 +655,7 @@ fn compute_current_step(config_path: &Path) -> StartupStep {
 
 
 
-/// One-shot diagnostics (useful for `nfs-klldap-startup check` and for the
-/// future when we want to expose health info).
+/// One-shot diagnostics for nfs-klldap-startup check.
 fn run_one_shot_diagnostics(config_path: &Path) -> Result<(), ConfigError> {
     println!("=== nfs-klldap-startup diagnostics ===");
     println!("Config: {}", config_path.display());
@@ -701,8 +689,7 @@ fn print_network_diagnostics() {
     }
 }
 
-/// Port of the shell check_runtime_permissions + check_keytab_hostname_match.
-/// Runs as root during startup (advisory diagnostics + remediation instructions).
+/// Advisory keytab, writable runtime dirs, and hostname alignment checks.
 fn print_runtime_diagnostics() {
     println!("  [RUNTIME PERMISSIONS] Checking keytab readability and runtime dirs...");
 

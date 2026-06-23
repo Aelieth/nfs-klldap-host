@@ -224,15 +224,7 @@ pub struct Share {
     pub security: Option<String>,
     pub rw: Option<bool>,
     pub squash: Option<String>,
-    /// Cache profile selector (preferred for UI-driven shares).
-    /// Written as `cache_profile = "..."` inside [[shares]].
-    /// When present and valid, the generator resolves it to Ganesha PrefRead/PrefWrite
-    /// values for the share's EXPORT block.
-    /// This is the mechanism for the "Cache Profile" dropdown in System Settings.
-    ///
-    /// Allowed values (exact): "Default", "Read - Basic", "Read - Heavy", "Mixed Use", "Write - Heavy".
-    /// See README for the matrix and "Best For" descriptions. (Server read_ahead_kb is a
-    /// host-only concern; see the short note in the README.)
+    /// UI cache profile name → generator maps to Ganesha PrefRead/PrefWrite. See CACHE_PROFILES / README.
     pub cache_profile: Option<String>,
     /// Optional PrefRead size in bytes (Ganesha EXPORT.PrefRead). Advanced/raw use.
     /// When a valid cache_profile is also present it takes precedence for generation.

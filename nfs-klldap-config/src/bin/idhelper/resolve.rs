@@ -98,8 +98,7 @@ fn resolve_via_structured_ldap(name_or_principal: &str) -> Option<(u32, u32)> {
     None
 }
 
-/// Load resolver + bind creds from the canonical NfsKlldapConfig (single source of truth).
-/// Replaces all previous hand-rolled toml + flat-map logic.
+/// Load resolver + bind creds from NfsKlldapConfig (NFS_CONFIG).
 fn load_resolver_from_config() -> Option<(IdLdapResolver, String, String)> {
     let path = std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
     let cfg = NfsKlldapConfig::load(std::path::Path::new(&path)).ok()?;
@@ -198,13 +197,7 @@ pub(crate) fn resolve_principal(
 
     // Attempt resolution
     let resolved = if is_machine {
-        // Short-circuit for all machine principals (host/, nfs/, root/, server variants,
-        // and client host names presented via "Linux NFSv4.x <host>").
-        // Kerberos auth has already succeeded; we only need consistent UID/GID mapping.
-        // Machines must map to 0:0. Real LDAP users are unaffected (they take the else path).
-        // Synthetic names (e.g. host/0x<epoch>) are also correctly forced to 0:0.
-        // This eliminates getent latency and non-determinism that can trigger
-        // clientid/session collapse on immutable + host-keytab clients.
+        // Machine principals (host/, nfs/, root/, server variants): map 0:0 without getent/LDAP.
         let short = principal
             .split('@')
             .next()
@@ -229,13 +222,7 @@ pub(crate) fn resolve_principal(
         let second_try = principal.split('@').next().unwrap_or(principal);
         dlog!("  user_path first_try=\"{}\" second_try=\"{}\"", first_try, second_try);
 
-        // Prefer nss/getent for "same lookup client would do", but always also
-        // attempt the direct structured LDAP resolver. This guarantees a uid/gid
-        // + materialize on first presentation of a user principal even if sss/getent
-        // has cold/negative cache or hasn't seen the name yet. Fixes first-compound
-        // "Could not map principal ... to uid" fallthrough.
-        // For full principals (kerberos looking), try the full form first so the
-        // resolver can use krbPrincipalName attr lookup in addition to name match.
+        // Try NSS/getent first; on miss fall back to structured LDAP (covers cold SSSD cache).
         let nss_looked = resolve_via_nss(first_try).or_else(|| resolve_via_nss(second_try));
         let ldap_looked = resolve_via_structured_ldap(first_try)
             .or_else(|| resolve_via_structured_ldap(second_try))

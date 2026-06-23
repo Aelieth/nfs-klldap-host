@@ -1,28 +1,22 @@
 #!/bin/bash
-#
-# verify-ganesha.sh
-#
-# Simple validation script for the Ganesha + LLDAP NFSv4 setup.
-#
-# Run this inside the running container (or on the host with docker exec).
-#
-# Usage:
-#   ./verify-ganesha.sh
-#
+# verify-ganesha.sh — post-deploy checks; run inside container (or docker exec).
+# Usage: ./verify-ganesha.sh
 
 set -euo pipefail
 
 echo "=== NFS-Ganesha + LLDAP Verification ==="
 echo
 
+# --- [1] Healthcheck (non-fatal; later steps still run) ---
 echo "[1] Healthcheck..."
 if /container/healthcheck.sh; then
     echo "  OK: healthcheck passed"
 else
-    echo "  FAIL: healthcheck failed"
+    echo "  FAIL: healthcheck failed (continuing with remaining checks)"
 fi
 
 echo
+# --- [2] SSSD / LLDAP resolution ---
 echo "[2] SSSD / LLDAP resolution..."
 if getent passwd root >/dev/null 2>&1; then
     echo "  OK: getent works (SSSD responding)"
@@ -31,6 +25,7 @@ else
 fi
 
 echo
+# --- [3] Ganesha management interface ---
 echo "[3] Ganesha management interface..."
 if command -v ganesha-ctl >/dev/null 2>&1; then
     if ganesha-ctl show-exports >/dev/null 2>&1; then
@@ -43,10 +38,12 @@ else
 fi
 
 echo
+# --- [4] Current exports (raw) ---
 echo "[4] Current exports (raw)..."
 ganesha-ctl show-exports 2>/dev/null | head -30 || echo "  (could not retrieve)"
 
 echo
+# --- [5] Keytab (if present) ---
 echo "[5] Keytab (if present)..."
 if [ -f /etc/krb5.keytab ]; then
     klist -k /etc/krb5.keytab 2>/dev/null | head -8 || echo "  klist failed or no tickets"
@@ -55,20 +52,21 @@ else
 fi
 
 echo
-echo "[6] Kerberos ID helper (machine vs user principal translator)..."
+# --- [6] idhelper ---
+echo "[6] Kerberos idhelper (machine vs user principal translator)..."
 if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
     /usr/local/bin/nfs-klldap-idhelper explain || true
     /usr/local/bin/nfs-klldap-idhelper check || true
-    echo "  idhelper override files (extrausers preferred, wrapper for preload):"
-    ls -l /var/lib/extrausers/passwd /var/lib/extrausers/group /var/lib/nfs-klldap/nss_passwd /var/lib/nfs-klldap/nss_group 2>/dev/null || echo "  (not materialized yet; will appear on first client name observe)"
+    echo "  idhelper override files (nss_passwd for Ganesha LD_PRELOAD; supplemental extrausers):"
+    ls -l /var/lib/extrausers/passwd /var/lib/extrausers/group /var/lib/nfs-klldap/nss_passwd /var/lib/nfs-klldap/nss_group 2>/dev/null || echo "  (not materialized yet; bulk-seed may still be running)"
 else
     echo "  WARN: nfs-klldap-idhelper not present (mount stability for Kerberos clients may be impacted)"
 fi
 
 echo
-echo "[7] Principal mapping parity + CLIENT policy (getent + id-map-test for ganesha 9.6 trixie)..."
+# --- [7] Principal mapping + export policy ---
+echo "[7] Principal mapping + export policy (id-map-test, fragment grep, shim paths)..."
 ganesha-ctl id-map-test testuser1 2>/dev/null || echo "  id-map-test not available or failed (non-fatal during early verify)"
-# Quick extra confirmation that generated fragments carry the 9.6 policy (if any fragments exist)
 if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
     if grep -q 'Read_Access_Check_Policy' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
         echo "  WARN: Read_Access_Check_Policy present — trixie-backports Ganesha 9.6 rejects this key (regenerate config)"
@@ -76,23 +74,19 @@ if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
         echo "  OK: Read_Access_Check_Policy omitted (ganesha 9.6 trixie default pre applies)"
     fi
 fi
-# Confirm the nfsidmap shim name is present for ganesha (PATH + /usr/sbin for full path calls)
+# Idmap* directives in ganesha.conf are intentionally omitted; mapping uses idhelper + idmapd.conf.
 if [ -e /usr/local/bin/nfsidmap ] || [ -e /usr/sbin/nfsidmap ] || [ -L /usr/sbin/nfsidmap ]; then
     echo "  OK: 'nfsidmap' (shim/symlink) visible in /usr/local/bin and/or /usr/sbin for principal2uid"
-    # The idhelper observer now also reacts to "Could not map principal ..." lines
-    # (the main remaining first-use timing symptom) and forces a resolve+materialize.
 else
     echo "  WARN: no 'nfsidmap' shim visible; interception may fail for Ganesha nfsidmap calls"
 fi
 
-# Confirm no Idmap* keys are emitted in ganesha.conf (must not be present for 9.6/trixie safety)
 if ! grep -qi 'idmapconf\|idmapd.conf\|UseGetpwnam\|Idmapping' /etc/ganesha/ganesha.conf 2>/dev/null; then
     echo "  OK: no Idmap* keys in ganesha.conf (safe for 9.6 trixie-backports)"
 else
     echo "  WARN: unexpected idmap keys found in ganesha.conf"
 fi
 
-# Confirm bulk LDAP seed + machine materialization (nss_passwd is what ganesha.nfsd sees under nss_wrapper)
 if [ -f /var/lib/nfs-klldap/.bulk_seed_done ]; then
     _bulk_n=$(cat /var/lib/nfs-klldap/.bulk_seed_done 2>/dev/null | tr -d '[:space:]')
     echo "  OK: idhelper bulk-seed marker present (${_bulk_n} users)"
@@ -111,6 +105,7 @@ if grep -q '^root:' /var/lib/extrausers/passwd /var/lib/nfs-klldap/nss_passwd 2>
 fi
 
 echo
+# --- [8] Network mode check ---
 echo "[8] Network mode check..."
 if command -v ip >/dev/null 2>&1; then
     _BRIDGE_IP=$(ip -4 -o addr show scope global 2>/dev/null | awk '/inet / {split($4,a,"/"); print a[1]; exit}')
@@ -128,11 +123,4 @@ fi
 echo
 echo "=== Verification complete ==="
 echo
-echo "Next steps if things look wrong:"
-echo "  - Check container logs for sssd and ganesha.nfsd"
-echo "  - Run: ganesha-ctl show-exports"
-echo "  - Run: ganesha-ctl id-check   (or nfs-klldap-idhelper check)"
-echo "  - Run: ganesha-ctl id-map-test testuser1   (verifies getent + principal mapping parity)"
-echo "  - Verify users have posixAccount + uidNumber/gidNumber in LLDAP"
-echo "  - Confirm host filesystem ownership matches those numeric IDs"
-echo "  - For Fedora Immutable clients: use the idhelper to confirm machine principals map correctly"
+echo "Next steps: see docs/run/README.md — ganesha-ctl show-exports, id-check, id-map-test."

@@ -84,7 +84,7 @@ pub async fn login(
             Err(e) => Err(e),
         }
     } else {
-        // LLDAP path — now uses the combined helper on LdapClient so we only
+        // LLDAP path — uses LdapClient::verify_user_is_admin (single lock, clear non-admin errors).
         // take the lock once and get a single, clear error for non-admins.
         // The helper still benefits from the memberOf fast-path recorded during verify.
         let l = state.lldap.lock().await;

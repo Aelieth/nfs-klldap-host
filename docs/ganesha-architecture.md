@@ -1,4 +1,4 @@
-# Architecture
+# Ganesha Architecture & Bind-Mount Contract
 
 Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+derives+generates sssd/krb5/ganesha fragments. entrypoint (pid1) + watcher (SIGHUP) + ganesha-ctl handle reloads/bounces. nfs-klldap-ui (9630 HTTPS) edits TOML + direct chown/chmod (root, on allowed host_path trees). Ganesha VFS + SSSD (from LLDAP POSIX) serve NFSv4 krb5. No host kernel NFS.
 
@@ -19,7 +19,7 @@ Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+de
 volumes:
   - /media/:/export:rw                # Recommended: single (or multiple) root-level bind(s) of host parent dir(s). First dir of each share's host_path is the implicit bind root; tail becomes subpath under container_root. export_path is only for the client Pseudo (can be short).
   - ./config:/config:rw               # nfs-klldap.conf (single source)
-  - ./krb5.keytab:/etc/krb5.keytab:ro
+  - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 ```
 
 See container/healthcheck.sh for service checks. See TESTING.md for test coverage.

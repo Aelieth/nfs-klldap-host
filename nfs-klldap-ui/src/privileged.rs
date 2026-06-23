@@ -6,20 +6,8 @@
 //! exclusively from `fs::FsManager::apply_*` after all allow-list and safety
 //! checks have passed.
 //!
-//! ## Symlink Policy (see also fs.rs module docs)
-//! - `chown` and `chmod` here use the *following* variants (std::os::unix::fs::chown
-//!   and set_permissions). This matches historical behavior and the documented
-//!   "follow for chown" policy.
-//! - Traversal decisions (never descend symlinks) are made by the WalkDir
-//!   configuration in `fs::apply_tree`, **not** here.
-//! - We deliberately do **not** expose lchown today. Changing ownership of
-//!   symlink *inodes themselves* is rarely what an admin intends when they
-//!   click "recursive" on a directory tree, and would require a separate
-//!   policy flag + careful UX. The current stance (skip symlinks for mutation)
-//!   is the safe default that also prevents the old escape vector.
-//!
-//! If a future requirement needs lchown on links, add a parallel
-//! `lchown` / `lchmod` here guarded by an explicit option.
+//! Symlink policy: WalkDir in `fs::apply_tree_with_progress` skips symlinks; chown/chmod
+//! here follow targets on applied entries only (no lchown). See `fs.rs` for traversal rules.
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;

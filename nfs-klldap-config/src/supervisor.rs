@@ -78,6 +78,7 @@ impl SupervisorEnv {
     }
 }
 
+#[derive(Default)]
 struct ChildPids {
     watcher: Option<u32>,
     sssd: Option<u32>,
@@ -85,19 +86,6 @@ struct ChildPids {
     webui: Option<u32>,
     dbus: Option<u32>,
     idhelper: Option<u32>,
-}
-
-impl Default for ChildPids {
-    fn default() -> Self {
-        Self {
-            watcher: None,
-            sssd: None,
-            ganesha: None,
-            webui: None,
-            dbus: None,
-            idhelper: None,
-        }
-    }
 }
 
 struct Supervisor {
@@ -540,14 +528,13 @@ impl Supervisor {
             self.pids.idhelper = Some(child.id());
         }
         for _ in 0..60 {
-            if Path::new(BULK_SEED_MARKER).is_file() {
-                if fs::read_to_string("/var/lib/nfs-klldap/nss_passwd")
+            if Path::new(BULK_SEED_MARKER).is_file()
+                && fs::read_to_string("/var/lib/nfs-klldap/nss_passwd")
                     .map(|s| s.lines().any(|l| l.starts_with("root:")))
                     .unwrap_or(false)
-                {
-                    self.log_info("idhelper preload ready");
-                    return;
-                }
+            {
+                self.log_info("idhelper preload ready");
+                return;
             }
             thread::sleep(Duration::from_millis(200));
         }
@@ -583,8 +570,8 @@ impl Supervisor {
             }
         }
         for _ in 0..50 {
-            if Path::new("/run/dbus/system_bus_socket").exists() {
-                if Command::new("dbus-send")
+            if Path::new("/run/dbus/system_bus_socket").exists()
+                && Command::new("dbus-send")
                     .args([
                         "--system",
                         "--print-reply",
@@ -595,10 +582,9 @@ impl Supervisor {
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false)
-                {
-                    self.log_info("D-Bus system bus is ready");
-                    return;
-                }
+            {
+                self.log_info("D-Bus system bus is ready");
+                return;
             }
             thread::sleep(Duration::from_millis(200));
         }

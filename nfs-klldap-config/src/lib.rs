@@ -1,4 +1,4 @@
-#![deny(unsafe_code)]
+#![deny(unsafe_code, dead_code)]
 
 //! nfs-klldap-config: TOML validation, derivation, and generation of sssd.conf, krb5.conf, ganesha exports.
 

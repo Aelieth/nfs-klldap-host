@@ -350,20 +350,6 @@ fn build_clear_session_cookie(state: &super::AppState, req_headers: &HeaderMap) 
     cookie.to_string()
 }
 
-/// Env-only decider for the Secure cookie bit (still used by unit test).
-/// The primary logic now lives in `effective_cookie_secure` (which respects this
-/// env when present, else delegates to `AppState::is_https` for direct_tls or
-/// X-Forwarded-Proto). Kept so existing tests continue to work.
-#[allow(dead_code)]
-fn cookie_secure() -> bool {
-    std::env::var("NFS_KLLDAP_WEBUI_COOKIE_SECURE")
-        .map(|v| {
-            let v = v.trim().to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "off" || v == "no")
-        })
-        .unwrap_or(true)
-}
-
 /// All non-empty `session=` values from a Cookie header (oldest → newest).
 pub(crate) fn extract_all_session_tokens(cookie_header: &str) -> Vec<String> {
     let mut tokens = Vec::new();
@@ -440,7 +426,17 @@ mod tests {
     }
 
     #[test]
-    fn cookie_secure_defaults_true() {
-        assert!(cookie_secure());
+    fn effective_cookie_secure_defaults_true_with_direct_tls() {
+        use axum::http::HeaderMap;
+        use crate::web::make_test_state_with_temp_config;
+
+        let (state, _tmp) = make_test_state_with_temp_config();
+        let headers = HeaderMap::new();
+        std::env::remove_var("NFS_KLLDAP_WEBUI_COOKIE_SECURE");
+        assert!(effective_cookie_secure(&state, &headers));
+
+        std::env::set_var("NFS_KLLDAP_WEBUI_COOKIE_SECURE", "0");
+        assert!(!effective_cookie_secure(&state, &headers));
+        std::env::remove_var("NFS_KLLDAP_WEBUI_COOKIE_SECURE");
     }
 }

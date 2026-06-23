@@ -93,13 +93,6 @@ pub struct KeytabDisplayContext {
     pub alert: Option<String>,
 }
 
-/// Per-request HTTPS flag from `direct_tls` + `X-Forwarded-Proto`.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct EffectiveScheme {
-    #[allow(dead_code)]
-    pub https: bool,
-}
-
 /// Redirect to the setup wizard when first-run steps are incomplete.
 async fn require_setup_complete(
     State(state): State<AppState>,
@@ -125,27 +118,7 @@ async fn require_setup_complete(
     next.run(req).await
 }
 
-async fn detect_effective_scheme(
-    direct_tls: bool,
-    mut req: Request<Body>,
-    next: Next,
-) -> Response<Body> {
-    let h = req.headers();
-    let proto = h
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_ascii_lowercase());
-    let _host = h
-        .get("x-forwarded-host")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    let is_https = direct_tls || proto.as_deref() == Some("https");
-    req.extensions_mut().insert(EffectiveScheme { https: is_https });
-    next.run(req).await
-}
-
 pub fn router(state: AppState) -> Router {
-    let direct_tls = state.direct_tls;
     let setup_gate_state = state.clone();
     let app = Router::new()
         // === Public (no auth) ===
@@ -195,10 +168,76 @@ pub fn router(state: AppState) -> Router {
         require_setup_complete,
     ))
     .layer(NormalizePathLayer::trim_trailing_slash())
-    .layer(middleware::from_fn(move |req, next| {
-        let d = direct_tls;
-        async move { detect_effective_scheme(d, req, next).await }
-    }))
+}
+
+#[cfg(test)]
+pub(crate) fn make_test_state_with_temp_config() -> (AppState, tempfile::TempDir) {
+    use std::sync::Arc;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config_path = tmp.path().join("test-nfs-klldap.conf");
+    let setup_marker = tmp.path().join(".setup_wizard_done");
+    std::fs::write(&setup_marker, "ok\n").unwrap();
+
+    let minimal = r#"
+            ldap_uri = "ldaps://kllap.test:6360"
+            [sssd]
+            ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+            ldap_default_authtok = "sekret"
+            # ldap_tls_reqcert = "never"   # example for self-signed LLDAP certs
+            [[shares]]
+            name = "data"
+            host_path = "/tmp/data"
+        "#;
+    std::fs::write(&config_path, minimal).unwrap();
+
+    let config = Arc::new(
+        nfs_klldap_config::NfsKlldapConfig::load(&config_path).expect("valid test config"),
+    );
+
+    let fs = Arc::new(FsManager::new((*config).clone()));
+
+    let default_mapping = nfs_klldap_config::PosixAttributeMapping {
+        user_object_class: "posixAccount".to_string(),
+        group_object_class: "posixGroup".to_string(),
+        user_name: "uid".to_string(),
+        user_uid_number: "uidNumber".to_string(),
+        user_gid_number: "gidNumber".to_string(),
+        user_home_directory: "homeDirectory".to_string(),
+        user_shell: "loginShell".to_string(),
+        user_full_name: "displayName".to_string(),
+        group_name: "cn".to_string(),
+        group_gid_number: "gidNumber".to_string(),
+        group_member: "member".to_string(),
+        user_principal_name: "krbPrincipalName".to_string(),
+    };
+    let lldap = Arc::new(Mutex::new(LdapClient::new_with_attributes(
+        "ldaps://localhost:6360",
+        "ou=people,dc=test,dc=com",
+        "ou=groups,dc=test,dc=com",
+        default_mapping,
+        true,
+        false,
+    )));
+
+    let auth = Arc::new(AuthManager::new(&config_path, None));
+
+    let state = AppState {
+        fs,
+        lldap,
+        config,
+        auth,
+        config_path,
+        keytab_hostname: "test-host".to_string(),
+        keytab_realm: "EXAMPLE.COM".to_string(),
+        keytab_alert: Arc::new(StdMutex::new(None)),
+        apply_progress: Arc::new(Mutex::new(None)),
+        restart_requested: Arc::new(Mutex::new(false)),
+        direct_tls: true,
+        setup_marker_override: Some(setup_marker),
+    };
+
+    (state, tmp)
 }
 
 // Integration tests (auth flows, settings, apply, cookie policy).
@@ -213,78 +252,7 @@ mod tests {
         },
     };
     use cookie::Cookie;
-    use std::sync::Arc;
-    use tempfile::TempDir;
-    use tower::ServiceExt; // for `oneshot`
-
-    fn make_test_state_with_temp_config() -> (AppState, TempDir) {
-        let tmp = TempDir::new().unwrap();
-        let config_path = tmp.path().join("test-nfs-klldap.conf");
-        let setup_marker = tmp.path().join(".setup_wizard_done");
-        std::fs::write(&setup_marker, "ok\n").unwrap();
-
-        // Write a minimal valid config
-        let minimal = r#"
-            ldap_uri = "ldaps://kllap.test:6360"
-            [sssd]
-            ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
-            ldap_default_authtok = "sekret"
-            # ldap_tls_reqcert = "never"   # example for self-signed LLDAP certs
-            [[shares]]
-            name = "data"
-            host_path = "/tmp/data"
-        "#;
-        std::fs::write(&config_path, minimal).unwrap();
-
-        let config = Arc::new(
-            nfs_klldap_config::NfsKlldapConfig::load(&config_path).expect("valid test config"),
-        );
-
-        let fs = Arc::new(FsManager::new((*config).clone()));
-
-        // Dummy LLDAP client (settings handlers don't use it)
-        let default_mapping = nfs_klldap_config::PosixAttributeMapping {
-            user_object_class: "posixAccount".to_string(),
-            group_object_class: "posixGroup".to_string(),
-            user_name: "uid".to_string(),
-            user_uid_number: "uidNumber".to_string(),
-            user_gid_number: "gidNumber".to_string(),
-            user_home_directory: "homeDirectory".to_string(),
-            user_shell: "loginShell".to_string(),
-            user_full_name: "displayName".to_string(),
-            group_name: "cn".to_string(),
-            group_gid_number: "gidNumber".to_string(),
-            group_member: "member".to_string(),
-            user_principal_name: "krbPrincipalName".to_string(),
-        };
-        let lldap = Arc::new(Mutex::new(LdapClient::new_with_attributes(
-            "ldaps://localhost:6360",
-            "ou=people,dc=test,dc=com",
-            "ou=groups,dc=test,dc=com",
-            default_mapping,
-            true, // no_tls_verify for test dummy
-            false,
-        )));
-
-        let auth = Arc::new(AuthManager::new(&config_path, None));
-
-        let state = AppState {
-            fs,
-            lldap,
-            config,
-            auth,
-            config_path,
-            keytab_hostname: "test-host".to_string(),
-            keytab_realm: "EXAMPLE.COM".to_string(),
-            keytab_alert: Arc::new(StdMutex::new(None)),
-            apply_progress: Arc::new(Mutex::new(None)),
-            restart_requested: Arc::new(Mutex::new(false)),
-            direct_tls: true,
-            setup_marker_override: Some(setup_marker),
-        };
-
-        (state, tmp)
-    }
+    use tower::ServiceExt;
 
     fn add_session_cookie(mut req: Request<Body>, token: &str) -> Request<Body> {
         let cookie = format!("session={}", token);

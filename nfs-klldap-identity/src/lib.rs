@@ -1,4 +1,4 @@
-#![deny(unsafe_code)]
+#![deny(unsafe_code, dead_code)]
 
 //! Minimal shared LDAP + Kerberos identity resolution for nfs-klldap-host.
 //!

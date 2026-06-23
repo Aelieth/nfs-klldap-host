@@ -4,7 +4,7 @@
 //! bind-mounted host_path trees via FsManager. Two pages: / (permissions tree)
 //! and /settings (raw + structured TOML + LLDAP client reload).
 
-#![deny(unsafe_code)]
+#![deny(unsafe_code, dead_code)]
 
 mod auth;
 mod certs;

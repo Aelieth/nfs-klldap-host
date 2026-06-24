@@ -61,13 +61,12 @@ fn assert_ganesha_96_compliant(ganesha: &str, idmap: &str) {
         "DIRECTORY_SERVICES",
         "DomainName = TEST",
         "Pwnam_Implementation = nsswitch",
-        "Root_Kerberos_Principal = host, nfs",
+        "Root_Kerberos_Principal = host, nfs, root",
         "idmapped_user_time_validity = 600",
         "idmapped_group_time_validity = 600",
         "NFS_KRB5",
         "PrincipalName = \"nfs\"",
         "Active_krb5 = TRUE",
-        "Enable_Dynamic_Metrics = false",
     ] {
         assert!(ganesha.contains(key), "ganesha.conf missing {key}");
     }

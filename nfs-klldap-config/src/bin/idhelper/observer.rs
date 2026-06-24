@@ -1,4 +1,4 @@
-//! Background Ganesha log observer for opportunistic principal resolution.
+//! Tails ganesha.log and triggers idhelper resolve on hybrid principal hints.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};

@@ -55,10 +55,7 @@ pub(crate) fn group_line_for(r: &Resolved) -> String {
     }
 }
 
-/// Replace all user cache entries from the current LDAP snapshot (prune then seed).
-/// Pruning removes stale/deleted LDAP users from IdCache before re-inserting the
-/// live directory view. Machine principals are preserved.
-/// Returns the number of users inserted from the snapshot.
+/// Prune stale LDAP users from cache, re-seed from snapshot; machine principals are kept.
 pub(crate) fn sync_user_cache_from_snapshot(
     snap: &IdMapSnapshot,
     realm: &str,

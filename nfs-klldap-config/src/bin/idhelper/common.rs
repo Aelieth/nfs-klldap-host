@@ -92,6 +92,27 @@ impl IdCache {
         self.entries.insert(key, r);
     }
 
+    /// Stable hash of cache contents; used to skip redundant nss materialize writes.
+    pub(crate) fn content_fingerprint(&self) -> u64 {
+        let mut keys: Vec<_> = self.entries.keys().collect();
+        keys.sort();
+        let mut h: u64 = 0xcbf29ce484222325;
+        for k in keys {
+            if let Some(r) = self.entries.get(k) {
+                for b in k
+                    .bytes()
+                    .chain(r.name.bytes())
+                    .chain(r.uid.to_le_bytes())
+                    .chain(r.gid.to_le_bytes())
+                    .chain(r.kind.as_str().bytes())
+                {
+                    h = h.wrapping_mul(0x100000001b3) ^ u64::from(b);
+                }
+            }
+        }
+        h
+    }
+
     /// Remove user and unknown entries; keep machine principals (host/, nfs/, etc.).
     /// Returns the number of entries removed.
     pub(crate) fn prune_non_machine_users(&mut self) -> usize {
@@ -256,4 +277,49 @@ pub(crate) fn get_realm() -> String {
         }
     }
     "EXAMPLE.COM".to_string()
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+
+    #[test]
+    fn identical_reinsert_keeps_fingerprint() {
+        let mut c = IdCache::default();
+        let r = Resolved {
+            principal: "alice@TEST".into(),
+            name: "alice".into(),
+            uid: 1001,
+            gid: 1001,
+            kind: PrincipalKind::User,
+            source: "sss".into(),
+        };
+        c.insert(r.clone());
+        let fp = c.content_fingerprint();
+        c.insert(r);
+        assert_eq!(fp, c.content_fingerprint());
+    }
+
+    #[test]
+    fn changed_uid_updates_fingerprint() {
+        let mut c = IdCache::default();
+        c.insert(Resolved {
+            principal: "bob@TEST".into(),
+            name: "bob".into(),
+            uid: 1001,
+            gid: 1001,
+            kind: PrincipalKind::User,
+            source: "sss".into(),
+        });
+        let fp = c.content_fingerprint();
+        c.insert(Resolved {
+            principal: "bob@TEST".into(),
+            name: "bob".into(),
+            uid: 1002,
+            gid: 1001,
+            kind: PrincipalKind::User,
+            source: "ldap".into(),
+        });
+        assert_ne!(fp, c.content_fingerprint());
+    }
 }

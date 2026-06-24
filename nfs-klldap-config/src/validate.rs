@@ -1,4 +1,4 @@
-//! Validation and auto-derivation for NfsKlldapConfig (DNS ldap_uri, realm, shares, etc.).
+//! Validates nfs-klldap.conf and derives realm, LDAP bases, and Ganesha 9.6-safe export defaults.
 
 use std::collections::HashSet;
 use std::path::PathBuf;

@@ -284,15 +284,9 @@ pub(crate) fn resolve_principal(
         );
     }
 
-    let changed = cache.get(&norm).map_or(true, |prev| {
-        prev.uid != resolved.uid
-            || prev.gid != resolved.gid
-            || prev.kind != resolved.kind
-            || prev.name != resolved.name
-    });
+    let fp_before = cache.content_fingerprint();
     cache.insert(resolved.clone());
-
-    if changed {
+    if fp_before != cache.content_fingerprint() {
         let write_res = cache.write_to_file(Path::new(CACHE_PATH));
         dlog!(
             "  cache_write result={}",
@@ -303,24 +297,16 @@ pub(crate) fn resolve_principal(
         }
     }
 
-    // Optional: try to warm SSSD cache for the resolved name (non-blocking).
-    // This helps both direct getent passwd testuser1 (short) and the full
-    // principal path (via shim + idhelper) see fresh data from LLDAP/SSSD.
-    // Must not change behavior for ganesha 9.6/trixie.
+    // Warm SSSD/getent after a successful user resolve (non-blocking).
     if resolved.uid != 0 && resolved.uid != FALLBACK_NOBODY_UID {
         let _ = Command::new("sss_cache")
             .args(["-u", &resolved.name])
             .output();
-        // Also do a best-effort getent (via the shell helper) to encourage sss
-        // to cache the short name for the preload/extrausers path Ganesha may use.
         let _ = Command::new("getent")
             .args(["passwd", &resolved.name])
             .output();
     }
 
-    // Distinct log line for correlation with Ganesha "Could not map" / nfs_req_creds failures.
-    // Helps operators see that our side of the mapping just became available for
-    // the next compound or retry.
     eprintln!(
         "[idhelper] MAPPED FOR GANESHA principal=\"{}\" uid={} gid={} source={}",
         resolved.principal, resolved.uid, resolved.gid, resolved.source

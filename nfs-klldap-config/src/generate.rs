@@ -112,9 +112,7 @@ ldap_search_base = {search_base}
 ldap_default_bind_dn = {bind_dn}
 ldap_default_authtok = {bind_pw}
 cache_credentials = true
-# Ample ID cache settings (derived from nfs-klldap.conf or defaults) to ensure
-# quick getent/SSSD lookups for UID/GID without constantly hitting the LDAP server.
-# These are emitted so resolution info from the source conf is utilized for performance.
+# SSSD entry cache timeouts from nfs-klldap.conf (defaults below).
 entry_cache_timeout = {entry_cache_timeout}
 entry_negative_timeout = {entry_negative_timeout}
 "#,
@@ -464,15 +462,13 @@ fn write_ganesha_main(
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
-    Enable_Dynamic_Metrics = false;
 }}
 
 DIRECTORY_SERVICES {{
     DomainName = {realm};
     Pwnam_Implementation = {pwnam};
-    # Ganesha 9.6 trixie only. idhelper (not this file) owns principal->uid classification.
     Root_Kerberos_Principal = {root_krb};
-    # Ganesha 9.6 trixie: idmapped_* validity belongs here (NFS_CORE_PARAM gids expiry is deprecated).
+    # idmapped_* validity here (not Manage_Gids_Expiration in NFS_CORE_PARAM).
     idmapped_user_time_validity = 600;
     idmapped_group_time_validity = 600;
 }}

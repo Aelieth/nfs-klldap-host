@@ -258,13 +258,13 @@ mod tests {
         assert!(main.contains("Protocols = 4;"));
         assert!(main.contains("Enable_UDP = false"));
         assert!(main.contains("Allow_Set_Io_Flusher_Fail = true"));
-        assert!(main.contains("Enable_Dynamic_Metrics = false"));
+        assert!(main.contains("Root_Kerberos_Principal = host, nfs, root;"));
         assert!(
             !main.contains("Manage_Gids_Expiration ="),
             "use idmapped_* in DIRECTORY_SERVICES on Ganesha 9.6 trixie-backports"
         );
         assert!(main.contains("NFS_KRB5 {"));
-        assert!(main.contains("Root_Kerberos_Principal = host, nfs;"));
+
         assert!(main.contains("idmapped_user_time_validity = 600;"));
         assert!(main.contains("idmapped_group_time_validity = 600;"));
         assert!(main.contains("EXPORT_DEFAULTS {\n    SecType = krb5p;\n    Protocols = 4;"));

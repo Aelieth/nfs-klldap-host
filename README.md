@@ -69,6 +69,8 @@ First run writes a default `nfs-klldap.conf` and starts the WebUI immediately. O
 2. `ldap_uri` — **Test Settings**, then **Save and Continue** (DNS/TCP reachability)
 3. `[sssd]` bind DN + password — **Test Settings**, then **Save and Continue** (`ldapsearch` bind)
 
+Each step shows a **Test Log** (same monospace style as the main UI apply log) with command output and troubleshooting hints when a probe fails — replacing the old terminal TUI live diagnostics.
+
 After step 3, a brief loading screen appears, then set the localhost admin password at `/login`. The supervisor then generates derived configs and starts Ganesha/SSSD.
 
 **Pre-configured deploy:** mount a complete `nfs-klldap.conf` plus `/etc/krb5.keytab` at startup — the wizard is skipped and you go straight to `/login` (or the main UI if the password sidecar already exists).
@@ -171,7 +173,7 @@ See [docs/run/README.md](docs/run/README.md) for the full env var table, reverse
 
 ## WebUI (9630)
 
-- `/setup/1` … `/setup/3` — First-run wizard (volume, ldap_uri, bind creds); steps 2–3 use **Test Settings** then **Save and Continue**.
+- `/setup/1` … `/setup/3` — First-run wizard (volume, ldap_uri, bind creds); each step has a **Test Log** with probe output and fix suggestions; steps 2–3 use **Test Settings** then **Save and Continue**.
 - `/login` — localhost password (first run) or LLDAP admin login.
 - `/` — Live FS tree browser (under shares) + KLLDAP user/group search + direct recursive chown/chmod.
 - `/settings` — Raw + structured TOML editor + current LLDAP bind identity + "Reload NFS client" + "Clear identity cache" (10 min user/group + 2 min search cache; stats shown).

@@ -19,23 +19,22 @@
 
 <div class="settings-group">
     <h4>SSSD bind credentials</h4>
-    <form id="setup-form" method="post" style="margin-bottom:0.75rem;">
+    <form id="setup-form" method="post" action="/setup/3/continue" style="margin-bottom:0.75rem;">
         <div style="margin-bottom:0.5rem;">
             <label>ldap_default_bind_dn<br>
-                <input type="text" name="ldap_default_bind_dn" value="{{ bind_dn }}" required
+                <input type="text" name="ldap_default_bind_dn" id="bind_dn" value="{{ bind_dn }}" required
                        style="width:100%; max-width:520px; padding:8px;">
             </label>
         </div>
         <div style="margin-bottom:0.5rem;">
             <label>ldap_default_authtok<br>
-                <input type="password" name="ldap_default_authtok" required autocomplete="new-password"
+                <input type="password" name="ldap_default_authtok" id="bind_pw" required autocomplete="new-password"
                        style="width:100%; max-width:320px; padding:8px;">
             </label>
         </div>
         <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-            <button type="submit" formaction="/setup/3/test" class="btn btn-primary">Test Settings</button>
-            <button type="submit" formaction="/setup/3/continue" id="continue-btn" class="btn"
-                    {% if !test_passed %}disabled{% endif %}>Save and Continue</button>
+            <button type="button" id="test-btn" class="btn btn-primary">Test Settings</button>
+            <button type="submit" id="continue-btn" class="btn" disabled>Save and Continue</button>
         </div>
     </form>
     <p style="margin:0.75rem 0 0; font-size:0.85em; color:var(--text-light);">
@@ -43,6 +42,7 @@
     </p>
 </div>
 
+<div id="setup-msg"></div>
 {% if let Some(msg) = message %}
 <p class="alert alert-success">{{ msg }}</p>
 {% endif %}
@@ -50,14 +50,119 @@
 <p class="alert alert-danger">{{ err }}</p>
 {% endif %}
 
+<div class="setup-test-log">
+    <div class="setup-test-log-header">Test Log</div>
+    <div id="setup-test-log-content" class="mono-log-panel"><em style="color:var(--text-light);">Enter bind credentials and click Test Settings.</em></div>
+</div>
+
 <script>
 (function () {
     const form = document.getElementById('setup-form');
+    const testBtn = document.getElementById('test-btn');
     const continueBtn = document.getElementById('continue-btn');
-    if (!form || !continueBtn) return;
-    form.querySelectorAll('input').forEach(function (el) {
-        el.addEventListener('input', function () { continueBtn.disabled = true; });
-    });
+    const msgBox = document.getElementById('setup-msg');
+    const logBox = document.getElementById('setup-test-log-content');
+    const dnInput = document.getElementById('bind_dn');
+    const pwInput = document.getElementById('bind_pw');
+    if (!form || !testBtn || !continueBtn || !dnInput || !pwInput || !logBox) return;
+
+    let snapshot = null;
+    let testing = false;
+
+    function showAlert(kind, text) {
+        if (!msgBox) return;
+        msgBox.innerHTML = '<p class="alert alert-' + kind + '">' + text + '</p>';
+    }
+
+    function showLog(html) {
+        logBox.innerHTML = html || '<em style="color:var(--text-light);">No test output.</em>';
+    }
+
+    function fieldValues() {
+        return {
+            ldap_default_bind_dn: dnInput.value,
+            ldap_default_authtok: pwInput.value
+        };
+    }
+
+    function fieldsMatchSnapshot() {
+        if (!snapshot) return false;
+        return dnInput.value === snapshot.ldap_default_bind_dn
+            && pwInput.value === snapshot.ldap_default_authtok;
+    }
+
+    function syncContinue() {
+        continueBtn.disabled = !(snapshot && fieldsMatchSnapshot());
+    }
+
+    function parseJsonResponse(r, text) {
+        if (!r.ok) {
+            throw new Error('HTTP ' + r.status + (text ? ': ' + text.slice(0, 200) : ''));
+        }
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            throw new Error('Invalid JSON response: ' + text.slice(0, 200));
+        }
+    }
+
+    function applyTestResult(data, auto) {
+        if (data.log) showLog(data.log);
+        if (data.ok) {
+            if (!auto) {
+                snapshot = fieldValues();
+                showAlert('success', data.message || 'Test passed.');
+                syncContinue();
+            }
+        } else if (!auto) {
+            showAlert('danger', data.error || 'Test failed.');
+        }
+    }
+
+    function runTest(auto) {
+        if (testing) return;
+        testing = true;
+        if (!auto) {
+            continueBtn.disabled = true;
+            snapshot = null;
+            msgBox.innerHTML = '<p class="alert" style="opacity:0.8;">Testing…</p>';
+        }
+        showLog('Stand-by, running LDAP bind probe…');
+        const body = new URLSearchParams(new FormData(form));
+        fetch('/setup/3/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body
+        })
+            .then(function (r) { return r.text().then(function (t) { return parseJsonResponse(r, t); }); })
+            .then(function (data) { applyTestResult(data, auto); })
+            .catch(function (err) {
+                if (!auto) showAlert('danger', 'Test request failed: ' + (err.message || err));
+            })
+            .finally(function () { testing = false; });
+    }
+
+    function loadDiskStatus() {
+        showLog('Stand-by, checking saved bind credentials…');
+        fetch('/setup/3/status')
+            .then(function (r) { return r.text().then(function (t) { return parseJsonResponse(r, t); }); })
+            .then(function (data) {
+                if (data.log) showLog(data.log);
+            })
+            .catch(function () {
+                showLog('<em style="color:var(--text-light);">Enter bind credentials and click Test Settings.</em>');
+            });
+    }
+
+    dnInput.addEventListener('input', syncContinue);
+    pwInput.addEventListener('input', syncContinue);
+    testBtn.addEventListener('click', function () { runTest(false); });
+
+    if (pwInput.value.trim()) {
+        runTest(true);
+    } else {
+        loadDiskStatus();
+    }
 })();
 </script>
 {% endblock %}

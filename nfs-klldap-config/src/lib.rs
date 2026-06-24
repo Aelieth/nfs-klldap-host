@@ -37,10 +37,12 @@ pub use hostname::{
 pub use persist::{is_persistent_config, load_host_paths_only};
 pub use startup::{
     attempt_realm_from_config, check_ldap_bind, check_ldap_reachability, check_persistent_writable,
-    compute_startup_step, config_has_required_startup_fields, default_config_path,
-    effective_startup_step, is_preconfigured_deployment, is_setup_wizard_complete,
-    resolve_keytab_path,
-    is_step_complete, mark_setup_wizard_complete, startup_step_hint, setup_wizard_marker_path,
+    compute_startup_step, compute_wizard_step, config_has_required_startup_fields,
+    default_config_path,
+    effective_startup_step, format_bind_probe, format_reachability_probe, format_volume_probe,
+    is_preconfigured_deployment, is_setup_wizard_complete, resolve_keytab_path,
+    is_step_complete, mark_setup_wizard_complete, should_bring_up_services, startup_step_hint,
+    setup_wizard_marker_path,
     webui_setup_url, LdapReachability, StartupStep, DEFAULT_KEYTAB_PATH, SETUP_WIZARD_MARKER,
 };
 pub use template::{generate_default_template, write_default_config_if_missing};

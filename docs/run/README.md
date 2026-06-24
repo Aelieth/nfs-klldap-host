@@ -26,6 +26,15 @@ On a fresh container the supervisor starts the WebUI immediately and polls until
 
 **Pre-configured bypass:** mount a valid `nfs-klldap.conf` and `/etc/krb5.keytab` before start — steps 1–3 are skipped; go directly to `/login`.
 
+### Setup wizard troubleshooting
+
+The **Test Log** on each setup page mirrors the old terminal TUI probes. Common failures:
+
+- **DNS failure (step 2):** check hostname spelling and DNS records on the Docker host; try `getent hosts <host>` from the host; container may need `--network=host` or `--dns=...`.
+- **Port unreachable (step 2):** confirm port in `ldap_uri` (ldaps usually 636, ldap usually 389); check firewall/SELinux; try `nc -zv <host> <port>` from the Docker host.
+- **Bind failed / error 49 (step 3):** verify `ldap_default_bind_dn` and password match LLDAP exactly (no trailing spaces).
+- **TLS / contact errors (step 3):** wrong port or self-signed cert — add `ldap_tls_reqcert = "never"` under `[sssd]` for internal LLDAP/KLLDAP certs.
+
 ## WebUI (9630)
 
 HTTPS by default (axum-server + rustls, self-signed or via `NFS_KLLDAP_WEBUI_TLS_CERT` / `NFS_KLLDAP_WEBUI_TLS_KEY`).

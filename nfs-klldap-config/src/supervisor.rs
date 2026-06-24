@@ -10,8 +10,8 @@ use std::thread;
 use std::time::Duration;
 
 use nfs_klldap_config::{
-    compute_startup_step, is_preconfigured_deployment, mark_setup_wizard_complete,
-    resolve_keytab_path, webui_setup_url, StartupStep,
+    compute_startup_step, is_preconfigured_deployment, is_setup_wizard_complete,
+    mark_setup_wizard_complete, resolve_keytab_path, should_bring_up_services, webui_setup_url,
 };
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -286,9 +286,11 @@ impl Supervisor {
             if SIGHUP_REQUESTED.swap(false, Ordering::SeqCst) {
                 let _ = self.handle_sighup();
             }
-            if !self.services_started
-                && compute_startup_step(&self.env.nfs_config) == StartupStep::Ready
-            {
+            if should_bring_up_services(
+                self.services_started,
+                is_setup_wizard_complete(),
+                compute_startup_step(&self.env.nfs_config),
+            ) {
                 let _ = mark_setup_wizard_complete();
                 self.log_info("Setup wizard complete — bringing up services");
                 if self.bring_up_services().is_ok() {

@@ -211,6 +211,7 @@ async fn main() {
         restart_requested: Arc::new(Mutex::new(false)),
         direct_tls: !webui_tls_off,
         setup_marker_override: None,
+        setup_test: Arc::new(std::sync::Mutex::new(crate::web::setup::SetupTestState::default())),
     };
 
     let app = crate::web::router(state);

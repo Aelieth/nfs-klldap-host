@@ -137,17 +137,97 @@ impl LdapReachability {
     }
 }
 
-/// DNS (getent) then TCP (nc) probe for the host extracted from ldap_uri.
-pub fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
-    let port: u16 = uri
-        .split(':')
+/// Default LDAP/LDAPS port from ldap_uri (636 when omitted).
+pub fn ldap_uri_port(uri: &str) -> u16 {
+    uri.split(':')
         .next_back()
         .and_then(|s| {
             s.trim_end_matches(|c: char| !c.is_ascii_digit())
                 .parse()
                 .ok()
         })
-        .unwrap_or(636);
+        .unwrap_or(636)
+}
+
+/// Apply-log-style reachability report with TUI troubleshooting hints.
+pub fn format_reachability_probe(host: &str, uri: &str, result: &LdapReachability) -> String {
+    let port = ldap_uri_port(uri);
+    let mut out = format!(
+        "<strong>Command</strong>\ngetent hosts {host}\ntimeout 4 nc -w 3 -zv {host} {port}\n\n<strong>Status</strong>\n"
+    );
+    match result {
+        LdapReachability::Reachable => {
+            out.push_str("✓ Basic TCP reachability OK (DNS + port open)");
+        }
+        LdapReachability::DnsFailure { detail } => {
+            out.push_str(&format!(
+                "❌ DNS FAILURE\nCould not resolve hostname '{host}'\nDetail: {detail}\n\n→ Common fixes:\n  - Check spelling / DNS records on the Docker host\n  - Container may need --network=host or --dns=...\n  - Test from host: getent hosts {host}"
+            ));
+        }
+        LdapReachability::Unreachable { detail } => {
+            out.push_str(&format!(
+                "❌ PORT UNREACHABLE (resolved successfully)\nDetail: {detail}\n\n→ Common fixes:\n  - Is the port correct? (ldaps usually 636, ldap usually 389)\n  - Firewall / SELinux blocking from Docker host?\n  - Try from the Docker host: nc -zv {host} {port}"
+            ));
+        }
+    }
+    out
+}
+
+/// Apply-log-style bind probe report with SSSD hints (password never included).
+pub fn format_bind_probe(cfg: &NfsKlldapConfig, result: Result<(), String>) -> String {
+    let dn = cfg.sssd.ldap_default_bind_dn.trim();
+    let uri = cfg.ldap_uri.trim();
+    let mapping = resolve_posix_attribute_mapping(&cfg.sssd);
+    let mut out = format!(
+        "<strong>Command</strong>\nldapsearch -H {uri} -D \"{dn}\" -w ******** -s base -b \"{dn}\" ...\n\n<strong>Status</strong>\n"
+    );
+    match &result {
+        Ok(()) => out.push_str("✓ Bind successful!"),
+        Err(err) => {
+            out.push_str(err);
+            out.push_str("\n\n→ Verify the DN exactly matches what is in your LDAP server.");
+            out.push_str("\n→ Make sure the password has no extra spaces or newlines.");
+            if err.contains("Invalid credentials") || err.contains("(49)") {
+                out.push_str("\n→ Double-check ldap_default_bind_dn and ldap_default_authtok.");
+            }
+            if err.contains("TLS") || err.contains("certificate") || err.contains("contact") {
+                out.push_str("\n→ Common causes: wrong port, self-signed cert, or firewall.");
+            }
+        }
+    }
+    out.push_str(&format!(
+        "\n\n<strong>SSSD</strong>\nDefaults: ldap_schema=rfc2307bis, enumerate=false, ldap_id_mapping=false\nPOSIX attrs: uid={}, uidNumber={}, gidNumber={}, member={}",
+        mapping.user_name, mapping.user_uid_number, mapping.user_gid_number, mapping.group_member
+    ));
+    if uri.starts_with("ldaps://") && cfg.sssd.ldap_tls_reqcert.is_none() {
+        out.push_str("\nFor self-signed LLDAP/KLLDAP certs add to [sssd]:\n  ldap_tls_reqcert = \"never\"");
+    }
+    if cfg.sssd.enumerate == Some(true) {
+        out.push_str("\nWARNING: enumerate=true can overload KLLDAP — default is false.");
+    }
+    out
+}
+
+/// Apply-log-style persistent volume check for setup step 1.
+pub fn format_volume_probe(config_path: &Path, ok: bool) -> String {
+    let parent = config_path
+        .parent()
+        .unwrap_or(Path::new("/config"))
+        .display();
+    let mut out = format!(
+        "<strong>Command</strong>\ncheck persistent writable config at {parent}\n\n<strong>Status</strong>\n"
+    );
+    if ok {
+        out.push_str("✓ Persistent volume detected and writable.");
+    } else {
+        out.push_str("❌ Persistent volume not detected or not writable.\n\n→ Common fixes:\n  - Bind-mount a host directory at /config (e.g. -v /path/on/host:/config)\n  - Ephemeral overlay storage loses changes on restart\n  - Ensure the mount is writable by root inside the container");
+    }
+    out
+}
+
+/// DNS (getent) then TCP (nc) probe for the host extracted from ldap_uri.
+pub fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
+    let port = ldap_uri_port(uri);
 
     if let Ok(out) = Command::new("getent").args(["hosts", host]).output() {
         if !out.status.success() {
@@ -273,6 +353,31 @@ pub fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     }
 }
 
+/// Wizard step from on-disk structure only — no live LDAP probes (fast WebUI page loads).
+pub fn compute_wizard_step(config_path: &Path) -> StartupStep {
+    if !check_persistent_writable(config_path) {
+        return StartupStep::WaitForPersistentVolume;
+    }
+
+    let cfg = match NfsKlldapConfig::load(config_path) {
+        Ok(c) => c,
+        Err(_) => return StartupStep::SetLdapUri,
+    };
+
+    if cfg.ldap_uri.trim().is_empty() {
+        return StartupStep::SetLdapUri;
+    }
+
+    if cfg.sssd.ldap_default_bind_dn.trim().is_empty()
+        || cfg.sssd.ldap_default_authtok.trim().is_empty()
+    {
+        return StartupStep::AddBindCredentials;
+    }
+
+    // All fields present; user finishes via step 3 Test + Continue (marker written there).
+    StartupStep::AddBindCredentials
+}
+
 /// Current step from persistent volume, ldap_uri reachability, and bind probe.
 pub fn compute_startup_step(config_path: &Path) -> StartupStep {
     if !check_persistent_writable(config_path) {
@@ -323,6 +428,15 @@ pub fn config_has_required_startup_fields(cfg: &NfsKlldapConfig) -> bool {
         return false;
     }
     true
+}
+
+/// True when the supervisor may start Ganesha/SSSD (wizard finished and config probes pass).
+pub fn should_bring_up_services(
+    services_started: bool,
+    wizard_complete: bool,
+    step: StartupStep,
+) -> bool {
+    !services_started && wizard_complete && step == StartupStep::Ready
 }
 
 /// Startup step for operators: Ready when preconf bypass applies, else live probe result.
@@ -437,6 +551,14 @@ mod tests {
     }
 
     #[test]
+    fn should_bring_up_services_requires_wizard_marker_and_ready() {
+        assert!(!should_bring_up_services(true, true, StartupStep::Ready));
+        assert!(!should_bring_up_services(false, false, StartupStep::Ready));
+        assert!(!should_bring_up_services(false, true, StartupStep::AddBindCredentials));
+        assert!(should_bring_up_services(false, true, StartupStep::Ready));
+    }
+
+    #[test]
     fn is_step_complete_follows_ordering() {
         assert!(!is_step_complete(
             StartupStep::WaitForPersistentVolume,
@@ -538,6 +660,16 @@ ldap_default_authtok = "sekret"
         fn drop(&mut self) {
             std::env::remove_var("NFS_KLLDAP_TEST_PERSISTENT");
         }
+    }
+
+    #[test]
+    fn compute_wizard_step_skips_live_ldap_probes() {
+        let _persist = TestPersistentEnv::set();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nfs-klldap.conf");
+        fs::write(&path, complete_preconf_toml()).unwrap();
+        assert_eq!(compute_wizard_step(&path), StartupStep::AddBindCredentials);
+        assert_ne!(compute_startup_step(&path), StartupStep::Ready);
     }
 
     #[test]
@@ -643,6 +775,46 @@ ldap_default_authtok = "sekret"
         };
         assert!(r.user_message().contains("DNS"));
         assert!(LdapReachability::Reachable.user_message().contains("reachable"));
+    }
+
+    #[test]
+    fn format_reachability_probe_includes_commands_and_fixes() {
+        let log = format_reachability_probe(
+            "ldap.example.com",
+            "ldaps://ldap.example.com:6360",
+            &LdapReachability::DnsFailure {
+                detail: "not found".into(),
+            },
+        );
+        assert!(log.contains("getent hosts"));
+        assert!(log.contains("Common fixes"));
+        assert!(log.contains("6360"));
+    }
+
+    #[test]
+    fn format_bind_probe_masks_password() {
+        let cfg = NfsKlldapConfig {
+            ldap_uri: "ldaps://kllap.test:6360".into(),
+            sssd: crate::SssdSection {
+                ldap_default_bind_dn: "uid=admin,dc=test".into(),
+                ldap_default_authtok: "sekret".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let log = format_bind_probe(&cfg, Err("BIND FAILED: test".into()));
+        assert!(log.contains("********"));
+        assert!(!log.contains("sekret"));
+        assert!(log.contains("SSSD"));
+    }
+
+    #[test]
+    fn format_volume_probe_reports_failure_hints() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nfs-klldap.conf");
+        let log = format_volume_probe(&path, false);
+        assert!(log.contains("/config"));
+        assert!(log.contains("Bind-mount"));
     }
 
     #[test]

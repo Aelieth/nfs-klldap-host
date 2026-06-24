@@ -22,7 +22,7 @@ mod auth;
 mod keytab;
 mod permission_tree;
 mod settings;
-mod setup;
+pub mod setup;
 
 pub use keytab::{compute_keytab_alert, get_keytab_info};
 
@@ -63,6 +63,8 @@ pub struct AppState {
     pub direct_tls: bool,
     /// Test-only: when set, gates setup completion on this marker path instead of the default.
     pub setup_marker_override: Option<PathBuf>,
+    /// Last successful wizard test inputs (probe-only; not persisted until continue).
+    pub setup_test: Arc<StdMutex<setup::SetupTestState>>,
 }
 
 impl AppState {
@@ -136,6 +138,7 @@ pub fn router(state: AppState) -> Router {
         .route("/setup/2/continue", post(setup::setup_step2_continue))
         .route("/setup/3", get(setup::setup_step3))
         .route("/setup/3/test", post(setup::setup_step3_test))
+        .route("/setup/3/status", get(setup::setup_step3_status))
         .route("/setup/3/continue", post(setup::setup_step3_continue))
         .route("/setup/complete", get(setup::setup_complete))
 
@@ -236,6 +239,7 @@ pub(crate) fn make_test_state_with_temp_config() -> (AppState, tempfile::TempDir
         restart_requested: Arc::new(Mutex::new(false)),
         direct_tls: true,
         setup_marker_override: Some(setup_marker),
+        setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
     };
 
     (state, tmp)
@@ -473,6 +477,7 @@ default_security = "krb5p"
             restart_requested: Arc::new(Mutex::new(false)),
             direct_tls: true,
             setup_marker_override: Some(setup_marker),
+            setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
         };
 
         let token = auth.create_privileged_session("testadmin");
@@ -859,6 +864,142 @@ default_security = "krb5p"
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body_str = String::from_utf8_lossy(&body);
         assert!(body_str.contains("dir-edit-form") || body_str.contains("Owner"), "editor should render the form");
+    }
+
+    struct SetupWizardTestEnv {
+        _tmp: tempfile::TempDir,
+    }
+
+    impl Drop for SetupWizardTestEnv {
+        fn drop(&mut self) {
+            std::env::remove_var("NFS_KLLDAP_TEST_PERSISTENT");
+        }
+    }
+
+    fn make_setup_wizard_test_state() -> (AppState, SetupWizardTestEnv) {
+        std::env::set_var("NFS_KLLDAP_TEST_PERSISTENT", "1");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("nfs-klldap.conf");
+        std::fs::write(
+            &config_path,
+            r#"ldap_uri = "ldaps://kllap.test:6360"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+"#,
+        )
+        .unwrap();
+
+        let config = Arc::new(
+            nfs_klldap_config::NfsKlldapConfig::load(&config_path).expect("valid test config"),
+        );
+        let fs = Arc::new(FsManager::new((*config).clone()));
+        let default_mapping = nfs_klldap_config::PosixAttributeMapping {
+            user_object_class: "posixAccount".to_string(),
+            group_object_class: "posixGroup".to_string(),
+            user_name: "uid".to_string(),
+            user_uid_number: "uidNumber".to_string(),
+            user_gid_number: "gidNumber".to_string(),
+            user_home_directory: "homeDirectory".to_string(),
+            user_shell: "loginShell".to_string(),
+            user_full_name: "displayName".to_string(),
+            group_name: "cn".to_string(),
+            group_gid_number: "gidNumber".to_string(),
+            group_member: "member".to_string(),
+            user_principal_name: "krbPrincipalName".to_string(),
+        };
+        let lldap = Arc::new(Mutex::new(LdapClient::new_with_attributes(
+            "ldaps://localhost:6360",
+            "ou=people,dc=test,dc=com",
+            "ou=groups,dc=test,dc=com",
+            default_mapping,
+            true,
+            false,
+        )));
+        let auth = Arc::new(AuthManager::new(&config_path, None));
+        let state = AppState {
+            fs,
+            lldap,
+            config,
+            auth,
+            config_path,
+            keytab_hostname: "test-host".to_string(),
+            keytab_realm: "EXAMPLE.COM".to_string(),
+            keytab_alert: Arc::new(StdMutex::new(None)),
+            apply_progress: Arc::new(Mutex::new(None)),
+            restart_requested: Arc::new(Mutex::new(false)),
+            direct_tls: true,
+            setup_marker_override: Some(tmp.path().join("no_marker")),
+            setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
+        };
+        (state, SetupWizardTestEnv { _tmp: tmp })
+    }
+
+    #[tokio::test]
+    async fn setup_step2_test_returns_json_with_urlencoded_body() {
+        let (state, _tmp) = make_setup_wizard_test_state();
+        let app = router(state);
+        let body = "ldap_uri=ldaps%3A%2F%2Fkllap.test%3A6360";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/setup/2/test")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(body.contains("\"log\""));
+        assert!(body.contains("getent hosts"));
+        assert!(body.contains("\"ok\""));
+    }
+
+    #[tokio::test]
+    async fn setup_step3_test_returns_json_with_urlencoded_body() {
+        let (state, _tmp) = make_setup_wizard_test_state();
+        let app = router(state);
+        let body = "ldap_default_bind_dn=uid%3Dadmin%2Cou%3Dpeople%2Cdc%3Dtest%2Cdc%3Dcom&ldap_default_authtok=sekret";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/setup/3/test")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(body.contains("\"log\""));
+        assert!(body.contains("ldapsearch"));
+        assert!(body.contains("\"ok\""));
+    }
+
+    #[tokio::test]
+    async fn setup_step2_test_rejects_multipart_without_json_panic() {
+        let (state, _tmp) = make_setup_wizard_test_state();
+        let app = router(state);
+        let body = "--boundary\r\nContent-Disposition: form-data; name=\"ldap_uri\"\r\n\r\nldaps://kllap.test:6360\r\n--boundary--\r\n";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/setup/2/test")
+            .header(
+                "content-type",
+                "multipart/form-data; boundary=boundary",
+            )
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(
+            resp.status() == StatusCode::UNPROCESSABLE_ENTITY
+                || resp.status() == StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "multipart must not be accepted as urlencoded form (got {})",
+            resp.status()
+        );
     }
 
     /// POST /apply accepts empty hidden uid/gid fields from dir-editor (no 422 deserialize error).

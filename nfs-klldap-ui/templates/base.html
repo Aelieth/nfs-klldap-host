@@ -379,13 +379,33 @@
             min-width: 240px;
             box-shadow: 0 3px 10px rgba(0, 0, 0, 0.18);
         }
-        .apply-status-content {
+        .apply-status-content,
+        .mono-log-panel {
             max-height: 220px;
             overflow-y: auto;
+            font-family: ui-monospace, monospace;
+            font-size: 0.78em;
+            background: var(--bg-alt);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 8px 10px;
+            white-space: pre-wrap;
+            line-height: 1.35;
         }
-        .apply-status-content strong {
+        .apply-status-content strong,
+        .mono-log-panel strong {
             color: var(--accent);
             font-weight: 600;
+        }
+        .setup-test-log {
+            margin-top: 1rem;
+            max-width: 640px;
+        }
+        .setup-test-log-header {
+            font-size: 0.85em;
+            font-weight: 600;
+            margin-bottom: 4px;
+            color: var(--text-muted);
         }
 
         /* Share cards and general cards */

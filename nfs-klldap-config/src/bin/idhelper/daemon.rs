@@ -162,6 +162,48 @@ pub(crate) fn run_daemon() {
     }
 }
 
+/// Handle one idhelper socket request; shared by daemon accept loop and tests.
+pub(crate) fn dispatch_idhelper_request(
+    req: &str,
+    realm: &str,
+    server_variants: &[String],
+    cache: &mut IdCache,
+) -> String {
+    let mut parts = req.splitn(2, ' ');
+    let verb = parts.next().unwrap_or("").to_ascii_uppercase();
+    let arg = parts.next().unwrap_or("").trim();
+
+    match verb.as_str() {
+        "PING" => "OK\n".to_string(),
+        "CLASSIFY" => {
+            if arg.is_empty() {
+                "ERR missing principal\n".to_string()
+            } else {
+                let (is_m, reason) = is_machine_principal(arg, realm, server_variants);
+                let k = if is_m { "machine" } else { "user" };
+                format!("OK {}|{}\n", k, reason)
+            }
+        }
+        "RESOLVE" => {
+            if arg.is_empty() {
+                "ERR missing principal\n".to_string()
+            } else {
+                dlog!("socket RESOLVE arg=\"{}\"", arg);
+                let r = resolve_principal(arg, realm, server_variants, cache);
+                format!(
+                    "OK {}|{}|{}|{}|{}\n",
+                    r.principal, r.uid, r.gid, r.kind.as_str(), r.source
+                )
+            }
+        }
+        "REBULK" => match rebulk_ldap_users(cache, realm) {
+            Some(n) => format!("OK {}\n", n),
+            None => "ERR rebulk failed\n".to_string(),
+        },
+        _ => "ERR unknown command\n".to_string(),
+    }
+}
+
 fn handle_client(
     mut stream: UnixStream,
     realm: &str,
@@ -176,51 +218,119 @@ fn handle_client(
         return Ok(());
     }
 
-    let mut parts = req.splitn(2, ' ');
-    let verb = parts.next().unwrap_or("").to_ascii_uppercase();
-    let arg = parts.next().unwrap_or("").trim();
-
-    let mut out = String::new();
-
-    match verb.as_str() {
-        "PING" => {
-            out.push_str("OK\n");
-        }
-        "CLASSIFY" => {
-            if arg.is_empty() {
-                out.push_str("ERR missing principal\n");
-            } else {
-                let (is_m, reason) = is_machine_principal(arg, realm, server_variants);
-                let k = if is_m { "machine" } else { "user" };
-                out.push_str(&format!("OK {}|{}\n", k, reason));
-            }
-        }
-        "RESOLVE" => {
-            if arg.is_empty() {
-                out.push_str("ERR missing principal\n");
-            } else {
-                dlog!("socket RESOLVE arg=\"{}\"", arg);
-                let mut guard = cache.lock().unwrap();
-                let r = resolve_principal(arg, realm, server_variants, &mut guard);
-                out.push_str(&format!(
-                    "OK {}|{}|{}|{}|{}\n",
-                    r.principal, r.uid, r.gid, r.kind.as_str(), r.source
-                ));
-            }
-        }
-        "REBULK" => {
-            let mut guard = cache.lock().unwrap();
-            match rebulk_ldap_users(&mut guard, realm) {
-                Some(n) => out.push_str(&format!("OK {}\n", n)),
-                None => out.push_str("ERR rebulk failed\n"),
-            }
-        }
-        _ => {
-            out.push_str("ERR unknown command\n");
-        }
-    }
+    let out = {
+        let mut guard = cache.lock().unwrap();
+        dispatch_idhelper_request(req, realm, server_variants, &mut guard)
+    };
 
     stream.write_all(out.as_bytes())?;
     stream.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod socket_resolve_tests {
+    use super::*;
+    use crate::common::{
+        last_materialized_fingerprint_for_tests, record_materialized_fingerprint,
+        reset_materialize_fingerprint_for_tests, PrincipalKind, Resolved, CACHE_PATH,
+        MATERIALIZE_FP_TEST_LOCK, NSS_PASSWD_PATH,
+    };
+    use crate::resolve::set_test_nss_resolve_for_tests;
+    use std::collections::HashMap;
+    use std::io::{Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    fn ensure_idhelper_runtime_dirs() {
+        let _ = fs::create_dir_all("/var/lib/nfs-klldap");
+        let _ = fs::create_dir_all("/var/lib/extrausers");
+        let _ = fs::create_dir_all("/var/run/nfs-klldap");
+    }
+
+    #[test]
+    fn socket_resolve_user_miss_materializes_nss_and_records_fp() {
+        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
+        reset_materialize_fingerprint_for_tests();
+        ensure_idhelper_runtime_dirs();
+        set_test_nss_resolve_for_tests(Some(HashMap::from([(
+            "alice".to_string(),
+            (1001, 1001, "sss".to_string()),
+        )])));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("idhelper.sock");
+        let listener = UnixListener::bind(&sock).expect("bind socket");
+        let cache = Arc::new(Mutex::new(IdCache::default()));
+        let realm = "EX.COM".to_string();
+        let variants = vec!["srv".to_string()];
+        let cache_t = Arc::clone(&cache);
+        let realm_t = realm.clone();
+        let variants_t = variants.clone();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            handle_client(stream, &realm_t, &variants_t, &cache_t).expect("handle");
+        });
+
+        let mut client = UnixStream::connect(&sock).expect("connect");
+        writeln!(client, "RESOLVE alice@EX.COM").expect("write");
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).expect("read");
+        server.join().expect("server join");
+
+        assert_eq!(resp.trim(), "OK alice@EX.COM|1001|1001|user|sss");
+
+        let guard = cache.lock().unwrap();
+        assert_eq!(
+            last_materialized_fingerprint_for_tests(),
+            Some(guard.content_fingerprint())
+        );
+        let nss = fs::read_to_string(NSS_PASSWD_PATH).expect("nss_passwd");
+        assert!(
+            nss.contains("alice:x:1001:1001:"),
+            "socket RESOLVE must materialize user into nss_passwd"
+        );
+        let cache_txt = fs::read_to_string(CACHE_PATH).expect("cache file");
+        assert!(
+            cache_txt.contains("alice@EX.COM|1001|1001|user|sss"),
+            "socket RESOLVE must persist cache"
+        );
+
+        set_test_nss_resolve_for_tests(None);
+    }
+
+    #[test]
+    fn dispatch_resolve_cache_hit_skips_materialize() {
+        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
+        reset_materialize_fingerprint_for_tests();
+        ensure_idhelper_runtime_dirs();
+
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "host/cached@EX.COM".into(),
+            name: "cached".into(),
+            uid: 0,
+            gid: 0,
+            kind: PrincipalKind::Machine,
+            source: "special".into(),
+        });
+        record_materialized_fingerprint(&cache);
+        let nss_before = fs::read(NSS_PASSWD_PATH).unwrap_or_default();
+
+        let resp = dispatch_idhelper_request(
+            "RESOLVE host/cached@EX.COM",
+            "EX.COM",
+            &["srv".to_string()],
+            &mut cache,
+        );
+        assert_eq!(resp.trim(), "OK host/cached@EX.COM|0|0|machine|cache");
+
+        let nss_after = fs::read(NSS_PASSWD_PATH).unwrap_or_default();
+        assert_eq!(nss_before, nss_after, "cache HIT must not rewrite nss_passwd");
+        assert_eq!(
+            last_materialized_fingerprint_for_tests(),
+            Some(cache.content_fingerprint())
+        );
+    }
 }

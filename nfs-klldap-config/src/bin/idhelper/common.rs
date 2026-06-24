@@ -217,7 +217,12 @@ pub(crate) fn reset_materialize_fingerprint_for_tests() {
     *LAST_MATERIALIZED_FP.lock().unwrap() = None;
 }
 
-/// Serializes tests that touch LAST_MATERIALIZED_FP (parallel cargo runs otherwise race).
+#[cfg(test)]
+pub(crate) fn last_materialized_fingerprint_for_tests() -> Option<u64> {
+    *LAST_MATERIALIZED_FP.lock().unwrap()
+}
+
+/// Serializes tests that touch LAST_MATERIALIZED_FP or resolve_principal (parallel races otherwise).
 #[cfg(test)]
 pub(crate) static MATERIALIZE_FP_TEST_LOCK: Mutex<()> = Mutex::new(());
 

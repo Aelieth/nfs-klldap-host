@@ -1,8 +1,12 @@
 //! Principal resolution: NSS getent, structured LDAP, and cache.
 
 use crate::dlog;
+#[cfg(test)]
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -17,8 +21,33 @@ use crate::common::{
 };
 use crate::materialize::materialize_nss_wrappers;
 
+#[cfg(test)]
+static TEST_NSS_RESOLVE: Mutex<Option<HashMap<String, (u32, u32, String)>>> = Mutex::new(None);
+
+/// Inject NSS lookup results for unit tests (exercises user TGT resolve path without live LDAP).
+#[cfg(test)]
+pub(crate) fn set_test_nss_resolve_for_tests(entries: Option<HashMap<String, (u32, u32, String)>>) {
+    *TEST_NSS_RESOLVE.lock().unwrap() = entries;
+}
+
+#[cfg(test)]
+fn test_nss_lookup(name_or_principal: &str) -> Option<(u32, u32, String)> {
+    let guard = TEST_NSS_RESOLVE.lock().ok()?;
+    let map = guard.as_ref()?;
+    if let Some(hit) = map.get(name_or_principal) {
+        return Some(hit.clone());
+    }
+    let short = name_or_principal.split('@').next().unwrap_or(name_or_principal);
+    map.get(short).cloned()
+}
+
 /// getent (NSS) path for "same lookup a client would see". Falls back to resolver snapshot.
 fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
+    #[cfg(test)]
+    if let Some(res) = test_nss_lookup(name_or_principal) {
+        return Some(res);
+    }
+
     // Try as-is first (handles user@REALM in some setups)
     if let Some(res) = resolve_getent(name_or_principal) {
         return Some(res);

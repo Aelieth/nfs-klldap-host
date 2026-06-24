@@ -19,7 +19,10 @@ use common::{
     CACHE_PATH, NSS_GROUP_PATH, NSS_PASSWD_PATH, SOCKET_PATH,
 };
 #[cfg(test)]
-use common::normalize_principal;
+use common::{
+    normalize_principal, record_materialized_fingerprint, reset_materialize_fingerprint_for_tests,
+    take_materialize_if_cache_changed, MATERIALIZE_FP_TEST_LOCK,
+};
 use daemon::run_daemon;
 #[cfg(test)]
 use materialize::{
@@ -27,7 +30,9 @@ use materialize::{
     sync_user_cache_from_snapshot,
 };
 #[cfg(test)]
-use nfs_klldap_config::{IdMapSnapshot, PosixUserEntry};
+use nfs_klldap_config::{
+    IdMapSnapshot, PosixUserEntry, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
+};
 #[cfg(test)]
 use observer::{extract_candidate_principal, looks_like_client_hostname};
 use resolve::resolve_principal;
@@ -587,6 +592,69 @@ mod tests {
                 assert!(!bad.contains("0x"), "frag produced host/0x epoch: {}", frag);
             }
         }
+    }
+
+    #[test]
+    fn resolve_miss_records_materialized_fingerprint() {
+        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
+        reset_materialize_fingerprint_for_tests();
+        let mut cache = IdCache::default();
+        let realm = "EX.COM";
+        let variants = vec!["srv".to_string()];
+
+        let r = resolve_principal("host/newclient@EX.COM", realm, &variants, &mut cache);
+        assert_eq!(r.source, "special");
+        assert!(cache.get("host/newclient@EX.COM").is_some());
+        assert!(
+            !take_materialize_if_cache_changed(&cache),
+            "resolve MISS must call record_materialized_fingerprint"
+        );
+    }
+
+    #[test]
+    fn resolve_cache_hit_returns_early_without_fp_change() {
+        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
+        reset_materialize_fingerprint_for_tests();
+        let mut cache = IdCache::default();
+        let realm = "EX.COM";
+        let variants = vec!["srv".to_string()];
+        cache.insert(Resolved {
+            principal: "host/cached@EX.COM".into(),
+            name: "cached".into(),
+            uid: 0,
+            gid: 0,
+            kind: PrincipalKind::Machine,
+            source: "special".into(),
+        });
+        record_materialized_fingerprint(&cache);
+
+        let fp_before = cache.content_fingerprint();
+        let r = resolve_principal("host/cached@EX.COM", realm, &variants, &mut cache);
+        assert_eq!(r.source, "cache");
+        assert_eq!(fp_before, cache.content_fingerprint());
+        assert!(
+            !take_materialize_if_cache_changed(&cache),
+            "cache HIT must not re-materialize or change fp gate"
+        );
+    }
+
+    #[test]
+    fn resolve_user_miss_nobody_fallback_records_fp() {
+        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
+        reset_materialize_fingerprint_for_tests();
+        let mut cache = IdCache::default();
+        let realm = "EX.COM";
+        let variants = vec!["srv".to_string()];
+
+        let r = resolve_principal("no_such_user@EX.COM", realm, &variants, &mut cache);
+        assert_eq!(r.uid, FALLBACK_NOBODY_UID);
+        assert_eq!(r.gid, FALLBACK_NOBODY_GID);
+        assert_eq!(r.kind, PrincipalKind::Unknown);
+        assert_eq!(r.source, "direct");
+        assert!(
+            !take_materialize_if_cache_changed(&cache),
+            "user MISS nobody path must record fp like other MISS paths"
+        );
     }
 
     #[test]

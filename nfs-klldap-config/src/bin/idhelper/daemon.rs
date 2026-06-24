@@ -13,37 +13,152 @@ use crate::common::{
     get_realm, get_server_variants, is_machine_principal, IdCache, BULK_SEED_MARKER, CACHE_PATH,
     DEFAULT_REBULK_INTERVAL_SECS, SOCKET_PATH,
 };
+use nfs_klldap_config::IdMapSnapshot;
+
 use crate::materialize::{
-    cache_changed_since, materialize_nss_wrappers, sync_user_cache_from_snapshot,
+    cache_changed_since, materialize_nss_wrappers, materialize_nss_wrappers_at,
+    sync_user_cache_from_snapshot, NssMaterializePaths,
 };
 use crate::observer::start_ganesha_observer;
 use crate::resolve::{get_or_init_resolver, resolve_principal, ID_RESOLVER};
 
+/// Files rebulk touches: idmap cache, bulk-seed marker, and nss_wrapper outputs.
+#[derive(Clone, Copy)]
+pub(crate) struct RebulkPaths<'a> {
+    pub cache_path: &'a Path,
+    pub bulk_seed_marker: &'a Path,
+    pub nss: NssMaterializePaths<'a>,
+}
+
+impl RebulkPaths<'_> {
+    pub(crate) fn production() -> RebulkPaths<'static> {
+        RebulkPaths {
+            cache_path: Path::new(CACHE_PATH),
+            bulk_seed_marker: Path::new(BULK_SEED_MARKER),
+            nss: NssMaterializePaths::production(),
+        }
+    }
+}
+
+/// Outcome of rebulk_apply_sync for tests asserting materialize skip vs execute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RebulkOutcome {
+    pub synced: usize,
+    pub materialized: bool,
+}
+
+/// Sync LDAP snapshot into cache; materialize nss only when fingerprint changes.
+pub(crate) fn rebulk_apply_sync(
+    cache: &mut IdCache,
+    realm: &str,
+    snap: &IdMapSnapshot,
+    paths: &RebulkPaths<'_>,
+) -> Result<RebulkOutcome, io::Error> {
+    let fp_before = cache.content_fingerprint();
+    let synced = sync_user_cache_from_snapshot(snap, realm, cache);
+    let materialized = if cache_changed_since(fp_before, cache) {
+        materialize_nss_wrappers_at(cache, &paths.nss)?;
+        cache.write_to_file(paths.cache_path)?;
+        true
+    } else {
+        false
+    };
+    fs::write(paths.bulk_seed_marker, format!("{}\n", synced))?;
+    Ok(RebulkOutcome {
+        synced,
+        materialized,
+    })
+}
+
+#[cfg(test)]
+pub(crate) mod test_rebulk {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[derive(Clone)]
+    pub(crate) struct TestRebulkOverride {
+        pub snap: IdMapSnapshot,
+        pub paths: RebulkPaths<'static>,
+    }
+
+    thread_local! {
+        static TEST_REBULK: RefCell<Option<TestRebulkOverride>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn current_override() -> Option<TestRebulkOverride> {
+        TEST_REBULK.with(|slot| slot.borrow().clone())
+    }
+
+    pub(crate) fn with_test_rebulk_override<F, R>(ov: TestRebulkOverride, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        TEST_REBULK.with(|slot| {
+            *slot.borrow_mut() = Some(ov);
+        });
+        let out = f();
+        TEST_REBULK.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+        out
+    }
+
+    pub(crate) fn rebulk_paths_in(base: &Path) -> RebulkPaths<'static> {
+        let leak = |p: PathBuf| -> &'static Path {
+            Box::leak(p.into_boxed_path())
+        };
+        RebulkPaths {
+            cache_path: leak(base.join("idmap.cache")),
+            bulk_seed_marker: leak(base.join(".bulk_seed_done")),
+            nss: NssMaterializePaths {
+                nss_passwd: leak(base.join("nss_passwd")),
+                nss_group: leak(base.join("nss_group")),
+                extrausers_passwd: leak(base.join("extrausers/passwd")),
+                extrausers_group: leak(base.join("extrausers/group")),
+            },
+        }
+    }
+}
+
 /// LDAP bulk load then nss materialize; must complete before supervisor starts ganesha.nfsd.
-fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usize> {
+pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usize> {
+    #[cfg(test)]
+    if let Some(ov) = test_rebulk::current_override() {
+        return match rebulk_apply_sync(cache, realm, &ov.snap, &ov.paths) {
+            Ok(o) => Some(o.synced),
+            Err(e) => {
+                eprintln!("[idhelper] WARN: rebulk nss materialize failed: {}", e);
+                None
+            }
+        };
+    }
+
     let (r, dn, pw) = ID_RESOLVER.get().and_then(|o| o.as_ref())?;
     let loaded = r.load_full_identities(dn, pw);
     let snap = r.snapshot();
     let fp_before = cache.content_fingerprint();
-    let synced = sync_user_cache_from_snapshot(&snap, realm, cache);
-    if cache_changed_since(fp_before, cache) {
-        if let Err(e) = materialize_nss_wrappers(cache) {
-            eprintln!("[idhelper] WARN: rebulk nss materialize failed: {}", e);
-            return None;
+    match rebulk_apply_sync(cache, realm, &snap, &RebulkPaths::production()) {
+        Ok(o) => {
+            if o.materialized {
+                eprintln!(
+                    "[idhelper] rebulk: ldap_loaded={} users_synced={} (nss_passwd refreshed, fp 0x{:x}->0x{:x})",
+                    loaded, o.synced, fp_before, cache.content_fingerprint()
+                );
+            } else {
+                eprintln!(
+                    "[idhelper] rebulk: ldap_loaded={} users_synced={} (nss unchanged, fp=0x{:x})",
+                    loaded, o.synced, fp_before
+                );
+            }
+            Some(o.synced)
         }
-        let _ = cache.write_to_file(Path::new(CACHE_PATH));
-        eprintln!(
-            "[idhelper] rebulk: ldap_loaded={} users_synced={} (nss_passwd refreshed, fp 0x{:x}->0x{:x})",
-            loaded, synced, fp_before, cache.content_fingerprint()
-        );
-    } else {
-        eprintln!(
-            "[idhelper] rebulk: ldap_loaded={} users_synced={} (nss unchanged, fp=0x{:x})",
-            loaded, synced, fp_before
-        );
+        Err(e) => {
+            eprintln!("[idhelper] WARN: rebulk nss materialize failed: {}", e);
+            None
+        }
     }
-    let _ = fs::write(BULK_SEED_MARKER, format!("{}\n", synced));
-    Some(synced)
 }
 
 fn rebulk_interval_secs() -> u64 {
@@ -228,4 +343,123 @@ fn handle_client(
     stream.write_all(out.as_bytes())?;
     stream.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod rebulk_ldap_users_tests {
+    use super::test_rebulk::{rebulk_paths_in, with_test_rebulk_override, TestRebulkOverride};
+    use super::*;
+    use nfs_klldap_config::PosixUserEntry;
+    use std::fs;
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    fn alice_snapshot() -> IdMapSnapshot {
+        let mut snap = IdMapSnapshot::default();
+        snap.users.insert(
+            "alice".to_string(),
+            PosixUserEntry {
+                uid: 1001,
+                gid: 1001,
+                display: "Alice".to_string(),
+            },
+        );
+        snap.by_uid.insert(1001, "alice".to_string());
+        snap
+    }
+
+    #[test]
+    fn rebulk_ldap_users_materializes_nss_on_first_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = rebulk_paths_in(tmp.path());
+        let ov = TestRebulkOverride {
+            snap: alice_snapshot(),
+            paths,
+        };
+        with_test_rebulk_override(ov, || {
+            let mut cache = IdCache::default();
+            let n = rebulk_ldap_users(&mut cache, "EX.COM").expect("rebulk succeeds");
+            assert_eq!(n, 1);
+            let passwd = fs::read_to_string(paths.nss.nss_passwd).expect("nss_passwd written");
+            assert!(passwd.contains("alice:x:1001:1001:"));
+            assert!(fs::metadata(paths.bulk_seed_marker).is_ok());
+        });
+    }
+
+    #[test]
+    fn rebulk_ldap_users_skips_nss_rewrite_when_snapshot_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = rebulk_paths_in(tmp.path());
+        let ov = TestRebulkOverride {
+            snap: alice_snapshot(),
+            paths,
+        };
+        with_test_rebulk_override(ov, || {
+            let mut cache = IdCache::default();
+            assert!(rebulk_ldap_users(&mut cache, "EX.COM").is_some());
+            let mtime1 = fs::metadata(paths.nss.nss_passwd)
+                .expect("first rebulk writes nss_passwd")
+                .modified()
+                .unwrap();
+            sleep(Duration::from_millis(50));
+            assert!(rebulk_ldap_users(&mut cache, "EX.COM").is_some());
+            let mtime2 = fs::metadata(paths.nss.nss_passwd)
+                .unwrap()
+                .modified()
+                .unwrap();
+            assert_eq!(
+                mtime1, mtime2,
+                "unchanged LDAP snapshot must not rewrite nss_passwd"
+            );
+        });
+    }
+
+    #[test]
+    fn rebulk_ldap_users_rewrites_nss_when_snapshot_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = rebulk_paths_in(tmp.path());
+        let mut snap1 = alice_snapshot();
+        let ov1 = TestRebulkOverride {
+            snap: snap1.clone(),
+            paths,
+        };
+        with_test_rebulk_override(ov1, || {
+            let mut cache = IdCache::default();
+            assert!(rebulk_ldap_users(&mut cache, "EX.COM").is_some());
+        });
+
+        snap1.users.insert(
+            "bob".to_string(),
+            PosixUserEntry {
+                uid: 1002,
+                gid: 1002,
+                display: "Bob".to_string(),
+            },
+        );
+        snap1.by_uid.insert(1002, "bob".to_string());
+        let ov2 = TestRebulkOverride { snap: snap1, paths };
+        with_test_rebulk_override(ov2, || {
+            let mut cache = IdCache::default();
+            sync_user_cache_from_snapshot(&alice_snapshot(), "EX.COM", &mut cache);
+            let mtime_before = fs::metadata(paths.nss.nss_passwd).unwrap().modified().unwrap();
+            sleep(Duration::from_millis(50));
+            assert!(rebulk_ldap_users(&mut cache, "EX.COM").is_some());
+            let mtime_after = fs::metadata(paths.nss.nss_passwd).unwrap().modified().unwrap();
+            assert_ne!(mtime_before, mtime_after);
+            let passwd = fs::read_to_string(paths.nss.nss_passwd).unwrap();
+            assert!(passwd.contains("bob:x:1002:1002:"));
+        });
+    }
+
+    #[test]
+    fn rebulk_apply_sync_reports_materialized_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = rebulk_paths_in(tmp.path());
+        let snap = alice_snapshot();
+        let mut cache = IdCache::default();
+        let first = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths).unwrap();
+        assert!(first.materialized);
+        let second = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths).unwrap();
+        assert!(!second.materialized);
+    }
 }

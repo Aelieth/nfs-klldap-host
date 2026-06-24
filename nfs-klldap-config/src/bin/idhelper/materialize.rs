@@ -9,10 +9,30 @@ use nfs_klldap_config::{
     IdMapSnapshot, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID, MACHINE_PRINCIPAL_PREFIXES,
 };
 
-use crate::common::{
-    IdCache, PrincipalKind, Resolved, EXTRAUSERS_GROUP, EXTRAUSERS_PASSWD, NSS_GROUP_PATH,
-    NSS_PASSWD_PATH,
-};
+use crate::common::{IdCache, PrincipalKind, Resolved};
+
+/// Output paths for nss_wrapper and extrausers writes (production or test temp dirs).
+#[derive(Clone, Copy)]
+pub(crate) struct NssMaterializePaths<'a> {
+    pub nss_passwd: &'a Path,
+    pub nss_group: &'a Path,
+    pub extrausers_passwd: &'a Path,
+    pub extrausers_group: &'a Path,
+}
+
+impl NssMaterializePaths<'_> {
+    pub(crate) fn production() -> NssMaterializePaths<'static> {
+        use crate::common::{
+            EXTRAUSERS_GROUP, EXTRAUSERS_PASSWD, NSS_GROUP_PATH, NSS_PASSWD_PATH,
+        };
+        NssMaterializePaths {
+            nss_passwd: Path::new(NSS_PASSWD_PATH),
+            nss_group: Path::new(NSS_GROUP_PATH),
+            extrausers_passwd: Path::new(EXTRAUSERS_PASSWD),
+            extrausers_group: Path::new(EXTRAUSERS_GROUP),
+        }
+    }
+}
 
 /// Sanitize a string for use as a passwd login name (allow alnum + _ - .).
 pub(crate) fn sanitize_for_nss(name: &str) -> String {
@@ -125,8 +145,15 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
 
 /// Atomically write nss_wrapper passwd/group for ganesha.nfsd LD_PRELOAD and extrausers supplement.
 pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
-    // Ensure parent exists (best effort, same as cache writer)
-    if let Some(parent) = Path::new(NSS_PASSWD_PATH).parent() {
+    materialize_nss_wrappers_at(cache, &NssMaterializePaths::production())
+}
+
+/// Same as materialize_nss_wrappers but writes to caller-supplied paths (used in rebulk tests).
+pub(crate) fn materialize_nss_wrappers_at(
+    cache: &IdCache,
+    paths: &NssMaterializePaths<'_>,
+) -> io::Result<()> {
+    if let Some(parent) = paths.nss_passwd.parent() {
         let _ = fs::create_dir_all(parent);
     }
 
@@ -220,27 +247,25 @@ pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
         ));
     }
 
-    // Write passwd atomically
     {
-        let tmp = Path::new(NSS_PASSWD_PATH).with_extension("tmp");
+        let tmp = paths.nss_passwd.with_extension("tmp");
         let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
         let mut w = BufWriter::new(f);
         // nss_wrapper (Debian trixie) rejects '#' comment lines — emit entries only.
         for l in &passwd_lines {
             writeln!(w, "{}", l)?;
         }
-        fs::rename(tmp, NSS_PASSWD_PATH)?;
+        fs::rename(tmp, paths.nss_passwd)?;
     }
 
-    // Write group atomically
     {
-        let tmp = Path::new(NSS_GROUP_PATH).with_extension("tmp");
+        let tmp = paths.nss_group.with_extension("tmp");
         let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
         let mut w = BufWriter::new(f);
         for l in &group_lines {
             writeln!(w, "{}", l)?;
         }
-        fs::rename(tmp, NSS_GROUP_PATH)?;
+        fs::rename(tmp, paths.nss_group)?;
     }
 
     dlog!(
@@ -255,30 +280,28 @@ pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
     // normally via sss even if the idhelper has never seen that user principal.
     {
         // Ensure dir (harmless if using the nss_wrapper paths under /var/lib/nfs-klldap too)
-        if let Some(p) = Path::new(EXTRAUSERS_PASSWD).parent() {
+        if let Some(p) = paths.extrausers_passwd.parent() {
             let _ = fs::create_dir_all(p);
         }
-        // passwd
         {
-            let tmp = Path::new(EXTRAUSERS_PASSWD).with_extension("tmp");
+            let tmp = paths.extrausers_passwd.with_extension("tmp");
             let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
             let mut w = BufWriter::new(f);
             writeln!(w, "# nfs-klldap-idhelper extrausers (machine overrides + seen users)")?;
             for l in &passwd_lines {
                 writeln!(w, "{}", l)?;
             }
-            fs::rename(tmp, EXTRAUSERS_PASSWD)?;
+            fs::rename(tmp, paths.extrausers_passwd)?;
         }
-        // group
         {
-            let tmp = Path::new(EXTRAUSERS_GROUP).with_extension("tmp");
+            let tmp = paths.extrausers_group.with_extension("tmp");
             let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
             let mut w = BufWriter::new(f);
             writeln!(w, "# nfs-klldap-idhelper extrausers group")?;
             for l in &group_lines {
                 writeln!(w, "{}", l)?;
             }
-            fs::rename(tmp, EXTRAUSERS_GROUP)?;
+            fs::rename(tmp, paths.extrausers_group)?;
         }
     }
 

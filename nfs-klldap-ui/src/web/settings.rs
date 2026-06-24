@@ -62,10 +62,7 @@ struct SettingsTemplate {
     /// Next index the client-side JS should use when the user clicks "+ Add share".
     next_share_idx: usize,
 
-    /// HOST_NFS (host-managed NFS) mode. When true many server-side controls are
-    /// muted/grayed because the actual NFS server runs on the host and reads the
-    /// generated ganesha fragments we write to (bind-mounted) /etc/ganesha paths.
-    /// Share definition, raw TOML, and the live permission tree remain fully usable.
+    /// HOST_NFS sidecar mode (host Ganesha serves exports; WebUI still manages config).
     host_nfs_mode: bool,
 }
 
@@ -82,7 +79,7 @@ pub(crate) fn render_restarting_page() -> Html<String> {
     Html(RestartingTemplate.render().unwrap())
 }
 
-/// Clear the recycle marker and schedule a delayed HUP to pid 1. Returns false when already scheduled.
+/// Clear recycle marker and schedule delayed HUP (pid 1, or NFS_KLLDAP_SUPERVISOR_PID in tests).
 pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_context: &str) -> bool {
     {
         let mut flag = state.restart_requested.lock().await;
@@ -93,15 +90,16 @@ pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_co
     }
     let _ = std::fs::remove_file(SERVICE_RECYCLE_MARKER);
     let label = log_context.to_string();
+    let hup_pid = std::env::var("NFS_KLLDAP_SUPERVISOR_PID").unwrap_or_else(|_| "1".to_string());
+    let delay_ms = std::env::var("NFS_KLLDAP_RECYCLE_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1400);
     tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_millis(1400)).await;
-        eprintln!(
-            "INFO: '{label}' — triggering service bounce (HUP to pid 1)"
-        );
-        let _ = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("sleep 0.25; kill -HUP 1 2>/dev/null || true")
-            .spawn();
+        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+        eprintln!("INFO: '{label}' — triggering service bounce (HUP to pid {hup_pid})");
+        let script = format!("sleep 0.25; kill -HUP {hup_pid} 2>/dev/null || true");
+        let _ = std::process::Command::new("sh").arg("-c").arg(script).spawn();
     });
     true
 }
@@ -216,11 +214,7 @@ fn get_explicit_str(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> O
     val.and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
-/// Export path for the shares editor: only when `export_path` is explicit in raw [[shares]].
-/// Derived defaults from validate_and_derive (e.g. `/{name}`) must not appear in the form.
-/// The returned value is normalized to be absolute (leading /) so that even if the
-/// on-disk raw TOML contains a relative value the form pre-fills a correct Pseudo path;
-/// saving the shares form will then persist the absolute form.
+/// Share export_path for the editor when explicit in raw TOML (normalized to absolute).
 fn share_export_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize) -> String {
     let Some(arr) = doc.get("shares").and_then(|s| s.as_array_of_tables()) else {
         return String::new();
@@ -258,9 +252,7 @@ fn infer_profile_from_prefs(pref_read: Option<u64>, pref_write: Option<u64>) -> 
     }
 }
 
-/// Build a fully-populated SettingsTemplate by reading the current on-disk config.
-/// Source for pre-filling structured editor (incl. shares).
-/// Used for initial page load and after raw/structured save (success or error).
+/// Build SettingsTemplate from on-disk config (page load and post-save re-render).
 fn build_settings_template(
     current_user: Option<String>,
     config_path: impl AsRef<std::path::Path>,
@@ -747,10 +739,7 @@ fn apply_structured_form_to_toml_doc(
     }
 }
 
-/// Write (or replace) only the [[shares]] array in the raw TOML doc.
-/// Used exclusively by the dedicated shares-save path so that saving shares
-/// never touches [sssd], [server], etc. (and vice-versa for settings save).
-/// Writes/replaces only `[[shares]]`; settings save does not touch other sections.
+/// Replace only the `[[shares]]` array in the raw TOML doc (shares-save path).
 fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_klldap_config::Share]) {
     // Submitted share rows replace [[shares]] entirely (empty list = user removed all shares).
     let had_shares = doc.get("shares").is_some();
@@ -1045,10 +1034,7 @@ pub(crate) async fn settings_save_structured(
     Ok(Html(tpl.render().unwrap()))
 }
 
-/// Dedicated handler for the separate Shares form.
-/// Only mutates the [[shares]] array in the on-disk TOML (via apply_shares_to_toml_doc);
-/// never re-applies or rewrites any [sssd], [server], ldap_uri, etc. keys.
-/// Validation is still performed (shares validation lives in validate_and_derive).
+/// POST handler for the shares editor; mutates only `[[shares]]` in the on-disk TOML.
 pub(crate) async fn settings_save_shares(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1311,8 +1297,7 @@ pub(crate) async fn restart_status() -> impl IntoResponse {
 
 // === Graceful "Restart and apply" (from System Settings) ===
 
-/// POST /settings/restart — returns restarting page, then SIGHUP pid 1 to recycle
-/// Ganesha, SSSD, and WebUI (entrypoint handle_sighup). One-shot via restart_requested.
+/// POST /settings/restart — restarting page, then HUP to recycle services (one-shot).
 pub(crate) async fn system_restart(
     State(state): State<AppState>,
     headers: HeaderMap,

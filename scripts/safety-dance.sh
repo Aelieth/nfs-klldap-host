@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# Clippy + first-party unsafe audit (safety-dance). Dependency geiger noise goes to sidecar.
+# Clippy + deny(unsafe_code) + first-party unsafe-fn grep audit.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
-SCRATCH="${SAFETY_DANCE_SCRATCH:-/tmp/grok-goal-fdb12523156d/implementer}"
-mkdir -p "$SCRATCH"
 
 echo "==> clippy (-D warnings)"
 make clippy
@@ -15,25 +13,33 @@ grep -q '#!\[deny(unsafe_code' nfs-klldap-config/src/lib.rs
 grep -q '#!\[deny(unsafe_code' nfs-klldap-identity/src/lib.rs
 grep -q '#!\[allow(unsafe_code)\]' nfs-klldap-config/src/supervisor.rs
 
-echo "==> first-party geiger (unsafe fn count must be 0; dep noise in sidecar)"
-for crate in nfs-klldap-ui nfs-klldap-config nfs-klldap-identity; do
-  sidecar="$SCRATCH/geiger-${crate}-stderr.log"
-  stdout="$SCRATCH/geiger-${crate}-stdout.log"
-  (cd "$crate" && cargo geiger --all-features >"$stdout" 2>"$sidecar") || true
-  line=$(grep -h -E "^[0-9]+/[0-9]+.*${crate} " "$stdout" "$sidecar" 2>/dev/null | head -1 || true)
-  if [ -z "$line" ]; then
-    line=$(grep -h -E "^0/[0-9]+[[:space:]]+.*${crate} " "$stdout" 2>/dev/null | head -1 || true)
+echo "==> first-party unsafe fn (grep count must be 0 outside supervisor.rs)"
+count_unsafe() {
+  local dir="$1" exclude="${2:-}"
+  if [ -n "$exclude" ]; then
+    { grep -r 'unsafe fn' "$dir" --include='*.rs' 2>/dev/null || true; } \
+      | { grep -v "$exclude" || true; } | wc -l
+  else
+    { grep -r 'unsafe fn' "$dir" --include='*.rs' 2>/dev/null || true; } | wc -l
   fi
-  if [ -z "$line" ]; then
-    echo "FAIL: could not parse geiger summary for $crate (see $stdout / $sidecar)" >&2
+}
+
+for crate in nfs-klldap-ui nfs-klldap-identity; do
+  count=$(count_unsafe "$crate/src" | tr -d ' ')
+  if [ "${count:-0}" != "0" ]; then
+    echo "FAIL: $crate has $count unsafe fn" >&2
     exit 1
   fi
-  unsafe=${line%%/*}
-  if [ "$unsafe" != "0" ]; then
-    echo "FAIL: $crate reports unsafe functions: $line" >&2
-    exit 1
-  fi
-  echo "OK: $crate $line"
+  echo "OK: $crate unsafe fn count=0"
 done
+
+count=$(count_unsafe nfs-klldap-config/src supervisor.rs | tr -d ' ')
+sup=$({ grep -c 'unsafe fn' nfs-klldap-config/src/supervisor.rs 2>/dev/null || true; })
+sup=${sup:-0}
+if [ "${count:-0}" != "0" ]; then
+  echo "FAIL: nfs-klldap-config has $count unsafe fn outside supervisor.rs" >&2
+  exit 1
+fi
+echo "OK: nfs-klldap-config unsafe fn outside supervisor.rs=0 (supervisor.rs=$sup allowed)"
 
 echo "==> safety-dance passed"

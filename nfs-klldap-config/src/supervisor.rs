@@ -44,6 +44,8 @@ struct SupervisorEnv {
     supervise_probe: bool,
     /// CI one-shot: bounded loop after post-wizard SIGHUP (wizard marker + complete conf).
     supervise_wizard_probe: bool,
+    /// CI: run supervisor_loop with probe stubs until a real SIGHUP (no auto-posted HUP).
+    supervise_loop_probe: bool,
     /// HOST_NFS sidecar mode: generate fragments for host Ganesha, skip in-container nfsd.
     host_nfs_mode: bool,
     /// Loop sleep override (ms); 0 for wizard-probe bounded ticks.
@@ -84,6 +86,8 @@ impl SupervisorEnv {
             supervise_probe: std::env::var("NFS_KLLDAP_SUPERVISE_PROBE")
                 .is_ok_and(|v| v == "1"),
             supervise_wizard_probe: std::env::var("NFS_KLLDAP_SUPERVISE_WIZARD_PROBE")
+                .is_ok_and(|v| v == "1"),
+            supervise_loop_probe: std::env::var("NFS_KLLDAP_SUPERVISE_LOOP_PROBE")
                 .is_ok_and(|v| v == "1"),
             host_nfs_mode: resolve_host_nfs_mode(config_path),
             supervisor_tick_ms: std::env::var("NFS_KLLDAP_SUPERVISOR_TICK_MS")
@@ -330,7 +334,10 @@ impl Supervisor {
     }
 
     fn supervisor_loop(&mut self) -> Result<(), String> {
-        if self.env.supervise_probe && !self.env.supervise_wizard_probe {
+        if self.env.supervise_probe
+            && !self.env.supervise_wizard_probe
+            && !self.env.supervise_loop_probe
+        {
             self.log_info("Supervise probe complete — exiting");
             return Ok(());
         }
@@ -361,8 +368,12 @@ impl Supervisor {
             );
             match action {
                 SupervisorLoopAction::ProcessSighup => {
+                    let need_watcher = self.pids.watcher.is_none();
                     self.handle_sighup()?;
                     self.services_started = true;
+                    if need_watcher {
+                        let _ = self.start_watcher();
+                    }
                 }
                 SupervisorLoopAction::BringUpServices => {
                     let _ = mark_setup_wizard_complete();
@@ -414,11 +425,15 @@ impl Supervisor {
 
     /// Signal to the WebUI restart poller that SSSD, idhelper, Ganesha, and WebUI are up.
     fn touch_recycle_marker(&self) {
-        let _ = OpenOptions::new()
+        if let Ok(mut f) = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(RECYCLE_MARKER);
+            .open(RECYCLE_MARKER)
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "ok");
+        }
     }
 
     fn cleanup(&mut self, reason: &str) {

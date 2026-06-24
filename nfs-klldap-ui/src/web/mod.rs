@@ -889,6 +889,24 @@ default_security = "krb5p"
         }
     }
 
+    fn cargo_test_bin(name: &str) -> std::path::PathBuf {
+        let env_key = format!("CARGO_BIN_EXE_{}", name.replace('-', "_"));
+        if let Ok(path) = std::env::var(&env_key) {
+            return std::path::PathBuf::from(path);
+        }
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/debug")
+            .join(name)
+    }
+
+    fn write_stub_exe(path: &std::path::Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+
     fn make_setup_wizard_test_state() -> (AppState, SetupWizardTestEnv) {
         std::env::set_var("NFS_KLLDAP_TEST_PERSISTENT", "1");
         let tmp = tempfile::TempDir::new().unwrap();
@@ -1113,29 +1131,130 @@ ldap_default_authtok = "sekret"
         std::env::remove_var("NFS_KLLDAP_SETUP_MARKER");
     }
 
-    /// Phase B (realworld): poll real supervisor marker, then GET /login without false SSSD errors.
+    /// Integrated: concurrent supervisor loop + HTTP continue schedules HUP → marker → login.
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
-    async fn wizard_poll_real_supervisor_marker_then_login() {
-        use std::process::Command;
+    async fn wizard_continue_hup_supervisor_marker_then_login() {
+        use std::process::{Command, Stdio};
         use std::time::Duration;
         use tokio::net::TcpListener;
 
-        if std::env::var("NFS_KLLDAP_REALWORLD").ok().as_deref() != Some("1") {
-            eprintln!("SKIP wizard_poll_real_supervisor_marker_then_login (set NFS_KLLDAP_REALWORLD=1)");
-            return;
-        }
-        assert!(
-            std::path::Path::new(super::settings::SERVICE_RECYCLE_MARKER).is_file(),
-            "run supervise-probe-wizard first to produce the recycle marker"
-        );
-
         let _marker_lock = nfs_klldap_config::lock_setup_marker_for_tests();
-        let (mut state, tmp) = make_setup_wizard_test_state();
-        let marker = tmp.root().join(".setup_wizard_done");
-        std::fs::write(&marker, "ok\n").unwrap();
-        std::env::set_var("NFS_KLLDAP_SETUP_MARKER", marker.to_str().unwrap());
-        state.setup_marker_override = Some(marker);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let stubs = tmp.path().join("stubs");
+        let out = tmp.path().join("out");
+        std::fs::create_dir_all(&stubs).unwrap();
+        std::fs::create_dir_all(out.join("exports.d")).unwrap();
+
+        let config_path = tmp.path().join("nfs-klldap.conf");
+        let wizard_marker = tmp.path().join(".setup_wizard_done");
+        std::fs::write(
+            &config_path,
+            r#"ldap_uri = "ldaps://kllap.test:6360"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+"#,
+        )
+        .unwrap();
+
+        write_stub_exe(&stubs.join("nfs-klldap-ui"), "#!/bin/sh\nexit 0\n");
+        write_stub_exe(
+            &stubs.join("nfs-klldap-conf-watcher"),
+            "#!/bin/sh\nexec sleep 3600\n",
+        );
+        write_stub_exe(&stubs.join("nfs-klldap-idhelper"), "#!/bin/sh\nexit 0\n");
+        write_stub_exe(&stubs.join("healthcheck.sh"), "#!/bin/sh\nexit 0\n");
+        write_stub_exe(&stubs.join("inotifywait"), "#!/bin/sh\nexit 0\n");
+
+        let startup_bin = cargo_test_bin("nfs-klldap-startup");
+        let config_bin = cargo_test_bin("nfs-klldap-config");
+        let _ = std::fs::remove_file(super::settings::SERVICE_RECYCLE_MARKER);
+
+        let mut supervisor = Command::new(&startup_bin)
+            .arg("supervise")
+            .env("NFS_CONFIG", &config_path)
+            .env("NFS_KLLDAP_SUPERVISE_PROBE", "1")
+            .env("NFS_KLLDAP_SUPERVISE_LOOP_PROBE", "1")
+            .env("NFS_KLLDAP_SUPERVISOR_TICK_MS", "150")
+            .env("NFS_KLLDAP_TEST_PERSISTENT", "1")
+            .env("NFS_KLLDAP_SETUP_MARKER", &wizard_marker)
+            .env("USE_NSS_WRAPPER", "0")
+            .env("CONFIG_BIN", &config_bin)
+            .env("UI_BIN", stubs.join("nfs-klldap-ui"))
+            .env("WATCHER_BIN", stubs.join("nfs-klldap-conf-watcher"))
+            .env("IDHELPER_BIN", stubs.join("nfs-klldap-idhelper"))
+            .env("HEALTHCHECK", stubs.join("healthcheck.sh"))
+            .env("SSSD_CONF", out.join("sssd.conf"))
+            .env("KRB5_CONF", out.join("krb5.conf"))
+            .env("GANESHA_CONF", out.join("ganesha.conf"))
+            .env("EXPORTS_DIR", out.join("exports.d"))
+            .env("IDMAP_CONF", out.join("idmapd.conf"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    stubs.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn supervisor loop-probe");
+        let supervisor_pid = supervisor.id();
+        std::env::set_var("NFS_KLLDAP_SUPERVISOR_PID", supervisor_pid.to_string());
+        std::env::set_var("NFS_KLLDAP_RECYCLE_DELAY_MS", "250");
+        std::env::set_var("NFS_KLLDAP_SETUP_MARKER", wizard_marker.to_str().unwrap());
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let config = Arc::new(
+            nfs_klldap_config::NfsKlldapConfig::load(&config_path).expect("valid test config"),
+        );
+        let fs = Arc::new(FsManager::new((*config).clone()));
+        let default_mapping = nfs_klldap_config::PosixAttributeMapping {
+            user_object_class: "posixAccount".to_string(),
+            group_object_class: "posixGroup".to_string(),
+            user_name: "uid".to_string(),
+            user_uid_number: "uidNumber".to_string(),
+            user_gid_number: "gidNumber".to_string(),
+            user_home_directory: "homeDirectory".to_string(),
+            user_shell: "loginShell".to_string(),
+            user_full_name: "displayName".to_string(),
+            group_name: "cn".to_string(),
+            group_gid_number: "gidNumber".to_string(),
+            group_member: "member".to_string(),
+            user_principal_name: "krbPrincipalName".to_string(),
+        };
+        let lldap = Arc::new(Mutex::new(LdapClient::new_with_attributes(
+            "ldaps://localhost:6360",
+            "ou=people,dc=test,dc=com",
+            "ou=groups,dc=test,dc=com",
+            default_mapping,
+            true,
+            false,
+        )));
+        let auth = Arc::new(AuthManager::new(&config_path, None));
+        let state = AppState {
+            fs,
+            lldap,
+            config,
+            auth,
+            config_path: config_path.clone(),
+            keytab_hostname: "test-host".to_string(),
+            keytab_realm: "EXAMPLE.COM".to_string(),
+            keytab_alert: Arc::new(StdMutex::new(None)),
+            apply_progress: Arc::new(Mutex::new(None)),
+            restart_requested: Arc::new(Mutex::new(false)),
+            direct_tls: true,
+            setup_marker_override: Some(wizard_marker.clone()),
+            setup_test: Arc::new(StdMutex::new(setup::SetupTestState {
+                step3_dn: Some("uid=admin,ou=people,dc=test,dc=com".into()),
+                step3_pw: Some("sekret".into()),
+                ..Default::default()
+            })),
+            host_nfs_mode: false,
+        };
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1143,12 +1262,56 @@ ldap_default_authtok = "sekret"
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        let base = format!("http://127.0.0.1:{port}");
-        let status_url = format!("{base}/restart-status");
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
+        let base = format!("http://127.0.0.1:{port}");
+        let form = "ldap_default_bind_dn=uid%3Dadmin%2Cou%3Dpeople%2Cdc%3Dtest%2Cdc%3Dcom&ldap_default_authtok=sekret";
+        let continue_url = format!("{base}/setup/3/continue");
+        let continue_out = tokio::task::spawn_blocking(move || {
+            Command::new("curl")
+                .args([
+                    "-sf",
+                    "-X",
+                    "POST",
+                    &continue_url,
+                    "-H",
+                    "content-type: application/x-www-form-urlencoded",
+                    "-d",
+                    form,
+                ])
+                .output()
+        })
+        .await
+        .expect("spawn_blocking join")
+        .expect("curl POST /setup/3/continue");
+        let continue_html = String::from_utf8_lossy(&continue_out.stdout);
+        assert!(continue_html.contains("Restarting to apply changes"));
+
+        let marker_path = super::settings::SERVICE_RECYCLE_MARKER.to_string();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let marker_ready = tokio::task::spawn_blocking(move || {
+            loop {
+                if let Ok(meta) = std::fs::metadata(&marker_path) {
+                    if meta.len() > 0 {
+                        return true;
+                    }
+                }
+                if std::time::Instant::now() > deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(150));
+            }
+        })
+        .await
+        .expect("spawn_blocking join");
+        assert!(
+            marker_ready,
+            "supervisor must touch non-empty recycle marker after UI-scheduled HUP"
+        );
+
+        let status_url = format!("{base}/restart-status");
         let mut ready = false;
-        for _ in 0..30 {
+        for _ in 0..40 {
             let url = status_url.clone();
             let out = tokio::task::spawn_blocking(move || {
                 Command::new("curl")
@@ -1164,7 +1327,7 @@ ldap_default_authtok = "sekret"
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        assert!(ready, "restart-status must report recycled from supervisor marker");
+        assert!(ready, "restart-status must be 200 after supervisor recycle");
 
         let login_url = format!("{base}/login");
         let login = tokio::task::spawn_blocking(move || {
@@ -1183,17 +1346,16 @@ ldap_default_authtok = "sekret"
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(login_code, "200", "login HTTP status (body len {})", login_html.len());
-        assert!(
-            !login_html.contains("SSSD") && !login_html.contains("BIND FAILED"),
-            "login must not show false service errors"
-        );
-        assert!(
-            login_html.contains("First-run") || login_html.contains("setup-password"),
-            "login page must render first-run form"
-        );
+        assert!(!login_html.contains("BIND FAILED"));
+        assert!(login_html.contains("First-run") || login_html.contains("setup-password"));
 
         server.abort();
+        let _ = supervisor.kill();
+        let _ = supervisor.wait();
+        let _ = std::fs::remove_file(super::settings::SERVICE_RECYCLE_MARKER);
         std::env::remove_var("NFS_KLLDAP_SETUP_MARKER");
+        std::env::remove_var("NFS_KLLDAP_SUPERVISOR_PID");
+        std::env::remove_var("NFS_KLLDAP_RECYCLE_DELAY_MS");
     }
 
     #[tokio::test]

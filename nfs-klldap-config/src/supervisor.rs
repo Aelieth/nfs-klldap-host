@@ -331,7 +331,7 @@ impl Supervisor {
                 if self.bring_up_services().is_ok() {
                     self.services_started = true;
                     let _ = self.start_watcher();
-                    let _ = fs::remove_file(RECYCLE_MARKER);
+                    self.touch_recycle_marker();
                     self.log_info("Container is ready.");
                 }
             }
@@ -355,12 +355,17 @@ impl Supervisor {
         self.env.host_nfs_mode = resolve_host_nfs_mode(&self.env.nfs_config);
         self.recycle_services_after_config();
         self.log_info("Services recycled after config apply.");
+        self.touch_recycle_marker();
+        Ok(())
+    }
+
+    /// Signal to the WebUI restart poller that SSSD, idhelper, Ganesha, and WebUI are up.
+    fn touch_recycle_marker(&self) {
         let _ = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(RECYCLE_MARKER);
-        Ok(())
     }
 
     fn cleanup(&mut self, reason: &str) {

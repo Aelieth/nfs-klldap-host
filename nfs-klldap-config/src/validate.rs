@@ -543,6 +543,7 @@ impl NfsKlldapConfig {
     /// Returns true if running in HOST_NFS (host-managed NFS) sidecar mode.
     /// The container still generates sssd/krb5/ganesha fragments and runs the WebUI
     /// + SSSD for identity/permission management, but does not start ganesha.nfsd.
+    ///
     /// The host's Ganesha (reading /etc/ganesha exports) serves the shares.
     pub fn is_host_nfs(&self) -> bool {
         self.host.host_nfs.unwrap_or(false)

@@ -72,7 +72,39 @@ struct SettingsTemplate {
 /// Self-contained restart page (JS polls until new UI ready, then to /login).
 #[derive(Template)]
 #[template(path = "restarting.html")]
-struct RestartingTemplate;
+pub(crate) struct RestartingTemplate;
+
+/// Path touched by the supervisor after a full service recycle (polled by restarting.html).
+pub(crate) const SERVICE_RECYCLE_MARKER: &str = "/tmp/.nfs-klldap-services-recycled";
+
+/// Render the standalone restarting page (shared by settings restart and setup step 3).
+pub(crate) fn render_restarting_page() -> Html<String> {
+    Html(RestartingTemplate.render().unwrap())
+}
+
+/// Clear the recycle marker and schedule a delayed HUP to pid 1. Returns false when already scheduled.
+pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_context: &str) -> bool {
+    {
+        let mut flag = state.restart_requested.lock().await;
+        if *flag {
+            return false;
+        }
+        *flag = true;
+    }
+    let _ = std::fs::remove_file(SERVICE_RECYCLE_MARKER);
+    let label = log_context.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(1400)).await;
+        eprintln!(
+            "INFO: '{label}' — triggering service bounce (HUP to pid 1)"
+        );
+        let _ = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 0.25; kill -HUP 1 2>/dev/null || true")
+            .spawn();
+    });
+    true
+}
 
 // === Forms ===
 
@@ -1267,11 +1299,10 @@ pub(crate) async fn clear_ldap_cache(
 /// as the new WebUI process binds (which happens before Ganesha/SSSD are ready
 /// and before the shell declares the cycle complete).
 pub(crate) async fn restart_status() -> impl IntoResponse {
-    const MARKER: &str = "/tmp/.nfs-klldap-services-recycled";
-    if std::path::Path::new(MARKER).exists() {
+    if std::path::Path::new(SERVICE_RECYCLE_MARKER).exists() {
         // Only trust a recent marker (this particular apply, not a leftover
         // from hours/days ago).
-        if let Ok(meta) = std::fs::metadata(MARKER) {
+        if let Ok(meta) = std::fs::metadata(SERVICE_RECYCLE_MARKER) {
             if let Ok(mtime) = meta.modified() {
                 if let Ok(age) = mtime.elapsed() {
                     if age < std::time::Duration::from_secs(10 * 60) {
@@ -1293,42 +1324,6 @@ pub(crate) async fn system_restart(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
-
-    // One-shot guard: if a restart was already requested (e.g. rapid re-click or
-    // browser refresh of POST result), just return the page again without rescheduling.
-    {
-        let mut flag = state.restart_requested.lock().await;
-        if *flag {
-            let tpl = RestartingTemplate;
-            return Ok(Html(tpl.render().unwrap()));
-        }
-        *flag = true;
-    }
-
-    // Clear the apply-complete marker (if any) so the JS poller on the restarting
-    // page will not see a stale "done" from a prior run. The marker is (re)created
-    // by the entrypoint only after the full "Services ... recycled" declaration.
-    let _ = std::fs::remove_file("/tmp/.nfs-klldap-services-recycled");
-
-    // Schedule the HUP *after* we have returned the response.
-    // The ~1.4 s delay gives the HTTP server time to flush the restarting page + headers
-    // to the browser before the current WebUI listener is terminated (as part of the
-    // service bounce). The JS in the page then polls for the new UI to come up.
-    tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_millis(1400)).await;
-        eprintln!(
-            "INFO: 'Restart and apply' requested by '{}' — triggering service bounce (HUP to pid 1)",
-            user.0
-        );
-        // Fire-and-forget a tiny shell snippet. We do not wait for it.
-        // The HUP handler in entrypoint does the generate + coordinated bounce of
-        // Ganesha/SSSD/WebUI (supervisor stays up; no full container restart).
-        let _ = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("sleep 0.25; kill -HUP 1 2>/dev/null || true")
-            .spawn();
-    });
-
-    let tpl = RestartingTemplate;
-    Ok(Html(tpl.render().unwrap()))
+    let _ = try_schedule_service_recycle(&state, &format!("Restart and apply by '{}'", user.0)).await;
+    Ok(render_restarting_page())
 }

@@ -988,6 +988,40 @@ ldap_default_authtok = "sekret"
     }
 
     #[tokio::test]
+    async fn setup_step3_continue_returns_restarting_page_after_valid_test() {
+        let (state, _tmp) = make_setup_wizard_test_state();
+        {
+            let mut t = state.setup_test.lock().unwrap();
+            t.step3_dn = Some("uid=admin,ou=people,dc=test,dc=com".into());
+            t.step3_pw = Some("sekret".into());
+        }
+        let app = router(state);
+        let body = "ldap_default_bind_dn=uid%3Dadmin%2Cou%3Dpeople%2Cdc%3Dtest%2Cdc%3Dcom&ldap_default_authtok=sekret";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/setup/3/continue")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8_lossy(&bytes);
+        assert!(html.contains("Restarting to apply changes"));
+        assert!(html.contains("/restart-status"));
+    }
+
+    #[tokio::test]
+    async fn restart_status_ok_when_recycle_marker_is_recent() {
+        let _ = std::fs::write(super::settings::SERVICE_RECYCLE_MARKER, b"ok\n");
+        let resp = super::settings::restart_status().await.into_response();
+        let _ = std::fs::remove_file(super::settings::SERVICE_RECYCLE_MARKER);
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn setup_step2_test_rejects_multipart_without_json_panic() {
         let (state, _tmp) = make_setup_wizard_test_state();
         let app = router(state);

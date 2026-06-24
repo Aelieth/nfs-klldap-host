@@ -71,7 +71,7 @@ First run writes a default `nfs-klldap.conf` and starts the WebUI immediately. O
 
 Each step shows a **Test Log** (same monospace style as the main UI apply log) with command output and troubleshooting hints when a probe fails — replacing the old terminal TUI live diagnostics.
 
-After step 3, a brief loading screen appears, then set the localhost admin password at `/login`. The supervisor then generates derived configs and starts Ganesha/SSSD.
+After step 3, the same **Restart and apply** flow runs (restarting page polling `/restart-status` until SSSD, Kerberos, and NFS services are up), then redirects to `/login` to set the localhost admin password.
 
 **Pre-configured deploy:** mount a complete `nfs-klldap.conf` plus `/etc/krb5.keytab` at startup — the wizard is skipped and you go straight to `/login` (or the main UI if the password sidecar already exists).
 

@@ -2,9 +2,10 @@
 
 use askama::Template;
 use axum::{
+    body::Body,
     extract::{Form, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Json, Redirect},
+    response::{Html, IntoResponse, Json, Redirect, Response},
 };
 use serde::Serialize;
 use nfs_klldap_config::{
@@ -75,10 +76,6 @@ pub(crate) struct SetupStep3Template {
     pub current_user: Option<String>,
     pub keytab_alert: Option<String>,
 }
-
-#[derive(Template)]
-#[template(path = "setup_complete.html")]
-pub(crate) struct SetupCompleteTemplate;
 
 #[derive(Deserialize)]
 pub(crate) struct LdapUriForm {
@@ -210,37 +207,6 @@ pub(crate) fn step3_test_matches(
 ) -> bool {
     cached_dn.is_some_and(|c| c == dn.trim())
         && cached_pw.is_some_and(|c| c == pw)
-}
-
-fn bind_cfg_from_form(
-    state: &super::AppState,
-    dn: &str,
-    pw: &str,
-) -> Result<nfs_klldap_config::NfsKlldapConfig, String> {
-    let mut cfg = nfs_klldap_config::NfsKlldapConfig::load(&state.config_path)
-        .map_err(|e| e.to_string())?;
-    cfg.sssd.ldap_default_bind_dn = dn.trim().to_string();
-    cfg.sssd.ldap_default_authtok = pw.to_string();
-    Ok(cfg)
-}
-
-fn run_bind_probe_from_form(
-    state: &super::AppState,
-    dn: &str,
-    pw: &str,
-) -> (Result<(), String>, String) {
-    let cfg = match bind_cfg_from_form(state, dn, pw) {
-        Ok(c) => c,
-        Err(e) => {
-            let log = format!(
-                "<strong>Command</strong>\n(load config failed)\n\n<strong>Status</strong>\n{e}"
-            );
-            return (Err(e), log);
-        }
-    };
-    let result = check_ldap_bind(&cfg);
-    let log = format_bind_probe(&cfg, result.clone());
-    (result, log)
 }
 
 fn run_bind_probe_from_disk(path: &Path) -> Option<(Result<(), String>, String)> {
@@ -387,7 +353,13 @@ pub async fn setup_step2_test(
         }
     };
     let host = extract_host_from_uri(uri);
-    let result = check_ldap_reachability(&host, uri);
+    let host_probe = host.clone();
+    let uri_owned = uri.to_string();
+    let result = tokio::task::spawn_blocking(move || check_ldap_reachability(&host_probe, &uri_owned))
+        .await
+        .unwrap_or(nfs_klldap_config::LdapReachability::Unreachable {
+            detail: "Reachability probe task failed".into(),
+        });
     let log = format_reachability_probe(&host, uri, &result);
     match result {
         nfs_klldap_config::LdapReachability::Reachable => {
@@ -502,11 +474,17 @@ pub async fn setup_step3_test(
         })
         .into_response();
     }
-    let (result, log) = run_bind_probe_from_form(
-        &state,
-        &form.ldap_default_bind_dn,
-        &form.ldap_default_authtok,
-    );
+    let config_path = state.config_path.clone();
+    let dn = form.ldap_default_bind_dn.clone();
+    let pw = form.ldap_default_authtok.clone();
+    let (result, log) = tokio::task::spawn_blocking(move || {
+        run_bind_probe_blocking(&config_path, &dn, &pw)
+    })
+    .await
+    .unwrap_or((
+        Err("Bind probe task failed".into()),
+        "<strong>Status</strong>\nBind probe task failed".to_string(),
+    ));
     match result {
         Ok(()) => {
             store_step3_test(
@@ -539,7 +517,7 @@ pub async fn setup_step3_test(
 pub async fn setup_step3_continue(
     State(state): State<super::AppState>,
     Form(form): Form<BindForm>,
-) -> impl IntoResponse {
+) -> Response<Body> {
     if form.ldap_default_bind_dn.trim().is_empty() {
         return render_step3_error(&state, "Bind DN is required.", Some(&form.ldap_default_bind_dn))
             .into_response();
@@ -548,14 +526,15 @@ pub async fn setup_step3_continue(
         return render_step3_error(&state, "Bind password is required.", Some(&form.ldap_default_bind_dn))
             .into_response();
     }
-    let cached = state.setup_test.lock().unwrap();
-    let matches = step3_test_matches(
-        cached.step3_dn.as_deref(),
-        cached.step3_pw.as_deref(),
-        &form.ldap_default_bind_dn,
-        &form.ldap_default_authtok,
-    );
-    drop(cached);
+    let matches = {
+        let cached = state.setup_test.lock().unwrap();
+        step3_test_matches(
+            cached.step3_dn.as_deref(),
+            cached.step3_pw.as_deref(),
+            &form.ldap_default_bind_dn,
+            &form.ldap_default_authtok,
+        )
+    };
     if !matches {
         return render_step3_error(&state, "Test settings before continuing.", Some(&form.ldap_default_bind_dn))
             .into_response();
@@ -569,12 +548,22 @@ pub async fn setup_step3_continue(
     }
     let _ = mark_setup_wizard_complete();
     clear_step3_test(&state);
-    Redirect::to("/setup/complete").into_response()
+    let _ = super::settings::try_schedule_service_recycle(
+        &state,
+        "First-run setup complete",
+    )
+    .await;
+    super::settings::render_restarting_page().into_response()
 }
 
 /// GET /setup/3/status — background bind probe using on-disk creds (does not update test cache).
 pub async fn setup_step3_status(State(state): State<super::AppState>) -> impl IntoResponse {
-    let Some((result, log)) = run_bind_probe_from_disk(&state.config_path) else {
+    let config_path = state.config_path.clone();
+    let probe = tokio::task::spawn_blocking(move || run_bind_probe_from_disk(&config_path))
+        .await
+        .ok()
+        .flatten();
+    let Some((result, log)) = probe else {
         return Json(SetupTestResponse {
             ok: false,
             message: None,
@@ -606,9 +595,31 @@ fn clear_step3_test(state: &super::AppState) {
     t.step3_pw = None;
 }
 
-/// GET /setup/complete — brief pause before redirecting to login.
-pub async fn setup_complete() -> impl IntoResponse {
-    Html(SetupCompleteTemplate.render().unwrap()).into_response()
+/// GET /setup/complete — legacy URL; serves the same restart poller as step 3 continue.
+pub async fn setup_complete(State(state): State<super::AppState>) -> Response<Body> {
+    let _ = super::settings::try_schedule_service_recycle(&state, "First-run setup complete").await;
+    super::settings::render_restarting_page().into_response()
+}
+
+fn run_bind_probe_blocking(
+    config_path: &Path,
+    dn: &str,
+    pw: &str,
+) -> (Result<(), String>, String) {
+    let mut cfg = match nfs_klldap_config::NfsKlldapConfig::load(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            let log = format!(
+                "<strong>Command</strong>\n(load config failed)\n\n<strong>Status</strong>\n{e}"
+            );
+            return (Err(e.to_string()), log);
+        }
+    };
+    cfg.sssd.ldap_default_bind_dn = dn.trim().to_string();
+    cfg.sssd.ldap_default_authtok = pw.to_string();
+    let result = check_ldap_bind(&cfg);
+    let log = format_bind_probe(&cfg, result.clone());
+    (result, log)
 }
 
 fn render_step2_page(
@@ -801,9 +812,21 @@ ldap_default_authtok = "sekret"
     }
 
     #[test]
-    fn setup_complete_template_renders() {
-        let html = SetupCompleteTemplate.render().unwrap();
-        assert!(html.contains("Settings successfully saved, loading"));
+    fn run_bind_probe_blocking_loads_config_from_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf = tmp.path().join("nfs-klldap.conf");
+        fs::write(
+            &conf,
+            r#"ldap_uri = "ldaps://kllap.test:6360"
+[sssd]
+ldap_default_bind_dn = "uid=admin,dc=test"
+ldap_default_authtok = "old"
+"#,
+        )
+        .unwrap();
+        let (_result, log) = run_bind_probe_blocking(&conf, "uid=admin,dc=test", "sekret");
+        assert!(log.contains("ldapsearch"));
+        assert!(log.contains("uid=admin,dc=test"));
     }
 
     #[test]

@@ -22,7 +22,7 @@ On a fresh container the supervisor starts the WebUI immediately and polls until
 1. **https://\<host\>:9630/setup/1** — verify a persistent `/config` bind mount.
 2. **/setup/2** — set `ldap_uri` (DNS name); **Test Settings**, then **Save and Continue**.
 3. **/setup/3** — set `[sssd]` bind DN/password; **Test Settings**, then **Save and Continue**.
-4. **/setup/complete** — brief loading screen, then **/login** to create the localhost admin password (`webui-password` sidecar).
+4. **Restarting page** — same service recycle as System Settings **Restart and apply**; polls `/restart-status` until SSSD/Ganesha/WebUI are ready, then **/login** to create the localhost admin password (`webui-password` sidecar).
 
 **Pre-configured bypass:** mount a valid `nfs-klldap.conf` and `/etc/krb5.keytab` before start — steps 1–3 are skipped; go directly to `/login`.
 

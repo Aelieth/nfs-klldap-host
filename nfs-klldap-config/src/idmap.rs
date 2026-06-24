@@ -1,4 +1,4 @@
-//! Thin adapter over nfs-klldap-identity with SssdSection convenience helpers.
+//! Bridges nfs-klldap.conf [sssd] fields to the shared IdLdapResolver in nfs-klldap-identity.
 
 use crate::SssdSection;
 

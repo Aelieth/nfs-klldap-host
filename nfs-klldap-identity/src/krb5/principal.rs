@@ -2,8 +2,7 @@
 
 use crate::constants::MACHINE_PRINCIPAL_PREFIXES;
 
-/// Classify a Kerberos principal as machine (host/nfs/root service) or user.
-/// Returns `(is_machine, reason)`.
+/// Classify machine (host/nfs/root) vs user principals; prefixes align with Ganesha Root_Kerberos_Principal.
 pub fn classify_principal(principal: &str, _realm: &str, server_variants: &[String]) -> (bool, String) {
     let p = principal.trim();
     let lower = p.to_ascii_lowercase();

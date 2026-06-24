@@ -67,6 +67,7 @@ fn assert_ganesha_96_compliant(ganesha: &str, idmap: &str) {
         "NFS_KRB5",
         "PrincipalName = \"nfs\"",
         "Active_krb5 = TRUE",
+        "Enable_Dynamic_Metrics = false",
     ] {
         assert!(ganesha.contains(key), "ganesha.conf missing {key}");
     }

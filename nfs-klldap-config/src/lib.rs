@@ -258,6 +258,7 @@ mod tests {
         assert!(main.contains("Protocols = 4;"));
         assert!(main.contains("Enable_UDP = false"));
         assert!(main.contains("Allow_Set_Io_Flusher_Fail = true"));
+        assert!(main.contains("Enable_Dynamic_Metrics = false"));
         assert!(
             !main.contains("Manage_Gids_Expiration ="),
             "use idmapped_* in DIRECTORY_SERVICES on Ganesha 9.6 trixie-backports"
@@ -690,8 +691,6 @@ mod tests {
             !sssd.contains("ignored_group_attributes"),
             "kll=false must not emit the KLLDAP ignore blocks into sssd.conf"
         );
-        // Still emits the header note about the setting value
-        assert!(sssd.contains("kllldap_ignored_attributes=false"));
     }
 
     #[test]

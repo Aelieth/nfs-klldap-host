@@ -17,7 +17,7 @@ use crate::materialize::{materialize_nss_wrappers, sync_user_cache_from_snapshot
 use crate::observer::start_ganesha_observer;
 use crate::resolve::{get_or_init_resolver, resolve_principal, ID_RESOLVER};
 
-/// Reload LDAP identities and rewrite nss_wrapper user mappings (machines preserved).
+/// LDAP bulk load then nss materialize; must complete before supervisor starts ganesha.nfsd.
 fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usize> {
     let (r, dn, pw) = ID_RESOLVER.get().and_then(|o| o.as_ref())?;
     let loaded = r.load_full_identities(dn, pw);

@@ -121,9 +121,7 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
     seeded
 }
 
-/// Atomically write the nss_wrapper passwd and group files from the current cache.
-/// This is the key side-effect that makes Ganesha (under LD_PRELOAD) see our
-/// machine->root and user uid/gid decisions.
+/// Atomically write nss_wrapper passwd/group for ganesha.nfsd LD_PRELOAD and extrausers supplement.
 pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
     // Ensure parent exists (best effort, same as cache writer)
     if let Some(parent) = Path::new(NSS_PASSWD_PATH).parent() {

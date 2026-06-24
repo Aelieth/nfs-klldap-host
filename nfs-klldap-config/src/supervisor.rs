@@ -518,6 +518,7 @@ impl Supervisor {
         }
     }
 
+    // LD_PRELOAD nss_wrapper so Ganesha getpwnam sees idhelper-materialized passwd/group.
     fn start_ganesha(&mut self) {
         self.quiet_winbind();
         let mut cmd = Command::new("ganesha.nfsd");

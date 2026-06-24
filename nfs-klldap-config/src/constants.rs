@@ -29,6 +29,7 @@ pub const GANESHA_ALLOWED_SQUASH: &[&str] = &[
 pub const IDMAPD_TRANSLATION_METHOD: &str = "nsswitch";
 pub const IDMAPD_GSS_METHODS: &str = "nsswitch";
 pub const IDMAPD_NOBODY_USER: &str = "nobody";
+/// idmapd Nobody-Group name; runtime nss fallback uses FALLBACK_NOBODY_GID (65534).
 pub const IDMAPD_NOBODY_GROUP: &str = "nogroup";
 
 /// Ganesha log observer noise tokens (exact match, lowercased).

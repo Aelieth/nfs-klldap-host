@@ -12,7 +12,8 @@ use nfs_klldap_config::{
 };
 
 use crate::common::{
-    is_machine_principal, normalize_principal, IdCache, PrincipalKind, Resolved, CACHE_PATH,
+    debug_enabled, is_machine_principal, normalize_principal, IdCache, PrincipalKind, Resolved,
+    CACHE_PATH,
 };
 use crate::materialize::materialize_nss_wrappers;
 
@@ -40,63 +41,59 @@ fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
     // nfs-klldap-ui/src/ldap.rs so behavior + cache effectiveness are identical
     // and we do not hit the server on every miss.
     if let Some((uid, gid)) = resolve_via_structured_ldap(short) {
-        eprintln!("[idhelper] getent passwd \"{}\" -> ldap fallback success uid={} gid={}", short, uid, gid);
+        dlog!(
+            "getent passwd \"{}\" -> ldap fallback uid={} gid={}",
+            short,
+            uid,
+            gid
+        );
         return Some((uid, gid, "ldap".to_string()));
     }
     None
 }
 
-/// Structured LDAP resolution using IdLdapResolver + full in-memory snapshot (preferred hot path).
-/// The bulk 10m load (called at daemon start) ensures we have all users+groups with aligned gids.
-/// On miss we force a fresh full load (covers users added after start or in nested OUs that a
-/// previous narrow base might have missed) then retry.
-/// Accepts full principal (for krbPrincipalName lookup) or short name.
-fn resolve_via_structured_ldap(name_or_principal: &str) -> Option<(u32, u32)> {
-    let (resolver, bind_dn, bind_pw) = get_or_init_resolver()?;
+fn uid_gid_from_user_resolve(
+    resolver: &IdLdapResolver,
+    name: &str,
+    bind_dn: &str,
+    bind_pw: &str,
+) -> Option<(u32, u32)> {
+    let (uid_i, gid_opt, _disp) = resolver.resolve_user(name, bind_dn, bind_pw)?;
+    let uid = uid_i as u32;
+    let gid = gid_opt.map(|g| g as u32).unwrap_or(uid);
+    Some((uid, gid))
+}
 
-    let short = name_or_principal.split('@').next().unwrap_or(name_or_principal);
-
-    // Prefer in-memory snapshot (try full principal key then short)
-    let snap: IdMapSnapshot = resolver.snapshot();
-    if let Some(u) = snap.users.get(name_or_principal) {
+fn uid_gid_from_snapshot(snap: &IdMapSnapshot, full: &str, short: &str) -> Option<(u32, u32)> {
+    if let Some(u) = snap.users.get(full) {
         return Some((u.uid as u32, u.gid as u32));
     }
     if let Some(u) = snap.users.get(short) {
         return Some((u.uid as u32, u.gid as u32));
     }
-
-    // Single resolve with full first (enables dual principal attr logic), then short
-    if let Some((uid_i, gid_opt, _disp)) = resolver.resolve_user(name_or_principal, &bind_dn, &bind_pw) {
-        let uid = uid_i as u32;
-        let gid = gid_opt.map(|g| g as u32).unwrap_or(uid);
-        return Some((uid, gid));
-    }
-    if let Some((uid_i, gid_opt, _disp)) = resolver.resolve_user(short, &bind_dn, &bind_pw) {
-        let uid = uid_i as u32;
-        let gid = gid_opt.map(|g| g as u32).unwrap_or(uid);
-        return Some((uid, gid));
-    }
-
-    // Miss - force a fresh full load then retry
-    let _ = resolver.load_full_identities(&bind_dn, &bind_pw);
-    let snap2: IdMapSnapshot = resolver.snapshot();
-    if let Some(u) = snap2.users.get(name_or_principal) {
-        return Some((u.uid as u32, u.gid as u32));
-    }
-    if let Some(u) = snap2.users.get(short) {
-        return Some((u.uid as u32, u.gid as u32));
-    }
-    if let Some((uid_i, gid_opt, _disp)) = resolver.resolve_user(name_or_principal, &bind_dn, &bind_pw) {
-        let uid = uid_i as u32;
-        let gid = gid_opt.map(|g| g as u32).unwrap_or(uid);
-        return Some((uid, gid));
-    }
-    if let Some((uid_i, gid_opt, _disp)) = resolver.resolve_user(short, &bind_dn, &bind_pw) {
-        let uid = uid_i as u32;
-        let gid = gid_opt.map(|g| g as u32).unwrap_or(uid);
-        return Some((uid, gid));
-    }
     None
+}
+
+/// LDAP snapshot first, then resolve_user; on miss reload full directory and retry.
+fn resolve_via_structured_ldap(name_or_principal: &str) -> Option<(u32, u32)> {
+    let (resolver, bind_dn, bind_pw) = get_or_init_resolver()?;
+    let short = name_or_principal.split('@').next().unwrap_or(name_or_principal);
+
+    if let Some(ids) = uid_gid_from_snapshot(&resolver.snapshot(), name_or_principal, short) {
+        return Some(ids);
+    }
+    if let Some(ids) = uid_gid_from_user_resolve(resolver, name_or_principal, &bind_dn, &bind_pw) {
+        return Some(ids);
+    }
+    if let Some(ids) = uid_gid_from_user_resolve(resolver, short, &bind_dn, &bind_pw) {
+        return Some(ids);
+    }
+
+    let _ = resolver.load_full_identities(&bind_dn, &bind_pw);
+    let snap2 = resolver.snapshot();
+    uid_gid_from_snapshot(&snap2, name_or_principal, short)
+        .or_else(|| uid_gid_from_user_resolve(resolver, name_or_principal, &bind_dn, &bind_pw))
+        .or_else(|| uid_gid_from_user_resolve(resolver, short, &bind_dn, &bind_pw))
 }
 
 /// Load resolver + bind creds from NfsKlldapConfig (NFS_CONFIG).
@@ -132,27 +129,26 @@ fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
     // getent passwd <name> -> name:pass:uid:gid:...
     // The short name path (testuser1) is the primary for "same lookup as client".
     // Full principal is also attempted (by callers) for principal mapping.
-    eprintln!("[idhelper] getent passwd \"{}\" called", name);
+    dlog!("getent passwd \"{}\" called", name);
     let out = Command::new("getent")
         .args(["passwd", name])
         .output()
         .ok()?;
     if !out.status.success() {
-        eprintln!("[idhelper] getent passwd \"{}\" -> failed (status={:?})", name, out.status.code());
+        dlog!("getent passwd \"{}\" -> failed (status={:?})", name, out.status.code());
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout);
     let line = s.lines().next().unwrap_or("");
     if let Some((uid, gid)) = parse_getent_passwd(line) {
-        eprintln!("[idhelper] getent passwd \"{}\" -> success uid={} gid={}", name, uid, gid);
+        dlog!("getent passwd \"{}\" -> success uid={} gid={}", name, uid, gid);
         return Some((uid, gid, "sss".to_string()));
     }
-    eprintln!("[idhelper] getent passwd \"{}\" -> malformed output", name);
+    dlog!("getent passwd \"{}\" -> malformed output", name);
     None
 }
 
-/// Perform full classification + resolution.
-/// This is the heart of the helper.
+/// Classify machine→uid 0 or resolve user via NSS/LDAP; materialize into nss_wrapper on change.
 pub(crate) fn resolve_principal(
     principal: &str,
     realm: &str,
@@ -172,11 +168,13 @@ pub(crate) fn resolve_principal(
     if let Some(existing) = cache.get(&norm).cloned() {
         let mut e = existing;
         e.source = "cache".to_string();
-        eprintln!("[idhelper] cache=HIT key=\"{}\"", norm);
-        eprintln!(
-            "[idhelper] FINAL principal=\"{}\" name=\"{}\" uid={} gid={} kind={} source={} (cache hit)",
-            e.principal, e.name, e.uid, e.gid, e.kind.as_str(), e.source
-        );
+        if debug_enabled() {
+            eprintln!("[idhelper] cache=HIT key=\"{}\"", norm);
+            eprintln!(
+                "[idhelper] FINAL principal=\"{}\" name=\"{}\" uid={} gid={} kind={} source={} (cache hit)",
+                e.principal, e.name, e.uid, e.gid, e.kind.as_str(), e.source
+            );
+        }
         let elapsed = start.elapsed();
         dlog!(
             "  result uid={} gid={} kind={} source={} elapsed={:?}",
@@ -184,11 +182,20 @@ pub(crate) fn resolve_principal(
         );
         return e;
     }
-    eprintln!("[idhelper] cache=MISS key=\"{}\"", norm);
+    if debug_enabled() {
+        eprintln!("[idhelper] cache=MISS key=\"{}\"", norm);
+    }
 
     let (is_machine, reason) = is_machine_principal(principal, realm, server_variants);
     dlog!("  classify is_machine={} reason=\"{}\"", is_machine, reason);
-    eprintln!("[idhelper] CLASSIFY principal=\"{}\" -> {} (reason=\"{}\")", principal, if is_machine { "machine" } else { "user" }, reason);
+    if debug_enabled() {
+        eprintln!(
+            "[idhelper] CLASSIFY principal=\"{}\" -> {} (reason=\"{}\")",
+            principal,
+            if is_machine { "machine" } else { "user" },
+            reason
+        );
+    }
 
     let kind = if is_machine {
         PrincipalKind::Machine
@@ -206,7 +213,12 @@ pub(crate) fn resolve_principal(
             .split('/')
             .next_back()
             .unwrap_or(principal);
-        eprintln!("[idhelper] short_name_extracted=\"{}\" (machine path, principal=\"{}\")", short, principal);
+        if debug_enabled() {
+            eprintln!(
+                "[idhelper] short_name_extracted=\"{}\" (machine path, principal=\"{}\")",
+                short, principal
+            );
+        }
 
         // No resolve_via_nss / getent calls for machines.
         Resolved {
@@ -260,27 +272,35 @@ pub(crate) fn resolve_principal(
         resolved.principal, resolved.name, resolved.uid, resolved.gid, resolved.kind.as_str(), resolved.source
     );
 
-    eprintln!(
-        "[idhelper] FINAL principal=\"{}\" name=\"{}\" uid={} gid={} kind={} source={} (sent to ganesha)",
-        resolved.principal, resolved.name, resolved.uid, resolved.gid, resolved.kind.as_str(), resolved.source
-    );
+    if debug_enabled() {
+        eprintln!(
+            "[idhelper] FINAL principal=\"{}\" name=\"{}\" uid={} gid={} kind={} source={} (sent to ganesha)",
+            resolved.principal,
+            resolved.name,
+            resolved.uid,
+            resolved.gid,
+            resolved.kind.as_str(),
+            resolved.source
+        );
+    }
 
-    // Store
+    let changed = cache.get(&norm).map_or(true, |prev| {
+        prev.uid != resolved.uid
+            || prev.gid != resolved.gid
+            || prev.kind != resolved.kind
+            || prev.name != resolved.name
+    });
     cache.insert(resolved.clone());
 
-    // Persist to the cache file (best effort, non-fatal)
-    let write_res = cache.write_to_file(Path::new(CACHE_PATH));
-    dlog!(
-        "  cache_write result={}",
-        if write_res.is_ok() { "ok" } else { "err" }
-    );
-
-    // Materialize nss_wrapper files so Ganesha (under LD_PRELOAD) sees our classification.
-    // This is the key "conjunction" point: idhelper decisions become visible to Ganesha's
-    // getpwnam calls for Kerberos principals (machine -> 0, users -> real ids from SSSD).
-    // Best effort, non-fatal.
-    if let Err(e) = materialize_nss_wrappers(cache) {
-        dlog!("  nss_wrapper_write err={}", e);
+    if changed {
+        let write_res = cache.write_to_file(Path::new(CACHE_PATH));
+        dlog!(
+            "  cache_write result={}",
+            if write_res.is_ok() { "ok" } else { "err" }
+        );
+        if let Err(e) = materialize_nss_wrappers(cache) {
+            dlog!("  nss_wrapper_write err={}", e);
+        }
     }
 
     // Optional: try to warm SSSD cache for the resolved name (non-blocking).

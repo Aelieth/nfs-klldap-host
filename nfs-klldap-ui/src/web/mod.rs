@@ -1027,10 +1027,10 @@ ldap_default_authtok = "sekret"
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// Live TCP server: step3 continue → restarting page → restart-status poll → login.
-    #[allow(clippy::await_holding_lock)] // serializes NFS_KLLDAP_SETUP_MARKER for the whole flow
+    /// Live TCP: step3 continue serves restarting page; restart-status is 503 before supervisor marker.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
-    async fn wizard_complete_live_http_restart_poll_then_login() {
+    async fn wizard_step3_continue_live_http_shows_restarting_and_pending_status() {
         use std::process::Command;
         use std::time::Duration;
         use tokio::net::TcpListener;
@@ -1109,15 +1109,62 @@ ldap_default_authtok = "sekret"
             "restart-status must be pending before supervisor recycle"
         );
 
-        std::fs::write(super::settings::SERVICE_RECYCLE_MARKER, b"ok\n").unwrap();
-        let ready_url = format!("{base}/restart-status");
-        let ready = tokio::task::spawn_blocking(move || {
-            Command::new("curl").args(["-sf", &ready_url]).output()
-        })
-        .await
-        .expect("spawn_blocking join")
-        .expect("curl GET /restart-status ready");
-        assert_eq!(String::from_utf8_lossy(&ready.stdout).trim(), "recycled");
+        server.abort();
+        std::env::remove_var("NFS_KLLDAP_SETUP_MARKER");
+    }
+
+    /// Phase B (realworld): poll real supervisor marker, then GET /login without false SSSD errors.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn wizard_poll_real_supervisor_marker_then_login() {
+        use std::process::Command;
+        use std::time::Duration;
+        use tokio::net::TcpListener;
+
+        if std::env::var("NFS_KLLDAP_REALWORLD").ok().as_deref() != Some("1") {
+            eprintln!("SKIP wizard_poll_real_supervisor_marker_then_login (set NFS_KLLDAP_REALWORLD=1)");
+            return;
+        }
+        assert!(
+            std::path::Path::new(super::settings::SERVICE_RECYCLE_MARKER).is_file(),
+            "run supervise-probe-wizard first to produce the recycle marker"
+        );
+
+        let _marker_lock = nfs_klldap_config::lock_setup_marker_for_tests();
+        let (mut state, tmp) = make_setup_wizard_test_state();
+        let marker = tmp.root().join(".setup_wizard_done");
+        std::fs::write(&marker, "ok\n").unwrap();
+        std::env::set_var("NFS_KLLDAP_SETUP_MARKER", marker.to_str().unwrap());
+        state.setup_marker_override = Some(marker);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = router(state);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let base = format!("http://127.0.0.1:{port}");
+        let status_url = format!("{base}/restart-status");
+
+        let mut ready = false;
+        for _ in 0..30 {
+            let url = status_url.clone();
+            let out = tokio::task::spawn_blocking(move || {
+                Command::new("curl")
+                    .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", &url])
+                    .output()
+            })
+            .await
+            .expect("spawn_blocking join")
+            .expect("curl GET /restart-status");
+            if String::from_utf8_lossy(&out.stdout).trim() == "200" {
+                ready = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert!(ready, "restart-status must report recycled from supervisor marker");
 
         let login_url = format!("{base}/login");
         let login = tokio::task::spawn_blocking(move || {
@@ -1138,7 +1185,7 @@ ldap_default_authtok = "sekret"
         assert_eq!(login_code, "200", "login HTTP status (body len {})", login_html.len());
         assert!(
             !login_html.contains("SSSD") && !login_html.contains("BIND FAILED"),
-            "login must not show false service errors before auth"
+            "login must not show false service errors"
         );
         assert!(
             login_html.contains("First-run") || login_html.contains("setup-password"),
@@ -1146,7 +1193,6 @@ ldap_default_authtok = "sekret"
         );
 
         server.abort();
-        let _ = std::fs::remove_file(super::settings::SERVICE_RECYCLE_MARKER);
         std::env::remove_var("NFS_KLLDAP_SETUP_MARKER");
     }
 

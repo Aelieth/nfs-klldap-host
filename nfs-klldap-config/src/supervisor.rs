@@ -10,9 +10,9 @@ use std::thread;
 use std::time::Duration;
 
 use nfs_klldap_config::{
-    compute_startup_step, is_preconfigured_deployment, is_setup_wizard_complete,
-    mark_setup_wizard_complete, resolve_keytab_path, should_bring_up_services, webui_setup_url,
-    NfsKlldapConfig,
+    compute_startup_step, compute_wizard_step, is_preconfigured_deployment,
+    is_setup_wizard_complete, mark_setup_wizard_complete, resolve_keytab_path,
+    supervisor_loop_tick, webui_setup_url, NfsKlldapConfig, SupervisorLoopAction,
 };
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -42,10 +42,14 @@ struct SupervisorEnv {
     log_format_json: bool,
     /// CI one-shot path: generate + log preconf bring-up, then exit (no daemon loop).
     supervise_probe: bool,
-    /// CI one-shot: simulate post-wizard SIGHUP recycle (wizard marker + complete conf).
+    /// CI one-shot: bounded loop after post-wizard SIGHUP (wizard marker + complete conf).
     supervise_wizard_probe: bool,
     /// HOST_NFS sidecar mode: generate fragments for host Ganesha, skip in-container nfsd.
     host_nfs_mode: bool,
+    /// Loop sleep override (ms); 0 for wizard-probe bounded ticks.
+    supervisor_tick_ms: u64,
+    /// Max loop iterations before exit when supervise_wizard_probe is set.
+    supervisor_max_ticks: u32,
 }
 
 impl SupervisorEnv {
@@ -82,6 +86,14 @@ impl SupervisorEnv {
             supervise_wizard_probe: std::env::var("NFS_KLLDAP_SUPERVISE_WIZARD_PROBE")
                 .is_ok_and(|v| v == "1"),
             host_nfs_mode: resolve_host_nfs_mode(config_path),
+            supervisor_tick_ms: std::env::var("NFS_KLLDAP_SUPERVISOR_TICK_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2000),
+            supervisor_max_ticks: std::env::var("NFS_KLLDAP_SUPERVISOR_MAX_TICKS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(12),
         }
     }
 }
@@ -160,21 +172,9 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
         ));
         let _ = fs::remove_file(RECYCLE_MARKER);
         if sup.env.supervise_wizard_probe && is_setup_wizard_complete() {
-            sup.log_info("Supervise-wizard-probe: simulating post-wizard SIGHUP recycle");
-            sup.handle_sighup()?;
-            if !sup.services_started {
-                return Err("wizard HUP must set services_started before loop".into());
-            }
-            if should_bring_up_services(
-                sup.services_started,
-                is_setup_wizard_complete(),
-                compute_startup_step(&sup.env.nfs_config),
-            ) {
-                return Err("supervisor_loop would duplicate bring-up after wizard HUP".into());
-            }
-            sup.log_info("Supervise-wizard-probe: loop bring-up suppressed (services_started=true)");
-            sup.log_info("Supervise wizard probe complete — exiting");
-            return Ok(());
+            sup.log_info("Supervise-wizard-probe: posting SIGHUP for bounded loop recycle");
+            SIGHUP_REQUESTED.store(true, Ordering::SeqCst);
+            return sup.supervisor_loop();
         }
     }
 
@@ -330,34 +330,62 @@ impl Supervisor {
     }
 
     fn supervisor_loop(&mut self) -> Result<(), String> {
-        if self.env.supervise_probe {
+        if self.env.supervise_probe && !self.env.supervise_wizard_probe {
             self.log_info("Supervise probe complete — exiting");
             return Ok(());
         }
+        let bounded = self.env.supervise_wizard_probe;
+        let max_ticks = if bounded {
+            self.env.supervisor_max_ticks
+        } else {
+            u32::MAX
+        };
+        let mut ticks = 0u32;
         loop {
             if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
                 self.cleanup("termination signal");
                 return Ok(());
             }
-            if SIGHUP_REQUESTED.swap(false, Ordering::SeqCst) {
-                let _ = self.handle_sighup();
-            }
-            if should_bring_up_services(
+            let sighup_pending = SIGHUP_REQUESTED.swap(false, Ordering::SeqCst);
+            let wizard_complete = is_setup_wizard_complete();
+            let step = if self.env.supervise_probe {
+                compute_wizard_step(&self.env.nfs_config)
+            } else {
+                compute_startup_step(&self.env.nfs_config)
+            };
+            let (action, _) = supervisor_loop_tick(
                 self.services_started,
-                is_setup_wizard_complete(),
-                compute_startup_step(&self.env.nfs_config),
-            ) {
-                let _ = mark_setup_wizard_complete();
-                self.log_info("Setup wizard complete — bringing up services");
-                if self.bring_up_services().is_ok() {
+                sighup_pending,
+                wizard_complete,
+                step,
+            );
+            match action {
+                SupervisorLoopAction::ProcessSighup => {
+                    self.handle_sighup()?;
                     self.services_started = true;
-                    let _ = self.start_watcher();
-                    self.touch_recycle_marker();
-                    self.log_info("Container is ready.");
                 }
+                SupervisorLoopAction::BringUpServices => {
+                    let _ = mark_setup_wizard_complete();
+                    self.log_info("Setup wizard complete — bringing up services");
+                    if self.bring_up_services().is_ok() {
+                        self.services_started = true;
+                        let _ = self.start_watcher();
+                        self.touch_recycle_marker();
+                        self.log_info("Container is ready.");
+                    }
+                }
+                SupervisorLoopAction::Idle => {}
             }
             reap_one_child();
-            thread::sleep(Duration::from_secs(2));
+            ticks = ticks.saturating_add(1);
+            if bounded && ticks >= max_ticks {
+                if !Path::new(RECYCLE_MARKER).is_file() {
+                    return Err("wizard probe: recycle marker missing after bounded loop".into());
+                }
+                self.log_info("Supervise wizard probe complete — exiting");
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(self.env.supervisor_tick_ms));
         }
     }
 
@@ -444,6 +472,11 @@ impl Supervisor {
         let _ = fs::create_dir_all("/var/lib/nfs-klldap");
         let _ = fs::create_dir_all("/var/run/nfs-klldap");
         let _ = fs::create_dir_all("/var/lib/extrausers");
+        if self.env.supervise_probe {
+            self.seed_probe_runtime_state();
+            self.log_info("Supervise-probe: service recycle simulated (SSSD/Ganesha/WebUI)");
+            return;
+        }
         if !self.env.host_nfs_mode {
             self.stop_ganesha();
         }

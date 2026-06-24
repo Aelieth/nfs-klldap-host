@@ -142,6 +142,8 @@ fn supervise_probe_wizard_complete_recycle_touches_marker() {
         .env("NFS_CONFIG", &conf)
         .env("NFS_KLLDAP_TEST_PERSISTENT", "1")
         .env("NFS_KLLDAP_SETUP_MARKER", &marker)
+        .env("NFS_KLLDAP_SUPERVISOR_TICK_MS", "0")
+        .env("NFS_KLLDAP_SUPERVISOR_MAX_TICKS", "5")
         .env("USE_NSS_WRAPPER", "0")
         .env("CONFIG_BIN", &config_bin)
         .env("UI_BIN", stubs.join("nfs-klldap-ui"))
@@ -173,13 +175,11 @@ fn supervise_probe_wizard_complete_recycle_touches_marker() {
         "supervise-probe-wizard failed: {combined}"
     );
     assert!(combined.contains("First-run setup required"));
-    assert!(combined.contains("Supervise-wizard-probe: simulating post-wizard SIGHUP recycle"));
+    assert!(combined.contains("Supervise-wizard-probe: posting SIGHUP for bounded loop recycle"));
     assert!(combined.contains("SIGHUP received — reloading configuration"));
-    assert!(combined.contains("Starting SSSD"));
+    assert!(combined.contains("Supervise-probe: service recycle simulated"));
     assert!(combined.contains("Services recycled after config apply"));
-    assert!(combined.contains(
-        "Supervise-wizard-probe: loop bring-up suppressed (services_started=true)"
-    ));
+    assert!(combined.contains("Supervise wizard probe complete"));
     assert!(
         !combined.contains("Setup wizard complete — bringing up services"),
         "must not double-bring-up via supervisor_loop after SIGHUP recycle"

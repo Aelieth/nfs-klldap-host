@@ -452,6 +452,30 @@ pub fn should_bring_up_services(
     !services_started && wizard_complete && step == StartupStep::Ready
 }
 
+/// Action the supervisor loop should take on one tick (pure decision, no I/O).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupervisorLoopAction {
+    ProcessSighup,
+    BringUpServices,
+    Idle,
+}
+
+/// One supervisor-loop iteration: HUP sets services_started; bring-up only when not started.
+pub fn supervisor_loop_tick(
+    services_started: bool,
+    sighup_pending: bool,
+    wizard_complete: bool,
+    startup_step: StartupStep,
+) -> (SupervisorLoopAction, bool) {
+    if sighup_pending {
+        return (SupervisorLoopAction::ProcessSighup, true);
+    }
+    if should_bring_up_services(services_started, wizard_complete, startup_step) {
+        return (SupervisorLoopAction::BringUpServices, true);
+    }
+    (SupervisorLoopAction::Idle, services_started)
+}
+
 /// Startup step for operators: Ready when preconf bypass applies, else live probe result.
 pub fn effective_startup_step(config_path: &Path, keytab_path: &Path) -> StartupStep {
     if is_preconfigured_deployment(config_path, keytab_path) {
@@ -569,6 +593,24 @@ mod tests {
         assert!(!should_bring_up_services(false, false, StartupStep::Ready));
         assert!(!should_bring_up_services(false, true, StartupStep::AddBindCredentials));
         assert!(should_bring_up_services(false, true, StartupStep::Ready));
+    }
+
+    #[test]
+    fn supervisor_loop_tick_hup_sets_started_and_next_tick_is_idle() {
+        let (action, started) =
+            supervisor_loop_tick(false, true, true, StartupStep::Ready);
+        assert_eq!(action, SupervisorLoopAction::ProcessSighup);
+        assert!(started);
+        let (next, _) = supervisor_loop_tick(started, false, true, StartupStep::Ready);
+        assert_eq!(next, SupervisorLoopAction::Idle);
+    }
+
+    #[test]
+    fn supervisor_loop_tick_brings_up_without_hup_when_ready() {
+        let (action, started) =
+            supervisor_loop_tick(false, false, true, StartupStep::Ready);
+        assert_eq!(action, SupervisorLoopAction::BringUpServices);
+        assert!(started);
     }
 
     #[test]

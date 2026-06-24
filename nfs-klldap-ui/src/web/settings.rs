@@ -1291,13 +1291,7 @@ pub(crate) async fn clear_ldap_cache(
     Html(ok)
 }
 
-/// GET /restart-status
-/// Public (no auth) lightweight status for the restarting.html poller.
-/// Returns 200 only after the entrypoint has completed a full service recycle
-/// (i.e. the "Services (Ganesha + SSSD + WebUI) recycled in place for config apply."
-/// log has been emitted). This prevents the poller from declaring "up" as soon
-/// as the new WebUI process binds (which happens before Ganesha/SSSD are ready
-/// and before the shell declares the cycle complete).
+/// GET /restart-status — public poller endpoint; 200 only when the supervisor recycle marker is recent.
 pub(crate) async fn restart_status() -> impl IntoResponse {
     if std::path::Path::new(SERVICE_RECYCLE_MARKER).exists() {
         // Only trust a recent marker (this particular apply, not a leftover

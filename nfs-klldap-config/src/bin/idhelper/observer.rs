@@ -95,9 +95,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
     }
 }
 
-/// Returns true only for tokens that look like real client hostnames
-/// (short name or fqdn) that we expect from "Linux NFSv4.x <host>" strings.
-/// Rejects log formatting noise such as "Unique", "CLIENT", "ID", "ffff", "Created", etc.
+/// True for real client hostnames from Linux NFSv4.x log lines; rejects noise tokens.
 pub(crate) fn looks_like_client_hostname(t: &str) -> bool {
     let s = t.trim();
     if s.len() < 2 || s.len() > 253 {
@@ -194,10 +192,7 @@ fn maybe_warn_bridge_server_addr(
     );
 }
 
-/// Try to extract a client hostname from a string that contains the common
-/// Ganesha/Linux-NFS pattern "Linux NFSv4.<ver> <hostname>".
-/// Only return a token if it comes from a group that looks like the client name
-/// (contains "Linux" or the version+host pattern), skipping (nil), (NULL), clientid blobs.
+/// Extract hostname from "Linux NFSv4.x <host>" groups; skip nil/clientid noise.
 fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
     let lower = line.to_ascii_lowercase();
     let marker = "nfsv4";

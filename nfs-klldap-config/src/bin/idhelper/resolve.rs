@@ -107,9 +107,7 @@ fn load_resolver_from_config() -> Option<(IdLdapResolver, String, String)> {
     Some((resolver, cfg.sssd.ldap_default_bind_dn.clone(), cfg.sssd.ldap_default_authtok.clone()))
 }
 
-/// Lazily initialized resolver (with creds) so that the 10m identity + reverse caches
-/// inside IdLdapResolver are effective across RESOLVE/getent/observer calls
-/// (addresses previous per-call fresh instance problem).
+/// Lazy resolver init so 10m IdLdapResolver caches persist across resolve/getent/observer calls.
 pub(crate) static ID_RESOLVER: OnceLock<Option<(IdLdapResolver, String, String)>> =
     OnceLock::new();
 

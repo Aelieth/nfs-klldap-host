@@ -489,8 +489,7 @@ NFSV4 {{
 EXPORT_DEFAULTS {{
     SecType = {sec};
     Protocols = {proto};
-    # Read_Access_Check_Policy intentionally omitted (ganesha 9.6 trixie-backports
-    # rejects the key; built-in default is pre).
+    # Read_Access_Check_Policy omitted (trixie 9.6 rejects it; default is pre).
 }}
 "#,
         realm = realm,

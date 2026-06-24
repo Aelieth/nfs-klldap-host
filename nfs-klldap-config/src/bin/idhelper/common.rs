@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
-use std::sync::Mutex;
 
 use nfs_klldap_config::{classify_principal, NfsKlldapConfig};
 use nfs_klldap_identity::nfs_keytab_host_variants;
@@ -93,7 +92,7 @@ impl IdCache {
         self.entries.insert(key, r);
     }
 
-    /// Stable hash of cache contents for materialize skip decisions.
+    /// Stable hash of cache contents; used to skip redundant nss materialize writes.
     pub(crate) fn content_fingerprint(&self) -> u64 {
         let mut keys: Vec<_> = self.entries.keys().collect();
         keys.sort();
@@ -191,41 +190,6 @@ impl IdCache {
     }
 }
 
-static LAST_MATERIALIZED_FP: Mutex<Option<u64>> = Mutex::new(None);
-
-/// Rebulk-only: true when cache fp differs from last nss materialize; records fp when true.
-pub(crate) fn take_materialize_if_cache_changed(cache: &IdCache) -> bool {
-    let fp = cache.content_fingerprint();
-    let mut guard = LAST_MATERIALIZED_FP.lock().expect("materialize fp lock");
-    if guard.map_or(true, |prev| prev != fp) {
-        *guard = Some(fp);
-        true
-    } else {
-        false
-    }
-}
-
-/// Call after resolve/rebulk materialize so rebulk skip tracks current nss state.
-pub(crate) fn record_materialized_fingerprint(cache: &IdCache) {
-    *LAST_MATERIALIZED_FP
-        .lock()
-        .expect("materialize fp lock") = Some(cache.content_fingerprint());
-}
-
-#[cfg(test)]
-pub(crate) fn reset_materialize_fingerprint_for_tests() {
-    *LAST_MATERIALIZED_FP.lock().unwrap() = None;
-}
-
-#[cfg(test)]
-pub(crate) fn last_materialized_fingerprint_for_tests() -> Option<u64> {
-    *LAST_MATERIALIZED_FP.lock().unwrap()
-}
-
-/// Serializes tests that touch LAST_MATERIALIZED_FP or resolve_principal (parallel races otherwise).
-#[cfg(test)]
-pub(crate) static MATERIALIZE_FP_TEST_LOCK: Mutex<()> = Mutex::new(());
-
 /// True when principal is a machine service name (host/nfs/root) vs a user TGT.
 pub fn is_machine_principal(
     principal: &str,
@@ -321,7 +285,6 @@ mod fingerprint_tests {
 
     #[test]
     fn identical_reinsert_keeps_fingerprint() {
-        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
         let mut c = IdCache::default();
         let r = Resolved {
             principal: "alice@TEST".into(),
@@ -339,7 +302,6 @@ mod fingerprint_tests {
 
     #[test]
     fn changed_uid_updates_fingerprint() {
-        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
         let mut c = IdCache::default();
         c.insert(Resolved {
             principal: "bob@TEST".into(),
@@ -359,53 +321,5 @@ mod fingerprint_tests {
             source: "ldap".into(),
         });
         assert_ne!(fp, c.content_fingerprint());
-    }
-
-    #[test]
-    fn take_materialize_skips_when_cache_unchanged_since_last() {
-        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
-        reset_materialize_fingerprint_for_tests();
-        let mut c = IdCache::default();
-        c.insert(Resolved {
-            principal: "alice@TEST".into(),
-            name: "alice".into(),
-            uid: 1001,
-            gid: 1001,
-            kind: PrincipalKind::User,
-            source: "sss".into(),
-        });
-        assert!(take_materialize_if_cache_changed(&c), "first materialize required");
-        assert!(
-            !take_materialize_if_cache_changed(&c),
-            "unchanged cache must skip second materialize"
-        );
-    }
-
-    #[test]
-    fn take_materialize_runs_after_cache_mutation() {
-        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
-        reset_materialize_fingerprint_for_tests();
-        let mut c = IdCache::default();
-        c.insert(Resolved {
-            principal: "alice@TEST".into(),
-            name: "alice".into(),
-            uid: 1001,
-            gid: 1001,
-            kind: PrincipalKind::User,
-            source: "bulk".into(),
-        });
-        assert!(take_materialize_if_cache_changed(&c));
-        c.insert(Resolved {
-            principal: "bob@TEST".into(),
-            name: "bob".into(),
-            uid: 1002,
-            gid: 1002,
-            kind: PrincipalKind::User,
-            source: "bulk".into(),
-        });
-        assert!(
-            take_materialize_if_cache_changed(&c),
-            "new entry must trigger materialize"
-        );
     }
 }

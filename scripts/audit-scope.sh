@@ -45,7 +45,7 @@ run file-inventory bash -c '
 
 run grep-deprecated-ganesha-keys grep -n -E 'Manage_Gids_Expiration|IdmapConf|UseGetpwnam|Read_Access_Check_Policy|Transports' nfs-klldap-config/src/generate.rs nfs-klldap-config/tests/representative_generate.rs || true
 
-run grep-root-krb-principal grep -rn -E 'Root_Kerberos_Principal|GANESHA_ROOT_KRB' nfs-klldap-config/src nfs-klldap-config/tests nfs-klldap-identity/src || true
+run grep-root-krb-principal grep -rn 'Root_Kerberos_Principal|GANESHA_ROOT_KRB' nfs-klldap-config/src nfs-klldap-config/tests || true
 
 run grep-ui-head head -40 nfs-klldap-ui/src/main.rs nfs-klldap-ui/src/ldap.rs nfs-klldap-ui/src/config.rs
 

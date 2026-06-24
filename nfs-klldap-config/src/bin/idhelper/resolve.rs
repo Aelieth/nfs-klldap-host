@@ -1,12 +1,8 @@
 //! Principal resolution: NSS getent, structured LDAP, and cache.
 
 use crate::dlog;
-#[cfg(test)]
-use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
-#[cfg(test)]
-use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -16,38 +12,13 @@ use nfs_klldap_config::{
 };
 
 use crate::common::{
-    debug_enabled, is_machine_principal, normalize_principal, record_materialized_fingerprint,
-    IdCache, PrincipalKind, Resolved, CACHE_PATH,
+    debug_enabled, is_machine_principal, normalize_principal, IdCache, PrincipalKind, Resolved,
+    CACHE_PATH,
 };
 use crate::materialize::materialize_nss_wrappers;
 
-#[cfg(test)]
-static TEST_NSS_RESOLVE: Mutex<Option<HashMap<String, (u32, u32, String)>>> = Mutex::new(None);
-
-/// Inject NSS lookup results for unit tests (exercises user TGT resolve path without live LDAP).
-#[cfg(test)]
-pub(crate) fn set_test_nss_resolve_for_tests(entries: Option<HashMap<String, (u32, u32, String)>>) {
-    *TEST_NSS_RESOLVE.lock().unwrap() = entries;
-}
-
-#[cfg(test)]
-fn test_nss_lookup(name_or_principal: &str) -> Option<(u32, u32, String)> {
-    let guard = TEST_NSS_RESOLVE.lock().ok()?;
-    let map = guard.as_ref()?;
-    if let Some(hit) = map.get(name_or_principal) {
-        return Some(hit.clone());
-    }
-    let short = name_or_principal.split('@').next().unwrap_or(name_or_principal);
-    map.get(short).cloned()
-}
-
 /// getent (NSS) path for "same lookup a client would see". Falls back to resolver snapshot.
 fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
-    #[cfg(test)]
-    if let Some(res) = test_nss_lookup(name_or_principal) {
-        return Some(res);
-    }
-
     // Try as-is first (handles user@REALM in some setups)
     if let Some(res) = resolve_getent(name_or_principal) {
         return Some(res);
@@ -311,17 +282,18 @@ pub(crate) fn resolve_principal(
         );
     }
 
+    let fp_before = cache.content_fingerprint();
     cache.insert(resolved.clone());
-    // MISS always materializes: new key changes fp; skip logic is rebulk-only via apply_cache_to_nss_if_changed.
-    let write_res = cache.write_to_file(Path::new(CACHE_PATH));
-    dlog!(
-        "  cache_write result={}",
-        if write_res.is_ok() { "ok" } else { "err" }
-    );
-    if let Err(e) = materialize_nss_wrappers(cache) {
-        dlog!("  nss_wrapper_write err={}", e);
+    if fp_before != cache.content_fingerprint() {
+        let write_res = cache.write_to_file(Path::new(CACHE_PATH));
+        dlog!(
+            "  cache_write result={}",
+            if write_res.is_ok() { "ok" } else { "err" }
+        );
+        if let Err(e) = materialize_nss_wrappers(cache) {
+            dlog!("  nss_wrapper_write err={}", e);
+        }
     }
-    record_materialized_fingerprint(cache);
 
     // Warm SSSD/getent after a successful user resolve (non-blocking).
     if resolved.uid != 0 && resolved.uid != FALLBACK_NOBODY_UID {

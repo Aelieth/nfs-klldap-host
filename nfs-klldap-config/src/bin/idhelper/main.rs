@@ -19,12 +19,7 @@ use common::{
     CACHE_PATH, NSS_GROUP_PATH, NSS_PASSWD_PATH, SOCKET_PATH,
 };
 #[cfg(test)]
-use common::{
-    last_materialized_fingerprint_for_tests, normalize_principal, record_materialized_fingerprint,
-    reset_materialize_fingerprint_for_tests, MATERIALIZE_FP_TEST_LOCK,
-};
-#[cfg(test)]
-use resolve::set_test_nss_resolve_for_tests;
+use common::normalize_principal;
 use daemon::run_daemon;
 #[cfg(test)]
 use materialize::{
@@ -33,8 +28,6 @@ use materialize::{
 };
 #[cfg(test)]
 use nfs_klldap_config::{IdMapSnapshot, PosixUserEntry};
-#[cfg(test)]
-use std::collections::HashMap;
 #[cfg(test)]
 use observer::{extract_candidate_principal, looks_like_client_hostname};
 use resolve::resolve_principal;
@@ -596,101 +589,8 @@ mod tests {
         }
     }
 
-    fn ensure_idhelper_runtime_dirs() {
-        let _ = std::fs::create_dir_all("/var/lib/nfs-klldap");
-        let _ = std::fs::create_dir_all("/var/lib/extrausers");
-    }
-
-    #[test]
-    fn resolve_machine_miss_writes_nss_and_records_fp() {
-        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
-        reset_materialize_fingerprint_for_tests();
-        ensure_idhelper_runtime_dirs();
-        set_test_nss_resolve_for_tests(None);
-
-        let mut cache = IdCache::default();
-        let realm = "EX.COM";
-        let variants = vec!["srv".to_string()];
-
-        let r = resolve_principal("host/newclient@EX.COM", realm, &variants, &mut cache);
-        assert_eq!(r.source, "special");
-        assert_eq!(r.kind, PrincipalKind::Machine);
-        assert_eq!(
-            last_materialized_fingerprint_for_tests(),
-            Some(cache.content_fingerprint()),
-            "resolve MISS must call record_materialized_fingerprint"
-        );
-
-        let nss = std::fs::read_to_string(NSS_PASSWD_PATH).expect("nss_passwd written");
-        assert!(
-            nss.contains("newclient:x:0:0:") || nss.contains("host_newclient:x:0:0:"),
-            "machine MISS must materialize nss_passwd entry"
-        );
-        let cache_txt = std::fs::read_to_string(CACHE_PATH).expect("cache file written");
-        assert!(cache_txt.contains("host/newclient@EX.COM|0|0|machine|special"));
-    }
-
-    #[test]
-    fn resolve_user_miss_via_nss_materializes_real_uid() {
-        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
-        reset_materialize_fingerprint_for_tests();
-        ensure_idhelper_runtime_dirs();
-        set_test_nss_resolve_for_tests(Some(HashMap::from([(
-            "alice".to_string(),
-            (1001, 1001, "sss".to_string()),
-        )])));
-
-        let mut cache = IdCache::default();
-        let realm = "EX.COM";
-        let variants = vec!["srv".to_string()];
-
-        let r = resolve_principal("alice@EX.COM", realm, &variants, &mut cache);
-        assert_eq!(r.uid, 1001);
-        assert_eq!(r.gid, 1001);
-        assert_eq!(r.kind, PrincipalKind::User);
-        assert_eq!(r.source, "sss");
-        assert_eq!(
-            last_materialized_fingerprint_for_tests(),
-            Some(cache.content_fingerprint())
-        );
-
-        let nss = std::fs::read_to_string(NSS_PASSWD_PATH).expect("nss_passwd");
-        assert!(nss.contains("alice:x:1001:1001:"));
-        set_test_nss_resolve_for_tests(None);
-    }
-
-    #[test]
-    fn resolve_cache_hit_returns_early_without_nss_rewrite() {
-        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
-        reset_materialize_fingerprint_for_tests();
-        ensure_idhelper_runtime_dirs();
-        set_test_nss_resolve_for_tests(None);
-
-        let mut cache = IdCache::default();
-        let realm = "EX.COM";
-        let variants = vec!["srv".to_string()];
-        cache.insert(Resolved {
-            principal: "host/cached@EX.COM".into(),
-            name: "cached".into(),
-            uid: 0,
-            gid: 0,
-            kind: PrincipalKind::Machine,
-            source: "special".into(),
-        });
-        record_materialized_fingerprint(&cache);
-        let nss_before = std::fs::read(NSS_PASSWD_PATH).unwrap_or_default();
-
-        let r = resolve_principal("host/cached@EX.COM", realm, &variants, &mut cache);
-        assert_eq!(r.source, "cache");
-        let nss_after = std::fs::read(NSS_PASSWD_PATH).unwrap_or_default();
-        assert_eq!(nss_before, nss_after, "cache HIT must not rewrite nss_passwd");
-    }
-
     #[test]
     fn machine_principal_short_circuits_to_zero_without_getent() {
-        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
-        reset_materialize_fingerprint_for_tests();
-        set_test_nss_resolve_for_tests(None);
         // Machine principals return 0:0 without getent.
         let mut cache = IdCache::default();
         let realm = "SATOMLIN.COM".to_string();

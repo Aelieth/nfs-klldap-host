@@ -193,7 +193,7 @@ impl IdCache {
 
 static LAST_MATERIALIZED_FP: Mutex<Option<u64>> = Mutex::new(None);
 
-/// True when cache fingerprint differs from last materialize; records fp when true.
+/// Rebulk-only: true when cache fp differs from last nss materialize; records fp when true.
 pub(crate) fn take_materialize_if_cache_changed(cache: &IdCache) -> bool {
     let fp = cache.content_fingerprint();
     let mut guard = LAST_MATERIALIZED_FP.lock().expect("materialize fp lock");
@@ -205,10 +205,21 @@ pub(crate) fn take_materialize_if_cache_changed(cache: &IdCache) -> bool {
     }
 }
 
+/// Call after resolve/rebulk materialize so rebulk skip tracks current nss state.
+pub(crate) fn record_materialized_fingerprint(cache: &IdCache) {
+    *LAST_MATERIALIZED_FP
+        .lock()
+        .expect("materialize fp lock") = Some(cache.content_fingerprint());
+}
+
 #[cfg(test)]
 pub(crate) fn reset_materialize_fingerprint_for_tests() {
     *LAST_MATERIALIZED_FP.lock().unwrap() = None;
 }
+
+/// Serializes tests that touch LAST_MATERIALIZED_FP (parallel cargo runs otherwise race).
+#[cfg(test)]
+pub(crate) static MATERIALIZE_FP_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// True when principal is a machine service name (host/nfs/root) vs a user TGT.
 pub fn is_machine_principal(
@@ -303,11 +314,9 @@ pub(crate) fn get_realm() -> String {
 mod fingerprint_tests {
     use super::*;
 
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn identical_reinsert_keeps_fingerprint() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
         let mut c = IdCache::default();
         let r = Resolved {
             principal: "alice@TEST".into(),
@@ -325,7 +334,7 @@ mod fingerprint_tests {
 
     #[test]
     fn changed_uid_updates_fingerprint() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
         let mut c = IdCache::default();
         c.insert(Resolved {
             principal: "bob@TEST".into(),
@@ -349,7 +358,7 @@ mod fingerprint_tests {
 
     #[test]
     fn take_materialize_skips_when_cache_unchanged_since_last() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
         reset_materialize_fingerprint_for_tests();
         let mut c = IdCache::default();
         c.insert(Resolved {
@@ -369,7 +378,7 @@ mod fingerprint_tests {
 
     #[test]
     fn take_materialize_runs_after_cache_mutation() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
         reset_materialize_fingerprint_for_tests();
         let mut c = IdCache::default();
         c.insert(Resolved {

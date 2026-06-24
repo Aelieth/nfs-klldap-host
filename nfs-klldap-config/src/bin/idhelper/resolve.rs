@@ -12,7 +12,7 @@ use nfs_klldap_config::{
 };
 
 use crate::common::{
-    debug_enabled, is_machine_principal, normalize_principal, take_materialize_if_cache_changed,
+    debug_enabled, is_machine_principal, normalize_principal, record_materialized_fingerprint,
     IdCache, PrincipalKind, Resolved, CACHE_PATH,
 };
 use crate::materialize::materialize_nss_wrappers;
@@ -283,18 +283,16 @@ pub(crate) fn resolve_principal(
     }
 
     cache.insert(resolved.clone());
-    if take_materialize_if_cache_changed(cache) {
-        let write_res = cache.write_to_file(Path::new(CACHE_PATH));
-        dlog!(
-            "  cache_write result={}",
-            if write_res.is_ok() { "ok" } else { "err" }
-        );
-        if let Err(e) = materialize_nss_wrappers(cache) {
-            dlog!("  nss_wrapper_write err={}", e);
-        }
-    } else {
-        dlog!("  nss_wrapper_write skipped (cache fp unchanged since last materialize)");
+    // MISS always materializes: new key changes fp; skip logic is rebulk-only via apply_cache_to_nss_if_changed.
+    let write_res = cache.write_to_file(Path::new(CACHE_PATH));
+    dlog!(
+        "  cache_write result={}",
+        if write_res.is_ok() { "ok" } else { "err" }
+    );
+    if let Err(e) = materialize_nss_wrappers(cache) {
+        dlog!("  nss_wrapper_write err={}", e);
     }
+    record_materialized_fingerprint(cache);
 
     // Warm SSSD/getent after a successful user resolve (non-blocking).
     if resolved.uid != 0 && resolved.uid != FALLBACK_NOBODY_UID {

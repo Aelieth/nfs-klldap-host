@@ -10,11 +10,12 @@ use std::thread;
 use std::time::Duration;
 
 use crate::common::{
-    get_realm, get_server_variants, is_machine_principal, take_materialize_if_cache_changed,
-    IdCache, BULK_SEED_MARKER, CACHE_PATH,
+    get_realm, get_server_variants, is_machine_principal, IdCache, BULK_SEED_MARKER, CACHE_PATH,
     DEFAULT_REBULK_INTERVAL_SECS, SOCKET_PATH,
 };
-use crate::materialize::{materialize_nss_wrappers, sync_user_cache_from_snapshot};
+use crate::materialize::{
+    apply_cache_to_nss_if_changed, materialize_nss_wrappers, sync_user_cache_from_snapshot,
+};
 use crate::observer::start_ganesha_observer;
 use crate::resolve::{get_or_init_resolver, resolve_principal, ID_RESOLVER};
 
@@ -24,14 +25,13 @@ fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usize> {
     let loaded = r.load_full_identities(dn, pw);
     let snap = r.snapshot();
     let synced = sync_user_cache_from_snapshot(&snap, realm, cache);
-    if take_materialize_if_cache_changed(cache) {
-        if let Err(e) = materialize_nss_wrappers(cache) {
+    match apply_cache_to_nss_if_changed(cache) {
+        Ok(true) => {}
+        Ok(false) => dlog!("rebulk: nss materialize skipped (cache unchanged)"),
+        Err(e) => {
             eprintln!("[idhelper] WARN: rebulk nss materialize failed: {}", e);
             return None;
         }
-        let _ = cache.write_to_file(Path::new(CACHE_PATH));
-    } else {
-        dlog!("rebulk: nss materialize skipped (cache unchanged)");
     }
     let _ = fs::write(BULK_SEED_MARKER, format!("{}\n", synced));
     eprintln!(

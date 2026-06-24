@@ -10,8 +10,8 @@ use nfs_klldap_config::{
 };
 
 use crate::common::{
-    IdCache, PrincipalKind, Resolved, EXTRAUSERS_GROUP, EXTRAUSERS_PASSWD, NSS_GROUP_PATH,
-    NSS_PASSWD_PATH,
+    take_materialize_if_cache_changed, IdCache, PrincipalKind, Resolved, CACHE_PATH,
+    EXTRAUSERS_GROUP, EXTRAUSERS_PASSWD, NSS_GROUP_PATH, NSS_PASSWD_PATH,
 };
 
 /// Sanitize a string for use as a passwd login name (allow alnum + _ - .).
@@ -116,6 +116,17 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
     }
 
     seeded
+}
+
+/// Rebulk path: materialize nss_wrapper only when cache fingerprint changed since last write.
+pub(crate) fn apply_cache_to_nss_if_changed(cache: &IdCache) -> io::Result<bool> {
+    if take_materialize_if_cache_changed(cache) {
+        materialize_nss_wrappers(cache)?;
+        cache.write_to_file(Path::new(CACHE_PATH))?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 /// Atomically write nss_wrapper passwd/group for ganesha.nfsd LD_PRELOAD and extrausers supplement.
@@ -278,4 +289,55 @@ pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod rebulk_skip_tests {
+    use super::*;
+    use crate::common::{
+        reset_materialize_fingerprint_for_tests, take_materialize_if_cache_changed,
+        PrincipalKind, MATERIALIZE_FP_TEST_LOCK,
+    };
+    use nfs_klldap_config::PosixUserEntry;
+
+    /// Rebulk path: sync then fingerprint gate (apply_cache_to_nss_if_changed uses the same gate).
+    #[test]
+    fn rebulk_skips_materialize_when_snapshot_unchanged() {
+        let _g = MATERIALIZE_FP_TEST_LOCK.lock().unwrap();
+        reset_materialize_fingerprint_for_tests();
+
+        let mut snap = IdMapSnapshot::default();
+        snap.users.insert(
+            "alice".to_string(),
+            PosixUserEntry {
+                uid: 1001,
+                gid: 1001,
+                display: "Alice".to_string(),
+            },
+        );
+        snap.by_uid.insert(1001, "alice".to_string());
+
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "host/srv@EX.COM".into(),
+            name: "srv".into(),
+            uid: 0,
+            gid: 0,
+            kind: PrincipalKind::Machine,
+            source: "special".into(),
+        });
+
+        let realm = "EX.COM";
+        assert_eq!(sync_user_cache_from_snapshot(&snap, realm, &mut cache), 1);
+        assert!(
+            take_materialize_if_cache_changed(&cache),
+            "first rebulk after LDAP sync must materialize"
+        );
+
+        assert_eq!(sync_user_cache_from_snapshot(&snap, realm, &mut cache), 1);
+        assert!(
+            !take_materialize_if_cache_changed(&cache),
+            "unchanged LDAP snapshot must skip nss rewrite"
+        );
+    }
 }

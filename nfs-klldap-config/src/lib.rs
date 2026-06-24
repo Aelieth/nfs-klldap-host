@@ -41,7 +41,7 @@ pub use startup::{
     effective_startup_step, is_preconfigured_deployment, is_setup_wizard_complete,
     resolve_keytab_path,
     is_step_complete, mark_setup_wizard_complete, startup_step_hint, setup_wizard_marker_path,
-    LdapReachability, StartupStep, DEFAULT_KEYTAB_PATH, SETUP_WIZARD_MARKER,
+    webui_setup_url, LdapReachability, StartupStep, DEFAULT_KEYTAB_PATH, SETUP_WIZARD_MARKER,
 };
 pub use template::{generate_default_template, write_default_config_if_missing};
 pub use uri::{derive_realm_from_uri, extract_host_from_uri, host_is_ip};

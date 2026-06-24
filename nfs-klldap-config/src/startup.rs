@@ -357,10 +357,10 @@ pub fn startup_step_hint(step: StartupStep) -> &'static str {
             "Bind-mount a host directory at /config (e.g. -v /path/on/host:/config) and verify."
         }
         StartupStep::SetLdapUri => {
-            "Set ldap_uri to a DNS name (not an IP), then verify reachability."
+            "Set ldap_uri to a DNS name (not an IP), test settings, then save and continue."
         }
         StartupStep::AddBindCredentials => {
-            "Set ldap_default_bind_dn and ldap_default_authtok in [sssd], then verify bind."
+            "Set ldap_default_bind_dn and ldap_default_authtok in [sssd], test settings, then save and continue."
         }
         StartupStep::Ready => "All startup checks passed.",
     }
@@ -399,6 +399,28 @@ pub fn default_config_path() -> PathBuf {
     std::env::var("NFS_CONFIG")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/config/nfs-klldap.conf"))
+}
+
+/// Operator-facing WebUI setup URL (scheme follows NFS_KLLDAP_WEBUI_TLS).
+pub fn webui_setup_url() -> String {
+    let host = crate::get_consistent_hostname()
+        .map(|c| c.hostname)
+        .ok()
+        .or_else(|| {
+            std::env::var("HOSTNAME")
+                .ok()
+                .map(|h| h.trim().to_string())
+                .filter(|h| !h.is_empty())
+        })
+        .unwrap_or_else(|| "localhost".to_string());
+    let tls_off = std::env::var("NFS_KLLDAP_WEBUI_TLS")
+        .map(|v| {
+            let t = v.trim().to_ascii_lowercase();
+            t == "off" || t == "false" || t == "0" || t == "no"
+        })
+        .unwrap_or(false);
+    let scheme = if tls_off { "http" } else { "https" };
+    format!("{scheme}://{host}:9630/setup")
 }
 
 #[cfg(test)]

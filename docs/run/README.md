@@ -20,9 +20,9 @@ See [examples/docker-compose.yml](../../examples/docker-compose.yml). The exampl
 On a fresh container the supervisor starts the WebUI immediately and polls until setup is complete.
 
 1. **https://\<host\>:9630/setup/1** — verify a persistent `/config` bind mount.
-2. **/setup/2** — set `ldap_uri` (DNS name) and verify TCP reachability.
-3. **/setup/3** — set `[sssd]` bind DN/password and verify `ldapsearch`.
-4. **/login** — create the localhost admin password (`webui-password` sidecar).
+2. **/setup/2** — set `ldap_uri` (DNS name); **Test Settings**, then **Save and Continue**.
+3. **/setup/3** — set `[sssd]` bind DN/password; **Test Settings**, then **Save and Continue**.
+4. **/setup/complete** — brief loading screen, then **/login** to create the localhost admin password (`webui-password` sidecar).
 
 **Pre-configured bypass:** mount a valid `nfs-klldap.conf` and `/etc/krb5.keytab` before start — steps 1–3 are skipped; go directly to `/login`.
 

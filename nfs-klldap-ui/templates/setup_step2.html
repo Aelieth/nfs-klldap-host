@@ -19,18 +19,17 @@
 
 <div class="settings-group">
     <h4>LDAP URI (DNS hostname required)</h4>
-    <form method="post" action="/setup/2/save" style="margin-bottom:0.75rem;">
+    <form id="setup-form" method="post" style="margin-bottom:0.75rem;">
         <label>ldap_uri<br>
             <input type="text" name="ldap_uri" value="{{ ldap_uri }}" required
                    placeholder="ldaps://lldap.yourdomain.com:6360"
                    style="width:100%; max-width:520px; padding:8px;">
         </label>
-        <div style="margin-top:0.5rem;">
-            <button type="submit" class="btn">Save ldap_uri</button>
+        <div style="margin-top:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button type="submit" formaction="/setup/2/test" class="btn btn-primary">Test Settings</button>
+            <button type="submit" formaction="/setup/2/continue" id="continue-btn" class="btn"
+                    {% if !test_passed %}disabled{% endif %}>Save and Continue</button>
         </div>
-    </form>
-    <form method="post" action="/setup/2/verify">
-        <button type="submit" class="btn btn-primary">Verify reachability &amp; continue</button>
     </form>
     <p style="margin:0.75rem 0 0; font-size:0.85em; color:var(--text-light);">
         Tests DNS resolution and TCP connectivity (getent + nc).
@@ -43,4 +42,15 @@
 {% if let Some(err) = error %}
 <p class="alert alert-danger">{{ err }}</p>
 {% endif %}
+
+<script>
+(function () {
+    const form = document.getElementById('setup-form');
+    const continueBtn = document.getElementById('continue-btn');
+    if (!form || !continueBtn) return;
+    form.querySelectorAll('input').forEach(function (el) {
+        el.addEventListener('input', function () { continueBtn.disabled = true; });
+    });
+})();
+</script>
 {% endblock %}

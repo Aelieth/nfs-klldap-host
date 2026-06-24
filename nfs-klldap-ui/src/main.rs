@@ -105,7 +105,8 @@ async fn main() {
     let fs = Arc::new(crate::fs::FsManager::new((*config).clone()));
 
     let posix_attrs = nfs_klldap_config::resolve_posix_attribute_mapping(&config.sssd);
-    let realm = config.effective_realm();
+    // display_realm is safe before validate_and_derive (first-run template / setup wizard).
+    let realm = config.display_realm();
     let (user_base, group_base) =
         nfs_klldap_config::effective_ldap_search_bases(&config.sssd, &realm);
 

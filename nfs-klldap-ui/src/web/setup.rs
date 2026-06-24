@@ -10,7 +10,7 @@ use nfs_klldap_config::{
     attempt_realm_from_config, check_ldap_bind, check_ldap_reachability, check_persistent_writable,
     compute_startup_step, extract_host_from_uri, format_nfs_principal_list, get_consistent_hostname,
     is_preconfigured_deployment, is_setup_wizard_complete, is_step_complete,
-    mark_setup_wizard_complete, resolve_keytab_path, startup_step_hint, StartupStep,
+    mark_setup_wizard_complete, resolve_keytab_path, StartupStep,
 };
 use serde::Deserialize;
 use std::path::Path;
@@ -36,6 +36,7 @@ pub(crate) struct SetupStep2Template {
     pub message: Option<String>,
     pub error: Option<String>,
     pub ldap_uri: String,
+    pub test_passed: bool,
     pub step1_done: bool,
     pub hostname: String,
     pub principals: String,
@@ -49,6 +50,7 @@ pub(crate) struct SetupStep3Template {
     pub message: Option<String>,
     pub error: Option<String>,
     pub bind_dn: String,
+    pub test_passed: bool,
     pub step1_done: bool,
     pub step2_done: bool,
     pub hostname: String,
@@ -56,6 +58,10 @@ pub(crate) struct SetupStep3Template {
     pub current_user: Option<String>,
     pub keytab_alert: Option<String>,
 }
+
+#[derive(Template)]
+#[template(path = "setup_complete.html")]
+pub(crate) struct SetupCompleteTemplate;
 
 #[derive(Deserialize)]
 pub(crate) struct LdapUriForm {
@@ -245,6 +251,7 @@ pub async fn setup_step2(State(state): State<super::AppState>) -> impl IntoRespo
             message: None,
             error: None,
             ldap_uri,
+            test_passed: false,
             step1_done,
             hostname,
             principals,
@@ -257,40 +264,47 @@ pub async fn setup_step2(State(state): State<super::AppState>) -> impl IntoRespo
     .into_response()
 }
 
-/// POST /setup/2/save
-pub async fn setup_step2_save(
+/// POST /setup/2/test — save ldap_uri and probe reachability without advancing.
+pub async fn setup_step2_test(
     State(state): State<super::AppState>,
     Form(form): Form<LdapUriForm>,
 ) -> impl IntoResponse {
     let uri = form.ldap_uri.trim();
     if uri.is_empty() || (!uri.starts_with("ldap://") && !uri.starts_with("ldaps://")) {
-        return render_step2_error(&state, "ldap_uri must start with ldap:// or ldaps://").into_response();
-    }
-    if nfs_klldap_config::host_is_ip(&nfs_klldap_config::extract_host_from_uri(uri)) {
-        return render_step2_error(&state, "ldap_uri must use a DNS hostname, not an IP address.")
+        return render_step2_error(&state, "ldap_uri must start with ldap:// or ldaps://", Some(uri))
             .into_response();
     }
-    if let Err(e) = write_ldap_uri(&state.config_path, uri) {
-        return render_step2_error(&state, &e).into_response();
+    if nfs_klldap_config::host_is_ip(&nfs_klldap_config::extract_host_from_uri(uri)) {
+        return render_step2_error(
+            &state,
+            "ldap_uri must use a DNS hostname, not an IP address.",
+            Some(uri),
+        )
+        .into_response();
     }
-    render_step2_page(&state, Some("ldap_uri saved."), None).into_response()
+    if let Err(e) = write_ldap_uri(&state.config_path, uri) {
+        return render_step2_error(&state, &e, Some(uri)).into_response();
+    }
+    let host = extract_host_from_uri(uri);
+    match check_ldap_reachability(&host, uri) {
+        nfs_klldap_config::LdapReachability::Reachable => {
+            render_step2_page(&state, Some("Reachability test passed."), None, true, None)
+                .into_response()
+        }
+        other => render_step2_error(&state, &other.user_message(), None).into_response(),
+    }
 }
 
-/// POST /setup/2/verify
-pub async fn setup_step2_verify(State(state): State<super::AppState>) -> impl IntoResponse {
-    let uri = match std::fs::read_to_string(&state.config_path)
-        .ok()
-        .and_then(|raw| {
-            let doc: toml_edit::DocumentMut = raw.parse().ok()?;
-            doc.get("ldap_uri").and_then(|v| v.as_str()).map(|s| s.to_string())
-        }) {
-        Some(u) if !u.trim().is_empty() => u,
-        _ => return render_step2_error(&state, "Set ldap_uri first.").into_response(),
-    };
+/// POST /setup/2/continue — re-probe saved ldap_uri and advance to step 3.
+pub async fn setup_step2_continue(State(state): State<super::AppState>) -> impl IntoResponse {
+    let uri = read_ldap_uri_from_disk(&state.config_path);
+    if uri.trim().is_empty() {
+        return render_step2_error(&state, "Test settings before continuing.", None).into_response();
+    }
     let host = extract_host_from_uri(&uri);
     match check_ldap_reachability(&host, &uri) {
         nfs_klldap_config::LdapReachability::Reachable => Redirect::to("/setup/3").into_response(),
-        other => render_step2_error(&state, &other.user_message()).into_response(),
+        other => render_step2_error(&state, &other.user_message(), None).into_response(),
     }
 }
 
@@ -314,6 +328,7 @@ pub async fn setup_step3(State(state): State<super::AppState>) -> impl IntoRespo
             message: None,
             error: None,
             bind_dn,
+            test_passed: false,
             step1_done: is_step_complete(StartupStep::WaitForPersistentVolume, step),
             step2_done: is_step_complete(StartupStep::SetLdapUri, step),
             hostname,
@@ -327,59 +342,89 @@ pub async fn setup_step3(State(state): State<super::AppState>) -> impl IntoRespo
     .into_response()
 }
 
-/// POST /setup/3/save
-pub async fn setup_step3_save(
+/// POST /setup/3/test — save bind creds and probe ldapsearch without advancing.
+pub async fn setup_step3_test(
     State(state): State<super::AppState>,
     Form(form): Form<BindForm>,
 ) -> impl IntoResponse {
     if form.ldap_default_bind_dn.trim().is_empty() {
-        return render_step3_error(&state, "Bind DN is required.").into_response();
+        return render_step3_error(&state, "Bind DN is required.", Some(&form.ldap_default_bind_dn))
+            .into_response();
     }
     if form.ldap_default_authtok.trim().is_empty() {
-        return render_step3_error(&state, "Bind password is required.").into_response();
+        return render_step3_error(&state, "Bind password is required.", Some(&form.ldap_default_bind_dn))
+            .into_response();
     }
     if let Err(e) = write_bind_creds(
         &state.config_path,
         &form.ldap_default_bind_dn,
         &form.ldap_default_authtok,
     ) {
-        return render_step3_error(&state, &e).into_response();
+        return render_step3_error(&state, &e, Some(&form.ldap_default_bind_dn)).into_response();
     }
-    render_step3_page(&state, Some("Bind credentials saved."), None).into_response()
-}
-
-/// POST /setup/3/verify — final step; redirects to login when bind succeeds.
-pub async fn setup_step3_verify(State(state): State<super::AppState>) -> impl IntoResponse {
     let cfg = match nfs_klldap_config::NfsKlldapConfig::load(&state.config_path) {
         Ok(c) => c,
-        Err(e) => return render_step3_error(&state, &e.to_string()).into_response(),
+        Err(e) => return render_step3_error(&state, &e.to_string(), None).into_response(),
+    };
+    match check_ldap_bind(&cfg) {
+        Ok(()) => render_step3_page(
+            &state,
+            Some("Bind test passed."),
+            None,
+            true,
+            Some(&form.ldap_default_bind_dn),
+        )
+        .into_response(),
+        Err(e) => render_step3_error(&state, &e, Some(&form.ldap_default_bind_dn)).into_response(),
+    }
+}
+
+/// POST /setup/3/continue — re-probe bind, mark wizard done, show completion interstitial.
+pub async fn setup_step3_continue(State(state): State<super::AppState>) -> impl IntoResponse {
+    let cfg = match nfs_klldap_config::NfsKlldapConfig::load(&state.config_path) {
+        Ok(c) => c,
+        Err(e) => return render_step3_error(&state, &e.to_string(), None).into_response(),
     };
     match check_ldap_bind(&cfg) {
         Ok(()) => {
             if compute_startup_step(&state.config_path) == StartupStep::Ready {
                 let _ = mark_setup_wizard_complete();
-                Redirect::to("/login").into_response()
+                Redirect::to("/setup/complete").into_response()
             } else {
-                render_step3_error(&state, startup_step_hint(StartupStep::AddBindCredentials))
-                    .into_response()
+                render_step3_error(
+                    &state,
+                    "Test settings before continuing.",
+                    Some(&cfg.sssd.ldap_default_bind_dn),
+                )
+                .into_response()
             }
         }
-        Err(e) => render_step3_error(&state, &e).into_response(),
+        Err(e) => render_step3_error(&state, &e, None).into_response(),
     }
+}
+
+/// GET /setup/complete — brief pause before redirecting to login.
+pub async fn setup_complete() -> impl IntoResponse {
+    Html(SetupCompleteTemplate.render().unwrap()).into_response()
 }
 
 fn render_step2_page(
     state: &super::AppState,
     message: Option<&str>,
     error: Option<&str>,
+    test_passed: bool,
+    ldap_uri_override: Option<&str>,
 ) -> (StatusCode, Html<String>) {
     let step = compute_startup_step(&state.config_path);
     let (hostname, principals) = banner_context(&state.config_path);
-    let ldap_uri = read_ldap_uri_from_disk(&state.config_path);
+    let ldap_uri = ldap_uri_override
+        .map(str::to_string)
+        .unwrap_or_else(|| read_ldap_uri_from_disk(&state.config_path));
     let html = SetupStep2Template {
         message: message.map(str::to_string),
         error: error.map(str::to_string),
         ldap_uri,
+        test_passed,
         step1_done: is_step_complete(StartupStep::WaitForPersistentVolume, step),
         hostname,
         principals,
@@ -396,21 +441,31 @@ fn render_step2_page(
     (status, Html(html))
 }
 
-fn render_step2_error(state: &super::AppState, err: &str) -> (StatusCode, Html<String>) {
-    render_step2_page(state, None, Some(err))
+fn render_step2_error(
+    state: &super::AppState,
+    err: &str,
+    ldap_uri_override: Option<&str>,
+) -> (StatusCode, Html<String>) {
+    render_step2_page(state, None, Some(err), false, ldap_uri_override)
 }
 
 fn render_step3_page(
     state: &super::AppState,
     message: Option<&str>,
     error: Option<&str>,
+    test_passed: bool,
+    bind_dn_override: Option<&str>,
 ) -> (StatusCode, Html<String>) {
     let step = compute_startup_step(&state.config_path);
     let (hostname, principals) = banner_context(&state.config_path);
+    let bind_dn = bind_dn_override
+        .map(str::to_string)
+        .unwrap_or_else(|| read_bind_dn_from_disk(&state.config_path));
     let html = SetupStep3Template {
         message: message.map(str::to_string),
         error: error.map(str::to_string),
-        bind_dn: read_bind_dn_from_disk(&state.config_path),
+        bind_dn,
+        test_passed,
         step1_done: is_step_complete(StartupStep::WaitForPersistentVolume, step),
         step2_done: is_step_complete(StartupStep::SetLdapUri, step),
         hostname,
@@ -428,8 +483,12 @@ fn render_step3_page(
     (status, Html(html))
 }
 
-fn render_step3_error(state: &super::AppState, err: &str) -> (StatusCode, Html<String>) {
-    render_step3_page(state, None, Some(err))
+fn render_step3_error(
+    state: &super::AppState,
+    err: &str,
+    bind_dn_override: Option<&str>,
+) -> (StatusCode, Html<String>) {
+    render_step3_page(state, None, Some(err), false, bind_dn_override)
 }
 
 #[cfg(test)]
@@ -529,5 +588,22 @@ ldap_default_authtok = "sekret"
         write_ldap_uri(&conf, "ldaps://ldap.example.com:6360").unwrap();
         let raw = fs::read_to_string(&conf).unwrap();
         assert!(raw.contains("ldaps://ldap.example.com:6360"));
+    }
+
+    #[test]
+    fn write_bind_creds_updates_sssd_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf = tmp.path().join("nfs-klldap.conf");
+        fs::write(&conf, "ldap_uri = \"ldaps://x.test:6360\"\n").unwrap();
+        write_bind_creds(&conf, "uid=admin,dc=test", "sekret").unwrap();
+        let raw = fs::read_to_string(&conf).unwrap();
+        assert!(raw.contains("uid=admin,dc=test"));
+        assert!(raw.contains("sekret"));
+    }
+
+    #[test]
+    fn setup_complete_template_renders() {
+        let html = SetupCompleteTemplate.render().unwrap();
+        assert!(html.contains("Settings successfully saved, loading"));
     }
 }

@@ -62,6 +62,13 @@ fn normalize_blank(field: &mut Option<String>) {
 
 impl NfsKlldapConfig {
     pub fn load(path: &std::path::Path) -> Result<Self, ConfigError> {
+        let mut cfg = Self::load_unchecked(path)?;
+        cfg.validate_and_derive()?;
+        Ok(cfg)
+    }
+
+    /// Parse nfs-klldap.conf without validation (for first-run WebUI before realm/bind are set).
+    pub fn load_unchecked(path: &std::path::Path) -> Result<Self, ConfigError> {
         let contents = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
 
         let mut cfg: Self = toml::from_str(&contents).map_err(|e| ConfigError::Parse {
@@ -69,7 +76,6 @@ impl NfsKlldapConfig {
             msg: e.to_string(),
         })?;
 
-        cfg.validate_and_derive()?;
         cfg.share_warnings = detect_share_unknown_keys(&contents);
         log_share_warnings(&cfg.share_warnings);
         Ok(cfg)

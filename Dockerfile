@@ -87,11 +87,16 @@ LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-hos
 
 # Runtime: Ganesha 9.6 (trixie-backports). Config is strictly limited to supported 9.6 options.
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && \
-    echo 'deb https://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list && \
-    apt-get update && \
+# ca-certificates must be installed before adding the HTTPS backports source.
+# Keep apt installs separate from nsswitch sed: a trailing "|| true" on those
+# seds previously made the whole RUN succeed even when apt-get install failed.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    echo 'deb https://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list; \
+    apt-get update; \
     apt-get install -y --no-install-recommends -t trixie-backports \
-        nfs-ganesha=${GANESHA_VERSION} nfs-ganesha-vfs=${GANESHA_VERSION} && \
+        nfs-ganesha=${GANESHA_VERSION} nfs-ganesha-vfs=${GANESHA_VERSION}; \
     apt-get install -y --no-install-recommends \
         sssd sssd-ldap libnss-sss \
         krb5-user \
@@ -99,17 +104,19 @@ RUN apt-get update && \
         inotify-tools procps iproute2 netcat-openbsd \
         ldap-utils \
         libnss-wrapper libnss-extrausers \
-        ca-certificates openssl hostname && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+        openssl hostname; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
     # Ensure NSS integration:
     # - sss for LDAP users/groups from LLDAP
     # - extrausers after files so the idhelper can write machine principal overrides
     #   (host/..., client names) that resolve to uid 0 without hiding real SSSD users.
-    sed -i 's/^\(passwd:.*\)/\1 sss/' /etc/nsswitch.conf && \
-    sed -i 's/^\(group:.*\)/\1 sss/' /etc/nsswitch.conf && \
-    sed -i 's/^\(shadow:.*\)/\1 sss/' /etc/nsswitch.conf || true && \
+    sed -i 's/^\(passwd:.*\)/\1 sss/' /etc/nsswitch.conf; \
+    sed -i 's/^\(group:.*\)/\1 sss/' /etc/nsswitch.conf; \
+    sed -i 's/^\(shadow:.*\)/\1 sss/' /etc/nsswitch.conf || true; \
     # Insert extrausers between files and sss (idempotent best-effort).
-    sed -i '/^passwd:/ s/ sss/ extrausers sss/' /etc/nsswitch.conf && \
+    sed -i '/^passwd:/ s/ sss/ extrausers sss/' /etc/nsswitch.conf; \
     sed -i '/^group:/  s/ sss/ extrausers sss/' /etc/nsswitch.conf || true
 
 RUN mkdir -p \

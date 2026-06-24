@@ -207,6 +207,10 @@
             filter: brightness(1.08);
             background: var(--accent);
         }
+        .btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
 
         /* Alert boxes for success/error/warning in templates + dynamic Rust HTML (settings/permission_tree) */
         .alert {

@@ -132,11 +132,12 @@ pub fn router(state: AppState) -> Router {
         .route("/setup/1", get(setup::setup_step1))
         .route("/setup/1/verify", post(setup::setup_step1_verify))
         .route("/setup/2", get(setup::setup_step2))
-        .route("/setup/2/save", post(setup::setup_step2_save))
-        .route("/setup/2/verify", post(setup::setup_step2_verify))
+        .route("/setup/2/test", post(setup::setup_step2_test))
+        .route("/setup/2/continue", post(setup::setup_step2_continue))
         .route("/setup/3", get(setup::setup_step3))
-        .route("/setup/3/save", post(setup::setup_step3_save))
-        .route("/setup/3/verify", post(setup::setup_step3_verify))
+        .route("/setup/3/test", post(setup::setup_step3_test))
+        .route("/setup/3/continue", post(setup::setup_step3_continue))
+        .route("/setup/complete", get(setup::setup_complete))
 
         // === Protected: Main permission tree UI (/) ===
         .route("/", get(index))

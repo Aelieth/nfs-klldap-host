@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use nfs_klldap_config::{
     compute_startup_step, is_preconfigured_deployment, mark_setup_wizard_complete,
-    resolve_keytab_path, StartupStep,
+    resolve_keytab_path, webui_setup_url, StartupStep,
 };
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -122,7 +122,10 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
         let _ = fs::remove_file(RECYCLE_MARKER);
         sup.log_info("Container is ready (pre-configured path).");
     } else {
-        sup.log_info("First-run setup required — WebUI wizard at https://<host>:9630/setup");
+        sup.log_info(&format!(
+            "First-run setup required — WebUI wizard at {}",
+            webui_setup_url()
+        ));
         let _ = fs::remove_file(RECYCLE_MARKER);
     }
 
@@ -337,13 +340,11 @@ impl Supervisor {
         {
             signal_process(pid, libc::SIGTERM);
         }
-        let _ = Command::new("pkill").args(["-TERM", "ganesha.nfsd"]).status();
-        let _ = Command::new("pkill").args(["-TERM", "sssd"]).status();
-        let _ = Command::new("pkill")
-            .args(["-TERM", "nfs-klldap-conf-watcher"])
-            .status();
-        let _ = Command::new("pkill").args(["-TERM", "dbus-daemon"]).status();
-        let _ = Command::new("pkill").args(["-TERM", "nfs-klldap-idhelper"]).status();
+        pkill_process("-TERM", "ganesha.nfsd");
+        pkill_process("-TERM", "sssd");
+        pkill_binary("-TERM", &self.env.watcher_bin);
+        pkill_process("-TERM", "dbus-daemon");
+        pkill_binary("-TERM", &self.env.idhelper_bin);
         thread::sleep(Duration::from_secs(1));
         self.log_info("Shutdown complete.");
         std::process::exit(0);
@@ -366,7 +367,7 @@ impl Supervisor {
         if let Some(pid) = self.pids.ganesha {
             signal_process(pid, libc::SIGTERM);
         }
-        let _ = Command::new("pkill").args(["-TERM", "ganesha.nfsd"]).status();
+        pkill_process("-TERM", "ganesha.nfsd");
         thread::sleep(Duration::from_millis(300));
         self.pids.ganesha = None;
     }
@@ -444,7 +445,7 @@ impl Supervisor {
         if let Some(pid) = self.pids.sssd {
             signal_process(pid, libc::SIGTERM);
         }
-        let _ = Command::new("pkill").args(["-TERM", "sssd"]).status();
+        pkill_process("-TERM", "sssd");
         thread::sleep(Duration::from_millis(500));
         self.log_info("Starting SSSD...");
         let mut cmd = Command::new("sssd");
@@ -508,9 +509,7 @@ impl Supervisor {
             signal_process(pid, libc::SIGTERM);
             thread::sleep(Duration::from_millis(200));
         }
-        let _ = Command::new("pkill")
-            .args(["-TERM", "nfs-klldap-idhelper"])
-            .status();
+        pkill_binary("-TERM", &self.env.idhelper_bin);
         thread::sleep(Duration::from_millis(200));
         self.log_info("Starting nfs-klldap-idhelper...");
         let mut cmd = Command::new(&self.env.idhelper_bin);
@@ -669,13 +668,48 @@ fn resolve_nss_wrapper_so() -> PathBuf {
     PathBuf::from("/usr/lib/x86_64-linux-gnu/libnss_wrapper.so")
 }
 
+/// Linux TASK_COMM_LEN — names longer than this must use cmdline matching.
+const PROC_COMM_NAME_MAX: usize = 15;
+
+fn pkill_process(signal: &str, ident: &str) {
+    let mut cmd = Command::new("pkill");
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    if ident.len() > PROC_COMM_NAME_MAX {
+        cmd.args([signal, "-f", "--", ident]);
+    } else {
+        cmd.args([signal, ident]);
+    }
+    let _ = cmd.status();
+}
+
+fn pkill_binary(signal: &str, bin: &Path) {
+    pkill_process(signal, &bin.to_string_lossy());
+}
+
 fn pgrep_running(name: &str) -> bool {
-    Command::new("pgrep")
-        .arg("-x")
-        .arg(name)
-        .output()
+    let mut cmd = Command::new("pgrep");
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    if name.len() > PROC_COMM_NAME_MAX {
+        cmd.args(["-f", "--", name]);
+    } else {
+        cmd.arg("-x").arg(name);
+    }
+    cmd.output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod pkill_tests {
+    use super::*;
+
+    #[test]
+    fn proc_comm_name_max_matches_linux_task_comm_len() {
+        assert_eq!(PROC_COMM_NAME_MAX, 15);
+        assert!("nfs-klldap-idhelper".len() > PROC_COMM_NAME_MAX);
+        assert!("nfs-klldap-conf-watcher".len() > PROC_COMM_NAME_MAX);
+        assert!("ganesha.nfsd".len() <= PROC_COMM_NAME_MAX);
+    }
 }
 
 fn signal_process(pid: u32, sig: i32) {

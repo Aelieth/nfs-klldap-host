@@ -19,7 +19,7 @@
 
 <div class="settings-group">
     <h4>SSSD bind credentials</h4>
-    <form method="post" action="/setup/3/save" style="margin-bottom:0.75rem;">
+    <form id="setup-form" method="post" style="margin-bottom:0.75rem;">
         <div style="margin-bottom:0.5rem;">
             <label>ldap_default_bind_dn<br>
                 <input type="text" name="ldap_default_bind_dn" value="{{ bind_dn }}" required
@@ -32,10 +32,11 @@
                        style="width:100%; max-width:320px; padding:8px;">
             </label>
         </div>
-        <button type="submit" class="btn">Save credentials</button>
-    </form>
-    <form method="post" action="/setup/3/verify">
-        <button type="submit" class="btn btn-primary">Verify LDAP bind &amp; finish setup</button>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button type="submit" formaction="/setup/3/test" class="btn btn-primary">Test Settings</button>
+            <button type="submit" formaction="/setup/3/continue" id="continue-btn" class="btn"
+                    {% if !test_passed %}disabled{% endif %}>Save and Continue</button>
+        </div>
     </form>
     <p style="margin:0.75rem 0 0; font-size:0.85em; color:var(--text-light);">
         Runs ldapsearch against the bind DN using the same POSIX attributes as SSSD.
@@ -48,4 +49,15 @@
 {% if let Some(err) = error %}
 <p class="alert alert-danger">{{ err }}</p>
 {% endif %}
+
+<script>
+(function () {
+    const form = document.getElementById('setup-form');
+    const continueBtn = document.getElementById('continue-btn');
+    if (!form || !continueBtn) return;
+    form.querySelectorAll('input').forEach(function (el) {
+        el.addEventListener('input', function () { continueBtn.disabled = true; });
+    });
+})();
+</script>
 {% endblock %}

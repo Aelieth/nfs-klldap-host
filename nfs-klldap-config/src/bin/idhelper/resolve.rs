@@ -12,8 +12,8 @@ use nfs_klldap_config::{
 };
 
 use crate::common::{
-    debug_enabled, is_machine_principal, normalize_principal, IdCache, PrincipalKind, Resolved,
-    CACHE_PATH,
+    debug_enabled, is_machine_principal, normalize_principal, take_materialize_if_cache_changed,
+    IdCache, PrincipalKind, Resolved, CACHE_PATH,
 };
 use crate::materialize::materialize_nss_wrappers;
 
@@ -282,9 +282,8 @@ pub(crate) fn resolve_principal(
         );
     }
 
-    let fp_before = cache.content_fingerprint();
     cache.insert(resolved.clone());
-    if fp_before != cache.content_fingerprint() {
+    if take_materialize_if_cache_changed(cache) {
         let write_res = cache.write_to_file(Path::new(CACHE_PATH));
         dlog!(
             "  cache_write result={}",
@@ -293,6 +292,8 @@ pub(crate) fn resolve_principal(
         if let Err(e) = materialize_nss_wrappers(cache) {
             dlog!("  nss_wrapper_write err={}", e);
         }
+    } else {
+        dlog!("  nss_wrapper_write skipped (cache fp unchanged since last materialize)");
     }
 
     // Warm SSSD/getent after a successful user resolve (non-blocking).

@@ -595,10 +595,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             .map(|_| "    Disable_ACL = true;\n")
             .unwrap_or_default();
 
-        // CLIENT block: Protocols=4 only. Read_Access_Check_Policy is intentionally
-        // omitted — Ganesha 9.6 trixie-backports rejects it in EXPORT_DEFAULTS and
-        // CLIENT blocks ("Unknown parameter"); the built-in default is pre.
-        // Additional CLIENT blocks may be appended manually (not preserved on regen).
+        // CLIENT block only; Read_Access_Check_Policy omitted (trixie 9.6 rejects it).
         let client_block = format!(
             r#"
     CLIENT {{

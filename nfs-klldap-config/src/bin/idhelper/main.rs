@@ -23,8 +23,8 @@ use common::normalize_principal;
 use daemon::run_daemon;
 #[cfg(test)]
 use materialize::{
-    group_line_for, passwd_line_for, sanitize_for_nss, seed_cache_and_nss_from_snapshot,
-    sync_user_cache_from_snapshot,
+    cache_changed_since, group_line_for, passwd_line_for, sanitize_for_nss,
+    seed_cache_and_nss_from_snapshot, sync_user_cache_from_snapshot,
 };
 #[cfg(test)]
 use nfs_klldap_config::{IdMapSnapshot, PosixUserEntry};
@@ -369,6 +369,100 @@ mod tests {
         assert!(line.starts_with("alice:x:1005:100:"));
         let gline = group_line_for(c.get("alice@EXAMPLE.COM").unwrap());
         assert!(gline.contains(":100:"));
+    }
+
+    #[test]
+    fn rebulk_sync_unchanged_snapshot_skips_materialize_gate() {
+        let mut snap = IdMapSnapshot::default();
+        snap.users.insert(
+            "alice".to_string(),
+            PosixUserEntry {
+                uid: 1001,
+                gid: 1001,
+                display: "Alice".to_string(),
+            },
+        );
+        snap.by_uid.insert(1001, "alice".to_string());
+
+        let mut cache = IdCache::default();
+        sync_user_cache_from_snapshot(&snap, "EX.COM", &mut cache);
+        let fp_after_first = cache.content_fingerprint();
+
+        let fp_before = cache.content_fingerprint();
+        let _ = sync_user_cache_from_snapshot(&snap, "EX.COM", &mut cache);
+        let fp_after_second = cache.content_fingerprint();
+
+        assert_eq!(fp_before, fp_after_second);
+        assert_eq!(fp_after_first, fp_after_second);
+        assert!(!cache_changed_since(fp_before, &cache));
+    }
+
+    #[test]
+    fn rebulk_sync_new_user_changes_fingerprint_and_triggers_materialize_gate() {
+        let mut snap1 = IdMapSnapshot::default();
+        snap1.users.insert(
+            "alice".to_string(),
+            PosixUserEntry {
+                uid: 1001,
+                gid: 1001,
+                display: "Alice".to_string(),
+            },
+        );
+        snap1.by_uid.insert(1001, "alice".to_string());
+
+        let mut cache = IdCache::default();
+        sync_user_cache_from_snapshot(&snap1, "EX.COM", &mut cache);
+        let fp_before = cache.content_fingerprint();
+
+        let mut snap2 = snap1.clone();
+        snap2.users.insert(
+            "bob".to_string(),
+            PosixUserEntry {
+                uid: 1002,
+                gid: 1002,
+                display: "Bob".to_string(),
+            },
+        );
+        snap2.by_uid.insert(1002, "bob".to_string());
+
+        let _ = sync_user_cache_from_snapshot(&snap2, "EX.COM", &mut cache);
+        let fp_after = cache.content_fingerprint();
+
+        assert_ne!(fp_before, fp_after);
+        assert!(cache_changed_since(fp_before, &cache));
+        assert!(cache.get("bob@EX.COM").is_some());
+    }
+
+    #[test]
+    fn rebulk_sync_uid_change_updates_fingerprint() {
+        let mut snap1 = IdMapSnapshot::default();
+        snap1.users.insert(
+            "alice".to_string(),
+            PosixUserEntry {
+                uid: 1001,
+                gid: 1001,
+                display: "Alice".to_string(),
+            },
+        );
+
+        let mut cache = IdCache::default();
+        sync_user_cache_from_snapshot(&snap1, "EX.COM", &mut cache);
+        let fp_before = cache.content_fingerprint();
+
+        let mut snap2 = IdMapSnapshot::default();
+        snap2.users.insert(
+            "alice".to_string(),
+            PosixUserEntry {
+                uid: 2001,
+                gid: 2001,
+                display: "Alice".to_string(),
+            },
+        );
+
+        let _ = sync_user_cache_from_snapshot(&snap2, "EX.COM", &mut cache);
+        assert_ne!(fp_before, cache.content_fingerprint());
+        assert!(cache_changed_since(fp_before, &cache));
+        assert_eq!(cache.get("alice@EX.COM").unwrap().uid, 2001);
     }
 
     #[test]

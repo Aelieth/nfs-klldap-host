@@ -13,7 +13,9 @@ use crate::common::{
     get_realm, get_server_variants, is_machine_principal, IdCache, BULK_SEED_MARKER, CACHE_PATH,
     DEFAULT_REBULK_INTERVAL_SECS, SOCKET_PATH,
 };
-use crate::materialize::{materialize_nss_wrappers, sync_user_cache_from_snapshot};
+use crate::materialize::{
+    cache_changed_since, materialize_nss_wrappers, sync_user_cache_from_snapshot,
+};
 use crate::observer::start_ganesha_observer;
 use crate::resolve::{get_or_init_resolver, resolve_principal, ID_RESOLVER};
 
@@ -22,17 +24,25 @@ fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usize> {
     let (r, dn, pw) = ID_RESOLVER.get().and_then(|o| o.as_ref())?;
     let loaded = r.load_full_identities(dn, pw);
     let snap = r.snapshot();
+    let fp_before = cache.content_fingerprint();
     let synced = sync_user_cache_from_snapshot(&snap, realm, cache);
-    if let Err(e) = materialize_nss_wrappers(cache) {
-        eprintln!("[idhelper] WARN: rebulk nss materialize failed: {}", e);
-        return None;
+    if cache_changed_since(fp_before, cache) {
+        if let Err(e) = materialize_nss_wrappers(cache) {
+            eprintln!("[idhelper] WARN: rebulk nss materialize failed: {}", e);
+            return None;
+        }
+        let _ = cache.write_to_file(Path::new(CACHE_PATH));
+        eprintln!(
+            "[idhelper] rebulk: ldap_loaded={} users_synced={} (nss_passwd refreshed, fp 0x{:x}->0x{:x})",
+            loaded, synced, fp_before, cache.content_fingerprint()
+        );
+    } else {
+        eprintln!(
+            "[idhelper] rebulk: ldap_loaded={} users_synced={} (nss unchanged, fp=0x{:x})",
+            loaded, synced, fp_before
+        );
     }
-    let _ = cache.write_to_file(Path::new(CACHE_PATH));
     let _ = fs::write(BULK_SEED_MARKER, format!("{}\n", synced));
-    eprintln!(
-        "[idhelper] rebulk: ldap_loaded={} users_synced={} (nss_passwd refreshed)",
-        loaded, synced
-    );
     Some(synced)
 }
 

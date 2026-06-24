@@ -55,6 +55,11 @@ pub(crate) fn group_line_for(r: &Resolved) -> String {
     }
 }
 
+/// True when cache content changed after sync and nss files should be rewritten.
+pub(crate) fn cache_changed_since(fp_before: u64, cache: &IdCache) -> bool {
+    fp_before != cache.content_fingerprint()
+}
+
 /// Prune stale LDAP users from cache, re-seed from snapshot; machine principals are kept.
 pub(crate) fn sync_user_cache_from_snapshot(
     snap: &IdMapSnapshot,

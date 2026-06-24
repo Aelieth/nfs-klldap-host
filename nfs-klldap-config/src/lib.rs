@@ -45,6 +45,8 @@ pub use startup::{
     setup_wizard_marker_path,
     webui_setup_url, LdapReachability, StartupStep, DEFAULT_KEYTAB_PATH, SETUP_WIZARD_MARKER,
 };
+#[doc(hidden)]
+pub use startup::lock_setup_marker_for_tests;
 pub use template::{generate_default_template, write_default_config_if_missing};
 pub use uri::{derive_realm_from_uri, extract_host_from_uri, host_is_ip};
 pub use nfs_klldap_identity::{

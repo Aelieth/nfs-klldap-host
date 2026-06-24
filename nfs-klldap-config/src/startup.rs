@@ -34,6 +34,16 @@ pub fn is_setup_wizard_complete() -> bool {
     setup_wizard_marker_path().is_file()
 }
 
+static SETUP_MARKER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serializes tests that override `NFS_KLLDAP_SETUP_MARKER` (shared process-global env).
+#[doc(hidden)]
+pub fn lock_setup_marker_for_tests() -> std::sync::MutexGuard<'static, ()> {
+    SETUP_MARKER_TEST_LOCK
+        .lock()
+        .expect("setup marker test lock")
+}
+
 /// Record successful wizard completion (step 3 verify or supervisor on Ready).
 pub fn mark_setup_wizard_complete() -> Result<(), String> {
     let path = setup_wizard_marker_path();
@@ -374,8 +384,10 @@ pub fn compute_wizard_step(config_path: &Path) -> StartupStep {
         return StartupStep::AddBindCredentials;
     }
 
-    // Structural fields present; stay on step 3 until Test+Continue writes the wizard marker.
-    // Supervisor bring-up uses compute_startup_step (live probes) + marker, not this helper.
+    if is_setup_wizard_complete() {
+        return StartupStep::Ready;
+    }
+    // Fields on disk but marker absent — remain on step 3 until Test+Continue.
     StartupStep::AddBindCredentials
 }
 
@@ -663,14 +675,55 @@ ldap_default_authtok = "sekret"
         }
     }
 
+    /// Isolates NFS_KLLDAP_SETUP_MARKER from parallel tests and host installs.
+    struct TestSetupMarkerEnv {
+        previous: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestSetupMarkerEnv {
+        fn set(path: &Path) -> Self {
+            let lock = super::lock_setup_marker_for_tests();
+            let previous = std::env::var("NFS_KLLDAP_SETUP_MARKER").ok();
+            std::env::set_var("NFS_KLLDAP_SETUP_MARKER", path);
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for TestSetupMarkerEnv {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(v) => std::env::set_var("NFS_KLLDAP_SETUP_MARKER", v),
+                None => std::env::remove_var("NFS_KLLDAP_SETUP_MARKER"),
+            }
+        }
+    }
+
     #[test]
     fn compute_wizard_step_skips_live_ldap_probes() {
         let _persist = TestPersistentEnv::set();
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("nfs-klldap.conf");
+        let marker = tmp.path().join(".setup_wizard_done");
+        let _marker_env = TestSetupMarkerEnv::set(&marker);
         fs::write(&path, complete_preconf_toml()).unwrap();
         assert_eq!(compute_wizard_step(&path), StartupStep::AddBindCredentials);
         assert_ne!(compute_startup_step(&path), StartupStep::Ready);
+    }
+
+    #[test]
+    fn compute_wizard_step_ready_when_marker_complete() {
+        let _persist = TestPersistentEnv::set();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nfs-klldap.conf");
+        let marker = tmp.path().join(".setup_wizard_done");
+        fs::write(&path, complete_preconf_toml()).unwrap();
+        fs::write(&marker, "ok\n").unwrap();
+        let _marker_env = TestSetupMarkerEnv::set(&marker);
+        assert_eq!(compute_wizard_step(&path), StartupStep::Ready);
     }
 
     #[test]

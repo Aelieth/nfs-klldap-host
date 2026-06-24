@@ -177,6 +177,9 @@ fn supervise_probe_wizard_complete_recycle_touches_marker() {
     assert!(combined.contains("SIGHUP received — reloading configuration"));
     assert!(combined.contains("Starting SSSD"));
     assert!(combined.contains("Services recycled after config apply"));
+    assert!(combined.contains(
+        "Supervise-wizard-probe: loop bring-up suppressed (services_started=true)"
+    ));
     assert!(
         !combined.contains("Setup wizard complete — bringing up services"),
         "must not double-bring-up via supervisor_loop after SIGHUP recycle"

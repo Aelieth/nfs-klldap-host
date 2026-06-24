@@ -161,7 +161,18 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
         let _ = fs::remove_file(RECYCLE_MARKER);
         if sup.env.supervise_wizard_probe && is_setup_wizard_complete() {
             sup.log_info("Supervise-wizard-probe: simulating post-wizard SIGHUP recycle");
-            let _ = sup.handle_sighup();
+            sup.handle_sighup()?;
+            if !sup.services_started {
+                return Err("wizard HUP must set services_started before loop".into());
+            }
+            if should_bring_up_services(
+                sup.services_started,
+                is_setup_wizard_complete(),
+                compute_startup_step(&sup.env.nfs_config),
+            ) {
+                return Err("supervisor_loop would duplicate bring-up after wizard HUP".into());
+            }
+            sup.log_info("Supervise-wizard-probe: loop bring-up suppressed (services_started=true)");
             sup.log_info("Supervise wizard probe complete — exiting");
             return Ok(());
         }

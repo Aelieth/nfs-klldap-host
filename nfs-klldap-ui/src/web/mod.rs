@@ -877,6 +877,12 @@ default_security = "krb5p"
         _tmp: tempfile::TempDir,
     }
 
+    impl SetupWizardTestEnv {
+        fn root(&self) -> &std::path::Path {
+            self._tmp.path()
+        }
+    }
+
     impl Drop for SetupWizardTestEnv {
         fn drop(&mut self) {
             std::env::remove_var("NFS_KLLDAP_TEST_PERSISTENT");
@@ -1019,6 +1025,129 @@ ldap_default_authtok = "sekret"
         let resp = super::settings::restart_status().await.into_response();
         let _ = std::fs::remove_file(super::settings::SERVICE_RECYCLE_MARKER);
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// Live TCP server: step3 continue → restarting page → restart-status poll → login.
+    #[allow(clippy::await_holding_lock)] // serializes NFS_KLLDAP_SETUP_MARKER for the whole flow
+    #[tokio::test]
+    async fn wizard_complete_live_http_restart_poll_then_login() {
+        use std::process::Command;
+        use std::time::Duration;
+        use tokio::net::TcpListener;
+
+        let _marker_lock = nfs_klldap_config::lock_setup_marker_for_tests();
+        let (mut state, tmp) = make_setup_wizard_test_state();
+        let marker = tmp.root().join(".setup_wizard_done");
+        std::env::set_var("NFS_KLLDAP_SETUP_MARKER", marker.to_str().unwrap());
+        // Gate on the same marker path mark_setup_wizard_complete() writes (not no_marker).
+        state.setup_marker_override = Some(marker);
+        {
+            let mut t = state.setup_test.lock().unwrap();
+            t.step3_dn = Some("uid=admin,ou=people,dc=test,dc=com".into());
+            t.step3_pw = Some("sekret".into());
+        }
+        let _ = std::fs::remove_file(super::settings::SERVICE_RECYCLE_MARKER);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = router(state);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let base = format!("http://127.0.0.1:{port}");
+        let form = "ldap_default_bind_dn=uid%3Dadmin%2Cou%3Dpeople%2Cdc%3Dtest%2Cdc%3Dcom&ldap_default_authtok=sekret";
+
+        let continue_url = format!("{base}/setup/3/continue");
+        let form_owned = form.to_string();
+        let continue_out = tokio::task::spawn_blocking(move || {
+            Command::new("curl")
+                .args([
+                    "-sf",
+                    "-X",
+                    "POST",
+                    &continue_url,
+                    "-H",
+                    "content-type: application/x-www-form-urlencoded",
+                    "-d",
+                    &form_owned,
+                ])
+                .output()
+        })
+        .await
+        .expect("spawn_blocking join")
+        .expect("curl POST /setup/3/continue");
+        assert!(
+            continue_out.status.success(),
+            "step3 continue failed: {}",
+            String::from_utf8_lossy(&continue_out.stderr)
+        );
+        let continue_html = String::from_utf8_lossy(&continue_out.stdout);
+        assert!(continue_html.contains("Restarting to apply changes"));
+        assert!(continue_html.contains("/restart-status"));
+
+        let status_url = format!("{base}/restart-status");
+        let pending = tokio::task::spawn_blocking(move || {
+            Command::new("curl")
+                .args([
+                    "-s",
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "%{http_code}",
+                    &status_url,
+                ])
+                .output()
+        })
+        .await
+        .expect("spawn_blocking join")
+        .expect("curl GET /restart-status pending");
+        assert_eq!(
+            String::from_utf8_lossy(&pending.stdout).trim(),
+            "503",
+            "restart-status must be pending before supervisor recycle"
+        );
+
+        std::fs::write(super::settings::SERVICE_RECYCLE_MARKER, b"ok\n").unwrap();
+        let ready_url = format!("{base}/restart-status");
+        let ready = tokio::task::spawn_blocking(move || {
+            Command::new("curl").args(["-sf", &ready_url]).output()
+        })
+        .await
+        .expect("spawn_blocking join")
+        .expect("curl GET /restart-status ready");
+        assert_eq!(String::from_utf8_lossy(&ready.stdout).trim(), "recycled");
+
+        let login_url = format!("{base}/login");
+        let login = tokio::task::spawn_blocking(move || {
+            Command::new("curl")
+                .args(["-s", "-S", "-w", "\n%{http_code}", &login_url])
+                .output()
+        })
+        .await
+        .expect("spawn_blocking join")
+        .expect("curl GET /login");
+        let login_raw = String::from_utf8_lossy(&login.stdout);
+        let login_code = login_raw.lines().last().unwrap_or("");
+        let login_html = login_raw
+            .lines()
+            .take(login_raw.lines().count().saturating_sub(1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(login_code, "200", "login HTTP status (body len {})", login_html.len());
+        assert!(
+            !login_html.contains("SSSD") && !login_html.contains("BIND FAILED"),
+            "login must not show false service errors before auth"
+        );
+        assert!(
+            login_html.contains("First-run") || login_html.contains("setup-password"),
+            "login page must render first-run form"
+        );
+
+        server.abort();
+        let _ = std::fs::remove_file(super::settings::SERVICE_RECYCLE_MARKER);
+        std::env::remove_var("NFS_KLLDAP_SETUP_MARKER");
     }
 
     #[tokio::test]

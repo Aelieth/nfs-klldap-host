@@ -42,6 +42,8 @@ struct SupervisorEnv {
     log_format_json: bool,
     /// CI one-shot path: generate + log preconf bring-up, then exit (no daemon loop).
     supervise_probe: bool,
+    /// CI one-shot: simulate post-wizard SIGHUP recycle (wizard marker + complete conf).
+    supervise_wizard_probe: bool,
     /// HOST_NFS sidecar mode: generate fragments for host Ganesha, skip in-container nfsd.
     host_nfs_mode: bool,
 }
@@ -76,6 +78,8 @@ impl SupervisorEnv {
                 .map(|v| v == "json")
                 .unwrap_or(false),
             supervise_probe: std::env::var("NFS_KLLDAP_SUPERVISE_PROBE")
+                .is_ok_and(|v| v == "1"),
+            supervise_wizard_probe: std::env::var("NFS_KLLDAP_SUPERVISE_WIZARD_PROBE")
                 .is_ok_and(|v| v == "1"),
             host_nfs_mode: resolve_host_nfs_mode(config_path),
         }
@@ -155,6 +159,12 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
             webui_setup_url()
         ));
         let _ = fs::remove_file(RECYCLE_MARKER);
+        if sup.env.supervise_wizard_probe && is_setup_wizard_complete() {
+            sup.log_info("Supervise-wizard-probe: simulating post-wizard SIGHUP recycle");
+            let _ = sup.handle_sighup();
+            sup.log_info("Supervise wizard probe complete — exiting");
+            return Ok(());
+        }
     }
 
     sup.supervisor_loop()
@@ -355,6 +365,10 @@ impl Supervisor {
         self.env.host_nfs_mode = resolve_host_nfs_mode(&self.env.nfs_config);
         self.recycle_services_after_config();
         self.log_info("Services recycled after config apply.");
+        if !self.services_started {
+            self.services_started = true;
+            let _ = self.start_watcher();
+        }
         self.touch_recycle_marker();
         Ok(())
     }

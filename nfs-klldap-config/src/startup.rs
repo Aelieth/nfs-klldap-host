@@ -374,7 +374,8 @@ pub fn compute_wizard_step(config_path: &Path) -> StartupStep {
         return StartupStep::AddBindCredentials;
     }
 
-    // All fields present; user finishes via step 3 Test + Continue (marker written there).
+    // Structural fields present; stay on step 3 until Test+Continue writes the wizard marker.
+    // Supervisor bring-up uses compute_startup_step (live probes) + marker, not this helper.
     StartupStep::AddBindCredentials
 }
 

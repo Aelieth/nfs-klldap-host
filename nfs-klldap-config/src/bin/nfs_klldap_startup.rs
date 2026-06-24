@@ -40,6 +40,14 @@ fn main() {
                 exit(2);
             }
         }
+        "supervise-probe-wizard" => {
+            std::env::set_var("NFS_KLLDAP_SUPERVISE_PROBE", "1");
+            std::env::set_var("NFS_KLLDAP_SUPERVISE_WIZARD_PROBE", "1");
+            if let Err(e) = supervisor::run_supervisor(&config_path) {
+                eprintln!("FATAL: {e}");
+                exit(2);
+            }
+        }
         "check" => {
             if let Err(e) = run_one_shot_diagnostics(&config_path) {
                 eprintln!("ERROR: {e}");
@@ -67,7 +75,8 @@ fn print_help() {
 
 Usage:
   nfs-klldap-startup supervise       Run pid-1 supervisor (default; replaces entrypoint logic)
-  nfs-klldap-startup supervise-probe One-shot supervise path for CI (probe mode, then exit)
+  nfs-klldap-startup supervise-probe        One-shot preconf supervise path for CI
+  nfs-klldap-startup supervise-probe-wizard One-shot post-wizard SIGHUP recycle for CI
   nfs-klldap-startup check           One-shot diagnostics and exit
   nfs-klldap-startup wait-ready      Poll until setup steps pass (no UI)
 

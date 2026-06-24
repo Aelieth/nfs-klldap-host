@@ -2,10 +2,9 @@
 
 use askama::Template;
 use axum::{
-    body::Body,
     extract::{Form, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Json, Redirect, Response},
+    response::{Html, IntoResponse, Json, Redirect},
 };
 use serde::Serialize;
 use nfs_klldap_config::{
@@ -250,7 +249,10 @@ pub async fn setup_step1(State(state): State<super::AppState>) -> impl IntoRespo
     }
     let (hostname, principals) = banner_context(&state.config_path);
     let realm = attempt_realm_from_config(&state.config_path).unwrap_or_else(|| "YOUR.REALM".into());
-    let verified = check_persistent_writable(&state.config_path);
+    let config_path = state.config_path.clone();
+    let verified = tokio::task::spawn_blocking(move || check_persistent_writable(&config_path))
+        .await
+        .unwrap_or(false);
     let test_log = Some(format_volume_probe(&state.config_path, verified));
     Html(
         SetupStep1Template {
@@ -273,7 +275,11 @@ pub async fn setup_step1(State(state): State<super::AppState>) -> impl IntoRespo
 
 /// POST /setup/1/verify
 pub async fn setup_step1_verify(State(state): State<super::AppState>) -> impl IntoResponse {
-    if check_persistent_writable(&state.config_path) {
+    let config_path = state.config_path.clone();
+    let verified = tokio::task::spawn_blocking(move || check_persistent_writable(&config_path))
+        .await
+        .unwrap_or(false);
+    if verified {
         Redirect::to("/setup/2").into_response()
     } else {
         let (hostname, principals) = banner_context(&state.config_path);
@@ -517,7 +523,7 @@ pub async fn setup_step3_test(
 pub async fn setup_step3_continue(
     State(state): State<super::AppState>,
     Form(form): Form<BindForm>,
-) -> Response<Body> {
+) -> impl IntoResponse {
     if form.ldap_default_bind_dn.trim().is_empty() {
         return render_step3_error(&state, "Bind DN is required.", Some(&form.ldap_default_bind_dn))
             .into_response();
@@ -596,7 +602,7 @@ fn clear_step3_test(state: &super::AppState) {
 }
 
 /// GET /setup/complete — legacy URL; serves the same restart poller as step 3 continue.
-pub async fn setup_complete(State(state): State<super::AppState>) -> Response<Body> {
+pub async fn setup_complete(State(state): State<super::AppState>) -> impl IntoResponse {
     let _ = super::settings::try_schedule_service_recycle(&state, "First-run setup complete").await;
     super::settings::render_restarting_page().into_response()
 }

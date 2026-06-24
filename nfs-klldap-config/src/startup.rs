@@ -159,7 +159,7 @@ pub fn ldap_uri_port(uri: &str) -> u16 {
         .unwrap_or(636)
 }
 
-/// Apply-log-style reachability report with TUI troubleshooting hints.
+/// Apply-log-style reachability report with setup-wizard troubleshooting hints.
 pub fn format_reachability_probe(host: &str, uri: &str, result: &LdapReachability) -> String {
     let port = ldap_uri_port(uri);
     let mut out = format!(

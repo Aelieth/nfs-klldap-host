@@ -1,5 +1,7 @@
 # nfs-klldap-host
 
+**Branch 0.9.x** — WebUI setup wizard at `/setup` (HTTPS :9630); first-run configuration is browser-based.
+
 Companion app for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos), this docker container helps to host and manage NFS shares with POSIX attributes sync'ed with real name resolution to users and groups across the LDAP protocol for simple management and visualization. Lightweight, flexible, and agile enough to host multiple shares, be deployable across a small network, and allow easy remote management via secure connections with KLLDAP.
 
 Debian 13-slim runtime (Rust build stages remain on Fedora minimal) providing a complete Kerberized NFSv4 server (NFS-Ganesha) with KLLDAP-backed POSIX UID/GID mapping via SSSD. The multi-stage build keeps the three Rust compilation stages on Fedora for reliable cargo-chef + cross-compilation while the final runtime uses Debian 13-slim (with Ganesha from backports for configuration compatibility) for smaller size and packaging stability.
@@ -63,13 +65,13 @@ docker run -d \
   ghcr.io/aelieth/nfs-klldap-host:latest
 ```
 
-First run writes a default `nfs-klldap.conf` and starts the WebUI immediately. Open **https://\<host\>:9630/setup** for the 3-step wizard (replaces the old terminal TUI):
+First run writes a default `nfs-klldap.conf` and starts the WebUI immediately. Open **https://<host>:9630/setup** for the 3-step wizard:
 
 1. Persistent `/config` bind mount (writable volume check)
 2. `ldap_uri` — **Test Settings**, then **Save and Continue** (DNS/TCP reachability)
 3. `[sssd]` bind DN + password — **Test Settings**, then **Save and Continue** (`ldapsearch` bind)
 
-Each step shows a **Test Log** (same monospace style as the main UI apply log) with command output and troubleshooting hints when a probe fails — replacing the old terminal TUI live diagnostics.
+Each step shows a **Test Log** with command output and troubleshooting hints when a probe fails.
 
 After step 3, the same **Restart and apply** flow runs (restarting page polling `/restart-status` until SSSD, Kerberos, and NFS services are up), then redirects to `/login` to set the localhost admin password.
 

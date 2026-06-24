@@ -6,22 +6,17 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
 use nfs_klldap_config::{classify_principal, NfsKlldapConfig};
+use nfs_klldap_identity::nfs_keytab_host_variants;
 
 pub(crate) const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
 pub(crate) const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
 const CACHE_VERSION: &str = "1";
 
-// nss_wrapper files materialized by the idhelper so that the Ganesha process
-// (launched under LD_PRELOAD=libnss_wrapper.so) sees correct uid/gid for both
-// LDAP users and machine principals (host/..., nfs/..., root/...).
-// These are the mechanism that actually wires idhelper classification into
-// Ganesha's name-to-uid hot path for Kerberos owner strings.
+// nss_wrapper passwd/group files Ganesha reads under LD_PRELOAD for Kerberos principal→uid.
 pub(crate) const NSS_PASSWD_PATH: &str = "/var/lib/nfs-klldap/nss_passwd";
 pub(crate) const NSS_GROUP_PATH: &str = "/var/lib/nfs-klldap/nss_group";
 
-// Supplemental extrausers (libnss-extrausers) location. When configured in
-// nsswitch (files extrausers sss) this lets us inject machine->root mappings
-// without replacing the entire user database or hiding SSSD/LDAP users.
+// Supplemental extrausers entries for machine→root mappings alongside SSSD users.
 pub(crate) const EXTRAUSERS_PASSWD: &str = "/var/lib/extrausers/passwd";
 pub(crate) const EXTRAUSERS_GROUP: &str = "/var/lib/extrausers/group";
 
@@ -174,17 +169,12 @@ impl IdCache {
     }
 }
 
-/// Return true if this looks like a machine / host / root Kerberos principal.
-/// Matches common patterns used by clients with host keytabs (Fedora Immutable etc.)
-/// as well as the server's own NFS service principals.
+/// True when principal is a machine service name (host/nfs/root) vs a user TGT.
 pub fn is_machine_principal(
     principal: &str,
     realm: &str,
     server_variants: &[String],
 ) -> (bool, String) {
-    // Delegate to the shared implementation (centralized prefixes + logic) for
-    // unification and to guarantee idhelper + any future users have identical
-    // classification for hybrid machine (host/nfs/root) vs user TGT principals.
     classify_principal(principal, realm, server_variants)
 }
 
@@ -200,51 +190,57 @@ pub fn normalize_principal(p: &str) -> String {
     }
 }
 
-pub(crate) fn get_server_variants() -> Vec<String> {
-    // Use the real config for hostname when present (single source of truth).
-    if let Ok(cfg) = NfsKlldapConfig::load(std::path::Path::new(
-        &std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string())
-    )) {
-        if let Some(h) = &cfg.server.hostname {
-            if !h.trim().is_empty() {
-                let mut v = vec![h.trim().to_string()];
-                if let Some(short) = h.split('.').next() {
-                    if short != h.trim() { v.push(short.to_string()); }
-                }
-                return v;
-            }
-        }
+fn config_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(
+        std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string()),
+    )
+}
+
+fn load_runtime_config() -> Option<NfsKlldapConfig> {
+    NfsKlldapConfig::load(&config_path()).ok()
+}
+
+fn resolve_hostname_for_idhelper() -> String {
+    if let Some(h) = load_runtime_config()
+        .and_then(|cfg| cfg.server.hostname)
+        .filter(|h| !h.trim().is_empty())
+    {
+        return h.trim().to_string();
     }
     if let Ok(h) = std::env::var("NFS_KLLDAP_SERVER_HOSTNAME") {
         if !h.trim().is_empty() {
-            let mut v = vec![h.trim().to_string()];
-            if let Some(short) = h.split('.').next() { if short != h.trim() { v.push(short.to_string()); } }
-            return v;
+            return h.trim().to_string();
         }
     }
     if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
         let h = h.trim().to_string();
         if !h.is_empty() {
-            let mut v = vec![h.clone()];
-            if let Some(short) = h.split('.').next() { if short != h { v.push(short.to_string()); } }
-            return v;
+            return h;
         }
     }
-    vec!["localhost".to_string()]
+    "localhost".to_string()
+}
+
+pub(crate) fn get_server_variants() -> Vec<String> {
+    let variants = nfs_keytab_host_variants(&resolve_hostname_for_idhelper());
+    if variants.is_empty() {
+        vec!["localhost".to_string()]
+    } else {
+        variants
+    }
 }
 
 pub(crate) fn get_realm() -> String {
-    // Prefer real config (effective_realm derivation matches generator/SSSD).
-    if let Ok(cfg) = NfsKlldapConfig::load(std::path::Path::new(
-        &std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string())
-    )) {
+    if let Some(cfg) = load_runtime_config() {
         let r = cfg.effective_realm();
         if !r.trim().is_empty() && !r.trim().eq_ignore_ascii_case("example.com") {
             return r.to_uppercase();
         }
     }
     if let Ok(r) = std::env::var("NFS_KLLDAP_KERBEROS_REALM") {
-        if !r.trim().is_empty() { return r.trim().to_uppercase(); }
+        if !r.trim().is_empty() {
+            return r.trim().to_uppercase();
+        }
     }
     if let Ok(content) = std::fs::read_to_string("/etc/krb5.conf") {
         for line in content.lines() {
@@ -252,7 +248,9 @@ pub(crate) fn get_realm() -> String {
             if t.starts_with("default_realm") {
                 if let Some(eq) = t.find('=') {
                     let r = t[eq + 1..].trim().to_string();
-                    if !r.is_empty() { return r.to_uppercase(); }
+                    if !r.is_empty() {
+                        return r.to_uppercase();
+                    }
                 }
             }
         }

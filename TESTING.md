@@ -1,6 +1,8 @@
 # Testing
 
-`cargo test --workspace` (or `make test` + `make clippy`). Workspace crates: `nfs-klldap-identity`, `nfs-klldap-config`, `nfs-klldap-ui`.
+**0.9.x branch.** `cargo test --workspace` (or `make test` + `make clippy`). Workspace crates: `nfs-klldap-identity`, `nfs-klldap-config`, `nfs-klldap-ui`.
+
+Representative full-config generation: `nfs-klldap-config/tests/representative_generate.rs`.
 
 ## Strategy
 

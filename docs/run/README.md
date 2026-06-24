@@ -1,5 +1,7 @@
 # Running
 
+**0.9.x branch:** first-run setup is the WebUI wizard at `https://<host>:9630/setup/1` … `/setup/3`.
+
 All services run as root inside the container. Recommended: `--uts=host`, keytab with NFS service principals matching the host hostname, bind mounts for config + data.
 
 See root README for the docker run example.
@@ -28,7 +30,7 @@ On a fresh container the supervisor starts the WebUI immediately and polls until
 
 ### Setup wizard troubleshooting
 
-The **Test Log** on each setup page mirrors the old terminal TUI probes. Common failures:
+The **Test Log** on each setup page shows live probe output. Common failures:
 
 - **DNS failure (step 2):** check hostname spelling and DNS records on the Docker host; try `getent hosts <host>` from the host; container may need `--network=host` or `--dns=...`.
 - **Port unreachable (step 2):** confirm port in `ldap_uri` (ldaps usually 636, ldap usually 389); check firewall/SELinux; try `nc -zv <host> <port>` from the Docker host.

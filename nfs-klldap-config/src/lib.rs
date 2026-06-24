@@ -746,23 +746,6 @@ mod tests {
     }
 
     #[test]
-    fn nfs_keytab_host_variants_short_and_fqdn() {
-        assert_eq!(
-            nfs_keytab_host_variants("aurora.testdomain.com"),
-            vec!["aurora".to_string(), "aurora.testdomain.com".to_string()]
-        );
-        assert_eq!(nfs_keytab_host_variants("myserver"), vec!["myserver".to_string()]);
-        assert_eq!(nfs_keytab_host_variants(""), Vec::<String>::new());
-    }
-
-    #[test]
-    fn nfs_keytab_host_matches_short_or_fqdn() {
-        assert!(nfs_keytab_host_matches("aurora", "aurora.testdomain.com"));
-        assert!(nfs_keytab_host_matches("aurora.testdomain.com", "aurora"));
-        assert!(!nfs_keytab_host_matches("other", "aurora.testdomain.com"));
-    }
-
-    #[test]
     fn docker_default_hostname_detection() {
         assert!(looks_like_docker_default_hostname("3c896c1c2e24"));
         assert!(looks_like_docker_default_hostname("a1b2c3d4e5f6"));

@@ -69,6 +69,10 @@ klist -k /etc/krb5.keytab
 
 Client `rpc.idmapd` (Method=nsswitch) still helps pretty `ls` output on NFS clients. The generator also writes `/etc/idmapd.conf` (Domain + Local-Realms from the Kerberos realm, Method + GSS-Methods = nsswitch) directly from the same nfs-klldap.conf + [sssd] info used for sssd.conf and ganesha DomainName. In sssd.conf it now auto-derives krb5_realm/krb5_server/krb5_kpasswd (same host as ldap_uri, same realm) — the "kerberos format" of the ldap auto values — for co-located KDC setups. Ganesha krb5* security (default krb5p) works with default auth_provider=ldap (sufficient); these settings make the domain Kerberos-aware for resolution. The authoritative live mapping + machine-vs-user classification for hybrid Kerberos principals remains the nfs-klldap-idhelper (IdLdapResolver + getent + nss_wrapper/extrausers materialization).
 
+## Ganesha 9.6 id mapping (generated config)
+
+The generator emits `DIRECTORY_SERVICES` with `DomainName`, `Pwnam_Implementation=nsswitch`, `Root_Kerberos_Principal=host, nfs`, and `idmapped_user/group_time_validity=600` — not deprecated `Manage_Gids_Expiration` or `Read_Access_Check_Policy`. Live principal→uid for hybrid clients is handled by `nfs-klldap-idhelper` (see below).
+
 ## Machine vs User Principals (Fedora Immutable + host keytabs)
 
 When clients use Kerberos host keytabs (e.g. `/etc/krb5.keytab` on Fedora Immutable/Silverblue) plus user TGTs, Ganesha receives Kerberos-authenticated principals on NFSv4 compounds:

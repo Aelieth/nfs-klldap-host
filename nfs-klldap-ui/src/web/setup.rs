@@ -1,4 +1,4 @@
-//! First-run 3-step WebUI setup wizard (replaces the terminal TUI).
+//! First-run 3-step WebUI setup wizard at /setup/1 … /setup/3.
 
 use askama::Template;
 use axum::{

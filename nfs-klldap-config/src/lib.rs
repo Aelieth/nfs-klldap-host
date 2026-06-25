@@ -8,6 +8,11 @@ mod error;
 mod exports_fingerprint;
 mod ganesha_liveness;
 mod recycle_plan;
+mod runtime;
+#[cfg(unix)]
+mod signals;
+#[cfg(not(unix))]
+mod signals_stub;
 mod fs_probe;
 mod fs_warnings;
 mod generate;
@@ -17,7 +22,6 @@ mod network;
 mod persist;
 mod startup;
 mod template;
-mod uri;
 mod validate;
 
 pub use config::{
@@ -42,6 +46,22 @@ pub use ganesha_liveness::{
 pub use recycle_plan::{
     plan_from_changes, ganesha_sighup_failed, GaneshaAction, ServiceRecyclePlan,
 };
+pub use runtime::{
+    host_nfs_active, host_nfs_from_env, parse_host_nfs_env_value, resolve_host_nfs_mode,
+    runtime_hostname, runtime_realm, runtime_realm_from_disk, runtime_server_variants,
+    runtime_server_variants_from_disk,
+};
+#[cfg(unix)]
+pub use signals::{
+    install_signal_handlers, reap_one_child, request_sighup, shutdown_requested, signal_process,
+    signal_supervisor_hup, take_sighup_requested,
+};
+#[cfg(not(unix))]
+pub use signals_stub::{
+    install_signal_handlers, reap_one_child, request_sighup, shutdown_requested,
+    signal_supervisor_hup, take_sighup_requested,
+};
+pub use constants::PROC_COMM_NAME_MAX;
 
 pub use fs_probe::{
     compute_effective_flags, limited_fs_warning, probe_from_mountinfo, probe_fs_capabilities,
@@ -73,7 +93,7 @@ pub use startup::{
 #[doc(hidden)]
 pub use startup::lock_setup_marker_for_tests;
 pub use template::{generate_default_template, write_default_config_if_missing};
-pub use uri::{derive_realm_from_uri, extract_host_from_uri, host_is_ip};
+pub use nfs_klldap_identity::{derive_realm_from_uri, extract_host_from_uri, host_is_ip};
 pub use nfs_klldap_identity::{
     get_keytab_info, parse_klist_nfs_hosts, parse_klist_nfs_principals, read_keytab_nfs_principals,
     KeytabInfo,

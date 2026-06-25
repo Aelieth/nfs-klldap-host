@@ -35,7 +35,8 @@ nfs-klldap-identity = { path = "../nfs-klldap-identity" }
 # thiserror kept out for tiny container binary size; manual error impl below
 
 [target.'cfg(unix)'.dependencies]
-libc = { workspace = true }
+nix = { workspace = true }
+signal-hook = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -533,16 +533,14 @@ impl LdapClient {
             .unwrap_or_default()
     }
 
-    fn escape_filter_value(s: &str) -> String {
-        escape_ldap_filter(s)
-    }
+
 
     fn user_filter_by_name(&self, name: &str) -> String {
         format!(
             "(&(objectClass={})({}={}))",
             self.posix_attributes.user_object_class,
             self.posix_attributes.user_name,
-            Self::escape_filter_value(name)
+            escape_ldap_filter(name)
         )
     }
 
@@ -551,7 +549,7 @@ impl LdapClient {
             "(&(objectClass={})({}={}))",
             self.posix_attributes.group_object_class,
             self.posix_attributes.group_name,
-            Self::escape_filter_value(name)
+            escape_ldap_filter(name)
         )
     }
 
@@ -615,7 +613,7 @@ impl LdapClient {
             return format!("(&(objectClass={})({}=*))", obj, uid_attr);
         }
 
-        let esc = Self::escape_filter_value(q_orig);
+        let esc = escape_ldap_filter(q_orig);
         let uid_clause = if let Ok(n) = q_orig.parse::<i32>() {
             format!("({}={})", uid_attr, n)
         } else {
@@ -637,7 +635,7 @@ impl LdapClient {
             return format!("(&(objectClass={})({}=*))", obj, gid_attr);
         }
 
-        let esc = Self::escape_filter_value(q_orig);
+        let esc = escape_ldap_filter(q_orig);
         let gid_clause = if let Ok(n) = q_orig.parse::<i32>() {
             format!("({}={})", gid_attr, n)
         } else {
@@ -1120,7 +1118,7 @@ impl LdapClient {
             "(&(objectClass={})({}={}))",
             obj,
             name_attr,
-            Self::escape_filter_value(username)
+            escape_ldap_filter(username)
         );
         let lookup_attrs: Vec<String> = vec![name_attr.clone(), "memberOf".into()];
 
@@ -1203,7 +1201,7 @@ impl LdapClient {
             "(&(objectClass={})({}={}))",
             g_obj,
             g_name,
-            Self::escape_filter_value(group_name)
+            escape_ldap_filter(group_name)
         );
 
         let g_entries = self
@@ -1228,7 +1226,7 @@ impl LdapClient {
         let test_filter = format!(
             "(&(objectClass={})(memberOf={}))",
             self.posix_attributes.user_object_class,
-            Self::escape_filter_value(&group_dn)
+            escape_ldap_filter(&group_dn)
         );
 
         let test_entries = self

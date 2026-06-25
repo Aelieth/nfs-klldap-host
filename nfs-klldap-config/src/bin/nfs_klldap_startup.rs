@@ -115,12 +115,9 @@ fn wait_until_ready(config_path: &Path) -> Result<(), String> {
     loop {
         let step = compute_startup_step(config_path);
         if step == StartupStep::Ready {
-            if let Ok(v) = std::env::var("HOST_NFS").or_else(|_| std::env::var("NFS_KLLDAP_HOST_NFS")) {
-                let t = v.trim().to_ascii_lowercase();
-                if t == "true" || t == "1" || t == "yes" || t == "on" {
-                    println!("[HOST_NFS] Mode active — host NFS server (Ganesha at /etc/ganesha) will serve the shares.");
-                    println!("           This container manages config, Kerberos material, SSSD identity, and the WebUI permission tools.");
-                }
+            if nfs_klldap_config::host_nfs_from_env() == Some(true) {
+                println!("[HOST_NFS] Mode active — host NFS server (Ganesha at /etc/ganesha) will serve the shares.");
+                println!("           This container manages config, Kerberos material, SSSD identity, and the WebUI permission tools.");
             }
             return Ok(());
         }

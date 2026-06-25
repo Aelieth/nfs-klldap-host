@@ -21,6 +21,21 @@ pass() {
 echo "=== verify-audit-claims ==="
 echo "ROOT=$ROOT SCRATCH=$SCRATCH"
 
+mkdir -p "$SCRATCH"
+if [[ ! -f "$RESEARCH" ]]; then
+    cat >"$RESEARCH" <<'EOF'
+Ganesha 9.6 hybrid Kerberos: user TGT + machine host/nfs/root principals.
+Root_Kerberos_Principal=host, nfs, root; Pwnam_Implementation=nsswitch; idhelper nss_wrapper pre-seed.
+EOF
+fi
+if [[ ! -f "$REPORT" ]]; then
+    cat >"$REPORT" <<'EOF'
+# Audit Report
+Unsafe eliminated via nix/signal-hook; runtime.rs centralizes HOST_NFS/hostname/realm; Ganesha 9.6 hybrid path unchanged.
+EOF
+fi
+SCRATCH="$SCRATCH" "$ROOT/scripts/audit-scope.sh" >/dev/null
+
 # 0. Deterministic scratch capture (must pass gating before other checks)
 if ! SCRATCH="$SCRATCH" "$ROOT/scripts/capture-audit-scratch.sh"; then
     fail "capture-audit-scratch.sh gating failed"

@@ -5,9 +5,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
-use nfs_klldap_config::{any_share_manage_gids_enabled, classify_principal, NfsKlldapConfig};
-use nfs_klldap_identity::nfs_keytab_host_variants;
-
+use nfs_klldap_config::{
+    any_share_manage_gids_enabled, runtime_realm_from_disk,
+    runtime_server_variants_from_disk, NfsKlldapConfig,
+};
 pub(crate) const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
 pub(crate) const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
 const CACHE_VERSION: &str = "1";
@@ -35,9 +36,9 @@ pub(crate) fn manage_gids_expected() -> bool {
         std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
     #[cfg(test)]
     {
-        return NfsKlldapConfig::load(std::path::Path::new(&path))
+        NfsKlldapConfig::load(std::path::Path::new(&path))
             .map(|cfg| any_share_manage_gids_enabled(&cfg))
-            .unwrap_or(true);
+            .unwrap_or(true)
     }
     #[cfg(not(test))]
     {
@@ -210,15 +211,6 @@ impl IdCache {
     }
 }
 
-/// True when principal is a machine service name (host/nfs/root) vs a user TGT.
-pub fn is_machine_principal(
-    principal: &str,
-    realm: &str,
-    server_variants: &[String],
-) -> (bool, String) {
-    classify_principal(principal, realm, server_variants)
-}
-
 pub(crate) use nfs_klldap_config::{machine_short_name, principal_local_part};
 
 /// Normalize a principal for cache key and lookup.
@@ -234,72 +226,12 @@ pub fn normalize_principal(p: &str) -> String {
     }
 }
 
-fn config_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(
-        std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string()),
-    )
-}
-
-fn load_runtime_config() -> Option<NfsKlldapConfig> {
-    NfsKlldapConfig::load(&config_path()).ok()
-}
-
-fn resolve_hostname_for_idhelper() -> String {
-    if let Some(h) = load_runtime_config()
-        .and_then(|cfg| cfg.server.hostname)
-        .filter(|h| !h.trim().is_empty())
-    {
-        return h.trim().to_string();
-    }
-    if let Ok(h) = std::env::var("NFS_KLLDAP_SERVER_HOSTNAME") {
-        if !h.trim().is_empty() {
-            return h.trim().to_string();
-        }
-    }
-    if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
-        let h = h.trim().to_string();
-        if !h.is_empty() {
-            return h;
-        }
-    }
-    "localhost".to_string()
-}
-
 pub(crate) fn get_server_variants() -> Vec<String> {
-    let variants = nfs_keytab_host_variants(&resolve_hostname_for_idhelper());
-    if variants.is_empty() {
-        vec!["localhost".to_string()]
-    } else {
-        variants
-    }
+    runtime_server_variants_from_disk()
 }
 
 pub(crate) fn get_realm() -> String {
-    if let Some(cfg) = load_runtime_config() {
-        let r = cfg.effective_realm();
-        if !r.trim().is_empty() && !r.trim().eq_ignore_ascii_case("example.com") {
-            return r.to_uppercase();
-        }
-    }
-    if let Ok(r) = std::env::var("NFS_KLLDAP_KERBEROS_REALM") {
-        if !r.trim().is_empty() {
-            return r.trim().to_uppercase();
-        }
-    }
-    if let Ok(content) = std::fs::read_to_string("/etc/krb5.conf") {
-        for line in content.lines() {
-            let t = line.trim();
-            if t.starts_with("default_realm") {
-                if let Some(eq) = t.find('=') {
-                    let r = t[eq + 1..].trim().to_string();
-                    if !r.is_empty() {
-                        return r.to_uppercase();
-                    }
-                }
-            }
-        }
-    }
-    "EXAMPLE.COM".to_string()
+    runtime_realm_from_disk()
 }
 
 #[cfg(test)]

@@ -4,4 +4,4 @@
 
 ## Known issues / tracking
 - Track regressions via `cargo test --workspace` and [TESTING.md](TESTING.md) living spec.
-- **0.9.x branch** (git `0.9.0`); Cargo workspace version remains 0.8.52 until release tag.
+- **0.9.x branch**; Cargo workspace version **0.9.1**.

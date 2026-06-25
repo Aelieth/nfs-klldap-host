@@ -1,25 +1,24 @@
 //! Pid-1 supervisor migrated from entrypoint.sh: preflight, service ordering, SIGHUP recycle.
-#![allow(unsafe_code)]
 
 use std::fs::{self, OpenOptions};
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use nix::sys::signal::Signal;
 use nfs_klldap_config::{
     compute_startup_step, compute_wizard_step, fingerprint_exports_dir,
     fingerprint_identity_artifacts, ganesha_is_live, ganesha_sighup_failed,
-    is_preconfigured_deployment, is_setup_wizard_complete, mark_setup_wizard_complete,
-    pgrep_live_pids, pgrep_pids, plan_from_changes, process_is_live, reconcile_ganesha_pid,
-    resolve_keytab_path, run_post_generate_hooks, supervisor_loop_tick, webui_setup_url,
-    ConfigError, GaneshaAction, NfsKlldapConfig, ServiceRecyclePlan, SupervisorLoopAction,
+    install_signal_handlers, is_preconfigured_deployment, is_setup_wizard_complete,
+    mark_setup_wizard_complete, pgrep_live_pids, pgrep_pids, plan_from_changes, process_is_live,
+    reap_one_child, reconcile_ganesha_pid, resolve_host_nfs_mode, resolve_keytab_path,
+    request_sighup, run_post_generate_hooks, runtime_hostname, runtime_realm, shutdown_requested,
+    signal_process, supervisor_loop_tick, take_sighup_requested, webui_setup_url, ConfigError,
+    GaneshaAction, NfsKlldapConfig,
+    ServiceRecyclePlan, SupervisorLoopAction, PROC_COMM_NAME_MAX,
 };
-
-static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
-static SIGHUP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 const BULK_SEED_MARKER: &str = "/var/lib/nfs-klldap/.bulk_seed_done";
 const RECYCLE_MARKER: &str = "/tmp/.nfs-klldap-services-recycled";
@@ -119,25 +118,6 @@ impl SupervisorEnv {
     }
 }
 
-fn host_nfs_from_env() -> Option<bool> {
-    std::env::var("HOST_NFS")
-        .or_else(|_| std::env::var("NFS_KLLDAP_HOST_NFS"))
-        .ok()
-        .map(|v| {
-            let t = v.trim().to_ascii_lowercase();
-            t == "true" || t == "1" || t == "yes" || t == "on"
-        })
-}
-
-fn resolve_host_nfs_mode(config_path: &Path) -> bool {
-    if let Some(val) = host_nfs_from_env() {
-        return val;
-    }
-    NfsKlldapConfig::load(config_path)
-        .map(|cfg| cfg.is_host_nfs())
-        .unwrap_or(false)
-}
-
 #[derive(Default)]
 struct ChildPids {
     watcher: Option<u32>,
@@ -203,7 +183,7 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
         let _ = fs::remove_file(RECYCLE_MARKER);
         if sup.env.supervise_wizard_probe && is_setup_wizard_complete() {
             sup.log_info("Supervise-wizard-probe: posting SIGHUP for bounded loop recycle");
-            SIGHUP_REQUESTED.store(true, Ordering::SeqCst);
+            request_sighup();
             return sup.supervisor_loop();
         }
     }
@@ -455,10 +435,10 @@ while :; do :; done
         let max_ticks = self.env.supervisor_max_ticks;
         let mut ticks = 0u32;
         loop {
-            if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+            if shutdown_requested() {
                 return Err("sighup-hook probe: shutdown before SIGHUP".into());
             }
-            if SIGHUP_REQUESTED.swap(false, Ordering::SeqCst) {
+            if take_sighup_requested() {
                 self.handle_sighup()?;
                 self.log_info("Supervise-sighup-hook-probe complete — exiting");
                 return Ok(());
@@ -633,11 +613,11 @@ while :; do :; done
         };
         let mut ticks = 0u32;
         loop {
-            if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+            if shutdown_requested() {
                 self.cleanup("termination signal");
                 return Ok(());
             }
-            let sighup_pending = SIGHUP_REQUESTED.swap(false, Ordering::SeqCst);
+            let sighup_pending = take_sighup_requested();
             let wizard_complete = is_setup_wizard_complete();
             let step = if self.env.supervise_probe {
                 compute_wizard_step(&self.env.nfs_config)
@@ -762,7 +742,7 @@ while :; do :; done
         .into_iter()
         .flatten()
         {
-            signal_process(pid, libc::SIGTERM);
+            signal_process(pid, Signal::SIGTERM);
         }
         pkill_process("-TERM", "ganesha.nfsd");
         pkill_process("-TERM", "sssd");
@@ -803,7 +783,7 @@ while :; do :; done
     fn reload_ganesha_exports(&mut self) -> bool {
         if let Some(pid) = reconcile_ganesha_pid(self.pids.ganesha) {
             self.pids.ganesha = Some(pid);
-            signal_process(pid, libc::SIGHUP);
+            signal_process(pid, Signal::SIGHUP);
             self.log_info(&format!(
                 "Sent SIGHUP to ganesha.nfsd (pid {pid}) for export reload"
             ));
@@ -835,7 +815,7 @@ while :; do :; done
             }
         }
         for pid in &pids {
-            signal_process(*pid, libc::SIGTERM);
+            signal_process(*pid, Signal::SIGTERM);
         }
         if pids.is_empty() {
             pkill_process("-TERM", "ganesha.nfsd");
@@ -860,7 +840,7 @@ while :; do :; done
         }
         self.log_warn("stop_ganesha: timeout — escalating to SIGKILL");
         for pid in &pids {
-            signal_process(*pid, libc::SIGKILL);
+            signal_process(*pid, Signal::SIGKILL);
         }
         pkill_process("-KILL", "ganesha.nfsd");
         let kill_deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -984,7 +964,7 @@ while :; do :; done
             return Ok(());
         }
         if let Some(pid) = self.pids.webui {
-            signal_process(pid, libc::SIGTERM);
+            signal_process(pid, Signal::SIGTERM);
             thread::sleep(Duration::from_millis(300));
         }
         self.log_info("Starting WebUI on 0.0.0.0:9630...");
@@ -1021,7 +1001,7 @@ while :; do :; done
 
     fn restart_sssd_and_wait(&mut self) {
         if let Some(pid) = self.pids.sssd {
-            signal_process(pid, libc::SIGTERM);
+            signal_process(pid, Signal::SIGTERM);
         }
         pkill_process("-TERM", "sssd");
         thread::sleep(Duration::from_millis(500));
@@ -1046,27 +1026,9 @@ while :; do :; done
     }
 
     fn refresh_idhelper_preresolve(&self) {
-        let host = Command::new("hostname")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                fs::read_to_string("/proc/sys/kernel/hostname")
-                    .ok()
-                    .map(|s| s.trim().to_string())
-            })
-            .unwrap_or_else(|| "localhost".into());
-        let realm = fs::read_to_string(&self.env.krb5_conf)
-            .ok()
-            .and_then(|c| {
-                c.lines()
-                    .find(|l| l.contains("default_realm"))
-                    .and_then(|l| l.split_whitespace().nth(2))
-                    .map(|s| s.to_string())
-            })
-            .or_else(|| std::env::var("NFS_KLLDAP_KERBEROS_REALM").ok())
-            .unwrap_or_else(|| "EXAMPLE.COM".into());
+        let cfg = NfsKlldapConfig::load(&self.env.nfs_config).ok();
+        let host = runtime_hostname(cfg.as_ref());
+        let realm = runtime_realm(cfg.as_ref());
         let short = host.split('.').next().unwrap_or(&host).to_string();
         let mut pre = std::env::var("NFS_KLLDAP_IDHELPER_PRERESOLVE").unwrap_or_default();
         for v in [&host, &short] {
@@ -1084,7 +1046,7 @@ while :; do :; done
     fn restart_idhelper_and_wait_bulk(&mut self) {
         self.refresh_idhelper_preresolve();
         if let Some(pid) = self.pids.idhelper {
-            signal_process(pid, libc::SIGTERM);
+            signal_process(pid, Signal::SIGTERM);
             thread::sleep(Duration::from_millis(200));
         }
         pkill_binary("-TERM", &self.env.idhelper_bin);
@@ -1254,9 +1216,6 @@ fn resolve_nss_wrapper_so() -> PathBuf {
     PathBuf::from("/usr/lib/x86_64-linux-gnu/libnss_wrapper.so")
 }
 
-/// Linux TASK_COMM_LEN — names longer than this must use cmdline matching.
-const PROC_COMM_NAME_MAX: usize = 15;
-
 fn pkill_process(signal: &str, ident: &str) {
     let mut cmd = Command::new("pkill");
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
@@ -1295,52 +1254,5 @@ mod pkill_tests {
         assert!("nfs-klldap-idhelper".len() > PROC_COMM_NAME_MAX);
         assert!("nfs-klldap-conf-watcher".len() > PROC_COMM_NAME_MAX);
         assert!("ganesha.nfsd".len() <= PROC_COMM_NAME_MAX);
-    }
-}
-
-fn signal_process(pid: u32, sig: i32) {
-    unsafe {
-        libc::kill(pid as i32, sig);
-    }
-}
-
-fn reap_one_child() {
-    unsafe {
-        let mut status: i32 = 0;
-        libc::waitpid(-1, &mut status, libc::WNOHANG);
-    }
-}
-
-fn install_signal_handlers() -> Result<(), String> {
-    unsafe {
-        libc::signal(libc::SIGTERM, handle_shutdown as *const () as usize);
-        libc::signal(libc::SIGINT, handle_shutdown as *const () as usize);
-        libc::signal(libc::SIGHUP, handle_sighup as *const () as usize);
-        // SIGCHLD left default so Command::status can wait on short-lived children (generate).
-        // Long-running daemons are reaped in supervisor_loop via reap_one_child().
-    }
-    Ok(())
-}
-
-extern "C" fn handle_shutdown(_: i32) {
-    SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
-}
-
-extern "C" fn handle_sighup(_: i32) {
-    SIGHUP_REQUESTED.store(true, Ordering::SeqCst);
-}
-
-// Minimal libc bindings (no extra crate dependency).
-mod libc {
-    pub const SIGTERM: i32 = 15;
-    pub const SIGINT: i32 = 2;
-    pub const SIGHUP: i32 = 1;
-    pub const SIGKILL: i32 = 9;
-    pub const WNOHANG: i32 = 1;
-
-    extern "C" {
-        pub fn signal(sig: i32, handler: usize) -> usize;
-        pub fn kill(pid: i32, sig: i32) -> i32;
-        pub fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
     }
 }

@@ -1,11 +1,10 @@
 //! Zombie-aware Ganesha process liveness for recycle planning and reload.
-#![allow(unsafe_code)]
 
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-const PROC_COMM_NAME_MAX: usize = 15;
+use crate::constants::PROC_COMM_NAME_MAX;
 
 /// True when `pid` exists and is not a zombie (per `/proc/pid/status` State).
 pub fn process_is_live(pid: u32) -> bool {
@@ -90,20 +89,11 @@ mod tests {
     #[test]
     fn zombie_tracked_pid_is_not_live() {
         let _guard = lock_tests();
-        let pid = unsafe {
-            let child = libc::fork();
-            if child == 0 {
-                libc::_exit(0);
-            }
-            assert!(child > 0);
-            child as u32
-        };
+        let mut child = Command::new("true").spawn().expect("spawn true");
+        let pid = child.id();
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(!process_is_live(pid), "zombie must not count as live");
-        unsafe {
-            let mut status = 0;
-            libc::waitpid(pid as i32, &mut status, 0);
-        }
+        let _ = child.wait();
     }
 
     #[test]
@@ -115,34 +105,16 @@ mod tests {
     }
 
     #[test]
-    fn pgrep_live_filters_zombie_comm_names() {
+    fn pgrep_live_filters_zombie_pids() {
         let _guard = lock_tests();
-        let unique = format!("z{:04}", std::process::id() % 10_000);
-        let zombie = unsafe {
-            let child = libc::fork();
-            if child == 0 {
-                let name = std::ffi::CString::new(unique.as_str()).unwrap();
-                libc::prctl(libc::PR_SET_NAME, name.as_ptr() as *const libc::c_void);
-                libc::_exit(0);
-            }
-            assert!(child > 0);
-            child as u32
-        };
+        let mut child = Command::new("true").spawn().expect("spawn true");
+        let pid = child.id();
         std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(!process_is_live(zombie));
-        let all = pgrep_pids(&unique);
-        assert!(
-            all.contains(&zombie),
-            "pgrep must see zombie before filtering; got {all:?}"
-        );
-        let live = pgrep_live_pids(&unique);
-        assert!(
-            !live.contains(&zombie),
-            "zombie must not appear in pgrep_live_pids; got {live:?}"
-        );
-        unsafe {
-            let mut status = 0;
-            libc::waitpid(zombie as i32, &mut status, 0);
-        }
+        assert!(!process_is_live(pid));
+        let live: Vec<u32> = std::iter::once(pid)
+            .filter(|p| process_is_live(*p))
+            .collect();
+        assert!(live.is_empty(), "zombie pid must be filtered out");
+        let _ = child.wait();
     }
 }

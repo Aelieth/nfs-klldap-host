@@ -144,7 +144,7 @@ impl NfsKlldapConfig {
 
         // ldap_uri must be DNS (not IP) for Kerberos.
         let host = crate::extract_host_from_uri(&self.ldap_uri);
-        if crate::uri::host_is_ip(&host) {
+        if nfs_klldap_identity::host_is_ip(&host) {
             return Err(ConfigError::Validation(
                 "LDAP IP addresses are not supported, DNS resolution is required for operation."
                     .into(),
@@ -431,19 +431,9 @@ impl NfsKlldapConfig {
             self.server.hostname = if t.is_empty() { None } else { Some(t.to_string()) };
         }
 
-        // [host] — HOST_NFS mode (bare HOST_NFS supported per design; NFS_KLLDAP_ alias for consistency)
-        // Env wins. If no env, the deserialized value from [host] host_nfs (or top-level) in TOML remains.
-        {
-            let env_host_nfs = std::env::var("HOST_NFS")
-                .or_else(|_| std::env::var("NFS_KLLDAP_HOST_NFS"))
-                .ok()
-                .map(|v| {
-                    let t = v.trim().to_ascii_lowercase();
-                    t == "true" || t == "1" || t == "yes" || t == "on"
-                });
-            if let Some(val) = env_host_nfs {
-                self.host.host_nfs = Some(val);
-            }
+        // [host] — env wins over TOML for HOST_NFS sidecar mode.
+        if let Some(val) = crate::runtime::host_nfs_from_env() {
+            self.host.host_nfs = Some(val);
         }
 
         // [storage]

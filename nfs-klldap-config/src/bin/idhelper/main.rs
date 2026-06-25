@@ -15,9 +15,10 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use common::{
-    get_realm, get_server_variants, is_machine_principal, principal_local_part, IdCache,
-    PrincipalKind, Resolved, CACHE_PATH, NSS_GROUP_PATH, NSS_PASSWD_PATH, SOCKET_PATH,
+    get_realm, get_server_variants, principal_local_part, IdCache, PrincipalKind, Resolved,
+    CACHE_PATH, NSS_GROUP_PATH, NSS_PASSWD_PATH, SOCKET_PATH,
 };
+use nfs_klldap_config::classify_principal;
 #[cfg(test)]
 use common::normalize_principal;
 use daemon::run_daemon;
@@ -113,7 +114,7 @@ fn handle_cli(args: &[String]) {
                 eprintln!("Usage: nfs-klldap-idhelper classify <principal>");
                 std::process::exit(2);
             }
-            let (is_m, reason) = is_machine_principal(p, &realm, &server_variants);
+            let (is_m, reason) = classify_principal(p, &realm, &server_variants);
             let kind = if is_m { "machine" } else { "user" };
             println!("{} -> kind={} reason=\"{}\"", p, kind, reason);
         }
@@ -204,13 +205,13 @@ mod tests {
     #[test]
     fn machine_principal_detection_basic() {
         let variants = vec!["aurora".to_string(), "aurora.example.com".to_string()];
-        let (m, _) = is_machine_principal("host/aurora@EXAMPLE.COM", "EXAMPLE.COM", &variants);
+        let (m, _) = classify_principal("host/aurora@EXAMPLE.COM", "EXAMPLE.COM", &variants);
         assert!(m);
-        let (m2, _) = is_machine_principal("nfs/aurora.example.com@EXAMPLE.COM", "EXAMPLE.COM", &variants);
+        let (m2, _) = classify_principal("nfs/aurora.example.com@EXAMPLE.COM", "EXAMPLE.COM", &variants);
         assert!(m2);
-        let (u, _) = is_machine_principal("alice@EXAMPLE.COM", "EXAMPLE.COM", &variants);
+        let (u, _) = classify_principal("alice@EXAMPLE.COM", "EXAMPLE.COM", &variants);
         assert!(!u);
-        let (m3, _) = is_machine_principal("root/client@REALM", "REALM", &variants);
+        let (m3, _) = classify_principal("root/client@REALM", "REALM", &variants);
         assert!(m3);
     }
 

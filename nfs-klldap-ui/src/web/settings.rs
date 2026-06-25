@@ -97,9 +97,19 @@ pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_co
         .unwrap_or(1400);
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-        eprintln!("INFO: '{label}' — triggering service bounce (HUP to pid {hup_pid})");
-        let script = format!("sleep 0.25; kill -HUP {hup_pid} 2>/dev/null || true");
-        let _ = std::process::Command::new("sh").arg("-c").arg(script).spawn();
+        let pid = match hup_pid.parse::<u32>() {
+            Ok(p) if p > 0 => p,
+            _ => {
+                eprintln!(
+                    "WARN: '{label}' — invalid NFS_KLLDAP_SUPERVISOR_PID '{hup_pid}', skipping HUP"
+                );
+                return;
+            }
+        };
+        eprintln!("INFO: '{label}' — triggering service bounce (HUP to pid {pid})");
+        if let Err(e) = nfs_klldap_config::signal_supervisor_hup(pid) {
+            eprintln!("WARN: '{label}' — SIGHUP failed: {e}");
+        }
     });
     true
 }

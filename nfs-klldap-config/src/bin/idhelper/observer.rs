@@ -197,94 +197,6 @@ fn maybe_log_managed_gids_noise(line: &str) -> Option<ManagedGidsLogLevel> {
     Some(level)
 }
 
-#[cfg(test)]
-mod managed_gids_log_tests {
-    use super::*;
-    use std::fs;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn write_limited_fs_config(dir: &std::path::Path) -> std::path::PathBuf {
-        let mountinfo = dir.join("mountinfo");
-        fs::write(
-            &mountinfo,
-            r#"
-36 35 0:59 / /export rw,relatime - btrfs /dev/sda1 rw,noacl
-"#,
-        )
-        .unwrap();
-        std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mountinfo);
-        let conf = dir.join("nfs-klldap.conf");
-        fs::write(
-            &conf,
-            r#"
-ldap_uri = "ldaps://kllap.test:6360"
-[sssd]
-ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
-ldap_default_authtok = "sekret"
-[[shares]]
-name = "data"
-host_path = "/media/data"
-"#,
-        )
-        .unwrap();
-        std::env::set_var("NFS_CONFIG", &conf);
-        conf
-    }
-
-    #[test]
-    fn maybe_log_managed_gids_noise_downgrades_via_manage_gids_expected() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        write_limited_fs_config(tmp.path());
-        assert!(
-            !manage_gids_expected(),
-            "limited-fs fixture must yield manage_gids_expected() == false"
-        );
-        let line = "managed_gids failed for uid 1001";
-        assert_eq!(
-            maybe_log_managed_gids_noise(line),
-            Some(ManagedGidsLogLevel::DebugOnly)
-        );
-    }
-
-    #[test]
-    fn maybe_log_managed_gids_noise_verbose_when_manage_gids_on() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let conf = tmp.path().join("nfs-klldap.conf");
-        fs::write(
-            &conf,
-            r#"
-ldap_uri = "ldaps://kllap.test:6360"
-[sssd]
-ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
-ldap_default_authtok = "sekret"
-[[shares]]
-name = "data"
-host_path = "/media/data"
-manage_gids = true
-"#,
-        )
-        .unwrap();
-        std::env::set_var("NFS_CONFIG", &conf);
-        assert!(manage_gids_expected());
-        assert_eq!(
-            maybe_log_managed_gids_noise("managed_gids stale cache"),
-            Some(ManagedGidsLogLevel::Verbose)
-        );
-    }
-
-    #[test]
-    fn maybe_log_managed_gids_noise_ignores_unrelated_lines() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        write_limited_fs_config(tmp.path());
-        assert_eq!(maybe_log_managed_gids_noise("nfs4_op succeeded"), None);
-    }
-}
-
 fn maybe_warn_bridge_server_addr(
     line: &str,
     bridge_warned: &mut std::collections::HashMap<String, std::time::Instant>,
@@ -497,4 +409,92 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
     }
 
     None
+}
+
+#[cfg(test)]
+mod managed_gids_log_tests {
+    use super::*;
+    use std::fs;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn write_limited_fs_config(dir: &std::path::Path) -> std::path::PathBuf {
+        let mountinfo = dir.join("mountinfo");
+        fs::write(
+            &mountinfo,
+            r#"
+36 35 0:59 / /export rw,relatime - btrfs /dev/sda1 rw,noacl
+"#,
+        )
+        .unwrap();
+        std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mountinfo);
+        let conf = dir.join("nfs-klldap.conf");
+        fs::write(
+            &conf,
+            r#"
+ldap_uri = "ldaps://kllap.test:6360"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "data"
+host_path = "/media/data"
+"#,
+        )
+        .unwrap();
+        std::env::set_var("NFS_CONFIG", &conf);
+        conf
+    }
+
+    #[test]
+    fn maybe_log_managed_gids_noise_downgrades_via_manage_gids_expected() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        write_limited_fs_config(tmp.path());
+        assert!(
+            !manage_gids_expected(),
+            "limited-fs fixture must yield manage_gids_expected() == false"
+        );
+        let line = "managed_gids failed for uid 1001";
+        assert_eq!(
+            maybe_log_managed_gids_noise(line),
+            Some(ManagedGidsLogLevel::DebugOnly)
+        );
+    }
+
+    #[test]
+    fn maybe_log_managed_gids_noise_verbose_when_manage_gids_on() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let conf = tmp.path().join("nfs-klldap.conf");
+        fs::write(
+            &conf,
+            r#"
+ldap_uri = "ldaps://kllap.test:6360"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "data"
+host_path = "/media/data"
+manage_gids = true
+"#,
+        )
+        .unwrap();
+        std::env::set_var("NFS_CONFIG", &conf);
+        assert!(manage_gids_expected());
+        assert_eq!(
+            maybe_log_managed_gids_noise("managed_gids stale cache"),
+            Some(ManagedGidsLogLevel::Verbose)
+        );
+    }
+
+    #[test]
+    fn maybe_log_managed_gids_noise_ignores_unrelated_lines() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        write_limited_fs_config(tmp.path());
+        assert_eq!(maybe_log_managed_gids_noise("nfs4_op succeeded"), None);
+    }
 }

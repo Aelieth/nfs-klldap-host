@@ -7,7 +7,7 @@ Companion app for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos), this
 Debian 13-slim runtime (Rust build stages remain on Fedora minimal) providing a complete Kerberized NFSv4 server (NFS-Ganesha) with KLLDAP-backed POSIX UID/GID mapping via SSSD. The multi-stage build keeps the three Rust compilation stages on Fedora for reliable cargo-chef + cross-compilation while the final runtime uses Debian 13-slim (with Ganesha from backports for configuration compatibility) for smaller size and packaging stability.
 
 <img
-  src="https://raw.githubusercontent.com/Aelieth/nfs-klldap-host/refs/heads/main/screenshot.png"
+  src="https://raw.githubusercontent.com/Aelieth/nfs-klldap-host/refs/heads/0.9.x/screenshot.png"
   alt="Screenshot of the nfs shares"
   width="50%"
 />
@@ -48,10 +48,10 @@ See [docs/ganesha-architecture.md](docs/ganesha-architecture.md) for the `host_p
 **Recommended:** use [examples/docker-compose.yml](examples/docker-compose.yml) with `network_mode: host` and `uts: host` so NFS and Kerberos see the real host identity. Port mapping in a bridged `docker run` can work for lab use but host networking is the supported production pattern.
 
 ```bash
-docker compose -f examples/docker-compose.yml up -d
+docker compose -f examples/docker-compose.yml up -d   # builds the image locally
 ```
 
-**Alternative** (`docker run` with host networking — required for NFS + Kerberos):
+**Alternative** (`docker run` with host networking — required for NFS + Kerberos; pre-built image):
 
 ```bash
 docker run -d \

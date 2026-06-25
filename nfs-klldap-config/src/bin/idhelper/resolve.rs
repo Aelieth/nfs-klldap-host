@@ -7,13 +7,13 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use nfs_klldap_config::{
-    from_sssd_section, parse_getent_passwd, IdLdapResolver, IdMapSnapshot, NfsKlldapConfig,
-    FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
+    classify_principal, from_sssd_section, parse_getent_passwd, IdLdapResolver, IdMapSnapshot,
+    NfsKlldapConfig, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
 };
 
 use crate::common::{
-    debug_enabled, is_machine_principal, machine_short_name, normalize_principal,
-    principal_local_part, IdCache, PrincipalKind, Resolved, CACHE_PATH,
+    debug_enabled, machine_short_name, normalize_principal, principal_local_part, IdCache,
+    PrincipalKind, Resolved, CACHE_PATH,
 };
 use crate::materialize::{materialize_nss_wrappers_at, NssMaterializePaths};
 
@@ -159,7 +159,7 @@ pub(crate) fn resolve_principal(
         eprintln!("[idhelper] cache=MISS key=\"{}\"", norm);
     }
 
-    let (is_machine, reason) = is_machine_principal(principal, realm, server_variants);
+    let (is_machine, reason) = classify_principal(principal, realm, server_variants);
     dlog!("  classify is_machine={} reason=\"{}\"", is_machine, reason);
     if debug_enabled() {
         eprintln!(

@@ -244,9 +244,11 @@ mod tests {
 
     #[test]
     fn compute_effective_flags_explicit_override() {
-        let mut share = Share::default();
-        share.disable_acl = Some(false);
-        share.manage_gids = Some(true);
+        let share = Share {
+            disable_acl: Some(false),
+            manage_gids: Some(true),
+            ..Default::default()
+        };
         let caps = FsCapabilities {
             fstype: "btrfs".into(),
             mount_options: vec!["noacl".into()],

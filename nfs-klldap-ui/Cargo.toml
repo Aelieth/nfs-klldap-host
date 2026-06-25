@@ -56,6 +56,9 @@ urlencoding = { workspace = true }
 # Filesystem tree walking for safe, policy-driven recursive permission application (follow_links control + filter_entry)
 walkdir = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tower = { workspace = true, features = ["util"] }  # ServiceExt::oneshot in handler tests

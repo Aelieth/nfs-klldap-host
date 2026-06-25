@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Clippy + deny(unsafe_code) + first-party unsafe-fn grep audit.
+# Clippy + deny(unsafe_code) + zero first-party unsafe audit.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
@@ -7,39 +7,31 @@ cd "$root"
 echo "==> clippy (-D warnings)"
 make clippy
 
-echo "==> deny(unsafe_code) on ui/config/identity (supervisor.rs is sole allow)"
-grep -q '#!\[deny(unsafe_code' nfs-klldap-ui/src/main.rs
-grep -q '#!\[deny(unsafe_code' nfs-klldap-config/src/lib.rs
-grep -q '#!\[deny(unsafe_code' nfs-klldap-identity/src/lib.rs
-grep -q '#!\[allow(unsafe_code)\]' nfs-klldap-config/src/supervisor.rs
-
-echo "==> first-party unsafe fn (grep count must be 0 outside supervisor.rs)"
-count_unsafe() {
-  local dir="$1" exclude="${2:-}"
-  if [ -n "$exclude" ]; then
-    { grep -r 'unsafe fn' "$dir" --include='*.rs' 2>/dev/null || true; } \
-      | { grep -v "$exclude" || true; } | wc -l
-  else
-    { grep -r 'unsafe fn' "$dir" --include='*.rs' 2>/dev/null || true; } | wc -l
-  fi
-}
-
-for crate in nfs-klldap-ui nfs-klldap-identity; do
-  count=$(count_unsafe "$crate/src" | tr -d ' ')
-  if [ "${count:-0}" != "0" ]; then
-    echo "FAIL: $crate has $count unsafe fn" >&2
-    exit 1
-  fi
-  echo "OK: $crate unsafe fn count=0"
+echo "==> deny(unsafe_code) on all workspace crates"
+for crate in nfs-klldap-ui nfs-klldap-config nfs-klldap-identity; do
+  grep -q '#!\[deny(unsafe_code' "$crate/src/main.rs" 2>/dev/null \
+    || grep -q '#!\[deny(unsafe_code' "$crate/src/lib.rs"
 done
 
-count=$(count_unsafe nfs-klldap-config/src supervisor.rs | tr -d ' ')
-sup=$({ grep -c 'unsafe fn' nfs-klldap-config/src/supervisor.rs 2>/dev/null || true; })
-sup=${sup:-0}
-if [ "${count:-0}" != "0" ]; then
-  echo "FAIL: nfs-klldap-config has $count unsafe fn outside supervisor.rs" >&2
+echo "==> zero allow(unsafe_code) in first-party sources"
+if grep -r '#!\[allow(unsafe_code)\]' nfs-klldap-config/src nfs-klldap-ui/src nfs-klldap-identity/src --include='*.rs' 2>/dev/null; then
+  echo "FAIL: allow(unsafe_code) found" >&2
   exit 1
 fi
-echo "OK: nfs-klldap-config unsafe fn outside supervisor.rs=0 (supervisor.rs=$sup allowed)"
+echo "OK: no allow(unsafe_code)"
+
+echo "==> zero unsafe blocks/fns in first-party sources"
+if grep -rE '\bunsafe\b' nfs-klldap-config/src nfs-klldap-ui/src nfs-klldap-identity/src --include='*.rs' 2>/dev/null; then
+  echo "FAIL: unsafe found in first-party sources" >&2
+  exit 1
+fi
+echo "OK: zero unsafe"
+
+echo "==> zero direct libc usage in first-party sources"
+if grep -r 'libc::' nfs-klldap-config/src nfs-klldap-ui/src nfs-klldap-identity/src --include='*.rs' 2>/dev/null; then
+  echo "FAIL: libc:: found in first-party sources" >&2
+  exit 1
+fi
+echo "OK: zero libc::"
 
 echo "==> safety-dance passed"

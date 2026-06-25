@@ -32,6 +32,8 @@ COMMENT_FILES=(
     nfs-klldap-identity/src/krb5/principal.rs
     nfs-klldap-identity/src/lib.rs
     nfs-klldap-config/src/supervisor.rs
+    nfs-klldap-config/src/runtime.rs
+    nfs-klldap-config/src/signals.rs
 )
 
 wc_file() {
@@ -64,6 +66,18 @@ count_split_sites() {
     echo "$((total - def)) $def $total"
 }
 
+REFACTOR_FILES=(
+    nfs-klldap-config/src/signals.rs
+    nfs-klldap-config/src/signals_stub.rs
+    nfs-klldap-config/src/runtime.rs
+    nfs-klldap-config/src/supervisor.rs
+    nfs-klldap-config/src/ganesha_liveness.rs
+    nfs-klldap-config/src/lib.rs
+    nfs-klldap-config/src/validate.rs
+    nfs-klldap-ui/src/web/settings.rs
+    scripts/safety-dance.sh
+)
+
 # --- changes.txt ---
 {
     echo "=== git diff --stat ${BASE}..HEAD ==="
@@ -71,6 +85,18 @@ count_split_sites() {
     echo
     echo "=== commits ==="
     git -C "$ROOT" log --oneline "${BASE}..HEAD"
+    echo
+    echo "=== working tree diff --stat (uncommitted refactor scope) ==="
+    git -C "$ROOT" diff --stat -- "${REFACTOR_FILES[@]}" 2>/dev/null || true
+    echo
+    echo "=== refactor scope files (tracked + untracked) ==="
+    for f in "${REFACTOR_FILES[@]}"; do
+        if [[ -f "$ROOT/$f" ]]; then
+            wc -l "$ROOT/$f"
+        else
+            echo "missing $f"
+        fi
+    done
 } >"$SCRATCH/changes.txt"
 
 # --- loc-evidence.txt ---

@@ -10,10 +10,10 @@ use std::thread;
 use std::time::Duration;
 
 use crate::common::{
-    get_realm, get_server_variants, is_machine_principal, IdCache, BULK_SEED_MARKER, CACHE_PATH,
+    get_realm, get_server_variants, IdCache, BULK_SEED_MARKER, CACHE_PATH,
     DEFAULT_REBULK_INTERVAL_SECS, SOCKET_PATH,
 };
-use nfs_klldap_config::IdMapSnapshot;
+use nfs_klldap_config::{classify_principal, IdMapSnapshot};
 
 use crate::materialize::{
     cache_changed_since, materialize_nss_wrappers, materialize_nss_wrappers_at,
@@ -310,7 +310,7 @@ fn handle_client(
             if arg.is_empty() {
                 out.push_str("ERR missing principal\n");
             } else {
-                let (is_m, reason) = is_machine_principal(arg, realm, server_variants);
+                let (is_m, reason) = classify_principal(arg, realm, server_variants);
                 let k = if is_m { "machine" } else { "user" };
                 out.push_str(&format!("OK {}|{}\n", k, reason));
             }

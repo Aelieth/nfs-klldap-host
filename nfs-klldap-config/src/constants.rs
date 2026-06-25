@@ -9,6 +9,9 @@ pub use nfs_klldap_identity::{
     MACHINE_PRINCIPAL_PREFIXES, MACHINE_UID,
 };
 
+/// Linux TASK_COMM_LEN — process names longer than this need cmdline matching.
+pub const PROC_COMM_NAME_MAX: usize = 15;
+
 /// Ganesha 9.6 / trixie specific safe values.
 pub const GANESHA_PROTOCOLS: &str = "4";
 pub const GANESHA_PWNAM_IMPL: &str = "nsswitch";

@@ -1,10 +1,7 @@
 #![deny(unsafe_code, dead_code)]
 
-//! Minimal shared LDAP + Kerberos identity resolution for nfs-klldap-host.
-//!
-//! Dependency-light crate used by nfs-klldap-config, nfs-klldap-idhelper, and
-//! nfs-klldap-ui. Targets Ganesha 9.6 / Debian Trixie hybrid principal handling
-//! (user TGT + client machine keytab credentials).
+//! Shared LDAP + Kerberos identity resolution for nfs-klldap-config, idhelper, and WebUI.
+//! Covers Ganesha 9.6 hybrid user-TGT and machine-keytab principal handling.
 
 pub mod constants;
 pub mod krb5;

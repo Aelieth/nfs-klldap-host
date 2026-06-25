@@ -9,22 +9,13 @@ pub fn principal_local_part(p: &str) -> &str {
 
 /// Trailing segment of a machine principal local part (host/client@REALM → client).
 pub fn machine_short_name(principal: &str) -> &str {
-    principal_local_part(principal)
-        .rsplit('/')
-        .next()
-        .unwrap_or(principal)
+    let local = principal_local_part(principal);
+    local.rsplit('/').next().unwrap_or(local)
 }
 
 /// Classify machine (host/nfs/root) vs user principals; prefixes align with Ganesha Root_Kerberos_Principal.
 pub fn classify_principal(principal: &str, _realm: &str, server_variants: &[String]) -> (bool, String) {
-    let p = principal.trim();
-    let lower = p.to_ascii_lowercase();
-
-    let local = if let Some(at) = lower.rfind('@') {
-        &lower[..at]
-    } else {
-        &lower
-    };
+    let local = principal_local_part(principal.trim()).to_ascii_lowercase();
 
     if MACHINE_PRINCIPAL_PREFIXES
         .iter()

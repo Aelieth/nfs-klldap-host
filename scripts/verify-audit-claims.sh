@@ -21,6 +21,22 @@ pass() {
 echo "=== verify-audit-claims ==="
 echo "ROOT=$ROOT SCRATCH=$SCRATCH"
 
+# 0. Deterministic scratch capture (must pass gating before other checks)
+if ! SCRATCH="$SCRATCH" "$ROOT/scripts/capture-audit-scratch.sh"; then
+    fail "capture-audit-scratch.sh gating failed"
+else
+    pass "capture-audit-scratch.sh"
+fi
+
+HEAD_TS=$(git -C "$ROOT" log -1 --format=%ct)
+for f in changes.txt loc-evidence.txt comment-audit.txt; do
+    if [[ ! -f "$SCRATCH/$f" ]]; then
+        fail "missing $SCRATCH/$f after capture"
+    elif [[ $(stat -c %Y "$SCRATCH/$f") -lt "$HEAD_TS" ]]; then
+        fail "stale $f (older than HEAD commit)"
+    fi
+done
+
 # 1. audit-evidence from audit-scope.sh
 if [[ ! -d "$EVIDENCE" ]] || [[ -z "$(ls -A "$EVIDENCE"/*.txt 2>/dev/null)" ]]; then
     fail "missing $EVIDENCE/*.txt — run: SCRATCH=$SCRATCH $ROOT/scripts/audit-scope.sh"
@@ -72,6 +88,7 @@ AUDITED=(
     nfs-klldap-config/src/bin/idhelper/daemon.rs
     nfs-klldap-config/src/validate.rs
     nfs-klldap-identity/src/krb5/principal.rs
+    nfs-klldap-identity/src/lib.rs
     nfs-klldap-config/src/supervisor.rs
 )
 LONG=0

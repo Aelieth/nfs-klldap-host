@@ -15,7 +15,7 @@
     <div class="shares-list" style="margin-bottom: 1.5rem;">
         {% for share in shares %}
             <div class="share-card"
-                 style="padding: 10px 14px; margin-bottom: 8px; border-radius: 6px; cursor: pointer;{% if share.warning.is_some() %} border: 1px solid var(--warning-amber-border, #c9a227);{% endif %}"
+                 style="padding: 10px 14px; margin-bottom: 8px; border-radius: 6px; cursor: pointer;{% if share.warning.is_some() || share.fs_warning.is_some() %} border: 1px solid var(--warning-amber-border, #c9a227);{% endif %}"
                  data-name="{{ share.name }}"
                  data-nfs-path="{{ share.nfs_path }}"
                  data-host-path="{{ share.host_path }}"
@@ -23,6 +23,11 @@
                 {% if let Some(warn) = share.warning %}
                 <div class="alert alert-warning" style="margin: 0 0 6px 0; font-size: 0.78em; padding: 6px 8px;">
                     {{ warn }}
+                </div>
+                {% endif %}
+                {% if let Some(fw) = share.fs_warning %}
+                <div class="alert alert-warning" style="margin: 0 0 6px 0; font-size: 0.78em; padding: 6px 8px;">
+                    {{ fw }}
                 </div>
                 {% endif %}
                 <strong>{{ share.name }}</strong>

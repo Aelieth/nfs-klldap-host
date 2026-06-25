@@ -2,7 +2,7 @@
 
 **0.9.x branch.** `cargo test --workspace` (or `make test` + `make clippy`). Workspace crates: `nfs-klldap-identity`, `nfs-klldap-config`, `nfs-klldap-ui`.
 
-Representative full-config generation: `nfs-klldap-config/tests/representative_generate.rs`.
+Representative full-config generation: `nfs-klldap-config/tests/representative_generate.rs`. Filesystem probe fixtures: `nfs-klldap-config/tests/fs_probe_fixtures.rs`. Limited-FS `generate_all` path: `nfs-klldap-config/tests/limited_fs_generate.rs`. `ganesha_path` staging probe: `tests/ganesha_path_generate.rs`. `fs-warnings` CLI: `tests/fs_warnings_cli.rs`. Post-generate hook: `tests/post_generate_hook.rs`.
 
 ## Strategy
 
@@ -52,6 +52,8 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | Core env overrides (NFS_KLLDAP_* only for ldap_uri, bind, realm, [webui] tls etc.) + [serde(default)] for omission | `nfs-klldap-config/src/validate.rs`, `config.rs`, lib.rs tests |
 | `all_managed_roots` / `is_allowed` + host<->container path mapping | `nfs-klldap-ui/src/config.rs`, `fs.rs` |
 | Generated sssd.conf shape + no dups + tls options | `nfs-klldap-config/src/lib.rs` |
+| Filesystem probe (mountinfo fixtures, acl_capable, effective flags) | `nfs-klldap-config/src/fs_probe.rs`, `tests/fs_probe_fixtures.rs` |
+| EXPORT Disable_ACL / Manage_Gids emission | `nfs-klldap-config/src/generate.rs`, `tests/limited_fs_generate.rs` |
 | Hostname consistency + keytab variants + docker-id detection | `nfs-klldap-config/src/hostname.rs`, `lib.rs` |
 | Keytab status message / alert | `nfs-klldap-ui/src/web/keytab.rs` |
 | Axum settings/apply/auth + login flows + cookie policy + empty-uid apply | `nfs-klldap-ui/src/web/mod.rs` (and sub) |

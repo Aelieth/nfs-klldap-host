@@ -4,8 +4,9 @@
 # ganesha process + 2049 listener checks (the host NFS server provides them).
 set -euo pipefail
 
+NFS_KLLDAP_CONTAINER_ROOT="${NFS_KLLDAP_CONTAINER_ROOT:-/container}"
 # shellcheck source=scripts/check-common.sh
-. /container/scripts/check-common.sh
+. "${NFS_KLLDAP_CONTAINER_ROOT}/scripts/check-common.sh"
 
 fail() {
     echo "FAIL: $*"
@@ -69,6 +70,7 @@ fi
 if [ "$HOST_NFS_MODE" -ne 1 ]; then
     warn_export_fragments
 fi
+warn_fs_limited_shares
 warn_idhelper_overrides
 warn_bridge_network
 

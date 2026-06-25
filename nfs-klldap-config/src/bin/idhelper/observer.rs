@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use nfs_klldap_config::MACHINE_PRINCIPAL_PREFIXES;
 
-use crate::common::IdCache;
+use crate::common::{manage_gids_expected, IdCache};
+use crate::dlog;
 use crate::resolve::resolve_principal;
 
 /// Best-effort: tail ganesha.log for early principal hints (feeds resolve).
@@ -50,6 +51,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                         }
                         Ok(_) => {
                             let line = buf.trim();
+                            let _ = maybe_log_managed_gids_noise(line);
                             maybe_warn_bridge_server_addr(
                                 line,
                                 &mut bridge_warned,
@@ -160,6 +162,127 @@ fn is_noise_hostname(t: &str) -> bool {
         return true;
     }
     false
+}
+
+/// Log verbosity for Ganesha managed_gids / uid2grp noise lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedGidsLogLevel {
+    Verbose,
+    DebugOnly,
+}
+
+/// Decide whether a ganesha log line should be eprintln (manage_gids on) or debug-only.
+pub(crate) fn managed_gids_log_level(line: &str, manage_gids_on: bool) -> Option<ManagedGidsLogLevel> {
+    let lower = line.to_ascii_lowercase();
+    if !lower.contains("managed_gids") && !lower.contains("uid2grp_allocate") {
+        return None;
+    }
+    if manage_gids_on {
+        Some(ManagedGidsLogLevel::Verbose)
+    } else {
+        Some(ManagedGidsLogLevel::DebugOnly)
+    }
+}
+
+fn maybe_log_managed_gids_noise(line: &str) -> Option<ManagedGidsLogLevel> {
+    let level = managed_gids_log_level(line, manage_gids_expected())?;
+    match level {
+        ManagedGidsLogLevel::Verbose => {
+            eprintln!("[idhelper] observed ganesha idmapper: {}", line);
+        }
+        ManagedGidsLogLevel::DebugOnly => {
+            dlog!("ganesha idmapper (manage_gids=false, debug only): {}", line);
+        }
+    }
+    Some(level)
+}
+
+#[cfg(test)]
+mod managed_gids_log_tests {
+    use super::*;
+    use std::fs;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn write_limited_fs_config(dir: &std::path::Path) -> std::path::PathBuf {
+        let mountinfo = dir.join("mountinfo");
+        fs::write(
+            &mountinfo,
+            r#"
+36 35 0:59 / /export rw,relatime - btrfs /dev/sda1 rw,noacl
+"#,
+        )
+        .unwrap();
+        std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mountinfo);
+        let conf = dir.join("nfs-klldap.conf");
+        fs::write(
+            &conf,
+            r#"
+ldap_uri = "ldaps://kllap.test:6360"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "data"
+host_path = "/media/data"
+"#,
+        )
+        .unwrap();
+        std::env::set_var("NFS_CONFIG", &conf);
+        conf
+    }
+
+    #[test]
+    fn maybe_log_managed_gids_noise_downgrades_via_manage_gids_expected() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        write_limited_fs_config(tmp.path());
+        assert!(
+            !manage_gids_expected(),
+            "limited-fs fixture must yield manage_gids_expected() == false"
+        );
+        let line = "managed_gids failed for uid 1001";
+        assert_eq!(
+            maybe_log_managed_gids_noise(line),
+            Some(ManagedGidsLogLevel::DebugOnly)
+        );
+    }
+
+    #[test]
+    fn maybe_log_managed_gids_noise_verbose_when_manage_gids_on() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let conf = tmp.path().join("nfs-klldap.conf");
+        fs::write(
+            &conf,
+            r#"
+ldap_uri = "ldaps://kllap.test:6360"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "data"
+host_path = "/media/data"
+manage_gids = true
+"#,
+        )
+        .unwrap();
+        std::env::set_var("NFS_CONFIG", &conf);
+        assert!(manage_gids_expected());
+        assert_eq!(
+            maybe_log_managed_gids_noise("managed_gids stale cache"),
+            Some(ManagedGidsLogLevel::Verbose)
+        );
+    }
+
+    #[test]
+    fn maybe_log_managed_gids_noise_ignores_unrelated_lines() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        write_limited_fs_config(tmp.path());
+        assert_eq!(maybe_log_managed_gids_noise("nfs4_op succeeded"), None);
+    }
 }
 
 fn maybe_warn_bridge_server_addr(

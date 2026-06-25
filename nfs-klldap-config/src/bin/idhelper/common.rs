@@ -5,7 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
-use nfs_klldap_config::{classify_principal, NfsKlldapConfig};
+use nfs_klldap_config::{any_share_manage_gids_enabled, classify_principal, NfsKlldapConfig};
 use nfs_klldap_identity::nfs_keytab_host_variants;
 
 pub(crate) const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
@@ -28,6 +28,27 @@ pub(crate) const DEFAULT_REBULK_INTERVAL_SECS: u64 = 10 * 60;
 
 /// Debug logging enabled via KLLDAP_IDHELPER_DEBUG=true (or 1/yes/on).
 static DEBUG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// True when any share has effective Manage_Gids (controls supplementary-group log noise).
+pub(crate) fn manage_gids_expected() -> bool {
+    let path =
+        std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
+    #[cfg(test)]
+    {
+        return NfsKlldapConfig::load(std::path::Path::new(&path))
+            .map(|cfg| any_share_manage_gids_enabled(&cfg))
+            .unwrap_or(true);
+    }
+    #[cfg(not(test))]
+    {
+        static EXPECT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *EXPECT.get_or_init(|| {
+            NfsKlldapConfig::load(std::path::Path::new(&path))
+                .map(|cfg| any_share_manage_gids_enabled(&cfg))
+                .unwrap_or(true)
+        })
+    }
+}
 
 pub(crate) fn debug_enabled() -> bool {
     *DEBUG_ENABLED.get_or_init(|| {

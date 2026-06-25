@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::exit;
 
 use nfs_klldap_config::{
-    generate_all, get_consistent_hostname, write_default_config_if_missing, ConfigError,
-    GenerationPaths, NfsKlldapConfig,
+    compute_effective_flags, generate_all, get_consistent_hostname, limited_fs_warnings_only,
+    probe_fs_capabilities, write_default_config_if_missing, ConfigError, FsCapabilities,
+    GenerationPaths, NfsKlldapConfig, Share,
 };
 
 fn usage() {
@@ -20,6 +21,7 @@ Usage:
   nfs-klldap-config init     --config <path>
   nfs-klldap-config generate --config <path> [--dry-run]
   nfs-klldap-config validate --config <path>
+  nfs-klldap-config fs-warnings --config <path>
 
 Companion binary:
   nfs-klldap-startup         (pid-1 supervise + diagnostics; entrypoint.sh execs it)
@@ -68,6 +70,7 @@ fn main() {
         "init" => handle_init(&config_path),
         "generate" => handle_generate(&config_path, dry_run),
         "validate" => handle_validate(&config_path),
+        "fs-warnings" => handle_fs_warnings(&config_path),
         "help" | "--help" | "-h" => {
             usage();
             Ok(())
@@ -130,12 +133,7 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
         println!("idmap domain (would use /etc/idmapd.conf): {}", cfg.nfsv4_domain());
         println!("shares:   {}", cfg.shares.len());
         for s in &cfg.shares {
-            println!(
-                "  - {} → host:{}  container(internal):{}",
-                s.name,
-                s.host_path.display(),
-                cfg.container_path_for(s)
-            );
+            print_share_probe_line(&cfg, s, true);
         }
         return Ok(());
     }
@@ -176,7 +174,50 @@ fn handle_validate(path: &Path) -> Result<(), ConfigError> {
     println!("  realm    : {}", cfg.effective_realm());
     println!("  shares   : {}", cfg.shares.len());
     for s in &cfg.shares {
-        println!("    {} (host: {})", s.name, s.host_path.display());
+        print_share_probe_line(&cfg, s, false);
     }
     Ok(())
+}
+
+fn handle_fs_warnings(path: &Path) -> Result<(), ConfigError> {
+    let cfg = NfsKlldapConfig::load(path)?;
+    for w in limited_fs_warnings_only(&cfg) {
+        println!("{}", w.format_line());
+    }
+    Ok(())
+}
+
+fn print_share_probe_line(cfg: &NfsKlldapConfig, s: &Share, dry_run: bool) {
+    let container = cfg.container_path_for(s);
+    let serve = cfg.serve_path_for(s);
+    let caps = probe_fs_capabilities(Path::new(&serve)).unwrap_or_else(|_| FsCapabilities {
+        fstype: "unknown".into(),
+        mount_options: vec![],
+        acl_capable: true,
+    });
+    if !caps.acl_capable {
+        let eff = compute_effective_flags(s, &caps);
+        println!(
+            "  - {} → host:{}  container:{}  serve:{}  fs:{} acl_capable=false effective_disable_acl={} effective_manage_gids={}",
+            s.name,
+            s.host_path.display(),
+            container,
+            serve,
+            caps.fstype,
+            eff.disable_acl,
+            eff.manage_gids
+        );
+        return;
+    }
+    if dry_run {
+        println!(
+            "  - {} → host:{}  container:{}  serve:{}",
+            s.name,
+            s.host_path.display(),
+            container,
+            serve
+        );
+    } else {
+        println!("    {} (host: {})", s.name, s.host_path.display());
+    }
 }

@@ -717,6 +717,25 @@ ldap_default_authtok = "sekret"
         }
     }
 
+    /// Clear core env overrides so incomplete on-disk TOML cannot validate via env pollution.
+    struct TestCoreEnvClean;
+
+    impl TestCoreEnvClean {
+        fn set() -> Self {
+            for key in [
+                "NFS_KLLDAP_LDAP_URI",
+                "NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN",
+                "NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK",
+                "NFS_KLLDAP_LLDAP_USER",
+                "NFS_KLLDAP_LLDAP_PW",
+                "NFS_KLLDAP_KERBEROS_REALM",
+            ] {
+                std::env::remove_var(key);
+            }
+            Self
+        }
+    }
+
     /// Isolates NFS_KLLDAP_SETUP_MARKER from parallel tests and host installs.
     struct TestSetupMarkerEnv {
         previous: Option<String>,
@@ -855,7 +874,9 @@ ldap_default_authtok = "sekret"
 
     #[test]
     fn is_preconfigured_false_with_incomplete_config() {
+        let _parallel = crate::ENV_TEST_LOCK.lock().unwrap();
         let _persist = TestPersistentEnv::set();
+        let _env = TestCoreEnvClean::set();
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("nfs-klldap.conf");
         let keytab = tmp.path().join("krb5.keytab");

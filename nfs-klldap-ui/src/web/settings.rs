@@ -175,6 +175,9 @@ struct ShareFormRow {
     cache_profile: Option<String>,
     pref_read: Option<String>,  // legacy numeric support (still parsed if posted)
     pref_write: Option<String>,
+    disable_acl: Option<bool>,
+    manage_gids: Option<bool>,
+    ganesha_path: Option<String>,
 }
 
 /// Template row for server-rendered shares in the structured editor (string values for simple Askama rendering).
@@ -188,7 +191,11 @@ struct ShareTemplateRow {
     rw: bool,
     root_squash: bool,
     cache_profile: String,
+    disable_acl: String,
+    manage_gids: String,
+    ganesha_path: String,
     warning: Option<String>,
+    fs_warning: Option<String>,
 }
 
 /// Key present in raw source (used to decide override checkboxes; core keys always explicit).
@@ -259,6 +266,7 @@ fn build_settings_template(
     message: Option<String>,
     keytab: KeytabDisplayContext,
     host_nfs_mode: bool,
+    fs_probe_mountinfo_path: Option<&std::path::Path>,
 ) -> SettingsTemplate {
     let p = config_path.as_ref();
     let raw_toml = std::fs::read_to_string(p)
@@ -287,12 +295,28 @@ fn build_settings_template(
                 .clone()
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| infer_profile_from_prefs(s.pref_read, s.pref_write)),
+            disable_acl: match s.disable_acl {
+                Some(true) => "true".to_string(),
+                Some(false) => "false".to_string(),
+                None => "auto".to_string(),
+            },
+            manage_gids: match s.manage_gids {
+                Some(true) => "true".to_string(),
+                Some(false) => "false".to_string(),
+                None => "auto".to_string(),
+            },
+            ganesha_path: s.ganesha_path.clone().unwrap_or_default(),
             warning: nfs_klldap_config::ShareFieldWarning::for_share(
                 &cfg.share_warnings,
                 idx,
                 &s.name,
             )
             .map(|w| w.display_message()),
+            fs_warning: nfs_klldap_config::share_fs_warning_message_with_mountinfo(
+                &cfg,
+                s,
+                fs_probe_mountinfo_path,
+            ),
         })
         .collect();
     let next_share_idx = current_shares.len();
@@ -387,6 +411,21 @@ fn collect_shares_from_structured_form(
                     .get(&format!("share_pref_write_{}", idx))
                     .cloned()
                     .filter(|s| !s.trim().is_empty());
+                let parse_tri_bool = |key: &str| -> Option<bool> {
+                    extra.get(key).and_then(|v| match v.trim() {
+                        "true" => Some(true),
+                        "false" => Some(false),
+                        _ => None,
+                    })
+                };
+                let disable_acl =
+                    parse_tri_bool(&format!("share_disable_acl_{}", idx));
+                let manage_gids =
+                    parse_tri_bool(&format!("share_manage_gids_{}", idx));
+                let ganesha_path = extra
+                    .get(&format!("share_ganesha_path_{}", idx))
+                    .cloned()
+                    .filter(|s| !s.trim().is_empty());
                 share_rows.push(ShareFormRow {
                     idx,
                     name,
@@ -398,6 +437,9 @@ fn collect_shares_from_structured_form(
                     cache_profile,
                     pref_read,
                     pref_write,
+                    disable_acl,
+                    manage_gids,
+                    ganesha_path,
                 });
             }
         }
@@ -420,7 +462,9 @@ fn collect_shares_from_structured_form(
             cache_profile: r.cache_profile,
             pref_read: r.pref_read.and_then(|s| s.trim().parse::<u64>().ok()),
             pref_write: r.pref_write.and_then(|s| s.trim().parse::<u64>().ok()),
-            disable_acl: None,
+            disable_acl: r.disable_acl,
+            manage_gids: r.manage_gids,
+            ganesha_path: r.ganesha_path,
         })
         .collect()
 }
@@ -516,10 +560,18 @@ fn make_settings_error_template(
     message: String,
     keytab: KeytabDisplayContext,
     host_nfs_mode: bool,
+    fs_probe_mountinfo_path: Option<&std::path::Path>,
 ) -> SettingsTemplate {
     // Always re-read current on-disk state for prefilled structured fields + raw.
     // On structured validation error the file on disk is unchanged.
-    build_settings_template(current_user, config_path, Some(message), keytab, host_nfs_mode)
+    build_settings_template(
+        current_user,
+        config_path,
+        Some(message),
+        keytab,
+        host_nfs_mode,
+        fs_probe_mountinfo_path,
+    )
 }
 
 fn atomic_write_config(path: &std::path::Path, content: &str) -> Result<(), String> {
@@ -543,9 +595,17 @@ fn make_settings_success_template(
     message: String,
     keytab: KeytabDisplayContext,
     host_nfs_mode: bool,
+    fs_probe_mountinfo_path: Option<&std::path::Path>,
 ) -> SettingsTemplate {
     // Re-read after successful write so structured pre-fills reflect the just-saved state.
-    build_settings_template(current_user, config_path, Some(message), keytab, host_nfs_mode)
+    build_settings_template(
+        current_user,
+        config_path,
+        Some(message),
+        keytab,
+        host_nfs_mode,
+        fs_probe_mountinfo_path,
+    )
 }
 
 fn apply_structured_form_to_toml_doc(
@@ -784,6 +844,17 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
                 t["pref_write"] = toml_edit::value(pw as i64);
             }
         }
+        if let Some(v) = s.disable_acl {
+            t["disable_acl"] = toml_edit::value(v);
+        }
+        if let Some(v) = s.manage_gids {
+            t["manage_gids"] = toml_edit::value(v);
+        }
+        if let Some(gp) = &s.ganesha_path {
+            if !gp.trim().is_empty() {
+                t["ganesha_path"] = toml_edit::value(gp.clone());
+            }
+        }
         shares.push(t);
     }
 
@@ -941,6 +1012,7 @@ pub(crate) async fn settings_page(
         None,
         state.keytab_display(),
         state.host_nfs_mode,
+        state.fs_probe_mountinfo_path.as_deref(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -975,6 +1047,7 @@ pub(crate) async fn settings_save_raw(
         "Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into(),
         state.keytab_display(),
         state.host_nfs_mode,
+        state.fs_probe_mountinfo_path.as_deref(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -1001,6 +1074,7 @@ pub(crate) async fn settings_save_structured(
             msg,
             state.keytab_display(),
             state.host_nfs_mode,
+            state.fs_probe_mountinfo_path.as_deref(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1020,6 +1094,7 @@ pub(crate) async fn settings_save_structured(
             msg,
             state.keytab_display(),
             state.host_nfs_mode,
+            state.fs_probe_mountinfo_path.as_deref(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1030,6 +1105,7 @@ pub(crate) async fn settings_save_structured(
         "Structured settings saved (shares left untouched in TOML). Container will regenerate configs shortly.".into(),
         state.keytab_display(),
         state.host_nfs_mode,
+        state.fs_probe_mountinfo_path.as_deref(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -1056,6 +1132,7 @@ pub(crate) async fn settings_save_shares(
             msg,
             state.keytab_display(),
             state.host_nfs_mode,
+            state.fs_probe_mountinfo_path.as_deref(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1075,6 +1152,7 @@ pub(crate) async fn settings_save_shares(
             msg,
             state.keytab_display(),
             state.host_nfs_mode,
+            state.fs_probe_mountinfo_path.as_deref(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -1085,6 +1163,7 @@ pub(crate) async fn settings_save_shares(
         "Shares saved (SSSD and other sections left untouched in TOML). The config watcher (or Restart and apply) will make Ganesha + WebUI see them shortly.".into(),
         state.keytab_display(),
         state.host_nfs_mode,
+        state.fs_probe_mountinfo_path.as_deref(),
     );
     Ok(Html(tpl.render().unwrap()))
 }

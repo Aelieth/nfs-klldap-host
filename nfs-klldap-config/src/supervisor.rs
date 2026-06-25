@@ -10,9 +10,12 @@ use std::thread;
 use std::time::Duration;
 
 use nfs_klldap_config::{
-    compute_startup_step, compute_wizard_step, is_preconfigured_deployment,
-    is_setup_wizard_complete, mark_setup_wizard_complete, resolve_keytab_path,
-    supervisor_loop_tick, webui_setup_url, NfsKlldapConfig, SupervisorLoopAction,
+    compute_startup_step, compute_wizard_step, fingerprint_exports_dir,
+    fingerprint_identity_artifacts, ganesha_is_live, ganesha_sighup_failed,
+    is_preconfigured_deployment, is_setup_wizard_complete, mark_setup_wizard_complete,
+    pgrep_live_pids, pgrep_pids, plan_from_changes, process_is_live, reconcile_ganesha_pid,
+    resolve_keytab_path, run_post_generate_hooks, supervisor_loop_tick, webui_setup_url,
+    ConfigError, GaneshaAction, NfsKlldapConfig, ServiceRecyclePlan, SupervisorLoopAction,
 };
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -46,6 +49,12 @@ struct SupervisorEnv {
     supervise_wizard_probe: bool,
     /// CI: run supervisor_loop with probe stubs until a real SIGHUP (no auto-posted HUP).
     supervise_loop_probe: bool,
+    /// CI one-shot: exercise ganesha SIGHUP reload + stop_ganesha against a stub nfsd.
+    supervise_recycle_probe: bool,
+    /// CI: wait for real OS SIGHUP then run handle_sighup (hook + fingerprint path).
+    supervise_sighup_hook_probe: bool,
+    /// CI one-shot: identity-only config change recycles SSSD without ganesha SIGHUP.
+    supervise_identity_recycle_probe: bool,
     /// HOST_NFS sidecar mode: generate fragments for host Ganesha, skip in-container nfsd.
     host_nfs_mode: bool,
     /// Loop sleep override (ms); 0 for wizard-probe bounded ticks.
@@ -89,6 +98,14 @@ impl SupervisorEnv {
                 .is_ok_and(|v| v == "1"),
             supervise_loop_probe: std::env::var("NFS_KLLDAP_SUPERVISE_LOOP_PROBE")
                 .is_ok_and(|v| v == "1"),
+            supervise_recycle_probe: std::env::var("NFS_KLLDAP_SUPERVISE_RECYCLE_PROBE")
+                .is_ok_and(|v| v == "1"),
+            supervise_sighup_hook_probe: std::env::var("NFS_KLLDAP_SUPERVISE_SIGHUP_HOOK_PROBE")
+                .is_ok_and(|v| v == "1"),
+            supervise_identity_recycle_probe: std::env::var(
+                "NFS_KLLDAP_SUPERVISE_IDENTITY_RECYCLE_PROBE",
+            )
+            .is_ok_and(|v| v == "1"),
             host_nfs_mode: resolve_host_nfs_mode(config_path),
             supervisor_tick_ms: std::env::var("NFS_KLLDAP_SUPERVISOR_TICK_MS")
                 .ok()
@@ -155,6 +172,15 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
     }
     if sup.env.supervise_probe {
         sup.log_info("Supervise-probe mode enabled");
+    }
+    if sup.env.supervise_recycle_probe {
+        return sup.run_supervise_recycle_probe();
+    }
+    if sup.env.supervise_sighup_hook_probe {
+        return sup.run_supervise_sighup_hook_probe();
+    }
+    if sup.env.supervise_identity_recycle_probe {
+        return sup.run_supervise_identity_recycle_probe();
     }
     sup.preflight_checks()?;
     sup.ensure_config_initialized()?;
@@ -255,6 +281,263 @@ impl Supervisor {
         Ok(())
     }
 
+    /// CI one-shot: handle_sighup fingerprint reload/skip + stop_ganesha (TERM and KILL) against stub nfsd.
+    fn run_supervise_recycle_probe(&mut self) -> Result<(), String> {
+        self.log_info("Supervise-recycle-probe mode enabled");
+        let stub_log = std::env::var("NFS_KLLDAP_RECYCLE_PROBE_GANESHA_LOG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/tmp/ganesha-recycle-probe.log"));
+        let _ = fs::remove_file(&stub_log);
+
+        for d in [
+            self.env.exports_dir.as_path(),
+            Path::new("/var/lib/nfs-klldap"),
+            Path::new("/var/run/nfs-klldap"),
+            Path::new("/var/lib/extrausers"),
+        ] {
+            let _ = fs::create_dir_all(d);
+        }
+        self.seed_probe_runtime_state();
+        self.services_started = true;
+
+        self.log_info(&format!(
+            "Generating derived configuration from {}",
+            self.env.nfs_config.display()
+        ));
+        let status = Command::new(&self.env.config_bin)
+            .args(["generate", "--config"])
+            .arg(&self.env.nfs_config)
+            .status()
+            .map_err(|e| format!("generate failed: {e}"))?;
+        if !status.success() {
+            return Err("recycle probe: initial generate failed".into());
+        }
+        self.run_post_generate_hooks()?;
+        self.fix_derived_permissions();
+
+        self.log_info("Supervise-recycle-probe: starting stub ganesha.nfsd");
+        self.start_ganesha();
+        thread::sleep(Duration::from_millis(400));
+        if !self.ganesha_running() {
+            return Err("recycle probe: stub ganesha.nfsd did not start".into());
+        }
+
+        self.log_info("Supervise-recycle-probe: handle_sighup with unchanged exports (expect changed=false)");
+        self.handle_sighup()?;
+        thread::sleep(Duration::from_millis(200));
+        let log_after_skip = fs::read_to_string(&stub_log).unwrap_or_default();
+        if log_after_skip.contains("HUP") || log_after_skip.contains("TERM") {
+            return Err(format!(
+                "recycle probe: unchanged handle_sighup must not signal ganesha, log={log_after_skip:?}"
+            ));
+        }
+        if !self.ganesha_running() {
+            return Err("recycle probe: ganesha must stay running after unchanged handle_sighup".into());
+        }
+
+        let conf_text = fs::read_to_string(&self.env.nfs_config)
+            .map_err(|e| format!("recycle probe: read config: {e}"))?;
+        if !conf_text.contains("host_path = \"/media/data\"") {
+            return Err("recycle probe: config missing expected host_path".into());
+        }
+        fs::write(
+            &self.env.nfs_config,
+            conf_text.replace(
+                "host_path = \"/media/data\"",
+                "host_path = \"/media/data-changed\"",
+            ),
+        )
+        .map_err(|e| format!("recycle probe: mutate config: {e}"))?;
+
+        self.log_info("Supervise-recycle-probe: handle_sighup after export mutation (expect changed=true)");
+        self.handle_sighup()?;
+        thread::sleep(Duration::from_millis(200));
+        let log_after_reload = fs::read_to_string(&stub_log).unwrap_or_default();
+        if !log_after_reload.contains("HUP") {
+            return Err(format!(
+                "recycle probe: expected SIGHUP after export change, log={log_after_reload:?}"
+            ));
+        }
+        if log_after_reload.contains("TERM") {
+            return Err(
+                "recycle probe: stub ganesha received SIGTERM during export-change reload".into(),
+            );
+        }
+
+        self.log_info("Supervise-recycle-probe: exercising stop_ganesha (SIGTERM path)");
+        self.stop_ganesha();
+        let log_term = fs::read_to_string(&stub_log).unwrap_or_default();
+        if !log_term.contains("TERM") {
+            return Err(format!(
+                "recycle probe: expected SIGTERM in stub log, got: {log_term:?}"
+            ));
+        }
+
+        if std::env::var("NFS_KLLDAP_RECYCLE_PROBE_TEST_KILL").is_ok_and(|v| v == "1") {
+            let ganesha_bin = std::env::var("NFS_KLLDAP_RECYCLE_PROBE_GANESHA_BIN")
+                .map(PathBuf::from)
+                .map_err(|_| "recycle probe: NFS_KLLDAP_RECYCLE_PROBE_GANESHA_BIN required for KILL test".to_string())?;
+            self.log_info("Supervise-recycle-probe: starting SIGKILL-escalation stub");
+            fs::write(
+                &ganesha_bin,
+                format!(
+                    r#"#!/bin/sh
+LOG="{log}"
+echo START >> "$LOG"
+trap 'echo TERM >> "$LOG"' TERM
+trap 'echo KILL >> "$LOG"; exit 0' KILL
+while :; do :; done
+"#,
+                    log = stub_log.display()
+                ),
+            )
+            .map_err(|e| format!("recycle probe: write kill stub: {e}"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&ganesha_bin)
+                    .map_err(|e| format!("recycle probe: kill stub meta: {e}"))?
+                    .permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&ganesha_bin, perms)
+                    .map_err(|e| format!("recycle probe: kill stub chmod: {e}"))?;
+            }
+            self.start_ganesha();
+            thread::sleep(Duration::from_millis(300));
+            std::env::set_var("NFS_KLLDAP_STOP_GANESHA_TERM_SECS", "1");
+            self.log_info("Supervise-recycle-probe: exercising stop_ganesha (SIGKILL escalation)");
+            self.stop_ganesha();
+            let log_kill = fs::read_to_string(&stub_log).unwrap_or_default();
+            if !log_kill.contains("TERM") {
+                return Err(format!(
+                    "recycle probe: expected SIGTERM before SIGKILL escalation, log={log_kill:?}"
+                ));
+            }
+            if self.ganesha_running() {
+                return Err("recycle probe: ganesha still running after SIGKILL escalation".into());
+            }
+        }
+
+        self.log_info("Supervise-recycle-probe complete — exiting");
+        Ok(())
+    }
+
+    /// CI: generate + hook + ganesha stub, then handle a real OS SIGHUP via handle_sighup().
+    fn run_supervise_sighup_hook_probe(&mut self) -> Result<(), String> {
+        self.log_info("Supervise-sighup-hook-probe mode enabled");
+        for d in [
+            self.env.exports_dir.as_path(),
+            Path::new("/var/lib/nfs-klldap"),
+            Path::new("/var/run/nfs-klldap"),
+        ] {
+            let _ = fs::create_dir_all(d);
+        }
+        self.seed_probe_runtime_state();
+        self.services_started = true;
+
+        let status = Command::new(&self.env.config_bin)
+            .args(["generate", "--config"])
+            .arg(&self.env.nfs_config)
+            .status()
+            .map_err(|e| format!("generate failed: {e}"))?;
+        if !status.success() {
+            return Err("sighup-hook probe: initial generate failed".into());
+        }
+        self.run_post_generate_hooks()?;
+        self.fix_derived_permissions();
+        self.start_ganesha();
+        thread::sleep(Duration::from_millis(400));
+        if !self.ganesha_running() {
+            return Err("sighup-hook probe: stub ganesha.nfsd did not start".into());
+        }
+
+        self.log_info("Supervise-sighup-hook-probe: waiting for OS SIGHUP");
+        let max_ticks = self.env.supervisor_max_ticks;
+        let mut ticks = 0u32;
+        loop {
+            if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+                return Err("sighup-hook probe: shutdown before SIGHUP".into());
+            }
+            if SIGHUP_REQUESTED.swap(false, Ordering::SeqCst) {
+                self.handle_sighup()?;
+                self.log_info("Supervise-sighup-hook-probe complete — exiting");
+                return Ok(());
+            }
+            reap_one_child();
+            ticks = ticks.saturating_add(1);
+            if ticks >= max_ticks {
+                return Err("sighup-hook probe: timed out waiting for OS SIGHUP".into());
+            }
+            thread::sleep(Duration::from_millis(self.env.supervisor_tick_ms));
+        }
+    }
+
+    /// CI one-shot: [sssd] edit with unchanged exports → restart SSSD, no ganesha SIGHUP.
+    fn run_supervise_identity_recycle_probe(&mut self) -> Result<(), String> {
+        self.log_info("Supervise-identity-recycle-probe mode enabled");
+        let stub_log = std::env::var("NFS_KLLDAP_RECYCLE_PROBE_GANESHA_LOG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/tmp/ganesha-identity-recycle.log"));
+        let _ = fs::remove_file(&stub_log);
+
+        for d in [
+            self.env.exports_dir.as_path(),
+            Path::new("/var/lib/nfs-klldap"),
+            Path::new("/var/run/nfs-klldap"),
+        ] {
+            let _ = fs::create_dir_all(d);
+        }
+        self.seed_probe_runtime_state();
+        self.services_started = true;
+
+        let status = Command::new(&self.env.config_bin)
+            .args(["generate", "--config"])
+            .arg(&self.env.nfs_config)
+            .status()
+            .map_err(|e| format!("generate failed: {e}"))?;
+        if !status.success() {
+            return Err("identity recycle probe: initial generate failed".into());
+        }
+        self.fix_derived_permissions();
+
+        self.start_ganesha();
+        thread::sleep(Duration::from_millis(400));
+        if !self.ganesha_running() {
+            return Err("identity recycle probe: stub ganesha.nfsd did not start".into());
+        }
+
+        let conf_text = fs::read_to_string(&self.env.nfs_config)
+            .map_err(|e| format!("identity recycle probe: read config: {e}"))?;
+        if !conf_text.contains("ldap_default_bind_dn = \"uid=admin,ou=people,dc=test,dc=com\"") {
+            return Err("identity recycle probe: config missing expected bind_dn".into());
+        }
+        fs::write(
+            &self.env.nfs_config,
+            conf_text.replace(
+                "ldap_default_bind_dn = \"uid=admin,ou=people,dc=test,dc=com\"",
+                "ldap_default_bind_dn = \"uid=admin2,ou=people,dc=test,dc=com\"",
+            ),
+        )
+        .map_err(|e| format!("identity recycle probe: mutate config: {e}"))?;
+
+        self.log_info("Supervise-identity-recycle-probe: handle_sighup after [sssd] bind_dn change");
+        self.handle_sighup()?;
+        thread::sleep(Duration::from_millis(200));
+
+        let log = fs::read_to_string(&stub_log).unwrap_or_default();
+        if log.contains("HUP") {
+            return Err(format!(
+                "identity recycle probe: ganesha must not receive SIGHUP when only identity artifacts change, log={log:?}"
+            ));
+        }
+        if !self.ganesha_running() {
+            return Err("identity recycle probe: ganesha must stay running".into());
+        }
+
+        self.log_info("Supervise-identity-recycle-probe complete — exiting");
+        Ok(())
+    }
+
     fn bring_up_services(&mut self) -> Result<(), String> {
         self.log_info(&format!(
             "Generating derived configuration from {}",
@@ -268,6 +551,7 @@ impl Supervisor {
         if !status.success() {
             return Err("Initial config generation failed".into());
         }
+        self.run_post_generate_hooks()?;
         self.fix_derived_permissions();
         for d in [
             "/var/lib/nfs-klldap",
@@ -401,7 +685,15 @@ impl Supervisor {
     }
 
     fn handle_sighup(&mut self) -> Result<(), String> {
+        reap_one_child();
+        self.pids.ganesha = reconcile_ganesha_pid(self.pids.ganesha);
         self.log_info("SIGHUP received — reloading configuration...");
+        let exports_fp_before = fingerprint_exports_dir(&self.env.exports_dir);
+        let identity_fp_before = fingerprint_identity_artifacts(
+            &self.env.sssd_conf,
+            &self.env.krb5_conf,
+            &self.env.idmap_conf,
+        );
         let status = Command::new(&self.env.config_bin)
             .args(["generate", "--config"])
             .arg(&self.env.nfs_config)
@@ -411,9 +703,30 @@ impl Supervisor {
             self.log_error("Config generator failed during SIGHUP reload");
             return Err("SIGHUP generate failed".into());
         }
+        self.run_post_generate_hooks()?;
         self.fix_derived_permissions();
         self.env.host_nfs_mode = resolve_host_nfs_mode(&self.env.nfs_config);
-        self.recycle_services_after_config();
+        let exports_fp_after = fingerprint_exports_dir(&self.env.exports_dir);
+        let identity_fp_after = fingerprint_identity_artifacts(
+            &self.env.sssd_conf,
+            &self.env.krb5_conf,
+            &self.env.idmap_conf,
+        );
+        let exports_changed = exports_fp_before != exports_fp_after;
+        let identity_changed = identity_fp_before != identity_fp_after;
+        self.log_info(&format!(
+            "Export fragments fingerprint: before={exports_fp_before} after={exports_fp_after} changed={exports_changed}"
+        ));
+        self.log_info(&format!(
+            "Identity artifacts fingerprint: before={identity_fp_before} after={identity_fp_after} changed={identity_changed}"
+        ));
+        let plan = plan_from_changes(
+            exports_changed,
+            identity_changed,
+            self.env.host_nfs_mode,
+            self.ganesha_running(),
+        );
+        self.execute_recycle_plan(plan);
         self.log_info("Services recycled after config apply.");
         if !self.services_started {
             self.services_started = true;
@@ -474,37 +787,163 @@ impl Supervisor {
             .status();
     }
 
-    fn stop_ganesha(&mut self) {
-        if let Some(pid) = self.pids.ganesha {
-            signal_process(pid, libc::SIGTERM);
+    fn run_post_generate_hooks(&self) -> Result<(), String> {
+        let cfg = NfsKlldapConfig::load(&self.env.nfs_config)
+            .map_err(|e| format!("post_generate_hook: config load failed: {e}"))?;
+        run_post_generate_hooks(&cfg).map_err(|e| match e {
+            ConfigError::Validation(msg) => msg,
+            other => other.to_string(),
+        })
+    }
+
+    fn ganesha_running(&self) -> bool {
+        ganesha_is_live(self.pids.ganesha)
+    }
+
+    fn reload_ganesha_exports(&mut self) -> bool {
+        if let Some(pid) = reconcile_ganesha_pid(self.pids.ganesha) {
+            self.pids.ganesha = Some(pid);
+            signal_process(pid, libc::SIGHUP);
+            self.log_info(&format!(
+                "Sent SIGHUP to ganesha.nfsd (pid {pid}) for export reload"
+            ));
+            return true;
         }
-        pkill_process("-TERM", "ganesha.nfsd");
-        thread::sleep(Duration::from_millis(300));
+        self.pids.ganesha = None;
+        false
+    }
+
+    fn stop_ganesha(&mut self) {
+        self.log_info("stop_ganesha: sending SIGTERM and waiting for exit");
+        let mut pids: Vec<u32> = Vec::new();
+        if let Some(pid) = self.pids.ganesha {
+            if process_is_live(pid) {
+                pids.push(pid);
+            }
+        }
+        for pid in pgrep_live_pids("ganesha.nfsd") {
+            if !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+        // Fall back to zombie pgrep hits so SIGTERM can reap them.
+        if pids.is_empty() {
+            for pid in pgrep_pids("ganesha.nfsd") {
+                if !pids.contains(&pid) {
+                    pids.push(pid);
+                }
+            }
+        }
+        for pid in &pids {
+            signal_process(*pid, libc::SIGTERM);
+        }
+        if pids.is_empty() {
+            pkill_process("-TERM", "ganesha.nfsd");
+        }
+        let term_wait_secs = std::env::var("NFS_KLLDAP_STOP_GANESHA_TERM_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5);
+        let deadline =
+            std::time::Instant::now() + Duration::from_secs(term_wait_secs);
+        loop {
+            if pgrep_live_pids("ganesha.nfsd").is_empty() && pgrep_pids("ganesha.nfsd").is_empty() {
+                self.log_info("stop_ganesha: process exited after SIGTERM");
+                self.pids.ganesha = None;
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+            reap_one_child();
+        }
+        self.log_warn("stop_ganesha: timeout — escalating to SIGKILL");
+        for pid in &pids {
+            signal_process(*pid, libc::SIGKILL);
+        }
+        pkill_process("-KILL", "ganesha.nfsd");
+        let kill_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if pgrep_live_pids("ganesha.nfsd").is_empty() && pgrep_pids("ganesha.nfsd").is_empty() {
+                self.log_info("stop_ganesha: process exited after SIGKILL");
+                self.pids.ganesha = None;
+                return;
+            }
+            if std::time::Instant::now() >= kill_deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+            reap_one_child();
+        }
         self.pids.ganesha = None;
     }
 
-    fn recycle_services_after_config(&mut self) {
+    fn execute_recycle_plan(&mut self, mut plan: ServiceRecyclePlan) {
         let _ = fs::create_dir_all("/var/lib/nfs-klldap");
         let _ = fs::create_dir_all("/var/run/nfs-klldap");
         let _ = fs::create_dir_all("/var/lib/extrausers");
-        if self.env.supervise_probe {
+        if self.env.supervise_probe
+            && !self.env.supervise_recycle_probe
+            && !self.env.supervise_identity_recycle_probe
+        {
             self.seed_probe_runtime_state();
             self.log_info("Supervise-probe: service recycle simulated (SSSD/Ganesha/WebUI)");
             return;
         }
-        if !self.env.host_nfs_mode {
-            self.stop_ganesha();
+        if plan.is_noop() {
+            self.log_info(
+                "No service recycle required — export and identity artifacts unchanged",
+            );
+            return;
         }
-        self.restart_sssd_and_wait();
-        self.restart_idhelper_and_wait_bulk();
+        self.log_info(&format!(
+            "Service recycle plan: ganesha={:?} restart_sssd={} restart_idhelper={} restart_webui={}",
+            plan.ganesha, plan.restart_sssd, plan.restart_idhelper, plan.restart_webui
+        ));
+
         if self.env.host_nfs_mode {
-            self.log_info("HOST_NFS mode: skipping Ganesha restart (host owns the NFS server; fragments were regenerated for it).");
+            self.log_info(
+                "HOST_NFS mode: skipping in-container Ganesha (host owns the NFS server; fragments were regenerated for it).",
+            );
         } else {
+            match plan.ganesha {
+                GaneshaAction::Skip => {}
+                GaneshaAction::Sighup => {
+                    if self.reload_ganesha_exports() {
+                        self.log_info("Ganesha export reload via SIGHUP complete.");
+                    } else {
+                        plan = ganesha_sighup_failed(plan);
+                        if self.ganesha_running() {
+                            self.stop_ganesha();
+                        }
+                    }
+                }
+                GaneshaAction::StopStart => {
+                    // Idempotent: wait out any stale pid/pgrep match before start.
+                    self.stop_ganesha();
+                }
+            }
+        }
+
+        if plan.restart_sssd {
+            self.restart_sssd_and_wait();
+        }
+        if plan.restart_idhelper {
+            self.restart_idhelper_and_wait_bulk();
+        }
+
+        if !self.env.host_nfs_mode
+            && plan.ganesha == GaneshaAction::StopStart
+            && !self.ganesha_running()
+        {
             self.ensure_ganesha_prereqs();
             self.log_info("Starting NFS-Ganesha after recycle...");
             self.start_ganesha();
         }
-        let _ = self.start_webui();
+        if plan.restart_webui {
+            let _ = self.start_webui();
+        }
     }
 
     fn quiet_winbind(&self) {
@@ -537,7 +976,10 @@ impl Supervisor {
     }
 
     fn start_webui(&mut self) -> Result<(), String> {
-        if self.env.supervise_probe {
+        if self.env.supervise_recycle_probe
+            || self.env.supervise_identity_recycle_probe
+            || self.env.supervise_probe
+        {
             self.log_info("Supervise-probe: WebUI start skipped (stub binaries)");
             return Ok(());
         }
@@ -546,17 +988,30 @@ impl Supervisor {
             thread::sleep(Duration::from_millis(300));
         }
         self.log_info("Starting WebUI on 0.0.0.0:9630...");
-        let log_file = OpenOptions::new()
+        let log_path = std::env::var("NFS_KLLDAP_WEBUI_LOG")
+            .unwrap_or_else(|_| "/var/log/webui.log".to_string());
+        let mut cmd = Command::new(&self.env.ui_bin);
+        cmd.args(["--config"])
+            .arg(&self.env.nfs_config)
+            .env("NFS_KLLDAP_CONF", &self.env.nfs_config);
+        match OpenOptions::new()
             .create(true)
             .append(true)
-            .open("/var/log/webui.log")
-            .map_err(|e| format!("webui log open: {e}"))?;
-        let child = Command::new(&self.env.ui_bin)
-            .args(["--config"])
-            .arg(&self.env.nfs_config)
-            .env("NFS_KLLDAP_CONF", &self.env.nfs_config)
-            .stdout(Stdio::from(log_file.try_clone().map_err(|e| e.to_string())?))
-            .stderr(Stdio::from(log_file))
+            .open(&log_path)
+        {
+            Ok(f) => match f.try_clone() {
+                Ok(f2) => {
+                    cmd.stdout(Stdio::from(f)).stderr(Stdio::from(f2));
+                }
+                Err(_) => {
+                    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                }
+            },
+            Err(_) => {
+                cmd.stdout(Stdio::null()).stderr(Stdio::null());
+            }
+        }
+        let child = cmd
             .spawn()
             .map_err(|e| format!("webui spawn failed: {e}"))?;
         self.pids.webui = Some(child.id());
@@ -637,13 +1092,21 @@ impl Supervisor {
         self.log_info("Starting nfs-klldap-idhelper...");
         let mut cmd = Command::new(&self.env.idhelper_bin);
         cmd.arg("daemon");
-        if let Ok(f) = OpenOptions::new()
+        match OpenOptions::new()
             .create(true)
             .append(true)
             .open("/var/log/idhelper.log")
         {
-            if let Ok(f2) = f.try_clone() {
-                cmd.stdout(Stdio::from(f)).stderr(Stdio::from(f2));
+            Ok(f) => match f.try_clone() {
+                Ok(f2) => {
+                    cmd.stdout(Stdio::from(f)).stderr(Stdio::from(f2));
+                }
+                Err(_) => {
+                    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                }
+            },
+            Err(_) => {
+                cmd.stdout(Stdio::null()).stderr(Stdio::null());
             }
         }
         if let Ok(child) = cmd.spawn() {
@@ -872,6 +1335,7 @@ mod libc {
     pub const SIGTERM: i32 = 15;
     pub const SIGINT: i32 = 2;
     pub const SIGHUP: i32 = 1;
+    pub const SIGKILL: i32 = 9;
     pub const WNOHANG: i32 = 1;
 
     extern "C" {

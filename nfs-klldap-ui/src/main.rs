@@ -225,6 +225,7 @@ async fn main() {
         setup_marker_override: None,
         setup_test: Arc::new(std::sync::Mutex::new(crate::web::setup::SetupTestState::default())),
         host_nfs_mode,
+        fs_probe_mountinfo_path: None,
     };
 
     let app = crate::web::router(state);

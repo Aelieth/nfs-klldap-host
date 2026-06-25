@@ -48,6 +48,27 @@ fn main() {
                 exit(2);
             }
         }
+        "supervise-recycle-probe" => {
+            std::env::set_var("NFS_KLLDAP_SUPERVISE_RECYCLE_PROBE", "1");
+            if let Err(e) = supervisor::run_supervisor(&config_path) {
+                eprintln!("FATAL: {e}");
+                exit(2);
+            }
+        }
+        "supervise-sighup-hook-probe" => {
+            std::env::set_var("NFS_KLLDAP_SUPERVISE_SIGHUP_HOOK_PROBE", "1");
+            if let Err(e) = supervisor::run_supervisor(&config_path) {
+                eprintln!("FATAL: {e}");
+                exit(2);
+            }
+        }
+        "supervise-identity-recycle-probe" => {
+            std::env::set_var("NFS_KLLDAP_SUPERVISE_IDENTITY_RECYCLE_PROBE", "1");
+            if let Err(e) = supervisor::run_supervisor(&config_path) {
+                eprintln!("FATAL: {e}");
+                exit(2);
+            }
+        }
         "check" => {
             if let Err(e) = run_one_shot_diagnostics(&config_path) {
                 eprintln!("ERROR: {e}");
@@ -77,6 +98,9 @@ Usage:
   nfs-klldap-startup supervise       Run pid-1 supervisor (default; replaces entrypoint logic)
   nfs-klldap-startup supervise-probe        One-shot preconf supervise path for CI
   nfs-klldap-startup supervise-probe-wizard One-shot post-wizard SIGHUP recycle for CI
+  nfs-klldap-startup supervise-recycle-probe  One-shot handle_sighup fp reload + stop for CI
+  nfs-klldap-startup supervise-sighup-hook-probe Real OS SIGHUP + hook + fingerprint for CI
+  nfs-klldap-startup supervise-identity-recycle-probe  Identity-only SIGHUP recycle for CI
   nfs-klldap-startup check           One-shot diagnostics and exit
   nfs-klldap-startup wait-ready      Poll until setup steps pass (no UI)
 

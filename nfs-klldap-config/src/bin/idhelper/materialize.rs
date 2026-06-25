@@ -5,8 +5,11 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
+use std::collections::HashMap;
+
 use nfs_klldap_config::{
-    IdMapSnapshot, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID, MACHINE_PRINCIPAL_PREFIXES,
+    IdMapSnapshot, PosixGroupEntry, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
+    MACHINE_PRINCIPAL_PREFIXES,
 };
 
 use crate::common::{IdCache, PrincipalKind, Resolved};
@@ -63,15 +66,22 @@ pub(crate) fn passwd_line_for(r: &Resolved) -> String {
     )
 }
 
-/// Build a minimal group(5) line for the primary gid of this resolved entry.
-/// We use a stable synthetic group name when we don't have a better one.
+/// Build a group(5) line for the primary gid of this resolved entry.
 pub(crate) fn group_line_for(r: &Resolved) -> String {
-    // Prefer a simple name; for uid==gid==0 we always ensure "root".
     if r.gid == 0 {
-        "root:x:0:".to_string()
+        group_line_with_members(0, "root", &[])
     } else {
         let gname = sanitize_for_nss(&r.name);
-        format!("{}:x:{}:", gname, r.gid)
+        group_line_with_members(r.gid, &gname, &[])
+    }
+}
+
+/// Build a full group(5) line with optional member list (comma-separated logins).
+pub(crate) fn group_line_with_members(gid: u32, gname: &str, members: &[String]) -> String {
+    if members.is_empty() {
+        format!("{}:x:{}:", gname, gid)
+    } else {
+        format!("{}:x:{}:{}", gname, gid, members.join(","))
     }
 }
 
@@ -145,13 +155,14 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
 
 /// Atomically write nss_wrapper passwd/group for ganesha.nfsd LD_PRELOAD and extrausers supplement.
 pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
-    materialize_nss_wrappers_at(cache, &NssMaterializePaths::production())
+    materialize_nss_wrappers_at(cache, &NssMaterializePaths::production(), None)
 }
 
 /// Same as materialize_nss_wrappers but writes to caller-supplied paths (used in rebulk tests).
 pub(crate) fn materialize_nss_wrappers_at(
     cache: &IdCache,
     paths: &NssMaterializePaths<'_>,
+    ldap_groups: Option<&HashMap<String, PosixGroupEntry>>,
 ) -> io::Result<()> {
     if let Some(parent) = paths.nss_passwd.parent() {
         let _ = fs::create_dir_all(parent);
@@ -209,7 +220,7 @@ pub(crate) fn materialize_nss_wrappers_at(
             }
         }
 
-        // Groups
+        // Groups (primary gid from resolved principal)
         if seen_gid.insert(r.gid) {
             group_lines.push(group_line_for(r));
         }
@@ -223,6 +234,27 @@ pub(crate) fn materialize_nss_wrappers_at(
             } else {
                 group_lines.push(format!("u{}:x:{}:", r.uid, r.uid));
             }
+        }
+    }
+
+    // LDAP-preloaded groups with member lists (supplementary groups for nss_wrapper getgrouplist).
+    if let Some(groups) = ldap_groups {
+        let mut by_gid: HashMap<i32, &PosixGroupEntry> = HashMap::new();
+        for entry in groups.values() {
+            by_gid.entry(entry.gid).or_insert(entry);
+        }
+        for entry in by_gid.values() {
+            let gid = entry.gid as u32;
+            if !seen_gid.insert(gid) {
+                continue;
+            }
+            let gname = sanitize_for_nss(&entry.display);
+            let members: Vec<String> = entry
+                .members
+                .iter()
+                .map(|m| sanitize_for_nss(m))
+                .collect();
+            group_lines.push(group_line_with_members(gid, &gname, &members));
         }
     }
 

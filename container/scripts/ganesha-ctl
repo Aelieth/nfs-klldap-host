@@ -14,6 +14,23 @@ log() {
     echo "[ganesha-ctl] $*"
 }
 
+# CONFIG_BIN env, PATH, then container default install path.
+resolve_config_bin() {
+    if [ -n "${CONFIG_BIN:-}" ] && [ -x "$CONFIG_BIN" ]; then
+        echo "$CONFIG_BIN"
+        return 0
+    fi
+    if command -v nfs-klldap-config >/dev/null 2>&1; then
+        command -v nfs-klldap-config
+        return 0
+    fi
+    if [ -x /usr/local/bin/nfs-klldap-config ]; then
+        echo /usr/local/bin/nfs-klldap-config
+        return 0
+    fi
+    return 1
+}
+
 die() {
     echo "[ganesha-ctl] ERROR: $*" >&2
     exit 1
@@ -32,6 +49,7 @@ Usage:
   id-resolve <principal>     # resolve/classify a Kerberos principal via idhelper
   id-check                   # quick health of the idhelper translator
   id-map-test [name]         # verify getent + principal mapping parity (testuser1 + host/...) for 9.6 mount stability
+  fs-warnings                # list limited-filesystem share warnings from nfs-klldap.conf
 
 The idhelper daemon (nfs-klldap-idhelper) is the authoritative principal
 classifier/resolver. It materializes mappings for Ganesha (via nss_wrapper files
@@ -40,13 +58,15 @@ Container watches nfs-klldap.conf; supervisor regenerates exports.d on SIGHUP.
 EOF
 }
 
-# Ask pid 1 to regenerate config and recycle SSSD, idhelper, Ganesha, and WebUI.
+# Ask the supervisor to regenerate config and recycle SSSD, idhelper, Ganesha, and WebUI.
+# In-container pid 1 is the supervisor; NFS_KLLDAP_SUPERVISOR_PID overrides for CI/evidence.
 signal_supervisor_reload() {
-    if kill -HUP 1 2>/dev/null; then
-        log "Signaled supervisor (pid 1) for privileged regeneration + service recycle"
+    local pid="${NFS_KLLDAP_SUPERVISOR_PID:-1}"
+    if kill -HUP "$pid" 2>/dev/null; then
+        log "Signaled supervisor (pid ${pid}) for privileged regeneration + service recycle"
         return 0
     fi
-    die "Could not signal supervisor (pid 1) — run from inside the container"
+    die "Could not signal supervisor (pid ${pid}) — run from inside the container"
 }
 
 # Best-effort mapping from a user-supplied name/id to a fragment filename.
@@ -181,6 +201,15 @@ case "$CMD" in
             echo "idhelper binary missing"
             exit 1
         fi
+        ;;
+    fs-warnings)
+        CONFIG="${NFS_CONFIG:-/config/nfs-klldap.conf}"
+        CONFIG_BIN_PATH="$(resolve_config_bin)" || die "nfs-klldap-config not found (set CONFIG_BIN or PATH)"
+        # Validation warnings go to stderr during load; operators want WARN-prefixed lines on stdout.
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            echo "WARN: fs: $line"
+        done < <("$CONFIG_BIN_PATH" fs-warnings --config "$CONFIG" 2>/dev/null || true)
         ;;
     id-map-test)
         # Exercise client-parity lookups: getent short name + idhelper principal resolve.

@@ -1,17 +1,36 @@
 //! Validates nfs-klldap.conf and derives realm, LDAP bases, and Ganesha 9.6-safe export defaults.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{
     config::{ShareFieldWarning, SHARE_KNOWN_KEYS},
-    ConfigError, NfsKlldapConfig, Share,
+    compute_effective_flags, limited_fs_warning, probe_fs_capabilities, ConfigError, NfsKlldapConfig,
+    Share,
 };
 
 fn log_share_warnings(warnings: &[ShareFieldWarning]) {
     for w in warnings {
         eprintln!("WARN [nfs-klldap-config] {}", w.display_message());
     }
+}
+
+fn warn_share_filesystem_limited(cfg: &NfsKlldapConfig, share: &Share) {
+    let serve_path = cfg.serve_path_for(share);
+    let caps = probe_fs_capabilities(Path::new(&serve_path)).unwrap_or_else(|_| {
+        crate::FsCapabilities {
+            fstype: "unknown".into(),
+            mount_options: vec![],
+            acl_capable: true,
+        }
+    });
+    if !caps.acl_capable {
+        eprintln!(
+            "WARN [nfs-klldap-config] {}",
+            limited_fs_warning(&share.name, &caps)
+        );
+    }
+    let _ = compute_effective_flags(share, &caps);
 }
 
 /// Scan raw TOML for unrecognized keys in `[[shares]]` tables.
@@ -230,8 +249,9 @@ impl NfsKlldapConfig {
                     share.name
                 )));
             }
+            normalize_blank(&mut share.ganesha_path);
             // Normalize export_path to an absolute NFSv4 Pseudo (Ganesha requires leading /).
-            // Internal EXPORT.Path still comes from container_path_for(host_path).
+            // Internal EXPORT.Path comes from serve_path_for (ganesha_path override when set).
             {
                 let ep = share.export_path.take();
                 let normalized = match ep {
@@ -302,6 +322,10 @@ impl NfsKlldapConfig {
                     )));
                 }
             }
+        }
+
+        for share in &self.shares {
+            warn_share_filesystem_limited(self, share);
         }
 
         // Require bind credentials for sssd
@@ -437,6 +461,14 @@ impl NfsKlldapConfig {
                 self.ganesha.default_security = t.to_string();
             }
         }
+        if let Ok(v) = std::env::var("NFS_KLLDAP_POST_GENERATE_HOOK") {
+            let t = v.trim();
+            self.ganesha.post_generate_hook = if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            };
+        }
 
         // [management] webui_admin_group
         if let Ok(v) = std::env::var("NFS_KLLDAP_MANAGEMENT_WEBUI_ADMIN_GROUP") {
@@ -534,6 +566,17 @@ impl NfsKlldapConfig {
             format!("/{}", ep_owned)
         };
         format!("{}{}", root, ep)
+    }
+
+    /// Ganesha EXPORT Path= and fs probe target (ganesha_path verbatim when set).
+    pub fn serve_path_for(&self, share: &Share) -> String {
+        if let Some(ref gp) = share.ganesha_path {
+            let t = gp.trim();
+            if !t.is_empty() {
+                return t.to_string();
+            }
+        }
+        self.container_path_for(share)
     }
 
     pub fn host_paths(&self) -> Vec<PathBuf> {

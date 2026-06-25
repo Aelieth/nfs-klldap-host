@@ -32,3 +32,25 @@ warn_export_fragments() {
         echo "WARN: no export fragments listed yet (may be normal during startup)"
     fi
 }
+
+warn_fs_limited_shares() {
+    local config="${NFS_CONFIG:-/config/nfs-klldap.conf}"
+    local bin="${1:-}"
+    if [ -z "$bin" ]; then
+        if [ -n "${CONFIG_BIN:-}" ] && [ -x "$CONFIG_BIN" ]; then
+            bin="$CONFIG_BIN"
+        elif command -v nfs-klldap-config >/dev/null 2>&1; then
+            bin="$(command -v nfs-klldap-config)"
+        elif [ -x /usr/local/bin/nfs-klldap-config ]; then
+            bin="/usr/local/bin/nfs-klldap-config"
+        else
+            return 0
+        fi
+    fi
+    command -v "$bin" >/dev/null 2>&1 || [ -x "$bin" ] || return 0
+    [ -f "$config" ] || return 0
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        echo "WARN: fs: $line"
+    done < <("$bin" fs-warnings --config "$config" 2>/dev/null || true)
+}

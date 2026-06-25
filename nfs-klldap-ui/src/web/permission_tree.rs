@@ -62,6 +62,7 @@ struct ShareInfo {
     pub squash_label: String,
     pub cache_profile: String,
     pub warning: Option<String>,
+    pub fs_warning: Option<String>,
 }
 
 #[derive(Template)]
@@ -245,6 +246,11 @@ pub(crate) async fn index(
                 &s.name,
             )
             .map(|w| w.display_message());
+            let fs_warning = nfs_klldap_config::share_fs_warning_message_with_mountinfo(
+                &state.config,
+                s,
+                state.fs_probe_mountinfo_path.as_deref(),
+            );
 
             ShareInfo {
                 name: s.name.clone(),
@@ -254,6 +260,7 @@ pub(crate) async fn index(
                 squash_label,
                 cache_profile,
                 warning,
+                fs_warning,
             }
         })
         .collect();

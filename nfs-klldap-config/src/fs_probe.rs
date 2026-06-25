@@ -1,0 +1,260 @@
+//! Pure-Rust /proc/self/mountinfo probe for POSIX ACL capability on share paths.
+
+use std::io;
+use std::path::Path;
+
+use crate::Share;
+
+/// Backing filesystem capabilities for a resolved container share path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FsCapabilities {
+    pub fstype: String,
+    pub mount_options: Vec<String>,
+    pub acl_capable: bool,
+}
+
+/// Effective Ganesha EXPORT flags after explicit TOML overrides and probe results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveShareFlags {
+    pub disable_acl: bool,
+    pub manage_gids: bool,
+    /// True when probe (not explicit TOML) drove the safe defaults.
+    pub auto_applied: bool,
+}
+
+#[derive(Debug, Clone)]
+struct MountEntry {
+    mount_point: String,
+    fstype: String,
+    mount_source: String,
+    super_options: Vec<String>,
+}
+
+/// Probe path against live mountinfo; on failure assume ACL-capable so generate never aborts.
+pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
+    let mountinfo_path = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH")
+        .unwrap_or_else(|_| "/proc/self/mountinfo".to_string());
+    let content = std::fs::read_to_string(mountinfo_path)?;
+    Ok(probe_from_mountinfo(&content, path))
+}
+
+/// Probe path against fixture or live mountinfo content (unit-test entry point).
+pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
+    let entries = parse_mountinfo(content);
+    let path_str = path.to_string_lossy();
+    match resolve_mount_for_path(&entries, path_str.as_ref()) {
+        Some(entry) => {
+            let acl_capable = acl_capable_from_mount(&entry.fstype, &entry.super_options, &entry.mount_source);
+            FsCapabilities {
+                fstype: entry.fstype.clone(),
+                mount_options: entry.super_options.clone(),
+                acl_capable,
+            }
+        }
+        None => FsCapabilities {
+            fstype: "unknown".into(),
+            mount_options: vec![],
+            acl_capable: true,
+        },
+    }
+}
+
+/// Merge explicit share flags with probe; limited FS defaults to safe krb5p EXPORT settings.
+pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> EffectiveShareFlags {
+    let probe_limited = !caps.acl_capable;
+    let disable_acl = share.disable_acl.unwrap_or(probe_limited);
+    let manage_gids = share.manage_gids.unwrap_or(!probe_limited);
+    let auto_applied =
+        probe_limited && share.disable_acl.is_none() && share.manage_gids.is_none();
+    EffectiveShareFlags {
+        disable_acl,
+        manage_gids,
+        auto_applied,
+    }
+}
+
+fn parse_mountinfo(content: &str) -> Vec<MountEntry> {
+    let mut entries = Vec::new();
+    for line in content.lines() {
+        if let Some(entry) = parse_mountinfo_line(line) {
+            entries.push(entry);
+        }
+    }
+    entries
+}
+
+fn parse_mountinfo_line(line: &str) -> Option<MountEntry> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    // mount_id parent_id major:minor root mount_point ... - fstype source super_options
+    if parts.len() < 10 {
+        return None;
+    }
+    let dash = parts.iter().position(|p| *p == "-")?;
+    if dash + 3 >= parts.len() {
+        return None;
+    }
+    let mount_point = parts.get(4)?.to_string();
+    let fstype = parts[dash + 1].to_string();
+    let mount_source = parts[dash + 2].to_string();
+    let super_options: Vec<String> = parts[dash + 3..]
+        .iter()
+        .flat_map(|s| s.split(','))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    Some(MountEntry {
+        mount_point,
+        fstype,
+        mount_source,
+        super_options,
+    })
+}
+
+fn resolve_mount_for_path<'a>(entries: &'a [MountEntry], path: &str) -> Option<&'a MountEntry> {
+    let norm = normalize_path(path);
+    entries
+        .iter()
+        .filter(|e| path_under_mount(&norm, &normalize_path(&e.mount_point)))
+        .max_by_key(|e| normalize_path(&e.mount_point).len())
+}
+
+fn path_under_mount(path: &str, mount_point: &str) -> bool {
+    if path == mount_point {
+        return true;
+    }
+    if mount_point == "/" {
+        return path.starts_with('/');
+    }
+    path.starts_with(&format!("{mount_point}/"))
+}
+
+fn normalize_path(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn acl_capable_from_mount(fstype: &str, options: &[String], mount_source: &str) -> bool {
+    if options.iter().any(|o| o.eq_ignore_ascii_case("noacl")) {
+        return false;
+    }
+    let fs = fstype.to_ascii_lowercase();
+    match fs.as_str() {
+        "vfat" | "fat" | "msdos" | "exfat" => false,
+        "ntfs" | "ntfs3" | "fuseblk" => false,
+        _ if mount_source.to_ascii_lowercase().contains("ntfs") => false,
+        _ => true,
+    }
+}
+
+/// One-line WARN for limited-FS shares (validate/dry-run/startup).
+pub fn limited_fs_warning(share_name: &str, caps: &FsCapabilities) -> String {
+    let opts = if caps.mount_options.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", caps.mount_options.join(","))
+    };
+    format!(
+        "share \"{share_name}\": filesystem {fstype}{opts} lacks POSIX ACL support — \
+         auto Disable_ACL=true and Manage_Gids=false for krb5p safety; remount with acl or accept limited mode",
+        share_name = share_name,
+        fstype = caps.fstype,
+        opts = opts
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FIXTURE: &str = r#"
+36 35 0:59 / /export rw,relatime - btrfs /dev/sda1 rw,noacl
+37 36 0:60 / /export/movies rw,relatime - ext4 /dev/sdb1 rw
+38 36 0:61 / /export/data rw,relatime - xfs /dev/sdc1 rw
+39 36 0:62 / /export/usb rw,relatime - vfat /dev/sdd1 rw,fmask=0022,dmask=0022
+40 36 0:63 / /export/ntfs rw,relatime - fuseblk /dev/sde1 rw,allow_other,default_permissions
+"#;
+
+    #[test]
+    fn btrfs_noacl_not_capable() {
+        let caps = probe_from_mountinfo(FIXTURE, Path::new("/export/users"));
+        assert_eq!(caps.fstype, "btrfs");
+        assert!(!caps.acl_capable);
+        assert!(caps.mount_options.iter().any(|o| o == "noacl"));
+    }
+
+    #[test]
+    fn ext4_xfs_capable() {
+        let ext4 = probe_from_mountinfo(FIXTURE, Path::new("/export/movies/sub"));
+        assert_eq!(ext4.fstype, "ext4");
+        assert!(ext4.acl_capable);
+        let xfs = probe_from_mountinfo(FIXTURE, Path::new("/export/data"));
+        assert_eq!(xfs.fstype, "xfs");
+        assert!(xfs.acl_capable);
+    }
+
+    #[test]
+    fn vfat_ntfs_not_capable() {
+        let vfat = probe_from_mountinfo(FIXTURE, Path::new("/export/usb"));
+        assert!(!vfat.acl_capable);
+        let ntfs = probe_from_mountinfo(FIXTURE, Path::new("/export/ntfs"));
+        assert_eq!(ntfs.fstype, "fuseblk");
+        assert!(!ntfs.acl_capable);
+    }
+
+    #[test]
+    fn unknown_path_assumes_capable() {
+        let caps = probe_from_mountinfo(FIXTURE, Path::new("/other/new"));
+        assert_eq!(caps.fstype, "unknown");
+        assert!(caps.acl_capable);
+    }
+
+    #[test]
+    fn root_mount_matches_export_subpaths() {
+        let fixture = "1 0 0:1 / / rw - btrfs /dev/sda1 rw,noacl\n";
+        let caps = probe_from_mountinfo(fixture, Path::new("/export/users"));
+        assert_eq!(caps.fstype, "btrfs");
+        assert!(!caps.acl_capable);
+    }
+
+    #[test]
+    fn explicit_noacl_on_ext4_not_capable() {
+        let fixture = "37 36 0:60 / /export/movies rw - ext4 /dev/sdb1 rw,noacl\n";
+        let caps = probe_from_mountinfo(fixture, Path::new("/export/movies"));
+        assert!(!caps.acl_capable);
+    }
+
+    #[test]
+    fn compute_effective_flags_auto_limited() {
+        let share = Share::default();
+        let caps = FsCapabilities {
+            fstype: "btrfs".into(),
+            mount_options: vec!["noacl".into()],
+            acl_capable: false,
+        };
+        let eff = compute_effective_flags(&share, &caps);
+        assert!(eff.disable_acl);
+        assert!(!eff.manage_gids);
+        assert!(eff.auto_applied);
+    }
+
+    #[test]
+    fn compute_effective_flags_explicit_override() {
+        let mut share = Share::default();
+        share.disable_acl = Some(false);
+        share.manage_gids = Some(true);
+        let caps = FsCapabilities {
+            fstype: "btrfs".into(),
+            mount_options: vec!["noacl".into()],
+            acl_capable: false,
+        };
+        let eff = compute_effective_flags(&share, &caps);
+        assert!(!eff.disable_acl);
+        assert!(eff.manage_gids);
+        assert!(!eff.auto_applied);
+    }
+}

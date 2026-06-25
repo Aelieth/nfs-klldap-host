@@ -57,7 +57,7 @@ pub(crate) fn rebulk_apply_sync(
     let fp_before = cache.content_fingerprint();
     let synced = sync_user_cache_from_snapshot(snap, realm, cache);
     let materialized = if cache_changed_since(fp_before, cache) {
-        materialize_nss_wrappers_at(cache, &paths.nss)?;
+        materialize_nss_wrappers_at(cache, &paths.nss, Some(&snap.groups))?;
         cache.write_to_file(paths.cache_path)?;
         true
     } else {
@@ -349,7 +349,7 @@ fn handle_client(
 mod rebulk_ldap_users_tests {
     use super::test_rebulk::{rebulk_paths_in, with_test_rebulk_override, TestRebulkOverride};
     use super::*;
-    use nfs_klldap_config::PosixUserEntry;
+    use nfs_klldap_config::{PosixGroupEntry, PosixUserEntry};
     use std::fs;
     use std::thread::sleep;
     use std::time::Duration;
@@ -448,6 +448,32 @@ mod rebulk_ldap_users_tests {
             assert_ne!(mtime_before, mtime_after);
             let passwd = fs::read_to_string(paths.nss.nss_passwd).unwrap();
             assert!(passwd.contains("bob:x:1002:1002:"));
+        });
+    }
+
+    #[test]
+    fn rebulk_materializes_ldap_group_member_lists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = rebulk_paths_in(tmp.path());
+        let mut snap = alice_snapshot();
+        snap.groups.insert(
+            "devs".to_string(),
+            PosixGroupEntry {
+                gid: 500,
+                display: "devs".to_string(),
+                members: vec!["alice".to_string(), "bob".to_string()],
+            },
+        );
+        snap.by_gid.insert(500, "devs".to_string());
+        let ov = TestRebulkOverride { snap, paths };
+        with_test_rebulk_override(ov, || {
+            let mut cache = IdCache::default();
+            assert!(rebulk_ldap_users(&mut cache, "EX.COM").is_some());
+            let group = fs::read_to_string(paths.nss.nss_group).expect("nss_group written");
+            assert!(
+                group.contains("devs:x:500:alice,bob"),
+                "LDAP member preload must appear in nss group line; got:\n{group}"
+            );
         });
     }
 

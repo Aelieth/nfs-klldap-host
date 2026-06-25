@@ -68,6 +68,7 @@ struct CachedGroup {
     id: String,
     gid_number: Option<i32>,
     display_name: String,
+    members: Vec<String>,
     fetched_at: Instant,
 }
 
@@ -90,6 +91,8 @@ pub struct PosixUserEntry {
 pub struct PosixGroupEntry {
     pub gid: i32,
     pub display: String,
+    /// Member login names (from LDAP member / uniqueMember preload).
+    pub members: Vec<String>,
 }
 
 impl IdLdapResolver {
@@ -196,6 +199,39 @@ impl IdLdapResolver {
             .or_else(|| Self::extract_first_attr(se, "displayName"))
             .or_else(|| Self::extract_first_attr(se, "cn"))
             .unwrap_or_else(|| fallback.to_string())
+    }
+
+    /// Member login names from member / uniqueMember / memberUid LDAP attributes.
+    fn extract_group_members(se: &SearchEntry, member_attr: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for attr in [member_attr, "uniqueMember", "memberUid", "memberuid"] {
+            let values = se
+                .attrs
+                .get(attr)
+                .or_else(|| se.attrs.get(&attr.to_lowercase()))
+                .cloned()
+                .unwrap_or_default();
+            for raw in values {
+                let name = if raw.contains('=') {
+                    raw.split(',')
+                        .next()
+                        .and_then(|r| r.split('=').nth(1))
+                        .unwrap_or(raw.as_str())
+                        .trim()
+                        .to_string()
+                } else {
+                    raw.trim().to_string()
+                };
+                if name.is_empty() {
+                    continue;
+                }
+                if seen.insert(name.clone()) {
+                    out.push(name);
+                }
+            }
+        }
+        out
     }
 
     /// Fallback search base: suffix from first dc= (covers principal-style lookups).
@@ -431,10 +467,15 @@ impl IdLdapResolver {
             let display = Self::extract_display_name(&se, &name_attr, name);
             if let Some(gid_str) = Self::extract_first_attr(&se, &gid_attr) {
                 if let Ok(g) = gid_str.parse::<i32>() {
+                    let members = Self::extract_group_members(
+                        &se,
+                        &self.posix_attributes.group_member,
+                    );
                     let group = CachedGroup {
                         id: name.to_string(),
                         gid_number: Some(g),
                         display_name: display.clone(),
+                        members,
                         fetched_at: Instant::now(),
                     };
                     self.group_cache
@@ -547,10 +588,15 @@ impl IdLdapResolver {
             if let Some(gid_str) = Self::extract_first_attr(&se, &gid_attr) {
                 if let Ok(g) = gid_str.parse::<i32>() {
                     if g == gid {
+                        let members = Self::extract_group_members(
+                            &se,
+                            &self.posix_attributes.group_member,
+                        );
                         let cg = CachedGroup {
                             id: id.clone(),
                             gid_number: Some(g),
                             display_name: display.clone(),
+                            members,
                             fetched_at: Instant::now(),
                         };
                         self.group_cache.lock().unwrap().insert(id.clone(), cg.clone());
@@ -595,9 +641,13 @@ impl IdLdapResolver {
             "displayName".into(),
             full_attr.clone(),
         ];
+        let group_member_attr = self.posix_attributes.group_member.clone();
         let group_attrs: Vec<String> = vec![
             group_name_attr.clone(),
             group_gid_attr.clone(),
+            group_member_attr.clone(),
+            "uniqueMember".into(),
+            "memberUid".into(),
             "cn".into(),
             "displayName".into(),
         ];
@@ -679,10 +729,13 @@ impl IdLdapResolver {
                     if let Some(g_str) = Self::extract_first_attr(&se, &group_gid_attr) {
                         if let Ok(g) = g_str.parse::<i32>() {
                             let display = Self::extract_display_name(&se, &group_name_attr, &id);
+                            let members =
+                                Self::extract_group_members(&se, &group_member_attr);
                             let cg = CachedGroup {
                                 id: id.clone(),
                                 gid_number: Some(g),
                                 display_name: display.clone(),
+                                members,
                                 fetched_at: Instant::now(),
                             };
                             self.group_cache.lock().unwrap().insert(id.clone(), cg.clone());
@@ -721,6 +774,7 @@ impl IdLdapResolver {
                     PosixGroupEntry {
                         gid,
                         display: cg.display_name.clone(),
+                        members: cg.members.clone(),
                     },
                 );
                 snap.by_gid.insert(gid, name.clone());

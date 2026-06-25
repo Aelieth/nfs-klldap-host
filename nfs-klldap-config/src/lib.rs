@@ -5,7 +5,13 @@
 mod config;
 mod constants;
 mod error;
+mod exports_fingerprint;
+mod ganesha_liveness;
+mod recycle_plan;
+mod fs_probe;
+mod fs_warnings;
 mod generate;
+mod hook;
 mod hostname;
 mod network;
 mod persist;
@@ -27,7 +33,25 @@ pub use validate::detect_share_unknown_keys;
 
 pub mod ignored_attributes;
 pub use error::ConfigError;
+pub use exports_fingerprint::{
+    fingerprint_exports_dir, fingerprint_identity_artifacts,
+};
+pub use ganesha_liveness::{
+    ganesha_is_live, pgrep_live_pids, pgrep_pids, process_is_live, reconcile_ganesha_pid,
+};
+pub use recycle_plan::{
+    plan_from_changes, ganesha_sighup_failed, GaneshaAction, ServiceRecyclePlan,
+};
 
+pub use fs_probe::{
+    compute_effective_flags, limited_fs_warning, probe_from_mountinfo, probe_fs_capabilities,
+    EffectiveShareFlags, FsCapabilities,
+};
+pub use fs_warnings::{
+    any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warnings_only,
+    share_fs_warning_message, share_fs_warning_message_with_mountinfo, FsShareWarning,
+};
+pub use hook::{effective_post_generate_hook, run_post_generate_hooks};
 pub use generate::generate_all;
 pub use hostname::{
     format_nfs_principal_list, get_consistent_hostname, looks_like_docker_default_hostname,
@@ -94,6 +118,10 @@ pub fn ldap_tls_policy(
     (no_verify, id_use_start_tls.unwrap_or(false))
 }
 
+/// Serializes env-mutating tests across modules (`cargo test --workspace` runs tests in parallel).
+#[cfg(test)]
+pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,7 +129,9 @@ mod tests {
     use std::path::PathBuf;
 
     /// Serializes env-mutating tests under `cargo test --workspace`.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_TEST_LOCK.lock().unwrap()
+    }
 
     /// RAII guard restoring previous env var value on drop.
     struct EnvGuard {
@@ -192,7 +222,7 @@ mod tests {
 
     #[test]
     fn load_and_derive_works() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
         let c = minimal_cfg();
         assert_eq!(c.effective_realm(), "TEST");
@@ -203,7 +233,7 @@ mod tests {
 
     #[test]
     fn generate_produces_expected_artifacts() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
         let cfg = minimal_cfg();
         let tmp = tempfile::tempdir().unwrap();
@@ -313,7 +343,7 @@ mod tests {
 
     #[test]
     fn ganesha_debug_log_block_emitted_only_when_env_true() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
 
         // 1) Default (no GANESHA_DEBUG) - baseline LOG (with CLIENTID etc) is intentionally
@@ -371,7 +401,7 @@ mod tests {
 
     #[test]
     fn duplicate_names_rejected() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.shares.push(Share {
@@ -384,7 +414,7 @@ mod tests {
 
     #[test]
     fn invalid_security_rejected() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.ganesha.default_security = "krb5x".into();
@@ -397,7 +427,7 @@ mod tests {
 
     #[test]
     fn invalid_squash_rejected() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.shares[0].squash = Some("invalid_squash".into());
@@ -410,7 +440,7 @@ mod tests {
 
     #[test]
     fn invalid_pref_read_rejected() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.shares[0].pref_read = Some(64 * 1024 * 1024 + 1);
@@ -427,7 +457,7 @@ mod tests {
 
     #[test]
     fn invalid_cache_profile_rejected_and_valid_profiles_accepted() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.shares[0].cache_profile = Some("Turbo".to_string());
@@ -466,6 +496,27 @@ mod tests {
         assert_eq!(cfg.share_warnings.len(), 1);
         assert_eq!(cfg.share_warnings[0].unknown_keys, vec!["disable_acll"]);
         assert_eq!(cfg.share_warnings[0].share_name.as_deref(), Some("movies"));
+    }
+
+    #[test]
+    fn share_manage_gids_valid_no_warnings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mg.conf");
+        let toml = r#"
+            ldap_uri = "ldaps://kllap.test:6360"
+            [sssd]
+            ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+            ldap_default_authtok = "sekret"
+            [[shares]]
+            name = "movies"
+            host_path = "/media/movies"
+            manage_gids = false
+        "#;
+        fs::write(&path, toml).unwrap();
+
+        let cfg = NfsKlldapConfig::load(&path).expect("load");
+        assert!(cfg.share_warnings.is_empty());
+        assert_eq!(cfg.shares[0].manage_gids, Some(false));
     }
 
     #[test]
@@ -516,7 +567,7 @@ mod tests {
 
     #[test]
     fn realm_is_required_no_silent_example() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://kllap.example.com:6360".into(),
@@ -548,7 +599,7 @@ mod tests {
 
     #[test]
     fn realm_from_env_works() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
         let _guard = EnvGuard::set("NFS_KLLDAP_KERBEROS_REALM", "ENV.REALM");
 
@@ -572,7 +623,7 @@ mod tests {
 
     #[test]
     fn core_env_overrides_for_ldap_uri_bind_and_webui_work() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env(); // clears everything first (under lock)
         let _g1 = EnvGuard::set("NFS_KLLDAP_LDAP_URI", "ldaps://envhost.testdomain.com:6360");
         let _g2 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN", "uid=envadmin,ou=people,dc=example,dc=com");
@@ -605,7 +656,7 @@ mod tests {
 
     #[test]
     fn display_realm_returns_real_value_after_validation_and_placeholder_otherwise() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://ldap.testdomain.com:6360".into(),
@@ -638,7 +689,7 @@ mod tests {
 
     #[test]
     fn sssd_tls_options_are_emitted_when_set() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.sssd.ldap_tls_reqcert = Some("never".into());
@@ -666,7 +717,7 @@ mod tests {
 
     #[test]
     fn kllldap_ignored_attributes_false_omits_ignore_blocks() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
         let mut c = minimal_cfg();
         c.sssd.kllldap_ignored_attributes = Some(false);
@@ -695,7 +746,7 @@ mod tests {
 
     #[test]
     fn ldap_uri_ip_rejected_with_exact_message() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = env_lock();
         let _guards = clean_core_env();
 
         fn make_minimal(ip_uri: &str) -> NfsKlldapConfig {

@@ -6,7 +6,8 @@ use std::path::Path;
 use crate::ignored_attributes;
 
 use crate::{
-    config::resolve_posix_attribute_mapping, constants, ConfigError, GenerationPaths, NfsKlldapConfig,
+    compute_effective_flags, config::resolve_posix_attribute_mapping, constants, probe_fs_capabilities,
+    ConfigError, FsCapabilities, GenerationPaths, NfsKlldapConfig,
 };
 
 
@@ -538,6 +539,37 @@ EXPORT_DEFAULTS {{
     Ok(())
 }
 
+/// Build Ganesha 9.6 EXPORT ACL lines and auto-detect comment from probe results.
+pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String) {
+    let eff = compute_effective_flags(share, caps);
+    let disable_acl_line = if eff.disable_acl {
+        "    Disable_ACL = true;\n".to_string()
+    } else {
+        String::new()
+    };
+    let manage_gids_line = if !eff.manage_gids {
+        "    Manage_Gids = false;\n".to_string()
+    } else {
+        String::new()
+    };
+    let auto_comment = if eff.auto_applied {
+        let opts = if caps.mount_options.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", caps.mount_options.join(","))
+        };
+        format!(
+            "# Auto-detected: {}{opts} — ACL-dependent NFSv4 ops disabled for compatibility.\n\
+             # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
+            caps.fstype,
+            opts = opts
+        )
+    } else {
+        String::new()
+    };
+    (disable_acl_line, manage_gids_line, auto_comment)
+}
+
 fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(), ConfigError> {
     // Remove prior managed fragments (we own exports.d/*.conf)
     if exports_dir.exists() {
@@ -553,7 +585,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
 
     for (i, share) in cfg.shares.iter().enumerate() {
         let export_id = derive_export_id(&share.name, 1000 + (i as u16 * 10));
-        let path = cfg.container_path_for(share); // internal (derived from share's host_path first dir + tail)
+        let path = cfg.serve_path_for(share);
         let default_pseudo = format!("/{}", share.name);
         let pseudo_raw = share.export_path.as_deref().unwrap_or(&default_pseudo); // external (can differ / be short)
         // Ganesha requires Pseudo to be absolute. validate_and_derive now guarantees it,
@@ -589,11 +621,13 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             .map(|v| format!("    PrefWrite = {};\n", v))
             .unwrap_or_default();
 
-        let disable_acl_line = share
-            .disable_acl
-            .filter(|&v| v)
-            .map(|_| "    Disable_ACL = true;\n")
-            .unwrap_or_default();
+        let caps = probe_fs_capabilities(Path::new(&path)).unwrap_or_else(|_| FsCapabilities {
+            fstype: "unknown".into(),
+            mount_options: vec![],
+            acl_capable: true,
+        });
+        let (disable_acl_line, manage_gids_line, auto_comment) =
+            export_fs_directives(share, &caps);
 
         // CLIENT block: Protocols=4 only. Read_Access_Check_Policy is intentionally
         // omitted — Ganesha 9.6 trixie-backports rejects it in EXPORT_DEFAULTS and
@@ -614,18 +648,29 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
 
         let block = format!(
             r#"# Generated from nfs-klldap.conf share "{}"
-EXPORT {{
+{auto_comment}EXPORT {{
     Export_Id = {};
     Path = {};
     Pseudo = {};
     SecType = {};
     Squash = {};
-{disable_acl_line}{pref_read_line}{pref_write_line}{client_block}    FSAL {{
+{disable_acl_line}{manage_gids_line}{pref_read_line}{pref_write_line}{client_block}    FSAL {{
         Name = VFS;
     }}
 }}
 "#,
-            share.name, export_id, path, pseudo, sec, squash, disable_acl_line = disable_acl_line, pref_read_line = pref_read_line, pref_write_line = pref_write_line, client_block = client_block
+            share.name,
+            export_id,
+            path,
+            pseudo,
+            sec,
+            squash,
+            auto_comment = auto_comment,
+            disable_acl_line = disable_acl_line,
+            manage_gids_line = manage_gids_line,
+            pref_read_line = pref_read_line,
+            pref_write_line = pref_write_line,
+            client_block = client_block
         );
 
         let filename = fragment_basename(i, &share.name);
@@ -825,7 +870,42 @@ mod tests {
     }
 
     #[test]
+    fn manage_gids_false_emitted_when_explicit() {
+        let share = crate::Share {
+            name: "gids".into(),
+            host_path: "/media/gids".into(),
+            manage_gids: Some(false),
+            ..Default::default()
+        };
+        let caps = crate::FsCapabilities {
+            fstype: "ext4".into(),
+            mount_options: vec![],
+            acl_capable: true,
+        };
+        let (_, manage_line, _) = export_fs_directives(&share, &caps);
+        assert!(manage_line.contains("Manage_Gids = false;"));
+    }
+
+    #[test]
+    fn btrfs_noacl_auto_directives_in_fragment() {
+        let share = crate::Share::default();
+        let caps = crate::FsCapabilities {
+            fstype: "btrfs".into(),
+            mount_options: vec!["noacl".into()],
+            acl_capable: false,
+        };
+        let (disable_line, manage_line, comment) = export_fs_directives(&share, &caps);
+        assert!(disable_line.contains("Disable_ACL = true;"));
+        assert!(manage_line.contains("Manage_Gids = false;"));
+        assert!(comment.contains("Auto-detected: btrfs"));
+        assert!(!comment.contains("Read_Access_Check_Policy"));
+        assert!(!comment.contains("Manage_Gids_Expiration"));
+    }
+
+    #[test]
     fn disable_acl_omitted_when_false_or_absent() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
+        std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");
         let mut cfg = crate::NfsKlldapConfig {
             ldap_uri: "ldaps://k.test:6360".into(),
             sssd: crate::SssdSection {

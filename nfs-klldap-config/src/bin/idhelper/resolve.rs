@@ -15,7 +15,7 @@ use crate::common::{
     debug_enabled, is_machine_principal, normalize_principal, IdCache, PrincipalKind, Resolved,
     CACHE_PATH,
 };
-use crate::materialize::materialize_nss_wrappers;
+use crate::materialize::{materialize_nss_wrappers_at, NssMaterializePaths};
 
 /// getent (NSS) path for "same lookup a client would see". Falls back to resolver snapshot.
 fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
@@ -290,7 +290,12 @@ pub(crate) fn resolve_principal(
             "  cache_write result={}",
             if write_res.is_ok() { "ok" } else { "err" }
         );
-        if let Err(e) = materialize_nss_wrappers(cache) {
+        let snap_groups = get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups);
+        if let Err(e) = materialize_nss_wrappers_at(
+            cache,
+            &NssMaterializePaths::production(),
+            snap_groups.as_ref(),
+        ) {
             dlog!("  nss_wrapper_write err={}", e);
         }
     }

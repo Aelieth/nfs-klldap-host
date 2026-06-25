@@ -154,6 +154,11 @@
             {{ warn }}
         </div>
         {% endif %}
+        {% if let Some(fw) = row.fs_warning %}
+        <div class="alert alert-warning" style="margin:0 0 4px 0;font-size:0.75em;padding:6px 8px;">
+            {{ fw }}
+        </div>
+        {% endif %}
         <div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
             <input name="share_name_{{ row.idx }}" value="{{ row.name }}" style="width:115px" placeholder="name">
             <input name="share_host_{{ row.idx }}" value="{{ row.host_path }}" style="flex:1" placeholder="host_path">
@@ -177,6 +182,25 @@
                 <option value="Write - Heavy" {% if row.cache_profile == "Write - Heavy" %}selected{% endif %}>Write - Heavy</option>
             </select>
             <button type="button" onclick="this.closest('.share-row-block').remove()">×</button>
+        </div>
+        <div class="share-advanced-row" style="display:flex;gap:6px;margin:0 0 4px 24px;font-size:0.85em;flex-wrap:wrap;">
+            <label title="Emit Disable_ACL in Ganesha export (auto = probe decides)">Disable ACL
+                <select name="share_disable_acl_{{ row.idx }}" style="width:72px;margin-left:4px;">
+                    <option value="auto" {% if row.disable_acl == "auto" %}selected{% endif %}>auto</option>
+                    <option value="true" {% if row.disable_acl == "true" %}selected{% endif %}>on</option>
+                    <option value="false" {% if row.disable_acl == "false" %}selected{% endif %}>off</option>
+                </select>
+            </label>
+            <label title="Emit Manage_Gids in Ganesha export (auto = probe decides)">Manage GIDs
+                <select name="share_manage_gids_{{ row.idx }}" style="width:72px;margin-left:4px;">
+                    <option value="auto" {% if row.manage_gids == "auto" %}selected{% endif %}>auto</option>
+                    <option value="true" {% if row.manage_gids == "true" %}selected{% endif %}>on</option>
+                    <option value="false" {% if row.manage_gids == "false" %}selected{% endif %}>off</option>
+                </select>
+            </label>
+            <label style="flex:1;min-width:200px;" title="Optional Ganesha EXPORT Path= override (staging tree on ACL-capable FS)">Ganesha path
+                <input name="share_ganesha_path_{{ row.idx }}" value="{{ row.ganesha_path }}" style="width:100%;margin-top:2px;" placeholder="/export/staging/...">
+            </label>
         </div>
         </div>
         {% endfor %}

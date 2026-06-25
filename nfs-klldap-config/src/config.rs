@@ -53,6 +53,8 @@ pub const SHARE_KNOWN_KEYS: &[&str] = &[
     "pref_read",
     "pref_write",
     "disable_acl",
+    "manage_gids",
+    "ganesha_path",
 ];
 
 /// Warning for unrecognized keys in a `[[shares]]` table (config still loads).
@@ -192,6 +194,8 @@ pub struct KerberosSection {
 pub struct GaneshaSection {
     #[serde(default = "default_security")]
     pub default_security: String,
+    /// Optional executable invoked by the supervisor after each successful generate (per share).
+    pub post_generate_hook: Option<String>,
 }
 
 fn default_security() -> String {
@@ -252,6 +256,10 @@ pub struct Share {
     pub pref_write: Option<u64>,
     /// When true, emit `Disable_ACL = true;` in the Ganesha EXPORT block.
     pub disable_acl: Option<bool>,
+    /// When false, emit `Manage_Gids = false;` in the Ganesha EXPORT block (auto on limited FS).
+    pub manage_gids: Option<bool>,
+    /// When set, used verbatim as Ganesha EXPORT Path= and for fs probe (staging tree).
+    pub ganesha_path: Option<String>,
 }
 
 impl Default for Share {
@@ -267,6 +275,8 @@ impl Default for Share {
             pref_read: None,
             pref_write: None,
             disable_acl: None,
+            manage_gids: None,
+            ganesha_path: None,
         }
     }
 }

@@ -70,6 +70,8 @@ pub struct AppState {
     /// still providing the WebUI, share config, Kerberos client material, and
     /// direct POSIX permission management on the bind-mounted host_path trees.
     pub host_nfs_mode: bool,
+    /// Optional mountinfo fixture for fs_warning badges (tests); avoids process-global env.
+    pub fs_probe_mountinfo_path: Option<PathBuf>,
 }
 
 impl AppState {
@@ -246,6 +248,7 @@ pub(crate) fn make_test_state_with_temp_config() -> (AppState, tempfile::TempDir
         setup_marker_override: Some(setup_marker),
         setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
         host_nfs_mode: false,
+        fs_probe_mountinfo_path: None,
     };
 
     (state, tmp)
@@ -358,6 +361,198 @@ ldap_default_authtok = "sekret"
         // ganesha: even though not mentioned in this POST, the !override path forces the default into the source
         // (addresses the "value removed entirely" complaint; other derived fields intentionally omit).
         assert!(written.contains("default_security = \"krb5p\""), "ganesha must default to krb5p and be materialized when not overridden");
+    }
+
+    struct MountinfoEnvGuard(Option<String>);
+
+    impl Drop for MountinfoEnvGuard {
+        fn drop(&mut self) {
+            if let Some(ref prev) = self.0 {
+                std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", prev);
+            } else {
+                std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");
+            }
+        }
+    }
+
+    fn make_test_state_with_limited_fs_mountinfo() -> (AppState, tempfile::TempDir, MountinfoEnvGuard) {
+        use std::sync::Arc;
+
+        let prev_mountinfo = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok();
+        // Decoy global mountinfo must not affect badges when AppState.fs_probe_mountinfo_path is set.
+        std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", "/nonexistent/decoy-mountinfo");
+        let env_guard = MountinfoEnvGuard(prev_mountinfo);
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mountinfo_path = tmp.path().join("mountinfo");
+        std::fs::write(
+            &mountinfo_path,
+            "36 35 0:59 / /export rw,relatime - btrfs /dev/sda1 rw,noacl\n",
+        )
+        .unwrap();
+
+        let config_path = tmp.path().join("test-nfs-klldap.conf");
+        let setup_marker = tmp.path().join(".setup_wizard_done");
+        std::fs::write(&setup_marker, "ok\n").unwrap();
+
+        let minimal = r#"
+ldap_uri = "ldaps://kllap.test:6360"
+[storage]
+container_root = "/export"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "data"
+host_path = "/media/data"
+"#;
+        std::fs::write(&config_path, minimal).unwrap();
+
+        let config = Arc::new(
+            nfs_klldap_config::NfsKlldapConfig::load(&config_path).expect("valid limited-fs config"),
+        );
+        let fs = Arc::new(FsManager::new((*config).clone()));
+
+        let default_mapping = nfs_klldap_config::PosixAttributeMapping {
+            user_object_class: "posixAccount".to_string(),
+            group_object_class: "posixGroup".to_string(),
+            user_name: "uid".to_string(),
+            user_uid_number: "uidNumber".to_string(),
+            user_gid_number: "gidNumber".to_string(),
+            user_home_directory: "homeDirectory".to_string(),
+            user_shell: "loginShell".to_string(),
+            user_full_name: "displayName".to_string(),
+            group_name: "cn".to_string(),
+            group_gid_number: "gidNumber".to_string(),
+            group_member: "member".to_string(),
+            user_principal_name: "krbPrincipalName".to_string(),
+        };
+        let lldap = Arc::new(Mutex::new(LdapClient::new_with_attributes(
+            "ldaps://localhost:6360",
+            "ou=people,dc=test,dc=com",
+            "ou=groups,dc=test,dc=com",
+            default_mapping,
+            true,
+            false,
+        )));
+
+        let auth = Arc::new(AuthManager::new(&config_path, None));
+
+        let state = AppState {
+            fs,
+            lldap,
+            config,
+            auth,
+            config_path,
+            keytab_hostname: "test-host".to_string(),
+            keytab_realm: "EXAMPLE.COM".to_string(),
+            keytab_alert: Arc::new(StdMutex::new(None)),
+            apply_progress: Arc::new(Mutex::new(None)),
+            restart_requested: Arc::new(Mutex::new(false)),
+            direct_tls: true,
+            setup_marker_override: Some(setup_marker),
+            setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
+            host_nfs_mode: false,
+            fs_probe_mountinfo_path: Some(mountinfo_path),
+        };
+
+        (state, tmp, env_guard)
+    }
+
+    #[tokio::test]
+    async fn settings_save_shares_roundtrips_acl_ganesha_path_fields() {
+        let (state, _tmp, _guard) = make_test_state_with_limited_fs_mountinfo();
+        let config_path = state.config_path.clone();
+        let auth = state.auth.clone();
+        let token = auth.create_privileged_session("testadmin");
+        let app = router(state);
+
+        let warn_snippet = "lacks POSIX ACL support";
+        let body = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_export_0=&share_rw_0=true\
+&share_cache_profile_0=Default&share_disable_acl_0=false&share_manage_gids_0=false\
+&share_ganesha_path_0=%2Fexport%2Fstaging%2Fdata";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/settings/save-shares")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let written = std::fs::read_to_string(&config_path).unwrap();
+        assert!(written.contains("disable_acl = false"));
+        assert!(written.contains("manage_gids = false"));
+        assert!(written.contains("ganesha_path = \"/export/staging/data\""));
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body_bytes.to_vec()).unwrap();
+        assert!(html.contains("share_disable_acl_0"));
+        assert!(html.contains("share_manage_gids_0"));
+        assert!(html.contains("share_ganesha_path_0"));
+        assert!(html.contains("/export/staging/data"));
+        assert!(
+            html.contains("alert-warning"),
+            "save-shares response must render fs_warning badge on limited FS"
+        );
+        assert!(
+            html.contains(warn_snippet),
+            "save-shares response must include limited-fs guidance text"
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_and_index_render_fs_warning_badge_with_limited_mountinfo() {
+        let (state, _tmp, _guard) = make_test_state_with_limited_fs_mountinfo();
+        let auth = state.auth.clone();
+        let token = auth.create_privileged_session("testadmin");
+        let app = router(state);
+
+        let warn_snippet = "lacks POSIX ACL support";
+
+        let index_req = Request::builder()
+            .method("GET")
+            .uri("/")
+            .body(Body::empty())
+            .unwrap();
+        let index_req = add_session_cookie(index_req, &token);
+        let resp = app.clone().oneshot(index_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let index_html =
+            String::from_utf8(axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec())
+                .unwrap();
+        assert!(
+            index_html.contains("alert-warning"),
+            "index must render fs_warning badge"
+        );
+        assert!(
+            index_html.contains(warn_snippet),
+            "index badge must include limited-fs guidance"
+        );
+
+        let settings_req = Request::builder()
+            .method("GET")
+            .uri("/settings")
+            .body(Body::empty())
+            .unwrap();
+        let settings_req = add_session_cookie(settings_req, &token);
+        let resp = app.oneshot(settings_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let settings_html =
+            String::from_utf8(axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec())
+                .unwrap();
+        assert!(
+            settings_html.contains("alert-warning"),
+            "settings must render fs_warning badge"
+        );
+        assert!(
+            settings_html.contains(warn_snippet),
+            "settings badge must include limited-fs guidance"
+        );
     }
 
     #[tokio::test]
@@ -485,6 +680,7 @@ default_security = "krb5p"
             setup_marker_override: Some(setup_marker),
             setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
             host_nfs_mode: false,
+            fs_probe_mountinfo_path: None,
         };
 
         let token = auth.create_privileged_session("testadmin");
@@ -963,6 +1159,7 @@ ldap_default_authtok = "sekret"
             setup_marker_override: Some(tmp.path().join("no_marker")),
             setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
             host_nfs_mode: false,
+            fs_probe_mountinfo_path: None,
         };
         (state, SetupWizardTestEnv { _tmp: tmp })
     }
@@ -1254,6 +1451,7 @@ ldap_default_authtok = "sekret"
                 ..Default::default()
             })),
             host_nfs_mode: false,
+            fs_probe_mountinfo_path: None,
         };
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

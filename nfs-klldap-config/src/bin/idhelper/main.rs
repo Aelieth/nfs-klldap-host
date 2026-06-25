@@ -356,6 +356,16 @@ mod tests {
     }
 
     #[test]
+    fn group_line_includes_ldap_member_list() {
+        let line = materialize::group_line_with_members(
+            500,
+            "devs",
+            &["alice".to_string(), "bob".to_string()],
+        );
+        assert_eq!(line, "devs:x:500:alice,bob");
+    }
+
+    #[test]
     fn materialize_writes_user_with_real_ids() {
         let mut c = IdCache::default();
         let user = Resolved {

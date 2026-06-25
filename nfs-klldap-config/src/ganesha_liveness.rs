@@ -61,7 +61,8 @@ pub fn ganesha_is_live(tracked: Option<u32>) -> bool {
     tracked.is_some_and(process_is_live)
 }
 
-/// Discover live ganesha.nfsd in this pid namespace .
+/// Discover live ganesha.nfsd in this pid namespace.
+/// Used for supervisor post-daemonize adoption.
 pub fn discover_ganesha_daemon_pid() -> Option<u32> {
     pgrep_live_pids("ganesha.nfsd").into_iter().next()
 }

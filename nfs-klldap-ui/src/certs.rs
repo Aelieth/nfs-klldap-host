@@ -1,5 +1,6 @@
-//! Ensure WebUI TLS: env override or self-signed via rcgen .
-//! Self-signed written to stable /var/lib/... path (0600 key).
+//! Ensure WebUI TLS: env override (NFS_KLLDAP_WEBUI_TLS_*) or rcgen self-signed.
+//! Self-signed certs use SANs for host and localhost.
+//! Self-signed written to a stable path under /var/lib (0600 key).
 
 use std::path::{Path, PathBuf};
 
@@ -26,8 +27,8 @@ pub struct TlsPaths {
     pub key: PathBuf,
 }
 
-/// Returns true when NFS_KLLDAP_WEBUI_TLS=off (or =false/0/no;
-/// case-insensitive).
+/// Returns true when NFS_KLLDAP_WEBUI_TLS=off (or =false/0/no
+/// case-insensitive). In this mode the WebUI
 /// must not attempt to serve TLS or generate/require cert material; a reverse
 /// proxy is expected in front (supplying X-Forwarded-Proto etc.).
 /// Env always wins over [webui] tls in nfs-klldap.conf.
@@ -44,8 +45,7 @@ pub fn webui_tls_disabled() -> bool {
     false
 }
 
-/// Priority: NFS_KLLDAP_WEBUI_TLS_* env > provided paths > generate
-/// self-signed.
+/// Priority: NFS_KLLDAP_WEBUI_TLS_* env > provided paths > generate self-signed.
 pub fn ensure_webui_tls_certs(
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,
@@ -55,9 +55,8 @@ pub fn ensure_webui_tls_certs(
         return Err(CertError::TlsDisabled);
     }
 
-    // Allow external certificates via environment (common in container
-    // deployments;
-    // only NFS_KLLDAP_ prefixed)
+    // Allow external certificates via environment (container deployments).
+    // Only NFS_KLLDAP_* prefixed vars are honored.
     if let (Ok(cert), Ok(key)) = (
         std::env::var("NFS_KLLDAP_WEBUI_TLS_CERT"),
         std::env::var("NFS_KLLDAP_WEBUI_TLS_KEY"),
@@ -67,8 +66,8 @@ pub fn ensure_webui_tls_certs(
         if cert.exists() && key.exists() && pem_files_are_parsable(&cert, &key) {
             return Ok(TlsPaths { cert, key });
         }
-        // Fall through to provided paths / generation if external ones are
-        // missing/invalid
+        // Fall through to provided paths or generation.
+        // Used when external certs are missing or invalid.
     }
 
     let cert_path = cert_path.as_ref().to_path_buf();

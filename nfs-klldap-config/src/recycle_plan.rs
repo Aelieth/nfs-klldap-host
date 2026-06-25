@@ -7,7 +7,8 @@ pub enum GaneshaAction {
     Skip,
     /// In-process export reload via SIGHUP.
     Sighup,
-    /// Stop then start — used when nfsd is down or SIGHUP reload failed.
+    /// Stop (if running) then start
+    /// used when nfsd is down or SIGHUP reload failed.
     StopStart,
 }
 
@@ -29,7 +30,7 @@ impl ServiceRecyclePlan {
     }
 }
 
-/// Compute recycle plan from fingerprint deltas (table-driven;
+/// Compute recycle plan from fingerprint deltas (table-driven
 /// see unit tests).
 pub fn plan_from_changes(
     exports_changed: bool,

@@ -13,27 +13,28 @@ pub(crate) const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
 pub(crate) const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
 const CACHE_VERSION: &str = "1";
 
-// nss_wrapper passwd/group files Ganesha reads under LD_PRELOAD for Kerberos
-// principal→uid.
+// nss_wrapper passwd/group for LD_PRELOAD principal→uid mapping in Ganesha.
 pub(crate) const NSS_PASSWD_PATH: &str = "/var/lib/nfs-klldap/nss_passwd";
 pub(crate) const NSS_GROUP_PATH: &str = "/var/lib/nfs-klldap/nss_group";
 
-// Supplemental extrausers entries for machine→root mappings alongside SSSD
-// users.
+// Supplemental extrausers entries for machine→root mappings.
+// Written alongside SSSD users.
 pub(crate) const EXTRAUSERS_PASSWD: &str = "/var/lib/extrausers/passwd";
 pub(crate) const EXTRAUSERS_GROUP: &str = "/var/lib/extrausers/group";
 
-/// Written after LDAP bulk-seed into nss_wrapper;
+/// Written after LDAP bulk-seed into nss_wrapper
 /// entrypoint waits on this before Ganesha.
 pub(crate) const BULK_SEED_MARKER: &str = "/var/lib/nfs-klldap/.bulk_seed_done";
 
-/// Default periodic LDAP→nss_wrapper sync interval .
+/// Default periodic LDAP→nss_wrapper sync interval.
+/// Matches IdLdapResolver 10m TTL.
 pub(crate) const DEFAULT_REBULK_INTERVAL_SECS: u64 = 10 * 60;
 
 /// Debug logging enabled via KLLDAP_IDHELPER_DEBUG=true (or 1/yes/on).
 static DEBUG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// True when any share has effective Manage_Gids .
+/// True when any share has effective Manage_Gids.
+/// Controls supplementary-group log noise.
 pub(crate) fn manage_gids_expected() -> bool {
     let path =
         std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
@@ -117,7 +118,7 @@ impl IdCache {
         self.entries.insert(key, r);
     }
 
-    /// Stable hash of cache contents;
+    /// Stable hash of cache contents
     /// used to skip redundant nss materialize writes.
     pub(crate) fn content_fingerprint(&self) -> u64 {
         let mut keys: Vec<_> = self.entries.keys().collect();
@@ -139,7 +140,7 @@ impl IdCache {
         h
     }
 
-    /// Remove user and unknown entries;
+    /// Remove user and unknown entries
     /// keep machine principals (host/, nfs/, etc.).
     /// Returns the number of entries removed.
     pub(crate) fn prune_non_machine_users(&mut self) -> usize {
@@ -169,8 +170,7 @@ impl IdCache {
                         _ => PrincipalKind::Unknown,
                     };
                     let local = principal_local_part(parts[0]);
-                    // Machine principals use the trailing host segment as the
-                    // nss login name.
+                    // Machine principals use the trailing host segment as the nss login name.
                     let name = if local.contains('/') {
                         machine_short_name(parts[0]).to_string()
                     } else {
@@ -220,7 +220,7 @@ impl IdCache {
 pub(crate) use nfs_klldap_config::{machine_short_name, principal_local_part};
 
 /// Normalize a principal for cache key and lookup.
-/// Uppercases realm;
+/// Uppercases realm
 /// local part matches principal_local_part (trim + first @ segment).
 pub fn normalize_principal(p: &str) -> String {
     let p = p.trim();

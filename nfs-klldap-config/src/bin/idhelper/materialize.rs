@@ -14,7 +14,8 @@ use nfs_klldap_config::{
 
 use crate::common::{principal_local_part, IdCache, PrincipalKind, Resolved};
 
-/// Output paths for nss_wrapper and extrausers writes .
+/// Output paths for nss_wrapper and extrausers writes.
+/// Production or test temp dirs.
 #[derive(Clone, Copy)]
 pub(crate) struct NssMaterializePaths<'a> {
     pub nss_passwd: &'a Path,
@@ -76,7 +77,8 @@ pub(crate) fn group_line_for(r: &Resolved) -> String {
     }
 }
 
-/// Build a full group line with optional member list .
+/// Build a full group(5) line with optional member list.
+/// Members are comma-separated logins.
 pub(crate) fn group_line_with_members(gid: u32, gname: &str, members: &[String]) -> String {
     if members.is_empty() {
         format!("{}:x:{}:", gname, gid)
@@ -85,13 +87,12 @@ pub(crate) fn group_line_with_members(gid: u32, gname: &str, members: &[String])
     }
 }
 
-/// True when cache content changed after sync and nss files should be
-/// rewritten.
+/// True when cache content changed after sync and nss files should be rewritten.
 pub(crate) fn cache_changed_since(fp_before: u64, cache: &IdCache) -> bool {
     fp_before != cache.content_fingerprint()
 }
 
-/// Prune stale LDAP users from cache, re-seed from snapshot;
+/// Prune stale LDAP users from cache, re-seed from snapshot
 /// machine principals are kept.
 pub(crate) fn sync_user_cache_from_snapshot(
     snap: &IdMapSnapshot,
@@ -105,7 +106,8 @@ pub(crate) fn sync_user_cache_from_snapshot(
     seed_cache_and_nss_from_snapshot(snap, realm, cache)
 }
 
-/// Insert LDAP users from snapshot into cache .
+/// Insert LDAP users from snapshot into cache.
+/// Caller may prune first via sync_*.
 pub(crate) fn seed_cache_and_nss_from_snapshot(
     snap: &IdMapSnapshot,
     realm: &str,
@@ -115,8 +117,7 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
     let mut best_per_uid: std::collections::HashMap<i32, (String, u32, u32)> =
         std::collections::HashMap::new();
 
-    // One entry per LDAP uid: prefer short posix names over UPN keys in
-    // snap.users.
+    // One entry per LDAP uid: prefer short posix names over UPN keys in snap.users.
     for (key, entry) in &snap.users {
         let uid = entry.uid;
         if uid == 0 {
@@ -156,13 +157,14 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
     seeded
 }
 
-/// Atomically write nss_wrapper passwd/group for ganesha.nfsd LD_PRELOAD and
-/// extrausers supplement.
+/// Atomically write nss_wrapper passwd/group for ganesha.nfsd LD_PRELOAD.
+/// Also writes extrausers supplement.
 pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
     materialize_nss_wrappers_at(cache, &NssMaterializePaths::production(), None)
 }
 
-/// Same as materialize_nss_wrappers but writes to caller-supplied paths .
+/// Same as materialize_nss_wrappers but writes to caller-supplied paths.
+/// Used in rebulk tests.
 pub(crate) fn materialize_nss_wrappers_at(
     cache: &IdCache,
     paths: &NssMaterializePaths<'_>,
@@ -172,12 +174,12 @@ pub(crate) fn materialize_nss_wrappers_at(
         let _ = fs::create_dir_all(parent);
     }
 
-    // Collect stable ordered list of entries
+    // Collect stable ordered list of entries (sort by principal for determinism)
     let mut items: Vec<_> = cache.entries.values().collect();
     items.sort_by(|a, b| a.principal.cmp(&b.principal));
 
     // Build passwd content.
-    // We dedup by login name (last wins for stability;
+    // We dedup by login name (last wins for stability; tiny set).
     let mut seen_login: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut passwd_lines: Vec<String> = Vec::new();
     let mut group_lines: Vec<String> = Vec::new();
@@ -206,8 +208,8 @@ pub(crate) fn materialize_nss_wrappers_at(
             }
         }
 
-        // User principals: also materialize full name@REALM for
-        // principal2uid/getpwnam paths.
+        // User principals: also materialize full name@REALM.
+        // Covers principal2uid/getpwnam paths.
         if r.kind != PrincipalKind::Machine {
             let full = r.principal.clone();
             if seen_login.insert(full.clone()) {
@@ -227,7 +229,7 @@ pub(crate) fn materialize_nss_wrappers_at(
         if seen_gid.insert(r.gid) {
             group_lines.push(group_line_for(r));
         }
-        // Also ensure the uid's primary group is represented if different
+        // Also ensure the uid's primary group is represented if different (rare)
         if r.uid != r.gid && seen_gid.insert(r.uid) {
             // Use same simple rule; uid as fallback group name
             if r.uid == 0 {
@@ -240,7 +242,8 @@ pub(crate) fn materialize_nss_wrappers_at(
         }
     }
 
-    // LDAP-preloaded groups with member lists .
+    // LDAP-preloaded groups with member lists.
+    // Supplementary groups for nss_wrapper getgrouplist.
     if let Some(groups) = ldap_groups {
         let mut by_gid: HashMap<i32, &PosixGroupEntry> = HashMap::new();
         for entry in groups.values() {
@@ -271,7 +274,7 @@ pub(crate) fn materialize_nss_wrappers_at(
         group_lines.push("root:x:0:root,daemon,bin".to_string());
     }
 
-    // root + nobody lines satisfy getpwuid_r and unknown-principal fallback.
+    // root + nobody lines satisfy getpwuid_r(0) and unknown-principal fallback.
     if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
         passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
     }
@@ -286,7 +289,8 @@ pub(crate) fn materialize_nss_wrappers_at(
         let tmp = paths.nss_passwd.with_extension("tmp");
         let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
         let mut w = BufWriter::new(f);
-        // nss_wrapper rejects '#' comment lines — emit entries only.
+        // nss_wrapper (Debian trixie) rejects '#' comment lines
+        // emit entries only.
         for l in &passwd_lines {
             writeln!(w, "{}", l)?;
         }
@@ -309,14 +313,13 @@ pub(crate) fn materialize_nss_wrappers_at(
         group_lines.len()
     );
 
-    // --- Also write the same machine/user mappings into extrausers ---
+    // --- Also write machine/user mappings into extrausers (supplemental) ---
     // This is the preferred path for most deployments: extrausers sits between
-    // files and sss in nsswitch,
+    // files and sss in nsswitch
     // so machines get 0 while real LDAP users resolve
-    // normally via sss even if the idhelper has never seen that user
-    // principal.
+    // normally via sss even if the idhelper has never seen that user principal.
     {
-        // Ensure dir
+        // Ensure dir exists (harmless for nss_wrapper paths under /var/lib/nfs-klldap).
         if let Some(p) = paths.extrausers_passwd.parent() {
             let _ = fs::create_dir_all(p);
         }

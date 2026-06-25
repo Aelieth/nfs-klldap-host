@@ -1,4 +1,4 @@
-//! Hybrid auth: sidecar webui-password (iter SHA-256,
+//! Hybrid auth: sidecar webui-password (iter SHA-256
 //! 0600) next to conf OR LLDAP member of webui_admin_group.
 //! 12h in-mem sessions; sidecar (SHA-256) + LLDAP admin group; cookie policy.
 
@@ -33,9 +33,9 @@ pub struct AuthManager {
 
 impl AuthManager {
     /// Create a new manager.
-    /// `config_path` is the path to nfs-klldap.conf;
+    /// `config_path` is the path to nfs-klldap.conf
     /// the sidecar lives beside it.
-    /// `admin_group` comes from the loaded config .
+    /// `admin_group` comes from the loaded config (falls back to "lldap_admin").
     pub fn new(config_path: impl AsRef<Path>, admin_group: Option<String>) -> Self {
         let config_path = config_path.as_ref();
         let simple_pw_path = config_path
@@ -58,7 +58,7 @@ impl AuthManager {
     // Simple password (localhost) handling
     // ---------------------------------------------------------------------
 
-    /// Returns true if a simple password sidecar already exists .
+    /// Returns true if a simple password sidecar already exists (first-run is over).
     pub fn has_simple_password(&self) -> bool {
         self.simple_pw_path.exists()
     }
@@ -82,7 +82,8 @@ impl AuthManager {
 
         let line = format!("{}:{}\n", hex_encode(&salt), hex_encode(&hash));
 
-        // Ensure parent directory exists
+        // Ensure parent directory exists (usually /config).
+        // May be the directory that contains the conf file.
         if let Some(parent) = self.simple_pw_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -153,7 +154,7 @@ impl AuthManager {
     // ---------------------------------------------------------------------
 
     /// Create a privileged session. The caller has already performed the
-    /// appropriate authentication (simple pw for localhost,
+    /// appropriate authentication (simple pw for localhost
     /// or LLDAP+group for others).
     pub fn create_privileged_session(&self, username: &str) -> String {
         let token: String = (0..32)

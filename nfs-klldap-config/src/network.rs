@@ -3,8 +3,8 @@
 use std::net::Ipv4Addr;
 use std::process::Command;
 
-/// Returns true when `addr` is an IPv4 address in Docker's default bridge
-/// range (172.17.0.0/16).
+/// Returns true when addr is an IPv4 address in Docker's default bridge.
+/// Range is 172.17.0.0/16.
 pub fn is_docker_bridge_ipv4(addr: &str) -> bool {
     let trimmed = addr.trim();
     let ip: Ipv4Addr = match trimmed.parse() {

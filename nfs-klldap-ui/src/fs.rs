@@ -1,12 +1,11 @@
-//! FsManager: allow-list (host_path from shares),
+//! FsManager: allow-list (host_path from shares)
 //! host<->container path translation, WalkDir-based chown/chmod.
-//! Policy: follow_links(false), never descend symlinks, numeric ids only,
-//! refuse 0/set*id.
-//! Non-rec = dir+immediate files.
+//! Policy: follow_links(false), never descend symlinks, numeric ids only
+//! refuse 0/set*id. Non-rec = dir+immediate files.
 //!
-//! Host<->container translation derives the internal container base from the
-//! share's own host_path +
-//! container_root.
+//! Host<->container translation uses each share's host_path.
+//! The first directory component after "/" is the per-share bind root.
+//! That root plus container_root yields the internal path.
 //! This keeps the permission tree and applies independent of the (editable)
 //! share.export_path that is used only for the external/client Pseudo name.
 
@@ -40,22 +39,21 @@ pub struct ApplyOptions {
 /// Structured result from a (possibly partial) apply operation.
 #[derive(Debug, Clone, Default)]
 pub struct ApplyResult {
-    /// Number of entries successfully chown'd + chmod'd (or would have been,
+    /// Number of entries successfully chown'd + chmod'd (or would have been
     /// in dry-run).
     pub changed: usize,
     /// Per-path errors encountered (path + message).
     /// Non-empty does not imply overall failure
     /// when `continue_on_error` was true.
     pub errors: Vec<(PathBuf, String)>,
-    /// Entries that were deliberately skipped (symlinks under the current
-    /// policy,
+    /// Entries that were deliberately skipped (symlinks under the current policy,
     /// entries filtered by apply_to_* flags, or everything in a dry-run).
     pub skipped: usize,
 }
 
-/// Live progress/cancel for async apply (atomics updated by walker,
+/// Live progress/cancel for async apply (atomics updated by walker
 /// read by web poller).
-/// Supports count phase (spinner) then apply phase,
+/// Supports count phase (spinner) then apply phase
 /// last_path for cancel messages.
 #[derive(Debug, Default)]
 pub struct ApplyProgress {
@@ -70,10 +68,11 @@ pub struct ApplyProgress {
     pub phase: StdMutex<String>,
     pub cmd: StdMutex<Option<String>>,
     pub final_result_text: StdMutex<Option<String>>,
-    /// Capped recent errors for live display .
+    /// Capped recent errors for live display.
+    /// Full list appears in the final result text.
     pub recent_errors: StdMutex<Vec<(PathBuf, String)>>,
-    /// Last path the walker was about to process when cancel was
-    /// observed. Included in the "CANCELLED after ..." message.
+    /// Last path being processed when cancel was observed.
+    /// Included in the CANCELLED-after-path user message.
     pub last_path: StdMutex<Option<String>>,
 }
 
@@ -87,11 +86,10 @@ impl FsManager {
     }
 
     /// Build tree using logical host_path namespace (for UI + is_allowed).
-    /// Translation to container path happens in `host_path_to_container_path`
-    /// before privileged ops.
+    /// Container translation runs in host_path_to_container_path.
+    /// Called before privileged ops.
     pub fn build_tree(&self, root: &Path) -> Option<DirectoryNode> {
-        // Normalize early so trailing slashes don't break matching or child
-        // synthesis.
+        // Normalize early so trailing slashes don't break matching or child synthesis.
         let normalized = self.normalize_for_matching(root);
 
         if !self.is_allowed(&normalized) {
@@ -163,8 +161,9 @@ impl FsManager {
             let child_name = entry.file_name();
             let logical_child = normalized.join(&child_name);
 
-            // We only need path + name for the lazy tree UI (owner/mode come
-            // from separate /dir-meta calls when the user selects a node).
+            // We only need path
+            // name for the lazy tree UI (owner/mode come from
+            // separate /dir-meta calls when the user selects a node).
             out.push(DirectoryNode {
                 path: logical_child.clone(),
                 name: child_name.to_string_lossy().into_owned(),
@@ -179,10 +178,9 @@ impl FsManager {
     /// plugged in here later with no other changes.
     pub fn invalidate_path(&self, _path: &Path) {}
 
-    /// Count variant that increments `progress.processed` as "scanned so far"
-    /// (for the "Stand-by, estimating total...
-    /// scanned N so far [spinner]" live feedback) and
-    /// honours cancel. Returns the final count (which becomes `total`).
+    /// Count variant that increments progress.processed as scanned so far.
+    /// Drives live Stand-by / scanned-N spinner feedback and honours cancel.
+    /// Returns the final count (which becomes total).
     pub fn count_applicable_with_live(
         &self,
         path: &Path,
@@ -208,10 +206,10 @@ impl FsManager {
             .map_err(|e| format!("count failed: {}", e))
     }
 
-    /// Apply variant that drives the supplied progress atomics and
+    /// Apply variant that drives the supplied progress atomics (and last_path) and
     /// honours cancellation.
     /// The caller is expected to have set (or let the count set)
-    /// progress.total beforehand for accurate %;
+    /// progress.total beforehand for accurate %
     /// if total is still 0 this pass will
     /// still run and update processed.
     pub fn apply_permissions_with_progress(
@@ -249,7 +247,8 @@ impl FsManager {
             .map_err(|e| format!("apply failed: {}", e))
     }
 
-    /// host_path → container path for the matching share .
+    /// host_path → container path for the matching share.
+    /// See module docs for the bind-root model.
     pub(crate) fn host_path_to_container_path(&self, host_path: &Path) -> Result<PathBuf, String> {
         let normalized = self.normalize_for_matching(host_path);
 
@@ -286,8 +285,7 @@ impl FsManager {
             .map_err(|e| format!("apply failed: {}", e))
     }
 
-    /// Whether this walk entry should receive chown/chmod under the current
-    /// options.
+    /// Whether this walk entry should receive chown/chmod under the current options.
     fn should_apply_entry(entry: &DirEntry, opts: &ApplyOptions) -> bool {
         let ft = entry.file_type();
         if ft.is_symlink() {
@@ -298,14 +296,15 @@ impl FsManager {
         if opts.recursive {
             return (is_dir && opts.apply_to_dirs) || (is_file && opts.apply_to_files);
         }
-        // Non-recursive: target directory + immediate files only.
+        // Non-recursive: target directory (depth 0)
+        // immediate files (depth 1) only.
         let depth = entry.depth();
         (is_dir && opts.apply_to_dirs && depth == 0)
             || (is_file && opts.apply_to_files && depth == 1)
     }
 
     /// Count-only tree walk (used by count_applicable_with_live). Increments
-    /// progress.processed as "scanned so far" (for spinner UX),
+    /// progress.processed as "scanned so far" (for spinner UX)
     /// updates last_path,
     /// and aborts early if cancelled. Does not perform any mutations.
     fn count_tree(
@@ -456,7 +455,7 @@ impl FsManager {
     }
 
     /// Normalize a path for prefix matching: strip trailing slashes.
-    /// This prevents issues when the UI has "/some/share/" vs "/some/share".
+    /// Avoids prefix mismatches from trailing slashes in UI or config.
     fn normalize_for_matching(&self, p: &Path) -> PathBuf {
         let s = p.to_string_lossy();
         let trimmed = s.trim_end_matches('/');
@@ -471,7 +470,7 @@ impl FsManager {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    // Translation tests: host_path first dir = implicit bind root;
+    // Translation tests: host_path first dir = implicit bind root
     // tail maps under container_root.
     use super::*;
     use tempfile::TempDir;
@@ -621,7 +620,7 @@ mod tests {
         let root = fs.host_path_to_container_path(Path::new("/hostroot/myshare")).unwrap();
         assert_eq!(root, PathBuf::from("/container/root/myshare"));
 
-        // Subdirectory under share root.
+        // Subdirectory
         let sub = fs.host_path_to_container_path(Path::new("/hostroot/myshare/sub/dir")).unwrap();
         assert_eq!(sub, PathBuf::from("/container/root/myshare/sub/dir"));
     }
@@ -719,8 +718,8 @@ mod tests {
         let mut cfg = cfg;
         cfg.storage.container_root = root.to_string_lossy().into_owned();
         cfg.shares[0].name.clear();
-        // One-segment host_path whose first-dir strip gives empty tail →
-        // internal identity with the container_root we set .
+        // One-segment host_path: first-dir strip yields empty tail.
+        // Internal path maps to container_root from the test tree.
 
         let fs = FsManager::new(cfg);
 
@@ -752,8 +751,8 @@ mod tests {
         let mut cfg = cfg;
         cfg.storage.container_root = root.to_string_lossy().into_owned();
         cfg.shares[0].name.clear();
-        // One-segment host_path whose first-dir strip gives empty tail →
-        // internal identity with the container_root we set .
+        // One-segment host_path: first-dir strip yields empty tail.
+        // Internal path maps to container_root from the test tree.
 
         let fs = FsManager::new(cfg);
 

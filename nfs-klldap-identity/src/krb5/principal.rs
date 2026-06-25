@@ -2,20 +2,21 @@
 
 use crate::constants::MACHINE_PRINCIPAL_PREFIXES;
 
-/// Local part of a Kerberos principal (before @),
+/// Local part of a Kerberos principal (before @)
 /// or the whole string when unqualified.
 pub fn principal_local_part(p: &str) -> &str {
     let p = p.trim();
     p.split('@').next().unwrap_or(p)
 }
 
-/// Trailing segment of a machine principal local part .
+/// Trailing segment of a machine principal local part.
+/// Example: host/client@REALM yields client.
 pub fn machine_short_name(principal: &str) -> &str {
     let local = principal_local_part(principal);
     local.rsplit('/').next().unwrap_or(local)
 }
 
-/// Classify machine vs user principals;
+/// Classify machine vs user principals
 /// aligns with Ganesha Root_Kerberos_Principal.
 pub fn classify_principal(principal: &str, _realm: &str, server_variants: &[String]) -> (bool, String) {
     let local = principal_local_part(principal.trim()).to_ascii_lowercase();

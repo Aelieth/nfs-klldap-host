@@ -26,8 +26,7 @@ pub(crate) fn start_ganesha_observer(
 }
 
 fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<Mutex<IdCache>>) {
-    // Per-candidate rate limit: avoid resolve spam on repeated log lines per
-    // client.
+    // Per-candidate rate limit: avoid resolve spam on repeated log lines per client.
     let mut recently: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
     let mut bridge_warned: std::collections::HashMap<String, std::time::Instant> =
         std::collections::HashMap::new();
@@ -46,8 +45,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                         Ok(0) => {
                             // No new data yet (regular file at EOF).
                             // Sleep briefly and retry
-                            // on the same fd -- appends by Ganesha will become
-                            // visible.
+                            // on the same fd -- appends by Ganesha will become visible.
                             thread::sleep(Duration::from_millis(250));
                             continue;
                         }
@@ -68,7 +66,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
 
                                 if is_fresh {
                                     recently.insert(candidate.clone(), now);
-                                    // Opportunistic prune
+                                    // Opportunistic prune (tiny map in practice)
                                     if recently.len() > 2048 {
                                         recently.retain(|_, t| now.duration_since(*t) < dedup_window);
                                     }
@@ -76,12 +74,11 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                                     eprintln!("[idhelper] observed from ganesha log: {}", candidate);
                                     {
                                         let mut guard = cache.lock().unwrap();
-                                        // Resolve the candidate.
+                                        // Resolve (and classify) the candidate.
                                         // If KLLDAP_IDHELPER_DEBUG
-                                        // is set, full details (normalize,
+                                        // is set, full details (normalize
                                         // cache hit/miss, getent etc.)
-                                        // will be logged by the existing debug
-                                        // instrumentation.
+                                        // will be logged by the existing debug instrumentation.
                                         let _ = resolve_principal(&candidate, realm, variants, &mut guard);
                                     }
                                 }
@@ -102,7 +99,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
     }
 }
 
-/// True for real client hostnames from Linux NFSv4.x log lines;
+/// True for real client hostnames from Linux NFSv4.x log lines
 /// rejects noise tokens.
 pub(crate) fn looks_like_client_hostname(t: &str) -> bool {
     let s = t.trim();
@@ -121,16 +118,17 @@ pub(crate) fn looks_like_client_hostname(t: &str) -> bool {
     }
     let lower = s.to_ascii_lowercase();
 
-    // Strong early rejection of known log noise tokens that frequently appear
-    // near client records (prevents host/nil, host/clientid, host/Unique,
+    // Strong early rejection of known log noise tokens that frequently appear near
+    // client records (prevents host/nil, host/clientid, host/Unique
     // host/ffff etc.)
     if is_noise_hostname(s) {
         return false;
     }
 
     // Reject common log noise and formatting tokens (case-insensitive)
-    // Source the common noise list .
-    // Keep local name for readability;
+    // Source the common noise list.
+    // Ganesha log hygiene for hybrid principal observer.
+    // Keep local name for readability
     // values centralized for idhelper + future.
     const NOISE: &[&str] = nfs_klldap_config::LOG_NOISE_TOKENS;
     if NOISE.contains(&lower.as_str()) {
@@ -142,8 +140,8 @@ pub(crate) fn looks_like_client_hostname(t: &str) -> bool {
         return false;
     }
 
-    // Real client hostnames from these logs are almost always lowercase and/or
-    // contain dot/hyphen
+    // Real client hostnames from these logs are almost always lowercase.
+    // They may also contain a dot or hyphen.
     if !s.chars().any(|c| c.is_ascii_lowercase()) && !s.contains('.') {
         return false;
     }
@@ -151,7 +149,7 @@ pub(crate) fn looks_like_client_hostname(t: &str) -> bool {
     true
 }
 
-/// Extra hostname rejection beyond LOG_NOISE_TOKENS (0x…, nfsv4.x,
+/// Extra hostname rejection beyond LOG_NOISE_TOKENS (0x…, nfsv4.x
 /// version-like tokens).
 fn is_noise_hostname(t: &str) -> bool {
     let s = t.trim().to_ascii_lowercase();
@@ -166,7 +164,7 @@ fn is_noise_hostname(t: &str) -> bool {
     ) {
         return true;
     }
-    // Also reject version-like tokens (NFSv4.2,
+    // Also reject version-like tokens (NFSv4.2
     // 2.3 etc) and obvious non-host words that
     // appear after : or - splits in client name blobs.
     if s.starts_with("nfsv") || s.starts_with("nfs") || (s.chars().any(|c| c.is_ascii_digit()) && s.contains('.')) {
@@ -182,7 +180,8 @@ pub(crate) enum ManagedGidsLogLevel {
     DebugOnly,
 }
 
-/// Decide whether a ganesha log line should be eprintln or debug-only.
+/// Decide whether a Ganesha log line is eprintln or debug-only.
+/// Depends on manage_gids.
 pub(crate) fn managed_gids_log_level(line: &str, manage_gids_on: bool) -> Option<ManagedGidsLogLevel> {
     let lower = line.to_ascii_lowercase();
     if !lower.contains("managed_gids") && !lower.contains("uid2grp_allocate") {
@@ -238,7 +237,7 @@ fn maybe_warn_bridge_server_addr(
     );
 }
 
-/// Extract hostname from "Linux NFSv4.x <host>" groups;
+/// Extract hostname from "Linux NFSv4.x <host>" groups
 /// skip nil/clientid noise.
 fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
     let lower = line.to_ascii_lowercase();
@@ -247,9 +246,9 @@ fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
         let suffix = &line[m + marker.len()..];
 
         // Prefer the group that contains the Linux NFS client string.
-        // Scan all groups after the marker and pick the last plausible host
-        // only from a group that contains "linux" or looks like "(21:Linux..."
-        // or "-(21:Linux...".
+        // Scan all (...) groups after the marker and pick the last plausible host
+        // Only from a group containing "linux" or like "(21:Linux...".
+        // Also accepts "-(21:Linux..." forms.
         let mut best: Option<String> = None;
         let mut search = suffix;
         while let Some(p) = search.find('(') {
@@ -279,7 +278,7 @@ fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
             return best;
         }
 
-        // Conservative fallback: skip internal debug blobs (clientid=,
+        // Conservative fallback: skip internal debug blobs (clientid=
         // cr_refcount, etc.).
         let lower_line = line.to_ascii_lowercase();
         let is_internal_blob = lower_line.contains("conf = (nil)") || lower_line.contains("clientid=") || lower_line.contains("unique=") || lower_line.contains("counter=") || lower_line.contains("cr_refcount");
@@ -309,15 +308,14 @@ fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
 pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<String> {
     let realm_lower = realm.to_ascii_lowercase();
 
-    // "Get uid for user@REALM using nfsidmap" — resolve user principals
-    // immediately.
+    // "Get uid for user@REALM using nfsidmap"
+    // resolve user principals immediately.
     if let Some(start) = line.find("Get uid for ") {
         let rest = &line[start + "Get uid for ".len()..];
         if let Some(end) = rest.find(|c: char| !c.is_alphanumeric() && c != '@' && c != '.' && c != '-' && c != '_') {
             let cand = &rest[..end].trim();
             if cand.contains('@') && cand.to_ascii_lowercase().contains(&realm_lower) {
-                // Only treat non-machine service forms as user candidates
-                // here.
+                // Only treat non-machine service forms as user candidates here.
                 if !MACHINE_PRINCIPAL_PREFIXES.iter().any(|p| cand.to_ascii_lowercase().starts_with(p)) {
                     return Some(cand.to_string());
                 }
@@ -326,7 +324,7 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
     }
 
     // 0b. Special high-signal case for our own mapping failures.
-    // When Ganesha logs "Could not map principal ...", extract immediately.
+    //    When Ganesha logs "Could not map principal ...", extract immediately.
     if let Some(start) = line.find("Could not map principal ") {
         let rest = &line[start + "Could not map principal ".len()..];
         if let Some(end) = rest.find(|c: char| !c.is_alphanumeric() && c != '@' && c != '.' && c != '-' && c != '_') {
@@ -344,7 +342,8 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
         }
     }
 
-    // Explicit Kerberos principals containing the realm .
+    // Explicit Kerberos principals containing the realm.
+    // Forms: user@REALM or host/xxx@REALM.
     if let Some(at_pos) = line.find('@') {
         let before = &line[..at_pos];
         let start = before
@@ -356,7 +355,7 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
             .unwrap_or(after.len());
         let cand = &line[start..at_pos + end_rel];
         if cand.contains('@') && cand.to_ascii_lowercase().contains(&realm_lower) {
-            // For host/ style we will normalize later;
+            // For host/ style we will normalize later
             // accept explicit @REALM as high-signal.
             return Some(cand.to_string());
         }
@@ -372,7 +371,8 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
     }
 
     // 3.
-    // Legacy direct name= support
+    // Legacy direct name=(21:Linux NFSv4.2 ...) support.
+    // Still useful for some log lines.
     if let Some(pos) = line.find("name=(") {
         let rest = &line[pos + 6..];
         if let Some(endp) = rest.find(')') {
@@ -388,8 +388,9 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
 
     // 4.
     // Limited additional markers.
-    // We deliberately avoid "clientid=" and "cr_refcount" because they contain
-    // counters ("Unique=...", numbers), not hostnames.
+    // Only accept tokens that pass the strict hostname check.
+    //    We deliberately avoid "clientid=" and "cr_refcount".
+    //    They contain counters, not hostnames.
     for marker in &["fs_create_clid_name", "client addr="] {
         if let Some(pos) = line.find(marker) {
             let tail = &line[pos + marker.len()..];
@@ -403,16 +404,15 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
     }
 
     // 5. Fallback: explicit @REALM anywhere (already partially handled above).
-    // Only return if the local part looks reasonable.
+    //    Only return if the local part looks reasonable.
     if line.to_ascii_lowercase().contains(&realm_lower) {
         for word in line.split(|c: char| {
             c.is_whitespace() || c == '=' || c == '(' || c == ')' || c == ':' || c == ',' || c == '[' || c == ']' || c == '"'
         }) {
             let w = word.trim();
             if w.contains('@') && w.to_ascii_lowercase().contains(&realm_lower) {
-                // Accept explicit principals .
-                // Guard: do not emit things like "nil@REALM" or
-                // "clientid@REALM" from noise.
+                // Accept explicit principals (they are usually the real thing).
+                // Guard: do not emit things like "nil@REALM" or "clientid@REALM" from noise.
                 let local = principal_local_part(w);
                 if is_noise_hostname(local) || !looks_like_client_hostname(local) {
                     continue;

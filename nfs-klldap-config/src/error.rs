@@ -1,4 +1,4 @@
-//! Error type for nfs-klldap-config (manual, no thiserror,
+//! Error type for nfs-klldap-config (manual, no thiserror
 //! for small binary size).
 
 #[derive(Debug)]

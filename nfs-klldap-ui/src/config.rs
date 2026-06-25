@@ -1,5 +1,5 @@
 //! Thin adapter around nfs_klldap_config::NfsKlldapConfig for the WebUI.
-//! Adds env overrides for creds, all_managed_roots,
+//! Adds env overrides for creds, all_managed_roots
 //! and short-name probe helper.
 
 use std::path::{Path, PathBuf};
@@ -21,8 +21,7 @@ fn minimal_default_config() -> Config {
 
 pub fn load_config_from(path: &Path) -> Result<Config, String> {
     if !path.exists() {
-        // Return a minimal default that still lets the UI start and show help
-        // text.
+        // Return a minimal default that still lets the UI start and show help text.
         // The user is expected to point --config at the real shared volume.
         return Ok(minimal_default_config());
     }
@@ -30,8 +29,7 @@ pub fn load_config_from(path: &Path) -> Result<Config, String> {
     match nfs_klldap_config::NfsKlldapConfig::load(path) {
         Ok(cfg) => Ok(cfg),
         Err(nfs_klldap_config::ConfigError::Validation(_)) => {
-            // First-run template: parse disk content without requiring
-            // realm/bind validation.
+            // First-run template: parse disk without realm/bind validation.
             nfs_klldap_config::NfsKlldapConfig::load_unchecked(path).map_err(|e| {
                 format!("Failed to load {}: {}", path.display(), e)
             })
@@ -40,7 +38,8 @@ pub fn load_config_from(path: &Path) -> Result<Config, String> {
     }
 }
 
-/// Return the list of host_path values the WebUI is allowed to manage .
+/// Return host_path values the WebUI may manage.
+/// Values come from configured shares.
 pub fn all_managed_roots(cfg: &Config) -> Vec<PathBuf> {
     cfg.shares.iter().map(|s| s.host_path.clone()).collect()
 }
@@ -55,8 +54,7 @@ pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
         std::env::var("NFS_KLLDAP_LLDAP_PW"),
     ) {
         if !user.trim().is_empty() && !pass.trim().is_empty() {
-            // Verbatim: full DN or acceptable bind name is the operator's
-            // responsibility.
+            // Verbatim: full DN or acceptable bind name is the operator's responsibility.
             return (user.trim().to_string(), pass);
         }
     }
@@ -82,7 +80,7 @@ mod tests {
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// RAII guard to safely manipulate environment variables in tests without
-    /// polluting other tests .
+    /// polluting other tests (especially important under `cargo test --workspace`).
     struct EnvGuard {
         key: &'static str,
         previous: Option<String>,
@@ -95,8 +93,8 @@ mod tests {
             Self { key, previous }
         }
 
-        /// Remove the var for the duration of the guard (restores previous
-        /// value or absence on drop).
+        /// Remove the var for the duration of the guard (restores previous value
+        /// or absence on drop).
         /// Used by tests that must not see override env vars
         /// even if other concurrent tests are manipulating them.
         fn clear(key: &'static str) -> Self {
@@ -159,7 +157,7 @@ mod tests {
 
         let cfg = base_config();
         let (bind_id, pass) = ldap_service_creds(&cfg);
-        // Must return the full DN verbatim for proper simple_bind .
+        // Must return the full DN verbatim for proper simple_bind (not a stripped uid).
         assert_eq!(bind_id, "uid=admin,ou=people,dc=example,dc=com");
         assert_eq!(pass, "sekret");
     }
@@ -206,8 +204,8 @@ mod tests {
         let mut cfg = base_config();
         cfg.sssd.ldap_default_bind_dn = "cn=weird,dc=example".into();
         let (bind_id, _) = ldap_service_creds(&cfg);
-        // Verbatim;
-        // server rejects bad DN at bind time .
+        // Verbatim bind DN; server rejects bad values at bind time.
+        // Surfaces the correct error instead of a silent rewrite.
         assert_eq!(bind_id, "cn=weird,dc=example");
     }
 }

@@ -1,4 +1,4 @@
-//! Login handlers, cookie construction (HttpOnly/Lax/Secure, 12h),
+//! Login handlers, cookie construction (HttpOnly/Lax/Secure, 12h)
 //! require_auth + redirects.
 
 use askama::Template;
@@ -31,19 +31,19 @@ pub(crate) struct LoginForm {
     pub password: String,
 }
 
-/// Optional query params for the login page (used to surface auth failure
-/// reasons after a require_auth redirect).
+/// Optional query params for the login page.
+/// Surfaces auth failure reasons after a require_auth redirect.
 #[derive(Deserialize, Default)]
 pub(crate) struct LoginQuery {
     /// When present (e.g.
     /// "session" or "required"), login_page renders a friendly
-    /// message so the user is not left wondering why they were sent back to
-    /// the form.
+    /// Friendly message when redirect sends the user back to the form.
     error: Option<String>,
 }
 
 /// GET /login — renders the form (or first-run variant).
-/// Supports ?error=... from require_auth redirects so failures are visible.
+/// Supports ?error= query param from require_auth redirects.
+/// Makes auth failures visible on the login form.
 pub async fn login_page(
     State(state): State<super::AppState>,
     headers: HeaderMap,
@@ -79,7 +79,7 @@ pub async fn login_page(
     .into_response()
 }
 
-/// POST /login — on success: session cookie + redirect;
+/// POST /login — on success: session cookie + redirect
 /// on failure: re-render with error.
 pub async fn login(
     State(state): State<super::AppState>,
@@ -95,11 +95,10 @@ pub async fn login(
             Err(e) => Err(e),
         }
     } else {
-        // LLDAP path — uses LdapClient::verify_user_is_admin (single lock,
+        // LLDAP path — uses LdapClient::verify_user_is_admin (single lock
         // clear non-admin errors).
         // take the lock once and get a single, clear error for non-admins.
-        // The helper still benefits from the memberOf fast-path recorded
-        // during verify.
+        // The helper still benefits from the memberOf fast-path recorded during verify.
         let l = state.lldap.lock().await;
         match l
             .verify_user_is_admin(username, password, state.auth.admin_group())
@@ -109,7 +108,7 @@ pub async fn login(
             Err(e) => {
                 // Log the real inner reason for operators.
                 eprintln!("LDAP admin login failed for '{}': {}", username, e);
-                // Present a friendly message to the browser .
+                // Present a friendly message to the browser (hides "service account" details).
                 if e.to_string().contains("not a member of") {
                     Err(e.to_string())
                 } else {
@@ -121,7 +120,7 @@ pub async fn login(
 
     match result {
         Ok(user) => {
-            // Drop any prior session tokens .
+            // Drop any prior session tokens (stale browser cookies after logout/restart).
             for old in extract_all_session_tokens_from_headers(&headers) {
                 state.auth.logout(&old);
             }
@@ -130,8 +129,8 @@ pub async fn login(
             insert_session_cookie(&state, &headers, &mut response_headers, &token);
 
             // Warm permission editor search caches on (web) login for instant
-            // suggestions in UID/GID boxes (no repeated LDAP roundtrips on
-            // focus/type in the Share Permissions directory editor).
+            // suggestions in UID/GID boxes (no repeated LDAP roundtrips on focus/type
+            // in the Share Permissions directory editor).
             // The list_* calls populate
             // both the 2m search cache (__all__) and the 10m identity caches.
             {
@@ -143,7 +142,8 @@ pub async fn login(
                 });
             }
 
-            // Attach Set-Cookie explicitly on the Redirect .
+            // Attach Set-Cookie explicitly on the Redirect (robust through 303
+            // Secure cookies).
             let mut response = Redirect::to("/").into_response();
             response.headers_mut().extend(response_headers);
             response
@@ -217,7 +217,7 @@ pub async fn setup_password(
             let mut response_headers = HeaderMap::new();
             insert_session_cookie(&state, &headers, &mut response_headers, &token);
 
-            // Warm caches also for first-run setup .
+            // Warm caches also for first-run setup (same benefit for editor UX).
             {
                 let lldap = state.lldap.clone();
                 tokio::spawn(async move {
@@ -266,8 +266,8 @@ pub async fn logout(State(state): State<super::AppState>, headers: HeaderMap) ->
 /// Map ?error= query values to user-visible login messages.
 fn login_error_message(first_run: bool, error: Option<&str>) -> Option<String> {
     let code = error?;
-    // First-run visitors are not "logged out" — suppress the session-expired
-    // copy.
+    // First-run visitors are not "logged out"
+    // suppress the session-expired copy.
     if first_run && matches!(code, "session" | "required" | "auth") {
         return None;
     }
@@ -279,7 +279,7 @@ fn login_error_message(first_run: bool, error: Option<&str>) -> Option<String> {
     })
 }
 
-/// Where to send unauthenticated users (context-aware,
+/// Where to send unauthenticated users (context-aware
 /// avoids misleading first-run copy).
 fn auth_failure_redirect(state: &super::AppState, headers: &HeaderMap) -> Redirect {
     if !state.auth.has_simple_password() {
@@ -319,8 +319,8 @@ fn insert_session_clear_cookie(
 }
 
 /// Returns the value for the Secure flag on cookies for this request.
-/// Prefers explicit NFS_KLLDAP_WEBUI_COOKIE_SECURE (escape hatch for setups
-/// that need to force the bit off even when TLS was on). When absent,
+/// Prefers explicit NFS_KLLDAP_WEBUI_COOKIE_SECURE (escape hatch for setups that
+/// need to force the bit off even when TLS was on). When absent,
 /// delegates to the smart detection (direct TLS or X-Forwarded-Proto: https).
 fn effective_cookie_secure(state: &super::AppState, headers: &HeaderMap) -> bool {
     if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_COOKIE_SECURE") {
@@ -331,8 +331,9 @@ fn effective_cookie_secure(state: &super::AppState, headers: &HeaderMap) -> bool
 }
 
 /// Session cookie builder (HttpOnly/Lax/Secure + effective https).
-/// Secure bit is now conditional on effective https ,
-/// while still honoring the NFS_KLLDAP_WEBUI_COOKIE_SECURE override.
+/// Secure bit is conditional on effective https.
+/// Honors direct TLS or proxy X-Forwarded-Proto header.
+/// Still honors the NFS_KLLDAP_WEBUI_COOKIE_SECURE override.
 fn build_session_cookie(state: &super::AppState, req_headers: &HeaderMap, token: &str) -> String {
     let max_age = cookie::time::Duration::seconds(12 * 3600);
 
@@ -382,7 +383,7 @@ fn extract_all_session_tokens_from_headers(headers: &HeaderMap) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Validate any session cookie on the request;
+/// Validate any session cookie on the request
 /// prefers the last (most recently set) token.
 pub(crate) fn validate_session_in_headers(
     state: &super::AppState,
@@ -402,7 +403,7 @@ pub(crate) fn validate_session_in_headers(
 #[derive(Clone)]
 pub struct AuthUser(pub String);
 
-/// Guard for protected routes;
+/// Guard for protected routes
 /// keytab_alert does not affect auth (see keytab.rs).
 pub async fn require_auth(
     state: &super::AppState,

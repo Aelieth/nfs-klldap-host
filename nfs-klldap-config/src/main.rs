@@ -1,7 +1,8 @@
 #![deny(unsafe_code, dead_code)]
 
 //! nfs-klldap-config CLI. Subcommands: init | generate | validate.
-//! generate drives the watcher + WebUI save path .
+//! generate drives the watcher
+//! WebUI save path (root execution required for 0600 files).
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -115,7 +116,7 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
             cfg.effective_hostname()
         );
 
-        // Two-tier runtime hostname (setup wizard/UI use this for keytab;
+        // Two-tier runtime hostname (setup wizard/UI use this for keytab
         // CI/sanity aid).
         match get_consistent_hostname() {
             Ok(c) => {

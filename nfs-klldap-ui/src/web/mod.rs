@@ -50,10 +50,11 @@ pub struct AppState {
     pub keytab_realm: String,
     /// Display-only keytab mismatch banner; see `keytab.rs` for the invariant.
     pub keytab_alert: Arc<StdMutex<Option<String>>>,
-    /// Shared state for an in-flight permission apply.
-    /// Populated when /apply starts the background task;
+    /// Shared state for an in-flight (recursive or non-recursive) permission apply.
+    /// Populated when /apply starts the background task
     /// read by /apply-progress for the
-    /// live Apply Log and by cancel_apply.
+    /// live Apply Log (with XXXX/XXXX
+    /// spinner while estimating) and by cancel_apply.
     pub apply_progress: Arc<Mutex<Option<Arc<crate::fs::ApplyProgress>>>>,
     /// Latched true on first successful POST /settings/restart.
     /// Guards against duplicate
@@ -63,29 +64,30 @@ pub struct AppState {
     /// Once set we just re-serve the
     /// standalone restarting.html without side-effects.
     pub restart_requested: Arc<Mutex<bool>>,
-    /// true when WebUI terminates TLS;
+    /// true when WebUI terminates TLS
     /// false when `NFS_KLLDAP_WEBUI_TLS=off` (proxy mode).
     pub direct_tls: bool,
-    /// Test-only: when set,
+    /// Test-only: when set
     /// gates setup completion on this marker path instead of the default.
     pub setup_marker_override: Option<PathBuf>,
-    /// Last successful wizard test inputs (probe-only;
+    /// Last successful wizard test inputs (probe-only
     /// not persisted until continue).
     pub setup_test: Arc<StdMutex<setup::SetupTestState>>,
     /// HOST_NFS mode (management sidecar).
     /// When true the container does not run
-    /// the NFS server;
+    /// the NFS server
     /// it writes Ganesha fragments for a host NFS server, while
     /// still providing the WebUI, share config, Kerberos client material, and
     /// direct POSIX permission management on the bind-mounted host_path trees.
     pub host_nfs_mode: bool,
-    /// Optional mountinfo fixture for fs_warning badges (tests);
+    /// Optional mountinfo fixture for fs_warning badges (tests)
     /// avoids process-global env.
     pub fs_probe_mountinfo_path: Option<PathBuf>,
 }
 
 impl AppState {
-    /// true when direct TLS or `X-Forwarded-Proto: https` .
+    /// true when direct TLS or X-Forwarded-Proto: https.
+    /// Drives the cookie Secure flag.
     pub fn is_https(&self, headers: &HeaderMap) -> bool {
         self.direct_tls
             || headers
@@ -144,7 +146,7 @@ pub fn router(state: AppState) -> Router {
         .route("/login", get(login_page).post(login))
         .route("/setup-password", post(setup_password))
         .route("/logout", get(logout).post(logout))
-        // Public status for the post-restart poller (no auth;
+        // Public status for the post-restart poller (no auth
         // used by restarting.html)
         .route("/restart-status", get(restart_status))
         // === Public: first-run setup wizard (replaces terminal TUI) ===
@@ -206,7 +208,7 @@ pub(crate) fn make_test_state_with_temp_config() -> (AppState, tempfile::TempDir
             [sssd]
             ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
             ldap_default_authtok = "sekret"
-            # ldap_tls_reqcert = "never" # example for self-signed LLDAP certs
+            # ldap_tls_reqcert = "never"   # example for self-signed LLDAP certs
             [[shares]]
             name = "data"
             host_path = "/tmp/data"
@@ -285,7 +287,7 @@ mod tests {
         req
     }
 
-    /// Login/setup responses emit clear + set cookies;
+    /// Login/setup responses emit clear + set cookies
     /// return the non-empty session token.
     fn session_token_from_response(resp: &axum::response::Response) -> String {
         for value in resp.headers().get_all(SET_COOKIE) {
@@ -304,7 +306,7 @@ mod tests {
     async fn settings_save_raw_accepts_valid_toml_and_preserves_user() {
         let (state, _tmp) = make_test_state_with_temp_config();
         let auth = state.auth.clone();
-        // Use the real privileged session creator
+        // Use the real privileged session creator (same path the login handlers use)
         let token = auth.create_privileged_session("testadmin");
 
         let app = router(state);
@@ -336,14 +338,14 @@ ldap_default_authtok = "sekret"
         let (state, _tmp) = make_test_state_with_temp_config();
         let config_path = state.config_path.clone();
         let auth = state.auth.clone();
-        // Use the real privileged session creator
+        // Use the real privileged session creator (same path the login handlers use)
         let token = auth.create_privileged_session("testadmin");
 
         let app = router(state);
 
         // Exercise override flags:
         // - server_hostname + override=true → should be written explicitly
-        // - sssd_user_base sent but override=false → should be removed
+        // - sssd_user_base with override=false → removed (derive allowed)
         // - kerberos_realm + override → written
         // ldap_uri (key) always written
         let body = "ldap_uri=ldaps%3A%2F%2Fnewhost.example.com%3A6360\
@@ -363,16 +365,17 @@ ldap_default_authtok = "sekret"
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        // Verify the written config has the expected explicit keys .
+        // Verify written config has expected explicit keys.
+        // Non-overridden fields should be omitted.
         let written = std::fs::read_to_string(&config_path).unwrap_or_default();
         assert!(written.contains("ldap_uri = \"ldaps://newhost.example.com:6360\""), "key field must be written");
         assert!(written.contains("hostname = \"override-host.example.com\""), "server override must be persisted when flag true");
         assert!(written.contains("realm = \"OVERRIDE.REALM\""), "kerberos override must be persisted when flag true");
         assert!(!written.contains("ldap_user_search_base"), "sssd_user_base must be omitted (no override) so derivation applies");
 
-        // ganesha: even though not mentioned in this POST,
+        // ganesha: even though not mentioned in this POST
         // the !override path forces the default into the source
-        // (addresses the "value removed entirely" complaint;
+        // (addresses the "value removed entirely" complaint
         // other derived fields intentionally omit).
         assert!(written.contains("default_security = \"krb5p\""), "ganesha must default to krb5p and be materialized when not overridden");
     }
@@ -393,8 +396,8 @@ ldap_default_authtok = "sekret"
         use std::sync::Arc;
 
         let prev_mountinfo = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok();
-        // Decoy global mountinfo must not affect badges when
-        // AppState.fs_probe_mountinfo_path is set.
+        // Decoy global mountinfo must not affect badges.
+        // Applies when AppState.fs_probe_mountinfo_path is set.
         std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", "/nonexistent/decoy-mountinfo");
         let env_guard = MountinfoEnvGuard(prev_mountinfo);
 
@@ -579,8 +582,8 @@ host_path = "/media/data"
         let app = router(state);
 
         // Save share with empty export field (optional pseudo path).
-        // Include the cache_profile field so collect + apply exercise the
-        // profile path.
+        // Include the cache_profile field so collect
+        // apply exercise the profile path.
         let body = "share_name_0=data&share_host_0=%2Ftmp%2Fdata&share_export_0=&share_rw_0=true&share_cache_profile_0=Default";
         let req = Request::builder()
             .method("POST")
@@ -615,15 +618,14 @@ host_path = "/media/data"
 
     #[tokio::test]
     async fn settings_save_shares_places_shares_after_webui_on_first_add() {
-        // Start from a config shaped like the default template: ends with
-        // [webui] + its
+        // Start from a config shaped like the default template: ends with [webui] + its
         // commented keys and has no [[shares]] yet.
         // This reproduces the reported ordering bug.
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("test-nfs-klldap.conf");
 
-        // Close approximation of generate_default_template() output for the
-        // sections the shares-save path must not disturb,
+        // Close approximation of generate_default_template() output for the sections
+        // the shares-save path must not disturb
         // plus the exact [webui] trailer.
         let initial = r#"ldap_uri = "ldaps://kllap.test:6360"
 
@@ -645,12 +647,9 @@ kllldap_ignored_attributes = true
 default_security = "krb5p"
 
 [webui]
-# tls = false # commented off by default .
-# Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
-# tls_cert = "/config/webui.crt" # optional custom cert
-# tls_key = "/config/webui.key" # optional custom key (NFS_KLLDAP_WEBUI_TLS_KEY
-# env wins;
-# 0600)
+# tls = false  # off by default; NFS_KLLDAP_WEBUI_TLS=off for proxy
+# tls_cert = "/config/webui.crt"  # optional; NFS_KLLDAP_WEBUI_TLS_CERT wins
+# tls_key = "/config/webui.key"  # optional; NFS_KLLDAP_WEBUI_TLS_KEY wins
 "#;
         std::fs::write(&config_path, initial).unwrap();
         let setup_marker = tmp.path().join(".setup_wizard_done");
@@ -661,7 +660,8 @@ default_security = "krb5p"
         );
         let fs = Arc::new(FsManager::new((*config).clone()));
 
-        // Dummy LLDAP client — match make_test_state_with_temp_config.
+        // Dummy LLDAP client (settings handlers don't use it)
+        // match make_test_state_with_temp_config.
         let default_mapping = nfs_klldap_config::PosixAttributeMapping {
             user_object_class: "posixAccount".to_string(),
             group_object_class: "posixGroup".to_string(),
@@ -708,7 +708,8 @@ default_security = "krb5p"
         let token = auth.create_privileged_session("testadmin");
         let app = router(state);
 
-        // Add two shares .
+        // Add two shares (multiple [[shares]] blocks).
+        // Comments must not appear after the last share.
         let body = "share_name_0=shares&share_host_0=%2Fvar%2Fhome%2Flocal%2FProjects%2Ftest-nfs-home%2Fshares%2F&share_rw_0=true&share_cache_profile_0=Default\
 &share_name_1=documents&share_host_1=%2Fvar%2Fhome%2Flocal%2FProjects%2Ftest-nfs-home%2Fdocuments%2F&share_rw_0=true&share_cache_profile_0=Default";
         let req = Request::builder()
@@ -739,8 +740,8 @@ default_security = "krb5p"
             written
         );
 
-        // At least one distinctive webui comment must appear after [webui] and
-        // before the first [[shares]].
+        // A distinctive webui comment must sit after [webui].
+        // It must appear before the first [[shares]].
         let webui_comment_pos = written.find("# tls = false");
         assert!(
             webui_comment_pos.is_some() && webui_comment_pos.unwrap() > webui_pos && webui_comment_pos.unwrap() < first_shares_pos,
@@ -759,12 +760,12 @@ default_security = "krb5p"
             );
         }
 
-        // Also sanity-check that the shares data survived correctly .
+        // Sanity-check that share data survived (cache_profile etc.).
         assert!(written.contains("host_path = \"/var/home/local/Projects/test-nfs-home/shares/\""));
         assert!(written.contains("cache_profile = \"Default\""));
     }
 
-    /// Localhost first-run, login (SameSite=Lax), redirect follow,
+    /// Localhost first-run, login (SameSite=Lax), redirect follow
     /// protected route, logout, re-login.
     #[tokio::test]
     async fn full_localhost_first_run_login_session_and_protected_route_flow() {
@@ -836,7 +837,7 @@ default_security = "krb5p"
 
         let login_token = session_token_from_response(&resp);
 
-        // Follow the login redirect with the real Set-Cookie .
+        // Follow the login redirect with the real Set-Cookie (browser behavior).
         let login_location = resp
             .headers()
             .get(LOCATION)
@@ -921,7 +922,7 @@ default_security = "krb5p"
         let auth = state.auth.clone();
         let app = router(state);
 
-        // First-run: no password sidecar → plain /login
+        // First-run: no password sidecar → plain /login (no scary session message)
         let resp = app
             .clone()
             .oneshot(
@@ -974,7 +975,7 @@ default_security = "krb5p"
         );
     }
 
-    /// keytab_alert is display-only;
+    /// keytab_alert is display-only
     /// must not block auth or protected routes (see keytab.rs).
     #[tokio::test]
     async fn keytab_mismatch_alert_does_not_break_auth_or_protected_actions() {
@@ -1026,8 +1027,7 @@ default_security = "krb5p"
         );
     }
 
-    /// /dir-meta and /dir-editor with a real temp dir;
-    /// also checks share card labels on /.
+    // dir-meta and /dir-editor routes; checks share card labels on /.
     #[tokio::test]
     async fn dir_meta_and_dir_editor_routes_work_with_real_fs_node() {
         let (state, tmp) = make_test_state_with_temp_config();
@@ -1271,7 +1271,7 @@ ldap_default_authtok = "sekret"
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// Live TCP: step3 continue serves restarting page;
+    /// Live TCP: step3 continue serves restarting page
     /// restart-status is 503 before supervisor marker.
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
@@ -1284,7 +1284,8 @@ ldap_default_authtok = "sekret"
         let (mut state, tmp) = make_setup_wizard_test_state();
         let marker = tmp.root().join(".setup_wizard_done");
         std::env::set_var("NFS_KLLDAP_SETUP_MARKER", marker.to_str().unwrap());
-        // Gate on the same marker path mark_setup_wizard_complete writes .
+        // Gate on the marker path mark_setup_wizard_complete() writes.
+        // Do not use the no_marker fixture path.
         state.setup_marker_override = Some(marker);
         {
             let mut t = state.setup_test.lock().unwrap();
@@ -1358,8 +1359,8 @@ ldap_default_authtok = "sekret"
         std::env::remove_var("NFS_KLLDAP_SETUP_MARKER");
     }
 
-    /// Integrated: concurrent supervisor loop + HTTP continue schedules HUP →
-    /// marker → login.
+    /// Integrated: concurrent supervisor loop
+    /// HTTP continue schedules HUP → marker → login.
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn wizard_continue_hup_supervisor_marker_then_login() {
@@ -1611,7 +1612,8 @@ ldap_default_authtok = "sekret"
         );
     }
 
-    /// POST /apply accepts empty hidden uid/gid fields from dir-editor .
+    /// POST /apply accepts empty hidden uid/gid fields from dir-editor.
+    /// Avoids 422 deserialize errors on empty strings.
     #[tokio::test]
     async fn apply_permissions_accepts_empty_hidden_uid_fields_from_dir_editor() {
         let (state, tmp) = make_test_state_with_temp_config();

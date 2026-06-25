@@ -6,9 +6,8 @@
 
 pub use nfs_klldap_config::KeytabInfo;
 
-/// User-visible warning when the on-disk keytab does not match the container
-/// hostname.
-/// Returns `None` when a matching nfs/* principal is present .
+/// Warning when the on-disk keytab does not match container hostname.
+/// Returns `None` when a matching nfs/* principal is present (no banner needed).
 pub fn compute_keytab_alert(expected_host: &str, expected_realm: &str) -> Option<String> {
     nfs_klldap_config::get_keytab_info(expected_host, expected_realm).alert
 }

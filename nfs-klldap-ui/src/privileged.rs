@@ -1,4 +1,4 @@
-//! Direct chown/chmod on bind-mounted host paths .
+//! Direct chown(2)/chmod(2) on bind-mounted host paths (root inside container).
 //!
 //! ## Security Boundary
 //! This module is the *only* place in the entire application that performs

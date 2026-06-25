@@ -15,7 +15,7 @@ pub fn parse_getent_passwd(line: &str) -> Option<(u32, u32)> {
     Some((uid, gid))
 }
 
-/// Parse `getent group` line: name:passwd:gid:memberlist...
+/// Parse `getent group` line: name:passwd:gid:memberlist.
 pub fn parse_getent_group(line: &str) -> Option<u32> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {

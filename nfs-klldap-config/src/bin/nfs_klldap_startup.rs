@@ -1,7 +1,7 @@
-//! nfs-klldap-startup — container bring-up supervisor + non-interactive
-//! diagnostics.
+//! nfs-klldap-startup
+//! container bring-up supervisor + non-interactive diagnostics.
 //!
-//! The blocking terminal TUI is replaced by the WebUI setup wizard;
+//! The blocking terminal TUI is replaced by the WebUI setup wizard
 //! this binary
 //! provides `supervise` (pid-1), `check`, and `wait-ready` entry points.
 
@@ -122,7 +122,7 @@ First-run setup is handled by the WebUI wizard at https://<host>:9630/setup
     );
 }
 
-/// Poll until compute_startup_step returns Ready .
+/// Poll until compute_startup_step returns Ready (used by tests and automation).
 fn wait_until_ready(config_path: &Path) -> Result<(), String> {
     loop {
         let step = compute_startup_step(config_path);

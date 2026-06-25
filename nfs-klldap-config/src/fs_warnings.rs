@@ -7,7 +7,8 @@ use crate::{
     FsCapabilities, NfsKlldapConfig, Share,
 };
 
-/// One line of fs-warnings output for a share .
+/// One line of fs-warnings output for a share.
+/// Capable shares omitted unless include_capable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FsShareWarning {
     pub share_name: String,
@@ -22,7 +23,8 @@ pub struct FsShareWarning {
 }
 
 impl FsShareWarning {
-    /// Stable single-line report for CLI / healthcheck .
+    /// Stable single-line report for CLI / healthcheck.
+    /// Limited shares include guidance.
     pub fn format_line(&self) -> String {
         if self.acl_capable {
             format!(
@@ -113,7 +115,8 @@ pub fn share_fs_warning_message(cfg: &NfsKlldapConfig, share: &Share) -> Option<
     share_fs_warning_message_with_mountinfo(cfg, share, None)
 }
 
-/// UI badge text using an explicit mountinfo fixture file .
+/// UI badge text using an explicit mountinfo fixture file.
+/// Isolates tests from process env.
 pub fn share_fs_warning_message_with_mountinfo(
     cfg: &NfsKlldapConfig,
     share: &Share,
@@ -191,7 +194,7 @@ mod tests {
             ..Default::default()
         };
         cfg.validate_and_derive().expect("valid");
-        // Without mountinfo override in unit test,
+        // Without mountinfo override in unit test
         // unknown path assumes capable → manage_gids true.
         assert!(any_share_manage_gids_enabled(&cfg));
         cfg.shares[0].manage_gids = Some(false);

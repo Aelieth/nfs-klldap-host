@@ -17,7 +17,8 @@ use crate::common::{
 };
 use crate::materialize::{materialize_nss_wrappers_at, NssMaterializePaths};
 
-/// getent (NSS) path for "same lookup a client would see". Falls back to resolver snapshot.
+/// getent (NSS) path for "same lookup a client would see".
+/// Falls back to resolver snapshot.
 fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
     let trimmed = name_or_principal.trim();
     let short = principal_local_part(trimmed);
@@ -60,7 +61,8 @@ fn uid_gid_from_snapshot(snap: &IdMapSnapshot, full: &str, short: &str) -> Optio
     None
 }
 
-/// LDAP snapshot first, then resolve_user; on miss reload full directory and retry.
+/// LDAP snapshot first, then resolve_user;
+/// on miss reload full directory and retry.
 fn resolve_via_structured_ldap(name_or_principal: &str) -> Option<(u32, u32)> {
     let (resolver, bind_dn, bind_pw) = get_or_init_resolver()?;
     let short = principal_local_part(name_or_principal);
@@ -87,7 +89,8 @@ fn load_resolver_from_config() -> Option<(IdLdapResolver, String, String)> {
     Some((resolver, cfg.sssd.ldap_default_bind_dn.clone(), cfg.sssd.ldap_default_authtok.clone()))
 }
 
-/// Lazy resolver init so 10m IdLdapResolver caches persist across resolve/getent/observer calls.
+/// Lazy resolver init so 10m IdLdapResolver caches persist across
+/// resolve/getent/observer calls.
 pub(crate) static ID_RESOLVER: OnceLock<Option<(IdLdapResolver, String, String)>> =
     OnceLock::new();
 
@@ -100,7 +103,8 @@ pub(crate) fn get_or_init_resolver() -> Option<(&'static IdLdapResolver, &'stati
 }
 
 fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
-    // Primary lookup is short posix name; callers also try full principal forms.
+    // Primary lookup is short posix name;
+    // callers also try full principal forms.
     dlog!("getent passwd \"{}\" called", name);
     let out = Command::new("getent")
         .args(["passwd", name])
@@ -120,7 +124,8 @@ fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
     None
 }
 
-/// Classify machine→uid 0 or resolve user via NSS/LDAP; materialize into nss_wrapper on change.
+/// Classify machine→uid 0 or resolve user via NSS/LDAP;
+/// materialize into nss_wrapper on change.
 pub(crate) fn resolve_principal(
     principal: &str,
     realm: &str,
@@ -178,7 +183,8 @@ pub(crate) fn resolve_principal(
 
     // Attempt resolution
     let resolved = if is_machine {
-        // Machine principals (host/, nfs/, root/, server variants): map 0:0 without getent/LDAP.
+        // Machine principals (host/, nfs/, root/,
+        // server variants): map 0:0 without getent/LDAP.
         let short = machine_short_name(principal);
         if debug_enabled() {
             eprintln!(
@@ -212,7 +218,8 @@ pub(crate) fn resolve_principal(
                 source: src,
             }
         } else {
-            // Nobody fallback: materialize so getpwnam under nss_wrapper can resolve it.
+            // Nobody fallback: materialize so getpwnam under nss_wrapper can
+            // resolve it.
             eprintln!(
                 "[idhelper] FALLBACK {} for principal=\"{}\" (no uid/gid from getent or structured resolver)",
                 FALLBACK_NOBODY_UID, principal

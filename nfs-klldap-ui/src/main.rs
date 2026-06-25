@@ -44,7 +44,7 @@ async fn main() {
     // Install ring CryptoProvider before any LDAPS (KLLDAP/rustls compat).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // Support --config /path or NFS_KLLDAP_CONF env (the shared volume with the container)
+    // Support --config /path or NFS_KLLDAP_CONF env
     let mut config_path: Option<PathBuf> = std::env::var("NFS_KLLDAP_CONF").ok().map(PathBuf::from);
     let args: Vec<String> = std::env::args().collect();
     for i in 0..args.len() {
@@ -104,7 +104,7 @@ async fn main() {
     let fs = Arc::new(crate::fs::FsManager::new((*config).clone()));
 
     let posix_attrs = nfs_klldap_config::resolve_posix_attribute_mapping(&config.sssd);
-    // display_realm is safe before validate_and_derive (first-run template / setup wizard).
+    // display_realm is safe before validate_and_derive .
     let realm = config.display_realm();
     let (user_base, group_base) =
         nfs_klldap_config::effective_ldap_search_bases(&config.sssd, &realm);
@@ -185,7 +185,7 @@ async fn main() {
         });
     }
 
-    // NFS_KLLDAP_WEBUI_BIND is used for both TLS and plain-http (reverse proxy) modes.
+    // NFS_KLLDAP_WEBUI_BIND is used for both TLS and plain-http modes.
     let addr = std::env::var("NFS_KLLDAP_WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
     // TLS: env `NFS_KLLDAP_WEBUI_TLS` wins, then [webui] tls (see certs.rs).
     let webui_tls_off = if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
@@ -231,7 +231,7 @@ async fn main() {
             .expect("WebUI HTTP server failed");
     } else {
         // existing axum_server::bind_rustls path (TLS enabled)
-        // Determine hostname for self-signed certificate SANs (same logic as keytab)
+        // Determine hostname for self-signed certificate SANs
         let cert_hostname = if let Some(h) = &config.server.hostname {
             if !h.trim().is_empty() {
                 h.trim().to_string()
@@ -242,7 +242,7 @@ async fn main() {
             resolve_runtime_hostname_for_banner()
         };
 
-        // Use a stable absolute path inside the container (created in Dockerfile).
+        // Use a stable absolute path inside the container .
         // This avoids polluting / and works under root-only execution model.
         // TLS cert precedence: env > [webui] paths > built-in default.
         // (Env handling + conf alignment explicit here in main.rs.)
@@ -266,7 +266,8 @@ async fn main() {
         println!("\nTLS: enabled (self-signed or custom)");
         println!("Listening on https://{addr} (TLS enabled via axum-server)");
         println!("Certificate: {}", tls_paths.cert.display());
-        // Note: if NFS_KLLDAP_WEBUI_TLS_CERT/KEY or [webui] were used, they are reflected in the resolved tls_paths.
+        // Note: if NFS_KLLDAP_WEBUI_TLS_CERT/KEY or [webui] were used,
+        // they are reflected in the resolved tls_paths.
 
         let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(
             &tls_paths.cert,

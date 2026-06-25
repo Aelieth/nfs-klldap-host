@@ -1,4 +1,5 @@
-//! Validates nfs-klldap.conf and derives realm, LDAP bases, and Ganesha 9.6-safe export defaults.
+//! Validates nfs-klldap.conf and derives realm, LDAP bases,
+//! and Ganesha 9.6-safe export defaults.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -86,7 +87,7 @@ impl NfsKlldapConfig {
         Ok(cfg)
     }
 
-    /// Parse nfs-klldap.conf without validation (for first-run WebUI before realm/bind are set).
+    /// Parse nfs-klldap.conf without validation .
     pub fn load_unchecked(path: &std::path::Path) -> Result<Self, ConfigError> {
         let contents = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
 
@@ -128,7 +129,8 @@ impl NfsKlldapConfig {
             normalize_blank(&mut s.ldap_group_gid_number);
             normalize_blank(&mut s.ldap_group_member);
 
-            // kllldap_ignored_attributes (Option<bool>) defaulted in generator; allow explicit false.
+            // kllldap_ignored_attributes defaulted in generator;
+            // allow explicit false.
             normalize_blank(&mut s.domain);
             normalize_blank(&mut s.auth_provider);
             normalize_blank(&mut s.chpass_provider);
@@ -151,7 +153,7 @@ impl NfsKlldapConfig {
             ));
         }
 
-        // Derive realm from ldap_uri if absent (or NFS_KLLDAP_KERBEROS_REALM env).
+        // Derive realm from ldap_uri if absent .
         if self.kerberos.realm.is_none() {
             if let Some(realm) = crate::derive_realm_from_uri(&self.ldap_uri) {
                 self.kerberos.realm = Some(realm);
@@ -189,11 +191,11 @@ impl NfsKlldapConfig {
         }
 
         // Derive search bases from effective realm.
-        // Use the main search_base (dc=...) as the default for user and group searches.
-        // This lets Subtree searches discover posix entries anywhere in the tree,
-        // including under ou=users, ou=people, or nested sub-OUs (e.g. ou=testing,ou=users).
-        // Users can still set explicit ldap_user_search_base / ldap_group_search_base
-        // in nfs-klldap.conf to narrow the scope if desired.
+        // Use the main search_base as the default for user and group searches.
+        // This lets Subtree searches discover posix entries anywhere in the
+        // tree, including under ou=users, ou=people, or nested sub-OUs (e.g.
+        // ou=testing,ou=users).
+        // Explicit ldap_user/group_search_base in TOML can narrow scope.
         let base_dn = format!(
             "dc={}",
             self.effective_realm().to_lowercase().replace('.', ",dc=")
@@ -250,8 +252,8 @@ impl NfsKlldapConfig {
                 )));
             }
             normalize_blank(&mut share.ganesha_path);
-            // Normalize export_path to an absolute NFSv4 Pseudo (Ganesha requires leading /).
-            // Internal EXPORT.Path comes from serve_path_for (ganesha_path override when set).
+            // Normalize export_path to an absolute NFSv4 Pseudo .
+            // Internal EXPORT.Path comes from serve_path_for .
             {
                 let ep = share.export_path.take();
                 let normalized = match ep {
@@ -289,7 +291,7 @@ impl NfsKlldapConfig {
                     )));
                 }
             }
-            // Validate optional pref_read (read-ahead size for streaming/large files)
+            // Validate optional pref_read
             if let Some(v) = share.pref_read {
                 const MIN: u64 = 512;
                 const MAX: u64 = 64 * 1024 * 1024;
@@ -311,7 +313,7 @@ impl NfsKlldapConfig {
                     )));
                 }
             }
-            // Validate cache_profile (the primary UI-driven field for the 5 tuning profiles)
+            // Validate cache_profile
             if let Some(p) = &share.cache_profile {
                 if crate::resolve_cache_profile(p).is_none() {
                     return Err(ConfigError::Validation(format!(
@@ -343,7 +345,7 @@ impl NfsKlldapConfig {
         Ok(())
     }
 
-    /// Hostname from [server] or best-effort container value (prefer get_consistent_hostname for production).
+    /// Hostname from [server] or best-effort container value .
     pub fn effective_hostname(&self) -> String {
         self.server.hostname.clone().unwrap_or_else(|| {
             crate::hostname::internal::get()
@@ -359,7 +361,7 @@ impl NfsKlldapConfig {
             .expect("effective_realm called on config that did not pass validation")
     }
 
-    /// Uppercase NFSv4 domain for ganesha.conf DomainName and idmapd.conf (libnfsidmap is case-sensitive).
+    /// Uppercase NFSv4 domain for ganesha.conf DomainName and idmapd.conf .
     pub fn nfsv4_domain(&self) -> String {
         self.effective_realm().to_ascii_uppercase()
     }
@@ -380,8 +382,10 @@ impl NfsKlldapConfig {
     }
 
     /// Apply env var overrides for *core* nfs-klldap.conf options (env wins).
-    /// Called early in validate_and_derive. Only NFS_KLLDAP_* prefixed forms are supported
-    /// (no bare WEBUI_* or legacy REALM aliases). NFS_KLLDAP_LLDAP_* kept for bind/UI compat.
+    /// Called early in validate_and_derive.
+    /// Only NFS_KLLDAP_* prefixed forms are supported
+    /// (no bare WEBUI_* or legacy REALM aliases).
+    /// NFS_KLLDAP_LLDAP_* kept for bind/UI compat.
     fn apply_core_env_overrides(&mut self) {
         // ldap_uri (top-level core)
         if let Ok(v) = std::env::var("NFS_KLLDAP_LDAP_URI") {
@@ -399,7 +403,7 @@ impl NfsKlldapConfig {
             }
         }
 
-        // [sssd] bind creds — core + secret path (NFS_KLLDAP_LLDAP_* supported for UI/compat + generate)
+        // [sssd] bind creds — core + secret path
         if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN") {
             let t = v.trim();
             if !t.is_empty() {
@@ -472,7 +476,8 @@ impl NfsKlldapConfig {
             self.sssd.kllldap_ignored_attributes = Some(t == "true" || t == "1" || t == "yes" || t == "on");
         }
 
-        // [sssd] TLS options (ldap_tls_reqcert, ldap_tls_cacert, ldap_id_use_start_tls)
+        // [sssd] TLS options (ldap_tls_reqcert, ldap_tls_cacert,
+        // ldap_id_use_start_tls)
         if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT") {
             let t = v.trim();
             if !t.is_empty() {
@@ -490,7 +495,9 @@ impl NfsKlldapConfig {
             self.sssd.ldap_id_use_start_tls = Some(t == "true" || t == "1" || t == "yes" || t == "on");
         }
 
-        // [webui] TLS mode + certs (only NFS_KLLDAP_WEBUI_* prefixed forms supported; env wins)
+        // [webui] TLS mode + certs (only NFS_KLLDAP_WEBUI_* prefixed forms
+        // supported;
+        // env wins)
         if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
             let t = v.trim().to_ascii_lowercase();
             let disabled = t == "off" || t == "false" || t == "0" || t == "no";
@@ -510,8 +517,10 @@ impl NfsKlldapConfig {
         }
     }
 
-    /// Internal Ganesha/FsManager path: container_root + tail of host_path after its first segment.
-    /// Example: host_path `/media/NVME/nvme`, container_root `/export` → `/export/NVME/nvme`.
+    /// Internal Ganesha/FsManager path: container_root + tail of host_path
+    /// after its first segment.
+    /// Example: host_path `/media/NVME/nvme`,
+    /// container_root `/export` → `/export/NVME/nvme`.
     /// export_path is client Pseudo only; see docs/ganesha-architecture.md.
     pub fn container_path_for(&self, share: &Share) -> String {
         let root = self.storage.container_root.trim_end_matches('/');
@@ -541,8 +550,9 @@ impl NfsKlldapConfig {
             return format!("{}{}", root, sub);
         }
 
-        // Degenerate host_path — fall back to legacy export_path / name behavior
-        // so old shallow or export-driven shares continue to have a deterministic location.
+        // Degenerate host_path — fall back to legacy export_path / name
+        // behavior so old shallow or export-driven shares continue to have a
+        // deterministic location.
         let ep_owned: String = share
             .export_path
             .as_deref()
@@ -558,7 +568,7 @@ impl NfsKlldapConfig {
         format!("{}{}", root, ep)
     }
 
-    /// Ganesha EXPORT Path= and fs probe target (ganesha_path verbatim when set).
+    /// Ganesha EXPORT Path= and fs probe target .
     pub fn serve_path_for(&self, share: &Share) -> String {
         if let Some(ref gp) = share.ganesha_path {
             let t = gp.trim();
@@ -574,8 +584,9 @@ impl NfsKlldapConfig {
     }
 
     /// Returns true if running in HOST_NFS (host-managed NFS) sidecar mode.
-    /// The container still generates sssd/krb5/ganesha fragments and runs the WebUI
-    /// + SSSD for identity/permission management, but does not start ganesha.nfsd.
+    /// The container still generates sssd/krb5/ganesha fragments and runs the
+    /// WebUI + SSSD for identity/permission management,
+    /// but does not start ganesha.nfsd.
     ///
     /// The host's Ganesha (reading /etc/ganesha exports) serves the shares.
     pub fn is_host_nfs(&self) -> bool {

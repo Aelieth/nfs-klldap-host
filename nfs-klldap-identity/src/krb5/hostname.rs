@@ -23,7 +23,7 @@ pub fn format_nfs_principal_list(host: &str, realm: &str) -> String {
         .join(", ")
 }
 
-/// True if `keytab_host` (from klist) matches the container hostname (short or FQDN).
+/// True if `keytab_host` matches the container hostname .
 pub fn nfs_keytab_host_matches(keytab_host: &str, container_host: &str) -> bool {
     let k = keytab_host.trim().to_lowercase();
     let c = container_host.trim().to_lowercase();
@@ -38,7 +38,7 @@ pub fn nfs_keytab_host_matches(keytab_host: &str, container_host: &str) -> bool 
     k_short == c_short
 }
 
-/// Returns true for 8-20 hex digits with no dot (typical Docker short container ID).
+/// Returns true for 8-20 hex digits with no dot .
 pub fn looks_like_docker_default_hostname(h: &str) -> bool {
     let h = h.trim();
     if h.contains('.') {

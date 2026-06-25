@@ -12,17 +12,17 @@ use crate::{
 /// Default Kerberos keytab path inside the container image.
 pub const DEFAULT_KEYTAB_PATH: &str = "/etc/krb5.keytab";
 
-/// Keytab path (override via NFS_KLLDAP_KEYTAB_PATH for tests or custom mounts).
+/// Keytab path .
 pub fn resolve_keytab_path() -> PathBuf {
     std::env::var("NFS_KLLDAP_KEYTAB_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_KEYTAB_PATH))
 }
 
-/// Marker written when the WebUI setup wizard completes (avoids per-request LDAP probes).
+/// Marker written when the WebUI setup wizard completes .
 pub const SETUP_WIZARD_MARKER: &str = "/var/lib/nfs-klldap/.setup_wizard_done";
 
-/// Path to the setup-complete marker (override via NFS_KLLDAP_SETUP_MARKER for tests).
+/// Path to the setup-complete marker .
 pub fn setup_wizard_marker_path() -> PathBuf {
     std::env::var("NFS_KLLDAP_SETUP_MARKER")
         .map(PathBuf::from)
@@ -36,7 +36,7 @@ pub fn is_setup_wizard_complete() -> bool {
 
 static SETUP_MARKER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Serializes tests that override `NFS_KLLDAP_SETUP_MARKER` (shared process-global env).
+/// Serializes tests that override `NFS_KLLDAP_SETUP_MARKER` .
 #[doc(hidden)]
 pub fn lock_setup_marker_for_tests() -> std::sync::MutexGuard<'static, ()> {
     SETUP_MARKER_TEST_LOCK
@@ -85,7 +85,8 @@ impl StartupStep {
     }
 }
 
-/// Returns true when `step` is complete relative to the current `current` step.
+/// Returns true when `step` is complete relative to the current `current`
+/// step.
 pub fn is_step_complete(step: StartupStep, current: StartupStep) -> bool {
     if step == current {
         return false;
@@ -103,7 +104,8 @@ pub fn is_step_complete(step: StartupStep, current: StartupStep) -> bool {
 
 /// Persistent bind mount at the config path plus a root writability probe.
 pub fn check_persistent_writable(path: &Path) -> bool {
-    // Tests set NFS_KLLDAP_TEST_PERSISTENT=1 to skip inode bind-mount detection.
+    // Tests set NFS_KLLDAP_TEST_PERSISTENT=1 to skip inode bind-mount
+    // detection.
     if std::env::var("NFS_KLLDAP_TEST_PERSISTENT").is_ok_and(|v| v == "1") {
         let parent = path.parent().unwrap_or(Path::new("/config"));
         let test_file = parent.join(".nfs-klldap-persist-test");
@@ -159,7 +161,8 @@ pub fn ldap_uri_port(uri: &str) -> u16 {
         .unwrap_or(636)
 }
 
-/// Apply-log-style reachability report with setup-wizard troubleshooting hints.
+/// Apply-log-style reachability report with setup-wizard troubleshooting
+/// hints.
 pub fn format_reachability_probe(host: &str, uri: &str, result: &LdapReachability) -> String {
     let port = ldap_uri_port(uri);
     let mut out = format!(
@@ -183,7 +186,7 @@ pub fn format_reachability_probe(host: &str, uri: &str, result: &LdapReachabilit
     out
 }
 
-/// Apply-log-style bind probe report with SSSD hints (password never included).
+/// Apply-log-style bind probe report with SSSD hints .
 pub fn format_bind_probe(cfg: &NfsKlldapConfig, result: Result<(), String>) -> String {
     let dn = cfg.sssd.ldap_default_bind_dn.trim();
     let uri = cfg.ldap_uri.trim();
@@ -282,7 +285,8 @@ pub fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
     }
 }
 
-/// ldapsearch base probe on the bind DN using the same POSIX attrs as SSSD/WebUI.
+/// ldapsearch base probe on the bind DN using the same POSIX attrs as
+/// SSSD/WebUI.
 pub fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     let uri = &cfg.ldap_uri;
     let dn = &cfg.sssd.ldap_default_bind_dn;
@@ -363,7 +367,7 @@ pub fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     }
 }
 
-/// Wizard step from on-disk structure only — no live LDAP probes (fast WebUI page loads).
+/// Wizard step from on-disk structure only — no live LDAP probes .
 pub fn compute_wizard_step(config_path: &Path) -> StartupStep {
     if !check_persistent_writable(config_path) {
         return StartupStep::WaitForPersistentVolume;
@@ -443,7 +447,7 @@ pub fn config_has_required_startup_fields(cfg: &NfsKlldapConfig) -> bool {
     true
 }
 
-/// True when the supervisor may start Ganesha/SSSD (wizard finished and config probes pass).
+/// True when the supervisor may start Ganesha/SSSD .
 pub fn should_bring_up_services(
     services_started: bool,
     wizard_complete: bool,
@@ -460,7 +464,8 @@ pub enum SupervisorLoopAction {
     Idle,
 }
 
-/// One supervisor-loop iteration: HUP sets services_started; bring-up only when not started.
+/// One supervisor-loop iteration: HUP sets services_started;
+/// bring-up only when not started.
 pub fn supervisor_loop_tick(
     services_started: bool,
     sighup_pending: bool,
@@ -476,7 +481,8 @@ pub fn supervisor_loop_tick(
     (SupervisorLoopAction::Idle, services_started)
 }
 
-/// Startup step for operators: Ready when preconf bypass applies, else live probe result.
+/// Startup step for operators: Ready when preconf bypass applies,
+/// else live probe result.
 pub fn effective_startup_step(config_path: &Path, keytab_path: &Path) -> StartupStep {
     if is_preconfigured_deployment(config_path, keytab_path) {
         StartupStep::Ready
@@ -485,8 +491,10 @@ pub fn effective_startup_step(config_path: &Path, keytab_path: &Path) -> Startup
     }
 }
 
-/// True when a mounted keytab and a complete on-disk config skip the setup wizard.
-/// Structural validation only — live LDAP probes run during wizard steps, not at bypass.
+/// True when a mounted keytab and a complete on-disk config skip the setup
+/// wizard.
+/// Structural validation only — live LDAP probes run during wizard steps,
+/// not at bypass.
 pub fn is_preconfigured_deployment(config_path: &Path, keytab_path: &Path) -> bool {
     if !keytab_path.is_file() {
         return false;
@@ -654,7 +662,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("nfs-klldap.conf");
         fs::write(&path, "[sssd]\nldap_default_bind_dn = \"uid=a,dc=x\"\n").unwrap();
-        // Ephemeral path still hits step 1 first; test ordering via direct bind check below.
+        // Ephemeral path still hits step 1 first;
+        // test ordering via direct bind check below.
         let step = compute_startup_step(&path);
         assert!(
             step == StartupStep::WaitForPersistentVolume || step == StartupStep::SetLdapUri
@@ -672,8 +681,10 @@ mod tests {
             },
             ..Default::default()
         };
-        // Empty DN still invokes ldapsearch; on CI without LDAP it fails — we only assert Err.
-        // Step computation treats empty creds as step 3 without calling bind when fields empty.
+        // Empty DN still invokes ldapsearch;
+        // on CI without LDAP it fails — we only assert Err.
+        // Step computation treats empty creds as step 3 without calling bind
+        // when fields empty.
         let step_path = {
             let tmp = tempfile::tempdir().unwrap();
             let p = tmp.path().join("c.conf");
@@ -686,8 +697,10 @@ mod tests {
             fs::write(&p, toml).unwrap();
             p
         };
-        // Ephemeral → step 1; the empty-cred branch is tested when persistent is mocked via
-        // compute on a loaded cfg path — use structural check on compute with empty fields:
+        // Ephemeral → step 1;
+        // the empty-cred branch is tested when persistent is mocked via
+        // compute on a loaded cfg path — use structural check on compute with
+        // empty fields:
         assert!(cfg.sssd.ldap_default_bind_dn.trim().is_empty());
         assert!(check_ldap_bind(&cfg).is_err() || cfg.sssd.ldap_default_authtok.is_empty());
         let _ = step_path;
@@ -717,7 +730,8 @@ ldap_default_authtok = "sekret"
         }
     }
 
-    /// Clear core env overrides so incomplete on-disk TOML cannot validate via env pollution.
+    /// Clear core env overrides so incomplete on-disk TOML cannot validate via
+    /// env pollution.
     struct TestCoreEnvClean;
 
     impl TestCoreEnvClean {
@@ -810,7 +824,8 @@ ldap_default_authtok = "sekret"
         assert!(!config_has_required_startup_fields(&cfg));
     }
 
-    /// Mirrors supervisor.rs bypass branch: keytab + structural conf skips wizard/login gate.
+    /// Mirrors supervisor.rs bypass branch: keytab + structural conf skips
+    /// wizard/login gate.
     #[test]
     fn supervisor_preconf_bypass_skips_wizard_without_ldap_ready() {
         let _persist = TestPersistentEnv::set();

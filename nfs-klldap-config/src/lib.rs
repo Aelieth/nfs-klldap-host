@@ -1,6 +1,7 @@
 #![deny(unsafe_code, dead_code)]
 
-//! nfs-klldap-config: TOML validation, derivation, and generation of sssd.conf, krb5.conf, ganesha exports.
+//! nfs-klldap-config: TOML validation, derivation, and generation of
+//! sssd.conf, krb5.conf, ganesha exports.
 
 mod config;
 mod constants;
@@ -102,7 +103,8 @@ pub use nfs_klldap_identity::{
     KeytabInfo,
 };
 
-// Structured LDAP resolution (IdLdapResolver); shared with nfs-klldap-identity / WebUI LDAP client.
+// Structured LDAP resolution (IdLdapResolver);
+// shared with nfs-klldap-identity / WebUI LDAP client.
 pub mod idmap;
 pub use idmap::{
     classify_principal, escape_ldap_filter, extract_first_attr_value, from_sssd_section,
@@ -110,7 +112,7 @@ pub use idmap::{
     IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry,
 };
 
-// Centralized constants (Ganesha 9.6 trixie + hybrid principal + POSIX + idmapd).
+// Centralized constants .
 pub use constants::{
     DEFAULT_GROUP_GID_ATTR, DEFAULT_GROUP_NAME_ATTR, DEFAULT_GROUP_OBJECT_CLASS,
     DEFAULT_USER_FULLNAME_ATTR, DEFAULT_USER_GID_ATTR, DEFAULT_USER_HOME_ATTR,
@@ -123,7 +125,8 @@ pub use constants::{
     DEFAULT_GROUP_MEMBER_ATTR_KLLDAP, DEFAULT_GROUP_MEMBER_ATTR_LEGACY,
 };
 
-/// Returns (no_tls_verify, start_tls) derived from [sssd] TLS fields and ldap_uri scheme.
+/// Returns (no_tls_verify,
+/// start_tls) derived from [sssd] TLS fields and ldap_uri scheme.
 pub fn ldap_tls_policy(
     ldap_uri: &str,
     reqcert: Option<&str>,
@@ -141,7 +144,7 @@ pub fn ldap_tls_policy(
     (no_verify, id_use_start_tls.unwrap_or(false))
 }
 
-/// Serializes env-mutating tests across modules (`cargo test --workspace` runs tests in parallel).
+/// Serializes env-mutating tests across modules .
 #[cfg(test)]
 pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -185,7 +188,8 @@ mod tests {
         }
     }
 
-    /// Clear NFS_KLLDAP_* env (test helper); hold guards alive across validate calls under ENV_LOCK.
+    /// Clear NFS_KLLDAP_* env (test helper);
+    /// hold guards alive across validate calls under ENV_LOCK.
     fn clean_core_env() -> Vec<EnvGuard> {
         let vars = [
             "NFS_KLLDAP_LDAP_URI",
@@ -212,7 +216,8 @@ mod tests {
     }
 
     fn minimal_cfg() -> NfsKlldapConfig {
-        // Clear at construction time so the internal validate sees a clean env.
+        // Clear at construction time so the internal validate sees a clean
+        // env.
         // Callers that later mutate the returned cfg and re-validate must keep
         // the result of clean_core_env() alive for the lifetime of the test
         // (see uses of `let _guards = clean_core_env();` below).
@@ -292,7 +297,8 @@ mod tests {
         assert_eq!(sssd.matches("ldap_pwd_policy = none").count(), 1);
         assert!(sssd.contains("ignored_user_attributes"));
 
-        // Auto-derived Kerberos KDC settings (co-located, same host/realm as ldap + krb5.conf)
+        // Auto-derived Kerberos KDC settings (co-located,
+        // same host/realm as ldap + krb5.conf)
         assert!(sssd.contains("krb5_realm = TEST"));
         assert!(sssd.contains("krb5_server = kllap.test"));
         assert!(sssd.contains("krb5_kpasswd = kllap.test"));
@@ -330,9 +336,10 @@ mod tests {
         assert!(!main.contains("Rquota_Port"));
         assert!(!main.contains("IdmapConf"));
         assert!(!main.contains("UseGetpwnam"));
-        // Enable_*=false are safe and explicit; the dangerous keys above are omitted.
+        // Enable_*=false are safe and explicit;
+        // the dangerous keys above are omitted.
 
-        // Baseline LOG always emitted (idhelper + operators need visibility on IDMAPPER).
+        // Baseline LOG always emitted .
         assert!(
             main.contains("LOG {"),
             "baseline LOG block should be present even without GANESHA_DEBUG"
@@ -341,7 +348,8 @@ mod tests {
             !main.contains("IDMAPPER = FULL_DEBUG"),
             "FULL_DEBUG must be absent by default"
         );
-        // The lighter components we care about for principal discovery should be present
+        // The lighter components we care about for principal discovery should
+        // be present
         assert!(main.contains("CLIENTID = DEBUG") || main.contains("IDMAPPER = EVENT"));
         // Regression guard for CLIENT block parameters
         assert!(!main.contains("Principals ="));
@@ -370,8 +378,9 @@ mod tests {
         let _env = env_lock();
         let _guards = clean_core_env();
 
-        // 1) Default (no GANESHA_DEBUG) - baseline LOG (with CLIENTID etc) is intentionally
-        //    always present now. Only the FULL_DEBUG variant is controlled by the env var.
+        // 1) Default - baseline LOG is intentionally
+        // always present now.
+        // Only the FULL_DEBUG variant is controlled by the env var.
         let cfg = minimal_cfg();
         let tmp = tempfile::tempdir().unwrap();
         let paths = GenerationPaths {
@@ -393,7 +402,7 @@ mod tests {
             "FULL_DEBUG must be absent without GANESHA_DEBUG=TRUE"
         );
 
-        // 2) With GANESHA_DEBUG=true (any common truthy spelling) -> FULL_DEBUG block
+        // 2) With GANESHA_DEBUG=true -> FULL_DEBUG block
         let _g = EnvGuard::set("GANESHA_DEBUG", "true");
         let cfg2 = minimal_cfg();
         let tmp2 = tempfile::tempdir().unwrap();
@@ -414,7 +423,8 @@ mod tests {
         );
         assert!(main_debug.contains("Default_Log_Level = DEBUG;"));
         assert!(main_debug.contains("IDMAPPER = FULL_DEBUG;"));
-        // FSAL only in fragments; top-level NFS4 is DEBUG for idhelper observer.
+        // FSAL only in fragments;
+        // top-level NFS4 is DEBUG for idhelper observer.
         assert!(main_debug.contains("NFS4 = DEBUG;"));
         assert!(
             !main_debug.contains("RECOVERY"),
@@ -571,7 +581,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("partial.conf");
 
-        // Partial config (missing bind creds) — load_host_paths_only must still succeed.
+        // Partial config — load_host_paths_only must still succeed.
         let partial = r#"
             ldap_uri = "ldaps://kllap.test:6360"
             [[shares]]

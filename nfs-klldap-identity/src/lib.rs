@@ -1,6 +1,7 @@
 #![deny(unsafe_code, dead_code)]
 
-//! Shared LDAP + Kerberos identity resolution for nfs-klldap-config, idhelper, and WebUI.
+//! Shared LDAP + Kerberos identity resolution for nfs-klldap-config, idhelper,
+//! and WebUI.
 //! Covers Ganesha 9.6 hybrid user-TGT and machine-keytab principal handling.
 
 pub mod constants;

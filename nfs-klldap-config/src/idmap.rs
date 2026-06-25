@@ -1,4 +1,5 @@
-//! Bridges nfs-klldap.conf [sssd] fields to the shared IdLdapResolver in nfs-klldap-identity.
+//! Bridges nfs-klldap.conf [sssd] fields to the shared IdLdapResolver in
+//! nfs-klldap-identity.
 
 use crate::SssdSection;
 
@@ -8,7 +9,7 @@ pub use nfs_klldap_identity::{
     LdapResolverInputs, LdapSearchBasesInput, PosixGroupEntry, PosixMappingInput, PosixUserEntry,
 };
 
-/// Build IdLdapResolver from ldap_uri + [sssd] + Kerberos realm (not ldap_search_base RDN).
+/// Build IdLdapResolver from ldap_uri + [sssd] + Kerberos realm .
 pub fn from_sssd_section(ldap_uri: &str, sssd: &SssdSection, realm: &str) -> IdLdapResolver {
     IdLdapResolver::from_inputs(&resolver_inputs_from_sssd(ldap_uri, sssd, realm))
 }

@@ -81,7 +81,8 @@ fn normalize_for_comparison(h: &str) -> String {
     h.trim().trim_matches('.').to_string()
 }
 
-/// Pure core of the two-tier check. Both inputs must match after normalization.
+/// Pure core of the two-tier check.
+/// Both inputs must match after normalization.
 pub(crate) fn confirm_consistent_hostname(
     primary_raw: &str,
     secondary_raw: &str,
@@ -146,7 +147,8 @@ now report the identical name in the setup wizard and WebUI logs.";
     Ok(primary)
 }
 
-/// Returns hostname when both sources agree after trim/trailing-dot normalization.
+/// Returns hostname when both sources agree after trim/trailing-dot
+/// normalization.
 pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsistency> {
     let primary = match Command::new("hostname").output() {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
@@ -331,7 +333,8 @@ mod tests {
 
     #[test]
     fn real_get_consistent_hostname_smoke() {
-        // Real I/O path smoke (succeeds or well-formed inconsistency; never panic/garbage).
+        // Real I/O path smoke (succeeds or well-formed inconsistency;
+        // never panic/garbage).
         let result = get_consistent_hostname();
         match result {
             Ok(c) => {

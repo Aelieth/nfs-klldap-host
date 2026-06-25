@@ -1,4 +1,5 @@
-//! Post-generate hook: optional operator script between config generation and Ganesha recycle.
+//! Post-generate hook: optional operator script between config generation and
+//! Ganesha recycle.
 
 use std::io::Read;
 use std::path::Path;
@@ -6,7 +7,8 @@ use std::process::{Command, Stdio};
 
 use crate::{ConfigError, NfsKlldapConfig};
 
-/// Resolved hook path (TOML [ganesha] post_generate_hook, then NFS_KLLDAP_POST_GENERATE_HOOK).
+/// Resolved hook path (TOML [ganesha] post_generate_hook,
+/// then NFS_KLLDAP_POST_GENERATE_HOOK).
 pub fn effective_post_generate_hook(cfg: &NfsKlldapConfig) -> Option<String> {
     if let Ok(env) = std::env::var("NFS_KLLDAP_POST_GENERATE_HOOK") {
         let t = env.trim();
@@ -38,7 +40,8 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-/// Invoke the configured hook once per share (SHARE_* env vars). Non-zero exit aborts.
+/// Invoke the configured hook once per share (SHARE_* env vars).
+/// Non-zero exit aborts.
 pub fn run_post_generate_hooks(cfg: &NfsKlldapConfig) -> Result<(), ConfigError> {
     let Some(hook) = effective_post_generate_hook(cfg) else {
         return Ok(());

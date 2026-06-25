@@ -1,4 +1,4 @@
-// ! Kerberos realm derivation from ldap/ldaps URIs.
+//! Kerberos realm derivation from ldap/ldaps URIs.
 
 /// Extract host from ldap/ldaps URI.
 pub fn extract_host_from_uri(uri: &str) -> String {

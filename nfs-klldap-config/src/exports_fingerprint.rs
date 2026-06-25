@@ -1,4 +1,4 @@
-// ! Stable fingerprints of generated artifacts (exports.d, identity configs).
+//! Stable fingerprints of generated artifacts (exports.d, identity configs).
 
 use std::fs;
 use std::path::Path;

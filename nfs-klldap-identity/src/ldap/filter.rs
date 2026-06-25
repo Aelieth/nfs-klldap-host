@@ -1,4 +1,4 @@
-// ! LDAP filter escaping (identical semantics to nfs-klldap-ui LdapClient).
+//! LDAP filter escaping (identical semantics to nfs-klldap-ui LdapClient).
 
 /// Escape an LDAP filter value.
 pub fn escape_ldap_filter(s: &str) -> String {

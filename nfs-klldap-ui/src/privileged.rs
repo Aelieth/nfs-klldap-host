@@ -1,12 +1,12 @@
-// !Direct chown(2)/chmod(2) on bind-mounted host paths (root inside cont...
-// !
-// ! ## Security Boundary
-// ! This module is the *only* place in the entire application that performs
-// ! privileged filesystem mutation on user data (the share trees). It is called
-// ! exclusively from `fs::FsManager::apply_*` after all allow-list and safety
-// ! checks have passed.
-// !
-// ! chown/chmod follow symlink targets; WalkDir skips symlinks (see fs.rs).
+//! Direct chown(2)/chmod(2) on bind-mounted host paths (root inside container).
+//!
+//! ## Security Boundary
+//! This module is the *only* place in the entire application that performs
+//! privileged filesystem mutation on user data (the share trees). It is called
+//! exclusively from `fs::FsManager::apply_*` after all allow-list and safety
+//! checks have passed.
+//!
+//! chown/chmod follow symlink targets; WalkDir skips symlinks (see fs.rs).
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;

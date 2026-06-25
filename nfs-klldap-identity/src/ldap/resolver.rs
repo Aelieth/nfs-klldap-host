@@ -1,4 +1,4 @@
-// ! Sync LDAP-backed ID resolution (idhelper + shared UI fallback path).
+//! Sync LDAP-backed ID resolution (idhelper + shared UI fallback path).
 
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
 use std::collections::HashMap;
@@ -202,7 +202,7 @@ impl IdLdapResolver {
             .unwrap_or_else(|| fallback.to_string())
     }
 
-    /// Member login names from member / uniqueMember / memberUid LDAP attr...
+    /// Member login names from member / uniqueMember / memberUid LDAP attributes.
     fn extract_group_members(se: &SearchEntry, member_attr: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -235,7 +235,7 @@ impl IdLdapResolver {
         out
     }
 
-    /// Fallback search base: suffix from first dc= (covers principal-style...
+    /// Fallback search base: suffix from first dc= (covers principal-style lookups).
     fn dc_base_from(&self, base: &str) -> String {
         if let Some(pos) = base.to_ascii_lowercase().find("dc=") {
             base[pos..].to_string()
@@ -617,7 +617,7 @@ impl IdLdapResolver {
         )
     }
 
-    /// Preload all posix users/groups into caches
+    /// Preload all posix users/groups into caches; index UPN aliases when present.
     pub fn load_full_identities(&self, bind_dn: &str, bind_pw: &str) -> usize {
         self.evict_expired();
 

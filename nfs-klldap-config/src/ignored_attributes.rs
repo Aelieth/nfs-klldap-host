@@ -1,6 +1,6 @@
-// ! Curated ignore lists for KLLDAP + SSSD (and dirsync clients).
-// !Emitted into generated sssd.conf when kllldap_ignored_attributes = tr...
-// ! See docs/ldap-integration.md for server-side application.
+//! Curated ignore lists for KLLDAP + SSSD (and dirsync clients).
+//! Emitted into generated sssd.conf when kllldap_ignored_attributes = true (default).
+//! See docs/ldap-integration.md for server-side application.
 
 /// Attributes commonly requested by SSSD, dirsync tools, and AD-compat clients
 /// on *user* entries that KLLDAP does not (and should not need to) provide.
@@ -57,21 +57,21 @@ pub fn get_kllldap_ignored_attributes_toml() -> (String, String) {
     (format!("[{}]", user_list), format!("[{}]", group_list))
 }
 
-/// Verbose comment block appended to generated sssd.conf when ignores...
+/// Verbose comment block appended to generated sssd.conf when ignores are enabled.
 pub fn get_kllldap_ignored_attributes_comment_block() -> String {
     let (users, groups) = get_kllldap_ignored_attributes_toml();
     format!(
         r#"# -----------------------------------------------------------------------------
 # KLLDAP server-side ignored attributes
 # -----------------------------------------------------------------------------
-# SSSD and similar clients request many AD-compat attributes KLLDAP doe...
-# Without server-side ignores
+# SSSD and similar clients request many AD-compat attributes KLLDAP does not store.
+# Without server-side ignores, logs fill with "unknown attribute" noise and some
 # clients retry aggressively (TLS disconnects, high CPU).
 # Keep [sssd] kllldap_ignored_attributes = true (default) in nfs-klldap.conf.
 #
-# ldap_group_member = "{member}" when ignores are enabled (not legacy m...
+# ldap_group_member = "{member}" when ignores are enabled (not legacy memberUid).
 #
-# To disable this setting add: "kllldap_ignored_attributes = false" in...
+# To disable this setting add: "kllldap_ignored_attributes = false" in nfs-klldap.conf
 # -----------------------------------------------------------------------------
 ignored_user_attributes = {users}
 ignored_group_attributes = {groups}

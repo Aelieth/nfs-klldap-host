@@ -1,4 +1,4 @@
-// !Pid-1 supervisor migrated from entrypoint.sh: preflight
+//! Pid-1 supervisor migrated from entrypoint.sh: preflight, service ordering, SIGHUP recycle.
 
 use std::fs::{self, OpenOptions};
 
@@ -43,19 +43,19 @@ struct SupervisorEnv {
     nss_wrapper_so: PathBuf,
     use_nss_wrapper: bool,
     log_format_json: bool,
-    /// CI one-shot path: generate + log preconf bring-up
+    /// CI one-shot path: generate + log preconf bring-up, then exit (no daemon loop).
     supervise_probe: bool,
-    /// CI one-shot: bounded loop after post-wizard SIGHUP (wizard marker +...
+    /// CI one-shot: bounded loop after post-wizard SIGHUP (wizard marker + complete conf).
     supervise_wizard_probe: bool,
-    /// CI: run supervisor_loop with probe stubs until a real SIGHUP (no au...
+    /// CI: run supervisor_loop with probe stubs until a real SIGHUP (no auto-posted HUP).
     supervise_loop_probe: bool,
-    /// CI one-shot: exercise ganesha SIGHUP reload + stop_ganesha against...
+    /// CI one-shot: exercise ganesha SIGHUP reload + stop_ganesha against a stub nfsd.
     supervise_recycle_probe: bool,
-    /// CI: wait for real OS SIGHUP then run handle_sighup (hook + fingerpr...
+    /// CI: wait for real OS SIGHUP then run handle_sighup (hook + fingerprint path).
     supervise_sighup_hook_probe: bool,
-    /// CI one-shot: identity-only config change recycles SSSD without gane...
+    /// CI one-shot: identity-only config change recycles SSSD without ganesha SIGHUP.
     supervise_identity_recycle_probe: bool,
-    /// HOST_NFS sidecar mode: generate fragments for host Ganesha
+    /// HOST_NFS sidecar mode: generate fragments for host Ganesha, skip in-container nfsd.
     host_nfs_mode: bool,
     /// Loop sleep override (ms); 0 for wizard-probe bounded ticks.
     supervisor_tick_ms: u64,
@@ -134,7 +134,7 @@ struct Supervisor {
     env: SupervisorEnv,
     pids: ChildPids,
     services_started: bool,
-    /// True after start_ganesha until stop_ganesha completes (enables daem...
+    /// True after start_ganesha until stop_ganesha completes (enables daemon pid adoption).
     ganesha_managed: bool,
 }
 
@@ -266,7 +266,7 @@ impl Supervisor {
         Ok(())
     }
 
-    /// CI one-shot: handle_sighup fingerprint reload/skip + stop_ganesha (...
+    /// CI one-shot: handle_sighup fingerprint reload/skip + stop_ganesha (TERM and KILL) against stub nfsd.
     fn run_supervise_recycle_probe(&mut self) -> Result<(), String> {
         self.log_info("Supervise-recycle-probe mode enabled");
         let stub_log = std::env::var("NFS_KLLDAP_RECYCLE_PROBE_GANESHA_LOG")
@@ -407,7 +407,7 @@ while :; do :; done
         Ok(())
     }
 
-    /// CI: generate + hook + ganesha stub
+    /// CI: generate + hook + ganesha stub, then handle a real OS SIGHUP via handle_sighup().
     fn run_supervise_sighup_hook_probe(&mut self) -> Result<(), String> {
         self.log_info("Supervise-sighup-hook-probe mode enabled");
         for d in [
@@ -457,7 +457,7 @@ while :; do :; done
         }
     }
 
-    /// CI one-shot: [sssd] edit with unchanged exports → restart SSSD
+    /// CI one-shot: [sssd] edit with unchanged exports → restart SSSD, no ganesha SIGHUP.
     fn run_supervise_identity_recycle_probe(&mut self) -> Result<(), String> {
         self.log_info("Supervise-identity-recycle-probe mode enabled");
         let stub_log = std::env::var("NFS_KLLDAP_RECYCLE_PROBE_GANESHA_LOG")
@@ -721,7 +721,7 @@ while :; do :; done
         Ok(())
     }
 
-    /// Signal to the WebUI restart poller that SSSD
+    /// Signal to the WebUI restart poller that SSSD, idhelper, Ganesha, and WebUI are up.
     fn touch_recycle_marker(&self) {
         if let Ok(mut f) = OpenOptions::new()
             .write(true)
@@ -790,7 +790,7 @@ while :; do :; done
         }
     }
 
-    /// After start_ganesha spawn: real nfsd daemonizes and the launcher pi...
+    /// After start_ganesha spawn: real nfsd daemonizes and the launcher pid exits.
     fn adopt_ganesha_daemon_pid_after_spawn(&mut self) {
         if !self.ganesha_managed || self.pids.ganesha.is_some_and(process_is_live) {
             return;
@@ -958,7 +958,7 @@ while :; do :; done
         }
     }
 
-    // LD_PRELOAD nss_wrapper so Ganesha getpwnam sees idhelper-materialized...
+    // LD_PRELOAD nss_wrapper so Ganesha getpwnam sees idhelper-materialized passwd/group.
     fn start_ganesha(&mut self) {
         self.quiet_winbind();
         let mut cmd = Command::new("ganesha.nfsd");

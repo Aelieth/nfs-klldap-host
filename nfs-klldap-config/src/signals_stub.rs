@@ -1,4 +1,4 @@
-// ! Non-Unix stubs so the config crate builds without nix/signal-hook.
+//! Non-Unix stubs so the config crate builds without nix/signal-hook.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

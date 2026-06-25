@@ -1,4 +1,4 @@
-// ! Unix-socket daemon: long-lived resolver + Ganesha integration.
+//! Unix-socket daemon: long-lived resolver + Ganesha integration.
 
 use crate::dlog;
 use std::fs;
@@ -22,7 +22,7 @@ use crate::materialize::{
 use crate::observer::start_ganesha_observer;
 use crate::resolve::{get_or_init_resolver, resolve_principal, ID_RESOLVER};
 
-/// Files rebulk touches: idmap cache
+/// Files rebulk touches: idmap cache, bulk-seed marker, and nss_wrapper outputs.
 #[derive(Clone, Copy)]
 pub(crate) struct RebulkPaths<'a> {
     pub cache_path: &'a Path,
@@ -40,14 +40,14 @@ impl RebulkPaths<'_> {
     }
 }
 
-/// Outcome of rebulk_apply_sync for tests asserting materialize skip v...
+/// Outcome of rebulk_apply_sync for tests asserting materialize skip vs execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RebulkOutcome {
     pub synced: usize,
     pub materialized: bool,
 }
 
-/// Sync LDAP snapshot into cache
+/// Sync LDAP snapshot into cache; materialize nss only when fingerprint changes.
 pub(crate) fn rebulk_apply_sync(
     cache: &mut IdCache,
     realm: &str,
@@ -122,7 +122,7 @@ pub(crate) mod test_rebulk {
     }
 }
 
-/// LDAP bulk load then nss materialize
+/// LDAP bulk load then nss materialize; must complete before supervisor starts ganesha.nfsd.
 pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usize> {
     #[cfg(test)]
     if let Some(ov) = test_rebulk::current_override() {
@@ -211,17 +211,17 @@ pub(crate) fn run_daemon() {
         }
     };
 
-    // Make socket world-accessible inside container (root only usage is als...
+    // Make socket world-accessible inside container (root only usage is also fine)
     let _ = fs::set_permissions(SOCKET_PATH, std::os::unix::fs::PermissionsExt::from_mode(0o666));
 
-    // Load persisted cache (machines + any prior resolves)
-    // on first LDAP sync below
+    // Load persisted cache (machines + any prior resolves). User rows are replaced
+    // on first LDAP sync below — do not materialize stale users to nss_passwd yet.
     let cache = Arc::new(Mutex::new(IdCache::load_from_file(Path::new(CACHE_PATH))));
 
     println!("[idhelper] daemon listening on {}", SOCKET_PATH);
     println!("[idhelper] realm={} variants={:?}", realm, server_variants);
 
-    // Eagerly initialize + bulk-load the full user+group map (10m authorita...
+    // Eagerly initialize + bulk-load the full user+group map (10m authoritative cache).
     let _ = get_or_init_resolver();
     {
         let mut guard = cache.lock().unwrap();
@@ -233,7 +233,7 @@ pub(crate) fn run_daemon() {
         }
     }
 
-    // Always auto pre-resolve the *server's own* host + nfs service princip...
+    // Always auto pre-resolve the *server's own* host + nfs service principals at cold start.
     for v in &server_variants {
         for prefix in ["host", "nfs"] {
             let p = format!("{}/{}@{}", prefix, v, realm);

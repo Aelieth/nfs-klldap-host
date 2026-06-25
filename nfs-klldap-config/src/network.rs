@@ -1,9 +1,9 @@
-// ! Docker bridge networking detection helpers.
+//! Docker bridge networking detection helpers.
 
 use std::net::Ipv4Addr;
 use std::process::Command;
 
-/// Returns true when `addr` is an IPv4 address in Docker's default bri...
+/// Returns true when `addr` is an IPv4 address in Docker's default bridge range (172.17.0.0/16).
 pub fn is_docker_bridge_ipv4(addr: &str) -> bool {
     let trimmed = addr.trim();
     let ip: Ipv4Addr = match trimmed.parse() {
@@ -44,7 +44,7 @@ pub fn container_primary_ipv4() -> Option<String> {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
-        // e.g. "2: eth0    inet 172.17.0.2/16 brd 172.17.255.255 scope global e...
+        // e.g. "2: eth0    inet 172.17.0.2/16 brd 172.17.255.255 scope global eth0"
         if let Some(inet_pos) = line.find("inet ") {
             let after = &line[inet_pos + 5..];
             let ip = after.split_whitespace().next()?.split('/').next()?;

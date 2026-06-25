@@ -1,4 +1,4 @@
-// ! Strict parsers for getent passwd/group output.
+//! Strict parsers for getent passwd/group output.
 
 /// Parse `getent passwd` line: name:passwd:uid:gid:gecos:home:shell
 pub fn parse_getent_passwd(line: &str) -> Option<(u32, u32)> {

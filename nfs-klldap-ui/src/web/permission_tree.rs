@@ -1,4 +1,4 @@
-// ! `/` permission tree, LLDAP search, and apply (chown/chmod via FsManager).
+//! `/` permission tree, LLDAP search, and apply (chown/chmod via FsManager).
 
 use askama::Template;
 use axum::{
@@ -21,7 +21,7 @@ struct IndexTemplate {
     shares: Vec<ShareInfo>,
     current_user: Option<String>,
     keytab_alert: Option<String>,
-    /// Mirrors AppState; used by the template to adjust the top "Ganesha r...
+    /// Mirrors AppState; used by the template to adjust the top "Ganesha reads..." note.
     host_nfs_mode: bool,
 }
 
@@ -31,8 +31,8 @@ struct TreeFragmentTemplate {
     children: Vec<DirNode>,
 }
 
-/// Renders a share root (or any directory) as the top clickable row in...
-/// with its direct children inside it
+/// Renders a share root (or any directory) as the top clickable row in the tree,
+/// with its direct children inside it. This lets users manage permissions on the
 /// share root directory itself.
 #[derive(Template)]
 #[template(path = "tree_root.html")]
@@ -48,7 +48,7 @@ pub(crate) struct DirNode {
 }
 
 /// Display row for a share card on the Share Permissions page.
-/// Precomputes the client-visible NFS path (using the effective keytab...
+/// Precomputes the client-visible NFS path (using the effective keytab hostname)
 /// and compact labels for the attributes (RW/RO, squash, cache profile).
 #[derive(Debug, Clone)]
 struct ShareInfo {
@@ -86,7 +86,7 @@ struct DirEditorTemplate {
     recursive_checked: String,
 }
 
-/// Friendly label for the permission editor / meta row: `display (uid)...
+/// Friendly label for the permission editor / meta row: `display (uid)` when LDAP resolves.
 async fn friendly_user_label(lldap: &crate::ldap::LdapClient, uid: u32) -> String {
     if uid == 0 {
         return "0".to_string();
@@ -140,10 +140,10 @@ pub(crate) struct DirEditorParams {
 pub(crate) struct SearchParams {
     /// Legacy/alternate query param (some HTMX configs send `q` via js: vals).
     q: Option<String>,
-    /// Live search: current Owner field value (preferred
+    /// Live search: current Owner field value (preferred — sent via hx-include on the input).
     #[serde(default)]
     owner_user: Option<String>,
-    /// Live search: current Group field value (preferred
+    /// Live search: current Group field value (preferred — sent via hx-include on the input).
     #[serde(default)]
     owner_group: Option<String>,
 }
@@ -178,9 +178,9 @@ pub(crate) struct ApplyForm {
     mode: String,
     #[serde(default)]
     recursive: bool,
-    // Strings (not Option<u32>) because the dir-editor form always includes...
-    // fields (often with empty value="" or "0")
-    // leniently below. This prevents 422 "cannot parse integer from empty s...
+    // Strings (not Option<u32>) because the dir-editor form always includes the hidden
+    // fields (often with empty value="" or "0"). Empty must deserialize cleanly; we parse
+    // leniently below. This prevents 422 "cannot parse integer from empty string".
     #[serde(default)]
     owner_user_uid: String,
     #[serde(default)]
@@ -196,10 +196,10 @@ pub(crate) async fn index(
     let user = require_auth(&state, &headers).await?;
 
     // Build display-oriented share cards. Centralizes:
-    // - Proper client NFS path using the same keytab_hostname the rest of t...
-    // (so it matches what clients should put in `server:/path` mount comman...
+    // - Proper client NFS path using the same keytab_hostname the rest of the system uses
+    //   (so it matches what clients should put in `server:/path` mount commands).
     // - Compact labels for RW/RO, root-squash/no, and cache profile.
-    // Build share cards: NFS path from keytab hostname + export pseudo
+    // Build share cards: NFS path from keytab hostname + export pseudo; RW/squash/cache labels.
     let server = &state.keytab_hostname;
     let display_shares: Vec<ShareInfo> = state
         .config
@@ -311,7 +311,7 @@ pub(crate) async fn tree_fragment(
         }
     }
 
-    // Return diagnostic HTML when tree build fails (bind mount / path trans...
+    // Return diagnostic HTML when tree build fails (bind mount / path translation).
     let safe_path = params
         .path
         .replace('&', "&amp;")
@@ -511,8 +511,8 @@ pub(crate) async fn apply_permissions(
     let mut group_gid: u32 = 0;
     let mut needs_lock = false;
 
-    // Hidden fields arrive as strings (may be ""
-    // We only trust a positive (>0) integer from the hidden
+    // Hidden fields arrive as strings (may be "", "0", or a valid number string).
+    // We only trust a positive (>0) integer from the hidden; 0 or empty means "not provided by search".
     if let Ok(n) = form.owner_user_uid.trim().parse::<u32>() {
         if n > 0 {
             owner_uid = n;
@@ -593,8 +593,8 @@ pub(crate) async fn apply_permissions(
         )
     };
 
-    // === Always async path (for live progress in Apply Log
-    // tree lock until done, and Cancel button)
+    // === Always async path (for live progress in Apply Log, spinner while estimating,
+    //      tree lock until done, and Cancel button). Even non-recursive on a dir with
     //      thousands of immediate entries benefits from the UX.
     let progress = Arc::new(ApplyProgress::default());
     {
@@ -614,7 +614,7 @@ pub(crate) async fn apply_permissions(
     let rec = form.recursive;
     let prog = progress.clone();
     tokio::spawn(async move {
-        // Count-as-you-go phase gives immediate visible feedback ("scanned N so...
+        // Count-as-you-go phase gives immediate visible feedback ("scanned N so far |")
         // via the poller + render_apply_status_oob. No long silent pre-count.
         *prog.phase.lock().unwrap() = "scanning".to_string();
         let _ = fs.count_applicable_with_live(std::path::Path::new(&pth), rec, &prog);
@@ -684,9 +684,9 @@ pub(crate) async fn apply_permissions(
         prog.finished.store(true, Ordering::Relaxed);
     });
 
-    // Immediate response: placeholder keeps the .dir-meta target (and the e...
-    // via JS + data-applying + currentEditPath)
-    // happen only after the poller sees finished and does the final /dir-me...
+    // Immediate response: placeholder keeps the .dir-meta target (and the edit/applying lock
+    // via JS + data-applying + currentEditPath). Real meta + subtree refresh (if recursive)
+    // happen only after the poller sees finished and does the final /dir-meta fetch.
     let placeholder = format!(
         r#"<div class="dir-meta-inner" data-path="{}" data-applying="1">
     <span style="color:var(--warning-text);">⏳ Applying permissions — see Apply Log for progress. Tree navigation locked until complete.</span>
@@ -694,15 +694,15 @@ pub(crate) async fn apply_permissions(
         form.path
     );
 
-    // Initial status (will be replaced by polls with live scanned/spinner o...
+    // Initial status (will be replaced by polls with live scanned/spinner or real %)
     let status_html = render_apply_status_oob(&cmd, "Stand-by, estimating total... (live updates below)", true);
 
     Ok(Html(format!("{}\n{}", placeholder, status_html)))
 }
 
-/// Renders the full oob-swappable #apply-status (header with Cancel on...
-/// active_cancel controls the red clickable vs
-/// When !active_cancel we also emit data-apply-finished so the JS poll...
+/// Renders the full oob-swappable #apply-status (header with Cancel on the right + content).
+/// active_cancel controls the red clickable vs. muted disabled appearance of the button.
+/// When !active_cancel we also emit data-apply-finished so the JS poller listener can stop itself.
 fn render_apply_status_oob(cmd: &str, result_or_live: &str, active_cancel: bool) -> String {
     let cancel_btn = if active_cancel {
         r#"<button type="button" onclick="if (window.cancelCurrentApply) window.cancelCurrentApply();" class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--danger-border); color:var(--danger-text); background:var(--danger-bg); border-radius:2px; cursor:pointer;">Cancel Apply</button>"#

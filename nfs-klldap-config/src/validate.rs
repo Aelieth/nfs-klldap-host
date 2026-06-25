@@ -1,4 +1,4 @@
-//! Validates nfs-klldap.conf; derives realm, LDAP bases, Ganesha 9.6 defaults.
+//! Validates nfs-klldap.conf and builds realm, LDAP bases, and defaults.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -102,7 +102,7 @@ impl NfsKlldapConfig {
     }
 
     pub fn validate_and_derive(&mut self) -> Result<(), ConfigError> {
-        // Env overrides (NFS_KLLDAP_* only) win; applied first.
+        // Applies NFS_KLLDAP_* env overrides before other normalization steps.
         self.apply_core_env_overrides();
 
         if self.ldap_uri.trim().is_empty() {
@@ -129,7 +129,7 @@ impl NfsKlldapConfig {
             normalize_blank(&mut s.ldap_group_gid_number);
             normalize_blank(&mut s.ldap_group_member);
 
-            // Kllldap_ignored_attributes (Option<bool>) defaulted in.
+            // Defaults kllldap_ignored_attributes when Option<bool> is unset.
             normalize_blank(&mut s.domain);
             normalize_blank(&mut s.auth_provider);
             normalize_blank(&mut s.chpass_provider);
@@ -222,7 +222,7 @@ impl NfsKlldapConfig {
             )));
         }
 
-        // Default storage root.
+        // Sets the default storage container root when it is empty.
         if self.storage.container_root.trim().is_empty() {
             self.storage.container_root = "/export".to_string();
         }
@@ -284,7 +284,7 @@ impl NfsKlldapConfig {
                     )));
                 }
             }
-            // Validate optional pref_read (read-ahead size for.
+            // Validates optional pref_read read-ahead within allowed bounds.
             if let Some(v) = share.pref_read {
                 const MIN: u64 = 512;
                 const MAX: u64 = 64 * 1024 * 1024;
@@ -361,7 +361,7 @@ impl NfsKlldapConfig {
         self.effective_realm().to_ascii_uppercase()
     }
 
-    /// Realm for banners (real after validation; placeholder otherwise).
+    /// Returns the realm string shown in banners after validation completes.
     pub fn display_realm(&self) -> String {
         self.kerberos
             .realm
@@ -505,7 +505,7 @@ impl NfsKlldapConfig {
         }
     }
 
-    /// FsManager path: container_root + host_path tail after first segment.
+    /// Builds the FsManager path from container_root and the host_path tail.
     pub fn container_path_for(&self, share: &Share) -> String {
         let root = self.storage.container_root.trim_end_matches('/');
 
@@ -549,8 +549,7 @@ impl NfsKlldapConfig {
         format!("{}{}", root, ep)
     }
 
-    /// Ganesha EXPORT Path= and fs probe target (ganesha_path verbatim when.
-    /// Set).
+    /// Returns the Ganesha EXPORT Path and fs probe target for a share.
     pub fn serve_path_for(&self, share: &Share) -> String {
         if let Some(ref gp) = share.ganesha_path {
             let t = gp.trim();

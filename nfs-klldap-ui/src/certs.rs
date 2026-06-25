@@ -40,8 +40,7 @@ pub fn webui_tls_disabled() -> bool {
     false
 }
 
-/// Priority: NFS_KLLDAP_WEBUI_TLS_* env > provided paths > generate.
-/// Self-signed.
+/// Ensures WebUI TLS certs from env paths or generates self-signed ones.
 pub fn ensure_webui_tls_certs(
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,

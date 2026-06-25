@@ -12,8 +12,7 @@ use crate::{
 /// Default Kerberos keytab path inside the container image.
 pub const DEFAULT_KEYTAB_PATH: &str = "/etc/krb5.keytab";
 
-/// Keytab path (override via NFS_KLLDAP_KEYTAB_PATH for tests or custom.
-/// Mounts).
+/// Returns the keytab path with optional NFS_KLLDAP_KEYTAB_PATH override.
 pub fn resolve_keytab_path() -> PathBuf {
     std::env::var("NFS_KLLDAP_KEYTAB_PATH")
         .map(PathBuf::from)
@@ -89,8 +88,7 @@ impl StartupStep {
     }
 }
 
-/// Returns true when `step` is complete relative to the current `current`.
-/// Step.
+/// Returns true when `step` is complete relative to the current startup step.
 pub fn is_step_complete(step: StartupStep, current: StartupStep) -> bool {
     if step == current {
         return false;
@@ -164,8 +162,7 @@ pub fn ldap_uri_port(uri: &str) -> u16 {
         .unwrap_or(636)
 }
 
-/// Apply-log-style reachability report with setup-wizard troubleshooting.
-/// Hints.
+/// Formats an apply-log-style reachability report with setup-wizard hints.
 pub fn format_reachability_probe(host: &str, uri: &str, result: &LdapReachability) -> String {
     let port = ldap_uri_port(uri);
     let mut out = format!(
@@ -189,8 +186,7 @@ pub fn format_reachability_probe(host: &str, uri: &str, result: &LdapReachabilit
     out
 }
 
-/// Apply-log-style bind probe report with SSSD hints (password never.
-/// Included).
+/// Formats an apply-log-style bind probe report with SSSD hints (no password).
 pub fn format_bind_probe(cfg: &NfsKlldapConfig, result: Result<(), String>) -> String {
     let dn = cfg.sssd.ldap_default_bind_dn.trim();
     let uri = cfg.ldap_uri.trim();
@@ -469,7 +465,7 @@ pub enum SupervisorLoopAction {
     Idle,
 }
 
-/// One supervisor-loop tick; HUP triggers bring-up when not started.
+/// Handles one supervisor-loop tick and triggers bring-up on HUP when needed.
 pub fn supervisor_loop_tick(
     services_started: bool,
     sighup_pending: bool,
@@ -485,7 +481,7 @@ pub fn supervisor_loop_tick(
     (SupervisorLoopAction::Idle, services_started)
 }
 
-/// Startup step: Ready on preconf bypass, else live probe result.
+/// Returns Ready on preconf bypass or the live probe result otherwise.
 pub fn effective_startup_step(config_path: &Path, keytab_path: &Path) -> StartupStep {
     if is_preconfigured_deployment(config_path, keytab_path) {
         StartupStep::Ready
@@ -723,8 +719,7 @@ ldap_default_authtok = "sekret"
         }
     }
 
-    /// Clear core env overrides so incomplete on-disk TOML cannot validate.
-    /// Prevents env pollution.
+    /// Clears core env overrides so incomplete on-disk TOML cannot validate.
     struct TestCoreEnvClean;
 
     impl TestCoreEnvClean {

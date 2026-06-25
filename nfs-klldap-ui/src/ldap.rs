@@ -32,8 +32,7 @@ pub struct LdapClient {
     ldap_uri: String,
     /// Effective search base for users (supports child OUs via Subtree scope).
     user_base: String,
-    /// Effective search base for groups (supports child OUs via Subtree.
-    /// Scope).
+    /// Holds the group search base and supports child OUs via Subtree scope.
     group_base: String,
 
     service_conn: Option<LdapConn>,
@@ -59,7 +58,7 @@ pub struct LdapClient {
     cache_clears: AtomicU64,
     last_cache_clear: Mutex<Option<Instant>>,
 
-    /// Shared sync resolver (10m identity caches); rebuilt on clear_cache().
+    /// Wraps a shared sync resolver whose caches clear_cache() rebuilds.
     identity_resolver: Arc<Mutex<IdLdapResolver>>,
 }
 
@@ -499,7 +498,7 @@ impl LdapClient {
                     if attempt == 2 {
                         return Err(LdapError::Ldap(e));
                     }
-                    // Transient error, retry.
+                    // Retries the LDAP search after a transient error.
                     tokio::time::sleep(std::time::Duration::from_millis(200 * (attempt + 1) as u64)).await;
                 }
                 Err(e) => {
@@ -596,8 +595,7 @@ impl LdapClient {
                 .contains(q_lower)
     }
 
-    /// Subtree filter: posix users only (objectClass + uidNumber present).
-    /// KLLDAP/LLDAP-safe.
+    /// Builds a subtree filter listing POSIX users with uidNumber for KLLDAP.
     fn build_user_list_ldap_filter(&self, q_orig: &str) -> String {
         let obj = &self.posix_attributes.user_object_class;
         let uid_attr = &self.posix_attributes.user_uid_number;
@@ -810,7 +808,7 @@ impl LdapClient {
         Some((gid, display))
     }
 
-    /// Reverse uidNumber→name lookup; subtree fallback fills caches.
+    /// Resolves uidNumber to a user name and fills caches via subtree search.
     pub async fn resolve_user_by_uid(&self, uid: i32) -> Option<(String, String)> {
         if let Some(hit) = self.cache_get_user_by_uid(uid) {
             if hit.uid_number.is_some() {
@@ -846,7 +844,7 @@ impl LdapClient {
         Some((id, display))
     }
 
-    /// Reverse lookup: gidNumber → (cn/name, display_name).
+    /// Resolves gidNumber to group name and display_name via subtree search.
     /// Uses dedicated 10m cache.
     pub async fn resolve_group_by_gid(&self, gid: i32) -> Option<(String, String)> {
         if let Some(hit) = self.cache_get_group_by_gid(gid) {
@@ -889,7 +887,7 @@ impl LdapClient {
         let mut results: Vec<User> = Vec::new();
         let mut seen_ids: HashSet<String> = HashSet::new();
 
-        // Identity cache for typed queries only; empty query always hits LDAP.
+        // Serves typed queries from cache while empty queries always hit LDAP.
         if !q_orig.is_empty() {
             for (id, cu) in self.user_cache.lock().unwrap().iter() {
                 Self::try_push_user(

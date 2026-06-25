@@ -1,4 +1,4 @@
-//! Keytab status banner for WebUI; display-only, never gates auth.
+//! Supplies a display-only keytab banner that never gates authentication.
 
 pub use nfs_klldap_config::KeytabInfo;
 

@@ -179,7 +179,7 @@ CLASSIFY, REBULK (force LDAP refresh).
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    // Support "nfs-klldap-idhelper daemon" or being started directly as the.
+    // Supports daemon subcommand or direct exec as the long-lived resolver.
     if args.len() > 1 && (args[1] == "daemon" || args[1] == "--daemon") {
         run_daemon();
         return;
@@ -544,7 +544,7 @@ mod tests {
         assert!(r.is_none() || !r.unwrap().contains("0x"));
     }
 
-    // These tests cover additional repros from the user's full trace after.
+    // These tests cover additional repro cases from the user's full trace.
     #[test]
     fn extract_rejects_pure_clientid_line() {
         // Standalone clientid= lines must never produce a host/ candidate.
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn stress_extract_on_trace_fragments_no_garbage() {
-        // Regression: Ganesha log fragments must not yield host/nil.
+        // Regression tests ensure Ganesha log fragments never yield host/nil.
         let fragments = vec![
             r#"conf = (nil) {NULL} unconf = (nil) {NULL}"#,
             r#"clientid=Unique=0x6a375213 Counter=0x00000001"#,
@@ -624,7 +624,7 @@ mod tests {
         let realm = "SATOMLIN.COM".to_string();
         let variants = vec!["zima-nas".to_string()];
 
-        // Regular host/ principal.
+        // Regular host/ principals resolve as machine identities.
         let r1 = resolve_principal("host/blue-lt@SATOMLIN.COM", &realm, &variants, &mut cache);
         assert_eq!(r1.uid, 0);
         assert_eq!(r1.gid, 0);
@@ -632,7 +632,7 @@ mod tests {
         assert_eq!(r1.source, "special");
         assert_eq!(r1.name, "blue-lt");
 
-        // Synthetic / internal form (host/0x...) should also short-circuit to.
+        // Synthetic host/0x forms resolve as machines without getent.
         let r2 = resolve_principal("host/0x6a375213@SATOMLIN.COM", &realm, &variants, &mut cache);
         assert_eq!(r2.uid, 0);
         assert_eq!(r2.gid, 0);
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn extract_catches_could_not_map_line_for_user_principal() {
-        // This is the key new pattern for closing the first-use timing gap.
+        // The could-not-map line pattern closes the first-use timing gap.
         let line = r#"nfs_req_creds :ID MAPPER :INFO :Could not map principal testuser1@SATOMLIN.COM to uid"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         assert_eq!(r, Some("testuser1@SATOMLIN.COM".to_string()));
@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn extract_catches_get_uid_using_nfsidmap_line() {
-        // Early sighting: Ganesha calling the mapper for a user principal.
+        // Early Get uid lines resolve user principals before materialize.
         let line = r#"principal2uid : Get uid for testuser1@SATOMLIN.COM using nfsidmap"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         assert_eq!(r, Some("testuser1@SATOMLIN.COM".to_string()));

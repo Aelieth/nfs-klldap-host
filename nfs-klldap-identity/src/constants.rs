@@ -1,6 +1,6 @@
 //! Identity-related constants shared across nfs-klldap-host binaries.
 
-/// Machine principal prefixes; match Ganesha Root_Kerberos_Principal.
+/// Prefixes for machine principals that match Ganesha Root_Kerberos_Principal.
 pub const MACHINE_PRINCIPAL_PREFIXES: &[&str] = &["host/", "nfs/", "root/"];
 
 pub const DEFAULT_USER_OBJECT_CLASS: &str = "posixAccount";

@@ -60,12 +60,10 @@ struct SettingsTemplate {
 
     /// Server-rendered shares for edit/delete via row removal.
     current_shares: Vec<ShareTemplateRow>,
-    /// Next index the client-side JS should use when the user clicks "+ Add.
-    /// Share".
+    /// Holds the next share row index the client JS uses for Add Share rows.
     next_share_idx: usize,
 
-    /// HOST_NFS sidecar mode (host Ganesha serves exports WebUI still manages.
-    /// Config).
+    /// Reflects HOST_NFS mode where host Ganesha serves exports and WebUI.
     host_nfs_mode: bool,
 }
 
@@ -135,7 +133,7 @@ pub(crate) struct RawSaveForm {
 // Structured form (top-level + shares rows). Shares POST reuses subset of.
 #[derive(Deserialize, Debug, Default)]
 pub(crate) struct StructuredSettingsForm {
-    // Top level.
+    // Captures top-level TOML fields such as ldap_uri.
     ldap_uri: Option<String>,
 
     // Handle the storage section fields.
@@ -155,7 +153,7 @@ pub(crate) struct StructuredSettingsForm {
     override_sssd_user_base: Option<bool>,
     sssd_group_base: Option<String>,
     override_sssd_group_base: Option<bool>,
-    // TLS options.
+    // Captures SSSD TLS-related override fields for the structured editor.
     sssd_ldap_tls_reqcert: Option<String>,
     override_sssd_ldap_tls_reqcert: Option<bool>,
     sssd_ldap_tls_cacert: Option<String>,
@@ -618,7 +616,7 @@ fn make_settings_success_template(
     host_nfs_mode: bool,
     fs_probe_mountinfo_path: Option<&std::path::Path>,
 ) -> SettingsTemplate {
-    // Re-read after successful write for structured pre-fills. Ensures the.
+    // Re-reads config after write so structured fields pre-fill correctly.
     build_settings_template(
         current_user,
         config_path,
@@ -662,7 +660,7 @@ fn apply_structured_form_to_toml_doc(
             tbl["ldap_default_bind_dn"] = toml_edit::value(v.clone());
         }
     }
-    // Only write bind pw when non-empty. Structured editor never prefills the.
+    // Writes bind password when non-empty since the editor never prefills it.
     if let Some(v) = &form.sssd_bind_pw {
         if !v.trim().is_empty() {
             let item = doc.entry("sssd").or_insert(toml_edit::table());
@@ -809,7 +807,7 @@ fn apply_structured_form_to_toml_doc(
             }
         }
     } else {
-        // Not overriding ganesha is ensure the default "krb5p" is present in.
+        // Ensures default_security stays krb5p when ganesha override is off.
         let item = doc.entry("ganesha").or_insert(toml_edit::table());
         if let Some(tbl) = item.as_table_mut() {
             tbl["default_security"] = toml_edit::value("krb5p");
@@ -819,7 +817,7 @@ fn apply_structured_form_to_toml_doc(
 
 /// Replace only the `[[shares]]` array in the raw TOML doc (shares-save path).
 fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_klldap_config::Share]) {
-    // Submitted share rows replace [[shares]] entirely. Empty list means the.
+    // Replaces [[shares]] from submitted rows, including an empty share list.
     let had_shares = doc.get("shares").is_some();
     // Remove first so we can control insertion position for the first-add.
     let _ = doc.as_table_mut().remove("shares");
@@ -875,7 +873,7 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
     let shares_item = toml_edit::Item::ArrayOfTables(shares);
 
     if !had_shares {
-        // First introduction of [[shares]] by the editor (e.g. from the.
+        // Inserts [[shares]] after the first anchor when shares are added.
         let anchor = if doc.get("webui").is_some() {
             Some("webui")
         } else if doc.get("ganesha").is_some() {
@@ -892,7 +890,7 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
             // Preserve document-level trailing trivia after the last key.
             let trailing = doc.trailing().clone();
 
-            // Snapshot top-level items in existing order. Taken after the.
+            // Snapshots top-level items before rebuilding the document table.
             let items: Vec<(String, toml_edit::Item)> = doc
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.clone()))
@@ -912,14 +910,14 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
                 }
             }
             if !inserted {
-                // Defensive: anchor check passed but it was not in the.
+                // Appends shares when the anchor key was missing in snapshot.
                 doc["shares"] = shares_item;
             }
 
             // Restore trailing so comments that were not attached to any key.
             doc.set_trailing(trailing);
         } else {
-            // No recognized anchor section fall back to append (legacy Or.
+            // Appends shares at document end when no anchor section exists.
             doc["shares"] = shares_item;
         }
     } else {
@@ -1116,7 +1114,7 @@ pub(crate) async fn settings_save_structured(
     Ok(Html(tpl.render().unwrap()))
 }
 
-/// POST shares editor; mutates only [[shares]] in on-disk TOML.
+/// Saves the shares editor form and mutates only [[shares]] in on-disk TOML.
 pub(crate) async fn settings_save_shares(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1383,7 +1381,7 @@ pub(crate) async fn restart_status() -> impl IntoResponse {
 
 // Handlers for graceful restart and apply.
 
-/// POST /settings/restart: restarting page then one-shot HUP recycle.
+/// Schedules a one-shot HUP recycle and renders the restarting page.
 pub(crate) async fn system_restart(
     State(state): State<AppState>,
     headers: HeaderMap,

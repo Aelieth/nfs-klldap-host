@@ -113,8 +113,7 @@ pub struct SssdSection {
     pub ldap_default_bind_dn: String,
     #[serde(default)]
     pub ldap_default_authtok: String,
-    /// Derived 636/389 for reference SSSD uses ldap_uri (port must be in the.
-    /// URI).
+    /// Derived 636/389 port is reference only because SSSD uses ldap_uri.
     pub port: Option<u16>,
     pub ldap_user_search_base: Option<String>,
     pub ldap_group_search_base: Option<String>,
@@ -128,7 +127,7 @@ pub struct SssdSection {
     pub ldap_tls_cacert: Option<String>,
     pub ldap_id_use_start_tls: Option<bool>,
 
-    // POSIX attribute mapping (excellent LLDAP defaults override Only on.
+    // POSIX attribute mapping uses LLDAP defaults unless overridden here.
     pub enumerate: Option<bool>,
 
     // Object classes (LLDAP typical is inetOrgPerson + posixAccount aux).
@@ -143,7 +142,7 @@ pub struct SssdSection {
     pub ldap_user_shell: Option<String>,
     pub ldap_user_fullname: Option<String>,
 
-    // Group attr mappings.
+    // Group attribute mappings override LLDAP defaults when set.
     pub ldap_group_name: Option<String>,
     pub ldap_group_gid_number: Option<String>,
     pub ldap_group_member: Option<String>,
@@ -161,7 +160,7 @@ pub struct SssdSection {
     pub krb5_kpasswd: Option<String>,
     pub krb5_validate: Option<bool>,
     pub krb5_store_password_if_offline: Option<bool>,
-    /// Kerberos principal LDAP attribute; default krbPrincipalName.
+    /// Names the krbPrincipalName LDAP attribute for Kerberos principals.
     pub ldap_user_principal_name: Option<String>,
 
     pub entry_cache_timeout: Option<u32>,
@@ -170,8 +169,7 @@ pub struct SssdSection {
 
 pub use nfs_klldap_identity::PosixAttributeMapping;
 
-/// Resolves POSIX attribute names from [sssd] overrides (or built-in.
-/// Defaults).
+/// Resolves POSIX attribute names from [sssd] overrides or built-in defaults.
 pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapping {
     nfs_klldap_identity::resolve_posix_attribute_mapping(&crate::idmap::posix_mapping_input_from_sssd(
         sssd,
@@ -196,8 +194,7 @@ pub struct KerberosSection {
 pub struct GaneshaSection {
     #[serde(default = "default_security")]
     pub default_security: String,
-    /// Optional executable invoked by the supervisor after each successful.
-    /// Generate. Runs per share.
+    /// Runs an optional executable after each successful generate pass.
     pub post_generate_hook: Option<String>,
 }
 
@@ -210,22 +207,21 @@ pub struct ManagementSection {
     pub webui_admin_group: Option<String>,
 }
 
-/// Host deployment mode; host_nfs=true runs WebUI/SSSD only (host serves NFS).
+/// Host deployment mode runs WebUI and SSSD only when host_nfs is true.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HostSection {
-    /// Sidecar mode: host ganesha.nfsd reads bind-mounted /etc/ganesha.
-    /// Fragments.
+    /// In sidecar mode the host nfsd reads bind-mounted export fragments.
     pub host_nfs: Option<bool>,
 }
 
-/// WebUI runtime options from [webui]; NFS_KLLDAP_WEBUI_* env wins at runtime.
+/// WebUI runtime options come from [webui] but NFS_KLLDAP_WEBUI_* env wins.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebuiSection {
-    /// Some(false) disables TLS (reverse-proxy mode with X-Forwarded-Proto).
+    /// Setting tls to false disables TLS for reverse-proxy mode.
     pub tls: Option<bool>,
-    /// Optional path to custom cert PEM (NFS_KLLDAP_WEBUI_TLS_CERT env wins).
+    /// Sets custom cert PEM unless NFS_KLLDAP_WEBUI_TLS_CERT wins.
     pub tls_cert: Option<String>,
-    /// Optional path to custom key PEM (NFS_KLLDAP_WEBUI_TLS_KEY env wins).
+    /// Sets custom key PEM unless NFS_KLLDAP_WEBUI_TLS_KEY wins.
     pub tls_key: Option<String>,
 }
 
@@ -235,7 +231,7 @@ pub struct Share {
     /// Host-visible path for allow-list and chown/chmod.
     /// See docs/ganesha-architecture.md.
     pub host_path: PathBuf,
-    /// Client NFSv4 Pseudo path; defaults to slash-name when omitted.
+    /// Sets the NFSv4 pseudo path and defaults to slash-name when omitted.
     pub export_path: Option<String>,
     pub security: Option<String>,
     pub rw: Option<bool>,
@@ -243,17 +239,15 @@ pub struct Share {
     /// UI cache profile name → generator maps to Ganesha PrefRead/PrefWrite.
     /// See CACHE_PROFILES / README.
     pub cache_profile: Option<String>,
-    /// Raw PrefRead bytes; cache_profile takes precedence when both are set.
+    /// Sets raw PrefRead bytes but cache_profile wins when both are set.
     pub pref_read: Option<u64>,
-    /// Raw PrefWrite bytes; usually resolved from cache_profile instead.
+    /// Sets raw PrefWrite bytes but cache_profile usually supplies the value.
     pub pref_write: Option<u64>,
-    /// When true, emit `Disable_ACL = true;` in the Ganesha EXPORT block.
+    /// Emits Disable_ACL=true in the Ganesha EXPORT block when set.
     pub disable_acl: Option<bool>,
-    /// When false, emit `Manage_Gids = false;` in the Ganesha EXPORT block.
-    /// Auto-applied on limited FS.
+    /// Emits Manage_Gids=false in the Ganesha EXPORT block when set.
     pub manage_gids: Option<bool>,
-    /// When set, used verbatim as Ganesha EXPORT Path= and for fs probe.
-    /// Staging tree path.
+    /// Uses this path verbatim as Ganesha EXPORT Path and for fs probes.
     pub ganesha_path: Option<String>,
 }
 
@@ -283,9 +277,9 @@ pub struct GenerationPaths {
     pub krb5_conf: PathBuf,
     pub ganesha_conf: PathBuf,
     pub exports_dir: PathBuf,
-    /// This field is the output path for generated idmapd.conf.
+    /// Holds the output path for generated idmapd.conf.
     pub idmap_conf: PathBuf,
-    /// This field is the output path for nfs-utils client defaults.
+    /// Holds the output path for nfs-utils client defaults.
     pub nfs_conf: PathBuf,
 }
 
@@ -296,8 +290,7 @@ impl Default for GenerationPaths {
 }
 
 impl GenerationPaths {
-    /// Resolve output paths from env (SSSD_CONF, GANESHA_CONF …) or container.
-    /// Defaults.
+    /// Resolves output paths from env vars or container defaults.
     pub fn from_env() -> Self {
         let env_path = |key: &str, default: &str| -> PathBuf {
             std::env::var(key)
@@ -315,7 +308,7 @@ impl GenerationPaths {
     }
 }
 
-// Cache Profiles (for [[shares]] dropdown name stored in TOML, Resolved to.
+// Cache profile names in [[shares]] resolve to Ganesha PrefRead and PrefWrite.
 
 /// The 5 supported share.cache_profile values.
 /// Order matches the WebUI dropdown.
@@ -327,8 +320,7 @@ pub const CACHE_PROFILES: &[&str] = &[
     "Write - Heavy",
 ];
 
-/// Resolve a cache profile name to the Ganesha tunables (PrefRead PrefWrite.
-/// In. Bytes).
+/// Resolves a cache profile to Ganesha PrefRead and PrefWrite byte counts.
 pub fn resolve_cache_profile(profile: &str) -> Option<(u64, u64)> {
     match profile.trim() {
         "Default" => Some((1048576, 1048576)),

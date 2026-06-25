@@ -1,4 +1,4 @@
-//! Principal resolution: NSS getent, structured LDAP, and cache.
+//! Resolves principals via NSS, LDAP, and the idhelper cache.
 
 use crate::dlog;
 use std::path::Path;
@@ -87,7 +87,7 @@ fn load_resolver_from_config() -> Option<(IdLdapResolver, String, String)> {
     Some((resolver, cfg.sssd.ldap_default_bind_dn.clone(), cfg.sssd.ldap_default_authtok.clone()))
 }
 
-/// This OnceLock keeps the resolver alive for observer and getent paths.
+/// The shared resolver stays alive for observer and getent resolution paths.
 pub(crate) static ID_RESOLVER: OnceLock<Option<(IdLdapResolver, String, String)>> =
     OnceLock::new();
 
@@ -176,7 +176,7 @@ pub(crate) fn resolve_principal(
         PrincipalKind::User
     };
 
-    // Attempt resolution.
+    // Resolve machine principals to root or users via NSS and LDAP.
     let resolved = if is_machine {
         // Machine principals (host/, nfs/, root/ server variants): map 0:0.
         let short = machine_short_name(principal);
@@ -212,7 +212,7 @@ pub(crate) fn resolve_principal(
                 source: src,
             }
         } else {
-            // Nobody fallback: materialize so getpwnam under nss_wrapper can.
+            // Nobody fallback materializes nss so getpwnam succeeds.
             eprintln!(
                 "[idhelper] FALLBACK {} for principal=\"{}\" (no uid/gid from getent or structured resolver)",
                 FALLBACK_NOBODY_UID, principal

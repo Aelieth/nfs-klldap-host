@@ -30,7 +30,7 @@ pub fn host_nfs_from_env() -> Option<bool> {
         .map(|v| parse_host_nfs_env_value(&v))
 }
 
-/// Env wins over TOML; used by supervisor at startup and on recycle.
+/// Environment variables override TOML and guide the supervisor at recycle.
 pub fn resolve_host_nfs_mode(config_path: &Path) -> bool {
     if let Some(val) = host_nfs_from_env() {
         return val;
@@ -67,7 +67,7 @@ pub fn runtime_hostname(cfg: Option<&NfsKlldapConfig>) -> String {
     "localhost".to_string()
 }
 
-/// Kerberos realm: validated config, env, krb5.conf scrape, then fallback.
+/// Resolves the Kerberos realm from config, env, krb5.conf, then fallback.
 pub fn runtime_realm(cfg: Option<&NfsKlldapConfig>) -> String {
     if let Some(c) = cfg {
         let r = c.effective_realm();

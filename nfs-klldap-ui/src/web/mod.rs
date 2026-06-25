@@ -48,22 +48,21 @@ pub struct AppState {
     pub config_path: PathBuf,
     pub keytab_hostname: String,
     pub keytab_realm: String,
-    /// Display-only keytab mismatch banner; see `keytab.rs` for the invariant.
+    /// Shows a display-only keytab mismatch banner when the invariant fails.
     pub keytab_alert: Arc<StdMutex<Option<String>>>,
-    /// In-flight apply state; /apply-progress and cancel_apply read this.
+    /// Tracks in-flight apply state for /apply-progress and cancel_apply.
     pub apply_progress: Arc<Mutex<Option<Arc<crate::fs::ApplyProgress>>>>,
-    /// Latched on first POST /settings/restart. Prevents duplicate HUP.
-    /// Scheduling.
+    /// Latches after the first restart POST to prevent duplicate HUP signals.
     pub restart_requested: Arc<Mutex<bool>>,
     /// Returns true when the WebUI terminates TLS internally.
     pub direct_tls: bool,
-    /// Test-only setup marker path override.
+    /// Overrides the setup marker path during tests only.
     pub setup_marker_override: Option<PathBuf>,
-    /// Last wizard test inputs (probe-only, not persisted until continue).
+    /// Stores last wizard test inputs until the user clicks continue.
     pub setup_test: Arc<StdMutex<setup::SetupTestState>>,
-    /// HOST_NFS sidecar: generates Ganesha fragments; host runs nfsd.
+    /// Enables HOST_NFS mode where the sidecar writes Ganesha fragments.
     pub host_nfs_mode: bool,
-    /// Optional mountinfo fixture for fs_warning badges (tests).
+    /// Points at a mountinfo fixture that drives fs_warning badges in tests.
     pub fs_probe_mountinfo_path: Option<PathBuf>,
 }
 
@@ -586,11 +585,11 @@ host_path = "/media/data"
 
     #[tokio::test]
     async fn settings_save_shares_places_shares_after_webui_on_first_add() {
-        // Start from a config shaped like the default template: ends with.
+        // Starts from a default-template config that ends with [webui].
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("test-nfs-klldap.conf");
 
-        // Close approximation of generate_default_template() output for the.
+        // Uses output close to generate_default_template() for this test.
         let initial = r#"ldap_uri = "ldaps://kllap.test:6360"
 
 [storage]
@@ -693,7 +692,7 @@ default_security = "krb5p"
         assert!(written.contains("name = \"shares\""));
         assert!(written.contains("name = \"documents\""));
 
-        // The critical ordering requirement: [webui] (and its comments) must.
+        // Requires [webui] and its comments before the first [[shares]] block.
         let webui_pos = written.find("[webui]").expect("[webui] header must still be present");
         let first_shares_pos = written.find("[[shares]]").expect("[[shares]] must be present");
         assert!(
@@ -1231,7 +1230,7 @@ ldap_default_authtok = "sekret"
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// Step3 continue serves restarting page; status 503 before marker.
+    /// Verifies step3 continue serves restarting and returns 503 pre-marker.
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn wizard_step3_continue_live_http_shows_restarting_and_pending_status() {
@@ -1317,8 +1316,7 @@ ldap_default_authtok = "sekret"
         std::env::remove_var("NFS_KLLDAP_SETUP_MARKER");
     }
 
-    /// Integrated: concurrent supervisor loop HTTP continue schedules HUP →.
-    /// Marker → login.
+    /// Verifies supervisor HUP flow recycles services and returns to login.
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn wizard_continue_hup_supervisor_marker_then_login() {

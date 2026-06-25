@@ -30,15 +30,14 @@ pub(crate) struct LoginForm {
     pub password: String,
 }
 
-/// Optional query params for the login page.
-/// Surfaces auth failure reasons after a require_auth redirect.
+/// Deserializes login-page query params including error codes from redirects.
 #[derive(Deserialize, Default)]
 pub(crate) struct LoginQuery {
     /// Carry the error query value from a require_auth redirect.
     error: Option<String>,
 }
 
-/// GET /login; supports ?error= from require_auth redirects.
+/// Renders the login page and surfaces error query values from redirects.
 pub async fn login_page(
     State(state): State<super::AppState>,
     headers: HeaderMap,
@@ -74,7 +73,7 @@ pub async fn login_page(
     .into_response()
 }
 
-/// POST /login: session cookie on success, re-render on failure.
+/// Handles login POST, sets a session cookie on success, or re-renders.
 pub async fn login(
     State(state): State<super::AppState>,
     headers: HeaderMap,
@@ -111,7 +110,7 @@ pub async fn login(
 
     match result {
         Ok(user) => {
-            // Drop any prior session tokens (stale browser cookies after.
+            // Drops stale session tokens from prior cookies after re-login.
             for old in extract_all_session_tokens_from_headers(&headers) {
                 state.auth.logout(&old);
             }
@@ -301,7 +300,7 @@ fn insert_session_clear_cookie(
     headers.insert(SET_COOKIE, clear.parse().expect("valid Set-Cookie clear"));
 }
 
-/// Cookie Secure flag; NFS_KLLDAP_WEBUI_COOKIE_SECURE overrides is_https().
+/// Chooses the cookie Secure flag and honors NFS_KLLDAP_WEBUI_COOKIE_SECURE.
 fn effective_cookie_secure(state: &super::AppState, headers: &HeaderMap) -> bool {
     if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_COOKIE_SECURE") {
         let v = v.trim().to_ascii_lowercase();
@@ -360,7 +359,7 @@ fn extract_all_session_tokens_from_headers(headers: &HeaderMap) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Validate session cookies; prefers the most recently set token.
+/// Validates session cookies and prefers the most recently set token.
 pub(crate) fn validate_session_in_headers(
     state: &super::AppState,
     headers: &HeaderMap,
@@ -379,7 +378,7 @@ pub(crate) fn validate_session_in_headers(
 #[derive(Clone)]
 pub struct AuthUser(pub String);
 
-/// Guard for protected routes; keytab_alert does not affect auth.
+/// Guards protected routes and ignores keytab_alert when authorizing access.
 pub async fn require_auth(
     state: &super::AppState,
     headers: &HeaderMap,

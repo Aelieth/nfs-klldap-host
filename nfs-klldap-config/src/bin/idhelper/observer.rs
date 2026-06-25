@@ -35,7 +35,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
     loop {
         match File::open(path) {
             Ok(mut f) => {
-                // Only watch new data from now on.
+                // Watch only new log data from the current seek offset onward.
                 let _ = f.seek(SeekFrom::End(0));
                 let mut reader = BufReader::new(f);
                 let mut buf = String::new();
@@ -64,7 +64,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
 
                                 if is_fresh {
                                     recently.insert(candidate.clone(), now);
-                                    // Opportunistic prune (tiny map in.
+                                    // Keeps the rate-limit map small.
                                     if recently.len() > 2048 {
                                         recently.retain(|_, t| now.duration_since(*t) < dedup_window);
                                     }
@@ -122,7 +122,7 @@ pub(crate) fn looks_like_client_hostname(t: &str) -> bool {
         return false;
     }
 
-    // Hostname chars only.
+    // Accept only characters that appear in real hostnames.
     if !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
         return false;
     }
@@ -318,7 +318,7 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
         }
     }
 
-    // Explicit Kerberos principals containing the realm. Forms: user@REALM or.
+    // Extract explicit Kerberos principals that contain the configured realm.
     if let Some(at_pos) = line.find('@') {
         let before = &line[..at_pos];
         let start = before
@@ -357,7 +357,7 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
         }
     }
 
-    // Step 4. Limited additional markers. Only accept tokens that pass the.
+    // Step 4 applies limited markers and accepts only validated tokens.
     for marker in &["fs_create_clid_name", "client addr="] {
         if let Some(pos) = line.find(marker) {
             let tail = &line[pos + marker.len()..];

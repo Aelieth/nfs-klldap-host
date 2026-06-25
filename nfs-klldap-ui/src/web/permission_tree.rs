@@ -21,8 +21,7 @@ struct IndexTemplate {
     shares: Vec<ShareInfo>,
     current_user: Option<String>,
     keytab_alert: Option<String>,
-    /// Mirrors AppState Used by the template to adjust the top Ganesha reads.
-    /// Note.
+    /// Mirrors host_nfs_mode so the template adjusts the top Ganesha notice.
     host_nfs_mode: bool,
 }
 
@@ -494,7 +493,7 @@ pub(crate) async fn apply_permissions(
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
 
-    // Numeric bypass (core of the inline editor UX): - Hidden uid/gid from.
+    // Reads hidden uid/gid fields first as the numeric bypass for the editor.
     let mut owner_uid: u32 = 0;
     let mut group_gid: u32 = 0;
     let mut needs_lock = false;
@@ -676,13 +675,13 @@ pub(crate) async fn apply_permissions(
         form.path
     );
 
-    // Initial status (will be replaced by polls with live scanned/spinner or.
+    // Renders initial status HTML that polls replace with live scan progress.
     let status_html = render_apply_status_oob(&cmd, "Stand-by, estimating total... (live updates below)", true);
 
     Ok(Html(format!("{}\n{}", placeholder, status_html)))
 }
 
-/// Renders oob-swappable #apply-status; active_cancel toggles Cancel button.
+/// Renders oob-swappable apply-status and toggles Cancel when active.
 fn render_apply_status_oob(cmd: &str, result_or_live: &str, active_cancel: bool) -> String {
     let cancel_btn = if active_cancel {
         r#"<button type="button" onclick="if (window.cancelCurrentApply) window.cancelCurrentApply();" class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--danger-border); color:var(--danger-text); background:var(--danger-bg); border-radius:2px; cursor:pointer;">Cancel Apply</button>"#

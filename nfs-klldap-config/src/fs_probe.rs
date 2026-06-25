@@ -1,5 +1,4 @@
-//! Pure-Rust /proc/self/mountinfo probe for POSIX ACL capability on share.
-//! Paths.
+//! Probes /proc/self/mountinfo for POSIX ACL capability on share paths.
 
 use std::io;
 use std::path::Path;
@@ -32,7 +31,7 @@ struct MountEntry {
     super_options: Vec<String>,
 }
 
-/// Probe path against live mountinfo; on failure assume ACL-capable.
+/// Probes live mountinfo and returns ACL-capable defaults when lookup fails.
 pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
     let mountinfo_path = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH")
         .unwrap_or_else(|_| "/proc/self/mountinfo".to_string());
@@ -40,8 +39,7 @@ pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
     Ok(probe_from_mountinfo(&content, path))
 }
 
-/// Probe path against fixture or live mountinfo content (unit-test entry.
-/// Point).
+/// Probes a path against fixture or live mountinfo content for unit tests.
 pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
     let entries = parse_mountinfo(content);
     let path_str = path.to_string_lossy();
@@ -62,7 +60,7 @@ pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
     }
 }
 
-/// Merge share flags with probe; limited FS gets safe krb5p EXPORT defaults.
+/// Merges share flags with probe and sets safe krb5p defaults on limited FS.
 pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> EffectiveShareFlags {
     let probe_limited = !caps.acl_capable;
     let disable_acl = share.disable_acl.unwrap_or(probe_limited);

@@ -23,16 +23,16 @@ pub struct Session {
 }
 
 pub struct AuthManager {
-    /// This map holds active sessions keyed by opaque bearer token.
+    /// Active sessions are keyed by opaque bearer token.
     sessions: RwLock<HashMap<String, Session>>,
-    /// This is the absolute path to the webui-password sidecar file.
+    /// The webui-password sidecar file lives beside nfs-klldap.conf.
     simple_pw_path: PathBuf,
-    /// This names the LDAP admin group from webui_admin_group.
+    /// Names the LDAP admin group from webui_admin_group.
     admin_group: String,
 }
 
 impl AuthManager {
-    /// This constructs a new manager beside nfs-klldap.conf.
+    /// Builds a manager using paths derived from nfs-klldap.conf.
     pub fn new(config_path: impl AsRef<Path>, admin_group: Option<String>) -> Self {
         let config_path = config_path.as_ref();
         let simple_pw_path = config_path
@@ -75,7 +75,7 @@ impl AuthManager {
 
         let line = format!("{}:{}\n", hex_encode(&salt), hex_encode(&hash));
 
-        // Ensure parent directory exists (usually /config). May be the.
+        // Ensure the parent directory exists (usually /config) before writing.
         if let Some(parent) = self.simple_pw_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -141,8 +141,6 @@ impl AuthManager {
         }
     }
 
-    // These tests cover session management (used after either auth path.
-
     /// Create session after localhost simple-pw or LLDAP+group auth.
     pub fn create_privileged_session(&self, username: &str) -> String {
         let token: String = (0..32)
@@ -164,7 +162,7 @@ impl AuthManager {
         let mut map = self.sessions.write().unwrap();
         map.insert(token.clone(), session);
 
-        // Opportunistic cleanup.
+        // Drops expired sessions opportunistically while holding the lock.
         let now = Instant::now();
         map.retain(|_, s| now.duration_since(s.created) < SESSION_TTL);
 

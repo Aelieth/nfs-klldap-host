@@ -1,7 +1,6 @@
 #![deny(unsafe_code, dead_code)]
 
-//! TOML validation, derivation, and generation of sssd.conf, krb5.conf,.
-//! Exports.
+//! Validates TOML and generates sssd.conf, krb5.conf, and export fragments.
 
 mod config;
 mod constants;
@@ -203,8 +202,7 @@ mod tests {
         }
     }
 
-    /// Clear NFS_KLLDAP_* env. Hold guards alive across validate under.
-    /// ENV_LOCK.
+    /// Clears NFS_KLLDAP_* env vars while ENV_LOCK guards stay alive.
     fn clean_core_env() -> Vec<EnvGuard> {
         let vars = [
             "NFS_KLLDAP_LDAP_URI",
@@ -347,7 +345,7 @@ mod tests {
         assert!(!main.contains("UseGetpwnam"));
         // Enable_*=false are safe and explicit the dangerous keys Above are.
 
-        // Baseline LOG always emitted (idhelper operators need Visibility on.
+        // Baseline LOG is always emitted for idhelper operator visibility.
         assert!(
             main.contains("LOG {"),
             "baseline LOG block should be present even without GANESHA_DEBUG"
@@ -631,7 +629,7 @@ mod tests {
         assert!(msg.contains("kerberos.realm is required"));
         assert!(msg.contains("NFS_KLLDAP_KERBEROS_REALM"));
 
-        // Good realm passes.
+        // A valid Kerberos realm passes structural validation.
         c.kerberos.realm = Some("MY.REALM".into());
         assert!(c.validate_and_derive().is_ok());
         assert_eq!(c.effective_realm(), "MY.REALM");
@@ -810,7 +808,7 @@ mod tests {
             }
         }
 
-        // IPv4.
+        // IPv4 ldap_uri hosts parse correctly from the URI.
         let mut c = make_minimal("ldaps://192.168.10.5:6360");
         let err = c.validate_and_derive().unwrap_err();
         let msg = err.to_string();

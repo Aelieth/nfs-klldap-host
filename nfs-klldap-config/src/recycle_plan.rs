@@ -1,4 +1,4 @@
-//! Pure recycle decision: which services to touch after config regeneration.
+//! Decides which services to recycle after config regeneration completes.
 
 /// How Ganesha should be recycled when export fragments change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

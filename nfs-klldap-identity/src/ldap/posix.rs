@@ -1,5 +1,5 @@
-//! POSIX LDAP attribute mapping and search-base derivation (no TOML/serde.
-//! Deps).
+//! Provides POSIX LDAP attribute mapping and search-base derivation.
+//! Does not depend on TOML or serde.
 
 use crate::constants::{
     DEFAULT_GROUP_GID_ATTR, DEFAULT_GROUP_MEMBER_ATTR_KLLDAP, DEFAULT_GROUP_MEMBER_ATTR_LEGACY,

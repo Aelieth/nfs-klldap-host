@@ -1,4 +1,4 @@
-//! WebUI on 9630: permissions tree and settings for nfs-klldap.conf.
+//! In-container WebUI on port 9630 for permissions and nfs-klldap.conf.
 
 #![deny(unsafe_code, dead_code)]
 
@@ -11,7 +11,7 @@ mod privileged;
 
 mod web;
 
-/// Resolve runtime hostname; log full diagnostic on inconsistency.
+/// Resolves the runtime hostname and logs diagnostics when sources disagree.
 fn resolve_runtime_hostname_for_banner() -> String {
     match get_consistent_hostname() {
         Ok(c) => c.hostname,
@@ -86,7 +86,7 @@ async fn main() {
         resolve_runtime_hostname_for_banner()
     };
 
-    // Realm from loaded config (same as krb5.conf). Placeholder only for.
+    // Reads the realm from loaded config for keytab reminders (see krb5.conf).
     let keytab_realm = config.display_realm();
 
     let principals = nfs_klldap_config::format_nfs_principal_list(&keytab_host, &keytab_realm);
@@ -124,7 +124,7 @@ async fn main() {
         start_tls,
     );
 
-    // Bind creds: NFS_KLLDAP_LLDAP_* env, else [sssd] (full DN verbatim).
+    // Loads bind credentials from NFS_KLLDAP_LLDAP_* env or [sssd] verbatim.
     let (lldap_user, lldap_pass) = crate::config::ldap_service_creds(&config);
     if lldap_pass.trim().is_empty()
         || lldap_pass == "CHANGE_THIS_TO_A_STRONG_SECRET"
@@ -177,7 +177,7 @@ async fn main() {
 
     // NFS_KLLDAP_WEBUI_BIND is used for TLS and plain-http modes. Plain-http.
     let addr = std::env::var("NFS_KLLDAP_WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
-    // TLS: env `NFS_KLLDAP_WEBUI_TLS` wins, then [webui] tls (see certs.rs).
+    // Enables TLS when NFS_KLLDAP_WEBUI_TLS or [webui].tls requests it.
     let webui_tls_off = if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
         let t = v.trim().to_ascii_lowercase();
         t == "off" || t == "false" || t == "0" || t == "no"
@@ -231,7 +231,7 @@ async fn main() {
             resolve_runtime_hostname_for_banner()
         };
 
-        // Use a stable absolute path inside the container (created in.
+        // Uses stable absolute cert paths in the container when env is unset.
         let default_cert = "/var/lib/nfs-klldap/webui-certs/webui.crt".to_string();
         let default_key = "/var/lib/nfs-klldap/webui-certs/webui.key".to_string();
         let cert_path = std::env::var("NFS_KLLDAP_WEBUI_TLS_CERT")

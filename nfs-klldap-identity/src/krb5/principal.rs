@@ -2,15 +2,15 @@
 
 use crate::constants::MACHINE_PRINCIPAL_PREFIXES;
 
-/// Local part of a Kerberos principal (before @), or the whole when.
-/// Unqualified.
+/// Returns the local part of a Kerberos principal before @.
+/// Returns the whole string when the principal is unqualified.
 pub fn principal_local_part(p: &str) -> &str {
     let p = p.trim();
     p.split('@').next().unwrap_or(p)
 }
 
-/// Trailing segment of a machine principal local part.
-/// Example: host/client@REALM yields client.
+/// Returns the trailing segment of a machine principal local part.
+/// For host/client@REALM the function returns client.
 pub fn machine_short_name(principal: &str) -> &str {
     let local = principal_local_part(principal);
     local.rsplit('/').next().unwrap_or(local)

@@ -1,4 +1,4 @@
-//! Two-tier hostname: hostname(1) must match /proc/sys/kernel/hostname.
+//! Validates hostname(1) against /proc/sys/kernel/hostname in two tiers.
 //! Mismatch yields a diagnostic for keytab and cert SAN alignment.
 
 pub use nfs_klldap_identity::{
@@ -217,7 +217,7 @@ pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsist
     })
 }
 
-/// Test-only constructor (feeds synthetic values to the pure checker).
+/// Constructs a checker with synthetic values for unit tests only.
 #[cfg(test)]
 pub fn get_consistent_hostname_from_values(
     primary: &str,

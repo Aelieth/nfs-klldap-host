@@ -202,8 +202,7 @@ impl IdLdapResolver {
             .unwrap_or_else(|| fallback.to_string())
     }
 
-    /// Member login names from member / uniqueMember / memberUid LDAP.
-    /// Attributes.
+    /// Returns member login names from member, uniqueMember, and memberUid.
     fn extract_group_members(se: &SearchEntry, member_attr: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -236,8 +235,8 @@ impl IdLdapResolver {
         out
     }
 
-    /// Fallback search base: suffix from first dc= (covers principal-style.
-    /// Lookups).
+    /// Builds a fallback search base from the first dc= suffix in the DN.
+    /// Supports principal-style lookups when the primary base does not match.
     fn dc_base_from(&self, base: &str) -> String {
         if let Some(pos) = base.to_ascii_lowercase().find("dc=") {
             base[pos..].to_string()
@@ -246,7 +245,7 @@ impl IdLdapResolver {
         }
     }
 
-    /// Sync LDAP op in worker thread; 3 attempts with backoff.
+    /// Performs sync LDAP in a worker thread with three backoff retries.
     fn service_search(
         &self,
         base: &str,
@@ -619,7 +618,7 @@ impl IdLdapResolver {
         )
     }
 
-    /// Preload posix users/groups into caches; index UPN aliases when present.
+    /// Preloads posix users and groups and indexes UPN aliases in caches.
     pub fn load_full_identities(&self, bind_dn: &str, bind_pw: &str) -> usize {
         self.evict_expired();
 

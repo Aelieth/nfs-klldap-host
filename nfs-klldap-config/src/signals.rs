@@ -30,17 +30,17 @@ fn signal_process(pid: u32, sig: Signal) {
     let _ = kill(Pid::from_raw(pid as i32), sig);
 }
 
-/// Send SIGTERM to pid; ignores errors if the process is already gone.
+/// Sends SIGTERM to pid and ignores errors when the process is already gone.
 pub fn signal_process_term(pid: u32) {
     signal_process(pid, Signal::SIGTERM);
 }
 
-/// Send SIGHUP to pid; ignores errors if the process is already gone.
+/// Sends SIGHUP to pid and ignores errors when the process is already gone.
 pub fn signal_process_hup(pid: u32) {
     signal_process(pid, Signal::SIGHUP);
 }
 
-/// Send SIGKILL to pid; ignores errors if the process is already gone.
+/// Sends SIGKILL to pid and ignores errors when the process is already gone.
 pub fn signal_process_kill(pid: u32) {
     signal_process(pid, Signal::SIGKILL);
 }

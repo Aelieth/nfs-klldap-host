@@ -21,17 +21,16 @@ pub(crate) const NSS_GROUP_PATH: &str = "/var/lib/nfs-klldap/nss_group";
 pub(crate) const EXTRAUSERS_PASSWD: &str = "/var/lib/extrausers/passwd";
 pub(crate) const EXTRAUSERS_GROUP: &str = "/var/lib/extrausers/group";
 
-/// Marker written after LDAP bulk-seed; entrypoint waits before Ganesha.
+/// The entrypoint waits on this marker after LDAP bulk-seed finishes.
 pub(crate) const BULK_SEED_MARKER: &str = "/var/lib/nfs-klldap/.bulk_seed_done";
 
-/// Default LDAP→nss_wrapper sync interval; matches IdLdapResolver 10m TTL.
+/// The default LDAP sync interval matches the IdLdapResolver ten-minute TTL.
 pub(crate) const DEFAULT_REBULK_INTERVAL_SECS: u64 = 10 * 60;
 
 /// Debug logging enabled via KLLDAP_IDHELPER_DEBUG=true (or 1/yes/on).
 static DEBUG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// True when any share has Manage_Gids. Controls supplementary-group log.
-/// Noise.
+/// Returns true when any share enables Manage_Gids logging.
 pub(crate) fn manage_gids_expected() -> bool {
     let path =
         std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
@@ -115,7 +114,7 @@ impl IdCache {
         self.entries.insert(key, r);
     }
 
-    /// Stable hash of cache contents; skips redundant nss materialize writes.
+    /// Returns a stable hash so nss materialize skips unchanged cache writes.
     pub(crate) fn content_fingerprint(&self) -> u64 {
         let mut keys: Vec<_> = self.entries.keys().collect();
         keys.sort();
@@ -136,7 +135,7 @@ impl IdCache {
         h
     }
 
-    /// Remove user entries; keep machine principals (host/, nfs/, etc.).
+    /// Removes users but keeps machine principals like host/ and nfs/.
     pub(crate) fn prune_non_machine_users(&mut self) -> usize {
         let before = self.entries.len();
         self.entries
@@ -164,7 +163,7 @@ impl IdCache {
                         _ => PrincipalKind::Unknown,
                     };
                     let local = principal_local_part(parts[0]);
-                    // Machine principals use the trailing host segment as the.
+                    // Machines use the trailing host segment as short name.
                     let name = if local.contains('/') {
                         machine_short_name(parts[0]).to_string()
                     } else {

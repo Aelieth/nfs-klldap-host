@@ -54,8 +54,7 @@ pub(crate) fn sanitize_for_nss(name: &str) -> String {
     out
 }
 
-/// Build a passwd(5)-format line for a resolved principal.
-/// Uses the short name we already computed; machines always get uid/gid 0.
+/// Builds a passwd(5) line and assigns uid and gid zero to machines.
 pub(crate) fn passwd_line_for(r: &Resolved) -> String {
     let login = sanitize_for_nss(&r.name);
     // Gecos is purely informational here.
@@ -87,13 +86,12 @@ pub(crate) fn group_line_with_members(gid: u32, gname: &str, members: &[String])
     }
 }
 
-/// True when cache content changed after sync and nss files should be.
-/// Rewritten.
+/// Returns true when cache content changed and nss files should be rewritten.
 pub(crate) fn cache_changed_since(fp_before: u64, cache: &IdCache) -> bool {
     fp_before != cache.content_fingerprint()
 }
 
-/// Prune stale LDAP users from cache; machine principals are kept.
+/// Prunes stale LDAP users from cache but keeps machine principals.
 pub(crate) fn sync_user_cache_from_snapshot(
     snap: &IdMapSnapshot,
     realm: &str,
@@ -117,7 +115,7 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
     let mut best_per_uid: std::collections::HashMap<i32, (String, u32, u32)> =
         std::collections::HashMap::new();
 
-    // One entry per LDAP uid: prefer short posix names over UPN keys in.
+    // Keep one entry per LDAP uid and prefer short posix names over UPN keys.
     for (key, entry) in &snap.users {
         let uid = entry.uid;
         if uid == 0 {
@@ -174,7 +172,7 @@ pub(crate) fn materialize_nss_wrappers_at(
         let _ = fs::create_dir_all(parent);
     }
 
-    // Collect stable ordered list of entries (sort by principal for.
+    // Collect a stable ordered list of entries sorted by principal.
     let mut items: Vec<_> = cache.entries.values().collect();
     items.sort_by(|a, b| a.principal.cmp(&b.principal));
 
@@ -207,7 +205,7 @@ pub(crate) fn materialize_nss_wrappers_at(
             }
         }
 
-        // User principals: also materialize full name@REALM. Covers.
+        // User principals also materialize the full name@REALM alias.
         if r.kind != PrincipalKind::Machine {
             let full = r.principal.clone();
             if seen_login.insert(full.clone()) {
@@ -231,16 +229,14 @@ pub(crate) fn materialize_nss_wrappers_at(
         if r.uid != r.gid && seen_gid.insert(r.uid) {
             // Use same simple rule. Uid as fallback group name.
             if r.uid == 0 {
-                if seen_gid.insert(0) {
-                    // Already handled.
-                }
+                seen_gid.insert(0);
             } else {
                 group_lines.push(format!("u{}:x:{}:", r.uid, r.uid));
             }
         }
     }
 
-    // LDAP-preloaded groups with member lists. Supplementary groups for.
+    // LDAP-preloaded groups with member lists supply supplementary groups.
     if let Some(groups) = ldap_groups {
         let mut by_gid: HashMap<i32, &PosixGroupEntry> = HashMap::new();
         for entry in groups.values() {

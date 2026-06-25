@@ -41,7 +41,7 @@ pub fn all_managed_roots(cfg: &Config) -> Vec<PathBuf> {
     cfg.shares.iter().map(|s| s.host_path.clone()).collect()
 }
 
-/// (bind identity, password); NFS_KLLDAP_LLDAP_* env wins over sssd creds.
+/// Returns LDAP bind identity and password from NFS_KLLDAP_LLDAP_* env.
 pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
     if let (Ok(user), Ok(pass)) = (
         std::env::var("NFS_KLLDAP_LLDAP_USER"),
@@ -79,7 +79,7 @@ mod tests {
             Self { key, previous }
         }
 
-        /// Remove var for guard lifetime; restores previous value on drop.
+        /// Removes the env var for the guard lifetime and restores it on drop.
         fn clear(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
             std::env::remove_var(key);

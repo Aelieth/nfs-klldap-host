@@ -1,4 +1,4 @@
-//! Pid-1 supervisor: preflight, service ordering, and SIGHUP recycle.
+//! Runs pid-1 supervision with preflight, ordering, and SIGHUP recycle.
 
 use std::fs::{self, OpenOptions};
 
@@ -43,21 +43,21 @@ struct SupervisorEnv {
     nss_wrapper_so: PathBuf,
     use_nss_wrapper: bool,
     log_format_json: bool,
-    /// CI one-shot: generate, log bring-up, then exit (no daemon loop).
+    /// Runs a CI one-shot that generates configs, logs bring-up, then exits.
     supervise_probe: bool,
-    /// CI one-shot: bounded loop after post-wizard SIGHUP with complete conf.
+    /// Runs a bounded CI loop after post-wizard SIGHUP with complete config.
     supervise_wizard_probe: bool,
-    /// CI: supervisor_loop with probe stubs until a real SIGHUP.
+    /// Exercises supervisor_loop with probe stubs until a real SIGHUP arrives.
     supervise_loop_probe: bool,
-    /// CI one-shot: ganesha SIGHUP reload and stop_ganesha against stub nfsd.
+    /// Tests ganesha SIGHUP reload and stop_ganesha against a stub nfsd.
     supervise_recycle_probe: bool,
-    /// CI: wait for OS SIGHUP then handle_sighup (hook fingerprint path).
+    /// Waits for OS SIGHUP then runs handle_sighup on the hook path.
     supervise_sighup_hook_probe: bool,
-    /// CI one-shot: identity-only change recycles SSSD without ganesha SIGHUP.
+    /// Verifies identity-only changes recycle SSSD without ganesha SIGHUP.
     supervise_identity_recycle_probe: bool,
-    /// HOST_NFS sidecar: generate fragments for host Ganesha; skip nfsd.
+    /// Enables HOST_NFS sidecar mode that generates fragments and skips nfsd.
     host_nfs_mode: bool,
-    /// Loop sleep override (ms); 0 for wizard-probe bounded ticks.
+    /// Overrides loop sleep ms; zero enables wizard-probe bounded ticks.
     supervisor_tick_ms: u64,
     /// Max loop iterations before exit when supervise_wizard_probe is set.
     supervisor_max_ticks: u32,
@@ -267,8 +267,7 @@ impl Supervisor {
         Ok(())
     }
 
-    /// CI one-shot: handle_sighup reload/skip and stop_ganesha against stub.
-    /// Nfsd.
+    /// Runs CI handle_sighup reload tests and stop_ganesha against stub nfsd.
     fn run_supervise_recycle_probe(&mut self) -> Result<(), String> {
         self.log_info("Supervise-recycle-probe mode enabled");
         let stub_log = std::env::var("NFS_KLLDAP_RECYCLE_PROBE_GANESHA_LOG")
@@ -459,7 +458,7 @@ while :; do :; done
         }
     }
 
-    /// CI one-shot: [sssd] edit with unchanged exports restarts SSSD only.
+    /// Verifies an [sssd] edit with unchanged exports restarts SSSD only.
     fn run_supervise_identity_recycle_probe(&mut self) -> Result<(), String> {
         self.log_info("Supervise-identity-recycle-probe mode enabled");
         let stub_log = std::env::var("NFS_KLLDAP_RECYCLE_PROBE_GANESHA_LOG")
@@ -723,8 +722,7 @@ while :; do :; done
         Ok(())
     }
 
-    /// Signal WebUI restart poller that SSSD, idhelper, Ganesha, and WebUI.
-    /// Are. Up.
+    /// Signals the WebUI poller when core services are up.
     fn touch_recycle_marker(&self) {
         if let Ok(mut f) = OpenOptions::new()
             .write(true)
@@ -793,8 +791,7 @@ while :; do :; done
         }
     }
 
-    /// After start_ganesha spawn: real nfsd daemonizes and the launcher pid.
-    /// Exits.
+    /// Adopts nfsd daemon pid after start_ganesha when the launcher exits.
     fn adopt_ganesha_daemon_pid_after_spawn(&mut self) {
         if !self.ganesha_managed || self.pids.ganesha.is_some_and(process_is_live) {
             return;
@@ -925,7 +922,7 @@ while :; do :; done
                     }
                 }
                 GaneshaAction::StopStart => {
-                    // Idempotent: wait out any stale pid/pgrep match before.
+                    // Waits out stale pids before idempotent stop-start.
                     self.stop_ganesha();
                 }
             }

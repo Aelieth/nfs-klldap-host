@@ -239,7 +239,7 @@ pub async fn setup_redirect(State(state): State<super::AppState>) -> impl IntoRe
     Redirect::to(&setup_redirect_for_step(&state.config_path)).into_response()
 }
 
-/// GET /setup/1.
+/// Renders setup wizard step 1 for the persistent volume check.
 pub async fn setup_step1(State(state): State<super::AppState>) -> impl IntoResponse {
     if is_wizard_complete(&state) {
         return Redirect::to("/login").into_response();
@@ -306,7 +306,7 @@ pub async fn setup_step1_verify(State(state): State<super::AppState>) -> impl In
     }
 }
 
-/// GET /setup/2.
+/// Renders setup wizard step 2 for LDAP URI configuration.
 pub async fn setup_step2(State(state): State<super::AppState>) -> impl IntoResponse {
     if is_wizard_complete(&state) {
         return Redirect::to("/login").into_response();
@@ -422,7 +422,7 @@ fn clear_step2_test(state: &super::AppState) {
     state.setup_test.lock().unwrap().step2_uri = None;
 }
 
-/// GET /setup/3.
+/// Renders setup wizard step 3 for LDAP bind credential testing.
 pub async fn setup_step3(State(state): State<super::AppState>) -> impl IntoResponse {
     if is_wizard_complete(&state) {
         return Redirect::to("/login").into_response();
@@ -520,7 +520,7 @@ pub async fn setup_step3_test(
     }
 }
 
-/// POST /setup/3/continue: save bind creds after test, finish wizard.
+/// Saves bind credentials after a successful test and finishes the wizard.
 pub async fn setup_step3_continue(
     State(state): State<super::AppState>,
     Form(form): Form<BindForm>,
@@ -563,7 +563,7 @@ pub async fn setup_step3_continue(
     super::settings::render_restarting_page().into_response()
 }
 
-/// GET /setup/3/status: background bind probe with on-disk creds.
+/// Runs a background bind probe against on-disk credentials for step 3 status.
 pub async fn setup_step3_status(State(state): State<super::AppState>) -> impl IntoResponse {
     let config_path = state.config_path.clone();
     let probe = tokio::task::spawn_blocking(move || run_bind_probe_from_disk(&config_path))
@@ -602,7 +602,7 @@ fn clear_step3_test(state: &super::AppState) {
     t.step3_pw = None;
 }
 
-/// GET /setup/complete: legacy URL, same restart poller as step 3.
+/// Serves the legacy setup complete URL with the same restart poller as step3.
 pub async fn setup_complete(State(state): State<super::AppState>) -> impl IntoResponse {
     let _ = super::settings::try_schedule_service_recycle(&state, "First-run setup complete").await;
     super::settings::render_restarting_page().into_response()

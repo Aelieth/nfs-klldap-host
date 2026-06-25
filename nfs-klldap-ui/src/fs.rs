@@ -33,13 +33,13 @@ pub struct ApplyOptions {
 pub struct ApplyResult {
     /// Entries chown'd/chmod'd (or counted in dry-run).
     pub changed: usize,
-    /// Per-path errors; non-empty is OK when continue_on_error is true.
+    /// Collects per-path errors when continue_on_error keeps partial results.
     pub errors: Vec<(PathBuf, String)>,
     /// Skipped entries (symlinks, filtered types, or dry-run).
     pub skipped: usize,
 }
 
-/// Live apply progress atomics; web poller reads count then apply phases.
+/// Tracks live apply progress atomics the web poller reads during apply.
 #[derive(Debug, Default)]
 pub struct ApplyProgress {
     pub total: AtomicUsize,
@@ -70,8 +70,7 @@ impl FsManager {
         Self { config }
     }
 
-    /// This builds the permission tree in host_path namespace before.
-    /// Privileged ops.
+    /// Builds the permission tree in host_path space before privileged work.
     pub fn build_tree(&self, root: &Path) -> Option<DirectoryNode> {
         // Normalize early so trailing slashes don't break matching or child.
         let normalized = self.normalize_for_matching(root);
@@ -95,7 +94,7 @@ impl FsManager {
             children: vec![],
         };
 
-        // Recursively build children (directories only). We read from the.
+        // Builds child directories recursively by reading the container path.
         if let Ok(entries) = fs::read_dir(&real_root) {
             for entry in entries.flatten() {
                 if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
@@ -183,8 +182,7 @@ impl FsManager {
             .map_err(|e| format!("count failed: {}", e))
     }
 
-    /// Apply with progress atomics. Caller should set progress.total from.
-    /// Count.
+    /// Applies permissions with progress atomics after progress.total is set.
     pub fn apply_permissions_with_progress(
         &self,
         path: &Path,
@@ -258,8 +256,7 @@ impl FsManager {
             .map_err(|e| format!("apply failed: {}", e))
     }
 
-    /// Whether this walk entry should receive chown/chmod under the current.
-    /// Options.
+    /// Returns whether this walk entry gets chown/chmod under the options.
     fn should_apply_entry(entry: &DirEntry, opts: &ApplyOptions) -> bool {
         let ft = entry.file_type();
         if ft.is_symlink() {
@@ -270,13 +267,13 @@ impl FsManager {
         if opts.recursive {
             return (is_dir && opts.apply_to_dirs) || (is_file && opts.apply_to_files);
         }
-        // Non-recursive: target directory (depth 0) immediate Files (depth 1).
+        // Non-recursive mode updates the target dir and immediate files only.
         let depth = entry.depth();
         (is_dir && opts.apply_to_dirs && depth == 0)
             || (is_file && opts.apply_to_files && depth == 1)
     }
 
-    /// Count-only walk; updates progress.processed and aborts on cancel.
+    /// Count-only walk that updates progress.processed and honors cancel.
     fn count_tree(
         &self,
         root: &Path,
@@ -424,7 +421,7 @@ impl FsManager {
             .any(|root| normalized.starts_with(self.normalize_for_matching(root)))
     }
 
-    /// Normalize a path for prefix matching: strip trailing slashes.
+    /// Normalizes a path for prefix matching by stripping trailing slashes.
     /// Avoids prefix mismatches from trailing slashes in UI or config.
     fn normalize_for_matching(&self, p: &Path) -> PathBuf {
         let s = p.to_string_lossy();
@@ -586,11 +583,11 @@ mod tests {
         );
         let fs = FsManager::new(cfg);
 
-        // Exact share root.
+        // Asserts mapping for the exact share root path.
         let root = fs.host_path_to_container_path(Path::new("/hostroot/myshare")).unwrap();
         assert_eq!(root, PathBuf::from("/container/root/myshare"));
 
-        // Subdirectory.
+        // Asserts mapping for a nested subdirectory path.
         let sub = fs.host_path_to_container_path(Path::new("/hostroot/myshare/sub/dir")).unwrap();
         assert_eq!(sub, PathBuf::from("/container/root/myshare/sub/dir"));
     }
@@ -689,7 +686,7 @@ mod tests {
         let mut cfg = cfg;
         cfg.storage.container_root = root.to_string_lossy().into_owned();
         cfg.shares[0].name.clear();
-        // One-segment host_path: first-dir strip yields empty tail. Internal.
+        // One-segment host_path makes first-dir stripping yield empty tail.
 
         let fs = FsManager::new(cfg);
 
@@ -721,7 +718,7 @@ mod tests {
         let mut cfg = cfg;
         cfg.storage.container_root = root.to_string_lossy().into_owned();
         cfg.shares[0].name.clear();
-        // One-segment host_path: first-dir strip yields empty tail. Internal.
+        // One-segment host_path makes first-dir stripping yield empty tail.
 
         let fs = FsManager::new(cfg);
 

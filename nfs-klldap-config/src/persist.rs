@@ -32,7 +32,7 @@ pub fn is_persistent_config(_path: &Path) -> bool {
     true
 }
 
-/// Load [[shares]] host_path entries only; tolerant of incomplete config.
+/// Loads [[shares]] host_path entries only and tolerates incomplete config.
 pub fn load_host_paths_only(path: &Path) -> Result<Vec<PathBuf>, ConfigError> {
     if !path.exists() {
         return Ok(vec![]);

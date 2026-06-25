@@ -1,4 +1,4 @@
-//! Unix-socket daemon: long-lived resolver + Ganesha integration.
+//! Long-lived Unix-socket daemon that resolves principals for Ganesha.
 
 use crate::dlog;
 use std::fs;
@@ -40,15 +40,14 @@ impl RebulkPaths<'_> {
     }
 }
 
-/// Outcome of rebulk_apply_sync for tests asserting materialize skip vs.
-/// Execute.
+/// Reports whether rebulk_apply_sync materialized nss files for tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RebulkOutcome {
     pub synced: usize,
     pub materialized: bool,
 }
 
-/// Sync LDAP snapshot into cache; materialize nss when fingerprint changes.
+/// Syncs LDAP snapshot to cache and materializes nss on fingerprint change.
 pub(crate) fn rebulk_apply_sync(
     cache: &mut IdCache,
     realm: &str,
@@ -123,7 +122,7 @@ pub(crate) mod test_rebulk {
     }
 }
 
-/// LDAP bulk load and nss materialize; must finish before ganesha.nfsd starts.
+/// Bulk-loads LDAP users and materializes nss before ganesha.nfsd starts.
 pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usize> {
     #[cfg(test)]
     if let Some(ov) = test_rebulk::current_override() {
@@ -201,7 +200,7 @@ pub(crate) fn run_daemon() {
     let _ = fs::create_dir_all("/var/lib/nfs-klldap");
     let _ = fs::create_dir_all("/var/lib/extrausers");
 
-    // Remove stale socket.
+    // Remove a stale socket from a prior daemon instance.
     let _ = fs::remove_file(SOCKET_PATH);
 
     let listener = match UnixListener::bind(SOCKET_PATH) {
@@ -215,7 +214,7 @@ pub(crate) fn run_daemon() {
     // Make socket world-accessible inside container (root only usage is also.
     let _ = fs::set_permissions(SOCKET_PATH, std::os::unix::fs::PermissionsExt::from_mode(0o666));
 
-    // Load persisted cache; user rows refresh on first LDAP sync below.
+    // Load the persisted cache and refresh user rows on the first LDAP sync.
     let cache = Arc::new(Mutex::new(IdCache::load_from_file(Path::new(CACHE_PATH))));
 
     println!("[idhelper] daemon listening on {}", SOCKET_PATH);

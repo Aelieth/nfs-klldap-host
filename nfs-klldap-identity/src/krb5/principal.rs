@@ -14,7 +14,7 @@ pub fn machine_short_name(principal: &str) -> &str {
     local.rsplit('/').next().unwrap_or(local)
 }
 
-/// Classify machine (host/nfs/root) vs user principals; prefixes align with Ganesha Root_Kerberos_Principal.
+/// Classify machine vs user principals; aligns with Ganesha Root_Kerberos_Principal.
 pub fn classify_principal(principal: &str, _realm: &str, server_variants: &[String]) -> (bool, String) {
     let local = principal_local_part(principal.trim()).to_ascii_lowercase();
 

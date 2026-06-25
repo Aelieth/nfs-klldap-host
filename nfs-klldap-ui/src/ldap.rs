@@ -1,6 +1,5 @@
 //! LdapClient: async wrapper over shared IdLdapResolver + UI-only LDAP paths.
-//! POSIX uid/gid resolution delegates to nfs-klldap-identity (via nfs-klldap-config).
-//! UI retains: 2m search caches, memberOf admin verify, list autocomplete, DN fetch.
+//! POSIX resolution via nfs-klldap-identity; UI adds search caches and admin verify.
 
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
 use nfs_klldap_config::{escape_ldap_filter, IdLdapResolver, PosixAttributeMapping};
@@ -48,8 +47,7 @@ pub struct LdapClient {
     // std Mutex for Sync (Axum & across await via outer tokio Mutex).
     user_cache: Mutex<HashMap<String, CachedUser>>,
     group_cache: Mutex<HashMap<String, CachedGroup>>,
-    // Reverse caches for friendly name display in tree meta (uid/gid -> name) after FS stat.
-    // Same 10m IDENTITY TTL as forward caches; populated by list_* and direct resolves.
+    // Reverse uid/gid→name caches for tree meta (10m TTL).
     user_by_uid_cache: Mutex<HashMap<i32, CachedUser>>,
     group_by_gid_cache: Mutex<HashMap<i32, CachedGroup>>,
     recent_user_searches: Mutex<HashMap<String, CachedSearch>>,
@@ -815,8 +813,7 @@ impl LdapClient {
         Some((gid, display))
     }
 
-    /// Reverse lookup: uidNumber → (uid/name, display_name). Uses dedicated 10m cache.
-    /// Falls back to subtree search on uidNumber=; populates both reverse and forward name cache.
+    /// Reverse lookup uidNumber→name; subtree fallback populates forward/reverse caches.
     pub async fn resolve_user_by_uid(&self, uid: i32) -> Option<(String, String)> {
         if let Some(hit) = self.cache_get_user_by_uid(uid) {
             if hit.uid_number.is_some() {
@@ -894,8 +891,7 @@ impl LdapClient {
         let mut results: Vec<User> = Vec::new();
         let mut seen_ids: HashSet<String> = HashSet::new();
 
-        // Identity cache helps typed queries only. For "show all" (empty query), identity
-        // entries are partial (e.g. one resolved owner) and must not suppress the full list.
+        // Identity cache for typed queries only; empty query always hits LDAP.
         if !q_orig.is_empty() {
             for (id, cu) in self.user_cache.lock().unwrap().iter() {
                 Self::try_push_user(

@@ -26,8 +26,7 @@ pub(crate) fn start_ganesha_observer(
 }
 
 fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<Mutex<IdCache>>) {
-    // Simple per-candidate rate limit to avoid spamming "observed" + full resolve/materialize
-    // on every log line that matches the same client name (very common during a mount).
+    // Per-candidate rate limit: avoid resolve spam on repeated log lines per client.
     let mut recently: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
     let mut bridge_warned: std::collections::HashMap<String, std::time::Instant> =
         std::collections::HashMap::new();
@@ -266,9 +265,7 @@ fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
             return best;
         }
 
-        // Fallback scan is deliberately conservative.
-        // If the line smells like an internal client-record debug blob (lots of (nil), clientid=, Unique=, Counter=, cr_refcount), do not trust the loose word fallback.
-        // (Good names from "Linux NFSv4..." groups will already have been returned via the best path above.)
+        // Conservative fallback: skip internal debug blobs (clientid=, cr_refcount, etc.).
         let lower_line = line.to_ascii_lowercase();
         let is_internal_blob = lower_line.contains("conf = (nil)") || lower_line.contains("clientid=") || lower_line.contains("unique=") || lower_line.contains("counter=") || lower_line.contains("cr_refcount");
         if is_internal_blob {
@@ -297,9 +294,7 @@ fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
 pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<String> {
     let realm_lower = realm.to_ascii_lowercase();
 
-    // 0. High-signal early sighting: Ganesha is about to / is calling the idmapper for a principal.
-    //    "Get uid for testuser1@REALM using nfsidmap" tells us a user principal is needed *now*.
-    //    Extract and resolve immediately (observer background) so state may be ready or for retries/other threads.
+    // "Get uid for user@REALM using nfsidmap" — resolve user principals immediately.
     if let Some(start) = line.find("Get uid for ") {
         let rest = &line[start + "Get uid for ".len()..];
         if let Some(end) = rest.find(|c: char| !c.is_alphanumeric() && c != '@' && c != '.' && c != '-' && c != '_') {
@@ -332,8 +327,7 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
         }
     }
 
-    // 1. Look for explicit Kerberos principals containing the realm (user@REALM or host/xxx@REALM).
-    //    Keep relatively permissive for real principals, but still validate the local part.
+    // Explicit Kerberos principals containing the realm (user@REALM or host/xxx@REALM).
     if let Some(at_pos) = line.find('@') {
         let before = &line[..at_pos];
         let start = before
@@ -350,9 +344,7 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
         }
     }
 
-    // 2. Primary reliable source: the "Linux NFSv4.x <hostname>" pattern.
-    //    This appears in name=(...), fs_create_clid_name "client name [...]",
-    //    and similar client record descriptions. Prefer this over blind word scanning.
+    // "Linux NFSv4.x <hostname>" pattern in client record log lines.
     if let Some(host) = extract_linux_nfs_hostname(line) {
         if !host.eq_ignore_ascii_case("linux") && !host.eq_ignore_ascii_case("nfs") && !is_noise_hostname(&host) && looks_like_client_hostname(&host) {
             // Emit the classic host/ form. Materialization will also create the bare alias.

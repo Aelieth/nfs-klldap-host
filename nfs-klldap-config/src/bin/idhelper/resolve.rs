@@ -30,7 +30,7 @@ fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
         }
     }
 
-    // LDAP fallback: pass full principal so snapshot/UPN and short posix paths both run inside.
+    // LDAP fallback tries full principal and short posix name inside resolver.
     if let Some((uid, gid)) = resolve_via_structured_ldap(trimmed) {
         dlog!("ldap fallback principal=\"{}\" uid={} gid={}", trimmed, uid, gid);
         return Some((uid, gid, "ldap".to_string()));
@@ -212,7 +212,7 @@ pub(crate) fn resolve_principal(
                 source: src,
             }
         } else {
-            // Nobody fallback: materialize into nss_passwd so Ganesha getpwnam under nss_wrapper can resolve it.
+            // Nobody fallback: materialize so getpwnam under nss_wrapper can resolve it.
             eprintln!(
                 "[idhelper] FALLBACK {} for principal=\"{}\" (no uid/gid from getent or structured resolver)",
                 FALLBACK_NOBODY_UID, principal

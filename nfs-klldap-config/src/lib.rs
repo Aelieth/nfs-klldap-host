@@ -414,7 +414,7 @@ mod tests {
         );
         assert!(main_debug.contains("Default_Log_Level = DEBUG;"));
         assert!(main_debug.contains("IDMAPPER = FULL_DEBUG;"));
-        // Note: FSAL not emitted in top-level LOG (only in fragments); NFS4 is DEBUG (not FULL) per current generator for idhelper observer.
+        // FSAL only in fragments; top-level NFS4 is DEBUG for idhelper observer.
         assert!(main_debug.contains("NFS4 = DEBUG;"));
         assert!(
             !main_debug.contains("RECOVERY"),

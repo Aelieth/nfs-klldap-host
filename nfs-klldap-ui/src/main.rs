@@ -24,7 +24,7 @@ fn resolve_runtime_hostname_for_banner() -> String {
         Err(e) => {
             eprintln!("\n{}", e);
             eprintln!("WARNING: Using best-effort fallback for keytab reminder because the two hostname sources disagreed.");
-            // Best-effort fallback so the UI can still start (the operator can still edit config)
+            // Best-effort fallback so the UI can still start.
             std::env::var("HOSTNAME").unwrap_or_else(|_| "your-container-hostname".into())
         }
     }
@@ -41,7 +41,7 @@ use nfs_klldap_config::get_consistent_hostname;
 async fn main() {
     println!("=== nfs-klldap-ui (in-container WebUI) ===\n");
 
-    // Install ring CryptoProvider early (before any LDAPS). Required for KLLDAP/rustls compat.
+    // Install ring CryptoProvider before any LDAPS (KLLDAP/rustls compat).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Support --config /path or NFS_KLLDAP_CONF env (the shared volume with the container)
@@ -81,7 +81,7 @@ async fn main() {
         }
     }
 
-    // Keytab host: prefer explicit [server], else two-tier consistent hostname (emits diag on mismatch).
+    // Keytab host: [server] override, else two-tier consistent hostname.
     let keytab_host = if let Some(h) = &config.server.hostname {
         if !h.trim().is_empty() {
             h.trim().to_string()
@@ -92,8 +92,7 @@ async fn main() {
         resolve_runtime_hostname_for_banner()
     };
 
-    // Use the authoritative realm from the loaded config (same one that will be written
-    // into krb5.conf by the generator). Falls back to a clear placeholder only for the
+    // Realm from loaded config (same as krb5.conf). Placeholder only for
     // early "no valid config yet" case.
     let keytab_realm = config.display_realm();
 
@@ -132,7 +131,7 @@ async fn main() {
         start_tls,
     );
 
-    // Bind creds: prefer NFS_KLLDAP_LLDAP_* env, else sssd section (full DN verbatim required).
+    // Bind creds: NFS_KLLDAP_LLDAP_* env, else [sssd] (full DN verbatim).
     let (lldap_user, lldap_pass) = crate::config::ldap_service_creds(&config);
     if lldap_pass.trim().is_empty()
         || lldap_pass == "CHANGE_THIS_TO_A_STRONG_SECRET"
@@ -169,7 +168,7 @@ async fn main() {
     let admin_group = config.management.webui_admin_group.clone();
     let auth = Arc::new(crate::auth::AuthManager::new(&config_path, admin_group));
 
-    // Display-only keytab banner; computed off-thread so klist cannot block startup (see keytab.rs).
+    // Keytab banner off-thread so klist cannot block startup.
     let keytab_alert: Arc<StdMutex<Option<String>>> = Arc::new(StdMutex::new(None));
     {
         let alert_slot = keytab_alert.clone();
@@ -245,7 +244,7 @@ async fn main() {
 
         // Use a stable absolute path inside the container (created in Dockerfile).
         // This avoids polluting / and works under root-only execution model.
-        // Precedence: NFS_KLLDAP_WEBUI_TLS_CERT/KEY env > [webui] tls_cert/tls_key in nfs-klldap.conf > built-in default path.
+        // TLS cert precedence: env > [webui] paths > built-in default.
         // (Env handling + conf alignment explicit here in main.rs.)
         let default_cert = "/var/lib/nfs-klldap/webui-certs/webui.crt".to_string();
         let default_key = "/var/lib/nfs-klldap/webui-certs/webui.key".to_string();

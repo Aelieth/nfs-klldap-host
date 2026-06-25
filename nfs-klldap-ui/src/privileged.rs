@@ -6,8 +6,7 @@
 //! exclusively from `fs::FsManager::apply_*` after all allow-list and safety
 //! checks have passed.
 //!
-//! Symlink policy: WalkDir in `fs::apply_tree_with_progress` skips symlinks; chown/chmod
-//! here follow targets on applied entries only (no lchown). See `fs.rs` for traversal rules.
+//! chown/chmod follow symlink targets; WalkDir skips symlinks (see fs.rs).
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;

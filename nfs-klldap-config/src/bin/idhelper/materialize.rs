@@ -59,7 +59,7 @@ pub(crate) fn passwd_line_for(r: &Resolved) -> String {
     let login = sanitize_for_nss(&r.name);
     // Gecos is purely informational here.
     let gecos = format!("kll:{}:{}", r.kind.as_str(), r.principal);
-    // We use /nonexistent and nologin to be explicit these are not real local accounts.
+    // /nonexistent + nologin: synthetic nss entries, not real local accounts.
     format!(
         "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
         login, r.uid, r.gid, gecos
@@ -187,9 +187,7 @@ pub(crate) fn materialize_nss_wrappers_at(
             }
         }
 
-        // For machine principals (host/..., nfs/..., root/...) also emit an alias using the
-        // sanitized full local part (e.g. "host_blue-lt"). This helps when Ganesha's idmapper
-        // feeds getpwnam the service/name form instead of (or in addition to) the short host.
+        // Machine principals: also emit sanitized local-part alias (e.g. host_blue-lt).
         let local = principal_local_part(&r.principal);
         if local.contains('/') && MACHINE_PRINCIPAL_PREFIXES.iter().any(|p| local.starts_with(p)) {
             let alias = sanitize_for_nss(local); // turns host/blue-lt into host_blue-lt etc.
@@ -202,9 +200,7 @@ pub(crate) fn materialize_nss_wrappers_at(
             }
         }
 
-        // For regular (non-machine) user principals, ALWAYS also materialize the full "name@REALM" form
-        // (in addition to the short name). This helps Ganesha's getpwnam / principal2uid paths
-        // when it feeds the exact Kerberos principal string (the "kerberos looking" case).
+        // User principals: also materialize full name@REALM for principal2uid/getpwnam paths.
         if r.kind != PrincipalKind::Machine {
             let full = r.principal.clone();
             if seen_login.insert(full.clone()) {
@@ -268,7 +264,7 @@ pub(crate) fn materialize_nss_wrappers_at(
         group_lines.push("root:x:0:root,daemon,bin".to_string());
     }
 
-    // root + nobody lines let Ganesha getpwuid_r(0) and unknown-principal fallback succeed under nss_wrapper.
+    // root + nobody lines satisfy getpwuid_r(0) and unknown-principal fallback.
     if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
         passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
     }

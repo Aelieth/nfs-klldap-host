@@ -1,5 +1,5 @@
-//! Two-tier hostname: hostname(1) must match /proc/sys/kernel/hostname after normalization.
-//! Mismatch -> rich diagnostic (used for keytab + cert SANs).
+//! Two-tier hostname: hostname(1) must match /proc/sys/kernel/hostname.
+//! Mismatch yields a diagnostic for keytab and cert SAN alignment.
 
 pub use nfs_klldap_identity::{
     format_nfs_principal_list, looks_like_docker_default_hostname, nfs_keytab_host_matches,
@@ -146,7 +146,7 @@ now report the identical name in the setup wizard and WebUI logs.";
     Ok(primary)
 }
 
-/// Returns hostname when `hostname(1)` and /proc/sys/kernel/hostname agree after trim/trailing-dot normalization.
+/// Returns hostname when both sources agree after trim/trailing-dot normalization.
 pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsistency> {
     let primary = match Command::new("hostname").output() {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
@@ -237,7 +237,7 @@ pub fn get_consistent_hostname_from_values(
 }
 
 pub(crate) mod internal {
-    /// Best-effort hostname for effective_hostname() fallback (not two-tier validated).
+    /// Best-effort hostname fallback (not two-tier validated).
     pub fn get() -> Result<std::ffi::OsString, std::io::Error> {
         if let Ok(h) = std::env::var("HOSTNAME") {
             return Ok(h.into());

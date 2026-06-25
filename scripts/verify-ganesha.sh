@@ -35,12 +35,7 @@ fi
 echo
 echo "[3] Export fragments (on-disk, from nfs-klldap.conf)..."
 if command -v ganesha-ctl >/dev/null 2>&1; then
-    fragments="$(ganesha-ctl show-fragments 2>/dev/null || true)"
-    if [ -n "$fragments" ]; then
-        printf '%s\n' "$fragments" | head -40
-    else
-        echo "  WARN: no export fragments found"
-    fi
+    ganesha-ctl show-fragments 2>/dev/null | head -40 || echo "  (could not list fragments)"
 else
     echo "  WARN: ganesha-ctl not found in PATH"
 fi
@@ -71,7 +66,7 @@ echo "[6] Principal mapping + Ganesha 9.6 policy..."
 ganesha-ctl id-map-test testuser1 2>/dev/null || echo "  id-map-test not available or failed (non-fatal)"
 if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
     if grep -q 'Read_Access_Check_Policy' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
-        echo "  WARN: Read_Access_Check_Policy present — omit it; 9.6 default pre applies"
+        echo "  WARN: Read_Access_Check_Policy present — trixie Ganesha 9.6 rejects this key"
     else
         echo "  OK: Read_Access_Check_Policy omitted in fragments"
     fi

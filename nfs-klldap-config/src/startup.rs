@@ -4,10 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::{
-    extract_host_from_uri, host_is_ip, is_persistent_config, resolve_posix_attribute_mapping,
-    NfsKlldapConfig,
-};
+use crate::{extract_host_from_uri, host_is_ip, is_persistent_config, sssd_resolver_inputs, NfsKlldapConfig};
+use nfs_klldap_identity::resolve_posix_attribute_mapping;
 
 /// Default Kerberos keytab path inside the container image.
 pub const DEFAULT_KEYTAB_PATH: &str = "/etc/krb5.keytab";
@@ -190,7 +188,9 @@ pub fn format_reachability_probe(host: &str, uri: &str, result: &LdapReachabilit
 pub fn format_bind_probe(cfg: &NfsKlldapConfig, result: Result<(), String>) -> String {
     let dn = cfg.sssd.ldap_default_bind_dn.trim();
     let uri = cfg.ldap_uri.trim();
-    let mapping = resolve_posix_attribute_mapping(&cfg.sssd);
+    let mapping = resolve_posix_attribute_mapping(
+        &sssd_resolver_inputs(&cfg.ldap_uri, &cfg.sssd, &cfg.display_realm()).posix_mapping,
+    );
     let mut out = format!(
         "<strong>Command</strong>\nldapsearch -H {uri} -D \"{dn}\" -w ******** -s base -b \"{dn}\" ...\n\n<strong>Status</strong>\n"
     );
@@ -292,7 +292,9 @@ pub fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     let dn = &cfg.sssd.ldap_default_bind_dn;
     let pw = &cfg.sssd.ldap_default_authtok;
     let is_ldaps = uri.starts_with("ldaps://");
-    let mapping = resolve_posix_attribute_mapping(&cfg.sssd);
+    let mapping = resolve_posix_attribute_mapping(
+        &sssd_resolver_inputs(&cfg.ldap_uri, &cfg.sssd, &cfg.display_realm()).posix_mapping,
+    );
 
     let mut attrs: Vec<&str> = vec![
         &mapping.user_name,

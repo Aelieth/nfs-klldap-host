@@ -1290,8 +1290,11 @@ pub(crate) async fn reload_nfs_client(
     }
 
     let realm = fresh.effective_realm();
-    let (posix_attrs, (user_base, group_base)) =
-        nfs_klldap_config::sssd_ldap_derived(&fresh.sssd, &realm);
+    let resolver =
+        nfs_klldap_config::from_sssd_section(&fresh.ldap_uri, &fresh.sssd, &realm);
+    let posix_attrs = resolver.posix_attributes().clone();
+    let user_base = resolver.user_base().to_string();
+    let group_base = resolver.group_base().to_string();
 
     let (no_tls_verify, start_tls) = nfs_klldap_config::ldap_tls_policy(
         &fresh.ldap_uri,

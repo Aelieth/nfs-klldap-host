@@ -6,9 +6,10 @@ use std::path::Path;
 use crate::ignored_attributes;
 
 use crate::{
-    compute_effective_flags, config::resolve_posix_attribute_mapping, constants, probe_fs_capabilities,
-    ConfigError, FsCapabilities, GenerationPaths, NfsKlldapConfig,
+    compute_effective_flags, constants, probe_fs_capabilities, sssd_resolver_inputs, ConfigError,
+    FsCapabilities, GenerationPaths, NfsKlldapConfig,
 };
+use nfs_klldap_identity::{effective_ldap_search_bases, resolve_posix_attribute_mapping};
 
 
 /// Sanitize share name for export fragment filenames.
@@ -63,7 +64,8 @@ fn write_sssd_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| format!("dc={}", realm.to_lowercase().replace('.', ",dc=")));
 
-    let (user_base, group_base) = crate::config::effective_ldap_search_bases(&cfg.sssd, &realm);
+    let inputs = sssd_resolver_inputs(&cfg.ldap_uri, &cfg.sssd, &realm);
+    let (user_base, group_base) = effective_ldap_search_bases(&inputs.search_bases, &realm);
 
     let domain_name = cfg
         .sssd
@@ -152,7 +154,12 @@ fn build_ldap_domain_options(
 ) -> String {
     let s = &cfg.sssd;
 
-    let mapping = resolve_posix_attribute_mapping(s);
+    let mapping = resolve_posix_attribute_mapping(&sssd_resolver_inputs(
+        &cfg.ldap_uri,
+        s,
+        &cfg.effective_realm(),
+    )
+    .posix_mapping);
     let user_attr_list = {
         let mut a = vec![
             mapping.user_name.as_str(),

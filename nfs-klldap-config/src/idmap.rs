@@ -1,5 +1,4 @@
 //! Bridges nfs-klldap.conf [sssd] fields to shared IdLdapResolver.
-//! Lives in nfs-klldap-identity.
 
 use crate::SssdSection;
 
@@ -10,16 +9,17 @@ pub use nfs_klldap_identity::{
     LdapResolverInputs, LdapSearchBasesInput, PosixGroupEntry, PosixMappingInput, PosixUserEntry,
 };
 
-/// Build IdLdapResolver from ldap_uri + [sssd] Kerberos realm (not.
-/// Ldap_search_base RDN).
-pub fn from_sssd_section(ldap_uri: &str, sssd: &SssdSection, realm: &str) -> IdLdapResolver {
-    IdLdapResolver::from_inputs(&resolver_inputs_from_sssd(ldap_uri, sssd, realm))
-}
-
-/// Build POSIX mapping and search-base inputs from [sssd] in one pass.
-pub(crate) fn sssd_ldap_inputs(sssd: &SssdSection) -> (PosixMappingInput, LdapSearchBasesInput) {
-    (
-        PosixMappingInput {
+/// Build LdapResolverInputs from ldap_uri, [sssd], and Kerberos realm.
+pub fn sssd_resolver_inputs(ldap_uri: &str, sssd: &SssdSection, realm: &str) -> LdapResolverInputs {
+    LdapResolverInputs {
+        ldap_uri: ldap_uri.to_string(),
+        realm: realm.to_string(),
+        search_bases: LdapSearchBasesInput {
+            ldap_search_base: sssd.ldap_search_base.clone(),
+            ldap_user_search_base: sssd.ldap_user_search_base.clone(),
+            ldap_group_search_base: sssd.ldap_group_search_base.clone(),
+        },
+        posix_mapping: PosixMappingInput {
             ldap_user_object_class: sssd.ldap_user_object_class.clone(),
             ldap_group_object_class: sssd.ldap_group_object_class.clone(),
             ldap_user_name: sssd.ldap_user_name.clone(),
@@ -34,30 +34,20 @@ pub(crate) fn sssd_ldap_inputs(sssd: &SssdSection) -> (PosixMappingInput, LdapSe
             ldap_user_principal_name: sssd.ldap_user_principal_name.clone(),
             kllldap_ignored_attributes: sssd.kllldap_ignored_attributes,
         },
-        LdapSearchBasesInput {
-            ldap_search_base: sssd.ldap_search_base.clone(),
-            ldap_user_search_base: sssd.ldap_user_search_base.clone(),
-            ldap_group_search_base: sssd.ldap_group_search_base.clone(),
-        },
-    )
-}
-
-fn resolver_inputs_from_sssd(ldap_uri: &str, sssd: &SssdSection, realm: &str) -> LdapResolverInputs {
-    let (posix_mapping, search_bases) = sssd_ldap_inputs(sssd);
-    LdapResolverInputs {
-        ldap_uri: ldap_uri.to_string(),
-        realm: realm.to_string(),
-        search_bases,
-        posix_mapping,
         ldap_tls_reqcert: sssd.ldap_tls_reqcert.clone(),
         ldap_id_use_start_tls: sssd.ldap_id_use_start_tls,
     }
 }
 
+/// Build IdLdapResolver from ldap_uri + [sssd] + Kerberos realm.
+pub fn from_sssd_section(ldap_uri: &str, sssd: &SssdSection, realm: &str) -> IdLdapResolver {
+    IdLdapResolver::from_inputs(&sssd_resolver_inputs(ldap_uri, sssd, realm))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{resolve_posix_attribute_mapping, DEFAULT_USER_PRINCIPAL_ATTR, SssdSection};
+    use crate::{DEFAULT_USER_PRINCIPAL_ATTR, SssdSection};
 
     #[test]
     fn resolver_constructs_from_minimal_sssd_section() {
@@ -102,9 +92,6 @@ mod tests {
     #[test]
     fn principal_attr_default_is_krb_principal_name_and_dual_lookup_works_in_mapping() {
         let s = SssdSection::default();
-        let mapping = resolve_posix_attribute_mapping(&s);
-        assert_eq!(mapping.user_principal_name, DEFAULT_USER_PRINCIPAL_ATTR);
-
         let r = from_sssd_section("ldaps://ex", &s, "ex.com");
         assert_eq!(
             r.posix_attributes().user_principal_name,

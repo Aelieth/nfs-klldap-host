@@ -25,8 +25,7 @@ mod template;
 mod validate;
 
 pub use config::{
-    effective_ldap_search_bases, resolve_cache_profile, resolve_posix_attribute_mapping,
-    sssd_ldap_derived,
+    resolve_cache_profile,
     ShareFieldWarning, CACHE_PROFILES, GaneshaSection, GenerationPaths, HostSection,
     KerberosSection, ManagementSection, NfsKlldapConfig, PosixAttributeMapping, ServerSection,
     Share, SssdSection, StorageSection, WebuiSection, SHARE_KNOWN_KEYS,
@@ -108,7 +107,7 @@ pub mod idmap;
 pub use idmap::{
     classify_principal, escape_ldap_filter, extract_first_attr_value, from_sssd_section,
     machine_short_name, normalize_principal, parse_getent_group, parse_getent_passwd,
-    principal_local_part,
+    principal_local_part, sssd_resolver_inputs,
     IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry,
 };
 

@@ -303,11 +303,11 @@ LOG {
 Key points:
 - `Protocols = 4` (also in EXPORT_DEFAULTS and per-share CLIENT blocks) for strict NFSv4.
 - `Enable_UDP = false` (NFSv4-only; verified on trixie-backports Ganesha 9.6).
-- `Idmapped_User_Time_Validity` / `Idmapped_Group_Time_Validity` in `DIRECTORY_SERVICES` (preferred over `Manage_Gids_Expiration` in `NFS_CORE_PARAM`).
+- `Idmapped_User_Time_Validity` / `Idmapped_Group_Time_Validity` in `DIRECTORY_SERVICES` (not `Manage_Gids_Expiration`).
 - `DomainName` is uppercase `effective_realm()` (matches `/etc/idmapd.conf` Domain).
-- Kerberos configuration via NFS_KRB5 and Root_Kerberos_Principal (host, nfs, root).
+- Kerberos via NFS_KRB5 and `Root_Kerberos_Principal` (host, nfs, root).
 - Explicit `%include` lines (one per share fragment) for deterministic loading.
-- `Read_Access_Check_Policy` omitted everywhere (9.6 default `pre` applies).
+- `Read_Access_Check_Policy` omitted (9.6 default `pre` applies).
 - Only the options above + safe NFSV4/EXPORT_DEFAULTS are emitted. Idmap* keys are deliberately not present in ganesha.conf (use the idhelper + shim + /etc/idmapd.conf + nss materialization instead; see man nfsidmap / idmapd.conf). Other legacy options are omitted because they are not accepted by the ganesha 9.6 parser on trixie-backports.
 
 Each per-share fragment contains an EXPORT with Path (internal), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block for access control, and the VFS FSAL. Additional CLIENT blocks can be appended manually (they will be lost on regeneration).

@@ -224,7 +224,7 @@ case "$CMD" in
         fi
         echo "[ganesha-ctl] fragment CLIENT block check (if exports exist):"
         if grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep -q 'Read_Access_Check_Policy' 2>/dev/null; then
-            echo "  WARN: Read_Access_Check_Policy present — omit it; 9.6 default pre applies"
+            echo "  WARN: Read_Access_Check_Policy present — trixie Ganesha 9.6 rejects this key"
         else
             grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep 'CLIENT' || echo "  (no fragments yet)"
         fi

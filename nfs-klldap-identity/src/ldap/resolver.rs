@@ -149,6 +149,10 @@ impl IdLdapResolver {
         &self.user_base
     }
 
+    pub fn group_base(&self) -> &str {
+        &self.group_base
+    }
+
     pub fn posix_attributes(&self) -> &PosixAttributeMapping {
         &self.posix_attributes
     }

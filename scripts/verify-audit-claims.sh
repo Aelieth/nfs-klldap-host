@@ -37,7 +37,7 @@ fi
 SCRATCH="$SCRATCH" "$ROOT/scripts/audit-scope.sh" >/dev/null
 
 # 0. Deterministic scratch capture (must pass gating before other checks)
-if ! SCRATCH="$SCRATCH" "$ROOT/scripts/capture-audit-scratch.sh"; then
+if ! SCRATCH="$SCRATCH" "$ROOT/scripts/audit-scope.sh" --capture; then
     fail "capture-audit-scratch.sh gating failed"
 else
     pass "capture-audit-scratch.sh"

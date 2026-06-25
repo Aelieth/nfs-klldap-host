@@ -248,67 +248,7 @@ ganesha.nfsd ...
 
 ### Generated ganesha.conf and exports
 
-The generator writes a minimal `ganesha.conf` plus one fragment per share under `/etc/ganesha/exports.d/`.
-
-Example top-level configuration emitted (exact form for ganesha 9.6 on Debian trixie / trixie-backports; only these options are used to avoid parser crashes):
-
-```
-NFS_CORE_PARAM {
-    Protocols = 4;
-    Bind_addr = 0.0.0.0;
-    NFS_Port = 2049;
-    Enable_UDP = false;
-    Enable_RQUOTA = false;
-    Enable_NLM = false;
-    Allow_Set_Io_Flusher_Fail = true;
-}
-
-DIRECTORY_SERVICES {
-    DomainName = EXAMPLE.COM;
-    Pwnam_Implementation = nsswitch;
-    Root_Kerberos_Principal = host, nfs, root;
-    Idmapped_User_Time_Validity = 600;
-    Idmapped_Group_Time_Validity = 600;
-}
-
-NFS_KRB5 {
-    PrincipalName = "nfs";
-    KeytabPath = "/etc/krb5.keytab";
-    Active_krb5 = TRUE;
-}
-
-NFSV4 {
-    Allow_Numeric_Owners = false;
-    RecoveryBackend = fs;
-    Lease_Lifetime = 20;
-    Grace_Period = 20;
-}
-
-EXPORT_DEFAULTS {
-    SecType = krb5p;
-    Protocols = 4;
-}
-
-LOG {
-    Default_Log_Level = INFO;
-    Components {
-        CLIENTID = EVENT;
-        SESSIONS = EVENT;
-        IDMAPPER = EVENT;
-        XPRT = EVENT;
-    }
-}
-```
-
-Key points:
-- `Protocols = 4` (also in EXPORT_DEFAULTS and per-share CLIENT blocks) for strict NFSv4.
-- `Enable_UDP = false` (NFSv4-only; verified on trixie-backports Ganesha 9.6).
-- `Idmapped_User_Time_Validity` / `Idmapped_Group_Time_Validity` in `DIRECTORY_SERVICES` (not `Manage_Gids_Expiration`).
-- `DomainName` is uppercase `effective_realm()` (matches `/etc/idmapd.conf` Domain).
-- Kerberos via NFS_KRB5 and `Root_Kerberos_Principal` (host, nfs, root).
-- Explicit `%include` lines (one per share fragment) for deterministic loading.
-- `Read_Access_Check_Policy` omitted (9.6 default `pre` applies).
-- Only the options above + safe NFSV4/EXPORT_DEFAULTS are emitted. Idmap* keys are deliberately not present in ganesha.conf (use the idhelper + shim + /etc/idmapd.conf + nss materialization instead; see man nfsidmap / idmapd.conf). Other legacy options are omitted because they are not accepted by the ganesha 9.6 parser on trixie-backports.
+The generator writes a minimal `ganesha.conf` plus one fragment per share under `/etc/ganesha/exports.d/`. Ganesha 9.6 on trixie-backports emits only parser-safe keys: `Protocols = 4`, `Enable_UDP = false`, `DIRECTORY_SERVICES` with `Pwnam_Implementation = nsswitch`, `Root_Kerberos_Principal = host, nfs, root`, and `Idmapped_User/Group_Time_Validity = 600`. We omit `Manage_Gids_Expiration`, `Read_Access_Check_Policy` (default `pre`), and legacy Idmap* blocks — live uid/gid mapping uses idhelper + nss_wrapper. See `nfs-klldap-config/tests/representative_generate.rs` and `examples/ganesha-exports.d/10-example.conf` for the exact shape.
 
 Each per-share fragment contains an EXPORT with Path (internal), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block for access control, and the VFS FSAL. Additional CLIENT blocks can be appended manually (they will be lost on regeneration).
 

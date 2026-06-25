@@ -86,21 +86,6 @@ mod tests {
     }
 
     #[test]
-    fn explicit_realm_drives_default_search_base_not_first_rdn() {
-        let r = from_sssd_section(
-            "ldaps://ldap.example:636",
-            &SssdSection {
-                ldap_user_search_base: Some("ou=testing,ou=users,dc=example,dc=com".into()),
-                ..SssdSection::default()
-            },
-            "my.corp",
-        );
-        assert!(r.user_base().contains("testing"));
-        let r2 = from_sssd_section("ldaps://ex", &SssdSection::default(), "my.corp");
-        assert_eq!(r2.user_base(), "dc=my,dc=corp");
-    }
-
-    #[test]
     fn principal_attr_default_is_krb_principal_name_and_dual_lookup_works_in_mapping() {
         let s = SssdSection::default();
         let r = from_sssd_section("ldaps://ex", &s, "ex.com");

@@ -1,6 +1,6 @@
 # nfs-klldap-ui
 
-Axum + HTMX WebUI (port 9630 inside the container). **0.9.x:** first-run `/setup/1` … `/setup/3` wizard (restarting page polls `/restart-status`), then `/login` and the main UI. Edits `nfs-klldap.conf` and applies direct chown/chmod on bind-mounted host paths. `HOST_NFS=true` sidecar mode grays out in-container NFS controls.
+Axum + HTMX WebUI (port 9630 inside the container). **0.9.x:** first-run `/setup/1` … `/setup/3` wizard, then `/login` and the main UI. Edits `nfs-klldap.conf` and applies direct chown/chmod on bind-mounted host paths.
 
 Build (for development):
 ```bash

@@ -1,4 +1,4 @@
-//! Decides which services to recycle after config regeneration completes.
+//! Pure recycle decision: which services to touch after config regeneration.
 
 /// How Ganesha should be recycled when export fragments change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7,7 +7,7 @@ pub enum GaneshaAction {
     Skip,
     /// In-process export reload via SIGHUP.
     Sighup,
-    /// Stop then start when nfsd is down or SIGHUP reload failed.
+    /// Stop (if running) then start — used when nfsd is down or SIGHUP reload failed.
     StopStart,
 }
 
@@ -29,7 +29,7 @@ impl ServiceRecyclePlan {
     }
 }
 
-/// Compute recycle plan from fingerprint deltas (see unit tests).
+/// Compute recycle plan from fingerprint deltas (table-driven; see unit tests).
 pub fn plan_from_changes(
     exports_changed: bool,
     identity_changed: bool,

@@ -7,8 +7,7 @@ use crate::{
     FsCapabilities, NfsKlldapConfig, Share,
 };
 
-/// One line of fs-warnings output for a share.
-/// Capable shares omitted unless include_capable.
+/// One line of fs-warnings output for a share (capable shares omitted unless `include_capable`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FsShareWarning {
     pub share_name: String,
@@ -23,8 +22,7 @@ pub struct FsShareWarning {
 }
 
 impl FsShareWarning {
-    /// Stable single-line report for CLI / healthcheck.
-    /// Limited shares include guidance.
+    /// Stable single-line report for CLI / healthcheck (limited shares include guidance).
     pub fn format_line(&self) -> String {
         if self.acl_capable {
             format!(
@@ -115,8 +113,7 @@ pub fn share_fs_warning_message(cfg: &NfsKlldapConfig, share: &Share) -> Option<
     share_fs_warning_message_with_mountinfo(cfg, share, None)
 }
 
-/// UI badge text using an explicit mountinfo fixture file.
-/// Isolates tests from process env.
+/// UI badge text using an explicit mountinfo fixture file (isolates tests from process env).
 pub fn share_fs_warning_message_with_mountinfo(
     cfg: &NfsKlldapConfig,
     share: &Share,
@@ -128,14 +125,6 @@ pub fn share_fs_warning_message_with_mountinfo(
     } else {
         Some(limited_fs_warning(&share.name, &caps))
     }
-}
-
-/// True when any share will emit Manage_Gids (explicit or probe default).
-pub fn any_share_manage_gids_enabled(cfg: &NfsKlldapConfig) -> bool {
-    cfg.shares.iter().any(|share| {
-        let caps = caps_for_share(cfg, share);
-        compute_effective_flags(share, &caps).manage_gids
-    })
 }
 
 #[cfg(test)]
@@ -194,9 +183,17 @@ mod tests {
             ..Default::default()
         };
         cfg.validate_and_derive().expect("valid");
-        // Without mountinfo override in unit test unknown path assumes.
+        // Without mountinfo override in unit test, unknown path assumes capable → manage_gids true.
         assert!(any_share_manage_gids_enabled(&cfg));
         cfg.shares[0].manage_gids = Some(false);
         assert!(!any_share_manage_gids_enabled(&cfg));
     }
+}
+
+/// True when any share will emit Manage_Gids (explicit or probe default).
+pub fn any_share_manage_gids_enabled(cfg: &NfsKlldapConfig) -> bool {
+    cfg.shares.iter().any(|share| {
+        let caps = caps_for_share(cfg, share);
+        compute_effective_flags(share, &caps).manage_gids
+    })
 }

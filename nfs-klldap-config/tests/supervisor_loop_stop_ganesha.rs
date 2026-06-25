@@ -107,7 +107,6 @@ exec sleep 3600
         .env("GANESHA_CONF", out.join("ganesha.conf"))
         .env("EXPORTS_DIR", out.join("exports.d"))
         .env("IDMAP_CONF", out.join("idmapd.conf"))
-        .env("NFS_CONF", out.join("nfs.conf"))
         .env("NSS_PASSWD", out.join("nss_passwd"))
         .env("NSS_GROUP", out.join("nss_group"))
         .env("NFS_KLLDAP_WEBUI_LOG", out.join("webui.log"))
@@ -162,23 +161,11 @@ exec sleep 3600
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    let stub_ganesha = stubs.join("ganesha.nfsd");
-    let stub_pid = Command::new("pgrep")
-        .args(["-f", "--"])
-        .arg(stub_ganesha.to_string_lossy().as_ref())
-        .output()
-        .expect("pgrep stub ganesha")
-        .stdout;
-    let stub_pid = String::from_utf8_lossy(&stub_pid)
-        .lines()
-        .next()
-        .and_then(|l| l.trim().parse::<u32>().ok())
-        .expect("stub ganesha pid");
     assert!(
-        Command::new("kill")
-            .args(["-TERM", &stub_pid.to_string()])
+        Command::new("pkill")
+            .args(["-TERM", "ganesha.nfsd"])
             .status()
-            .expect("kill stub ganesha")
+            .expect("pkill ganesha")
             .success(),
         "must stop ganesha stub before export-change SIGHUP"
     );

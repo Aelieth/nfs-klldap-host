@@ -5,7 +5,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Instant;
+
 
 const COMPLETE_TOML: &str = r#"
 ldap_uri = "ldaps://kllap.test:6360"
@@ -44,10 +44,14 @@ fn write_exe(path: &std::path::Path, body: &str) {
     fs::set_permissions(path, perms).unwrap();
 }
 
-fn wait_until(deadline: Instant, mut ready: impl FnMut() -> bool, label: &str) {
-    while !ready() {
-        assert!(deadline > Instant::now(), "{label}");
+fn spin_until(mut ready: impl FnMut() -> bool, max_spins: u64, label: &str) {
+    for _ in 0..max_spins {
+        if ready() {
+            return;
+        }
+        std::hint::spin_loop();
     }
+    panic!("{label}");
 }
 
 #[test]
@@ -280,11 +284,7 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
     });
 
     let pid = child.id();
-    wait_until(
-        Instant::now() + std::time::Duration::from_secs(30),
-        || loop_ready.is_file(),
-        "supervisor never wrote loop-probe ready marker",
-    );
+    spin_until(|| loop_ready.is_file(), 50_000_000, "supervisor never wrote loop-probe ready marker");
     assert!(
         !recycle_marker.is_file(),
         "recycle marker must be absent before SIGHUP"
@@ -298,11 +298,7 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         "must deliver real SIGHUP to supervisor child"
     );
 
-    wait_until(
-        Instant::now() + std::time::Duration::from_secs(30),
-        || recycle_marker.is_file(),
-        "recycle marker missing after real SIGHUP",
-    );
+    spin_until(|| recycle_marker.is_file(), 50_000_000, "recycle marker missing after real SIGHUP");
     assert!(
         fs::metadata(&recycle_marker).map(|m| m.len()).unwrap_or(0) > 0,
         "recycle marker must be non-empty"

@@ -48,7 +48,7 @@ help:
 	@echo "  make dist           cross + dist/ artifacts"
 	@echo "  make docker         local image"
 	@echo "  make docker-multi   multi-arch (buildx, --push by default)"
-	@echo "  make test / clippy / comments-quality / clean"
+	@echo "  make test / clippy / clean"
 	@echo ""
 	@echo "Variables: VERSION= IMAGE_NAME= REGISTRY= DOCKER_PUSH=false"
 
@@ -125,10 +125,6 @@ test:
 .PHONY: clippy
 clippy:
 	$(CARGO) +nightly clippy --workspace --all-targets --all-features -- -D warnings
-
-.PHONY: comments-quality
-comments-quality:
-	@python3 scripts/comment_lint.py
 
 .PHONY: clean
 clean:

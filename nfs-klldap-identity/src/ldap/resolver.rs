@@ -635,7 +635,7 @@ impl IdLdapResolver {
         )
     }
 
-    fn build_posix_list_filter(
+    pub(crate) fn build_posix_list_filter(
         obj_class: &str,
         num_attr: &str,
         name_attr: &str,
@@ -697,28 +697,6 @@ impl IdLdapResolver {
         out
     }
 
-    /// Subtree filter for POSIX users with uidNumber.
-    pub fn build_user_list_filter(&self, query: &str) -> String {
-        Self::build_posix_list_filter(
-            &self.posix_attributes.user_object_class,
-            &self.posix_attributes.user_uid_number,
-            &self.posix_attributes.user_name,
-            Some(&self.posix_attributes.user_full_name),
-            query,
-        )
-    }
-
-    /// Subtree filter listing POSIX groups with gidNumber.
-    pub fn build_group_list_filter(&self, query: &str) -> String {
-        Self::build_posix_list_filter(
-            &self.posix_attributes.group_object_class,
-            &self.posix_attributes.group_gid_number,
-            &self.posix_attributes.group_name,
-            None,
-            query,
-        )
-    }
-
     /// Search users for permission-editor autocomplete.
     pub fn search_list_users(
         &self,
@@ -727,12 +705,20 @@ impl IdLdapResolver {
         bind_pw: &str,
         limit: usize,
     ) -> Vec<(String, Option<i32>, String, String)> {
+        let pa = &self.posix_attributes;
+        let filter = Self::build_posix_list_filter(
+            &pa.user_object_class,
+            &pa.user_uid_number,
+            &pa.user_name,
+            Some(&pa.user_full_name),
+            query,
+        );
         self.search_list_posix(
             &self.user_base,
-            &self.build_user_list_filter(query),
-            &self.posix_attributes.user_name,
-            &self.posix_attributes.user_uid_number,
-            &self.posix_attributes.user_full_name,
+            &filter,
+            &pa.user_name,
+            &pa.user_uid_number,
+            &pa.user_full_name,
             bind_dn,
             bind_pw,
             limit,
@@ -816,12 +802,20 @@ impl IdLdapResolver {
         bind_pw: &str,
         limit: usize,
     ) -> Vec<(String, Option<i32>, String, String)> {
+        let pa = &self.posix_attributes;
+        let filter = Self::build_posix_list_filter(
+            &pa.group_object_class,
+            &pa.group_gid_number,
+            &pa.group_name,
+            None,
+            query,
+        );
         self.search_list_posix(
             &self.group_base,
-            &self.build_group_list_filter(query),
-            &self.posix_attributes.group_name,
-            &self.posix_attributes.group_gid_number,
-            &self.posix_attributes.group_name,
+            &filter,
+            &pa.group_name,
+            &pa.group_gid_number,
+            &pa.group_name,
             bind_dn,
             bind_pw,
             limit,
@@ -1094,18 +1088,10 @@ mod tests {
     }
 
     #[test]
-    fn user_list_filter_requires_uid_number() {
-        let r = IdLdapResolver::from_inputs(&LdapResolverInputs::default());
-        let all = r.build_user_list_filter("");
+    fn posix_list_filters_require_numbers() {
+        let all = IdLdapResolver::build_posix_list_filter("posixAccount", "uidNumber", "uid", None, "");
         assert!(all.contains("(uidNumber=*)"));
-        let num = r.build_user_list_filter("1001");
-        assert!(num.contains("(uidNumber=1001)"));
-    }
-
-    #[test]
-    fn group_list_filter_requires_gid_number() {
-        let r = IdLdapResolver::from_inputs(&LdapResolverInputs::default());
-        let all = r.build_group_list_filter("");
-        assert!(all.contains("(gidNumber=*)"));
+        let num = IdLdapResolver::build_posix_list_filter("posixGroup", "gidNumber", "cn", None, "1001");
+        assert!(num.contains("(gidNumber=1001)"));
     }
 }

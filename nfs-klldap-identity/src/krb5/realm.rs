@@ -15,8 +15,8 @@ pub fn extract_host_from_uri(uri: &str) -> String {
         .to_string()
 }
 
-/// Derive a Kerberos realm from an ldap/ldaps URI host. Example:.
-/// Ldaps://kllap.example.com:6360 → "EXAMPLE.COM".
+/// Derive a Kerberos realm from an ldap/ldaps URI host.
+/// Example: ldaps://kllap.example.com:6360 → "EXAMPLE.COM"
 pub fn derive_realm_from_uri(uri: &str) -> Option<String> {
     let host = extract_host_from_uri(uri);
     if host.is_empty() {

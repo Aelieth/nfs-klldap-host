@@ -215,7 +215,7 @@ See [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md) for the ful
 
 ## Identity & Kerberos (idhelper)
 
-`nfs-klldap-idhelper` classifies Kerberos principals (machine `host/`/`nfs/` vs LDAP users), resolves them to uid/gid via SSSD/getent with structured LDAP fallback (`nfs-klldap-identity`), and bulk-seeds/materializes decisions into nss_wrapper + extrausers before Ganesha starts. Ganesha 9.6 `principal2uid` uses in-process libnfsidmap (`nfs4_gss_princ_to_ids` → `getpwnam` under `LD_PRELOAD=nss_wrapper`), not the nfsidmap binary; the shim remains for operator/rpc.idmapd-style fallback calls.
+`nfs-klldap-idhelper` classifies Kerberos principals (machine `host/`/`nfs/`/`root/` vs LDAP users), resolves them to uid/gid via SSSD/getent with structured LDAP fallback (`nfs-klldap-identity`), and bulk-seeds/materializes decisions into nss_wrapper + extrausers before Ganesha starts. Ganesha 9.6 `principal2uid` uses in-process libnfsidmap (`nfs4_gss_princ_to_ids` → `getpwnam` under `LD_PRELOAD=nss_wrapper`), not the nfsidmap binary; the shim remains for operator/rpc.idmapd-style fallback calls.
 
 Inside the container:
 

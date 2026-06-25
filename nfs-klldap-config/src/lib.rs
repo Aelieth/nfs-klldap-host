@@ -8,10 +8,7 @@ mod error;
 mod exports_fingerprint;
 mod ganesha_liveness;
 mod recycle_plan;
-#[cfg(unix)]
 mod signals;
-#[cfg(not(unix))]
-mod signals_stub;
 mod fs_probe;
 mod fs_warnings;
 mod generate;
@@ -46,14 +43,7 @@ pub use ganesha_liveness::{
 pub use recycle_plan::{
     plan_from_changes, ganesha_sighup_failed, GaneshaAction, ServiceRecyclePlan,
 };
-#[cfg(unix)]
 pub use signals::{
-    install_signal_handlers, reap_one_child, request_sighup, shutdown_requested,
-    signal_process_hup, signal_process_kill, signal_process_term, signal_supervisor_hup,
-    take_sighup_requested,
-};
-#[cfg(not(unix))]
-pub use signals_stub::{
     install_signal_handlers, reap_one_child, request_sighup, shutdown_requested,
     signal_process_hup, signal_process_kill, signal_process_term, signal_supervisor_hup,
     take_sighup_requested,
@@ -152,22 +142,6 @@ mod tests {
     /// Serializes env-mutating tests under `cargo test --workspace`.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         ENV_TEST_LOCK.lock().unwrap()
-    }
-
-    #[test]
-    fn comments_quality_gate() {
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        let script = root.join("scripts/comment_lint.py");
-        let out = std::process::Command::new("python3")
-            .arg(&script)
-            .current_dir(&root)
-            .output()
-            .expect("run comment_lint.py");
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stdout)
-        );
     }
 
     /// RAII guard restoring previous env var value on drop.

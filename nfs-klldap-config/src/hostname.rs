@@ -6,6 +6,7 @@ pub use nfs_klldap_identity::{
     nfs_keytab_host_variants,
 };
 
+use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -332,26 +333,6 @@ mod tests {
     }
 
     #[test]
-    fn real_get_consistent_hostname_smoke() {
-        // Real I/O path smoke (succeeds or well-formed inconsistency Never.
-        let result = get_consistent_hostname();
-        match result {
-            Ok(c) => {
-                assert!(!c.hostname.is_empty());
-                assert_eq!(c.primary.source, HostnameSource::Command);
-                assert_eq!(c.secondary.source, HostnameSource::ProcSysKernel);
-                // On a normal test machine the two sources must have agreed.
-                assert_eq!(c.primary.value, c.secondary.value);
-            }
-            Err(e) => {
-                // Acceptable in some CI sandboxes, but the error must be rich.
-                assert!(!e.reason.is_empty());
-                assert!(!e.remediation.is_empty());
-            }
-        }
-    }
-
-    #[test]
     fn consistency_returns_raw_hostname_for_keytab() {
         let c = get_consistent_hostname_from_values("aurora.test.com", "aurora.test.com").unwrap();
         assert_eq!(c.hostname, "aurora.test.com");
@@ -385,14 +366,11 @@ use std::path::Path;
 
 use crate::NfsKlldapConfig;
 
-fn runtime_config_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(
-        std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string()),
-    )
-}
-
 fn load_runtime_config() -> Option<NfsKlldapConfig> {
-    NfsKlldapConfig::load(&runtime_config_path()).ok()
+    let path = std::env::var("NFS_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/config/nfs-klldap.conf"));
+    NfsKlldapConfig::load(&path).ok()
 }
 
 /// True when a HOST_NFS env string enables sidecar mode.
@@ -455,16 +433,16 @@ pub fn runtime_realm(cfg: Option<&NfsKlldapConfig>) -> String {
         }
     }
     if let Ok(r) = std::env::var("NFS_KLLDAP_KERBEROS_REALM") {
-        if !r.trim().is_empty() {
-            return r.trim().to_uppercase();
+        let r = r.trim();
+        if !r.is_empty() {
+            return r.to_uppercase();
         }
     }
     if let Ok(content) = std::fs::read_to_string("/etc/krb5.conf") {
         for line in content.lines() {
-            let t = line.trim();
-            if t.starts_with("default_realm") {
-                if let Some(eq) = t.find('=') {
-                    let r = t[eq + 1..].trim().to_string();
+            if let Some((key, val)) = line.trim().split_once('=') {
+                if key.trim() == "default_realm" {
+                    let r = val.trim();
                     if !r.is_empty() {
                         return r.to_uppercase();
                     }

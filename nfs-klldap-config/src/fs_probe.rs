@@ -1,4 +1,4 @@
-//! Probes /proc/self/mountinfo for POSIX ACL capability on share paths.
+//! Pure-Rust /proc/self/mountinfo probe for POSIX ACL capability on share paths.
 
 use std::io;
 use std::path::Path;
@@ -13,8 +13,7 @@ pub struct FsCapabilities {
     pub acl_capable: bool,
 }
 
-/// Effective Ganesha EXPORT flags after explicit TOML overrides.
-/// Probe results may also apply.
+/// Effective Ganesha EXPORT flags after explicit TOML overrides and probe results.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveShareFlags {
     pub disable_acl: bool,
@@ -31,7 +30,7 @@ struct MountEntry {
     super_options: Vec<String>,
 }
 
-/// Probes live mountinfo and returns ACL-capable defaults when lookup fails.
+/// Probe path against live mountinfo; on failure assume ACL-capable so generate never aborts.
 pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
     let mountinfo_path = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH")
         .unwrap_or_else(|_| "/proc/self/mountinfo".to_string());
@@ -39,7 +38,7 @@ pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
     Ok(probe_from_mountinfo(&content, path))
 }
 
-/// Probes a path against fixture or live mountinfo content for unit tests.
+/// Probe path against fixture or live mountinfo content (unit-test entry point).
 pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
     let entries = parse_mountinfo(content);
     let path_str = path.to_string_lossy();
@@ -60,7 +59,7 @@ pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
     }
 }
 
-/// Merges share flags with probe and sets safe krb5p defaults on limited FS.
+/// Merge explicit share flags with probe; limited FS defaults to safe krb5p EXPORT settings.
 pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> EffectiveShareFlags {
     let probe_limited = !caps.acl_capable;
     let disable_acl = share.disable_acl.unwrap_or(probe_limited);
@@ -86,7 +85,7 @@ fn parse_mountinfo(content: &str) -> Vec<MountEntry> {
 
 fn parse_mountinfo_line(line: &str) -> Option<MountEntry> {
     let parts: Vec<&str> = line.split_whitespace().collect();
-    // Mount_id parent_id major:minor root mount_point then fstype Source.
+    // mount_id parent_id major:minor root mount_point ... - fstype source super_options
     if parts.len() < 10 {
         return None;
     }
@@ -245,11 +244,9 @@ mod tests {
 
     #[test]
     fn compute_effective_flags_explicit_override() {
-        let share = Share {
-            disable_acl: Some(false),
-            manage_gids: Some(true),
-            ..Default::default()
-        };
+        let mut share = Share::default();
+        share.disable_acl = Some(false);
+        share.manage_gids = Some(true);
         let caps = FsCapabilities {
             fstype: "btrfs".into(),
             mount_options: vec!["noacl".into()],

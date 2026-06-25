@@ -33,7 +33,6 @@ fn generate_with_mountinfo(mountinfo: &str, toml: &str) -> String {
         ganesha_conf: out.join("ganesha.conf"),
         exports_dir: out.join("exports.d"),
         idmap_conf: out.join("idmapd.conf"),
-        nfs_conf: out.join("nfs.conf"),
     };
     generate_all(&cfg, &paths).expect("generate");
 

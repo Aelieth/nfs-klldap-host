@@ -243,7 +243,7 @@ async fn main() {
             .ok()
             .or_else(|| config.webui.tls_key.clone())
             .unwrap_or(default_key);
-        let tls_paths = crate::certs::ensure_webui_tls_certs(
+        let mut tls_paths = crate::certs::ensure_webui_tls_certs(
             &cert_path,
             &key_path,
             &cert_hostname,
@@ -251,28 +251,64 @@ async fn main() {
         .expect("failed to ensure WebUI TLS certificates");
 
         println!("\nTLS: enabled (self-signed or custom)");
-        println!("Listening on https://{addr} (TLS enabled via axum-server)");
         println!("Certificate: {}", tls_paths.cert.display());
-        // Note: if NFS_KLLDAP_WEBUI_TLS_CERT/KEY or [webui] were used they.
 
-        let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(
-            &tls_paths.cert,
-            &tls_paths.key,
-        )
-        .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("FATAL: Failed to load TLS certificate and key:");
-                eprintln!("  cert: {}", tls_paths.cert.display());
-                eprintln!("  key : {}", tls_paths.key.display());
-                eprintln!("  error: {e}");
-                eprintln!("The WebUI cannot start without valid TLS material.");
-                std::process::exit(1);
-            }
-        };
+        let rustls_config =
+            match axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                &tls_paths.cert,
+                &tls_paths.key,
+            )
+            .await
+            {
+                Ok(c) => c,
+                Err(first_err) => {
+                    eprintln!(
+                        "WARNING: TLS material at {} failed to load ({first_err}); regenerating self-signed cert",
+                        tls_paths.cert.display()
+                    );
+                    tls_paths = crate::certs::regenerate_webui_tls_certs(
+                        &cert_path,
+                        &key_path,
+                        &cert_hostname,
+                    )
+                    .expect("failed to regenerate WebUI TLS certificates after load failure");
+                    match axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                        &tls_paths.cert,
+                        &tls_paths.key,
+                    )
+                    .await
+                    {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("FATAL: Failed to load TLS certificate and key:");
+                            eprintln!("  cert: {}", tls_paths.cert.display());
+                            eprintln!("  key : {}", tls_paths.key.display());
+                            eprintln!("  error: {e}");
+                            eprintln!("The WebUI cannot start without valid TLS material.");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            };
 
-        axum_server::bind_rustls(addr.parse().expect("invalid bind address"), config)
+        let webui_port = addr
+            .split(':')
+            .nth(1)
+            .unwrap_or("9630");
+        let sans = crate::certs::cert_sans_for_host(&cert_hostname);
+        println!("Listening on https://{addr} (TLS enabled via axum-server)");
+        println!(
+            "Open https://{}:{webui_port}/setup (self-signed; accept the browser warning if prompted)",
+            cert_hostname
+        );
+        if sans.len() > 1 {
+            println!("Certificate SANs: {}", sans.join(", "));
+        }
+        println!(
+            "If you use a different hostname or IP, ensure it appears in the SAN list above."
+        );
+
+        axum_server::bind_rustls(addr.parse().expect("invalid bind address"), rustls_config)
             .serve(app.into_make_service())
             .await
             .expect("WebUI HTTPS server failed");

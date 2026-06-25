@@ -340,5 +340,5 @@ This combination (bind mounts + root inside + the two caps + `--uts=host` + expl
 verify-ganesha.sh            # in-container Ganesha/export + network checks (/usr/local/bin/)
 ganesha-ctl show-fragments
 getent passwd <user>
-NFS_TEST_USER_PW='...' ./scripts/test-share-access.sh   # host-side krb5p mount/write to configured shares
+SCRATCH=/tmp/... NFS_TEST_USER_PW='...' ./scripts/capture-share-access-evidence.sh   # krb5p mount/write proof (transcript + ganesha delta + host artifacts)
 ```

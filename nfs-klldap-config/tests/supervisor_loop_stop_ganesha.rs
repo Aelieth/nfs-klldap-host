@@ -161,11 +161,23 @@ exec sleep 3600
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
+    let stub_ganesha = stubs.join("ganesha.nfsd");
+    let stub_pid = Command::new("pgrep")
+        .args(["-f", "--"])
+        .arg(stub_ganesha.to_string_lossy().as_ref())
+        .output()
+        .expect("pgrep stub ganesha")
+        .stdout;
+    let stub_pid = String::from_utf8_lossy(&stub_pid)
+        .lines()
+        .next()
+        .and_then(|l| l.trim().parse::<u32>().ok())
+        .expect("stub ganesha pid");
     assert!(
-        Command::new("pkill")
-            .args(["-TERM", "ganesha.nfsd"])
+        Command::new("kill")
+            .args(["-TERM", &stub_pid.to_string()])
             .status()
-            .expect("pkill ganesha")
+            .expect("kill stub ganesha")
             .success(),
         "must stop ganesha stub before export-change SIGHUP"
     );

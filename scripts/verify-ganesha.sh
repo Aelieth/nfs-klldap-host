@@ -35,7 +35,8 @@ fi
 echo
 echo "[3] Export fragments (on-disk, from nfs-klldap.conf)..."
 if command -v ganesha-ctl >/dev/null 2>&1; then
-    ganesha-ctl show-fragments 2>/dev/null | head -40 || echo "  (could not list fragments)"
+    # head may SIGPIPE ganesha-ctl; that is not a listing failure.
+    ganesha-ctl show-fragments 2>/dev/null | head -40 || true
 else
     echo "  WARN: ganesha-ctl not found in PATH"
 fi

@@ -51,10 +51,12 @@ pub fn pgrep_live_pids(name: &str) -> Vec<u32> {
         .collect()
 }
 
-/// Reconcile tracked Ganesha pid: keep live tracked pid, else first live pgrep match.
+/// Reconcile tracked Ganesha pid: keep live tracked pid; when tracked is dead return
+/// None (do not pgrep — another host/container nfsd must not masquerade as ours).
+/// Pgrep fallback applies only when the supervisor never recorded a pid.
 pub fn reconcile_ganesha_pid(tracked: Option<u32>) -> Option<u32> {
-    if tracked.is_some_and(process_is_live) {
-        return tracked;
+    if let Some(pid) = tracked {
+        return process_is_live(pid).then_some(pid);
     }
     pgrep_live_pids("ganesha.nfsd").into_iter().next()
 }
@@ -102,6 +104,18 @@ mod tests {
         let bogus = "ganesha.nfsd-this-test-name-will-not-exist";
         assert!(pgrep_pids(bogus).is_empty());
         assert!(pgrep_live_pids(bogus).is_empty());
+    }
+
+    #[test]
+    fn dead_tracked_pid_does_not_pgrep_fallback() {
+        let _guard = lock_tests();
+        let mut child = Command::new("true").spawn().expect("spawn true");
+        let pid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!process_is_live(pid));
+        assert_eq!(reconcile_ganesha_pid(Some(pid)), None);
+        assert!(!ganesha_is_live(Some(pid)));
+        let _ = child.wait();
     }
 
     #[test]

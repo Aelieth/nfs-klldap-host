@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use nfs_klldap_config::{
     compute_startup_step, compute_wizard_step, fingerprint_exports_dir,
-    fingerprint_identity_artifacts, ganesha_is_live, ganesha_sighup_failed,
+    fingerprint_identity_artifacts, ganesha_sighup_failed,
     install_signal_handlers, is_preconfigured_deployment, is_setup_wizard_complete,
-    mark_setup_wizard_complete, pgrep_live_pids, pgrep_pids, plan_from_changes, process_is_live,
-    reap_one_child, reconcile_ganesha_pid, resolve_host_nfs_mode, resolve_keytab_path,
+    mark_setup_wizard_complete, plan_from_changes, process_is_live,
+    reap_one_child, resolve_host_nfs_mode, resolve_keytab_path,
     request_sighup, run_post_generate_hooks, runtime_hostname, runtime_realm, shutdown_requested,
     signal_process_hup, signal_process_kill, signal_process_term, supervisor_loop_tick,
     take_sighup_requested, webui_setup_url, ConfigError,
@@ -666,7 +666,7 @@ while :; do :; done
 
     fn handle_sighup(&mut self) -> Result<(), String> {
         reap_one_child();
-        self.pids.ganesha = reconcile_ganesha_pid(self.pids.ganesha);
+        self.refresh_tracked_ganesha_pid();
         self.log_info("SIGHUP received — reloading configuration...");
         let exports_fp_before = fingerprint_exports_dir(&self.env.exports_dir);
         let identity_fp_before = fingerprint_identity_artifacts(
@@ -776,50 +776,44 @@ while :; do :; done
         })
     }
 
+    /// Drop a dead tracked pid; never pgrep — another host/container nfsd is not ours.
+    fn refresh_tracked_ganesha_pid(&mut self) {
+        if self.pids.ganesha.is_some_and(|pid| !process_is_live(pid)) {
+            self.pids.ganesha = None;
+        }
+    }
+
     fn ganesha_running(&self) -> bool {
-        ganesha_is_live(self.pids.ganesha)
+        self.pids.ganesha.is_some_and(process_is_live)
     }
 
     fn reload_ganesha_exports(&mut self) -> bool {
-        if let Some(pid) = reconcile_ganesha_pid(self.pids.ganesha) {
-            self.pids.ganesha = Some(pid);
-            signal_process_hup(pid);
-            self.log_info(&format!(
-                "Sent SIGHUP to ganesha.nfsd (pid {pid}) for export reload"
-            ));
-            return true;
+        let Some(pid) = self.pids.ganesha else {
+            return false;
+        };
+        if !process_is_live(pid) {
+            self.pids.ganesha = None;
+            return false;
         }
-        self.pids.ganesha = None;
-        false
+        signal_process_hup(pid);
+        self.log_info(&format!(
+            "Sent SIGHUP to ganesha.nfsd (pid {pid}) for export reload"
+        ));
+        true
     }
 
     fn stop_ganesha(&mut self) {
         self.log_info("stop_ganesha: sending SIGTERM and waiting for exit");
-        let mut pids: Vec<u32> = Vec::new();
-        if let Some(pid) = self.pids.ganesha {
-            if process_is_live(pid) {
-                pids.push(pid);
-            }
+        let Some(pid) = self.pids.ganesha else {
+            self.log_info("stop_ganesha: no tracked ganesha.nfsd to stop");
+            return;
+        };
+        if !process_is_live(pid) {
+            self.log_info("stop_ganesha: tracked ganesha.nfsd already exited");
+            self.pids.ganesha = None;
+            return;
         }
-        for pid in pgrep_live_pids("ganesha.nfsd") {
-            if !pids.contains(&pid) {
-                pids.push(pid);
-            }
-        }
-        // Fall back to zombie pgrep hits so SIGTERM can reap them.
-        if pids.is_empty() {
-            for pid in pgrep_pids("ganesha.nfsd") {
-                if !pids.contains(&pid) {
-                    pids.push(pid);
-                }
-            }
-        }
-        for pid in &pids {
-            signal_process_term(*pid);
-        }
-        if pids.is_empty() {
-            pkill_process("-TERM", "ganesha.nfsd");
-        }
+        signal_process_term(pid);
         let term_wait_secs = std::env::var("NFS_KLLDAP_STOP_GANESHA_TERM_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -827,7 +821,7 @@ while :; do :; done
         let deadline =
             std::time::Instant::now() + Duration::from_secs(term_wait_secs);
         loop {
-            if pgrep_live_pids("ganesha.nfsd").is_empty() && pgrep_pids("ganesha.nfsd").is_empty() {
+            if !process_is_live(pid) {
                 self.log_info("stop_ganesha: process exited after SIGTERM");
                 self.pids.ganesha = None;
                 return;
@@ -839,13 +833,12 @@ while :; do :; done
             reap_one_child();
         }
         self.log_warn("stop_ganesha: timeout — escalating to SIGKILL");
-        for pid in &pids {
-            signal_process_kill(*pid);
+        if process_is_live(pid) {
+            signal_process_kill(pid);
         }
-        pkill_process("-KILL", "ganesha.nfsd");
         let kill_deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
-            if pgrep_live_pids("ganesha.nfsd").is_empty() && pgrep_pids("ganesha.nfsd").is_empty() {
+            if !process_is_live(pid) {
                 self.log_info("stop_ganesha: process exited after SIGKILL");
                 self.pids.ganesha = None;
                 return;

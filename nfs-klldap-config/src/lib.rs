@@ -102,8 +102,8 @@ pub use nfs_klldap_identity::{
     KeytabInfo,
 };
 
-// Structured LDAP resolution (IdLdapResolver)
-// shared with nfs-klldap-identity / WebUI LDAP client.
+// Structured LDAP resolution (IdLdapResolver) shared with
+// Nfs-klldap-identity / WebUI LDAP client.
 pub mod idmap;
 pub use idmap::{
     classify_principal, escape_ldap_filter, extract_first_attr_value, from_sssd_section,
@@ -111,8 +111,8 @@ pub use idmap::{
     IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry,
 };
 
-// Centralized constants (Ganesha 9.6 trixie + hybrid principal + POSIX
-// idmapd).
+// Centralized constants (Ganesha 9.6 trixie + hybrid
+// Principal + POSIX idmapd).
 pub use constants::{
     DEFAULT_GROUP_GID_ATTR, DEFAULT_GROUP_NAME_ATTR, DEFAULT_GROUP_OBJECT_CLASS,
     DEFAULT_USER_FULLNAME_ATTR, DEFAULT_USER_GID_ATTR, DEFAULT_USER_HOME_ATTR,
@@ -215,10 +215,8 @@ mod tests {
     }
 
     fn minimal_cfg() -> NfsKlldapConfig {
-        // Clear at construction time so the internal validate sees a clean env.
-        // Callers that later mutate the returned cfg and re-validate must keep
-        // the result of clean_core_env() alive for the lifetime of the test
-        // (see uses of `let _guards = clean_core_env();` below).
+        // Clear at construction time so the internal validate sees a clean env
+        // Result of clean_core_env() alive for the lifetime of the test (see u
         let _guards = clean_core_env();
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://kllap.test:6360".into(),
@@ -295,8 +293,8 @@ mod tests {
         assert_eq!(sssd.matches("ldap_pwd_policy = none").count(), 1);
         assert!(sssd.contains("ignored_user_attributes"));
 
-        // Auto-derived Kerberos KDC settings (co-located
-        // same host/realm as ldap + krb5.conf)
+        // Auto-derived Kerberos KDC settings (co-located same
+        // Host/realm as ldap + krb5.conf).
         assert!(sssd.contains("krb5_realm = TEST"));
         assert!(sssd.contains("krb5_server = kllap.test"));
         assert!(sssd.contains("krb5_kpasswd = kllap.test"));
@@ -334,11 +332,11 @@ mod tests {
         assert!(!main.contains("Rquota_Port"));
         assert!(!main.contains("IdmapConf"));
         assert!(!main.contains("UseGetpwnam"));
-        // Enable_*=false are safe and explicit
-        // the dangerous keys above are omitted.
+        // Enable_*=false are safe and explicit the dangerous keys
+        // Above are omitted.
 
-        // Baseline LOG always emitted (idhelper
-        // operators need visibility on IDMAPPER).
+        // Baseline LOG always emitted (idhelper operators need
+        // Visibility on IDMAPPER).
         assert!(
             main.contains("LOG {"),
             "baseline LOG block should be present even without GANESHA_DEBUG"
@@ -376,10 +374,8 @@ mod tests {
         let _env = env_lock();
         let _guards = clean_core_env();
 
-        // 1) Default (no GANESHA_DEBUG)
-        // baseline LOG (with CLIENTID etc) is intentionally
-        // always present now.
-        // Only the FULL_DEBUG variant is controlled by the env var.
+        // 1) Default (no GANESHA_DEBUG) baseline LOG (with CLIENTID etc) is in
+        // Now. Only the FULL_DEBUG variant is controlled by the env var.
         let cfg = minimal_cfg();
         let tmp = tempfile::tempdir().unwrap();
         let paths = GenerationPaths {
@@ -422,8 +418,8 @@ mod tests {
         );
         assert!(main_debug.contains("Default_Log_Level = DEBUG;"));
         assert!(main_debug.contains("IDMAPPER = FULL_DEBUG;"));
-        // FSAL only in fragments
-        // top-level NFS4 is DEBUG for idhelper observer.
+        // FSAL only in fragments top-level NFS4 is DEBUG for
+        // Idhelper observer.
         assert!(main_debug.contains("NFS4 = DEBUG;"));
         assert!(
             !main_debug.contains("RECOVERY"),
@@ -580,8 +576,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("partial.conf");
 
-        // Partial config (missing bind creds)
-        // load_host_paths_only must still succeed.
+        // Partial config (missing bind creds) load_host_paths_only
+        // Must still succeed.
         let partial = r#"
             ldap_uri = "ldaps://kllap.test:6360"
             [[shares]]

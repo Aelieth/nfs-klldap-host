@@ -23,7 +23,7 @@ pub struct Session {
 }
 
 pub struct AuthManager {
-    /// token -> session
+    /// Active sessions keyed by opaque bearer token.
     sessions: RwLock<HashMap<String, Session>>,
     /// Absolute path to the simple password sidecar (next to nfs-klldap.conf)
     simple_pw_path: PathBuf,

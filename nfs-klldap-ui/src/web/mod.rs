@@ -67,8 +67,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// true when direct TLS or X-Forwarded-Proto: https.
-    /// Drives the cookie Secure flag.
+    /// Returns true for direct TLS or X-Forwarded-Proto https (cookie Secure).
     pub fn is_https(&self, headers: &HeaderMap) -> bool {
         self.direct_tls
             || headers
@@ -127,8 +126,8 @@ pub fn router(state: AppState) -> Router {
         .route("/login", get(login_page).post(login))
         .route("/setup-password", post(setup_password))
         .route("/logout", get(logout).post(logout))
-        // Public status for the post-restart poller (no auth
-        // used by restarting.html)
+        // Public status for the post-restart poller (no auth used
+        // By restarting.html).
         .route("/restart-status", get(restart_status))
         // === Public: first-run setup wizard (replaces terminal TUI) ===
         .route("/setup", get(setup::setup_redirect))
@@ -323,11 +322,8 @@ ldap_default_authtok = "sekret"
 
         let app = router(state);
 
-        // Exercise override flags:
-        // - server_hostname + override=true → should be written explicitly
-        // - sssd_user_base with override=false → removed (derive allowed)
-        // - kerberos_realm + override → written
-        // ldap_uri (key) always written
+        // Exercise override flags: - server_hostname + override=true → should 
+        // Removed (derive allowed) - kerberos_realm + override → written ldap_
         let body = "ldap_uri=ldaps%3A%2F%2Fnewhost.example.com%3A6360\
 &server_hostname=override-host.example.com&override_server_hostname=true\
 &sssd_user_base=ou%3Dpeople%2Cdc%3Dfoo&override_sssd_user_base=false\
@@ -353,10 +349,8 @@ ldap_default_authtok = "sekret"
         assert!(written.contains("realm = \"OVERRIDE.REALM\""), "kerberos override must be persisted when flag true");
         assert!(!written.contains("ldap_user_search_base"), "sssd_user_base must be omitted (no override) so derivation applies");
 
-        // ganesha: even though not mentioned in this POST
-        // the !override path forces the default into the source
-        // (addresses the "value removed entirely" complaint
-        // other derived fields intentionally omit).
+        // Ganesha: even though not mentioned in this POST the !override path f
+        // The "value removed entirely" complaint other derived fields intentio
         assert!(written.contains("default_security = \"krb5p\""), "ganesha must default to krb5p and be materialized when not overridden");
     }
 
@@ -561,9 +555,8 @@ host_path = "/media/data"
         let token = auth.create_privileged_session("testadmin");
         let app = router(state);
 
-        // Save share with empty export field (optional pseudo path).
-        // Include the cache_profile field so collect
-        // apply exercise the profile path.
+        // Save share with empty export field (optional pseudo path). Include t
+        // Field so collect apply exercise the profile path.
         let body = "share_name_0=data&share_host_0=%2Ftmp%2Fdata&share_export_0=&share_rw_0=true&share_cache_profile_0=Default";
         let req = Request::builder()
             .method("POST")
@@ -598,15 +591,13 @@ host_path = "/media/data"
 
     #[tokio::test]
     async fn settings_save_shares_places_shares_after_webui_on_first_add() {
-        // Start from a config shaped like the default template: ends with [webui] + its
-        // commented keys and has no [[shares]] yet.
-        // This reproduces the reported ordering bug.
+        // Start from a config shaped like the default template: ends with [web
+        // No [[shares]] yet. This reproduces the reported ordering bug.
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("test-nfs-klldap.conf");
 
-        // Close approximation of generate_default_template() output for the sections
-        // the shares-save path must not disturb
-        // plus the exact [webui] trailer.
+        // Close approximation of generate_default_template() output for the se
+        // Path must not disturb plus the exact [webui] trailer.
         let initial = r#"ldap_uri = "ldaps://kllap.test:6360"
 
 [storage]
@@ -640,8 +631,8 @@ default_security = "krb5p"
         );
         let fs = Arc::new(FsManager::new((*config).clone()));
 
-        // Dummy LLDAP client (settings handlers don't use it)
-        // match make_test_state_with_temp_config.
+        // Dummy LLDAP client (settings handlers don't use it) match
+        // Make_test_state_with_temp_config.
         let default_mapping = nfs_klldap_config::PosixAttributeMapping {
             user_object_class: "posixAccount".to_string(),
             group_object_class: "posixGroup".to_string(),
@@ -954,7 +945,7 @@ default_security = "krb5p"
         );
     }
 
-    /// keytab_alert is display-only and must not block auth.
+    /// The keytab_alert banner is display-only and must not block auth.
     #[tokio::test]
     async fn keytab_mismatch_alert_does_not_break_auth_or_protected_actions() {
         let (state, _tmp) = make_test_state_with_temp_config();

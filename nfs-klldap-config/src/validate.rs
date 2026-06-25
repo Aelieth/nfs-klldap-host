@@ -129,8 +129,8 @@ impl NfsKlldapConfig {
             normalize_blank(&mut s.ldap_group_gid_number);
             normalize_blank(&mut s.ldap_group_member);
 
-            // kllldap_ignored_attributes (Option<bool>) defaulted in generator
-            // allow explicit false.
+            // Kllldap_ignored_attributes (Option<bool>) defaulted in
+            // Generator allow explicit false.
             normalize_blank(&mut s.domain);
             normalize_blank(&mut s.auth_provider);
             normalize_blank(&mut s.chpass_provider);
@@ -190,13 +190,8 @@ impl NfsKlldapConfig {
             });
         }
 
-        // Derive search bases from effective realm.
-        // Use the main search_base (dc=...) as the default for user and group searches.
-        // This lets Subtree searches discover posix entries anywhere in the tree,
-        // including under ou=users, ou=people, or nested sub-OUs (e.g.
-        // ou=testing,ou=users).
-        // Users can still set explicit ldap_user_search_base / ldap_group_search_base
-        // in nfs-klldap.conf to narrow the scope if desired.
+        // Derive search bases from effective realm. Use the main search_base (
+        // Ou=people, or nested sub-OUs (e.g. ou=testing,ou=users). Users can s
         let base_dn = format!(
             "dc={}",
             self.effective_realm().to_lowercase().replace('.', ",dc=")
@@ -253,10 +248,8 @@ impl NfsKlldapConfig {
                 )));
             }
             normalize_blank(&mut share.ganesha_path);
-            // Normalize export_path to an absolute NFSv4 Pseudo.
-            // Ganesha requires a leading /.
-            // Internal EXPORT.Path comes from serve_path_for.
-            // ganesha_path override applies when set.
+            // Normalize export_path to an absolute NFSv4 Pseudo. Ganesha requi
+            // Comes from serve_path_for. ganesha_path override applies when se
             {
                 let ep = share.export_path.take();
                 let normalized = match ep {
@@ -366,7 +359,7 @@ impl NfsKlldapConfig {
     }
 
     /// Uppercase NFSv4 domain for ganesha.conf DomainName and idmapd.conf.
-    /// libnfsidmap is case-sensitive.
+    /// Realm strings must match case because libnfsidmap is case-sensitive.
     pub fn nfsv4_domain(&self) -> String {
         self.effective_realm().to_ascii_uppercase()
     }
@@ -404,9 +397,8 @@ impl NfsKlldapConfig {
             }
         }
 
-        // [sssd] bind creds
-        // core + secret path (NFS_KLLDAP_LLDAP_* supported for UI/compat
-        // generate)
+        // [sssd] bind creds core + secret path (NFS_KLLDAP_LLDAP_*
+        // Supported for UI/compat generate).
         if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN") {
             let t = v.trim();
             if !t.is_empty() {
@@ -480,7 +472,7 @@ impl NfsKlldapConfig {
         }
 
         // [sssd] TLS options (ldap_tls_reqcert, ldap_tls_cacert
-        // ldap_id_use_start_tls)
+        // Ldap_id_use_start_tls).
         if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT") {
             let t = v.trim();
             if !t.is_empty() {
@@ -498,8 +490,8 @@ impl NfsKlldapConfig {
             self.sssd.ldap_id_use_start_tls = Some(t == "true" || t == "1" || t == "yes" || t == "on");
         }
 
-        // [webui] TLS mode
-        // certs (only NFS_KLLDAP_WEBUI_* prefixed forms supported; env wins)
+        // [webui] TLS mode certs (only NFS_KLLDAP_WEBUI_* prefixed
+        // Forms supported; env wins).
         if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
             let t = v.trim().to_ascii_lowercase();
             let disabled = t == "off" || t == "false" || t == "0" || t == "no";
@@ -548,9 +540,8 @@ impl NfsKlldapConfig {
             return format!("{}{}", root, sub);
         }
 
-        // Degenerate host_path
-        // fall back to legacy export_path / name behavior
-        // Old shallow or export-driven shares keep a deterministic location.
+        // Degenerate host_path fall back to legacy export_path / name behavior
+        // Export-driven shares keep a deterministic location.
         let ep_owned: String = share
             .export_path
             .as_deref()

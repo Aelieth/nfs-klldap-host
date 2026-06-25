@@ -86,8 +86,8 @@ fn parse_mountinfo(content: &str) -> Vec<MountEntry> {
 
 fn parse_mountinfo_line(line: &str) -> Option<MountEntry> {
     let parts: Vec<&str> = line.split_whitespace().collect();
-    // mount_id parent_id major:minor root mount_point
-    // then fstype source super_options
+    // Mount_id parent_id major:minor root mount_point then fstype
+    // Source super_options.
     if parts.len() < 10 {
         return None;
     }

@@ -28,7 +28,7 @@ impl std::error::Error for LdapError {}
 
 #[derive(Debug)]
 pub struct LdapClient {
-    /// ldap:// or ldaps:// URI from the central config (same one SSSD uses).
+    /// LDAP URI from central config (ldap:// or ldaps://, same as SSSD).
     ldap_uri: String,
     /// Effective search base for users (supports child OUs via Subtree scope).
     user_base: String,
@@ -223,11 +223,8 @@ impl LdapClient {
         if self.no_tls_verify {
             s = s.set_no_tls_verify(true);
         }
-        // TLS provider is installed early at application startup (see main.rs).
-        // ldap3 handles the rest (roots, config, close_notify on unbind
-        // etc.).
-        // Short-lived connections + explicit unbind() are intentional for
-        // compatibility with strict rustls LDAPS servers like KLLDAP.
+        // TLS provider is installed early at application startup (see main.rs)
+        // Connections + explicit unbind() are intentional for compatibility wi
         s
     }
 
@@ -439,10 +436,8 @@ impl LdapClient {
     }
 
     async fn get_or_bind_service(&mut self) -> Result<(), LdapError> {
-        // No-op for now (we use fresh connect+bind+op+unbind per call inside
-        // spawn_blocking because of the "sync" ldap3 API choice for KLLDAP compat).
-        // This keeps things simple and safe.
-        // Long-lived conn optimization possible later.
+        // No-op for now (we use fresh connect+bind+op+unbind per call inside s
+        // KLLDAP compat). This keeps things simple and safe. Long-lived conn o
         if self.username.is_none() || self.password.is_none() {
             return Err(LdapError::Auth("no service credentials".into()));
         }
@@ -916,8 +911,8 @@ impl LdapClient {
             }
         }
 
-        // Recent search cache (2m): re-apply query filter
-        // stale keys must not bypass typing.
+        // Recent search cache (2m): re-apply query filter stale keys
+        // Must not bypass typing.
         let search_cached = self.cache_get_search(&cache_key, true);
         if let Some(cached) = search_cached.clone() {
             for (id, uid, display) in cached {
@@ -935,8 +930,8 @@ impl LdapClient {
             }
         }
 
-        // LDAP when caches miss, typed query misses
-        // or a stale empty __all__ cache blocks results.
+        // LDAP when caches miss, typed query misses or a stale empty
+        // __all__ cache blocks results.
         let needs_ldap = if q_orig.is_empty() {
             search_cached.as_ref().is_none_or(|c| c.is_empty())
         } else {
@@ -1187,8 +1182,8 @@ impl LdapClient {
     }
 
     async fn user_is_member_of(&self, username: &str, group_name: &str) -> bool {
-        // Fast path: if we just verified this exact user
-        // use the memberOf list we already fetched.
+        // Fast path: if we just verified this exact user use the memberOf
+        // List we already fetched.
         if let Some(admin_dn) = self.resolve_admin_group_dn(group_name).await {
             if self.has_recent_memberof(username, &admin_dn) {
                 return true;
@@ -1214,8 +1209,8 @@ impl LdapClient {
             _ => return false,
         };
 
-        // After we have the group DN
-        // the recent verify data may still help for this group.
+        // After we have the group DN the recent verify data may still
+        // Help for this group.
         if self.has_recent_memberof(username, &group_dn) {
             return true;
         }

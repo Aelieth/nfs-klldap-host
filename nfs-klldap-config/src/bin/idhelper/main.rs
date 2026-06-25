@@ -36,7 +36,7 @@ use resolve::resolve_principal;
 
 /// Try to perform RESOLVE via the running daemon's unix socket.
 /// Returns Some(Resolved) on success (the daemon did the work + materialize).
-/// Falls back to local logic in the caller if this returns None.
+/// Returns None so the caller performs local resolve logic instead.
 fn try_resolve_via_socket(principal: &str) -> Option<Resolved> {
     let mut stream = UnixStream::connect(SOCKET_PATH).ok()?;
     let req = format!("RESOLVE {}\n", principal);
@@ -190,8 +190,8 @@ fn main() {
         return;
     }
 
-    // If no subcommand and we look like we were exec'd as the main
-    // show help once.
+    // If no subcommand and we look like we were exec'd as the
+    // Main show help once.
     if args.len() <= 1 {
         // Allow being started as a simple long-lived process via other means.
         // Default to daemon behavior only if explicitly requested.
@@ -341,23 +341,16 @@ mod tests {
 
     #[test]
     fn materialize_always_includes_root_uid0_for_immediate_nss_hits() {
-        // Critical for cold-start: even with no principals materialized yet,
-        // nss_passwd must contain a root line so getpwuid_r(0) succeeds for
-        // uid2grp on the very first host/ machine principal compound.
-        // (Prevents the "getpwuid_r for uid 0 failed
-        // error 2" in first-access logs.)
-        // We simulate the lines that materialize builds (the actual function
-        // uses const paths that are hard to redirect in unit tests; helpers
-        // + the unconditional root injection rule are exercised here + in
-        // the caller at daemon start).
+        // Critical for cold-start: even with no principals materialized yet, n
+        // Logs.) We simulate the lines that materialize builds (the actual fun
         let mut passwd_lines: Vec<String> = vec![];
         // Simulate the exact injection rule added to materialize_nss_wrappers
         if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
             passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
         }
         assert!(passwd_lines[0].starts_with("root:x:0:0:"));
-        // When a machine is also present
-        // its name line + the root group are there too.
+        // When a machine is also present its name line + the root
+        // Group are there too.
         let mut c = IdCache::default();
         let machine = Resolved { principal: "host/x@EX".into(), name: "x".into(), uid: 0, gid: 0, kind: PrincipalKind::Machine, source: "s".into() };
         c.insert(machine);
@@ -524,7 +517,7 @@ mod tests {
     #[test]
     fn extract_rejects_nil_from_conf_group() {
         // Lines often contain conf = (nil) after a good name= group
-        // must never emit host/nil
+        // Must never emit host/nil.
         let line = r#"key_locate :CLIENT ID :F_DBG :Locate Client Record seeking Key=... {{... name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} ...}}"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         if let Some(c) = r {
@@ -608,7 +601,7 @@ mod tests {
     #[test]
     fn stress_extract_on_trace_fragments_no_garbage() {
         // Regression: Ganesha log fragments must not yield host/nil
-        // host/clientid, etc.
+        // Host/clientid, etc.
         let fragments = vec![
             r#"conf = (nil) {NULL} unconf = (nil) {NULL}"#,
             r#"clientid=Unique=0x6a375213 Counter=0x00000001"#,

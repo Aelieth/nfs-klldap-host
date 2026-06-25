@@ -193,11 +193,8 @@ pub(crate) async fn index(
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
 
-    // Build display-oriented share cards. Centralizes:
-    // - Client NFS path from keytab_hostname (matches mount commands).
-    // - Compact labels for RW/RO, root-squash/no, and cache profile.
-    // Build share cards: NFS path from keytab hostname + export pseudo
-    // RW/squash/cache labels.
+    // Build display-oriented share cards. Centralizes: - Client NFS path from 
+    // Root-squash/no, and cache profile. Build share cards: NFS path from keyt
     let server = &state.keytab_hostname;
     let display_shares: Vec<ShareInfo> = state
         .config
@@ -501,18 +498,14 @@ pub(crate) async fn apply_permissions(
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
 
-    // Numeric bypass (core of the inline editor UX):
-    // - Hidden uid/gid from search click (fast, cached)
-    // - Direct numeric entry (no LDAP roundtrip)
-    // - Name → resolve via LLDAP (only when necessary)
+    // Numeric bypass (core of the inline editor UX): - Hidden uid/gid from sea
+    // Entry (no LDAP roundtrip) - Name → resolve via LLDAP (only when necessar
     let mut owner_uid: u32 = 0;
     let mut group_gid: u32 = 0;
     let mut needs_lock = false;
 
-    // Hidden fields arrive as strings (may be "", "0"
-    // or a valid number string).
-    // We only trust a positive (>0) integer from the hidden
-    // 0 or empty means "not provided by search".
+    // Hidden fields arrive as strings (may be "", "0" or a valid number string
+    // Integer from the hidden 0 or empty means "not provided by search".
     if let Ok(n) = form.owner_user_uid.trim().parse::<u32>() {
         if n > 0 {
             owner_uid = n;
@@ -593,11 +586,8 @@ pub(crate) async fn apply_permissions(
         )
     };
 
-    // === Always async path (for live progress in Apply Log
-    // spinner while estimating,
-    // tree lock until done, and Cancel button).
-    // Even non-recursive on a dir with
-    //      thousands of immediate entries benefits from the UX.
+    // === Always async path (for live progress in Apply Log spinner while esti
+    // Even non-recursive on a dir with thousands of immediate entries benefits
     let progress = Arc::new(ApplyProgress::default());
     {
         let mut slot = state.apply_progress.lock().await;
@@ -616,8 +606,8 @@ pub(crate) async fn apply_permissions(
     let rec = form.recursive;
     let prog = progress.clone();
     tokio::spawn(async move {
-        // Count-as-you-go phase gives immediate visible feedback ("scanned N so far |")
-        // via the poller + render_apply_status_oob. No long silent pre-count.
+        // Count-as-you-go phase gives immediate visible feedback ("scanned N s
+        // Poller + render_apply_status_oob. No long silent pre-count.
         *prog.phase.lock().unwrap() = "scanning".to_string();
         let _ = fs.count_applicable_with_live(std::path::Path::new(&pth), rec, &prog);
         let total = prog.processed.load(Ordering::Relaxed);

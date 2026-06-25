@@ -258,15 +258,15 @@ access_provider = {access}"#,
     // krb5 auth: avoid extra LDAP roundtrips.
     if auth_provider == "krb5" {
         out.push_str("\nchpass_provider = krb5");
-        // krb5_validate=false avoids extra LDAP lookups for TGT validation
-        // in many common LLDAP + krb5 setups.
+        // Krb5_validate=false avoids extra LDAP lookups for TGT validation in
+        // Many common LLDAP + krb5 setups.
         if s.krb5_validate.is_none() {
             out.push_str("\nkrb5_validate = false");
         }
     }
 
-    // krb5_realm/server/kpasswd: from effective_realm
-    // ldap_uri host unless overridden.
+    // Krb5_realm/server/kpasswd: from effective_realm ldap_uri
+    // Host unless overridden.
     let kdc_host = crate::extract_host_from_uri(&cfg.ldap_uri);
     let realm = cfg.effective_realm(); // caller must have run validate_and_derive (or load)
 
@@ -455,8 +455,8 @@ fn ganesha_debug_enabled() -> bool {
         .unwrap_or(false)
 }
 
-// Ganesha 9.6 pwnam=nsswitch
-// idhelper materializes principals for hybrid Kerberos.
+// Ganesha 9.6 pwnam=nsswitch idhelper materializes principals
+// For hybrid Kerberos.
 fn write_ganesha_main(
     cfg: &NfsKlldapConfig,
     out: &Path,
@@ -611,8 +611,8 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         let path = cfg.serve_path_for(share);
         let default_pseudo = format!("/{}", share.name);
         let pseudo_raw = share.export_path.as_deref().unwrap_or(&default_pseudo); // external (can differ / be short)
-        // Defensive absolutize
-        // validate_and_derive normally guarantees absolute Pseudo.
+        // Defensive absolutize validate_and_derive normally
+        // Guarantees absolute Pseudo.
         let pseudo = if pseudo_raw.starts_with('/') {
             pseudo_raw.to_string()
         } else {
@@ -978,8 +978,8 @@ mod tests {
 
     #[test]
     fn per_share_export_respects_rw_and_security_overrides() {
-        // Exercise non-defaults: RO
-        // krb5i security -> EXPORT must reflect them
+        // Exercise non-defaults: RO krb5i security -> EXPORT
+        // Must reflect them.
         let mut cfg = crate::NfsKlldapConfig {
             ldap_uri: "ldaps://k.test:6360".into(),
             sssd: crate::SssdSection {
@@ -1038,9 +1038,8 @@ mod tests {
 
     #[test]
     fn idmap_conf_generated_with_domain_from_realm_and_nsswitch() {
-        // Verifies standardized idmapd.conf generation follows effective_realm()
-        // and [sssd] policy (nsswitch + direct POSIX).
-        // No new ganesha.conf keys.
+        // Verifies standardized idmapd.conf generation follows effective_realm
+        // (nsswitch + direct POSIX). No new ganesha.conf keys.
         let mut cfg = crate::NfsKlldapConfig {
             ldap_uri: "ldaps://k.test:6360".into(),
             sssd: crate::SssdSection {
@@ -1089,7 +1088,7 @@ mod tests {
         assert!(!ganesha.contains("IdmapConf"));
         assert!(!ganesha.contains("idmapd.conf"));
         // Read_Access_Check_Policy rejected by trixie 9.6
-        // built-in default is pre.
+        // Built-in default is pre.
         assert!(
             !ganesha.contains("Read_Access_Check_Policy ="),
             "Read_Access_Check_Policy = must not appear in main ganesha.conf"

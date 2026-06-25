@@ -88,7 +88,7 @@ async fn main() {
     };
 
     // Realm from loaded config (same as krb5.conf). Placeholder only for
-    // early "no valid config yet" case.
+    // Early "no valid config yet" case.
     let keytab_realm = config.display_realm();
 
     let principals = nfs_klldap_config::format_nfs_principal_list(&keytab_host, &keytab_realm);
@@ -144,8 +144,7 @@ async fn main() {
     }
 
     // Do not extract the RDN value from the bind DN and search using user_name
-    // (e.g. uid). This produced filters containing "uid" that triggered KLLDAP
-    // warnings when strict ignored_*_attributes are in use.
+    // "uid" that triggered KLLDAP warnings when strict ignored_*_attributes ar
 
     let lldap = Arc::new(Mutex::new(lldap));
 
@@ -239,10 +238,8 @@ async fn main() {
             resolve_runtime_hostname_for_banner()
         };
 
-        // Use a stable absolute path inside the container (created in Dockerfile).
-        // This avoids polluting / and works under root-only execution model.
-        // TLS cert precedence: env > [webui] paths > built-in default.
-        // (Env handling + conf alignment explicit here in main.rs.)
+        // Use a stable absolute path inside the container (created in Dockerfi
+        // Precedence: env > [webui] paths > built-in default. (Env handling + 
         let default_cert = "/var/lib/nfs-klldap/webui-certs/webui.crt".to_string();
         let default_key = "/var/lib/nfs-klldap/webui-certs/webui.key".to_string();
         let cert_path = std::env::var("NFS_KLLDAP_WEBUI_TLS_CERT")
@@ -263,8 +260,8 @@ async fn main() {
         println!("\nTLS: enabled (self-signed or custom)");
         println!("Listening on https://{addr} (TLS enabled via axum-server)");
         println!("Certificate: {}", tls_paths.cert.display());
-        // Note: if NFS_KLLDAP_WEBUI_TLS_CERT/KEY or [webui] were used
-        // they are reflected in the resolved tls_paths.
+        // Note: if NFS_KLLDAP_WEBUI_TLS_CERT/KEY or [webui] were used they are
+        // Reflected in the resolved tls_paths.
 
         let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(
             &tls_paths.cert,

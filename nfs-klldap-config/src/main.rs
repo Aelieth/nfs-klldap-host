@@ -1,8 +1,7 @@
 #![deny(unsafe_code, dead_code)]
 
-//! nfs-klldap-config CLI. Subcommands: init | generate | validate.
-//! generate drives the watcher
-//! WebUI save path (root execution required for 0600 files).
+//! The nfs-klldap-config CLI provides init, generate, and validate.
+//! The generate subcommand drives the config watcher on WebUI save.
 
 use std::env;
 use std::path::{Path, PathBuf};

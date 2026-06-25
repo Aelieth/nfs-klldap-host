@@ -28,11 +28,11 @@ pub const GANESHA_ALLOWED_SQUASH: &[&str] = &[
     "all_root_id_squash",
 ];
 
-/// idmapd.conf values for Ganesha 9.6 + libnfsidmap shim.
+/// Default idmapd.conf values for Ganesha 9.6 and the libnfsidmap shim.
 pub const IDMAPD_TRANSLATION_METHOD: &str = "nsswitch";
 pub const IDMAPD_GSS_METHODS: &str = "nsswitch";
 pub const IDMAPD_NOBODY_USER: &str = "nobody";
-/// idmapd Nobody-Group; runtime nss fallback uses FALLBACK_NOBODY_GID (65534).
+/// Default idmapd Nobody-Group; nss fallback uses FALLBACK_NOBODY_GID (65534).
 pub const IDMAPD_NOBODY_GROUP: &str = "nogroup";
 
 /// Ganesha log observer noise tokens (exact match, lowercased).

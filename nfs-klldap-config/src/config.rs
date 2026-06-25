@@ -128,8 +128,8 @@ pub struct SssdSection {
     pub ldap_tls_cacert: Option<String>,
     pub ldap_id_use_start_tls: Option<bool>,
 
-    // POSIX attribute mapping (excellent LLDAP defaults
-    // override only on schema mismatch)
+    // POSIX attribute mapping (excellent LLDAP defaults override
+    // Only on schema mismatch).
     pub enumerate: Option<bool>,
 
     // Object classes (LLDAP typical: inetOrgPerson + posixAccount aux)
@@ -282,9 +282,9 @@ pub struct GenerationPaths {
     pub krb5_conf: PathBuf,
     pub ganesha_conf: PathBuf,
     pub exports_dir: PathBuf,
-    /// idmapd.conf path; domain/realm aligned with Ganesha DIRECTORY_SERVICES.
+    /// Output path for generated idmapd.conf aligned with DIRECTORY_SERVICES.
     pub idmap_conf: PathBuf,
-    /// nfs-utils client defaults (rpc.gssd use-machine-creds, pipefs path).
+    /// Output path for nfs-utils client defaults including use-machine-creds.
     pub nfs_conf: PathBuf,
 }
 
@@ -314,8 +314,8 @@ impl GenerationPaths {
     }
 }
 
-// Cache Profiles (for [[shares]] dropdown
-// name stored in TOML, resolved to Pref* at generate)
+// Cache Profiles (for [[shares]] dropdown name stored in TOML,
+// Resolved to Pref* at generate).
 
 /// The 5 supported share.cache_profile values.
 /// Order matches the WebUI dropdown.

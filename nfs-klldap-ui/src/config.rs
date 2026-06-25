@@ -54,11 +54,8 @@ pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
         }
     }
 
-    // Use the bind DN from config *verbatim*.
-    // ldap_default_bind_dn is already the
-    // full distinguished name in every real deployment and in the documented
-    // examples. Passing anything less (bare uid) causes bind failures or
-    // connection drops on KLLDAP and other strict LDAPS servers.
+    // Use the bind DN from config *verbatim*. ldap_default_bind_dn is already 
+    // Examples. Passing anything less (bare uid) causes bind failures or conne
     let bind_identity = cfg.sssd.ldap_default_bind_dn.clone();
     let password = cfg.sssd.ldap_default_authtok.clone();
     (bind_identity, password)
@@ -138,8 +135,8 @@ mod tests {
         // Serialize vs other env-manipulating tests (see ENV_LOCK).
         let _serial = ENV_LOCK.lock().unwrap();
 
-        // Force a clean env so parallel tests that set the LLDAP_* overrides
-        // cannot affect this result.
+        // Force a clean env so parallel tests that set the LLDAP_*
+        // Overrides cannot affect this result.
         let _c1 = EnvGuard::clear("NFS_KLLDAP_LLDAP_USER");
         let _c2 = EnvGuard::clear("NFS_KLLDAP_LLDAP_PW");
 
@@ -185,7 +182,7 @@ mod tests {
         let _serial = ENV_LOCK.lock().unwrap();
 
         // Force a clean env so parallel tests that set the LLDAP_* overrides
-        // cannot affect the cfg-path result.
+        // Cannot affect the cfg-path result.
         let _c1 = EnvGuard::clear("NFS_KLLDAP_LLDAP_USER");
         let _c2 = EnvGuard::clear("NFS_KLLDAP_LLDAP_PW");
 

@@ -214,17 +214,13 @@ pub(crate) fn run_daemon() {
     // Make socket world-accessible inside container (root only usage is also fine)
     let _ = fs::set_permissions(SOCKET_PATH, std::os::unix::fs::PermissionsExt::from_mode(0o666));
 
-    // Load persisted cache (machines + any prior resolves).
-    // User rows are replaced
-    // on first LDAP sync below
-    // do not materialize stale users to nss_passwd yet.
+    // Load persisted cache; user rows refresh on first LDAP sync below.
     let cache = Arc::new(Mutex::new(IdCache::load_from_file(Path::new(CACHE_PATH))));
 
     println!("[idhelper] daemon listening on {}", SOCKET_PATH);
     println!("[idhelper] realm={} variants={:?}", realm, server_variants);
 
-    // Eagerly initialize
-    // bulk-load the full user+group map (10m authoritative cache).
+    // Eagerly bulk-load the full user+group map into the 10m resolver cache.
     let _ = get_or_init_resolver();
     {
         let mut guard = cache.lock().unwrap();
@@ -236,8 +232,8 @@ pub(crate) fn run_daemon() {
         }
     }
 
-    // Always auto pre-resolve the *server's own* host
-    // nfs service principals at cold start.
+    // Always auto pre-resolve the *server's own* host nfs service
+    // Principals at cold start.
     for v in &server_variants {
         for prefix in ["host", "nfs"] {
             let p = format!("{}/{}@{}", prefix, v, realm);

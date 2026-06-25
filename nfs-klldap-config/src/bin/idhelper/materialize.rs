@@ -263,12 +263,8 @@ pub(crate) fn materialize_nss_wrappers_at(
         }
     }
 
-    // Always ensure at least a root group entry.
-    // For machine principals (uid/gid 0) we also synthesize a couple of
-    // common supplementals. This gives uid2grp_allocate_by_principal and
-    // set_extended_groups something to work with for root creds and reduces
-    // (but does not completely eliminate) the expected INFO noise for
-    // host/ nfs/ machine principals.
+    // Always ensure at least a root group entry. For machine principals (uid/g
+    // Set_extended_groups something to work with for root creds and reduces (b
     if seen_gid.is_empty() || !seen_gid.contains(&0) {
         group_lines.push("root:x:0:root,daemon,bin".to_string());
     }
@@ -288,8 +284,8 @@ pub(crate) fn materialize_nss_wrappers_at(
         let tmp = paths.nss_passwd.with_extension("tmp");
         let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
         let mut w = BufWriter::new(f);
-        // nss_wrapper (Debian trixie) rejects '#' comment lines
-        // emit entries only.
+        // Nss_wrapper (Debian trixie) rejects '#' comment lines
+        // Emit entries only.
         for l in &passwd_lines {
             writeln!(w, "{}", l)?;
         }
@@ -312,11 +308,7 @@ pub(crate) fn materialize_nss_wrappers_at(
         group_lines.len()
     );
 
-    // --- Also write machine/user mappings into extrausers (supplemental) ---
-    // This is the preferred path for most deployments: extrausers sits between
-    // files and sss in nsswitch
-    // so machines get 0 while real LDAP users resolve
-    // normally via sss even if the idhelper has never seen that user principal.
+    // Write supplemental extrausers entries so machines map to 0 via nsswitch.
     {
         // Ensure dir exists (harmless for nss_wrapper paths under /var/lib/nfs-klldap).
         if let Some(p) = paths.extrausers_passwd.parent() {

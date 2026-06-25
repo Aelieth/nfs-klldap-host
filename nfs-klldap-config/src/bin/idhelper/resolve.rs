@@ -17,8 +17,7 @@ use crate::common::{
 };
 use crate::materialize::{materialize_nss_wrappers_at, NssMaterializePaths};
 
-/// getent (NSS) path for "same lookup a client would see".
-/// Falls back to resolver snapshot.
+/// Resolve via getent NSS first, then fall back to the LDAP resolver snapshot.
 fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
     let trimmed = name_or_principal.trim();
     let short = principal_local_part(trimmed);
@@ -102,8 +101,8 @@ pub(crate) fn get_or_init_resolver() -> Option<(&'static IdLdapResolver, &'stati
 }
 
 fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
-    // Primary lookup is short posix name
-    // callers also try full principal forms.
+    // Primary lookup is short posix name callers also try
+    // Full principal forms.
     dlog!("getent passwd \"{}\" called", name);
     let out = Command::new("getent")
         .args(["passwd", name])
@@ -181,8 +180,8 @@ pub(crate) fn resolve_principal(
 
     // Attempt resolution
     let resolved = if is_machine {
-        // Machine principals (host/, nfs/, root/
-        // server variants): map 0:0 without getent/LDAP.
+        // Machine principals (host/, nfs/, root/ server variants): map
+        // 0:0 without getent/LDAP.
         let short = machine_short_name(principal);
         if debug_enabled() {
             eprintln!(

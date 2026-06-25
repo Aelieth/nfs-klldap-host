@@ -89,10 +89,8 @@ pub async fn login(
             Err(e) => Err(e),
         }
     } else {
-        // LLDAP path — uses LdapClient::verify_user_is_admin (single lock
-        // clear non-admin errors).
-        // take the lock once and get a single, clear error for non-admins.
-        // The helper still benefits from the memberOf fast-path recorded during verify.
+        // LLDAP path — uses LdapClient::verify_user_is_admin (single lock clea
+        // Error for non-admins. The helper still benefits from the memberOf fa
         let l = state.lldap.lock().await;
         match l
             .verify_user_is_admin(username, password, state.auth.admin_group())
@@ -122,11 +120,8 @@ pub async fn login(
             let mut response_headers = HeaderMap::new();
             insert_session_cookie(&state, &headers, &mut response_headers, &token);
 
-            // Warm permission editor search caches on (web) login for instant
-            // suggestions in UID/GID boxes (no repeated LDAP roundtrips on focus/type
-            // in the Share Permissions directory editor).
-            // The list_* calls populate
-            // both the 2m search cache (__all__) and the 10m identity caches.
+            // Warm permission editor search caches on (web) login for instant 
+            // Permissions directory editor). The list_* calls populate both th
             {
                 let lldap = state.lldap.clone();
                 tokio::spawn(async move {
@@ -259,8 +254,8 @@ pub async fn logout(State(state): State<super::AppState>, headers: HeaderMap) ->
 /// Map ?error= query values to user-visible login messages.
 fn login_error_message(first_run: bool, error: Option<&str>) -> Option<String> {
     let code = error?;
-    // First-run visitors are not "logged out"
-    // suppress the session-expired copy.
+    // First-run visitors are not "logged out" suppress the
+    // Session-expired copy.
     if first_run && matches!(code, "session" | "required" | "auth") {
         return None;
     }

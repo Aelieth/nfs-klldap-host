@@ -1,6 +1,5 @@
-//! FsManager: allow-listed chown/chmod with host↔container path translation.
-//! WalkDir skips symlinks; refuses uid/gid 0 and set*id bits.
-//! Bind-root model: first path segment maps host_path to container_root.
+//! FsManager applies chown/chmod on allow-listed share paths.
+//! It translates host paths to container paths via the bind-root model.
 
 #![deny(clippy::unwrap_used)]
 
@@ -71,9 +70,7 @@ impl FsManager {
         Self { config }
     }
 
-    /// Build tree using logical host_path namespace (for UI + is_allowed).
-    /// Container translation runs in host_path_to_container_path.
-    /// Called before privileged ops.
+    /// Build the permission tree in host_path namespace before privileged ops.
     pub fn build_tree(&self, root: &Path) -> Option<DirectoryNode> {
         // Normalize early so trailing slashes don't break matching or child synthesis.
         let normalized = self.normalize_for_matching(root);
@@ -98,9 +95,7 @@ impl FsManager {
         };
 
         // Recursively build children (directories only). We read from the real
-        // container path but synthesize child paths in the logical (host)
-        // namespace so that subsequent HTMX calls and is_allowed checks
-        // continue to work against the configured shares.
+        // Namespace so that subsequent HTMX calls and is_allowed checks contin
         if let Ok(entries) = fs::read_dir(&real_root) {
             for entry in entries.flatten() {
                 if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
@@ -147,9 +142,8 @@ impl FsManager {
             let child_name = entry.file_name();
             let logical_child = normalized.join(&child_name);
 
-            // We only need path
-            // name for the lazy tree UI (owner/mode come from
-            // separate /dir-meta calls when the user selects a node).
+            // We only need path name for the lazy tree UI (owner/mode come fro
+            // /dir-meta calls when the user selects a node).
             out.push(DirectoryNode {
                 path: logical_child.clone(),
                 name: child_name.to_string_lossy().into_owned(),
@@ -226,7 +220,7 @@ impl FsManager {
             .map_err(|e| format!("apply failed: {}", e))
     }
 
-    /// host_path → container path for the matching share.
+    /// Maps host_path to the container path for the matching share.
     /// See module docs for the bind-root model.
     pub(crate) fn host_path_to_container_path(&self, host_path: &Path) -> Result<PathBuf, String> {
         let normalized = self.normalize_for_matching(host_path);
@@ -275,8 +269,8 @@ impl FsManager {
         if opts.recursive {
             return (is_dir && opts.apply_to_dirs) || (is_file && opts.apply_to_files);
         }
-        // Non-recursive: target directory (depth 0)
-        // immediate files (depth 1) only.
+        // Non-recursive: target directory (depth 0) immediate
+        // Files (depth 1) only.
         let depth = entry.depth();
         (is_dir && opts.apply_to_dirs && depth == 0)
             || (is_file && opts.apply_to_files && depth == 1)
@@ -318,7 +312,7 @@ impl FsManager {
         Ok(count)
     }
 
-    /// WalkDir apply with progress atomics, cancel, and finished flag.
+    /// Applies WalkDir with progress atomics, cancel, and finished flag.
     fn apply_tree_with_progress(
         &self,
         root: &Path,
@@ -446,8 +440,8 @@ impl FsManager {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    // Translation tests: host_path first dir = implicit bind root
-    // tail maps under container_root.
+    // Translation tests: host_path first dir = implicit bind root tail
+    // Maps under container_root.
     use super::*;
     use tempfile::TempDir;
 

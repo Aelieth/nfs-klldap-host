@@ -285,7 +285,7 @@ pub fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
     }
 }
 
-/// ldapsearch base probe on the bind DN.
+/// Runs an ldapsearch base probe against the bind DN.
 /// Uses the same POSIX attrs as SSSD/WebUI.
 pub fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     let uri = &cfg.ldap_uri;
@@ -658,8 +658,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("nfs-klldap.conf");
         fs::write(&path, "[sssd]\nldap_default_bind_dn = \"uid=a,dc=x\"\n").unwrap();
-        // Ephemeral path still hits step 1 first
-        // test ordering via direct bind check below.
+        // Ephemeral path still hits step 1 first test ordering via
+        // Direct bind check below.
         let step = compute_startup_step(&path);
         assert!(
             step == StartupStep::WaitForPersistentVolume || step == StartupStep::SetLdapUri
@@ -677,10 +677,8 @@ mod tests {
             },
             ..Default::default()
         };
-        // Empty DN still invokes ldapsearch
-        // on CI without LDAP it fails — we only assert Err.
-        // Step computation treats empty creds as step 3.
-        // Skips bind when credential fields are empty.
+        // Empty DN still invokes ldapsearch on CI without LDAP it fails — we o
+        // Treats empty creds as step 3. Skips bind when credential fields are 
         let step_path = {
             let tmp = tempfile::tempdir().unwrap();
             let p = tmp.path().join("c.conf");
@@ -693,10 +691,8 @@ mod tests {
             fs::write(&p, toml).unwrap();
             p
         };
-        // Ephemeral → step 1
-        // the empty-cred branch is tested when persistent is mocked via
-        // compute on a loaded cfg path
-        // use structural check on compute with empty fields:
+        // Ephemeral → step 1 the empty-cred branch is tested when persistent i
+        // Loaded cfg path use structural check on compute with empty fields:.
         assert!(cfg.sssd.ldap_default_bind_dn.trim().is_empty());
         assert!(check_ldap_bind(&cfg).is_err() || cfg.sssd.ldap_default_authtok.is_empty());
         let _ = step_path;

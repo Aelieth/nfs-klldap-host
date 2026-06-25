@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn real_get_consistent_hostname_smoke() {
         // Real I/O path smoke (succeeds or well-formed inconsistency
-        // never panic/garbage).
+        // Never panic/garbage).
         let result = get_consistent_hostname();
         match result {
             Ok(c) => {

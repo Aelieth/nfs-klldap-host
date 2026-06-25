@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::constants::IDENTITY_CACHE_TTL_SECS;
+use crate::krb5::principal_local_part;
 use crate::ldap::filter::escape_ldap_filter;
 use crate::ldap::posix::{
     effective_ldap_search_bases, resolve_posix_attribute_mapping, LdapSearchBasesInput,
@@ -407,7 +408,7 @@ impl IdLdapResolver {
                             if let Ok(u) = uid_str.parse::<i32>() {
                                 let g = Self::extract_first_attr(&se, &gid_attr)
                                     .and_then(|s| s.trim().parse::<i32>().ok());
-                                let short = name.split('@').next().unwrap_or(name).to_string();
+                                let short = principal_local_part(name).to_string();
                                 let user = CachedUser {
                                     id: short.clone(),
                                     uid_number: Some(u),

@@ -3,9 +3,9 @@
 use crate::SssdSection;
 
 pub use nfs_klldap_identity::{
-    classify_principal, escape_ldap_filter, extract_first_attr_value, parse_getent_group,
-    parse_getent_passwd, IdLdapResolver, IdMapSnapshot, LdapResolverInputs, LdapSearchBasesInput,
-    PosixGroupEntry, PosixMappingInput, PosixUserEntry,
+    classify_principal, escape_ldap_filter, extract_first_attr_value, machine_short_name,
+    parse_getent_group, parse_getent_passwd, principal_local_part, IdLdapResolver, IdMapSnapshot,
+    LdapResolverInputs, LdapSearchBasesInput, PosixGroupEntry, PosixMappingInput, PosixUserEntry,
 };
 
 /// Build IdLdapResolver from ldap_uri + [sssd] + Kerberos realm (not ldap_search_base RDN).

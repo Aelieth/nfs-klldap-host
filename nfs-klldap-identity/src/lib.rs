@@ -21,9 +21,10 @@ pub use constants::{
 };
 pub use krb5::{
     classify_principal, derive_realm_from_uri, extract_host_from_uri, format_nfs_principal_list,
-    get_keytab_info, host_is_ip, looks_like_docker_default_hostname, nfs_keytab_host_matches,
-    nfs_keytab_host_variants, parse_klist_nfs_hosts, parse_klist_nfs_principals,
-    read_default_keytab_nfs_principals, read_keytab_nfs_principals, KeytabInfo,
+    get_keytab_info, host_is_ip, looks_like_docker_default_hostname, machine_short_name,
+    nfs_keytab_host_matches, nfs_keytab_host_variants, parse_klist_nfs_hosts,
+    parse_klist_nfs_principals, principal_local_part, read_default_keytab_nfs_principals,
+    read_keytab_nfs_principals, KeytabInfo,
 };
 pub use ldap::{
     effective_ldap_search_bases, escape_ldap_filter, extract_first_attr_value, IdLdapResolver,

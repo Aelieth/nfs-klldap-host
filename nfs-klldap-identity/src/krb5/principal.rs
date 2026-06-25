@@ -2,6 +2,19 @@
 
 use crate::constants::MACHINE_PRINCIPAL_PREFIXES;
 
+/// Local part of a Kerberos principal (before @), or the whole string when unqualified.
+pub fn principal_local_part(p: &str) -> &str {
+    p.split('@').next().unwrap_or(p)
+}
+
+/// Trailing segment of a machine principal local part (host/client@REALM → client).
+pub fn machine_short_name(principal: &str) -> &str {
+    principal_local_part(principal)
+        .rsplit('/')
+        .next()
+        .unwrap_or(principal)
+}
+
 /// Classify machine (host/nfs/root) vs user principals; prefixes align with Ganesha Root_Kerberos_Principal.
 pub fn classify_principal(principal: &str, _realm: &str, server_variants: &[String]) -> (bool, String) {
     let p = principal.trim();
@@ -37,6 +50,18 @@ pub fn classify_principal(principal: &str, _realm: &str, server_variants: &[Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn principal_local_part_strips_realm() {
+        assert_eq!(principal_local_part("alice@REALM"), "alice");
+        assert_eq!(principal_local_part("host/client@REALM"), "host/client");
+    }
+
+    #[test]
+    fn machine_short_name_takes_trailing_segment() {
+        assert_eq!(machine_short_name("host/blue-lt@REALM"), "blue-lt");
+        assert_eq!(machine_short_name("alice@REALM"), "alice");
+    }
 
     #[test]
     fn machine_prefixes_classify_as_machine() {

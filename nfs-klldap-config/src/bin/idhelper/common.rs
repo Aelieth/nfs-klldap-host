@@ -219,18 +219,7 @@ pub fn is_machine_principal(
     classify_principal(principal, realm, server_variants)
 }
 
-/// Local part of a Kerberos principal (before @), or the whole string when unqualified.
-pub(crate) fn principal_local_part(p: &str) -> &str {
-    p.split('@').next().unwrap_or(p)
-}
-
-/// Trailing segment of a machine principal local part (host/client@REALM → client).
-pub(crate) fn machine_short_name(principal: &str) -> &str {
-    principal_local_part(principal)
-        .rsplit('/')
-        .next()
-        .unwrap_or(principal)
-}
+pub(crate) use nfs_klldap_config::{machine_short_name, principal_local_part};
 
 /// Normalize a principal for cache key and lookup.
 /// Lowercases the realm part; keeps the local part as presented.
@@ -315,19 +304,6 @@ pub(crate) fn get_realm() -> String {
 #[cfg(test)]
 mod fingerprint_tests {
     use super::*;
-
-    #[test]
-    fn principal_local_part_strips_realm() {
-        assert_eq!(principal_local_part("alice@REALM"), "alice");
-        assert_eq!(principal_local_part("host/client@REALM"), "host/client");
-        assert_eq!(principal_local_part("short"), "short");
-    }
-
-    #[test]
-    fn machine_short_name_takes_trailing_segment() {
-        assert_eq!(machine_short_name("host/blue-lt@REALM"), "blue-lt");
-        assert_eq!(machine_short_name("alice@REALM"), "alice");
-    }
 
     #[test]
     fn identical_reinsert_keeps_fingerprint() {

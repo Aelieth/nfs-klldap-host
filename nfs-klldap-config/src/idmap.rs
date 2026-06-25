@@ -44,6 +44,17 @@ pub fn from_sssd_section(ldap_uri: &str, sssd: &SssdSection, realm: &str) -> IdL
     IdLdapResolver::from_inputs(&sssd_resolver_inputs(ldap_uri, sssd, realm))
 }
 
+/// Resolved POSIX attribute names from one sssd_resolver_inputs pass.
+pub fn posix_mapping_from_sssd(
+    ldap_uri: &str,
+    sssd: &SssdSection,
+    realm: &str,
+) -> nfs_klldap_identity::PosixAttributeMapping {
+    nfs_klldap_identity::resolve_posix_attribute_mapping(
+        &sssd_resolver_inputs(ldap_uri, sssd, realm).posix_mapping,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

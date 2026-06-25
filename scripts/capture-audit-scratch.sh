@@ -80,6 +80,9 @@ REFACTOR_FILES=(
 
 # --- changes.txt ---
 {
+    echo "=== git diff --shortstat ${BASE}..HEAD ==="
+    git -C "$ROOT" diff --shortstat "${BASE}..HEAD"
+    echo
     echo "=== git diff --stat ${BASE}..HEAD ==="
     git -C "$ROOT" diff --stat "${BASE}..HEAD"
     echo
@@ -118,6 +121,15 @@ read -r split_calls split_defs split_total < <(count_split_sites)
     done
     echo "idhelper subtotal current: $idh_now"
     echo "idhelper delta: $idh_delta"
+    echo
+    echo "=== scoped refactor shortstat (${BASE}..HEAD) ==="
+    git -C "$ROOT" diff --shortstat "${BASE}..HEAD" -- \
+        nfs-klldap-config/src/idmap.rs \
+        nfs-klldap-config/src/config.rs \
+        nfs-klldap-config/src/bin/idhelper \
+        nfs-klldap-identity/src/krb5/principal.rs \
+        nfs-klldap-identity/src/ldap/resolver.rs \
+        nfs-klldap-ui/src/ldap.rs
     echo
     echo "=== split('@') in assumed scope ==="
     echo "call sites (excl. principal_local_part definition): $split_calls"

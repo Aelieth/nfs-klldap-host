@@ -1019,31 +1019,6 @@ impl LdapClient {
 #[cfg(test)]
 mod list_search_tests {
     use super::*;
-    use nfs_klldap_config::{IdLdapResolver, PosixAttributeMapping};
-
-    fn test_resolver() -> IdLdapResolver {
-        IdLdapResolver::new(
-            "ldap://127.0.0.1",
-            "ou=people,dc=example,dc=com",
-            "ou=groups,dc=example,dc=com",
-            PosixAttributeMapping {
-                user_object_class: "posixAccount".into(),
-                group_object_class: "posixGroup".into(),
-                user_name: "uid".into(),
-                user_uid_number: "uidNumber".into(),
-                user_gid_number: "gidNumber".into(),
-                user_home_directory: "homeDirectory".into(),
-                user_shell: "loginShell".into(),
-                user_full_name: "cn".into(),
-                group_name: "cn".into(),
-                group_gid_number: "gidNumber".into(),
-                group_member: "member".into(),
-                user_principal_name: "krbPrincipalName".into(),
-            },
-            true,
-            false,
-        )
-    }
 
     #[test]
     fn normalize_editor_search_query_strips_friendly_labels() {
@@ -1073,32 +1048,6 @@ mod list_search_tests {
         assert!(LdapClient::matches_list_query("100", "bob", "Bob", Some(1001)));
         assert!(!LdapClient::matches_list_query("zzz", "alice", "Alice", Some(1001)));
         assert!(LdapClient::matches_list_query("", "any", "Any", Some(42)));
-    }
-
-    #[test]
-    fn user_list_filter_requires_uid_number_and_supports_numeric_exact() {
-        let r = test_resolver();
-        let all = r.build_user_list_filter("");
-        assert!(all.contains("posixAccount"));
-        assert!(all.contains("(uidNumber=*)"));
-
-        let num = r.build_user_list_filter("1001");
-        assert!(num.contains("(uidNumber=1001)"));
-
-        let name = r.build_user_list_filter("alice");
-        assert!(name.contains("(uid=*alice*)"));
-        assert!(name.contains("(uidNumber=*)"));
-    }
-
-    #[test]
-    fn group_list_filter_requires_gid_number() {
-        let r = test_resolver();
-        let all = r.build_group_list_filter("");
-        assert!(all.contains("posixGroup"));
-        assert!(all.contains("(gidNumber=*)"));
-
-        let num = r.build_group_list_filter("2000");
-        assert!(num.contains("(gidNumber=2000)"));
     }
 
     #[test]

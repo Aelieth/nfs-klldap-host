@@ -108,6 +108,19 @@ idh_now=$(idhelper_total HEAD)
 idh_delta=$((idh_now - idh_pre))
 read -r split_calls split_defs split_total < <(count_split_sites)
 
+scoped_stat=$(git -C "$ROOT" diff --shortstat "${BASE}..HEAD" -- \
+    nfs-klldap-config/src/idmap.rs \
+    nfs-klldap-config/src/config.rs \
+    nfs-klldap-config/src/bin/idhelper \
+    nfs-klldap-identity/src/krb5/principal.rs \
+    nfs-klldap-identity/src/ldap/resolver.rs \
+    nfs-klldap-ui/src/ldap.rs)
+scoped_ins=$(echo "$scoped_stat" | awk '{print $4}')
+scoped_del=$(echo "$scoped_stat" | awk '{print $6}')
+scoped_ins=${scoped_ins:-0}
+scoped_del=${scoped_del:-0}
+scoped_delta=$((scoped_ins - scoped_del))
+
 {
     echo "=== LOC pre-audit (${BASE}) ==="
     for f in "${IDHELPER_FILES[@]}" nfs-klldap-identity/src/krb5/principal.rs nfs-klldap-identity/src/ldap/resolver.rs; do
@@ -123,13 +136,8 @@ read -r split_calls split_defs split_total < <(count_split_sites)
     echo "idhelper delta: $idh_delta"
     echo
     echo "=== scoped refactor shortstat (${BASE}..HEAD) ==="
-    git -C "$ROOT" diff --shortstat "${BASE}..HEAD" -- \
-        nfs-klldap-config/src/idmap.rs \
-        nfs-klldap-config/src/config.rs \
-        nfs-klldap-config/src/bin/idhelper \
-        nfs-klldap-identity/src/krb5/principal.rs \
-        nfs-klldap-identity/src/ldap/resolver.rs \
-        nfs-klldap-ui/src/ldap.rs
+    echo "$scoped_stat"
+    echo "scoped refactor net delta: $scoped_delta (ins=$scoped_ins del=$scoped_del)"
     echo
     echo "=== split('@') in assumed scope ==="
     echo "call sites (excl. principal_local_part definition): $split_calls"
@@ -182,7 +190,11 @@ if [[ "$split_defs" -ne 1 ]]; then
     echo "FAIL: split('@') definitions $split_defs (need 1)" >&2
     FAIL=1
 fi
+if [[ "$scoped_delta" -ge 0 ]]; then
+    echo "FAIL: scoped refactor net delta $scoped_delta (need < 0)" >&2
+    FAIL=1
+fi
 
-echo "capture-audit-scratch: idhelper delta=$idh_delta split_calls=$split_calls split_defs=$split_defs"
+echo "capture-audit-scratch: idhelper delta=$idh_delta scoped delta=$scoped_delta split_calls=$split_calls split_defs=$split_defs"
 echo "wrote $SCRATCH/{changes.txt,loc-evidence.txt,comment-audit.txt,docs-sync.txt}"
 exit "$FAIL"

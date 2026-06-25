@@ -14,12 +14,12 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use common::{
-    get_realm, get_server_variants, principal_local_part, IdCache, PrincipalKind, Resolved,
-    CACHE_PATH, NSS_GROUP_PATH, NSS_PASSWD_PATH, SOCKET_PATH,
+    get_realm, get_server_variants, IdCache, PrincipalKind, Resolved, CACHE_PATH, NSS_GROUP_PATH,
+    NSS_PASSWD_PATH, SOCKET_PATH,
 };
-use nfs_klldap_config::classify_principal;
+use nfs_klldap_identity::{classify_principal, principal_local_part};
 #[cfg(test)]
-use common::normalize_principal;
+use nfs_klldap_identity::normalize_principal;
 use daemon::run_daemon;
 #[cfg(test)]
 use materialize::{

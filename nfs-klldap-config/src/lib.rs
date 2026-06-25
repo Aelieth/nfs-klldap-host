@@ -106,7 +106,8 @@ pub use nfs_klldap_identity::{
 pub mod idmap;
 pub use idmap::{
     classify_principal, escape_ldap_filter, extract_first_attr_value, from_sssd_section,
-    machine_short_name, parse_getent_group, parse_getent_passwd, principal_local_part,
+    machine_short_name, normalize_principal, parse_getent_group, parse_getent_passwd,
+    principal_local_part,
     IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry,
 };
 

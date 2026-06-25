@@ -7,14 +7,14 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use nfs_klldap_config::{
-    classify_principal, from_sssd_section, parse_getent_passwd, IdLdapResolver, IdMapSnapshot,
-    NfsKlldapConfig, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
+    from_sssd_section, parse_getent_passwd, IdLdapResolver, IdMapSnapshot, NfsKlldapConfig,
+    FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
+};
+use nfs_klldap_identity::{
+    classify_principal, machine_short_name, normalize_principal, principal_local_part,
 };
 
-use crate::common::{
-    debug_enabled, machine_short_name, normalize_principal, principal_local_part, IdCache,
-    PrincipalKind, Resolved, CACHE_PATH,
-};
+use crate::common::{debug_enabled, IdCache, PrincipalKind, Resolved, CACHE_PATH};
 use crate::materialize::{materialize_nss_wrappers_at, NssMaterializePaths};
 
 /// Resolve via getent NSS first, then fall back to the LDAP resolver snapshot.

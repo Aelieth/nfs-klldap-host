@@ -81,9 +81,9 @@ When clients use Kerberos host keytabs (e.g. `/etc/krb5.keytab` on Fedora Immuta
 
 If Ganesha maps these inconsistently (or falls back to nobody/65534 for machine names), the client can see credential mixing that causes NFSv4 session teardown or permission failures.
 
-`nfs-klldap-idhelper` (using structured LDAP resolution via shared IdLdapResolver for consistency with the UI LdapClient + its caches, plus getent for client parity) is the authoritative layer for this. At daemon start it eagerly inits the resolver (the "ldap cache") and pre-resolves server host principals + forces a root uid0 entry so nsswitch (sss + extrausers + wrapper for ganesha) has user/machine info *immediately* after startup, avoiding cold first-access races ("Could not map", getpwuid 0 fails for host/ principals).
+`nfs-klldap-idhelper` (IdLdapResolver shared with UI list/search/filter paths, plus getent for client parity) is the authoritative layer for this. At daemon start it eagerly inits the resolver (the "ldap cache") and pre-resolves server host principals + forces a root uid0 entry so nsswitch (sss + extrausers + wrapper for ganesha) has user/machine info *immediately* after startup, avoiding cold first-access races ("Could not map", getpwuid 0 fails for host/ principals).
 
-- It classifies principals (machine vs. user) using `classify_principal`.
+- It classifies and normalizes principals via `classify_principal` and `normalize_principal` in `nfs-klldap-identity`.
 - It resolves via NSS/SSSD (users) or forces uid/gid 0 (machines).
 - On every resolution it materializes machine overrides (uid 0) into both the nss_wrapper files and `/var/lib/extrausers/{passwd,group}` (supplemental).
 - Ganesha runs with nss_wrapper LD_PRELOAD by default (`USE_NSS_WRAPPER=1`); extrausers is supplemental. Machine principals map to 0; LDAP users resolve via sss. Idhelper classification prevents mixed-credential session teardown on immutable clients.

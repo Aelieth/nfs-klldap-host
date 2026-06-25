@@ -527,21 +527,11 @@ impl LdapClient {
 
 
     fn user_filter_by_name(&self, name: &str) -> String {
-        format!(
-            "(&(objectClass={})({}={}))",
-            self.posix_attributes.user_object_class,
-            self.posix_attributes.user_name,
-            escape_ldap_filter(name)
-        )
+        self.identity_resolver.lock().unwrap().user_filter_by_name(name)
     }
 
     fn group_filter_by_name(&self, name: &str) -> String {
-        format!(
-            "(&(objectClass={})({}={}))",
-            self.posix_attributes.group_object_class,
-            self.posix_attributes.group_name,
-            escape_ldap_filter(name)
-        )
+        self.identity_resolver.lock().unwrap().group_filter_by_name(name)
     }
 
     /// Strip permission-editor values like `Alice (1000)`.
@@ -595,52 +585,6 @@ impl LdapClient {
                 .contains(q_lower)
     }
 
-    /// Builds a subtree filter listing POSIX users with uidNumber for KLLDAP.
-    fn build_user_list_ldap_filter(&self, q_orig: &str) -> String {
-        let obj = &self.posix_attributes.user_object_class;
-        let uid_attr = &self.posix_attributes.user_uid_number;
-        let name_attr = &self.posix_attributes.user_name;
-        let full = &self.posix_attributes.user_full_name;
-
-        if q_orig.is_empty() {
-            return format!("(&(objectClass={})({}=*))", obj, uid_attr);
-        }
-
-        let esc = escape_ldap_filter(q_orig);
-        let uid_clause = if let Ok(n) = q_orig.parse::<i32>() {
-            format!("({}={})", uid_attr, n)
-        } else {
-            format!("({}=*{}*)", uid_attr, esc)
-        };
-
-        format!(
-            "(&(objectClass={})({}=*)(|({}=*{}*)(cn=*{}*)(displayName=*{}*)({}=*{}*){}))",
-            obj, uid_attr, name_attr, esc, esc, esc, full, esc, uid_clause
-        )
-    }
-
-    fn build_group_list_ldap_filter(&self, q_orig: &str) -> String {
-        let obj = &self.posix_attributes.group_object_class;
-        let gid_attr = &self.posix_attributes.group_gid_number;
-        let name_attr = &self.posix_attributes.group_name;
-
-        if q_orig.is_empty() {
-            return format!("(&(objectClass={})({}=*))", obj, gid_attr);
-        }
-
-        let esc = escape_ldap_filter(q_orig);
-        let gid_clause = if let Ok(n) = q_orig.parse::<i32>() {
-            format!("({}={})", gid_attr, n)
-        } else {
-            format!("({}=*{}*)", gid_attr, esc)
-        };
-
-        format!(
-            "(&(objectClass={})({}=*)(|({}=*{}*)(cn=*{}*)(displayName=*{}*){}))",
-            obj, gid_attr, name_attr, esc, esc, esc, gid_clause
-        )
-    }
-
     fn sort_users_for_list(users: &mut [User]) {
         users.sort_by(|a, b| {
             let da = a.display_name.as_deref().unwrap_or(&a.id).to_lowercase();
@@ -691,17 +635,6 @@ impl LdapClient {
         if seen.insert(g.id.clone()) {
             results.push(g);
         }
-    }
-
-    fn extract_first_attr(se: &SearchEntry, name: &str) -> Option<String> {
-        nfs_klldap_config::extract_first_attr_value(se, name)
-    }
-
-    fn extract_display_name(se: &SearchEntry, full_name_attr: &str, fallback: &str) -> String {
-        Self::extract_first_attr(se, full_name_attr)
-            .or_else(|| Self::extract_first_attr(se, "displayName"))
-            .or_else(|| Self::extract_first_attr(se, "cn"))
-            .unwrap_or_else(|| fallback.to_string())
     }
 
     async fn try_simple_bind(&self, dn: &str, pw: &str) -> bool {
@@ -932,42 +865,29 @@ impl LdapClient {
                     || search_cached.as_ref().is_some_and(|c| c.is_empty()))
         };
         if needs_ldap {
-            let ldap_filter = self.build_user_list_ldap_filter(&q_orig);
-            let name_attr = self.posix_attributes.user_name.clone();
-            let uid_attr = self.posix_attributes.user_uid_number.clone();
-            let full_attr = self.posix_attributes.user_full_name.clone();
-            let attrs: Vec<String> = vec![
-                name_attr.clone(),
-                uid_attr.clone(),
-                "cn".into(),
-                "displayName".into(),
-                full_attr.clone(),
-            ];
-
-            let entries = self
-                .ldap_search_entries(&self.user_base, &ldap_filter, attrs)
-                .await;
-
-            for se in entries {
-                let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
-                if id.is_empty() {
-                    continue;
-                }
-                let display = Self::extract_display_name(&se, &full_attr, &id);
-                let uid = Self::extract_first_attr(&se, &uid_attr).and_then(|s| s.parse::<i32>().ok());
-                Self::try_push_user(
-                    &mut results,
-                    &mut seen_ids,
-                    &q_lower,
-                    User {
-                        id,
-                        dn: se.dn,
-                        display_name: Some(display),
-                        uid_number: uid,
-                    },
-                );
-                if results.len() >= LIST_RESULT_LIMIT {
-                    break;
+            let q = q_orig.clone();
+            let limit = LIST_RESULT_LIMIT;
+            if let Some(rows) = self
+                .with_identity(move |resolver, bind_dn, bind_pw| {
+                    Some(resolver.search_list_users(&q, bind_dn, bind_pw, limit))
+                })
+                .await
+            {
+                for (id, uid, display, dn) in rows {
+                    Self::try_push_user(
+                        &mut results,
+                        &mut seen_ids,
+                        &q_lower,
+                        User {
+                            id,
+                            dn,
+                            display_name: Some(display),
+                            uid_number: uid,
+                        },
+                    );
+                    if results.len() >= LIST_RESULT_LIMIT {
+                        break;
+                    }
                 }
             }
         }
@@ -1040,40 +960,29 @@ impl LdapClient {
                     || search_cached.as_ref().is_some_and(|c| c.is_empty()))
         };
         if needs_ldap {
-            let ldap_filter = self.build_group_list_ldap_filter(&q_orig);
-            let name_attr = self.posix_attributes.group_name.clone();
-            let gid_attr = self.posix_attributes.group_gid_number.clone();
-            let attrs: Vec<String> = vec![
-                name_attr.clone(),
-                gid_attr.clone(),
-                "cn".into(),
-                "displayName".into(),
-            ];
-
-            let entries = self
-                .ldap_search_entries(&self.group_base, &ldap_filter, attrs)
-                .await;
-
-            for se in entries {
-                let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
-                if id.is_empty() {
-                    continue;
-                }
-                let display = Self::extract_display_name(&se, &name_attr, &id);
-                let gid = Self::extract_first_attr(&se, &gid_attr).and_then(|s| s.parse::<i32>().ok());
-                Self::try_push_group(
-                    &mut results,
-                    &mut seen_ids,
-                    &q_lower,
-                    Group {
-                        id,
-                        dn: se.dn,
-                        display_name: Some(display),
-                        gid_number: gid,
-                    },
-                );
-                if results.len() >= LIST_RESULT_LIMIT {
-                    break;
+            let q = q_orig.clone();
+            let limit = LIST_RESULT_LIMIT;
+            if let Some(rows) = self
+                .with_identity(move |resolver, bind_dn, bind_pw| {
+                    Some(resolver.search_list_groups(&q, bind_dn, bind_pw, limit))
+                })
+                .await
+            {
+                for (id, gid, display, dn) in rows {
+                    Self::try_push_group(
+                        &mut results,
+                        &mut seen_ids,
+                        &q_lower,
+                        Group {
+                            id,
+                            dn,
+                            display_name: Some(display),
+                            gid_number: gid,
+                        },
+                    );
+                    if results.len() >= LIST_RESULT_LIMIT {
+                        break;
+                    }
                 }
             }
         }
@@ -1226,10 +1135,10 @@ impl LdapClient {
 #[cfg(test)]
 mod list_search_tests {
     use super::*;
-    use nfs_klldap_config::PosixAttributeMapping;
+    use nfs_klldap_config::{IdLdapResolver, PosixAttributeMapping};
 
-    fn test_client() -> LdapClient {
-        LdapClient::new_with_attributes(
+    fn test_resolver() -> IdLdapResolver {
+        IdLdapResolver::new(
             "ldap://127.0.0.1",
             "ou=people,dc=example,dc=com",
             "ou=groups,dc=example,dc=com",
@@ -1284,27 +1193,27 @@ mod list_search_tests {
 
     #[test]
     fn user_list_filter_requires_uid_number_and_supports_numeric_exact() {
-        let c = test_client();
-        let all = c.build_user_list_ldap_filter("");
+        let r = test_resolver();
+        let all = r.build_user_list_filter("");
         assert!(all.contains("posixAccount"));
         assert!(all.contains("(uidNumber=*)"));
 
-        let num = c.build_user_list_ldap_filter("1001");
+        let num = r.build_user_list_filter("1001");
         assert!(num.contains("(uidNumber=1001)"));
 
-        let name = c.build_user_list_ldap_filter("alice");
+        let name = r.build_user_list_filter("alice");
         assert!(name.contains("(uid=*alice*)"));
         assert!(name.contains("(uidNumber=*)"));
     }
 
     #[test]
     fn group_list_filter_requires_gid_number() {
-        let c = test_client();
-        let all = c.build_group_list_ldap_filter("");
+        let r = test_resolver();
+        let all = r.build_group_list_filter("");
         assert!(all.contains("posixGroup"));
         assert!(all.contains("(gidNumber=*)"));
 
-        let num = c.build_group_list_ldap_filter("2000");
+        let num = r.build_group_list_filter("2000");
         assert!(num.contains("(gidNumber=2000)"));
     }
 

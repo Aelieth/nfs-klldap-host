@@ -611,6 +611,151 @@ impl IdLdapResolver {
         None
     }
 
+    /// Filter for exact user name lookup (permission editor resolve paths).
+    pub fn user_filter_by_name(&self, name: &str) -> String {
+        format!(
+            "(&(objectClass={})({}={}))",
+            self.posix_attributes.user_object_class,
+            self.posix_attributes.user_name,
+            escape_ldap_filter(name)
+        )
+    }
+
+    /// Filter for exact group name lookup.
+    pub fn group_filter_by_name(&self, name: &str) -> String {
+        format!(
+            "(&(objectClass={})({}={}))",
+            self.posix_attributes.group_object_class,
+            self.posix_attributes.group_name,
+            escape_ldap_filter(name)
+        )
+    }
+
+    /// Subtree filter for POSIX users with uidNumber.
+    pub fn build_user_list_filter(&self, query: &str) -> String {
+        let obj = &self.posix_attributes.user_object_class;
+        let uid_attr = &self.posix_attributes.user_uid_number;
+        let name_attr = &self.posix_attributes.user_name;
+        let full = &self.posix_attributes.user_full_name;
+
+        if query.is_empty() {
+            return format!("(&(objectClass={})({}=*))", obj, uid_attr);
+        }
+
+        let esc = escape_ldap_filter(query);
+        let uid_clause = if let Ok(n) = query.parse::<i32>() {
+            format!("({}={})", uid_attr, n)
+        } else {
+            format!("({}=*{}*)", uid_attr, esc)
+        };
+
+        format!(
+            "(&(objectClass={})({}=*)(|({}=*{}*)(cn=*{}*)(displayName=*{}*)({}=*{}*){}))",
+            obj, uid_attr, name_attr, esc, esc, esc, full, esc, uid_clause
+        )
+    }
+
+    /// Subtree filter listing POSIX groups with gidNumber.
+    pub fn build_group_list_filter(&self, query: &str) -> String {
+        let obj = &self.posix_attributes.group_object_class;
+        let gid_attr = &self.posix_attributes.group_gid_number;
+        let name_attr = &self.posix_attributes.group_name;
+
+        if query.is_empty() {
+            return format!("(&(objectClass={})({}=*))", obj, gid_attr);
+        }
+
+        let esc = escape_ldap_filter(query);
+        let gid_clause = if let Ok(n) = query.parse::<i32>() {
+            format!("({}={})", gid_attr, n)
+        } else {
+            format!("({}=*{}*)", gid_attr, esc)
+        };
+
+        format!(
+            "(&(objectClass={})({}=*)(|({}=*{}*)(cn=*{}*)(displayName=*{}*){}))",
+            obj, gid_attr, name_attr, esc, esc, esc, gid_clause
+        )
+    }
+
+    /// Search users for permission-editor autocomplete.
+    pub fn search_list_users(
+        &self,
+        query: &str,
+        bind_dn: &str,
+        bind_pw: &str,
+        limit: usize,
+    ) -> Vec<(String, Option<i32>, String, String)> {
+        let ldap_filter = self.build_user_list_filter(query);
+        let name_attr = self.posix_attributes.user_name.clone();
+        let uid_attr = self.posix_attributes.user_uid_number.clone();
+        let full_attr = self.posix_attributes.user_full_name.clone();
+        let attrs: Vec<String> = vec![
+            name_attr.clone(),
+            uid_attr.clone(),
+            "cn".into(),
+            "displayName".into(),
+            full_attr.clone(),
+        ];
+
+        let entries = self
+            .service_search(&self.user_base, &ldap_filter, attrs, bind_dn, bind_pw)
+            .unwrap_or_default();
+
+        let mut out = Vec::new();
+        for se in entries {
+            let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
+            if id.is_empty() {
+                continue;
+            }
+            let display = Self::extract_display_name(&se, &full_attr, &id);
+            let uid = Self::extract_first_attr(&se, &uid_attr).and_then(|s| s.parse::<i32>().ok());
+            out.push((id, uid, display, se.dn));
+            if out.len() >= limit {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Search groups for permission-editor autocomplete.
+    pub fn search_list_groups(
+        &self,
+        query: &str,
+        bind_dn: &str,
+        bind_pw: &str,
+        limit: usize,
+    ) -> Vec<(String, Option<i32>, String, String)> {
+        let ldap_filter = self.build_group_list_filter(query);
+        let name_attr = self.posix_attributes.group_name.clone();
+        let gid_attr = self.posix_attributes.group_gid_number.clone();
+        let attrs: Vec<String> = vec![
+            name_attr.clone(),
+            gid_attr.clone(),
+            "cn".into(),
+            "displayName".into(),
+        ];
+
+        let entries = self
+            .service_search(&self.group_base, &ldap_filter, attrs, bind_dn, bind_pw)
+            .unwrap_or_default();
+
+        let mut out = Vec::new();
+        for se in entries {
+            let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
+            if id.is_empty() {
+                continue;
+            }
+            let display = Self::extract_display_name(&se, &name_attr, &id);
+            let gid = Self::extract_first_attr(&se, &gid_attr).and_then(|s| s.parse::<i32>().ok());
+            out.push((id, gid, display, se.dn));
+            if out.len() >= limit {
+                break;
+            }
+        }
+        out
+    }
+
     pub fn cache_stats(&self) -> (u64, u64) {
         (
             self.cache_hits.load(Ordering::Relaxed),
@@ -874,5 +1019,21 @@ mod tests {
             r.posix_attributes().user_principal_name,
             DEFAULT_USER_PRINCIPAL_ATTR
         );
+    }
+
+    #[test]
+    fn user_list_filter_requires_uid_number() {
+        let r = IdLdapResolver::from_inputs(&LdapResolverInputs::default());
+        let all = r.build_user_list_filter("");
+        assert!(all.contains("(uidNumber=*)"));
+        let num = r.build_user_list_filter("1001");
+        assert!(num.contains("(uidNumber=1001)"));
+    }
+
+    #[test]
+    fn group_list_filter_requires_gid_number() {
+        let r = IdLdapResolver::from_inputs(&LdapResolverInputs::default());
+        let all = r.build_group_list_filter("");
+        assert!(all.contains("(gidNumber=*)"));
     }
 }

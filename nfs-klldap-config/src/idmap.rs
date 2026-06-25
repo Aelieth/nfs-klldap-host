@@ -5,7 +5,8 @@ use crate::SssdSection;
 
 pub use nfs_klldap_identity::{
     classify_principal, escape_ldap_filter, extract_first_attr_value, machine_short_name,
-    parse_getent_group, parse_getent_passwd, principal_local_part, IdLdapResolver, IdMapSnapshot,
+    normalize_principal, parse_getent_group, parse_getent_passwd, principal_local_part,
+    IdLdapResolver, IdMapSnapshot,
     LdapResolverInputs, LdapSearchBasesInput, PosixGroupEntry, PosixMappingInput, PosixUserEntry,
 };
 
@@ -15,38 +16,39 @@ pub fn from_sssd_section(ldap_uri: &str, sssd: &SssdSection, realm: &str) -> IdL
     IdLdapResolver::from_inputs(&resolver_inputs_from_sssd(ldap_uri, sssd, realm))
 }
 
-pub(crate) fn posix_mapping_input_from_sssd(sssd: &SssdSection) -> PosixMappingInput {
-    PosixMappingInput {
-        ldap_user_object_class: sssd.ldap_user_object_class.clone(),
-        ldap_group_object_class: sssd.ldap_group_object_class.clone(),
-        ldap_user_name: sssd.ldap_user_name.clone(),
-        ldap_user_uid_number: sssd.ldap_user_uid_number.clone(),
-        ldap_user_gid_number: sssd.ldap_user_gid_number.clone(),
-        ldap_user_home_directory: sssd.ldap_user_home_directory.clone(),
-        ldap_user_shell: sssd.ldap_user_shell.clone(),
-        ldap_user_fullname: sssd.ldap_user_fullname.clone(),
-        ldap_group_name: sssd.ldap_group_name.clone(),
-        ldap_group_gid_number: sssd.ldap_group_gid_number.clone(),
-        ldap_group_member: sssd.ldap_group_member.clone(),
-        ldap_user_principal_name: sssd.ldap_user_principal_name.clone(),
-        kllldap_ignored_attributes: sssd.kllldap_ignored_attributes,
-    }
-}
-
-pub(crate) fn search_bases_input_from_sssd(sssd: &SssdSection) -> LdapSearchBasesInput {
-    LdapSearchBasesInput {
-        ldap_search_base: sssd.ldap_search_base.clone(),
-        ldap_user_search_base: sssd.ldap_user_search_base.clone(),
-        ldap_group_search_base: sssd.ldap_group_search_base.clone(),
-    }
+/// Build POSIX mapping and search-base inputs from [sssd] in one pass.
+pub(crate) fn sssd_ldap_inputs(sssd: &SssdSection) -> (PosixMappingInput, LdapSearchBasesInput) {
+    (
+        PosixMappingInput {
+            ldap_user_object_class: sssd.ldap_user_object_class.clone(),
+            ldap_group_object_class: sssd.ldap_group_object_class.clone(),
+            ldap_user_name: sssd.ldap_user_name.clone(),
+            ldap_user_uid_number: sssd.ldap_user_uid_number.clone(),
+            ldap_user_gid_number: sssd.ldap_user_gid_number.clone(),
+            ldap_user_home_directory: sssd.ldap_user_home_directory.clone(),
+            ldap_user_shell: sssd.ldap_user_shell.clone(),
+            ldap_user_fullname: sssd.ldap_user_fullname.clone(),
+            ldap_group_name: sssd.ldap_group_name.clone(),
+            ldap_group_gid_number: sssd.ldap_group_gid_number.clone(),
+            ldap_group_member: sssd.ldap_group_member.clone(),
+            ldap_user_principal_name: sssd.ldap_user_principal_name.clone(),
+            kllldap_ignored_attributes: sssd.kllldap_ignored_attributes,
+        },
+        LdapSearchBasesInput {
+            ldap_search_base: sssd.ldap_search_base.clone(),
+            ldap_user_search_base: sssd.ldap_user_search_base.clone(),
+            ldap_group_search_base: sssd.ldap_group_search_base.clone(),
+        },
+    )
 }
 
 fn resolver_inputs_from_sssd(ldap_uri: &str, sssd: &SssdSection, realm: &str) -> LdapResolverInputs {
+    let (posix_mapping, search_bases) = sssd_ldap_inputs(sssd);
     LdapResolverInputs {
         ldap_uri: ldap_uri.to_string(),
         realm: realm.to_string(),
-        search_bases: search_bases_input_from_sssd(sssd),
-        posix_mapping: posix_mapping_input_from_sssd(sssd),
+        search_bases,
+        posix_mapping,
         ldap_tls_reqcert: sssd.ldap_tls_reqcert.clone(),
         ldap_id_use_start_tls: sssd.ldap_id_use_start_tls,
     }

@@ -171,18 +171,15 @@ pub use nfs_klldap_identity::PosixAttributeMapping;
 
 /// Resolves POSIX attribute names from [sssd] overrides or built-in defaults.
 pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapping {
-    nfs_klldap_identity::resolve_posix_attribute_mapping(&crate::idmap::posix_mapping_input_from_sssd(
-        sssd,
-    ))
+    let (posix, _) = crate::idmap::sssd_ldap_inputs(sssd);
+    nfs_klldap_identity::resolve_posix_attribute_mapping(&posix)
 }
 
 /// Effective user/group search bases (Subtree).
 /// From [sssd] overrides or realm-derived defaults.
 pub fn effective_ldap_search_bases(sssd: &SssdSection, realm: &str) -> (String, String) {
-    nfs_klldap_identity::effective_ldap_search_bases(
-        &crate::idmap::search_bases_input_from_sssd(sssd),
-        realm,
-    )
+    let (_, bases) = crate::idmap::sssd_ldap_inputs(sssd);
+    nfs_klldap_identity::effective_ldap_search_bases(&bases, realm)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

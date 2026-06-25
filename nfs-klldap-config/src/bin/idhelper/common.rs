@@ -9,6 +9,7 @@ use nfs_klldap_config::{
     any_share_manage_gids_enabled, runtime_realm_from_disk,
     runtime_server_variants_from_disk, NfsKlldapConfig,
 };
+use nfs_klldap_identity::{machine_short_name, normalize_principal, principal_local_part};
 pub(crate) const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
 pub(crate) const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
 const CACHE_VERSION: &str = "1";
@@ -207,20 +208,6 @@ impl IdCache {
         }
         fs::rename(tmp, path)?;
         Ok(())
-    }
-}
-
-pub(crate) use nfs_klldap_config::{machine_short_name, principal_local_part};
-
-/// Normalize a principal for cache lookup (uppercase realm, local part trim).
-pub fn normalize_principal(p: &str) -> String {
-    let p = p.trim();
-    if let Some(at) = p.find('@') {
-        let local = principal_local_part(p);
-        let realm = p[at + 1..].trim();
-        format!("{}@{}", local, realm.to_ascii_uppercase())
-    } else {
-        p.to_string()
     }
 }
 

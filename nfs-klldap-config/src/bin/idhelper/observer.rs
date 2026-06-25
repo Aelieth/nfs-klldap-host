@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use nfs_klldap_config::MACHINE_PRINCIPAL_PREFIXES;
 
-use crate::common::{manage_gids_expected, principal_local_part, IdCache};
+use nfs_klldap_identity::principal_local_part;
+
+use crate::common::{manage_gids_expected, IdCache};
 use crate::dlog;
 use crate::resolve::resolve_principal;
 

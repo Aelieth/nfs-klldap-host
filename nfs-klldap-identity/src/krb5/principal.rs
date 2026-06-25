@@ -41,6 +41,18 @@ pub fn classify_principal(principal: &str, _realm: &str, server_variants: &[Stri
     (false, "treated as regular user principal".to_string())
 }
 
+/// Normalize principal for cache lookup. Uppercase realm, trim local part.
+pub fn normalize_principal(p: &str) -> String {
+    let p = p.trim();
+    if let Some(at) = p.find('@') {
+        let local = principal_local_part(p);
+        let realm = p[at + 1..].trim();
+        format!("{}@{}", local, realm.to_ascii_uppercase())
+    } else {
+        p.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +114,12 @@ mod tests {
     fn host_substring_in_username_does_not_classify_as_machine() {
         let (is_machine, _) = classify_principal("app/hostbackup@REALM", "REALM", &[]);
         assert!(!is_machine);
+    }
+
+    #[test]
+    fn normalize_keeps_local_preserves_upper_realm() {
+        assert_eq!(normalize_principal("alice@exAmPle.com"), "alice@EXAMPLE.COM");
+        assert_eq!(normalize_principal(" alice@exAmPle.com "), "alice@EXAMPLE.COM");
+        assert_eq!(normalize_principal("host/box"), "host/box");
     }
 }

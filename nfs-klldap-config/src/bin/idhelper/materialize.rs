@@ -12,7 +12,9 @@ use nfs_klldap_config::{
     MACHINE_PRINCIPAL_PREFIXES,
 };
 
-use crate::common::{principal_local_part, IdCache, PrincipalKind, Resolved};
+use nfs_klldap_identity::principal_local_part;
+
+use crate::common::{IdCache, PrincipalKind, Resolved};
 
 /// Output paths for nss_wrapper and extrausers writes.
 /// Production or test temp dirs.

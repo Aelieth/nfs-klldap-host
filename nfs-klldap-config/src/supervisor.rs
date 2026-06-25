@@ -7,7 +7,6 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use nix::sys::signal::Signal;
 use nfs_klldap_config::{
     compute_startup_step, compute_wizard_step, fingerprint_exports_dir,
     fingerprint_identity_artifacts, ganesha_is_live, ganesha_sighup_failed,
@@ -15,7 +14,8 @@ use nfs_klldap_config::{
     mark_setup_wizard_complete, pgrep_live_pids, pgrep_pids, plan_from_changes, process_is_live,
     reap_one_child, reconcile_ganesha_pid, resolve_host_nfs_mode, resolve_keytab_path,
     request_sighup, run_post_generate_hooks, runtime_hostname, runtime_realm, shutdown_requested,
-    signal_process, supervisor_loop_tick, take_sighup_requested, webui_setup_url, ConfigError,
+    signal_process_hup, signal_process_kill, signal_process_term, supervisor_loop_tick,
+    take_sighup_requested, webui_setup_url, ConfigError,
     GaneshaAction, NfsKlldapConfig,
     ServiceRecyclePlan, SupervisorLoopAction, PROC_COMM_NAME_MAX,
 };
@@ -742,7 +742,7 @@ while :; do :; done
         .into_iter()
         .flatten()
         {
-            signal_process(pid, Signal::SIGTERM);
+            signal_process_term(pid);
         }
         pkill_process("-TERM", "ganesha.nfsd");
         pkill_process("-TERM", "sssd");
@@ -783,7 +783,7 @@ while :; do :; done
     fn reload_ganesha_exports(&mut self) -> bool {
         if let Some(pid) = reconcile_ganesha_pid(self.pids.ganesha) {
             self.pids.ganesha = Some(pid);
-            signal_process(pid, Signal::SIGHUP);
+            signal_process_hup(pid);
             self.log_info(&format!(
                 "Sent SIGHUP to ganesha.nfsd (pid {pid}) for export reload"
             ));
@@ -815,7 +815,7 @@ while :; do :; done
             }
         }
         for pid in &pids {
-            signal_process(*pid, Signal::SIGTERM);
+            signal_process_term(*pid);
         }
         if pids.is_empty() {
             pkill_process("-TERM", "ganesha.nfsd");
@@ -840,7 +840,7 @@ while :; do :; done
         }
         self.log_warn("stop_ganesha: timeout — escalating to SIGKILL");
         for pid in &pids {
-            signal_process(*pid, Signal::SIGKILL);
+            signal_process_kill(*pid);
         }
         pkill_process("-KILL", "ganesha.nfsd");
         let kill_deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -964,7 +964,7 @@ while :; do :; done
             return Ok(());
         }
         if let Some(pid) = self.pids.webui {
-            signal_process(pid, Signal::SIGTERM);
+            signal_process_term(pid);
             thread::sleep(Duration::from_millis(300));
         }
         self.log_info("Starting WebUI on 0.0.0.0:9630...");
@@ -1001,7 +1001,7 @@ while :; do :; done
 
     fn restart_sssd_and_wait(&mut self) {
         if let Some(pid) = self.pids.sssd {
-            signal_process(pid, Signal::SIGTERM);
+            signal_process_term(pid);
         }
         pkill_process("-TERM", "sssd");
         thread::sleep(Duration::from_millis(500));
@@ -1046,7 +1046,7 @@ while :; do :; done
     fn restart_idhelper_and_wait_bulk(&mut self) {
         self.refresh_idhelper_preresolve();
         if let Some(pid) = self.pids.idhelper {
-            signal_process(pid, Signal::SIGTERM);
+            signal_process_term(pid);
             thread::sleep(Duration::from_millis(200));
         }
         pkill_binary("-TERM", &self.env.idhelper_bin);

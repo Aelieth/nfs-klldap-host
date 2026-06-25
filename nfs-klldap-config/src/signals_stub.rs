@@ -17,6 +17,12 @@ pub fn request_sighup() {
     SIGHUP_REQUESTED.store(true, Ordering::SeqCst);
 }
 
+pub fn signal_process_term(_pid: u32) {}
+
+pub fn signal_process_hup(_pid: u32) {}
+
+pub fn signal_process_kill(_pid: u32) {}
+
 pub fn reap_one_child() {}
 
 pub fn install_signal_handlers() -> Result<(), String> {

@@ -26,9 +26,23 @@ pub fn request_sighup() {
     SIGHUP_REQUESTED.store(true, Ordering::SeqCst);
 }
 
-/// Send a signal to pid; ignores errors (process may already be gone).
-pub fn signal_process(pid: u32, sig: Signal) {
+fn signal_process(pid: u32, sig: Signal) {
     let _ = kill(Pid::from_raw(pid as i32), sig);
+}
+
+/// Send SIGTERM to pid; ignores errors if the process is already gone.
+pub fn signal_process_term(pid: u32) {
+    signal_process(pid, Signal::SIGTERM);
+}
+
+/// Send SIGHUP to pid; ignores errors if the process is already gone.
+pub fn signal_process_hup(pid: u32) {
+    signal_process(pid, Signal::SIGHUP);
+}
+
+/// Send SIGKILL to pid; ignores errors if the process is already gone.
+pub fn signal_process_kill(pid: u32) {
+    signal_process(pid, Signal::SIGKILL);
 }
 
 /// Non-blocking reap of one child process.
@@ -76,5 +90,10 @@ mod tests {
         reap_one_child();
     }
 
-
+    #[test]
+    fn signal_process_wrappers_ignore_missing_pid() {
+        signal_process_term(999_999_999);
+        signal_process_hup(999_999_999);
+        signal_process_kill(999_999_999);
+    }
 }

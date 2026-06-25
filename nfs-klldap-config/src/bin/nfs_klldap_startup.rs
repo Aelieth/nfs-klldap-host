@@ -5,8 +5,18 @@
 
 #![deny(unsafe_code, dead_code)]
 
+#[cfg(unix)]
 #[path = "../supervisor.rs"]
 mod supervisor;
+
+#[cfg(not(unix))]
+mod supervisor {
+    use std::path::Path;
+
+    pub fn run_supervisor(_config_path: &Path) -> Result<(), String> {
+        Err("nfs-klldap-startup supervise requires a Unix target".to_string())
+    }
+}
 
 use std::env;
 use std::path::Path;

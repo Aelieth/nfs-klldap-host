@@ -53,13 +53,15 @@ pub use runtime::{
 };
 #[cfg(unix)]
 pub use signals::{
-    install_signal_handlers, reap_one_child, request_sighup, shutdown_requested, signal_process,
-    signal_supervisor_hup, take_sighup_requested,
+    install_signal_handlers, reap_one_child, request_sighup, shutdown_requested,
+    signal_process_hup, signal_process_kill, signal_process_term, signal_supervisor_hup,
+    take_sighup_requested,
 };
 #[cfg(not(unix))]
 pub use signals_stub::{
     install_signal_handlers, reap_one_child, request_sighup, shutdown_requested,
-    signal_supervisor_hup, take_sighup_requested,
+    signal_process_hup, signal_process_kill, signal_process_term, signal_supervisor_hup,
+    take_sighup_requested,
 };
 pub use constants::PROC_COMM_NAME_MAX;
 

@@ -266,7 +266,7 @@ NFS_CORE_PARAM {
 DIRECTORY_SERVICES {
     DomainName = EXAMPLE.COM;
     Pwnam_Implementation = nsswitch;
-    Root_Kerberos_Principal = host, nfs;
+    Root_Kerberos_Principal = host, nfs, root;
     idmapped_user_time_validity = 600;
     idmapped_group_time_validity = 600;
 }
@@ -305,7 +305,7 @@ Key points:
 - `Enable_UDP = false` (NFSv4-only; verified on trixie-backports Ganesha 9.6).
 - `idmapped_user_time_validity` / `idmapped_group_time_validity` in `DIRECTORY_SERVICES` (not deprecated `Manage_Gids_Expiration` in `NFS_CORE_PARAM`).
 - `DomainName` is uppercase `effective_realm()` (matches `/etc/idmapd.conf` Domain).
-- Kerberos configuration via NFS_KRB5 and a minimal Root_Kerberos_Principal (host, nfs).
+- Kerberos configuration via NFS_KRB5 and Root_Kerberos_Principal (host, nfs, root).
 - Explicit `%include` lines (one per share fragment) for deterministic loading.
 - `Read_Access_Check_Policy` omitted everywhere (trixie Ganesha 9.6 rejects it; built-in default `pre` applies).
 - Only the options above + safe NFSV4/EXPORT_DEFAULTS are emitted. Idmap* keys are deliberately not present in ganesha.conf (use the idhelper + shim + /etc/idmapd.conf + nss materialization instead; see man nfsidmap / idmapd.conf). Other legacy options are omitted because they are not accepted by the ganesha 9.6 parser on trixie-backports.

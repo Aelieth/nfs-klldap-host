@@ -162,7 +162,7 @@ impl IdCache {
                         "user" => PrincipalKind::User,
                         _ => PrincipalKind::Unknown,
                     };
-                    let local = parts[0].split('@').next().unwrap_or(parts[0]);
+                    let local = principal_local_part(parts[0]);
                     // For host/... style principals prefer the short hostname part as the "name"
                     // so that nss entries and FINAL logs use a clean short like "blue-lt" rather than "host/blue-lt".
                     let name = if local.contains('/') {
@@ -220,8 +220,13 @@ pub fn is_machine_principal(
     classify_principal(principal, realm, server_variants)
 }
 
+/// Local part of a Kerberos principal (before @), or the whole string when unqualified.
+pub(crate) fn principal_local_part(p: &str) -> &str {
+    p.split('@').next().unwrap_or(p)
+}
+
 /// Normalize a principal for cache key and lookup.
-/// Lowercases the realm part, keeps the local part as presented (SSSD is often case-sensitive for uid).
+/// Lowercases the realm part; keeps the local part as presented.
 pub fn normalize_principal(p: &str) -> String {
     let p = p.trim();
     if let Some(at) = p.rfind('@') {
@@ -303,6 +308,13 @@ pub(crate) fn get_realm() -> String {
 #[cfg(test)]
 mod fingerprint_tests {
     use super::*;
+
+    #[test]
+    fn principal_local_part_strips_realm() {
+        assert_eq!(principal_local_part("alice@REALM"), "alice");
+        assert_eq!(principal_local_part("host/client@REALM"), "host/client");
+        assert_eq!(principal_local_part("short"), "short");
+    }
 
     #[test]
     fn identical_reinsert_keeps_fingerprint() {

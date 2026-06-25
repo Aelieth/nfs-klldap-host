@@ -71,7 +71,7 @@ Client `rpc.idmapd` (Method=nsswitch) still helps pretty `ls` output on NFS clie
 
 ## Ganesha 9.6 id mapping (generated config)
 
-The generator emits `DIRECTORY_SERVICES` with `DomainName`, `Pwnam_Implementation=nsswitch`, `Root_Kerberos_Principal=host, nfs`, and `idmapped_user/group_time_validity=600` — not deprecated `Manage_Gids_Expiration` or `Read_Access_Check_Policy`. Live principal→uid for hybrid clients is handled by `nfs-klldap-idhelper` (see below).
+The generator emits `DIRECTORY_SERVICES` with `DomainName`, `Pwnam_Implementation=nsswitch`, `Root_Kerberos_Principal=host, nfs, root`, and `idmapped_user/group_time_validity=600` — not deprecated `Manage_Gids_Expiration` or `Read_Access_Check_Policy`. Live principal→uid for hybrid clients is handled by `nfs-klldap-idhelper` (see below).
 
 ## Machine vs User Principals (Fedora Immutable + host keytabs)
 
@@ -100,6 +100,6 @@ getent passwd testuser1
 
 The server must perform the same lookups clients do (`getent passwd testuser1` + principal forms). For ganesha 9.6 on Debian trixie, `principal2uid` calls in-process libnfsidmap (`nfs4_gss_princ_to_ids`), which does `getpwnam` inside ganesha.nfsd under nss_wrapper — so LDAP users must be present in `/var/lib/nfs-klldap/nss_passwd`. The idhelper syncs LDAP→nss_wrapper at startup and every 10 minutes by default (`NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS`, `0` disables). Each sync prunes non-machine cache entries then reloads from LDAP (adds, uid/gid changes, and deletions propagate). Manual refresh: `echo REBULK | nc -U /var/run/nfs-klldap/idhelper.sock` or config SIGHUP (restarts idhelper). The nfsidmap binary shim does not intercept the principal2uid path. `Read_Access_Check_Policy` is omitted (ganesha 9.6 trixie default `pre` applies). Machine principals map to 0; group-fetch INFO for uid 0 and winbind noise are expected.
 
-This is what actually makes the idhelper work "in conjunction" with Ganesha and SSSD. It does **not** inject untrusted data into `ganesha.conf` (Ganesha stays on a conservative static `Root_Kerberos_Principal = host, nfs;` list; the live translation lives in the nss_wrapper view controlled by the idhelper).
+This is what actually makes the idhelper work "in conjunction" with Ganesha and SSSD. It does **not** inject untrusted data into `ganesha.conf` (Ganesha uses static `Root_Kerberos_Principal = host, nfs, root`; live uid/gid translation lives in the nss_wrapper view controlled by the idhelper).
 
 See [README.md](../README.md) (Identity & Kerberos section) and [TESTING.md](../TESTING.md).

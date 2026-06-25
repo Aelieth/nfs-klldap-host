@@ -1,6 +1,6 @@
 # Ganesha Architecture & Bind-Mount Contract
 
-**0.9.x / Ganesha 9.6 (Debian trixie-backports):** id mapping uses `DIRECTORY_SERVICES` (`DomainName`, `Pwnam_Implementation=nsswitch`, `Root_Kerberos_Principal`, `idmapped_*_time_validity`) plus `nfs-klldap-idhelper` for hybrid machine/user Kerberos principals.
+**0.9.x / Ganesha 9.6 (Debian trixie-backports):** id mapping uses `DIRECTORY_SERVICES` (`DomainName`, `Pwnam_Implementation=nsswitch`, `Root_Kerberos_Principal=host,nfs,root`, `idmapped_*_time_validity=600`) plus `nfs-klldap-idhelper` for hybrid machine/user Kerberos principals.
 
 Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+derives+generates sssd/krb5/ganesha fragments. nfs-klldap-startup supervise (pid1) + watcher (SIGHUP) + ganesha-ctl handle reloads/bounces. nfs-klldap-ui (9630 HTTPS) edits TOML + direct chown/chmod (root, on allowed host_path trees). Ganesha VFS + SSSD (from LLDAP POSIX) serve NFSv4 krb5. No host kernel NFS.
 

@@ -12,8 +12,8 @@ use nfs_klldap_config::{
 };
 
 use crate::common::{
-    debug_enabled, is_machine_principal, normalize_principal, IdCache, PrincipalKind, Resolved,
-    CACHE_PATH,
+    debug_enabled, is_machine_principal, normalize_principal, principal_local_part, IdCache,
+    PrincipalKind, Resolved, CACHE_PATH,
 };
 use crate::materialize::{materialize_nss_wrappers_at, NssMaterializePaths};
 
@@ -30,16 +30,12 @@ fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
             return Some(res);
         }
     }
-    // Try common variants
-    let short = name_or_principal.split('@').next().unwrap_or(name_or_principal);
+    let short = principal_local_part(name_or_principal);
     if let Some(res) = resolve_getent(short) {
         return Some(res);
     }
 
-    // Fallback to structured LDAP resolution via IdLdapResolver.
-    // Uses the same PosixAttributeMapping, filters, and caching logic as
-    // nfs-klldap-ui/src/ldap.rs so behavior + cache effectiveness are identical
-    // and we do not hit the server on every miss.
+    // Structured LDAP fallback via IdLdapResolver (same mapping/filters as the WebUI LdapClient).
     if let Some((uid, gid)) = resolve_via_structured_ldap(short) {
         dlog!(
             "getent passwd \"{}\" -> ldap fallback uid={} gid={}",
@@ -76,24 +72,30 @@ fn uid_gid_from_snapshot(snap: &IdMapSnapshot, full: &str, short: &str) -> Optio
 
 /// LDAP snapshot first, then resolve_user; on miss reload full directory and retry.
 fn resolve_via_structured_ldap(name_or_principal: &str) -> Option<(u32, u32)> {
-    let (resolver, bind_dn, bind_pw) = get_or_init_resolver()?;
-    let short = name_or_principal.split('@').next().unwrap_or(name_or_principal);
+    let ctx = get_or_init_resolver()?;
+    let short = principal_local_part(name_or_principal);
 
-    if let Some(ids) = uid_gid_from_snapshot(&resolver.snapshot(), name_or_principal, short) {
+    if let Some(ids) = uid_gid_from_snapshot(&ctx.resolver.snapshot(), name_or_principal, short) {
         return Some(ids);
     }
-    if let Some(ids) = uid_gid_from_user_resolve(resolver, name_or_principal, &bind_dn, &bind_pw) {
+    if let Some(ids) =
+        uid_gid_from_user_resolve(ctx.resolver, name_or_principal, ctx.bind_dn, ctx.bind_pw)
+    {
         return Some(ids);
     }
-    if let Some(ids) = uid_gid_from_user_resolve(resolver, short, &bind_dn, &bind_pw) {
+    if let Some(ids) = uid_gid_from_user_resolve(ctx.resolver, short, ctx.bind_dn, ctx.bind_pw) {
         return Some(ids);
     }
 
-    let _ = resolver.load_full_identities(&bind_dn, &bind_pw);
-    let snap2 = resolver.snapshot();
+    let _ = ctx
+        .resolver
+        .load_full_identities(ctx.bind_dn, ctx.bind_pw);
+    let snap2 = ctx.resolver.snapshot();
     uid_gid_from_snapshot(&snap2, name_or_principal, short)
-        .or_else(|| uid_gid_from_user_resolve(resolver, name_or_principal, &bind_dn, &bind_pw))
-        .or_else(|| uid_gid_from_user_resolve(resolver, short, &bind_dn, &bind_pw))
+        .or_else(|| {
+            uid_gid_from_user_resolve(ctx.resolver, name_or_principal, ctx.bind_dn, ctx.bind_pw)
+        })
+        .or_else(|| uid_gid_from_user_resolve(ctx.resolver, short, ctx.bind_dn, ctx.bind_pw))
 }
 
 /// Load resolver + bind creds from NfsKlldapConfig (NFS_CONFIG).
@@ -107,26 +109,32 @@ fn load_resolver_from_config() -> Option<(IdLdapResolver, String, String)> {
     Some((resolver, cfg.sssd.ldap_default_bind_dn.clone(), cfg.sssd.ldap_default_authtok.clone()))
 }
 
+/// Borrowed resolver + bind creds from the process-wide OnceLock cache.
+pub(crate) struct ResolverCtx {
+    pub resolver: &'static IdLdapResolver,
+    pub bind_dn: &'static str,
+    pub bind_pw: &'static str,
+}
+
 /// Lazy resolver init so 10m IdLdapResolver caches persist across resolve/getent/observer calls.
 pub(crate) static ID_RESOLVER: OnceLock<Option<(IdLdapResolver, String, String)>> =
     OnceLock::new();
 
-pub(crate) fn get_or_init_resolver() -> Option<(&'static IdLdapResolver, String, String)> {
-    if let Some(cached) = ID_RESOLVER.get().and_then(|o| o.as_ref()) {
-        return Some((&cached.0, cached.1.clone(), cached.2.clone()));
+pub(crate) fn get_or_init_resolver() -> Option<ResolverCtx> {
+    if ID_RESOLVER.get().and_then(|o| o.as_ref()).is_none() {
+        let loaded = load_resolver_from_config()?;
+        let _ = ID_RESOLVER.set(Some(loaded));
     }
-    let (resolver, bind_dn, bind_pw) = load_resolver_from_config()?;
-    let _ = ID_RESOLVER.set(Some((resolver, bind_dn.clone(), bind_pw.clone())));
-    if let Some(cached) = ID_RESOLVER.get().and_then(|o| o.as_ref()) {
-        return Some((&cached.0, cached.1.clone(), cached.2.clone()));
-    }
-    None
+    let cached = ID_RESOLVER.get().and_then(|o| o.as_ref())?;
+    Some(ResolverCtx {
+        resolver: &cached.0,
+        bind_dn: &cached.1,
+        bind_pw: &cached.2,
+    })
 }
 
 fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
-    // getent passwd <name> -> name:pass:uid:gid:...
-    // The short name path (testuser1) is the primary for "same lookup as client".
-    // Full principal is also attempted (by callers) for principal mapping.
+    // Primary lookup is short posix name; callers also try full principal forms.
     dlog!("getent passwd \"{}\" called", name);
     let out = Command::new("getent")
         .args(["passwd", name])
@@ -230,7 +238,7 @@ pub(crate) fn resolve_principal(
     } else {
         // Regular user
         let first_try = principal;
-        let second_try = principal.split('@').next().unwrap_or(principal);
+        let second_try = principal_local_part(principal);
         dlog!("  user_path first_try=\"{}\" second_try=\"{}\"", first_try, second_try);
 
         // getent then LDAP (resolve_via_nss already chains structured LDAP on miss).
@@ -238,7 +246,7 @@ pub(crate) fn resolve_principal(
         dlog!("  nss_getent final_got={:?}", looked.as_ref().map(|(u, g, s)| (*u, *g, s.as_str())));
 
         if let Some((uid, gid, src)) = looked {
-            let name = principal.split('@').next().unwrap_or(principal).to_string();
+            let name = principal_local_part(principal).to_string();
             Resolved {
                 principal: principal.to_string(),
                 name,
@@ -253,7 +261,7 @@ pub(crate) fn resolve_principal(
                 "[idhelper] FALLBACK {} for principal=\"{}\" (no uid/gid from getent or structured resolver)",
                 FALLBACK_NOBODY_UID, principal
             );
-            let name = principal.split('@').next().unwrap_or(principal).to_string();
+            let name = principal_local_part(principal).to_string();
             Resolved {
                 principal: principal.to_string(),
                 name,
@@ -290,7 +298,7 @@ pub(crate) fn resolve_principal(
             "  cache_write result={}",
             if write_res.is_ok() { "ok" } else { "err" }
         );
-        let snap_groups = get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups);
+        let snap_groups = get_or_init_resolver().map(|ctx| ctx.resolver.snapshot().groups);
         if let Err(e) = materialize_nss_wrappers_at(
             cache,
             &NssMaterializePaths::production(),

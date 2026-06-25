@@ -10,6 +10,7 @@ Representative full-config generation: `nfs-klldap-config/tests/representative_g
 - `tempfile` trees for `FsManager`.
 - `tower::ServiceExt` oneshot tests for the Axum router.
 - Container/watcher/healthcheck via compose (not unit-tested).
+- Live krb5p NFS share access: `scripts/test-share-access.sh` (needs running container + `NFS_TEST_USER_PW`).
 
 ## Well-Tested Areas
 

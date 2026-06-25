@@ -195,7 +195,7 @@ pub(crate) fn run_daemon() {
     let realm = get_realm();
     let server_variants = get_server_variants();
 
-    // Ensure runtime directories.
+    // Creates runtime directories when missing.
     let _ = fs::create_dir_all("/var/run/nfs-klldap");
     let _ = fs::create_dir_all("/var/lib/nfs-klldap");
     let _ = fs::create_dir_all("/var/lib/extrausers");

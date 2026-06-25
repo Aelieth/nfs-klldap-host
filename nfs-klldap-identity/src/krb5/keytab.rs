@@ -7,8 +7,8 @@ use super::hostname::{format_nfs_principal_list, nfs_keytab_host_matches};
 
 const DEFAULT_KEYTAB_PATH: &str = "/etc/krb5.keytab";
 
-/// Parse nfs/* service principals from klist stdout.
-/// Handles both `klist -k` (principal in column 2) and `klist -k -t` (principal as last token).
+/// Parses nfs/* service principals from klist stdout.
+/// Handles `klist -k` column 2 and `klist -k -t` trailing principal output.
 pub fn parse_klist_nfs_principals(stdout: &str) -> Vec<String> {
     let mut found = Vec::new();
 

@@ -44,12 +44,12 @@ fn write_exe(path: &std::path::Path, body: &str) {
     fs::set_permissions(path, perms).unwrap();
 }
 
-fn spin_until(mut ready: impl FnMut() -> bool, max_spins: u64, label: &str) {
-    for _ in 0..max_spins {
+fn wait_for(mut ready: impl FnMut() -> bool, max_tries: u32, label: &str) {
+    for _ in 0..max_tries {
         if ready() {
             return;
         }
-        std::hint::spin_loop();
+        std::thread::yield_now();
     }
     panic!("{label}");
 }
@@ -284,7 +284,7 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
     });
 
     let pid = child.id();
-    spin_until(|| loop_ready.is_file(), 50_000_000, "supervisor never wrote loop-probe ready marker");
+    wait_for(|| loop_ready.is_file(), 500_000, "supervisor never wrote loop-probe ready marker");
     assert!(
         !recycle_marker.is_file(),
         "recycle marker must be absent before SIGHUP"
@@ -298,7 +298,7 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         "must deliver real SIGHUP to supervisor child"
     );
 
-    spin_until(|| recycle_marker.is_file(), 50_000_000, "recycle marker missing after real SIGHUP");
+    wait_for(|| recycle_marker.is_file(), 500_000, "recycle marker missing after real SIGHUP");
     assert!(
         fs::metadata(&recycle_marker).map(|m| m.len()).unwrap_or(0) > 0,
         "recycle marker must be non-empty"

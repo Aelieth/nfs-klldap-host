@@ -1,4 +1,4 @@
-//! POSIX LDAP attribute mapping and search-base derivation (no TOML/serde deps).
+//! POSIX LDAP attribute mapping and search-base derivation.
 
 use crate::constants::{
     DEFAULT_GROUP_GID_ATTR, DEFAULT_GROUP_MEMBER_ATTR_KLLDAP, DEFAULT_GROUP_MEMBER_ATTR_LEGACY,
@@ -24,7 +24,7 @@ pub struct PosixAttributeMapping {
     pub user_principal_name: String,
 }
 
-/// Plain inputs for resolving POSIX attribute names (mirrors [sssd] TOML fields).
+/// Inputs for resolving POSIX attribute names from [sssd] fields.
 #[derive(Debug, Clone, Default)]
 pub struct PosixMappingInput {
     pub ldap_user_object_class: Option<String>,
@@ -46,7 +46,7 @@ fn non_empty(s: &Option<String>) -> Option<&str> {
     s.as_deref().filter(|v| !v.trim().is_empty())
 }
 
-/// Resolves POSIX attribute names from optional overrides (or built-in defaults).
+/// Resolves POSIX attribute names from overrides or defaults.
 pub fn resolve_posix_attribute_mapping(input: &PosixMappingInput) -> PosixAttributeMapping {
     let user_obj = non_empty(&input.ldap_user_object_class)
         .map(|s| s.trim().to_string())
@@ -128,7 +128,7 @@ pub struct LdapSearchBasesInput {
     pub ldap_group_search_base: Option<String>,
 }
 
-/// Effective user/group search bases (Subtree) from overrides or realm-derived defaults.
+/// Resolves user/group search bases from overrides or realm defaults.
 pub fn effective_ldap_search_bases(input: &LdapSearchBasesInput, realm: &str) -> (String, String) {
     let search_base = input
         .ldap_search_base

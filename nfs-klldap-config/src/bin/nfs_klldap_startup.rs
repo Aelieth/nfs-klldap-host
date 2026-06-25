@@ -1,12 +1,20 @@
-//! nfs-klldap-startup — container bring-up supervisor + non-interactive diagnostics.
-//!
-//! The blocking terminal TUI is replaced by the WebUI setup wizard; this binary
-//! provides `supervise` (pid-1), `check`, and `wait-ready` entry points.
+//! Container bring-up: supervise (pid-1), check, and wait-ready entry points.
+//! The WebUI setup wizard replaces the former blocking terminal TUI.
 
 #![deny(unsafe_code, dead_code)]
 
+#[cfg(unix)]
 #[path = "../supervisor.rs"]
 mod supervisor;
+
+#[cfg(not(unix))]
+mod supervisor {
+    use std::path::Path;
+
+    pub fn run_supervisor(_config_path: &Path) -> Result<(), String> {
+        Err("nfs-klldap-startup supervise requires a Unix target".to_string())
+    }
+}
 
 use std::env;
 use std::path::Path;
@@ -110,17 +118,14 @@ First-run setup is handled by the WebUI wizard at https://<host>:9630/setup
     );
 }
 
-/// Poll until compute_startup_step returns Ready (used by tests and automation).
+/// Polls until compute_startup_step returns Ready for tests and automation.
 fn wait_until_ready(config_path: &Path) -> Result<(), String> {
     loop {
         let step = compute_startup_step(config_path);
         if step == StartupStep::Ready {
-            if let Ok(v) = std::env::var("HOST_NFS").or_else(|_| std::env::var("NFS_KLLDAP_HOST_NFS")) {
-                let t = v.trim().to_ascii_lowercase();
-                if t == "true" || t == "1" || t == "yes" || t == "on" {
-                    println!("[HOST_NFS] Mode active — host NFS server (Ganesha at /etc/ganesha) will serve the shares.");
-                    println!("           This container manages config, Kerberos material, SSSD identity, and the WebUI permission tools.");
-                }
+            if nfs_klldap_config::host_nfs_from_env() == Some(true) {
+                println!("[HOST_NFS] Mode active — host NFS server (Ganesha at /etc/ganesha) will serve the shares.");
+                println!("           This container manages config, Kerberos material, SSSD identity, and the WebUI permission tools.");
             }
             return Ok(());
         }

@@ -91,52 +91,22 @@ mod tests {
     }
 
     #[test]
-    fn machine_prefixes_classify_as_machine() {
-        let (is_machine, _) = classify_principal("host/client.example.com@REALM", "REALM", &[]);
-        assert!(is_machine);
-
-        let (is_machine, _) = classify_principal("nfs/client@REALM", "REALM", &[]);
-        assert!(is_machine);
-
-        let (is_machine, _) = classify_principal("root/client@REALM", "REALM", &[]);
-        assert!(is_machine);
-    }
-
-    #[test]
-    fn user_principal_classifies_as_user() {
-        let (is_machine, reason) = classify_principal("alice@REALM", "REALM", &[]);
-        assert!(!is_machine);
-        assert!(reason.contains("regular user"));
-    }
-
-    #[test]
-    fn server_variant_host_principal() {
+    fn classify_machine_user_and_realm_rules() {
         let variants = vec!["myserver.example.com".to_string()];
-        let (is_machine, _) =
-            classify_principal("host/myserver.example.com@REALM", "REALM", &variants);
-        assert!(is_machine);
-    }
-
-    #[test]
-    fn bare_service_names_are_machine() {
+        assert!(classify_principal("host/client@REALM", "REALM", &[]).0);
+        assert!(classify_principal("nfs/client@REALM", "REALM", &[]).0);
+        assert!(classify_principal("root/client@REALM", "REALM", &[]).0);
+        assert!(classify_principal("host/myserver.example.com@REALM", "REALM", &variants).0);
         for name in ["host", "nfs", "root"] {
-            let (is_machine, _) = classify_principal(name, "REALM", &[]);
-            assert!(is_machine, "expected machine for {}", name);
+            assert!(classify_principal(name, "REALM", &[]).0, "{name}");
         }
-    }
-
-    #[test]
-    fn host_substring_in_username_does_not_classify_as_machine() {
-        let (is_machine, _) = classify_principal("app/hostbackup@REALM", "REALM", &[]);
-        assert!(!is_machine);
-    }
-
-    #[test]
-    fn foreign_realm_principal_classifies_as_user() {
-        let (is_machine, reason) =
-            classify_principal("alice@OTHER.REALM", "MY.REALM", &[]);
-        assert!(!is_machine);
-        assert!(reason.contains("OTHER.REALM"));
+        let (u, r) = classify_principal("alice@REALM", "REALM", &[]);
+        assert!(!u);
+        assert!(r.contains("regular user"));
+        assert!(!classify_principal("app/hostbackup@REALM", "REALM", &[]).0);
+        let (u2, r2) = classify_principal("alice@OTHER.REALM", "MY.REALM", &[]);
+        assert!(!u2);
+        assert!(r2.contains("OTHER.REALM"));
     }
 
     #[test]

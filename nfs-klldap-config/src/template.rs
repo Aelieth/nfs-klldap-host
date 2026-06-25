@@ -1,4 +1,4 @@
-//! First-run default template
+//! First-run default template.
 
 use std::fs;
 use std::path::Path;

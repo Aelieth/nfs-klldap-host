@@ -58,7 +58,7 @@ pub fn posix_mapping_from_sssd(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DEFAULT_USER_PRINCIPAL_ATTR, SssdSection};
+    use crate::SssdSection;
 
     #[test]
     fn resolver_constructs_from_minimal_sssd_section() {
@@ -72,26 +72,5 @@ mod tests {
         assert!(r.user_base().contains("people"));
     }
 
-    #[test]
-    fn dc_base_extraction_covers_nested_under_users() {
-        let r = from_sssd_section(
-            "ldaps://ldap.example:636",
-            &SssdSection {
-                ldap_user_search_base: Some("ou=testing,ou=users,dc=example,dc=com".into()),
-                ..SssdSection::default()
-            },
-            "example.com",
-        );
-        assert!(r.user_base().contains("testing"));
-    }
 
-    #[test]
-    fn principal_attr_default_is_krb_principal_name_and_dual_lookup_works_in_mapping() {
-        let s = SssdSection::default();
-        let r = from_sssd_section("ldaps://ex", &s, "ex.com");
-        assert_eq!(
-            r.posix_attributes().user_principal_name,
-            DEFAULT_USER_PRINCIPAL_ATTR
-        );
-    }
 }

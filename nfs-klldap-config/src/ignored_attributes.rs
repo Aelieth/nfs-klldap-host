@@ -1,9 +1,6 @@
-//! Curated ignore lists for KLLDAP + SSSD (and dirsync clients).
-//! Emitted into generated sssd.conf when kllldap_ignored_attributes = true (default).
-//! See docs/ldap-integration.md for server-side application.
+//! KLLDAP/SSSD ignore lists emitted into sssd.conf when enabled (default on).
 
-/// Attributes commonly requested by SSSD, dirsync tools, and AD-compat clients
-/// on *user* entries that KLLDAP does not (and should not need to) provide.
+/// User attributes SSSD/dirsync request that KLLDAP does not provide.
 pub const RECOMMENDED_IGNORED_USER_ATTRIBUTES: &[&str] = &[
     "accountexpires",
     "authorizedservice",
@@ -34,13 +31,10 @@ pub const RECOMMENDED_IGNORED_USER_ATTRIBUTES: &[&str] = &[
 /// Attributes commonly requested by SSSD and sync tools on *group* entries.
 pub const RECOMMENDED_IGNORED_GROUP_ATTRIBUTES: &[&str] = &["memberuid", "userpassword", "sudohost"];
 
-/// The recommended group membership attribute to use with KLLDAP when
-/// ldap_schema = rfc2307bis. KLLDAP populates `member` (and `uniqueMember`)
-/// with DNs automatically.
+/// Lists the group member attributes that KLLDAP populates for rfc2307bis.
 pub const RECOMMENDED_KLLDAP_GROUP_MEMBER: &str = "member";
 
-/// Returns the recommended lists formatted as TOML array literals
-/// ready to paste into a KLLDAP server configuration.
+/// Recommended ignore lists as TOML array literals for KLLDAP server config.
 pub fn get_kllldap_ignored_attributes_toml() -> (String, String) {
     let user_list = RECOMMENDED_IGNORED_USER_ATTRIBUTES
         .iter()
@@ -57,21 +51,24 @@ pub fn get_kllldap_ignored_attributes_toml() -> (String, String) {
     (format!("[{}]", user_list), format!("[{}]", group_list))
 }
 
-/// Verbose comment block appended to generated sssd.conf when ignores are enabled.
+/// Verbose comment block appended to generated sssd.conf.
+/// Used when ignores are enabled.
 pub fn get_kllldap_ignored_attributes_comment_block() -> String {
     let (users, groups) = get_kllldap_ignored_attributes_toml();
     format!(
         r#"# -----------------------------------------------------------------------------
 # KLLDAP server-side ignored attributes
 # -----------------------------------------------------------------------------
-# SSSD and similar clients request many AD-compat attributes KLLDAP does not store.
-# Without server-side ignores, logs fill with "unknown attribute" noise and some
+# SSSD and similar clients request many AD-compat attributes.
+# KLLDAP does not store them.
+# Without server-side ignores
+# logs fill with "unknown attribute" noise and some
 # clients retry aggressively (TLS disconnects, high CPU).
 # Keep [sssd] kllldap_ignored_attributes = true (default) in nfs-klldap.conf.
 #
 # ldap_group_member = "{member}" when ignores are enabled (not legacy memberUid).
 #
-# To disable this setting add: "kllldap_ignored_attributes = false" in nfs-klldap.conf
+# To disable: add "kllldap_ignored_attributes = false" in nfs-klldap.conf
 # -----------------------------------------------------------------------------
 ignored_user_attributes = {users}
 ignored_group_attributes = {groups}

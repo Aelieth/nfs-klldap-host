@@ -1,12 +1,8 @@
-//! NFS keytab principal status for the WebUI (startup banner + settings).
-//!
-//! `keytab_alert` is display-only: it never gates auth, session creation, or
-//! protected routes. Pre-auth pages (login) omit the banner so admins can recover.
+//! Supplies a display-only keytab banner that never gates authentication.
 
 pub use nfs_klldap_config::KeytabInfo;
 
-/// User-visible warning when the on-disk keytab does not match the container hostname.
-/// Returns `None` when a matching nfs/* principal is present (no banner needed).
+/// Return a warning when the keytab does not match the container hostname.
 pub fn compute_keytab_alert(expected_host: &str, expected_realm: &str) -> Option<String> {
     nfs_klldap_config::get_keytab_info(expected_host, expected_realm).alert
 }

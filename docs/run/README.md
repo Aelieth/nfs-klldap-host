@@ -252,26 +252,8 @@ The generator writes a minimal `ganesha.conf` plus one fragment per share under 
 
 Each per-share fragment contains an EXPORT with Path (internal), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block for access control, and the VFS FSAL. Additional CLIENT blocks can be appended manually (they will be lost on regeneration).
 
-See also the reference shape in `examples/ganesha-exports.d/10-example.conf`.
-
-### SELinux, volume labeling, and other host notes
-- On enforcing SELinux hosts (e.g. Atomic Fedora), bind-mounted data volumes often still need the `:Z` (or `:z`) suffix so that the content is labeled appropriately for container use (`container_file_t` etc.). The image itself no longer includes a Fedora SELinux subpackage (runtime is Debian-based).
-- If you see denials related to dbus, rpc, or file labeling, the two caps + relabeling resolve the large majority of cases. Full `--privileged` is a last resort.
-- `read_ahead_kb` on the host block devices that back your shares remains a host-side tuning knob (outside the container) for sequential read workloads.
-
-### Common failure modes and fixes
-- "No such file or directory" when mounting a VFS export, or Ganesha failing to traverse the tree → missing `SYS_ADMIN`/`DAC_READ_SEARCH` or the bind mount not actually visible at the expected internal Path (container_root + tail of host_path after its first dir component) inside the container. (export_path is only for the Pseudo; check that the first dir of the share's host_path matches the bind source you mounted.)
-- WebUI "apply" fails with permission errors on subdirectories → numeric UIDs don't match across the host/container boundary, or the DAC cap is absent.
-- Ganesha fails to start with dbus/socket errors → the entrypoint dbus launch didn't produce `/run/dbus/system_bus_socket` in time (rare; the readiness loop helps), or the package was not present in an old image.
-- Kerberos principal / hostname mismatches → missing `--uts=host` (or `uts: host` in compose) and/or keytab principals that don't match the name the container sees.
-- Ganesha CLIENT records show `server_addr = 172.17.x.x` while clients connect from external addresses → container is on Docker bridge networking instead of host mode. Restart with `network_mode: host` / `--network=host`. `verify-ganesha.sh` and `nfs-klldap-startup check` warn when the container primary IPv4 is in `172.17.0.0/16`.
-- UDP clients or legacy `showmount` tools complain → `Enable_UDP = false` in `NFS_CORE_PARAM` (NFSv4 TCP only); rpcbind is still present for compatibility; open the ports you actually need.
-- Mounts repeatedly fail / get torn down with Fedora Immutable clients (host keytab + user TGT) → the `nfs-klldap-idhelper` daemon must be running (started automatically after SSSD). Ganesha uses nss_wrapper preload by default (`USE_NSS_WRAPPER=1`); set `USE_NSS_WRAPPER=0` to rely on extrausers alone. Use `ganesha-ctl id-check`, `ganesha-ctl id-resolve '<principal>'`, and inspect `/var/lib/nfs-klldap/nss_passwd` to verify. See [docs/ldap-integration.md](../ldap-integration.md).
-
-### Security model recap (WebUI FS changes)
-All owner/group/mode mutations still go exclusively through `FsManager` (allow-list from configured `host_path` entries, WalkDir with `follow_links(false)`, never descend symlinks for mutation, refuse uid/gid 0 and set*id bits). The caps are additive for traversal and Ganesha VFS reliability; they do not relax the allow-list or symlink policy. See `nfs-klldap-ui/src/fs.rs`, `privileged.rs`, and [nfs-klldap-ui/docs/security.md](../../nfs-klldap-ui/docs/security.md).
-
-This combination (bind mounts + root inside + the two caps + `--uts=host` + explicit CORE_PARAM + dbus in the image) is the practical, supportable way to run this Ganesha-based appliance while giving the WebUI safe direct control over the host's exported trees.
+### Host notes and troubleshooting
+SELinux hosts may need `:Z` on bind mounts. Common failures: missing caps or wrong internal Path, UID namespace mismatch on apply, dbus socket timing, `--uts=host`/keytab hostname drift, bridge networking (`172.17.x.x` in CLIENT records — use host network), hybrid Kerberos teardown (ensure idhelper + `ganesha-ctl id-check`). See [docs/ldap-integration.md](../ldap-integration.md) and `scripts/verify-ganesha.sh`.
 
 ### Verification
 

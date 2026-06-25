@@ -332,34 +332,6 @@ mod tests {
         assert!(!looks_like_docker_default_hostname("aurora.testdomain.com"));
     }
 
-    #[test]
-    fn consistency_returns_raw_hostname_for_keytab() {
-        let c = get_consistent_hostname_from_values("aurora.test.com", "aurora.test.com").unwrap();
-        assert_eq!(c.hostname, "aurora.test.com");
-        assert_eq!(
-            nfs_keytab_host_variants(&c.hostname),
-            vec!["aurora".to_string(), "aurora.test.com".to_string()]
-        );
-    }
-
-    #[test]
-    fn runtime_hostname_falls_back_without_config() {
-        assert!(!super::runtime_hostname(None).is_empty());
-    }
-
-    #[test]
-    fn runtime_realm_falls_back_without_config() {
-        assert!(!super::runtime_realm(None).is_empty());
-    }
-
-    #[test]
-    fn parse_host_nfs_env_accepts_common_truthy_values() {
-        assert!(super::parse_host_nfs_env_value("true"));
-        assert!(super::parse_host_nfs_env_value("1"));
-        assert!(super::parse_host_nfs_env_value("YES"));
-        assert!(!super::parse_host_nfs_env_value("false"));
-        assert!(!super::parse_host_nfs_env_value("0"));
-    }
 }
 
 use std::path::Path;

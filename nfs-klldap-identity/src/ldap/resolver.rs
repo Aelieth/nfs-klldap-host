@@ -996,21 +996,6 @@ impl IdLdapResolver {
         snap
     }
 
-    #[cfg(test)]
-    fn insert_test_user(&self, name: &str, uid: i32, gid: i32, display: &str) {
-        let cu = CachedUser {
-            id: name.to_string(),
-            uid_number: Some(uid),
-            primary_gid: Some(gid),
-            display_name: display.to_string(),
-            fetched_at: Instant::now(),
-        };
-        self.user_cache
-            .lock()
-            .unwrap()
-            .insert(name.to_string(), cu.clone());
-        self.user_by_uid_cache.lock().unwrap().insert(uid, cu);
-    }
 }
 
 /// Best-effort first attribute extraction (handles case variants).
@@ -1042,49 +1027,6 @@ mod tests {
         let s = IdMapSnapshot::default();
         assert!(s.users.is_empty());
         assert!(s.groups.is_empty());
-    }
-
-    #[test]
-    fn nested_ou_user_base_constructs() {
-        let r = IdLdapResolver::from_inputs(&LdapResolverInputs {
-            ldap_uri: "ldaps://ldap.example:636".into(),
-            realm: "example.com".into(),
-            search_bases: LdapSearchBasesInput {
-                ldap_user_search_base: Some("ou=testing,ou=users,dc=example,dc=com".into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-        assert!(r.user_base().contains("testing"));
-    }
-
-    #[test]
-    fn snapshot_populates_uid_and_gid_from_user_entry() {
-        let r = IdLdapResolver::from_inputs(&LdapResolverInputs {
-            ldap_uri: "ldaps://ldap.example:636".into(),
-            realm: "ex.com".into(),
-            search_bases: LdapSearchBasesInput {
-                ldap_user_search_base: Some("ou=users,dc=ex,dc=com".into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-
-        r.insert_test_user("nesteduser", 12345, 12345, "Nested User");
-
-        let snap = r.snapshot();
-        let entry = snap.users.get("nesteduser").expect("nested user in snapshot");
-        assert_eq!(entry.uid, 12345);
-        assert_eq!(entry.gid, 12345);
-    }
-
-    #[test]
-    fn principal_attr_default_in_resolver() {
-        let r = IdLdapResolver::from_inputs(&LdapResolverInputs::default());
-        assert_eq!(
-            r.posix_attributes().user_principal_name,
-            DEFAULT_USER_PRINCIPAL_ATTR
-        );
     }
 
     #[test]

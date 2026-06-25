@@ -1236,9 +1236,12 @@ ldap_default_authtok = "sekret"
 
     #[tokio::test]
     async fn restart_status_ok_when_recycle_marker_is_recent() {
-        let _ = std::fs::write(super::settings::SERVICE_RECYCLE_MARKER, b"ok\n");
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("recycled");
+        std::env::set_var("NFS_KLLDAP_RECYCLE_MARKER", marker.to_str().unwrap());
+        std::fs::write(&marker, b"ok\n").unwrap();
         let resp = super::settings::restart_status().await.into_response();
-        let _ = std::fs::remove_file(super::settings::SERVICE_RECYCLE_MARKER);
+        std::env::remove_var("NFS_KLLDAP_RECYCLE_MARKER");
         assert_eq!(resp.status(), StatusCode::OK);
     }
 

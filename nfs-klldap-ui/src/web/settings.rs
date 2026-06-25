@@ -71,8 +71,14 @@ struct SettingsTemplate {
 #[template(path = "restarting.html")]
 pub(crate) struct RestartingTemplate;
 
-/// Path touched by the supervisor after a full service recycle (polled by restarting.html).
+/// Default path touched by the supervisor after a full service recycle (polled by restarting.html).
 pub(crate) const SERVICE_RECYCLE_MARKER: &str = "/tmp/.nfs-klldap-services-recycled";
+
+fn service_recycle_marker_path() -> std::path::PathBuf {
+    std::env::var("NFS_KLLDAP_RECYCLE_MARKER")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from(SERVICE_RECYCLE_MARKER))
+}
 
 /// Render the standalone restarting page (shared by settings restart and setup step 3).
 pub(crate) fn render_restarting_page() -> Html<String> {
@@ -88,7 +94,7 @@ pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_co
         }
         *flag = true;
     }
-    let _ = std::fs::remove_file(SERVICE_RECYCLE_MARKER);
+    let _ = std::fs::remove_file(service_recycle_marker_path());
     let label = log_context.to_string();
     let hup_pid = std::env::var("NFS_KLLDAP_SUPERVISOR_PID").unwrap_or_else(|_| "1".to_string());
     let delay_ms = std::env::var("NFS_KLLDAP_RECYCLE_DELAY_MS")
@@ -1368,10 +1374,11 @@ pub(crate) async fn clear_ldap_cache(
 
 /// GET /restart-status — public poller endpoint; 200 only when the supervisor recycle marker is recent.
 pub(crate) async fn restart_status() -> impl IntoResponse {
-    if std::path::Path::new(SERVICE_RECYCLE_MARKER).exists() {
+    let marker = service_recycle_marker_path();
+    if marker.exists() {
         // Only trust a recent marker (this particular apply, not a leftover
         // from hours/days ago).
-        if let Ok(meta) = std::fs::metadata(SERVICE_RECYCLE_MARKER) {
+        if let Ok(meta) = std::fs::metadata(&marker) {
             if let Ok(mtime) = meta.modified() {
                 if let Ok(age) = mtime.elapsed() {
                     if age < std::time::Duration::from_secs(10 * 60) {

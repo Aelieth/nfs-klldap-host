@@ -22,8 +22,7 @@ use crate::materialize::{
 use crate::observer::start_ganesha_observer;
 use crate::resolve::{get_or_init_resolver, resolve_principal, ID_RESOLVER};
 
-/// Files rebulk touches: idmap cache, bulk-seed marker
-/// and nss_wrapper outputs.
+/// Paths rebulk writes: idmap cache, bulk-seed marker, nss_wrapper outputs.
 #[derive(Clone, Copy)]
 pub(crate) struct RebulkPaths<'a> {
     pub cache_path: &'a Path,
@@ -48,8 +47,7 @@ pub(crate) struct RebulkOutcome {
     pub materialized: bool,
 }
 
-/// Sync LDAP snapshot into cache
-/// materialize nss only when fingerprint changes.
+/// Sync LDAP snapshot into cache; materialize nss when fingerprint changes.
 pub(crate) fn rebulk_apply_sync(
     cache: &mut IdCache,
     realm: &str,
@@ -124,8 +122,7 @@ pub(crate) mod test_rebulk {
     }
 }
 
-/// LDAP bulk load then nss materialize
-/// must complete before supervisor starts ganesha.nfsd.
+/// LDAP bulk load and nss materialize; must finish before ganesha.nfsd starts.
 pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usize> {
     #[cfg(test)]
     if let Some(ov) = test_rebulk::current_override() {

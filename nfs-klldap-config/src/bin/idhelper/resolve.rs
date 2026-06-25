@@ -61,8 +61,7 @@ fn uid_gid_from_snapshot(snap: &IdMapSnapshot, full: &str, short: &str) -> Optio
     None
 }
 
-/// LDAP snapshot first, then resolve_user
-/// on miss reload full directory and retry.
+/// LDAP snapshot first; on miss reload full directory and retry resolve_user.
 fn resolve_via_structured_ldap(name_or_principal: &str) -> Option<(u32, u32)> {
     let (resolver, bind_dn, bind_pw) = get_or_init_resolver()?;
     let short = principal_local_part(name_or_principal);
@@ -124,8 +123,7 @@ fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
     None
 }
 
-/// Classify machine→uid 0 or resolve user via NSS/LDAP
-/// materialize into nss_wrapper on change.
+/// Classify machine→uid 0 or resolve user; materialize nss_wrapper on change.
 pub(crate) fn resolve_principal(
     principal: &str,
     realm: &str,

@@ -1,10 +1,6 @@
-//! Curated ignore lists for KLLDAP + SSSD (and dirsync clients).
-//! Emitted into generated sssd.conf when kllldap_ignored_attributes is true.
-//! Default is enabled.
-//! See docs/ldap-integration.md for server-side application.
+//! KLLDAP/SSSD ignore lists emitted into sssd.conf when enabled (default on).
 
-/// Attributes commonly requested by SSSD, dirsync tools, and AD-compat clients
-/// on *user* entries that KLLDAP does not (and should not need to) provide.
+/// User attributes SSSD/dirsync request that KLLDAP does not provide.
 pub const RECOMMENDED_IGNORED_USER_ATTRIBUTES: &[&str] = &[
     "accountexpires",
     "authorizedservice",
@@ -35,13 +31,10 @@ pub const RECOMMENDED_IGNORED_USER_ATTRIBUTES: &[&str] = &[
 /// Attributes commonly requested by SSSD and sync tools on *group* entries.
 pub const RECOMMENDED_IGNORED_GROUP_ATTRIBUTES: &[&str] = &["memberuid", "userpassword", "sudohost"];
 
-/// The recommended group membership attribute to use with KLLDAP when
-/// ldap_schema = rfc2307bis. KLLDAP populates `member` (and `uniqueMember`)
-/// with DNs automatically.
+/// Group member attribute for rfc2307bis; KLLDAP populates member/uniqueMember.
 pub const RECOMMENDED_KLLDAP_GROUP_MEMBER: &str = "member";
 
-/// Returns the recommended lists formatted as TOML array literals
-/// ready to paste into a KLLDAP server configuration.
+/// Recommended ignore lists as TOML array literals for KLLDAP server config.
 pub fn get_kllldap_ignored_attributes_toml() -> (String, String) {
     let user_list = RECOMMENDED_IGNORED_USER_ATTRIBUTES
         .iter()

@@ -32,10 +32,7 @@ struct TreeFragmentTemplate {
     children: Vec<DirNode>,
 }
 
-/// Renders a share root (or any directory) as the top clickable row in the tree,
-/// with its direct children inside it.
-/// This lets users manage permissions on the
-/// share root directory itself.
+/// Share root as top tree row with direct children (includes root perms).
 #[derive(Template)]
 #[template(path = "tree_root.html")]
 struct TreeRootTemplate {
@@ -49,9 +46,7 @@ pub(crate) struct DirNode {
     pub name: String,
 }
 
-/// Display row for a share card on the Share Permissions page.
-/// Precomputes the client-visible NFS path (using the effective keytab hostname)
-/// and compact labels for the attributes (RW/RO, squash, cache profile).
+/// Share card row with client NFS path and RW/squash/cache labels.
 #[derive(Debug, Clone)]
 struct ShareInfo {
     pub name: String,
@@ -143,12 +138,10 @@ pub(crate) struct DirEditorParams {
 pub(crate) struct SearchParams {
     /// Legacy/alternate query param (some HTMX configs send `q` via js: vals).
     q: Option<String>,
-    /// Live search: current Owner field value (preferred
-    /// sent via hx-include on the input).
+    /// Owner field value from hx-include live search.
     #[serde(default)]
     owner_user: Option<String>,
-    /// Live search: current Group field value (preferred
-    /// sent via hx-include on the input).
+    /// Group field value from hx-include live search.
     #[serde(default)]
     owner_group: Option<String>,
 }
@@ -709,11 +702,7 @@ pub(crate) async fn apply_permissions(
     Ok(Html(format!("{}\n{}", placeholder, status_html)))
 }
 
-/// Renders the full oob-swappable #apply-status block.
-/// Header includes Cancel on the right plus content.
-/// active_cancel controls the red clickable vs muted disabled Cancel button.
-/// When !active_cancel we emit data-apply-finished.
-/// Lets the JS poller listener stop itself.
+/// Renders oob-swappable #apply-status; active_cancel toggles Cancel button.
 fn render_apply_status_oob(cmd: &str, result_or_live: &str, active_cancel: bool) -> String {
     let cancel_btn = if active_cancel {
         r#"<button type="button" onclick="if (window.cancelCurrentApply) window.cancelCurrentApply();" class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--danger-border); color:var(--danger-text); background:var(--danger-bg); border-radius:2px; cursor:pointer;">Cancel Apply</button>"#

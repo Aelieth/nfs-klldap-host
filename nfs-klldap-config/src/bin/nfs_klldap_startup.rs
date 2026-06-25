@@ -1,9 +1,5 @@
-//! nfs-klldap-startup
-//! container bring-up supervisor + non-interactive diagnostics.
-//!
-//! The blocking terminal TUI is replaced by the WebUI setup wizard
-//! this binary
-//! provides `supervise` (pid-1), `check`, and `wait-ready` entry points.
+//! Container bring-up: supervise (pid-1), check, and wait-ready entry points.
+//! The WebUI setup wizard replaces the former blocking terminal TUI.
 
 #![deny(unsafe_code, dead_code)]
 

@@ -27,11 +27,7 @@ pub struct TlsPaths {
     pub key: PathBuf,
 }
 
-/// Returns true when NFS_KLLDAP_WEBUI_TLS=off (or =false/0/no
-/// case-insensitive). In this mode the WebUI
-/// must not attempt to serve TLS or generate/require cert material; a reverse
-/// proxy is expected in front (supplying X-Forwarded-Proto etc.).
-/// Env always wins over [webui] tls in nfs-klldap.conf.
+/// True when NFS_KLLDAP_WEBUI_TLS=off; reverse proxy serves TLS instead.
 pub fn webui_tls_disabled() -> bool {
     if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
         let t = v.trim().to_ascii_lowercase();

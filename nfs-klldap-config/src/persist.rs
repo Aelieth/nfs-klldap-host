@@ -1,16 +1,10 @@
-//! is_persistent_config (dev inode diff)
-//! load_host_paths_only (tolerant for UI allow-list).
+//! Persistent config detection and tolerant host_path-only loading.
 
 use std::path::{Path, PathBuf};
 
 use crate::ConfigError;
 
-/// Returns true if the given config path is on a persistent volume (i.e.
-/// a real
-/// host bind mount), not the container's own filesystem layer.
-///
-/// Used by the WebUI setup wizard.
-/// Refuses meaningful work until /config is a real bind mount.
+/// True when config path is on a host bind mount, not container rootfs.
 #[cfg(unix)]
 pub fn is_persistent_config(path: &Path) -> bool {
     if !path.exists() {
@@ -38,12 +32,7 @@ pub fn is_persistent_config(_path: &Path) -> bool {
     true
 }
 
-/// Load only the [[shares]] host_path entries from a config file.
-///
-/// This is intentionally tolerant of missing credentials / incomplete config
-/// so the privileged permission helper can still enforce its allow-list even
-/// if the rest of the TOML is in a transitional state. Only well-formed
-/// absolute host_path values are returned.
+/// Load [[shares]] host_path entries only; tolerant of incomplete config.
 pub fn load_host_paths_only(path: &Path) -> Result<Vec<PathBuf>, ConfigError> {
     if !path.exists() {
         return Ok(vec![]);

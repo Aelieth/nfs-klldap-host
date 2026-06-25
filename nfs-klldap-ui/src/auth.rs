@@ -32,10 +32,7 @@ pub struct AuthManager {
 }
 
 impl AuthManager {
-    /// Create a new manager.
-    /// `config_path` is the path to nfs-klldap.conf
-    /// the sidecar lives beside it.
-    /// `admin_group` comes from the loaded config (falls back to "lldap_admin").
+    /// New manager; sidecar webui-password lives beside nfs-klldap.conf.
     pub fn new(config_path: impl AsRef<Path>, admin_group: Option<String>) -> Self {
         let config_path = config_path.as_ref();
         let simple_pw_path = config_path
@@ -153,9 +150,7 @@ impl AuthManager {
     // Session management (used after either auth path succeeds)
     // ---------------------------------------------------------------------
 
-    /// Create a privileged session. The caller has already performed the
-    /// appropriate authentication (simple pw for localhost
-    /// or LLDAP+group for others).
+    /// Create session after localhost simple-pw or LLDAP+group auth.
     pub fn create_privileged_session(&self, username: &str) -> String {
         let token: String = (0..32)
             .map(|_| {

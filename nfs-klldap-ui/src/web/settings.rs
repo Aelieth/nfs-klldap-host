@@ -28,8 +28,7 @@ struct SettingsTemplate {
     effective_realm: String,
     keytab_alert: Option<String>,
 
-    /// NFS principals found in the keytab (for display
-    /// matching underline in template).
+    /// NFS principals from keytab (template underline highlight).
     keytab_found_principals: Vec<String>,
 
     ldap_uri: String,
@@ -60,8 +59,7 @@ struct SettingsTemplate {
     override_sssd_ldap_id_use_start_tls: bool,
     override_sssd_enumerate: bool,
 
-    /// Server-rendered current shares (enables proper edit
-    /// delete via row removal before submit).
+    /// Server-rendered shares for edit/delete via row removal.
     current_shares: Vec<ShareTemplateRow>,
     /// Next index the client-side JS should use when the user clicks "+ Add share".
     next_share_idx: usize,
@@ -92,8 +90,7 @@ pub(crate) fn render_restarting_page() -> Html<String> {
     Html(RestartingTemplate.render().unwrap())
 }
 
-/// Clear recycle marker and schedule delayed HUP (pid 1
-/// or NFS_KLLDAP_SUPERVISOR_PID in tests).
+/// Clear recycle marker and schedule delayed HUP (pid 1 or test override).
 pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_context: &str) -> bool {
     {
         let mut flag = state.restart_requested.lock().await;
@@ -225,8 +222,7 @@ struct ShareTemplateRow {
     fs_warning: Option<String>,
 }
 
-/// Key present in raw source (used to decide override checkboxes
-/// core keys always explicit).
+/// Key present in raw TOML (drives override checkbox visibility).
 fn has_explicit(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> bool {
     if section.is_empty() {
         doc.get(key).is_some()
@@ -1163,8 +1159,7 @@ pub(crate) async fn settings_save_structured(
     Ok(Html(tpl.render().unwrap()))
 }
 
-/// POST handler for the shares editor
-/// mutates only `[[shares]]` in the on-disk TOML.
+/// POST shares editor; mutates only [[shares]] in on-disk TOML.
 pub(crate) async fn settings_save_shares(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1433,8 +1428,7 @@ pub(crate) async fn restart_status() -> impl IntoResponse {
 
 // === Graceful "Restart and apply" (from System Settings) ===
 
-/// POST /settings/restart — restarting page
-/// then HUP to recycle services (one-shot).
+/// POST /settings/restart: restarting page then one-shot HUP recycle.
 pub(crate) async fn system_restart(
     State(state): State<AppState>,
     headers: HeaderMap,

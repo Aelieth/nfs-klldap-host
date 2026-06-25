@@ -1,5 +1,4 @@
-//! Validates nfs-klldap.conf and derives realm, LDAP bases
-//! and Ganesha 9.6-safe export defaults.
+//! Validates nfs-klldap.conf; derives realm, LDAP bases, Ganesha 9.6 defaults.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -387,11 +386,7 @@ impl NfsKlldapConfig {
             .unwrap_or_else(|| "YOUR.REALM".to_string())
     }
 
-    /// Apply env var overrides for *core* nfs-klldap.conf options (env wins).
-    /// Called early in validate_and_derive.
-    /// Only NFS_KLLDAP_* prefixed forms are supported
-    /// (no bare WEBUI_* or legacy REALM aliases).
-    /// NFS_KLLDAP_LLDAP_* kept for bind/UI compat.
+    /// Apply NFS_KLLDAP_* env overrides for core options (env wins).
     fn apply_core_env_overrides(&mut self) {
         // ldap_uri (top-level core)
         if let Ok(v) = std::env::var("NFS_KLLDAP_LDAP_URI") {
@@ -524,11 +519,7 @@ impl NfsKlldapConfig {
         }
     }
 
-    /// Internal Ganesha/FsManager path: container_root
-    /// tail of host_path after its first segment.
-    /// Example: host_path `/media/NVME/nvme`
-    /// container_root `/export` → `/export/NVME/nvme`.
-    /// export_path is client Pseudo only; see docs/ganesha-architecture.md.
+    /// FsManager path: container_root + host_path tail after first segment.
     pub fn container_path_for(&self, share: &Share) -> String {
         let root = self.storage.container_root.trim_end_matches('/');
 

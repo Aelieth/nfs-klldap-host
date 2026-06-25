@@ -1,13 +1,6 @@
-//! FsManager: allow-list (host_path from shares)
-//! host<->container path translation, WalkDir-based chown/chmod.
-//! Policy: follow_links(false), never descend symlinks, numeric ids only
-//! refuse 0/set*id. Non-rec = dir+immediate files.
-//!
-//! Host<->container translation uses each share's host_path.
-//! The first directory component after "/" is the per-share bind root.
-//! That root plus container_root yields the internal path.
-//! This keeps the permission tree and applies independent of the (editable)
-//! share.export_path that is used only for the external/client Pseudo name.
+//! FsManager: allow-listed chown/chmod with host↔container path translation.
+//! WalkDir skips symlinks; refuses uid/gid 0 and set*id bits.
+//! Bind-root model: first path segment maps host_path to container_root.
 
 #![deny(clippy::unwrap_used)]
 
@@ -39,22 +32,15 @@ pub struct ApplyOptions {
 /// Structured result from a (possibly partial) apply operation.
 #[derive(Debug, Clone, Default)]
 pub struct ApplyResult {
-    /// Number of entries successfully chown'd + chmod'd (or would have been
-    /// in dry-run).
+    /// Entries chown'd/chmod'd (or counted in dry-run).
     pub changed: usize,
-    /// Per-path errors encountered (path + message).
-    /// Non-empty does not imply overall failure
-    /// when `continue_on_error` was true.
+    /// Per-path errors; non-empty is OK when continue_on_error is true.
     pub errors: Vec<(PathBuf, String)>,
-    /// Entries that were deliberately skipped (symlinks under the current policy,
-    /// entries filtered by apply_to_* flags, or everything in a dry-run).
+    /// Skipped entries (symlinks, filtered types, or dry-run).
     pub skipped: usize,
 }
 
-/// Live progress/cancel for async apply (atomics updated by walker
-/// read by web poller).
-/// Supports count phase (spinner) then apply phase
-/// last_path for cancel messages.
+/// Live apply progress atomics; web poller reads count then apply phases.
 #[derive(Debug, Default)]
 pub struct ApplyProgress {
     pub total: AtomicUsize,
@@ -173,9 +159,7 @@ impl FsManager {
         Some(out)
     }
 
-    /// No-op; reserved for post-apply cache invalidation.
-    /// The web handler spawns a call to exercise the path; a real cache can be
-    /// plugged in here later with no other changes.
+    /// No-op hook for post-apply cache invalidation.
     pub fn invalidate_path(&self, _path: &Path) {}
 
     /// Count variant that increments progress.processed as scanned so far.
@@ -206,12 +190,7 @@ impl FsManager {
             .map_err(|e| format!("count failed: {}", e))
     }
 
-    /// Apply variant that drives the supplied progress atomics (and last_path) and
-    /// honours cancellation.
-    /// The caller is expected to have set (or let the count set)
-    /// progress.total beforehand for accurate %
-    /// if total is still 0 this pass will
-    /// still run and update processed.
+    /// Apply with progress atomics; caller should set progress.total from count.
     pub fn apply_permissions_with_progress(
         &self,
         path: &Path,
@@ -303,10 +282,7 @@ impl FsManager {
             || (is_file && opts.apply_to_files && depth == 1)
     }
 
-    /// Count-only tree walk (used by count_applicable_with_live). Increments
-    /// progress.processed as "scanned so far" (for spinner UX)
-    /// updates last_path,
-    /// and aborts early if cancelled. Does not perform any mutations.
+    /// Count-only walk; updates progress.processed and aborts on cancel.
     fn count_tree(
         &self,
         root: &Path,

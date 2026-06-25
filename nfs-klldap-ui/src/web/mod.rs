@@ -50,38 +50,19 @@ pub struct AppState {
     pub keytab_realm: String,
     /// Display-only keytab mismatch banner; see `keytab.rs` for the invariant.
     pub keytab_alert: Arc<StdMutex<Option<String>>>,
-    /// Shared state for an in-flight (recursive or non-recursive) permission apply.
-    /// Populated when /apply starts the background task
-    /// read by /apply-progress for the
-    /// live Apply Log (with XXXX/XXXX
-    /// spinner while estimating) and by cancel_apply.
+    /// In-flight apply state; /apply-progress and cancel_apply read this.
     pub apply_progress: Arc<Mutex<Option<Arc<crate::fs::ApplyProgress>>>>,
-    /// Latched true on first successful POST /settings/restart.
-    /// Guards against duplicate
-    /// scheduling of the delayed HUP (e.g.
-    /// fast double-click, or browser re-POST on
-    /// refresh of the /settings/restart result "page").
-    /// Once set we just re-serve the
-    /// standalone restarting.html without side-effects.
+    /// Latched on first POST /settings/restart; prevents duplicate HUP scheduling.
     pub restart_requested: Arc<Mutex<bool>>,
-    /// true when WebUI terminates TLS
-    /// false when `NFS_KLLDAP_WEBUI_TLS=off` (proxy mode).
+    /// True when WebUI terminates TLS; false in NFS_KLLDAP_WEBUI_TLS=off mode.
     pub direct_tls: bool,
-    /// Test-only: when set
-    /// gates setup completion on this marker path instead of the default.
+    /// Test-only setup marker path override.
     pub setup_marker_override: Option<PathBuf>,
-    /// Last successful wizard test inputs (probe-only
-    /// not persisted until continue).
+    /// Last wizard test inputs (probe-only, not persisted until continue).
     pub setup_test: Arc<StdMutex<setup::SetupTestState>>,
-    /// HOST_NFS mode (management sidecar).
-    /// When true the container does not run
-    /// the NFS server
-    /// it writes Ganesha fragments for a host NFS server, while
-    /// still providing the WebUI, share config, Kerberos client material, and
-    /// direct POSIX permission management on the bind-mounted host_path trees.
+    /// HOST_NFS sidecar: generates Ganesha fragments; host runs nfsd.
     pub host_nfs_mode: bool,
-    /// Optional mountinfo fixture for fs_warning badges (tests)
-    /// avoids process-global env.
+    /// Optional mountinfo fixture for fs_warning badges (tests).
     pub fs_probe_mountinfo_path: Option<PathBuf>,
 }
 
@@ -287,8 +268,7 @@ mod tests {
         req
     }
 
-    /// Login/setup responses emit clear + set cookies
-    /// return the non-empty session token.
+    /// Extract non-empty session token from login/setup Set-Cookie headers.
     fn session_token_from_response(resp: &axum::response::Response) -> String {
         for value in resp.headers().get_all(SET_COOKIE) {
             let s = value.to_str().expect("Set-Cookie must be UTF-8");
@@ -765,8 +745,7 @@ default_security = "krb5p"
         assert!(written.contains("cache_profile = \"Default\""));
     }
 
-    /// Localhost first-run, login (SameSite=Lax), redirect follow
-    /// protected route, logout, re-login.
+    /// Integration: first-run login, protected route, logout, re-login.
     #[tokio::test]
     async fn full_localhost_first_run_login_session_and_protected_route_flow() {
         let (state, _tmp) = make_test_state_with_temp_config();
@@ -975,8 +954,7 @@ default_security = "krb5p"
         );
     }
 
-    /// keytab_alert is display-only
-    /// must not block auth or protected routes (see keytab.rs).
+    /// keytab_alert is display-only and must not block auth.
     #[tokio::test]
     async fn keytab_mismatch_alert_does_not_break_auth_or_protected_actions() {
         let (state, _tmp) = make_test_state_with_temp_config();
@@ -1271,8 +1249,7 @@ ldap_default_authtok = "sekret"
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// Live TCP: step3 continue serves restarting page
-    /// restart-status is 503 before supervisor marker.
+    /// Step3 continue serves restarting page; status 503 before marker.
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn wizard_step3_continue_live_http_shows_restarting_and_pending_status() {

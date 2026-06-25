@@ -617,8 +617,7 @@ impl IdLdapResolver {
         )
     }
 
-    /// Preload all posix users/groups into caches
-    /// index UPN aliases when present.
+    /// Preload posix users/groups into caches; index UPN aliases when present.
     pub fn load_full_identities(&self, bind_dn: &str, bind_pw: &str) -> usize {
         self.evict_expired();
 

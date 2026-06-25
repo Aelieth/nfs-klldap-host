@@ -92,8 +92,7 @@ pub(crate) fn cache_changed_since(fp_before: u64, cache: &IdCache) -> bool {
     fp_before != cache.content_fingerprint()
 }
 
-/// Prune stale LDAP users from cache, re-seed from snapshot
-/// machine principals are kept.
+/// Prune stale LDAP users from cache; machine principals are kept.
 pub(crate) fn sync_user_cache_from_snapshot(
     snap: &IdMapSnapshot,
     realm: &str,

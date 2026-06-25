@@ -7,8 +7,7 @@ use std::process::{Command, Stdio};
 
 use crate::{ConfigError, NfsKlldapConfig};
 
-/// Resolved hook path (TOML [ganesha] post_generate_hook
-/// then NFS_KLLDAP_POST_GENERATE_HOOK).
+/// Hook path from [ganesha] post_generate_hook or NFS_KLLDAP_POST_GENERATE_HOOK.
 pub fn effective_post_generate_hook(cfg: &NfsKlldapConfig) -> Option<String> {
     if let Ok(env) = std::env::var("NFS_KLLDAP_POST_GENERATE_HOOK") {
         let t = env.trim();

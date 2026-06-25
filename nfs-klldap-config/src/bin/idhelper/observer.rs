@@ -99,8 +99,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
     }
 }
 
-/// True for real client hostnames from Linux NFSv4.x log lines
-/// rejects noise tokens.
+/// True for real client hostnames in Linux NFSv4.x log lines.
 pub(crate) fn looks_like_client_hostname(t: &str) -> bool {
     let s = t.trim();
     if s.len() < 2 || s.len() > 253 {
@@ -149,8 +148,7 @@ pub(crate) fn looks_like_client_hostname(t: &str) -> bool {
     true
 }
 
-/// Extra hostname rejection beyond LOG_NOISE_TOKENS (0x…, nfsv4.x
-/// version-like tokens).
+/// Extra hostname rejection beyond LOG_NOISE_TOKENS (hex, version-like).
 fn is_noise_hostname(t: &str) -> bool {
     let s = t.trim().to_ascii_lowercase();
     if s.starts_with("0x") {
@@ -237,8 +235,7 @@ fn maybe_warn_bridge_server_addr(
     );
 }
 
-/// Extract hostname from "Linux NFSv4.x <host>" groups
-/// skip nil/clientid noise.
+/// Extract hostname from "Linux NFSv4.x <host>" log groups.
 fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
     let lower = line.to_ascii_lowercase();
     let marker = "nfsv4";

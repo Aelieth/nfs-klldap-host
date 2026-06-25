@@ -1,7 +1,6 @@
 #![deny(unsafe_code, dead_code)]
 
-//! nfs-klldap-config: TOML validation, derivation, and generation of sssd.conf
-//! krb5.conf, ganesha exports.
+//! TOML validation, derivation, and generation of sssd.conf, krb5.conf, exports.
 
 mod config;
 mod constants;
@@ -126,8 +125,7 @@ pub use constants::{
     DEFAULT_GROUP_MEMBER_ATTR_KLLDAP, DEFAULT_GROUP_MEMBER_ATTR_LEGACY,
 };
 
-/// Returns (no_tls_verify
-/// start_tls) derived from [sssd] TLS fields and ldap_uri scheme.
+/// (no_tls_verify, start_tls) from [sssd] TLS fields and ldap_uri scheme.
 pub fn ldap_tls_policy(
     ldap_uri: &str,
     reqcert: Option<&str>,
@@ -190,8 +188,7 @@ mod tests {
         }
     }
 
-    /// Clear NFS_KLLDAP_* env (test helper)
-    /// hold guards alive across validate calls under ENV_LOCK.
+    /// Clear NFS_KLLDAP_* env; hold guards alive across validate under ENV_LOCK.
     fn clean_core_env() -> Vec<EnvGuard> {
         let vars = [
             "NFS_KLLDAP_LDAP_URI",

@@ -162,11 +162,7 @@ pub struct SssdSection {
     pub krb5_kpasswd: Option<String>,
     pub krb5_validate: Option<bool>,
     pub krb5_store_password_if_offline: Option<bool>,
-    /// Optional attribute holding the Kerberos principal (e.g.
-    /// krbPrincipalName or userPrincipalName).
-    /// When set, IdLdapResolver uses it for direct principal-form lookups.
-    /// Complements name-match lookups.
-    /// Default in resolver is "krbPrincipalName".
+    /// Kerberos principal LDAP attribute; default krbPrincipalName.
     pub ldap_user_principal_name: Option<String>,
 
     pub entry_cache_timeout: Option<u32>,
@@ -214,32 +210,17 @@ pub struct ManagementSection {
     pub webui_admin_group: Option<String>,
 }
 
-/// Host / deployment mode options.
-/// host_nfs = true (or HOST_NFS / NFS_KLLDAP_HOST_NFS env) switches the
-/// container into management-sidecar mode: it still generates and writes Ganesha
-/// fragments (to host-visible paths) and runs the WebUI
-/// SSSD for identity/perms,
-/// but does not run the in-container NFS-Ganesha server.
-/// The host's Ganesha (or
-/// equivalent) at /etc/ganesha serves the exports using the keytab and configs.
+/// Host deployment mode; host_nfs=true runs WebUI/SSSD only (host serves NFS).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HostSection {
-    /// When true the container is a config + WebUI + identity manager only.
-    /// NFS server (ganesha.nfsd) runs on the host and reads the generated fragments
-    /// from the (bind-mounted) /etc/ganesha tree.
+    /// Sidecar mode: host ganesha.nfsd reads bind-mounted /etc/ganesha fragments.
     pub host_nfs: Option<bool>,
 }
 
-/// WebUI runtime options (single-source in nfs-klldap.conf under [webui]).
-/// These align with NFS_KLLDAP_WEBUI_* env vars.
-/// Env takes precedence at runtime; only prefixed forms supported.
-/// tls=false (or NFS_KLLDAP_WEBUI_TLS=off/false) disables internal TLS.
-/// For reverse-proxy setups.
+/// WebUI runtime options from [webui]; NFS_KLLDAP_WEBUI_* env wins at runtime.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebuiSection {
-    /// If Some(false)
-    /// equivalent to NFS_KLLDAP_WEBUI_TLS=off (reverse proxy mode
-    /// plain HTTP + X-Forwarded-Proto).
+    /// Some(false) disables TLS (reverse-proxy mode with X-Forwarded-Proto).
     pub tls: Option<bool>,
     /// Optional path to custom cert PEM (NFS_KLLDAP_WEBUI_TLS_CERT env wins).
     pub tls_cert: Option<String>,
@@ -253,9 +234,7 @@ pub struct Share {
     /// Host-visible path for allow-list and chown/chmod.
     /// See docs/ganesha-architecture.md.
     pub host_path: PathBuf,
-    /// Client-visible NFSv4 Pseudo path only
-    /// internal Ganesha/FsManager path comes from host_path.
-    /// Defaults to `/<name>` when absent.
+    /// Client NFSv4 Pseudo path; FsManager uses host_path. Defaults to /<name>.
     pub export_path: Option<String>,
     pub security: Option<String>,
     pub rw: Option<bool>,
@@ -263,15 +242,9 @@ pub struct Share {
     /// UI cache profile name → generator maps to Ganesha PrefRead/PrefWrite.
     /// See CACHE_PROFILES / README.
     pub cache_profile: Option<String>,
-    /// Optional PrefRead size in bytes (Ganesha EXPORT.PrefRead).
-    /// Advanced/raw use.
-    /// When cache_profile is also present, it takes precedence for generation.
-    /// (Legacy numeric values in nfs-klldap.conf are still accepted and validated.)
+    /// Raw PrefRead bytes; cache_profile takes precedence when both are set.
     pub pref_read: Option<u64>,
-    /// Optional PrefWrite size in bytes (Ganesha EXPORT.PrefWrite).
-    /// Advanced/raw use.
-    /// Symmetric to pref_read
-    /// usually resolved from cache_profile in normal operation.
+    /// Raw PrefWrite bytes; usually resolved from cache_profile instead.
     pub pref_write: Option<u64>,
     /// When true, emit `Disable_ACL = true;` in the Ganesha EXPORT block.
     pub disable_acl: Option<bool>,
@@ -309,15 +282,7 @@ pub struct GenerationPaths {
     pub krb5_conf: PathBuf,
     pub ganesha_conf: PathBuf,
     pub exports_dir: PathBuf,
-    /// Standardized idmap configuration (Domain + Local-Realms + Method
-    /// GSS-Methods)
-    /// derived from kerberos.realm + [sssd] policy.
-    /// Written to the canonical Debian location
-    /// so Ganesha 9.x (default IdmapConf=/etc/idmapd.conf), the nfsidmap shim
-    /// fallback
-    /// libnfsidmap, and client rpc.idmapd see consistent NFSv4 domain
-    /// Kerberos realm
-    /// handling matching DIRECTORY_SERVICES.DomainName.
+    /// idmapd.conf path; domain/realm aligned with Ganesha DIRECTORY_SERVICES.
     pub idmap_conf: PathBuf,
     /// nfs-utils client defaults (rpc.gssd use-machine-creds, pipefs path).
     pub nfs_conf: PathBuf,

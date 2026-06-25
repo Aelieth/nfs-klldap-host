@@ -1,5 +1,4 @@
-//! Login handlers, cookie construction (HttpOnly/Lax/Secure, 12h)
-//! require_auth + redirects.
+//! Login handlers, session cookies, and require_auth redirects.
 
 use askama::Template;
 use axum::{
@@ -35,15 +34,11 @@ pub(crate) struct LoginForm {
 /// Surfaces auth failure reasons after a require_auth redirect.
 #[derive(Deserialize, Default)]
 pub(crate) struct LoginQuery {
-    /// When present (e.g.
-    /// "session" or "required"), login_page renders a friendly
-    /// Friendly message when redirect sends the user back to the form.
+    /// ?error= value from require_auth redirect (e.g. session, required).
     error: Option<String>,
 }
 
-/// GET /login — renders the form (or first-run variant).
-/// Supports ?error= query param from require_auth redirects.
-/// Makes auth failures visible on the login form.
+/// GET /login; supports ?error= from require_auth redirects.
 pub async fn login_page(
     State(state): State<super::AppState>,
     headers: HeaderMap,
@@ -79,8 +74,7 @@ pub async fn login_page(
     .into_response()
 }
 
-/// POST /login — on success: session cookie + redirect
-/// on failure: re-render with error.
+/// POST /login: session cookie on success, re-render on failure.
 pub async fn login(
     State(state): State<super::AppState>,
     headers: HeaderMap,
@@ -165,8 +159,7 @@ pub async fn login(
     }
 }
 
-/// POST /setup-password — first-run only. Sets the initial localhost password
-/// and immediately creates a session (auto-login).
+/// POST /setup-password: first-run localhost password and auto-login session.
 pub async fn setup_password(
     State(state): State<super::AppState>,
     headers: HeaderMap,
@@ -279,8 +272,7 @@ fn login_error_message(first_run: bool, error: Option<&str>) -> Option<String> {
     })
 }
 
-/// Where to send unauthenticated users (context-aware
-/// avoids misleading first-run copy).
+/// Redirect target for unauthenticated users (context-aware first-run copy).
 fn auth_failure_redirect(state: &super::AppState, headers: &HeaderMap) -> Redirect {
     if !state.auth.has_simple_password() {
         return Redirect::to("/login");
@@ -318,10 +310,7 @@ fn insert_session_clear_cookie(
     headers.insert(SET_COOKIE, clear.parse().expect("valid Set-Cookie clear"));
 }
 
-/// Returns the value for the Secure flag on cookies for this request.
-/// Prefers explicit NFS_KLLDAP_WEBUI_COOKIE_SECURE (escape hatch for setups that
-/// need to force the bit off even when TLS was on). When absent,
-/// delegates to the smart detection (direct TLS or X-Forwarded-Proto: https).
+/// Cookie Secure flag; NFS_KLLDAP_WEBUI_COOKIE_SECURE overrides is_https().
 fn effective_cookie_secure(state: &super::AppState, headers: &HeaderMap) -> bool {
     if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_COOKIE_SECURE") {
         let v = v.trim().to_ascii_lowercase();
@@ -330,10 +319,7 @@ fn effective_cookie_secure(state: &super::AppState, headers: &HeaderMap) -> bool
     state.is_https(headers)
 }
 
-/// Session cookie builder (HttpOnly/Lax/Secure + effective https).
-/// Secure bit is conditional on effective https.
-/// Honors direct TLS or proxy X-Forwarded-Proto header.
-/// Still honors the NFS_KLLDAP_WEBUI_COOKIE_SECURE override.
+/// Session cookie builder with HttpOnly/Lax and conditional Secure.
 fn build_session_cookie(state: &super::AppState, req_headers: &HeaderMap, token: &str) -> String {
     let max_age = cookie::time::Duration::seconds(12 * 3600);
 
@@ -383,8 +369,7 @@ fn extract_all_session_tokens_from_headers(headers: &HeaderMap) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Validate any session cookie on the request
-/// prefers the last (most recently set) token.
+/// Validate session cookies; prefers the most recently set token.
 pub(crate) fn validate_session_in_headers(
     state: &super::AppState,
     headers: &HeaderMap,
@@ -403,8 +388,7 @@ pub(crate) fn validate_session_in_headers(
 #[derive(Clone)]
 pub struct AuthUser(pub String);
 
-/// Guard for protected routes
-/// keytab_alert does not affect auth (see keytab.rs).
+/// Guard for protected routes; keytab_alert does not affect auth.
 pub async fn require_auth(
     state: &super::AppState,
     headers: &HeaderMap,

@@ -1,5 +1,4 @@
-//! Error type for nfs-klldap-config (manual, no thiserror
-//! for small binary size).
+//! Error type for nfs-klldap-config (manual Display, no thiserror).
 
 #[derive(Debug)]
 pub enum ConfigError {

@@ -1,6 +1,4 @@
-//! Thin adapter around nfs_klldap_config::NfsKlldapConfig for the WebUI.
-//! Adds env overrides for creds, all_managed_roots
-//! and short-name probe helper.
+//! Thin NfsKlldapConfig adapter with env cred overrides for the WebUI.
 
 use std::path::{Path, PathBuf};
 
@@ -44,10 +42,7 @@ pub fn all_managed_roots(cfg: &Config) -> Vec<PathBuf> {
     cfg.shares.iter().map(|s| s.host_path.clone()).collect()
 }
 
-/// Returns (bind identity, password).
-/// Prefers NFS_KLLDAP_LLDAP_* env, falls back
-/// to sssd.ldap_default_bind_dn + authtok.
-/// Full DN (or verbatim identity) required.
+/// (bind identity, password); NFS_KLLDAP_LLDAP_* env wins over sssd creds.
 pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
     if let (Ok(user), Ok(pass)) = (
         std::env::var("NFS_KLLDAP_LLDAP_USER"),
@@ -73,14 +68,10 @@ pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
 mod tests {
     use super::*;
 
-    /// Serializes all tests that touch the NFS_KLLDAP_LLDAP_* env vars.
-    /// Without this, parallel test execution (default under cargo) causes
-    /// the global process environment to produce flaky results between the
-    /// "prefers env" test and the "cfg path" tests.
+    /// Serializes tests that touch NFS_KLLDAP_LLDAP_* env vars.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// RAII guard to safely manipulate environment variables in tests without
-    /// polluting other tests (especially important under `cargo test --workspace`).
+    /// RAII env var guard for parallel-safe tests.
     struct EnvGuard {
         key: &'static str,
         previous: Option<String>,
@@ -93,10 +84,7 @@ mod tests {
             Self { key, previous }
         }
 
-        /// Remove the var for the duration of the guard (restores previous value
-        /// or absence on drop).
-        /// Used by tests that must not see override env vars
-        /// even if other concurrent tests are manipulating them.
+        /// Remove var for guard lifetime; restores previous value on drop.
         fn clear(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
             std::env::remove_var(key);

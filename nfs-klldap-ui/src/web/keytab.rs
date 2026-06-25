@@ -1,8 +1,4 @@
-//! NFS keytab principal status for the WebUI (startup banner + settings).
-//!
-//! `keytab_alert` is display-only: it never gates auth, session creation, or
-//! protected routes.
-//! Pre-auth pages (login) omit the banner so admins can recover.
+//! Keytab status banner for WebUI; display-only, never gates auth.
 
 pub use nfs_klldap_config::KeytabInfo;
 

@@ -367,8 +367,7 @@ pub fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
     }
 }
 
-/// Wizard step from on-disk structure only
-/// no live LDAP probes (fast WebUI page loads).
+/// Wizard step from on-disk structure only (no live LDAP probes).
 pub fn compute_wizard_step(config_path: &Path) -> StartupStep {
     if !check_persistent_writable(config_path) {
         return StartupStep::WaitForPersistentVolume;
@@ -466,8 +465,7 @@ pub enum SupervisorLoopAction {
     Idle,
 }
 
-/// One supervisor-loop iteration: HUP sets services_started
-/// bring-up only when not started.
+/// One supervisor-loop tick; HUP triggers bring-up when not started.
 pub fn supervisor_loop_tick(
     services_started: bool,
     sighup_pending: bool,
@@ -483,8 +481,7 @@ pub fn supervisor_loop_tick(
     (SupervisorLoopAction::Idle, services_started)
 }
 
-/// Startup step for operators: Ready when preconf bypass applies
-/// else live probe result.
+/// Startup step: Ready on preconf bypass, else live probe result.
 pub fn effective_startup_step(config_path: &Path, keytab_path: &Path) -> StartupStep {
     if is_preconfigured_deployment(config_path, keytab_path) {
         StartupStep::Ready
@@ -493,9 +490,7 @@ pub fn effective_startup_step(config_path: &Path, keytab_path: &Path) -> Startup
     }
 }
 
-/// True when a mounted keytab and complete on-disk config skip the wizard.
-/// Structural validation only — live LDAP probes run during wizard steps
-/// not at bypass.
+/// True when keytab and complete config skip the wizard (structural only).
 pub fn is_preconfigured_deployment(config_path: &Path, keytab_path: &Path) -> bool {
     if !keytab_path.is_file() {
         return false;
@@ -825,8 +820,7 @@ ldap_default_authtok = "sekret"
         assert!(!config_has_required_startup_fields(&cfg));
     }
 
-    /// Mirrors supervisor.rs bypass branch: keytab
-    /// structural conf skips wizard/login gate.
+    /// Mirrors supervisor bypass: keytab + structural conf skips wizard gate.
     #[test]
     fn supervisor_preconf_bypass_skips_wizard_without_ldap_ready() {
         let _persist = TestPersistentEnv::set();

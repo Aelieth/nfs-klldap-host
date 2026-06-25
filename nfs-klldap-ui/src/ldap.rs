@@ -1,6 +1,4 @@
-//! LdapClient: async wrapper over shared IdLdapResolver + UI-only LDAP paths.
-//! POSIX resolution via nfs-klldap-identity
-//! UI adds search caches and admin verify.
+//! LdapClient wraps IdLdapResolver with UI search caches and admin verify.
 
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
 use nfs_klldap_config::{escape_ldap_filter, IdLdapResolver, PosixAttributeMapping};
@@ -822,8 +820,7 @@ impl LdapClient {
         Some((gid, display))
     }
 
-    /// Reverse lookup uidNumber→name
-    /// subtree fallback populates forward/reverse caches.
+    /// Reverse uidNumber→name lookup; subtree fallback fills caches.
     pub async fn resolve_user_by_uid(&self, uid: i32) -> Option<(String, String)> {
         if let Some(hit) = self.cache_get_user_by_uid(uid) {
             if hit.uid_number.is_some() {
@@ -1170,13 +1167,7 @@ impl LdapClient {
         self.user_is_member_of(username, group_name).await
     }
 
-    /// Convenience for the WebUI login path: verify the user's password
-    /// *and* that they are a member of the given admin group.
-    ///
-    /// This keeps the two-lock + membership dance out of the web layer
-    /// and gives a single, clear error when the user is not an admin.
-    /// The fast-path memberOf cache (populated by verify_user_credentials)
-    /// is still used internally.
+    /// Verify password and admin-group membership for WebUI login.
     pub async fn verify_user_is_admin(
         &self,
         username: &str,

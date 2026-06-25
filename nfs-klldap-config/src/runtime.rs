@@ -67,8 +67,7 @@ pub fn runtime_hostname(cfg: Option<&NfsKlldapConfig>) -> String {
     "localhost".to_string()
 }
 
-/// Kerberos realm for idhelper: validated config, env, krb5.conf scrape
-/// then fallback.
+/// Kerberos realm: validated config, env, krb5.conf scrape, then fallback.
 pub fn runtime_realm(cfg: Option<&NfsKlldapConfig>) -> String {
     if let Some(c) = cfg {
         let r = c.effective_realm();

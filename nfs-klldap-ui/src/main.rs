@@ -1,8 +1,4 @@
-//! In-container WebUI (Axum + HTMX + rustls) on 9630.
-//!
-//! Edits the single nfs-klldap.conf. Performs direct chown/chmod (root) on
-//! bind-mounted host_path trees via FsManager. Two pages: / (permissions tree)
-//! and /settings (raw + structured TOML + LLDAP client reload).
+//! WebUI on 9630: permissions tree and settings for nfs-klldap.conf.
 
 #![deny(unsafe_code, dead_code)]
 
@@ -15,9 +11,7 @@ mod privileged;
 
 mod web;
 
-/// Resolve the runtime hostname using the two-tier consistent API.
-/// On inconsistency we print the full actionable diagnostic to the log
-/// (this is what surfaces the "d81b4e782f65 vs real name" problem).
+/// Resolve runtime hostname; log full diagnostic on inconsistency.
 fn resolve_runtime_hostname_for_banner() -> String {
     match get_consistent_hostname() {
         Ok(c) => c.hostname,

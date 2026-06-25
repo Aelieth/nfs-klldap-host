@@ -15,8 +15,8 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use common::{
-    get_realm, get_server_variants, is_machine_principal, IdCache, PrincipalKind, Resolved,
-    CACHE_PATH, NSS_GROUP_PATH, NSS_PASSWD_PATH, SOCKET_PATH,
+    get_realm, get_server_variants, is_machine_principal, principal_local_part, IdCache,
+    PrincipalKind, Resolved, CACHE_PATH, NSS_GROUP_PATH, NSS_PASSWD_PATH, SOCKET_PATH,
 };
 #[cfg(test)]
 use common::normalize_principal;
@@ -57,7 +57,7 @@ fn try_resolve_via_socket(principal: &str) -> Option<Resolved> {
                 };
                 // Name computation is done by the daemon's resolve_principal for the reply.
                 // For CLI printing we use the local part (consistent with normal Resolved.name for users).
-                let name = parts[0].split('@').next().unwrap_or(parts[0]).to_string();
+                let name = principal_local_part(parts[0]).to_string();
                 return Some(Resolved {
                     principal: parts[0].to_string(),
                     name,

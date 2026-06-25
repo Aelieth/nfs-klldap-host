@@ -163,10 +163,9 @@ impl IdCache {
                         _ => PrincipalKind::Unknown,
                     };
                     let local = principal_local_part(parts[0]);
-                    // For host/... style principals prefer the short hostname part as the "name"
-                    // so that nss entries and FINAL logs use a clean short like "blue-lt" rather than "host/blue-lt".
+                    // Machine principals use the trailing host segment as the nss login name.
                     let name = if local.contains('/') {
-                        local.rsplit('/').next().unwrap_or(local).to_string()
+                        machine_short_name(parts[0]).to_string()
                     } else {
                         local.to_string()
                     };
@@ -223,6 +222,14 @@ pub fn is_machine_principal(
 /// Local part of a Kerberos principal (before @), or the whole string when unqualified.
 pub(crate) fn principal_local_part(p: &str) -> &str {
     p.split('@').next().unwrap_or(p)
+}
+
+/// Trailing segment of a machine principal local part (host/client@REALM → client).
+pub(crate) fn machine_short_name(principal: &str) -> &str {
+    principal_local_part(principal)
+        .rsplit('/')
+        .next()
+        .unwrap_or(principal)
 }
 
 /// Normalize a principal for cache key and lookup.
@@ -314,6 +321,12 @@ mod fingerprint_tests {
         assert_eq!(principal_local_part("alice@REALM"), "alice");
         assert_eq!(principal_local_part("host/client@REALM"), "host/client");
         assert_eq!(principal_local_part("short"), "short");
+    }
+
+    #[test]
+    fn machine_short_name_takes_trailing_segment() {
+        assert_eq!(machine_short_name("host/blue-lt@REALM"), "blue-lt");
+        assert_eq!(machine_short_name("alice@REALM"), "alice");
     }
 
     #[test]

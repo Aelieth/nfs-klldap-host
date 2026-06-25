@@ -12,7 +12,7 @@ use nfs_klldap_config::{
     MACHINE_PRINCIPAL_PREFIXES,
 };
 
-use crate::common::{IdCache, PrincipalKind, Resolved};
+use crate::common::{principal_local_part, IdCache, PrincipalKind, Resolved};
 
 /// Output paths for nss_wrapper and extrausers writes (production or test temp dirs).
 #[derive(Clone, Copy)]
@@ -124,7 +124,7 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
         {
             continue;
         }
-        let short = key.split('@').next().unwrap_or(key.as_str()).to_string();
+        let short = principal_local_part(key).to_string();
         let uid_u = uid as u32;
         let gid_u = entry.gid as u32;
         best_per_uid
@@ -190,7 +190,7 @@ pub(crate) fn materialize_nss_wrappers_at(
         // For machine principals (host/..., nfs/..., root/...) also emit an alias using the
         // sanitized full local part (e.g. "host_blue-lt"). This helps when Ganesha's idmapper
         // feeds getpwnam the service/name form instead of (or in addition to) the short host.
-        let local = r.principal.split('@').next().unwrap_or(&r.principal);
+        let local = principal_local_part(&r.principal);
         if local.contains('/') && MACHINE_PRINCIPAL_PREFIXES.iter().any(|p| local.starts_with(p)) {
             let alias = sanitize_for_nss(local); // turns host/blue-lt into host_blue-lt etc.
             if seen_login.insert(alias.clone()) {

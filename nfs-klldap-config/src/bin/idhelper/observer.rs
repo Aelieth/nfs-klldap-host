@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use nfs_klldap_config::MACHINE_PRINCIPAL_PREFIXES;
 
-use crate::common::{manage_gids_expected, IdCache};
+use crate::common::{manage_gids_expected, principal_local_part, IdCache};
 use crate::dlog;
 use crate::resolve::resolve_principal;
 
@@ -487,10 +487,9 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
             if w.contains('@') && w.to_ascii_lowercase().contains(&realm_lower) {
                 // Accept explicit principals (they are usually the real thing).
                 // Guard: do not emit things like "nil@REALM" or "clientid@REALM" from noise.
-                if let Some(local) = w.split('@').next() {
-                    if is_noise_hostname(local) || !looks_like_client_hostname(local) {
-                        continue;
-                    }
+                let local = principal_local_part(w);
+                if is_noise_hostname(local) || !looks_like_client_hostname(local) {
+                    continue;
                 }
                 return Some(w.to_string());
             }

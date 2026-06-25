@@ -71,7 +71,7 @@ Client `rpc.idmapd` (Method=nsswitch) still helps pretty `ls` output on NFS clie
 
 ## Ganesha 9.6 id mapping (generated config)
 
-The generator emits `DIRECTORY_SERVICES` with `DomainName`, `Pwnam_Implementation=nsswitch`, `Root_Kerberos_Principal=host, nfs, root`, and `idmapped_user/group_time_validity=600` — not deprecated `Manage_Gids_Expiration` or `Read_Access_Check_Policy`. Live principal→uid for hybrid clients is handled by `nfs-klldap-idhelper` (see below).
+The generator emits `DIRECTORY_SERVICES` with `DomainName`, `Pwnam_Implementation=nsswitch`, `Root_Kerberos_Principal=host, nfs, root`, and `Idmapped_User/Group_Time_Validity=600` (Ganesha 9.6 keys). We omit `Manage_Gids_Expiration` and do not set `Read_Access_Check_Policy` (9.6 default `pre` applies). Live principal→uid for hybrid clients is handled by `nfs-klldap-idhelper` (see below).
 
 ## Machine vs User Principals (Fedora Immutable + host keytabs)
 

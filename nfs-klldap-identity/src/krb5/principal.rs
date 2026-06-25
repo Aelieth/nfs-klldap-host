@@ -17,8 +17,23 @@ pub fn machine_short_name(principal: &str) -> &str {
 }
 
 /// Classify machine vs user principals for Ganesha Root_Kerberos_Principal.
-pub fn classify_principal(principal: &str, _realm: &str, server_variants: &[String]) -> (bool, String) {
-    let local = principal_local_part(principal.trim()).to_ascii_lowercase();
+pub fn classify_principal(principal: &str, realm: &str, server_variants: &[String]) -> (bool, String) {
+    let principal = principal.trim();
+    let realm_u = realm.trim().to_ascii_uppercase();
+    if !realm_u.is_empty() && principal.contains('@') {
+        let p_realm = principal
+            .rsplit_once('@')
+            .map(|(_, r)| r.trim().to_ascii_uppercase())
+            .unwrap_or_default();
+        if !p_realm.is_empty() && p_realm != realm_u {
+            return (
+                false,
+                format!("principal realm {} != configured {}", p_realm, realm_u),
+            );
+        }
+    }
+
+    let local = principal_local_part(principal).to_ascii_lowercase();
 
     if MACHINE_PRINCIPAL_PREFIXES
         .iter()
@@ -114,6 +129,14 @@ mod tests {
     fn host_substring_in_username_does_not_classify_as_machine() {
         let (is_machine, _) = classify_principal("app/hostbackup@REALM", "REALM", &[]);
         assert!(!is_machine);
+    }
+
+    #[test]
+    fn foreign_realm_principal_classifies_as_user() {
+        let (is_machine, reason) =
+            classify_principal("alice@OTHER.REALM", "MY.REALM", &[]);
+        assert!(!is_machine);
+        assert!(reason.contains("OTHER.REALM"));
     }
 
     #[test]

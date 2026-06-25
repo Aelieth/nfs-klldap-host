@@ -718,6 +718,75 @@ impl IdLdapResolver {
         out
     }
 
+    /// Returns the DN of the first LDAP entry matching filter under base.
+    pub fn lookup_first_dn(
+        &self,
+        base: &str,
+        filter: &str,
+        bind_dn: &str,
+        bind_pw: &str,
+    ) -> Option<String> {
+        let entries = self
+            .service_search(base, filter, vec!["1.1".into()], bind_dn, bind_pw)
+            .ok()?;
+        entries.into_iter().next().map(|se| se.dn)
+    }
+
+    /// Lookup user DN and memberOf values for WebUI credential verify.
+    pub fn lookup_user_dn_and_memberof(
+        &self,
+        username: &str,
+        bind_dn: &str,
+        bind_pw: &str,
+    ) -> Option<(String, Vec<String>)> {
+        let filter = self.user_filter_by_name(username);
+        let name_attr = self.posix_attributes.user_name.clone();
+        let entries = self
+            .service_search(
+                &self.user_base,
+                &filter,
+                vec![name_attr, "memberOf".into()],
+                bind_dn,
+                bind_pw,
+            )
+            .ok()?;
+        let se = entries.into_iter().next()?;
+        let memberofs = se
+            .attrs
+            .get("memberOf")
+            .or_else(|| se.attrs.get("memberof"))
+            .cloned()
+            .unwrap_or_default();
+        Some((se.dn, memberofs))
+    }
+
+    /// Lookup group DN by name for membership checks.
+    pub fn lookup_group_dn(&self, group_name: &str, bind_dn: &str, bind_pw: &str) -> Option<String> {
+        let filter = self.group_filter_by_name(group_name);
+        self.lookup_first_dn(&self.group_base, &filter, bind_dn, bind_pw)
+    }
+
+    /// True when a user DN is returned by memberOf filter under user_base.
+    pub fn user_dn_has_memberof(
+        &self,
+        user_dn: &str,
+        group_dn: &str,
+        bind_dn: &str,
+        bind_pw: &str,
+    ) -> bool {
+        let filter = format!(
+            "(&(objectClass={})(memberOf={}))",
+            self.posix_attributes.user_object_class,
+            escape_ldap_filter(group_dn)
+        );
+        let entries = self
+            .service_search(&self.user_base, &filter, vec!["1.1".into()], bind_dn, bind_pw)
+            .unwrap_or_default();
+        entries
+            .iter()
+            .any(|e| e.dn.eq_ignore_ascii_case(user_dn))
+    }
+
     /// Search groups for permission-editor autocomplete.
     pub fn search_list_groups(
         &self,

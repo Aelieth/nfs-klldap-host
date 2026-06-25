@@ -16,6 +16,8 @@ pub const PROC_COMM_NAME_MAX: usize = 15;
 pub const GANESHA_PROTOCOLS: &str = "4";
 pub const GANESHA_PWNAM_IMPL: &str = "nsswitch";
 pub const GANESHA_ROOT_KRB_PRINCIPALS: &str = "host, nfs, root";
+/// Ganesha 9.6 DIRECTORY_SERVICES idmapped cache TTL (seconds).
+pub const GANESHA_IDMAPPED_VALIDITY_SECS: u32 = 600;
 pub const GANESHA_DEFAULT_SECTYPE: &str = "krb5p";
 pub const GANESHA_DEFAULT_SQUASH: &str = "no_root_squash";
 pub const GANESHA_ALLOWED_SECTYPES: &[&str] = &["krb5p", "krb5i", "krb5"];

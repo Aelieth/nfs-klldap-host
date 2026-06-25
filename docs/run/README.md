@@ -268,8 +268,8 @@ DIRECTORY_SERVICES {
     DomainName = EXAMPLE.COM;
     Pwnam_Implementation = nsswitch;
     Root_Kerberos_Principal = host, nfs, root;
-    idmapped_user_time_validity = 600;
-    idmapped_group_time_validity = 600;
+    Idmapped_User_Time_Validity = 600;
+    Idmapped_Group_Time_Validity = 600;
 }
 
 NFS_KRB5 {
@@ -304,7 +304,7 @@ LOG {
 Key points:
 - `Protocols = 4` (also in EXPORT_DEFAULTS and per-share CLIENT blocks) for strict NFSv4.
 - `Enable_UDP = false` (NFSv4-only; verified on trixie-backports Ganesha 9.6).
-- `idmapped_user_time_validity` / `idmapped_group_time_validity` in `DIRECTORY_SERVICES` (not deprecated `Manage_Gids_Expiration` in `NFS_CORE_PARAM`).
+- `Idmapped_User_Time_Validity` / `Idmapped_Group_Time_Validity` in `DIRECTORY_SERVICES` (preferred over `Manage_Gids_Expiration` in `NFS_CORE_PARAM`).
 - `DomainName` is uppercase `effective_realm()` (matches `/etc/idmapd.conf` Domain).
 - Kerberos configuration via NFS_KRB5 and Root_Kerberos_Principal (host, nfs, root).
 - Explicit `%include` lines (one per share fragment) for deterministic loading.

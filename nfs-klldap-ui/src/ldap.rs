@@ -1,7 +1,7 @@
 //! LdapClient wraps IdLdapResolver with UI search caches and admin verify.
 
-use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
-use nfs_klldap_config::{escape_ldap_filter, IdLdapResolver, PosixAttributeMapping};
+use ldap3::{LdapConn, LdapConnSettings};
+use nfs_klldap_config::{IdLdapResolver, PosixAttributeMapping};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,17 +9,13 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub enum LdapError {
-    Network(String),
     Auth(String),
-    Ldap(String),
 }
 
 impl std::fmt::Display for LdapError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LdapError::Network(e) => write!(f, "Network error: {}", e),
             LdapError::Auth(e) => write!(f, "Authentication error: {}", e),
-            LdapError::Ldap(e) => write!(f, "LDAP error: {}", e),
         }
     }
 }
@@ -204,12 +200,12 @@ impl LdapClient {
     }
 
     async fn fetch_entry_dn(&self, base: &str, filter: &str) -> Option<String> {
-        let name_attr = self.posix_attributes.user_name.clone();
-        let entries = self
-            .service_search(base, filter, vec![name_attr])
-            .await
-            .ok()?;
-        entries.into_iter().next().map(|se| se.dn)
+        let base = base.to_string();
+        let filter = filter.to_string();
+        self.with_identity(move |resolver, bind_dn, bind_pw| {
+            resolver.lookup_first_dn(&base, &filter, bind_dn, bind_pw)
+        })
+        .await
     }
 
     // Connection settings (sync ldap3).
@@ -438,93 +434,6 @@ impl LdapClient {
         self.last_auth_time = Some(Instant::now());
         Ok(())
     }
-
-    async fn service_search(
-        &self,
-        base: &str,
-        filter: &str,
-        attrs: Vec<String>,
-    ) -> Result<Vec<SearchEntry>, LdapError> {
-        let uri = self.ldap_uri.clone();
-        let settings = self.build_conn_settings();
-        let (u, p) = match (&self.username, &self.password) {
-            (Some(u), Some(p)) => (u.clone(), p.clone()),
-            _ => return Err(LdapError::Auth("no service credentials".into())),
-        };
-        let base = base.to_string();
-        let filter = filter.to_string();
-
-        // Retry on transient connect errors.
-        for attempt in 0..3 {
-            let result = tokio::task::spawn_blocking({
-                let uri = uri.clone();
-                let settings = settings.clone();
-                let u = u.clone();
-                let p = p.clone();
-                let base = base.clone();
-                let filter = filter.clone();
-                let attrs = attrs.clone();
-
-                move || {
-                    let mut ldap = LdapConn::with_settings(settings, &uri)
-                        .map_err(|e| format!("connect: {}", e))?;
-
-                    // Best-effort TLS clean shutdown on unbind.
-                    let op_result = (|| -> Result<Vec<SearchEntry>, String> {
-                        ldap.simple_bind(&u, &p)
-                            .map_err(|e| format!("bind: {}", e))?
-                            .success()
-                            .map_err(|e| format!("bind success: {:?}", e))?;
-
-                        let (rs, _res) = ldap
-                            .search(&base, Scope::Subtree, &filter, attrs)
-                            .map_err(|e| format!("search: {}", e))?
-                            .success()
-                            .map_err(|e| format!("search success: {:?}", e))?;
-
-                        let entries: Vec<SearchEntry> = rs.into_iter().map(SearchEntry::construct).collect();
-                        Ok(entries)
-                    })();
-
-                    let _ = ldap.unbind();
-                    op_result
-                }
-            })
-            .await;
-
-            match result {
-                Ok(Ok(entries)) => return Ok(entries),
-                Ok(Err(e)) => {
-                    if attempt == 2 {
-                        return Err(LdapError::Ldap(e));
-                    }
-                    // Retries the LDAP search after a transient error.
-                    tokio::time::sleep(std::time::Duration::from_millis(200 * (attempt + 1) as u64)).await;
-                }
-                Err(e) => {
-                    if attempt == 2 {
-                        return Err(LdapError::Network(format!("spawn_blocking join error: {}", e)));
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(200 * (attempt + 1) as u64)).await;
-                }
-            }
-        }
-
-        Err(LdapError::Ldap("exhausted retries".into()))
-    }
-
-    async fn ldap_search_entries(
-        &self,
-        base: &str,
-        filter: &str,
-        attrs: Vec<String>,
-    ) -> Vec<SearchEntry> {
-        self.service_search(base, filter, attrs)
-            .await
-            .unwrap_or_default()
-    }
-
-
 
     fn user_filter_by_name(&self, name: &str) -> String {
         self.identity_resolver.lock().unwrap().user_filter_by_name(name)
@@ -1012,27 +921,15 @@ impl LdapClient {
         username: &str,
         password: &str,
     ) -> Result<(), LdapError> {
-        let name_attr = self.posix_attributes.user_name.clone();
-        let obj = self.posix_attributes.user_object_class.clone();
-
-        let user_filter = format!(
-            "(&(objectClass={})({}={}))",
-            obj,
-            name_attr,
-            escape_ldap_filter(username)
-        );
-        let lookup_attrs: Vec<String> = vec![name_attr.clone(), "memberOf".into()];
-
-        let entries = self
-            .ldap_search_entries(&self.user_base, &user_filter, lookup_attrs)
-            .await;
-
-        let (user_dn, memberofs) = match entries.into_iter().next() {
-            Some(se) => {
-                let dn = se.dn;
-                let m = se.attrs.get("memberOf").cloned().or_else(|| se.attrs.get("memberof").cloned()).unwrap_or_default();
-                (dn, m)
-            }
+        let name = username.to_string();
+        let lookup_name = name.clone();
+        let (user_dn, memberofs) = match self
+            .with_identity(move |resolver, bind_dn, bind_pw| {
+                resolver.lookup_user_dn_and_memberof(&lookup_name, bind_dn, bind_pw)
+            })
+            .await
+        {
+            Some(v) => v,
             None => {
                 return Err(LdapError::Auth(
                     "user not found or service account lacks permission to search".into(),
@@ -1041,7 +938,7 @@ impl LdapClient {
         };
 
         if self.try_simple_bind(&user_dn, password).await {
-            self.record_verified_memberofs(username, memberofs);
+            self.record_verified_memberofs(&name, memberofs);
             Ok(())
         } else {
             Err(LdapError::Auth(
@@ -1089,26 +986,17 @@ impl LdapClient {
             }
         }
 
-        let g_name = self.posix_attributes.group_name.clone();
-        let g_obj = self.posix_attributes.group_object_class.clone();
-
-        let g_filter = format!(
-            "(&(objectClass={})({}={}))",
-            g_obj,
-            g_name,
-            escape_ldap_filter(group_name)
-        );
-
-        let g_entries = self
-            .ldap_search_entries(&self.group_base, &g_filter, vec!["1.1".into()])
-            .await;
-
-        let group_dn = match g_entries.into_iter().next() {
-            Some(e) if !e.dn.is_empty() => e.dn,
+        let group_name = group_name.to_string();
+        let group_dn = match self
+            .with_identity(move |resolver, bind_dn, bind_pw| {
+                resolver.lookup_group_dn(&group_name, bind_dn, bind_pw)
+            })
+            .await
+        {
+            Some(dn) if !dn.is_empty() => dn,
             _ => return false,
         };
 
-        // After we have the group DN the recent verify data may still Help.
         if self.has_recent_memberof(username, &group_dn) {
             return true;
         }
@@ -1118,17 +1006,13 @@ impl LdapClient {
             None => return false,
         };
 
-        let test_filter = format!(
-            "(&(objectClass={})(memberOf={}))",
-            self.posix_attributes.user_object_class,
-            escape_ldap_filter(&group_dn)
-        );
-
-        let test_entries = self
-            .ldap_search_entries(&self.user_base, &test_filter, vec!["1.1".into()])
-            .await;
-
-        test_entries.iter().any(|e| e.dn.eq_ignore_ascii_case(&user_dn))
+        let user_dn = user_dn.clone();
+        let group_dn = group_dn.clone();
+        self.with_identity(move |resolver, bind_dn, bind_pw| {
+            Some(resolver.user_dn_has_memberof(&user_dn, &group_dn, bind_dn, bind_pw))
+        })
+        .await
+        .unwrap_or(false)
     }
 }
 

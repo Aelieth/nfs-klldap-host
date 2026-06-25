@@ -487,9 +487,9 @@ DIRECTORY_SERVICES {{
     DomainName = {realm};
     Pwnam_Implementation = {pwnam};
     Root_Kerberos_Principal = {root_krb};
-    # idmapped_* validity here (not Manage_Gids_Expiration in NFS_CORE_PARAM).
-    idmapped_user_time_validity = 600;
-    idmapped_group_time_validity = 600;
+    # Idmapped_* here (not Manage_Gids_Expiration in NFS_CORE_PARAM).
+    Idmapped_User_Time_Validity = {idmap_validity};
+    Idmapped_Group_Time_Validity = {idmap_validity};
 }}
 
 NFS_KRB5 {{
@@ -516,6 +516,7 @@ EXPORT_DEFAULTS {{
         proto = constants::GANESHA_PROTOCOLS,
         pwnam = constants::GANESHA_PWNAM_IMPL,
         root_krb = constants::GANESHA_ROOT_KRB_PRINCIPALS,
+        idmap_validity = constants::GANESHA_IDMAPPED_VALIDITY_SECS,
     );
 
     // Baseline LOG helps operators while GANESHA_DEBUG enables FULL_DEBUG.

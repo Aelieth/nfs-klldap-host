@@ -56,10 +56,11 @@ count_split_sites() {
     local total=0 def=0 line
     while IFS= read -r line; do
         total=$((total + 1))
-        if [[ "$line" == nfs-klldap-identity/src/krb5/principal.rs:* ]]; then
+        if [[ "$line" == nfs-klldap-identity/src/krb5/principal.rs:* ]] \
+            || [[ "$line" == *"/nfs-klldap-identity/src/krb5/principal.rs:"* ]]; then
             def=$((def + 1))
         fi
-    done < <(grep -rn "split('@')" "${SPLIT_SCOPE[@]/#/$ROOT/}" 2>/dev/null || true)
+    done < <(cd "$ROOT" && grep -rn "split('@')" "${SPLIT_SCOPE[@]}" 2>/dev/null || true)
     echo "$((total - def)) $def $total"
 }
 
@@ -96,7 +97,7 @@ read -r split_calls split_defs split_total < <(count_split_sites)
     echo "call sites (excl. principal_local_part definition): $split_calls"
     echo "definitions (principal.rs principal_local_part): $split_defs"
     echo "total grep matches: $split_total"
-    grep -rn "split('@')" "${SPLIT_SCOPE[@]/#/$ROOT/}" 2>/dev/null || echo "(none)"
+    (cd "$ROOT" && grep -rn "split('@')" "${SPLIT_SCOPE[@]}" 2>/dev/null) || echo "(none)"
 } >"$SCRATCH/loc-evidence.txt"
 
 # --- comment-audit.txt ---

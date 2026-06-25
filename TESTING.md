@@ -10,8 +10,6 @@ Representative full-config generation: `nfs-klldap-config/tests/representative_g
 - `tempfile` trees for `FsManager`.
 - `tower::ServiceExt` oneshot tests for the Axum router.
 - Container/watcher/healthcheck via compose (not unit-tested).
-- Live krb5p NFS share access: `SCRATCH=/tmp/... NFS_TEST_USER_PW='...' ./scripts/capture-share-access-evidence.sh` (external `fedora:42` client; or `scripts/test-share-access.sh` wrapper).
-- Container verification bundle: `SCRATCH=/tmp/... ./scripts/run-container-verify.sh` (healthcheck, verify-ganesha, `ganesha-ctl fs-warnings`).
 
 ## Well-Tested Areas
 

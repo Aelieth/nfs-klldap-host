@@ -15,6 +15,10 @@ name = "data"
 host_path = "/media/data"
 "#;
 
+fn recycle_marker_for(tmp: &tempfile::TempDir) -> PathBuf {
+    tmp.path().join(".nfs-klldap-services-recycled")
+}
+
 fn cargo_bin(name: &str) -> PathBuf {
     let env_key = format!("CARGO_BIN_EXE_{}", name.replace('-', "_"));
     if let Ok(path) = std::env::var(&env_key) {
@@ -120,8 +124,8 @@ fn supervise_probe_wizard_complete_recycle_touches_marker() {
 
     let conf = tmp.path().join("nfs-klldap.conf");
     let marker = tmp.path().join(".setup_wizard_done");
-    let recycle_marker = std::path::Path::new("/tmp/.nfs-klldap-services-recycled");
-    let _ = fs::remove_file(recycle_marker);
+    let recycle_marker = recycle_marker_for(&tmp);
+    let _ = fs::remove_file(&recycle_marker);
 
     fs::write(&conf, COMPLETE_TOML).unwrap();
     fs::write(&marker, "ok\n").unwrap();
@@ -143,6 +147,7 @@ fn supervise_probe_wizard_complete_recycle_touches_marker() {
         .env("NFS_CONFIG", &conf)
         .env("NFS_KLLDAP_TEST_PERSISTENT", "1")
         .env("NFS_KLLDAP_SETUP_MARKER", &marker)
+        .env("NFS_KLLDAP_RECYCLE_MARKER", &recycle_marker)
         .env("NFS_KLLDAP_SUPERVISOR_TICK_MS", "0")
         .env("NFS_KLLDAP_SUPERVISOR_MAX_TICKS", "5")
         .env("USE_NSS_WRAPPER", "0")
@@ -192,7 +197,7 @@ fn supervise_probe_wizard_complete_recycle_touches_marker() {
         "recycle marker must exist after wizard SIGHUP path"
     );
     assert!(out.join("sssd.conf").is_file(), "generate must write sssd.conf");
-    let _ = fs::remove_file(recycle_marker);
+    let _ = fs::remove_file(&recycle_marker);
 }
 
 /// Loop-probe waits for a real OS SIGHUP (not the wizard-probe auto-posted flag).
@@ -206,8 +211,8 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
 
     let conf = tmp.path().join("nfs-klldap.conf");
     let marker = tmp.path().join(".setup_wizard_done");
-    let recycle_marker = std::path::Path::new("/tmp/.nfs-klldap-services-recycled");
-    let _ = fs::remove_file(recycle_marker);
+    let recycle_marker = recycle_marker_for(&tmp);
+    let _ = fs::remove_file(&recycle_marker);
 
     fs::write(&conf, COMPLETE_TOML).unwrap();
 
@@ -231,6 +236,7 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         .env("NFS_KLLDAP_SUPERVISOR_TICK_MS", "100")
         .env("NFS_KLLDAP_TEST_PERSISTENT", "1")
         .env("NFS_KLLDAP_SETUP_MARKER", &marker)
+        .env("NFS_KLLDAP_RECYCLE_MARKER", &recycle_marker)
         .env("USE_NSS_WRAPPER", "0")
         .env("CONFIG_BIN", &config_bin)
         .env("UI_BIN", stubs.join("nfs-klldap-ui"))
@@ -288,7 +294,7 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     assert!(
-        fs::metadata(recycle_marker).map(|m| m.len()).unwrap_or(0) > 0,
+        fs::metadata(&recycle_marker).map(|m| m.len()).unwrap_or(0) > 0,
         "recycle marker must be non-empty"
     );
 
@@ -303,5 +309,5 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         !combined.contains("Setup wizard complete — bringing up services"),
         "loop must not duplicate bring-up after HUP recycle"
     );
-    let _ = fs::remove_file(recycle_marker);
+    let _ = fs::remove_file(&recycle_marker);
 }

@@ -21,8 +21,14 @@ use nfs_klldap_config::{
 };
 
 const BULK_SEED_MARKER: &str = "/var/lib/nfs-klldap/.bulk_seed_done";
-const RECYCLE_MARKER: &str = "/tmp/.nfs-klldap-services-recycled";
+const RECYCLE_MARKER_DEFAULT: &str = "/tmp/.nfs-klldap-services-recycled";
 const NSS_PIPE: &str = "/var/lib/sss/pipes/nss";
+
+fn recycle_marker_path() -> PathBuf {
+    std::env::var("NFS_KLLDAP_RECYCLE_MARKER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(RECYCLE_MARKER_DEFAULT))
+}
 
 /// Runtime paths and binaries (override via env for CI).
 struct SupervisorEnv {
@@ -179,14 +185,14 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
         sup.bring_up_services()?;
         sup.services_started = true;
         sup.start_watcher()?;
-        let _ = fs::remove_file(RECYCLE_MARKER);
+        let _ = fs::remove_file(recycle_marker_path());
         sup.log_info("Container is ready (pre-configured path).");
     } else {
         sup.log_info(&format!(
             "First-run setup required — WebUI wizard at {}",
             webui_setup_url()
         ));
-        let _ = fs::remove_file(RECYCLE_MARKER);
+        let _ = fs::remove_file(recycle_marker_path());
         if sup.env.supervise_wizard_probe && is_setup_wizard_complete() {
             sup.log_info("Supervise-wizard-probe: posting SIGHUP for bounded loop recycle");
             request_sighup();
@@ -660,7 +666,7 @@ while :; do :; done
             reap_one_child();
             ticks = ticks.saturating_add(1);
             if bounded && ticks >= max_ticks {
-                if !Path::new(RECYCLE_MARKER).is_file() {
+                if !recycle_marker_path().is_file() {
                     return Err("wizard probe: recycle marker missing after bounded loop".into());
                 }
                 self.log_info("Supervise wizard probe complete — exiting");
@@ -728,7 +734,7 @@ while :; do :; done
             .write(true)
             .create(true)
             .truncate(true)
-            .open(RECYCLE_MARKER)
+            .open(recycle_marker_path())
         {
             use std::io::Write;
             let _ = writeln!(f, "ok");

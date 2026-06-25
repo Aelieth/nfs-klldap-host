@@ -1,4 +1,4 @@
-//! Safe Unix signal delivery for the pid-1 supervisor.
+// ! Safe Unix signal delivery for the pid-1 supervisor.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;

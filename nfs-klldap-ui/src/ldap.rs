@@ -1,5 +1,5 @@
-//! LdapClient: async wrapper over shared IdLdapResolver + UI-only LDAP paths.
-//! POSIX resolution via nfs-klldap-identity; UI adds search caches and admin verify.
+// ! LdapClient: async wrapper over shared IdLdapResolver + UI-only LDAP paths.
+// !POSIX resolution via nfs-klldap-identity
 
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
 use nfs_klldap_config::{escape_ldap_filter, IdLdapResolver, PosixAttributeMapping};
@@ -33,7 +33,7 @@ pub struct LdapClient {
     ldap_uri: String,
     /// Effective search base for users (supports child OUs via Subtree scope).
     user_base: String,
-    /// Effective search base for groups (supports child OUs via Subtree scope).
+    /// Effective search base for groups (supports child OUs via Subtree sc...
     group_base: String,
 
     service_conn: Option<LdapConn>,
@@ -84,7 +84,7 @@ pub struct Group {
 const IDENTITY_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const SEARCH_CACHE_TTL: Duration = Duration::from_secs(2 * 60);
 const MAX_RECENT_SEARCHES: usize = 8;
-/// Max autocomplete rows returned to the permission editor (scrollable dropdown).
+/// Max autocomplete rows returned to the permission editor (scrollable...
 const LIST_RESULT_LIMIT: usize = 25;
 
 #[derive(Debug, Clone)]
@@ -124,7 +124,7 @@ struct CachedSearch {
 }
 
 impl LdapClient {
-    /// `user_base`/`group_base` from effective_ldap_search_bases (Subtree for child OUs).
+    /// `user_base`/`group_base` from effective_ldap_search_bases (Subtree...
     /// Bind identity must be full DN (or verbatim) for LDAPS reliability.
     pub fn new_with_attributes(
         ldap_uri: &str,
@@ -300,7 +300,7 @@ impl LdapClient {
         );
     }
 
-    // --- Reverse (uid/gid -> display) cache helpers (for friendly meta display after FS stat) ---
+    // --- Reverse (uid/gid -> display) cache helpers (for friendly meta dis...
     fn cache_get_user_by_uid(&self, uid: i32) -> Option<CachedUser> {
         self.evict_expired();
         if let Some(hit) = self.user_by_uid_cache.lock().unwrap().get(&uid).cloned() {
@@ -437,8 +437,8 @@ impl LdapClient {
 
     async fn get_or_bind_service(&mut self) -> Result<(), LdapError> {
         // No-op for now (we use fresh connect+bind+op+unbind per call inside
-        // spawn_blocking because of the "sync" ldap3 API choice for KLLDAP compat).
-        // This keeps things simple and safe. Long-lived conn optimization possible later.
+        // spawn_blocking because of the "sync" ldap3 API choice for KLLDAP comp...
+        // This keeps things simple and safe
         if self.username.is_none() || self.password.is_none() {
             return Err(LdapError::Auth("no service credentials".into()));
         }
@@ -551,7 +551,7 @@ impl LdapClient {
         )
     }
 
-    /// Strip permission-editor display values like `Alice (1000)` → `1000` or `Alice`.
+    /// Strip permission-editor display values like `Alice (1000)` → `1000`...
     pub(crate) fn normalize_editor_search_query(q: Option<&str>) -> Option<String> {
         let s = q.map(str::trim).filter(|s| !s.is_empty())?;
         if let Some(open) = s.rfind('(') {
@@ -576,7 +576,7 @@ impl LdapClient {
         Some(s.to_string())
     }
 
-    /// Normalized query for permission-editor autocomplete (name or numeric substring).
+    /// Normalized query for permission-editor autocomplete (name or numeri...
     fn normalize_list_query(filter: Option<&str>) -> (String, String, String) {
         let q_orig = Self::normalize_editor_search_query(filter).unwrap_or_default();
         let q_lower = q_orig.to_lowercase();
@@ -600,7 +600,7 @@ impl LdapClient {
                 .contains(q_lower)
     }
 
-    /// Subtree filter: posix users only (objectClass + uidNumber present). KLLDAP/LLDAP-safe.
+    /// Subtree filter: posix users only (objectClass + uidNumber present)
     fn build_user_list_ldap_filter(&self, q_orig: &str) -> String {
         let obj = &self.posix_attributes.user_object_class;
         let uid_attr = &self.posix_attributes.user_uid_number;
@@ -813,7 +813,7 @@ impl LdapClient {
         Some((gid, display))
     }
 
-    /// Reverse lookup uidNumber→name; subtree fallback populates forward/reverse caches.
+    /// Reverse lookup uidNumber→name
     pub async fn resolve_user_by_uid(&self, uid: i32) -> Option<(String, String)> {
         if let Some(hit) = self.cache_get_user_by_uid(uid) {
             if hit.uid_number.is_some() {
@@ -849,7 +849,7 @@ impl LdapClient {
         Some((id, display))
     }
 
-    /// Reverse lookup: gidNumber → (cn/name, display_name). Uses dedicated 10m cache.
+    /// Reverse lookup: gidNumber → (cn/name, display_name)
     pub async fn resolve_group_by_gid(&self, gid: i32) -> Option<(String, String)> {
         if let Some(hit) = self.cache_get_group_by_gid(gid) {
             if hit.gid_number.is_some() {
@@ -908,7 +908,7 @@ impl LdapClient {
             }
         }
 
-        // Recent search cache (2m): re-apply query filter — stale keys must not bypass typing.
+        // Recent search cache (2m): re-apply query filter
         let search_cached = self.cache_get_search(&cache_key, true);
         if let Some(cached) = search_cached.clone() {
             for (id, uid, display) in cached {
@@ -926,7 +926,7 @@ impl LdapClient {
             }
         }
 
-        // LDAP when caches miss, typed query misses, or a stale empty __all__ cache blocks results.
+        // LDAP when caches miss
         let needs_ldap = if q_orig.is_empty() {
             search_cached.as_ref().is_none_or(|c| c.is_empty())
         } else {
@@ -1183,7 +1183,7 @@ impl LdapClient {
     }
 
     async fn user_is_member_of(&self, username: &str, group_name: &str) -> bool {
-        // Fast path: if we just verified this exact user, use the memberOf list we already fetched.
+        // Fast path: if we just verified this exact user
         if let Some(admin_dn) = self.resolve_admin_group_dn(group_name).await {
             if self.has_recent_memberof(username, &admin_dn) {
                 return true;
@@ -1209,7 +1209,7 @@ impl LdapClient {
             _ => return false,
         };
 
-        // After we have the group DN, the recent verify data may still help for this group.
+        // After we have the group DN
         if self.has_recent_memberof(username, &group_dn) {
             return true;
         }

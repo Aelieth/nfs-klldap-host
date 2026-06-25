@@ -1,4 +1,4 @@
-//! Constants for nfs-klldap-config (Ganesha 9.6 trixie + identity re-exports).
+// ! Constants for nfs-klldap-config (Ganesha 9.6 trixie + identity re-exports).
 
 pub use nfs_klldap_identity::{
     DEFAULT_GROUP_GID_ATTR, DEFAULT_GROUP_MEMBER_ATTR_KLLDAP, DEFAULT_GROUP_MEMBER_ATTR_LEGACY,
@@ -32,7 +32,7 @@ pub const GANESHA_ALLOWED_SQUASH: &[&str] = &[
 pub const IDMAPD_TRANSLATION_METHOD: &str = "nsswitch";
 pub const IDMAPD_GSS_METHODS: &str = "nsswitch";
 pub const IDMAPD_NOBODY_USER: &str = "nobody";
-/// idmapd Nobody-Group name; runtime nss fallback uses FALLBACK_NOBODY_GID (65534).
+/// idmapd Nobody-Group name
 pub const IDMAPD_NOBODY_GROUP: &str = "nogroup";
 
 /// Ganesha log observer noise tokens (exact match, lowercased).

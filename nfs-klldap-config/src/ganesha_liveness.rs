@@ -1,4 +1,4 @@
-//! Zombie-aware Ganesha process liveness for recycle planning and reload.
+// ! Zombie-aware Ganesha process liveness for recycle planning and reload.
 
 use std::fs;
 use std::path::Path;
@@ -61,7 +61,7 @@ pub fn ganesha_is_live(tracked: Option<u32>) -> bool {
     tracked.is_some_and(process_is_live)
 }
 
-/// Discover live ganesha.nfsd in this pid namespace (supervisor post-daemonize adoption).
+/// Discover live ganesha.nfsd in this pid namespace (supervisor post-d...
 pub fn discover_ganesha_daemon_pid() -> Option<u32> {
     pgrep_live_pids("ganesha.nfsd").into_iter().next()
 }

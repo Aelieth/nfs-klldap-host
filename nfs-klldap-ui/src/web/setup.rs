@@ -1,4 +1,4 @@
-//! First-run 3-step WebUI setup wizard at /setup/1 … /setup/3.
+// ! First-run 3-step WebUI setup wizard at /setup/1 … /setup/3.
 
 use askama::Template;
 use axum::{
@@ -17,7 +17,7 @@ use nfs_klldap_config::{
 use serde::Deserialize;
 use std::path::Path;
 
-/// Last successful probe inputs per wizard step (not written to disk until continue).
+/// Last successful probe inputs per wizard step (not written to disk u...
 #[derive(Default)]
 pub struct SetupTestState {
     pub step2_uri: Option<String>,
@@ -101,7 +101,7 @@ pub fn setup_wizard_required_with_marker(
     !complete
 }
 
-/// Redirect target for incomplete setup (structural checks only — no LDAP probes).
+/// Redirect target for incomplete setup (structural checks only
 pub fn setup_redirect_for_step(config_path: &Path) -> String {
     if is_preconfigured_deployment(config_path, &resolve_keytab_path()) {
         return "/login".into();
@@ -519,7 +519,7 @@ pub async fn setup_step3_test(
     }
 }
 
-/// POST /setup/3/continue — save bind creds after a matching test, then finish wizard.
+/// POST /setup/3/continue
 pub async fn setup_step3_continue(
     State(state): State<super::AppState>,
     Form(form): Form<BindForm>,
@@ -562,7 +562,7 @@ pub async fn setup_step3_continue(
     super::settings::render_restarting_page().into_response()
 }
 
-/// GET /setup/3/status — background bind probe using on-disk creds (does not update test cache).
+/// GET /setup/3/status
 pub async fn setup_step3_status(State(state): State<super::AppState>) -> impl IntoResponse {
     let config_path = state.config_path.clone();
     let probe = tokio::task::spawn_blocking(move || run_bind_probe_from_disk(&config_path))
@@ -601,7 +601,7 @@ fn clear_step3_test(state: &super::AppState) {
     t.step3_pw = None;
 }
 
-/// GET /setup/complete — legacy URL; serves the same restart poller as step 3 continue.
+/// GET /setup/complete — legacy URL
 pub async fn setup_complete(State(state): State<super::AppState>) -> impl IntoResponse {
     let _ = super::settings::try_schedule_service_recycle(&state, "First-run setup complete").await;
     super::settings::render_restarting_page().into_response()

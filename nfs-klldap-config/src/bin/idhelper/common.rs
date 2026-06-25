@@ -1,4 +1,4 @@
-//! Shared types, constants, and config helpers for nfs-klldap-idhelper.
+// ! Shared types, constants, and config helpers for nfs-klldap-idhelper.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -13,24 +13,24 @@ pub(crate) const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
 pub(crate) const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
 const CACHE_VERSION: &str = "1";
 
-// nss_wrapper passwd/group files Ganesha reads under LD_PRELOAD for Kerberos principal→uid.
+// nss_wrapper passwd/group files Ganesha reads under LD_PRELOAD for Ker...
 pub(crate) const NSS_PASSWD_PATH: &str = "/var/lib/nfs-klldap/nss_passwd";
 pub(crate) const NSS_GROUP_PATH: &str = "/var/lib/nfs-klldap/nss_group";
 
-// Supplemental extrausers entries for machine→root mappings alongside SSSD users.
+// Supplemental extrausers entries for machine→root mappings alongside S...
 pub(crate) const EXTRAUSERS_PASSWD: &str = "/var/lib/extrausers/passwd";
 pub(crate) const EXTRAUSERS_GROUP: &str = "/var/lib/extrausers/group";
 
-/// Written after LDAP bulk-seed into nss_wrapper; entrypoint waits on this before Ganesha.
+/// Written after LDAP bulk-seed into nss_wrapper
 pub(crate) const BULK_SEED_MARKER: &str = "/var/lib/nfs-klldap/.bulk_seed_done";
 
-/// Default periodic LDAP→nss_wrapper sync interval (matches IdLdapResolver 10m TTL).
+/// Default periodic LDAP→nss_wrapper sync interval (matches IdLdapReso...
 pub(crate) const DEFAULT_REBULK_INTERVAL_SECS: u64 = 10 * 60;
 
 /// Debug logging enabled via KLLDAP_IDHELPER_DEBUG=true (or 1/yes/on).
 static DEBUG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// True when any share has effective Manage_Gids (controls supplementary-group log noise).
+/// True when any share has effective Manage_Gids (controls supplementa...
 pub(crate) fn manage_gids_expected() -> bool {
     let path =
         std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
@@ -114,7 +114,7 @@ impl IdCache {
         self.entries.insert(key, r);
     }
 
-    /// Stable hash of cache contents; used to skip redundant nss materialize writes.
+    /// Stable hash of cache contents
     pub(crate) fn content_fingerprint(&self) -> u64 {
         let mut keys: Vec<_> = self.entries.keys().collect();
         keys.sort();
@@ -135,7 +135,7 @@ impl IdCache {
         h
     }
 
-    /// Remove user and unknown entries; keep machine principals (host/, nfs/, etc.).
+    /// Remove user and unknown entries
     /// Returns the number of entries removed.
     pub(crate) fn prune_non_machine_users(&mut self) -> usize {
         let before = self.entries.len();
@@ -214,7 +214,7 @@ impl IdCache {
 pub(crate) use nfs_klldap_config::{machine_short_name, principal_local_part};
 
 /// Normalize a principal for cache key and lookup.
-/// Uppercases realm; local part matches principal_local_part (trim + first @ segment).
+/// Uppercases realm; local part matches principal_local_part (trim + f...
 pub fn normalize_principal(p: &str) -> String {
     let p = p.trim();
     if let Some(at) = p.find('@') {

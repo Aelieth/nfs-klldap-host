@@ -1,13 +1,13 @@
-//! is_persistent_config (dev inode diff) + load_host_paths_only (tolerant for UI allow-list).
+// !is_persistent_config (dev inode diff) + load_host_paths_only (toleran...
 
 use std::path::{Path, PathBuf};
 
 use crate::ConfigError;
 
-/// Returns true if the given config path is on a persistent volume (i.e. a real
-/// host bind mount) rather than living inside the container's own filesystem layer.
+/// Returns true if the given config path is on a persistent volume (i.e
+/// host bind mount) rather than living inside the container's own file...
 ///
-/// Used by the WebUI setup wizard: refuse meaningful work until /config is a real bind mount.
+/// Used by the WebUI setup wizard: refuse meaningful work until /confi...
 #[cfg(unix)]
 pub fn is_persistent_config(path: &Path) -> bool {
     if !path.exists() {

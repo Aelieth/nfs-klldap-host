@@ -1,4 +1,4 @@
-//! First-run default template
+// ! First-run default template
 
 use std::fs;
 use std::path::Path;
@@ -12,7 +12,7 @@ pub fn generate_default_template() -> String {
 # nfs-klldap.conf — Single Source of Truth for nfs-klldap-host
 # =============================================================================
 # This file is the ONLY configuration file that needs editing.
-# The container auto-derives sssd.conf, krb5.conf, and all Ganesha EXPORT fragments.
+# The container auto-derives sssd.conf
 #
 # REQUIRED: ldap_uri + [sssd] bind credentials.
 # ldap_uri host MUST be a DNS name (A/AAAA + PTR recommended). IP addresses are
@@ -32,32 +32,32 @@ ldap_uri = "ldaps://kllap.example.com:6360"                     # Required - LLD
 container_root = "/export"                                      # Required - Ganesha Path base + UI translation root. Bind one or more host parent dirs to this target (e.g. /media/:/export and/or /mount/:/export). The first directory component of each share's host_path is treated as the implicit per-share bind root; the tail becomes the subpath under container_root. This lets export_path (below) be a short external name only.
 
 [management]
-# webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins
+# webui_admin_group = "lldap_admin"                             # Default
 
 [server]
-# hostname = "myhost.example.com"                               # Default - Optional override for keytab only. Recommended: docker run --uts=host
+# hostname = "myhost.example.com"                               # Default
 
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"  # Required - LDAP bind DN
 ldap_default_authtok = "strong-secret"                          # Required - LDAP bind password
-# ldap_user_search_base = "ou=people,dc=example,dc=com"          # Optional - defaults to dc=<realm> (Subtree)
-# ldap_group_search_base = "ou=people,dc=example,dc=com"        # Optional - defaults to dc=<realm> (Subtree)
+# ldap_user_search_base = "ou=people,dc=example,dc=com"          # Opti...
+# ldap_group_search_base = "ou=people,dc=example,dc=com"        # Optio...
 kllldap_ignored_attributes = true                               # KLLDAP specific - improves lookup time, prevents attribute spam
 
-# ldap_tls_reqcert = "never"                                    # auto-derived - typical for internal/self-signed
-# ldap_tls_cacert = "/path/to/ca.pem"                           # when using custom CA instead of never
-# ldap_id_use_start_tls = true                                  # only with ldap:// + STARTTLS (not ldaps://)
+# ldap_tls_reqcert = "never"                                    # auto-...
+# ldap_tls_cacert = "/path/to/ca.pem"                           # when...
+# ldap_id_use_start_tls = true                                  # only...
 
 [kerberos]
-# realm = "EXAMPLE.COM"                                         # Default - auto-derived from ldap_uri host, edit to override
+# realm = "EXAMPLE.COM"                                         # Default
 
 [ganesha]
 default_security = "krb5p"                                      # Security, krb5p (default) | krb5i | krb5
 
 [webui]
-# tls = false                                                   # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
-# tls_cert = "/config/webui.crt"                                # optional custom cert (NFS_KLLDAP_WEBUI_TLS_CERT env wins)
-# tls_key = "/config/webui.key"                                 # optional custom key (NFS_KLLDAP_WEBUI_TLS_KEY env wins; 0600)
+# tls = false                                                   # comme...
+# tls_cert = "/config/webui.crt"                                # optio...
+# tls_key = "/config/webui.key"                                 # optio...
 
 "#
     .to_string()

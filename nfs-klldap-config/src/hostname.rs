@@ -1,5 +1,5 @@
-//! Two-tier hostname: hostname(1) must match /proc/sys/kernel/hostname.
-//! Mismatch yields a diagnostic for keytab and cert SAN alignment.
+// ! Two-tier hostname: hostname(1) must match /proc/sys/kernel/hostname.
+// ! Mismatch yields a diagnostic for keytab and cert SAN alignment.
 
 pub use nfs_klldap_identity::{
     format_nfs_principal_list, looks_like_docker_default_hostname, nfs_keytab_host_matches,
@@ -81,7 +81,7 @@ fn normalize_for_comparison(h: &str) -> String {
     h.trim().trim_matches('.').to_string()
 }
 
-/// Pure core of the two-tier check. Both inputs must match after normalization.
+/// Pure core of the two-tier check
 pub(crate) fn confirm_consistent_hostname(
     primary_raw: &str,
     secondary_raw: &str,
@@ -146,7 +146,7 @@ now report the identical name in the setup wizard and WebUI logs.";
     Ok(primary)
 }
 
-/// Returns hostname when both sources agree after trim/trailing-dot normalization.
+/// Returns hostname when both sources agree after trim/trailing-dot no...
 pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsistency> {
     let primary = match Command::new("hostname").output() {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn real_get_consistent_hostname_smoke() {
-        // Real I/O path smoke (succeeds or well-formed inconsistency; never panic/garbage).
+        // Real I/O path smoke (succeeds or well-formed inconsistency
         let result = get_consistent_hostname();
         match result {
             Ok(c) => {

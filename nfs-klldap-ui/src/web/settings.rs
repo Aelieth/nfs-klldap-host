@@ -1,4 +1,4 @@
-//! /settings: raw TOML + structured form (top + shares), LLDAP status/reload/clear, restart (HUP pid1).
+// !/settings: raw TOML + structured form (top + shares)
 
 use askama::Template;
 use axum::{
@@ -27,7 +27,7 @@ struct SettingsTemplate {
     effective_realm: String,
     keytab_alert: Option<String>,
 
-    /// NFS principals found in the keytab (for display + matching underline in template).
+    /// NFS principals found in the keytab (for display + matching underlin...
     keytab_found_principals: Vec<String>,
 
     ldap_uri: String,
@@ -45,7 +45,7 @@ struct SettingsTemplate {
     ganesha_default_security: String,
     kllldap_ignored_attributes: bool,
 
-    // true when the key is explicitly present in raw TOML (structured save writes override vs omit).
+    // true when the key is explicitly present in raw TOML (structured save...
     override_server_hostname: bool,
     override_kerberos_realm: bool,
     override_ganesha_default_security: bool,
@@ -57,12 +57,12 @@ struct SettingsTemplate {
     override_sssd_ldap_id_use_start_tls: bool,
     override_sssd_enumerate: bool,
 
-    /// Server-rendered current shares (enables proper edit + delete via row removal before submit).
+    /// Server-rendered current shares (enables proper edit + delete via ro...
     current_shares: Vec<ShareTemplateRow>,
-    /// Next index the client-side JS should use when the user clicks "+ Add share".
+    /// Next index the client-side JS should use when the user clicks "+ Ad...
     next_share_idx: usize,
 
-    /// HOST_NFS sidecar mode (host Ganesha serves exports; WebUI still manages config).
+    /// HOST_NFS sidecar mode (host Ganesha serves exports
     host_nfs_mode: bool,
 }
 
@@ -71,7 +71,7 @@ struct SettingsTemplate {
 #[template(path = "restarting.html")]
 pub(crate) struct RestartingTemplate;
 
-/// Default path touched by the supervisor after a full service recycle (polled by restarting.html).
+/// Default path touched by the supervisor after a full service recycle...
 pub(crate) const SERVICE_RECYCLE_MARKER: &str = "/tmp/.nfs-klldap-services-recycled";
 
 fn service_recycle_marker_path() -> std::path::PathBuf {
@@ -80,12 +80,12 @@ fn service_recycle_marker_path() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from(SERVICE_RECYCLE_MARKER))
 }
 
-/// Render the standalone restarting page (shared by settings restart and setup step 3).
+/// Render the standalone restarting page (shared by settings restart a...
 pub(crate) fn render_restarting_page() -> Html<String> {
     Html(RestartingTemplate.render().unwrap())
 }
 
-/// Clear recycle marker and schedule delayed HUP (pid 1, or NFS_KLLDAP_SUPERVISOR_PID in tests).
+/// Clear recycle marker and schedule delayed HUP (pid 1
 pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_context: &str) -> bool {
     {
         let mut flag = state.restart_requested.lock().await;
@@ -127,7 +127,7 @@ pub(crate) struct RawSaveForm {
     raw_content: String,
 }
 
-// Structured form (top-level + shares rows). Shares POST reuses subset of fields.
+// Structured form (top-level + shares rows)
 #[derive(Deserialize, Debug, Default)]
 pub(crate) struct StructuredSettingsForm {
     // Top level
@@ -159,7 +159,7 @@ pub(crate) struct StructuredSettingsForm {
     override_sssd_ldap_id_use_start_tls: Option<bool>,
     sssd_enumerate: Option<bool>,
     override_sssd_enumerate: Option<bool>,
-    // Control for server-side KLLDAP ignore lists (and ldap_group_member choice) emitted into sssd.conf.
+    // Control for server-side KLLDAP ignore lists (and ldap_group_member ch...
     kllldap_ignored_attributes: Option<bool>,
 
     // [kerberos]
@@ -177,7 +177,7 @@ pub(crate) struct StructuredSettingsForm {
 
 // === Internal helper types ===
 
-/// Internal row representation for the share editor form (used during collect from POST).
+/// Internal row representation for the share editor form (used during...
 /// Used by structured save + dedicated shares save.
 #[derive(Debug, Clone)]
 struct ShareFormRow {
@@ -196,7 +196,7 @@ struct ShareFormRow {
     ganesha_path: Option<String>,
 }
 
-/// Template row for server-rendered shares in the structured editor (string values for simple Askama rendering).
+/// Template row for server-rendered shares in the structured editor (s...
 #[derive(Debug, Clone)]
 struct ShareTemplateRow {
     idx: usize,
@@ -214,7 +214,7 @@ struct ShareTemplateRow {
     fs_warning: Option<String>,
 }
 
-/// Key present in raw source (used to decide override checkboxes; core keys always explicit).
+/// Key present in raw source (used to decide override checkboxes
 fn has_explicit(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> bool {
     if section.is_empty() {
         doc.get(key).is_some()
@@ -237,7 +237,7 @@ fn get_explicit_str(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> O
     val.and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
-/// Share export_path for the editor when explicit in raw TOML (normalized to absolute).
+/// Share export_path for the editor when explicit in raw TOML (normali...
 fn share_export_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize) -> String {
     let Some(arr) = doc.get("shares").and_then(|s| s.as_array_of_tables()) else {
         return String::new();
@@ -262,7 +262,7 @@ fn share_export_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize) -> Strin
     }
 }
 
-/// Maps legacy pref_read/pref_write byte pairs to canonical cache profile names for dropdown prefill.
+/// Maps legacy pref_read/pref_write byte pairs to canonical cache prof...
 fn infer_profile_from_prefs(pref_read: Option<u64>, pref_write: Option<u64>) -> String {
     match (pref_read, pref_write) {
         (Some(1048576), Some(1048576)) => "Default".to_string(),
@@ -275,7 +275,7 @@ fn infer_profile_from_prefs(pref_read: Option<u64>, pref_write: Option<u64>) -> 
     }
 }
 
-/// Build SettingsTemplate from on-disk config (page load and post-save re-render).
+/// Build SettingsTemplate from on-disk config (page load and post-save...
 fn build_settings_template(
     current_user: Option<String>,
     config_path: impl AsRef<std::path::Path>,
@@ -288,8 +288,8 @@ fn build_settings_template(
     let raw_toml = std::fs::read_to_string(p)
         .unwrap_or_else(|_| "# Could not read config file".to_string());
 
-    // Parse raw (un-derived) TOML to detect which fields are *explicit overrides*
-    // vs. purely derived at load/validate time. This drives the "override" checkboxes.
+    // Parse raw (un-derived) TOML to detect which fields are *explicit over...
+    // vs. purely derived at load/validate time. This drives the "override"...
     let doc: toml_edit::DocumentMut = raw_toml.parse().unwrap_or_default();
 
     let cfg = nfs_klldap_config::NfsKlldapConfig::load(p).unwrap_or_default();
@@ -365,7 +365,7 @@ fn build_settings_template(
         // Computed from *raw source presence* (not from derived cfg values).
         override_server_hostname: has_explicit(&doc, "server", "hostname"),
         override_kerberos_realm: has_explicit(&doc, "kerberos", "realm"),
-        // Treat explicit krb5p as non-override; writer always materializes krb5p when override is off.
+        // Treat explicit krb5p as non-override
         override_ganesha_default_security: get_explicit_str(&doc, "ganesha", "default_security")
             .is_some_and(|v| v != "krb5p"),
         override_sssd_search_base: has_explicit(&doc, "sssd", "ldap_search_base"),
@@ -504,7 +504,7 @@ fn apply_structured_form_to_config(
     if let Some(v) = form.sssd_bind_dn.clone() {
         cfg.sssd.ldap_default_bind_dn = v;
     }
-    // Only overwrite bind pw if a non-empty value was submitted (structured form does not prefill the secret).
+    // Only overwrite bind pw if a non-empty value was submitted (structured...
     if let Some(v) = form.sssd_bind_pw.clone() {
         if !v.trim().is_empty() {
             cfg.sssd.ldap_default_authtok = v;
@@ -545,8 +545,8 @@ fn apply_structured_form_to_config(
         cfg.sssd.enumerate = form.sssd_enumerate;
     }
 
-    // kllldap_ignored_attributes: checkbox absence on submit (for this default-true flag) means explicit false.
-    // We always produce Some so structured saves make the value explicit in the TOML.
+    // kllldap_ignored_attributes: checkbox absence on submit (for this defa...
+    // We always produce Some so structured saves make the value explicit in...
     cfg.sssd.kllldap_ignored_attributes = Some(form.kllldap_ignored_attributes.unwrap_or(false));
 
     if form.override_kerberos_realm.unwrap_or(false) {
@@ -564,7 +564,7 @@ fn apply_structured_form_to_config(
         }
     } else {
         // Not overriding: materialize the standard default (so ganesha.conf always
-        // gets a known SecType, and "go back" from override restores krb5p in source
+        // gets a known SecType, and "go back" from override restores krb5p in s...
         // instead of stripping the key entirely).
         cfg.ganesha.default_security = "krb5p".to_string();
     }
@@ -578,7 +578,7 @@ fn make_settings_error_template(
     host_nfs_mode: bool,
     fs_probe_mountinfo_path: Option<&std::path::Path>,
 ) -> SettingsTemplate {
-    // Always re-read current on-disk state for prefilled structured fields + raw.
+    // Always re-read current on-disk state for prefilled structured fields...
     // On structured validation error the file on disk is unchanged.
     build_settings_template(
         current_user,
@@ -613,7 +613,7 @@ fn make_settings_success_template(
     host_nfs_mode: bool,
     fs_probe_mountinfo_path: Option<&std::path::Path>,
 ) -> SettingsTemplate {
-    // Re-read after successful write so structured pre-fills reflect the just-saved state.
+    // Re-read after successful write so structured pre-fills reflect the ju...
     build_settings_template(
         current_user,
         config_path,
@@ -657,7 +657,7 @@ fn apply_structured_form_to_toml_doc(
             tbl["ldap_default_bind_dn"] = toml_edit::value(v.clone());
         }
     }
-    // Only write bind pw if non-empty (structured editor never prefills the secret field).
+    // Only write bind pw if non-empty (structured editor never prefills the...
     if let Some(v) = &form.sssd_bind_pw {
         if !v.trim().is_empty() {
             let item = doc.entry("sssd").or_insert(toml_edit::table());
@@ -768,7 +768,7 @@ fn apply_structured_form_to_toml_doc(
         }
     }
 
-    // kllldap_ignored_attributes is always emitted explicitly from the structured path
+    // kllldap_ignored_attributes is always emitted explicitly from the stru...
     // (we treat unchecked as false for this default-true flag).
     {
         let kll = form.kllldap_ignored_attributes.unwrap_or(false);
@@ -798,16 +798,16 @@ fn apply_structured_form_to_toml_doc(
                 tbl["default_security"] = toml_edit::value(val);
             }
         } else {
-            // override checked but no value submitted (e.g. was disabled before toggle): use default
+            // override checked but no value submitted (e.g
             let item = doc.entry("ganesha").or_insert(toml_edit::table());
             if let Some(tbl) = item.as_table_mut() {
                 tbl["default_security"] = toml_edit::value("krb5p");
             }
         }
     } else {
-        // Not overriding ganesha: ensure the default "krb5p" is present in the source
-        // (prevents the value from being "removed entirely" when un-overriding; other
-        // derived fields intentionally omit their keys to allow dynamic derivation).
+        // Not overriding ganesha: ensure the default "krb5p" is present in the...
+        // (prevents the value from being "removed entirely" when un-overriding
+        // derived fields intentionally omit their keys to allow dynamic derivat...
         let item = doc.entry("ganesha").or_insert(toml_edit::table());
         if let Some(tbl) = item.as_table_mut() {
             tbl["default_security"] = toml_edit::value("krb5p");
@@ -817,9 +817,9 @@ fn apply_structured_form_to_toml_doc(
 
 /// Replace only the `[[shares]]` array in the raw TOML doc (shares-save path).
 fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_klldap_config::Share]) {
-    // Submitted share rows replace [[shares]] entirely (empty list = user removed all shares).
+    // Submitted share rows replace [[shares]] entirely (empty list = user r...
     let had_shares = doc.get("shares").is_some();
-    // Remove first so we can control insertion position for the first-add case.
+    // Remove first so we can control insertion position for the first-add c...
     let _ = doc.as_table_mut().remove("shares");
 
     let mut shares = toml_edit::ArrayOfTables::new();
@@ -833,7 +833,7 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
         if let Some(sec) = &s.security {
             t["security"] = toml_edit::value(sec.clone());
         }
-        // Only persist non-defaults in the source TOML (keeps conf clean; generator
+        // Only persist non-defaults in the source TOML (keeps conf clean
         // always applies the effective default when the key is absent).
         let rw = s.rw.unwrap_or(true);
         if !rw {
@@ -844,9 +844,9 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
                 t["squash"] = toml_edit::value(sq.clone());
             }
         }
-        // Write cache_profile (the new primary field from the Cache Profile dropdown).
-        // This is what gets stored in [[shares]] for the organized profile-driven path.
-        // If absent (legacy direct numeric path via raw edit), fall back to writing
+        // Write cache_profile (the new primary field from the Cache Profile dro...
+        // This is what gets stored in [[shares]] for the organized profile-driv...
+        // If absent (legacy direct numeric path via raw edit)
         // the explicit pref_read / pref_write so generator can still use them.
         if let Some(cp) = &s.cache_profile {
             if !cp.trim().is_empty() {
@@ -877,9 +877,9 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
     let shares_item = toml_edit::Item::ArrayOfTables(shares);
 
     if !had_shares {
-        // First introduction of [[shares]] by the editor (e.g. from the default template
-        // that ends with [webui] + comments). Force the array after [webui] (or the nearest
-        // prior known anchor) so that [webui] and its comments appear before [[shares]].
+        // First introduction of [[shares]] by the editor (e.g
+        // that ends with [webui] + comments)
+        // prior known anchor) so that [webui] and its comments appear before [[...
         let anchor = if doc.get("webui").is_some() {
             Some("webui")
         } else if doc.get("ganesha").is_some() {
@@ -893,17 +893,17 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
         };
 
         if let Some(anchor_key) = anchor {
-            // Preserve any document-level trailing trivia (newlines/comments after the last key).
-            // Empty [webui] with only comments underneath in the source often ends up here.
+            // Preserve any document-level trailing trivia (newlines/comments after...
+            // Empty [webui] with only comments underneath in the source often ends...
             let trailing = doc.trailing().clone();
 
-            // Snapshot current top-level items (in their existing order) after the remove above.
+            // Snapshot current top-level items (in their existing order) after the...
             let items: Vec<(String, toml_edit::Item)> = doc
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.clone()))
                 .collect();
 
-            // Clear the root table so we can re-add keys (and the shares item) in the desired order.
+            // Clear the root table so we can re-add keys (and the shares item) in t...
             // Per-key Decor (comments/whitespace) is carried on the cloned Items.
             for (k, _) in &items {
                 let _ = doc.as_table_mut().remove(k.as_str());
@@ -918,24 +918,24 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
                 }
             }
             if !inserted {
-                // Defensive: anchor check passed but it was not in the snapshot; append.
+                // Defensive: anchor check passed but it was not in the snapshot
                 doc["shares"] = shares_item;
             }
 
             // Restore trailing so comments that were not attached to any key survive.
             doc.set_trailing(trailing);
         } else {
-            // No recognized anchor section; fall back to append (legacy or minimal configs).
+            // No recognized anchor section
             doc["shares"] = shares_item;
         }
     } else {
-        // Shares key already existed in the source — replace it in its prior position
+        // Shares key already existed in the source
         // so we do not reorder a file the user may have arranged via raw edit.
         doc["shares"] = shares_item;
     }
 
-    // toml_edit may park [webui] comments as trailing trivia after [[shares]] on first-add;
-    // peel/reinsert after [webui] so order matches the default template (see shares-order test).
+    // toml_edit may park [webui] comments as trailing trivia after [[shares...
+    // peel/reinsert after [webui] so order matches the default template (se...
     if !had_shares {
         let mut full = doc.to_string();
 
@@ -1079,9 +1079,9 @@ pub(crate) async fn settings_save_structured(
 
     apply_structured_form_to_config(&form, &mut cfg);
 
-    // Note: shares are *not* collected or touched here. The dedicated /settings/save-shares
-    // path (and its form) is the only thing that mutates [[shares]]. This ensures a
-    // "Save Settings" cannot overwrite custom shares (or their comments) in the raw TOML.
+    // Note: shares are *not* collected or touched here
+    // path (and its form) is the only thing that mutates [[shares]]
+    // "Save Settings" cannot overwrite custom shares (or their comments) in...
     if let Err(e) = cfg.validate_and_derive() {
         let msg = format!("Validation error: {}", e);
         let tpl = make_settings_error_template(
@@ -1126,7 +1126,7 @@ pub(crate) async fn settings_save_structured(
     Ok(Html(tpl.render().unwrap()))
 }
 
-/// POST handler for the shares editor; mutates only `[[shares]]` in the on-disk TOML.
+/// POST handler for the shares editor
 pub(crate) async fn settings_save_shares(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1134,7 +1134,7 @@ pub(crate) async fn settings_save_shares(
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
 
-    // Collect only from the share_* indexed fields in the flatten extra (other form fields absent/None).
+    // Collect only from the share_* indexed fields in the flatten extra (ot...
     let new_shares = collect_shares_from_structured_form(&form.extra);
 
     let mut cfg = nfs_klldap_config::NfsKlldapConfig::load(&state.config_path).unwrap_or_default();
@@ -1372,7 +1372,7 @@ pub(crate) async fn clear_ldap_cache(
     Html(ok)
 }
 
-/// GET /restart-status — public poller endpoint; 200 only when the supervisor recycle marker is recent.
+/// GET /restart-status — public poller endpoint
 pub(crate) async fn restart_status() -> impl IntoResponse {
     let marker = service_recycle_marker_path();
     if marker.exists() {
@@ -1393,7 +1393,7 @@ pub(crate) async fn restart_status() -> impl IntoResponse {
 
 // === Graceful "Restart and apply" (from System Settings) ===
 
-/// POST /settings/restart — restarting page, then HUP to recycle services (one-shot).
+/// POST /settings/restart
 pub(crate) async fn system_restart(
     State(state): State<AppState>,
     headers: HeaderMap,

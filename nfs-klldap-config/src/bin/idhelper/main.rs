@@ -1,7 +1,7 @@
 #![deny(unsafe_code, dead_code)]
 
-//! nfs-klldap-idhelper
-//! Central fast resolver for ganesha 9.6 (libnfsidmap getpwnam + nss_wrapper paths).
+// ! nfs-klldap-idhelper
+// !Central fast resolver for ganesha 9.6 (libnfsidmap getpwnam + nss_wra...
 
 mod common;
 mod daemon;
@@ -56,8 +56,8 @@ fn try_resolve_via_socket(principal: &str) -> Option<Resolved> {
                     "user" => PrincipalKind::User,
                     _ => PrincipalKind::Unknown,
                 };
-                // Name computation is done by the daemon's resolve_principal for the reply.
-                // For CLI printing we use the local part (consistent with normal Resolved.name for users).
+                // Name computation is done by the daemon's resolve_principal for the re...
+                // For CLI printing we use the local part (consistent with normal Resolv...
                 let name = principal_local_part(parts[0]).to_string();
                 return Some(Resolved {
                     principal: parts[0].to_string(),
@@ -88,7 +88,7 @@ fn handle_cli(args: &[String]) {
             dlog!("cli RESOLVE p=\"{}\"", p);
             let json_flag = args.iter().any(|a| a == "--json" || a == "-j");
 
-            // Prefer live daemon cache/state via socket (observer results become immediately visible to shim/CLI).
+            // Prefer live daemon cache/state via socket (observer results become im...
             let r = if let Some(r) = try_resolve_via_socket(p) {
                 r
             } else {
@@ -123,7 +123,7 @@ fn handle_cli(args: &[String]) {
             println!("server_variants: {:?}", server_variants);
             println!("cache file: {}", CACHE_PATH);
             println!("socket: {}", SOCKET_PATH);
-            // Self-test with a real LDAP user when present (avoids nobody/65534 noise from synthetic principals).
+            // Self-test with a real LDAP user when present (avoids nobody/65534 noi...
             let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
             let test_p = format!("testuser1@{}", realm);
             let r = resolve_principal(&test_p, &realm, &server_variants, &mut cache);
@@ -182,13 +182,13 @@ CLASSIFY, REBULK (force LDAP refresh).
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    // Support "nfs-klldap-idhelper daemon" or being started directly as the daemon.
+    // Support "nfs-klldap-idhelper daemon" or being started directly as the...
     if args.len() > 1 && (args[1] == "daemon" || args[1] == "--daemon") {
         run_daemon();
         return;
     }
 
-    // If no subcommand and we look like we were exec'd as the main, show help once.
+    // If no subcommand and we look like we were exec'd as the main
     if args.len() <= 1 {
         // Allow being started as a simple long-lived process via other means.
         // Default to daemon behavior only if explicitly requested.
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn materialize_writes_machine_as_root() {
         let _tmp = tempfile::tempdir().unwrap();
-        // Temporarily override the const paths by using a temp dir and monkey-patch via env is hard;
+        // Temporarily override the const paths by using a temp dir and monkey-p...
         // instead directly test the line builders and a small manual cache write.
         let mut c = IdCache::default();
         let machine = Resolved {
@@ -341,7 +341,7 @@ mod tests {
         // Critical for cold-start: even with no principals materialized yet,
         // nss_passwd must contain a root line so getpwuid_r(0) succeeds for
         // uid2grp on the very first host/ machine principal compound.
-        // (Prevents the "getpwuid_r for uid 0 failed, error 2" in first-access logs.)
+        // (Prevents the "getpwuid_r for uid 0 failed
         // We simulate the lines that materialize builds (the actual function
         // uses const paths that are hard to redirect in unit tests; helpers
         // + the unconditional root injection rule are exercised here + in
@@ -352,7 +352,7 @@ mod tests {
             passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
         }
         assert!(passwd_lines[0].starts_with("root:x:0:0:"));
-        // When a machine is also present, its name line + the root group are there too.
+        // When a machine is also present
         let mut c = IdCache::default();
         let machine = Resolved { principal: "host/x@EX".into(), name: "x".into(), uid: 0, gid: 0, kind: PrincipalKind::Machine, source: "s".into() };
         c.insert(machine);
@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn extract_rejects_nil_from_conf_group() {
-        // Lines often contain conf = (nil) after a good name= group; must never emit host/nil
+        // Lines often contain conf = (nil) after a good name= group
         let line = r#"key_locate :CLIENT ID :F_DBG :Locate Client Record seeking Key=... {{... name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} ...}}"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         if let Some(c) = r {
@@ -557,7 +557,7 @@ mod tests {
         assert!(r.is_none() || !r.unwrap().contains("0x"));
     }
 
-    // --- Additional repros from the exact full trace the user provided after rebuild ---
+    // --- Additional repros from the exact full trace the user provided aft...
     #[test]
     fn extract_rejects_pure_clientid_line() {
         // Standalone clientid= lines must never produce a host/ candidate
@@ -576,7 +576,7 @@ mod tests {
             assert!(!c.contains("ffff"));
             assert!(!c.to_ascii_lowercase().contains("client"));
         } else {
-            // If it returns none that's also acceptable as long as it doesn't emit garbage
+            // If it returns none that's also acceptable as long as it doesn't emit...
         }
     }
 
@@ -601,7 +601,7 @@ mod tests {
 
     #[test]
     fn stress_extract_on_trace_fragments_no_garbage() {
-        // Regression: Ganesha log fragments must not yield host/nil, host/clientid, etc.
+        // Regression: Ganesha log fragments must not yield host/nil
         let fragments = vec![
             r#"conf = (nil) {NULL} unconf = (nil) {NULL}"#,
             r#"clientid=Unique=0x6a375213 Counter=0x00000001"#,
@@ -613,7 +613,7 @@ mod tests {
             // Long CLIENT ID lines with server_addr on Docker bridge
             r#"hashtable_getlatch :CLIENT ID :F_DBG :Get Client Record returning Value=0x7f0c14001df0 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=0}}"#,
             r#"hashtable_deletelatched :CLIENT ID :F_DBG :Delete Client Record Key=0x7f0c14001df0 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=0}} Value=0x7f0c14001df0 ... was removed"#,
-            // A line that contains nfsv4 early and later (nil) groups with no good Linux group after the marker (to hit fallback)
+            // A line that contains nfsv4 early and later (nil) groups with no good...
             r#"some prefix NFSv4 stuff clientid=Unique=0x6a375213 conf = (nil) unconf = (nil) other tokens"#,
         ];
 
@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn extract_catches_could_not_map_line_for_user_principal() {
         // This is the key new pattern for closing the first-use timing gap.
-        // Ganesha logs this when its principal2uid can't map during nfs_req_creds/ACCESS.
+        // Ganesha logs this when its principal2uid can't map during nfs_req_cre...
         // We must extract the principal so the observer resolves it promptly.
         let line = r#"nfs_req_creds :ID MAPPER :INFO :Could not map principal testuser1@SATOMLIN.COM to uid"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
@@ -681,8 +681,8 @@ mod tests {
 
     #[test]
     fn extract_catches_get_uid_using_nfsidmap_line() {
-        // Early sighting: Ganesha announcing it is calling the mapper for a user principal.
-        // Extracting here allows the observer to resolve *before or during* the blocking shim call.
+        // Early sighting: Ganesha announcing it is calling the mapper for a use...
+        // Extracting here allows the observer to resolve *before or during* the...
         let line = r#"principal2uid : Get uid for testuser1@SATOMLIN.COM using nfsidmap"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         assert_eq!(r, Some("testuser1@SATOMLIN.COM".to_string()));

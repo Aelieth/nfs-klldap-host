@@ -1,4 +1,4 @@
-//! Pure-Rust /proc/self/mountinfo probe for POSIX ACL capability on share paths.
+// !Pure-Rust /proc/self/mountinfo probe for POSIX ACL capability on shar...
 
 use std::io;
 use std::path::Path;
@@ -13,7 +13,7 @@ pub struct FsCapabilities {
     pub acl_capable: bool,
 }
 
-/// Effective Ganesha EXPORT flags after explicit TOML overrides and probe results.
+/// Effective Ganesha EXPORT flags after explicit TOML overrides and pr...
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveShareFlags {
     pub disable_acl: bool,
@@ -30,7 +30,7 @@ struct MountEntry {
     super_options: Vec<String>,
 }
 
-/// Probe path against live mountinfo; on failure assume ACL-capable so generate never aborts.
+/// Probe path against live mountinfo
 pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
     let mountinfo_path = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH")
         .unwrap_or_else(|_| "/proc/self/mountinfo".to_string());
@@ -38,7 +38,7 @@ pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
     Ok(probe_from_mountinfo(&content, path))
 }
 
-/// Probe path against fixture or live mountinfo content (unit-test entry point).
+/// Probe path against fixture or live mountinfo content (unit-test ent...
 pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
     let entries = parse_mountinfo(content);
     let path_str = path.to_string_lossy();
@@ -59,7 +59,7 @@ pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
     }
 }
 
-/// Merge explicit share flags with probe; limited FS defaults to safe krb5p EXPORT settings.
+/// Merge explicit share flags with probe
 pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> EffectiveShareFlags {
     let probe_limited = !caps.acl_capable;
     let disable_acl = share.disable_acl.unwrap_or(probe_limited);
@@ -85,7 +85,7 @@ fn parse_mountinfo(content: &str) -> Vec<MountEntry> {
 
 fn parse_mountinfo_line(line: &str) -> Option<MountEntry> {
     let parts: Vec<&str> = line.split_whitespace().collect();
-    // mount_id parent_id major:minor root mount_point ... - fstype source super_options
+    // mount_id parent_id major:minor root mount_point 
     if parts.len() < 10 {
         return None;
     }

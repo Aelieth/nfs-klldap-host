@@ -1,5 +1,5 @@
-//! Thin adapter around nfs_klldap_config::NfsKlldapConfig for the WebUI.
-//! Adds env overrides for creds, all_managed_roots, and short-name probe helper.
+// ! Thin adapter around nfs_klldap_config::NfsKlldapConfig for the WebUI.
+// !Adds env overrides for creds
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +20,7 @@ fn minimal_default_config() -> Config {
 
 pub fn load_config_from(path: &Path) -> Result<Config, String> {
     if !path.exists() {
-        // Return a minimal default that still lets the UI start and show help text.
+        // Return a minimal default that still lets the UI start and show help t...
         // The user is expected to point --config at the real shared volume.
         return Ok(minimal_default_config());
     }
@@ -28,7 +28,7 @@ pub fn load_config_from(path: &Path) -> Result<Config, String> {
     match nfs_klldap_config::NfsKlldapConfig::load(path) {
         Ok(cfg) => Ok(cfg),
         Err(nfs_klldap_config::ConfigError::Validation(_)) => {
-            // First-run template: parse disk content without requiring realm/bind validation.
+            // First-run template: parse disk content without requiring realm/bind v...
             nfs_klldap_config::NfsKlldapConfig::load_unchecked(path).map_err(|e| {
                 format!("Failed to load {}: {}", path.display(), e)
             })
@@ -37,25 +37,25 @@ pub fn load_config_from(path: &Path) -> Result<Config, String> {
     }
 }
 
-/// Return the list of host_path values the WebUI is allowed to manage (from the shares).
+/// Return the list of host_path values the WebUI is allowed to manage...
 pub fn all_managed_roots(cfg: &Config) -> Vec<PathBuf> {
     cfg.shares.iter().map(|s| s.host_path.clone()).collect()
 }
 
-/// Returns (bind identity, password). Prefers NFS_KLLDAP_LLDAP_* env, falls back
-/// to sssd.ldap_default_bind_dn + authtok. Full DN (or verbatim identity) required.
+/// Returns (bind identity, password)
+/// to sssd.ldap_default_bind_dn + authtok
 pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
     if let (Ok(user), Ok(pass)) = (
         std::env::var("NFS_KLLDAP_LLDAP_USER"),
         std::env::var("NFS_KLLDAP_LLDAP_PW"),
     ) {
         if !user.trim().is_empty() && !pass.trim().is_empty() {
-            // Verbatim: full DN or acceptable bind name is the operator's responsibility.
+            // Verbatim: full DN or acceptable bind name is the operator's responsib...
             return (user.trim().to_string(), pass);
         }
     }
 
-    // Use the bind DN from config *verbatim*. ldap_default_bind_dn is already the
+    // Use the bind DN from config *verbatim*
     // full distinguished name in every real deployment and in the documented
     // examples. Passing anything less (bare uid) causes bind failures or
     // connection drops on KLLDAP and other strict LDAPS servers.
@@ -75,7 +75,7 @@ mod tests {
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// RAII guard to safely manipulate environment variables in tests without
-    /// polluting other tests (especially important under `cargo test --workspace`).
+    /// polluting other tests (especially important under `cargo test --wor...
     struct EnvGuard {
         key: &'static str,
         previous: Option<String>,
@@ -89,7 +89,7 @@ mod tests {
         }
 
         /// Remove the var for the duration of the guard (restores previous value
-        /// or absence on drop). Used by tests that must not see override env vars
+        /// or absence on drop)
         /// even if other concurrent tests are manipulating them.
         fn clear(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
@@ -151,7 +151,7 @@ mod tests {
 
         let cfg = base_config();
         let (bind_id, pass) = ldap_service_creds(&cfg);
-        // Must return the full DN verbatim for proper simple_bind (not a stripped uid).
+        // Must return the full DN verbatim for proper simple_bind (not a stripp...
         assert_eq!(bind_id, "uid=admin,ou=people,dc=example,dc=com");
         assert_eq!(pass, "sekret");
     }
@@ -198,7 +198,7 @@ mod tests {
         let mut cfg = base_config();
         cfg.sssd.ldap_default_bind_dn = "cn=weird,dc=example".into();
         let (bind_id, _) = ldap_service_creds(&cfg);
-        // Verbatim; server rejects bad DN at bind time (correct error vs silent rewrite).
+        // Verbatim; server rejects bad DN at bind time (correct error vs silent...
         assert_eq!(bind_id, "cn=weird,dc=example");
     }
 }

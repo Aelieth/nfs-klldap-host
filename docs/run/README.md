@@ -323,7 +323,7 @@ See also the reference shape in `examples/ganesha-exports.d/10-example.conf`.
 - "No such file or directory" when mounting a VFS export, or Ganesha failing to traverse the tree → missing `SYS_ADMIN`/`DAC_READ_SEARCH` or the bind mount not actually visible at the expected internal Path (container_root + tail of host_path after its first dir component) inside the container. (export_path is only for the Pseudo; check that the first dir of the share's host_path matches the bind source you mounted.)
 - WebUI "apply" fails with permission errors on subdirectories → numeric UIDs don't match across the host/container boundary, or the DAC cap is absent.
 - Ganesha fails to start with dbus/socket errors → the entrypoint dbus launch didn't produce `/run/dbus/system_bus_socket` in time (rare; the readiness loop helps), or the package was not present in an old image.
-- Kerberos principal / hostname mismatches → missing `--uts=host` (or `uts: host` in compose) and/or keytab principals that don't match the name the container sees.
+- Kerberos principal / hostname mismatches → missing `--uts=host` (or `uts: host` in compose) and/or keytab principals that don't match the name the container sees. For krb5p **client** mounts, use the server FQDN in the mount source (`server.example.com:/export`), not `localhost` — the NFS service principal must match the keytab (`nfs/<fqdn>@REALM`).
 - Ganesha CLIENT records show `server_addr = 172.17.x.x` while clients connect from external addresses → container is on Docker bridge networking instead of host mode. Restart with `network_mode: host` / `--network=host`. `verify-ganesha.sh` and `nfs-klldap-startup check` warn when the container primary IPv4 is in `172.17.0.0/16`.
 - UDP clients or legacy `showmount` tools complain → `Enable_UDP = false` in `NFS_CORE_PARAM` (NFSv4 TCP only); rpcbind is still present for compatibility; open the ports you actually need.
 - Mounts repeatedly fail / get torn down with Fedora Immutable clients (host keytab + user TGT) → the `nfs-klldap-idhelper` daemon must be running (started automatically after SSSD). Ganesha uses nss_wrapper preload by default (`USE_NSS_WRAPPER=1`); set `USE_NSS_WRAPPER=0` to rely on extrausers alone. Use `ganesha-ctl id-check`, `ganesha-ctl id-resolve '<principal>'`, and inspect `/var/lib/nfs-klldap/nss_passwd` to verify. See [docs/ldap-integration.md](../ldap-integration.md).
@@ -340,4 +340,5 @@ This combination (bind mounts + root inside + the two caps + `--uts=host` + expl
 verify-ganesha.sh            # in-container Ganesha/export + network checks (/usr/local/bin/)
 ganesha-ctl show-fragments
 getent passwd <user>
+NFS_TEST_USER_PW='...' ./scripts/test-share-access.sh   # host-side krb5p mount/write to configured shares
 ```

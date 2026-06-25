@@ -1006,7 +1006,7 @@ pub fn extract_first_attr_value(se: &SearchEntry, name: &str) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::DEFAULT_USER_PRINCIPAL_ATTR;
+
 
     #[test]
     fn resolver_constructs_from_minimal_inputs() {

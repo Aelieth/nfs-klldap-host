@@ -51,19 +51,19 @@ pub fn pgrep_live_pids(name: &str) -> Vec<u32> {
         .collect()
 }
 
-/// Reconcile tracked Ganesha pid: keep live tracked pid; when tracked is dead return
-/// None (do not pgrep — another host/container nfsd must not masquerade as ours).
-/// Pgrep fallback applies only when the supervisor never recorded a pid.
+/// Return tracked pid only when it is still live (never pgrep).
 pub fn reconcile_ganesha_pid(tracked: Option<u32>) -> Option<u32> {
-    if let Some(pid) = tracked {
-        return process_is_live(pid).then_some(pid);
-    }
-    pgrep_live_pids("ganesha.nfsd").into_iter().next()
+    tracked.filter(|pid| process_is_live(*pid))
 }
 
-/// Whether any live ganesha.nfsd exists (tracked or pgrep).
+/// True when the tracked ganesha.nfsd pid is live.
 pub fn ganesha_is_live(tracked: Option<u32>) -> bool {
-    reconcile_ganesha_pid(tracked).is_some()
+    tracked.is_some_and(process_is_live)
+}
+
+/// Discover live ganesha.nfsd in this pid namespace (supervisor post-daemonize adoption).
+pub fn discover_ganesha_daemon_pid() -> Option<u32> {
+    pgrep_live_pids("ganesha.nfsd").into_iter().next()
 }
 
 #[cfg(test)]

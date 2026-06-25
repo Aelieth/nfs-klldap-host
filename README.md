@@ -164,6 +164,8 @@ Not every advanced `[sssd]` option is exposed via env. The core options (LDAP UR
 
 A new top-level switch `HOST_NFS=true` (or `NFS_KLLDAP_HOST_NFS=true`) runs the container as a management sidecar for a *host* NFS server (Ganesha at `/etc/ganesha`). Shares, Kerberos config, and the WebUI permission tools continue to work normally; the container does not start ganesha.nfsd. See docs/run/README.md for compose volumes, keytab sharing, UI gray-out behavior, and ZimaOS-style appliance notes.
 
+Set `GANESHA_DEBUG=true` (truthy spellings accepted) to upgrade generated Ganesha logging to DEBUG/FULL_DEBUG for `CLIENTID`/`SESSIONS`/`IDMAPPER` plus `NFS4`/`DISPATCH`/`XPRT` — see docs/run/README.md.
+
 Example in compose:
 
 ```

@@ -11,7 +11,7 @@ use nfs_klldap_config::{
     compute_startup_step, compute_wizard_step, fingerprint_exports_dir,
     fingerprint_identity_artifacts, ganesha_sighup_failed,
     install_signal_handlers, is_preconfigured_deployment, is_setup_wizard_complete,
-    mark_setup_wizard_complete, plan_from_changes, process_is_live,
+    discover_ganesha_daemon_pid, mark_setup_wizard_complete, plan_from_changes, process_is_live,
     reap_one_child, resolve_host_nfs_mode, resolve_keytab_path,
     request_sighup, run_post_generate_hooks, runtime_hostname, runtime_realm, shutdown_requested,
     signal_process_hup, signal_process_kill, signal_process_term, supervisor_loop_tick,
@@ -132,6 +132,8 @@ struct Supervisor {
     env: SupervisorEnv,
     pids: ChildPids,
     services_started: bool,
+    /// True after start_ganesha until stop_ganesha completes (enables daemon pid adoption).
+    ganesha_managed: bool,
 }
 
 /// Entry point for pid-1 supervision (replaces entrypoint.sh main loop).
@@ -142,6 +144,7 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
         env,
         pids: ChildPids::default(),
         services_started: false,
+        ganesha_managed: false,
     };
 
     sup.log_info("=== Starting nfs-klldap-host (Rust supervisor) ===");
@@ -744,7 +747,8 @@ while :; do :; done
         {
             signal_process_term(pid);
         }
-        pkill_process("-TERM", "ganesha.nfsd");
+        self.stop_ganesha();
+        self.ganesha_managed = false;
         pkill_process("-TERM", "sssd");
         pkill_binary("-TERM", &self.env.watcher_bin);
         pkill_process("-TERM", "dbus-daemon");
@@ -776,18 +780,33 @@ while :; do :; done
         })
     }
 
-    /// Drop a dead tracked pid; never pgrep — another host/container nfsd is not ours.
+    /// Drop a dead tracked launcher/daemon pid (never pgrep on refresh).
     fn refresh_tracked_ganesha_pid(&mut self) {
         if self.pids.ganesha.is_some_and(|pid| !process_is_live(pid)) {
             self.pids.ganesha = None;
         }
     }
 
-    fn ganesha_running(&self) -> bool {
+    /// After start_ganesha spawn: real nfsd daemonizes and the launcher pid exits.
+    fn adopt_ganesha_daemon_pid_after_spawn(&mut self) {
+        if !self.ganesha_managed || self.pids.ganesha.is_some_and(process_is_live) {
+            return;
+        }
+        if let Some(pid) = discover_ganesha_daemon_pid() {
+            self.pids.ganesha = Some(pid);
+            self.log_info(&format!(
+                "Adopted ganesha.nfsd daemon pid {pid} after launcher exit"
+            ));
+        }
+    }
+
+    fn ganesha_running(&mut self) -> bool {
+        self.refresh_tracked_ganesha_pid();
         self.pids.ganesha.is_some_and(process_is_live)
     }
 
     fn reload_ganesha_exports(&mut self) -> bool {
+        self.refresh_tracked_ganesha_pid();
         let Some(pid) = self.pids.ganesha else {
             return false;
         };
@@ -804,13 +823,16 @@ while :; do :; done
 
     fn stop_ganesha(&mut self) {
         self.log_info("stop_ganesha: sending SIGTERM and waiting for exit");
+        self.refresh_tracked_ganesha_pid();
         let Some(pid) = self.pids.ganesha else {
             self.log_info("stop_ganesha: no tracked ganesha.nfsd to stop");
+            self.ganesha_managed = false;
             return;
         };
         if !process_is_live(pid) {
             self.log_info("stop_ganesha: tracked ganesha.nfsd already exited");
             self.pids.ganesha = None;
+            self.ganesha_managed = false;
             return;
         }
         signal_process_term(pid);
@@ -824,6 +846,7 @@ while :; do :; done
             if !process_is_live(pid) {
                 self.log_info("stop_ganesha: process exited after SIGTERM");
                 self.pids.ganesha = None;
+                self.ganesha_managed = false;
                 return;
             }
             if std::time::Instant::now() >= deadline {
@@ -841,6 +864,7 @@ while :; do :; done
             if !process_is_live(pid) {
                 self.log_info("stop_ganesha: process exited after SIGKILL");
                 self.pids.ganesha = None;
+                self.ganesha_managed = false;
                 return;
             }
             if std::time::Instant::now() >= kill_deadline {
@@ -850,6 +874,7 @@ while :; do :; done
             reap_one_child();
         }
         self.pids.ganesha = None;
+        self.ganesha_managed = false;
     }
 
     fn execute_recycle_plan(&mut self, mut plan: ServiceRecyclePlan) {
@@ -945,6 +970,9 @@ while :; do :; done
         }
         if let Ok(child) = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
             self.pids.ganesha = Some(child.id());
+            self.ganesha_managed = true;
+            thread::sleep(Duration::from_millis(800));
+            self.adopt_ganesha_daemon_pid_after_spawn();
         }
     }
 

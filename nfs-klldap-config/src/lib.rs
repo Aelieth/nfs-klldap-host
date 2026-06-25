@@ -266,6 +266,7 @@ mod tests {
             ganesha_conf: tmp.path().join("ganesha.conf"),
             exports_dir: tmp.path().join("exports.d"),
             idmap_conf: tmp.path().join("idmapd.conf"),
+            nfs_conf: tmp.path().join("nfs.conf"),
         };
         generate_all(&cfg, &paths).expect("generate");
 
@@ -379,6 +380,7 @@ mod tests {
             ganesha_conf: tmp.path().join("ganesha.conf"),
             exports_dir: tmp.path().join("exports.d"),
             idmap_conf: tmp.path().join("idmapd.conf"),
+            nfs_conf: tmp.path().join("nfs.conf"),
         };
         generate_all(&cfg, &paths).expect("generate default");
         let main_default = fs::read_to_string(&paths.ganesha_conf).unwrap();
@@ -401,6 +403,7 @@ mod tests {
             ganesha_conf: tmp2.path().join("ganesha.conf"),
             exports_dir: tmp2.path().join("exports.d"),
             idmap_conf: tmp2.path().join("idmapd.conf"),
+            nfs_conf: tmp2.path().join("nfs.conf"),
         };
         generate_all(&cfg2, &paths2).expect("generate with debug");
 
@@ -728,6 +731,7 @@ mod tests {
             ganesha_conf: tmp.path().join("ganesha.conf"),
             exports_dir: tmp.path().join("exports.d"),
             idmap_conf: tmp.path().join("idmapd.conf"),
+            nfs_conf: tmp.path().join("nfs.conf"),
         };
         generate_all(&c, &paths).expect("generate with tls");
 
@@ -753,6 +757,7 @@ mod tests {
             ganesha_conf: tmp.path().join("ganesha.conf"),
             exports_dir: tmp.path().join("exports.d"),
             idmap_conf: tmp.path().join("idmapd.conf"),
+            nfs_conf: tmp.path().join("nfs.conf"),
         };
         generate_all(&c, &paths).expect("generate with kll=false");
 

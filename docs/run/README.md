@@ -207,13 +207,14 @@ This project exports real directories from the Docker *host* via Ganesha VFS ins
 - `host_path` values in `nfs-klldap.conf` (and the UI) are **absolute paths on the Docker host** (unchanged by this layout).
 - Inside the container the data for a share is visible at the *internal* location derived from `storage.container_root` + (tail of the share's `host_path` after its first directory component). The first dir component of `host_path` acts as the implicit per-share bind root (e.g. host `/media/NVME-RAID/nvme` → internal `/export/NVME-RAID/nvme`). `export_path` (editable in the Shares section; defaults to `/<name>`) is used *only* for the client-visible Pseudo path and can be a short/friendly name independently of the internal layout.
 - Translation (host_path → real container path for chown/chmod/readdir) happens only at the syscall boundary (`FsManager` + `privileged.rs`).
-- **Numeric UID/GID identity must be identical** on the host and inside the container for the bind-mounted trees. Do **not** use `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts. The on-disk owners written by the WebUI (and seen by NFS clients) are the raw numbers from LLDAP `uidNumber`/`gidNumber`.
+- **Numeric UID/GID identity must be identical** on the host and inside the container for the bind-mounted trees. Add `--userns=host` so Docker does not remap container uids on bind mounts (without it, host paths often show 65534/nobody while the container sees LLDAP ids). Do **not** use `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts. The on-disk owners written by the WebUI (and seen by NFS clients) are the raw numbers from LLDAP `uidNumber`/`gidNumber`.
 
 ### Recommended container flags
 ```yaml
 # (or equivalent docker run flags)
 network_mode: host
 uts: host
+userns_mode: host
 cap_add:
   - SYS_ADMIN
   - DAC_READ_SEARCH
@@ -339,6 +340,13 @@ This combination (bind mounts + root inside + the two caps + `--uts=host` + expl
 /container/healthcheck.sh
 verify-ganesha.sh            # in-container Ganesha/export + network checks (/usr/local/bin/)
 ganesha-ctl show-fragments
+ganesha-ctl id-check
+ganesha-ctl fs-warnings      # limited-FS / ACL diagnostics per share
 getent passwd <user>
-SCRATCH=/tmp/... NFS_TEST_USER_PW='...' ./scripts/capture-share-access-evidence.sh   # krb5p mount/write proof (transcript + ganesha delta + host artifacts)
+SCRATCH=/tmp/... ./scripts/run-container-verify.sh [container]   # bundles the above into container-verify.log
+SCRATCH=/tmp/... NFS_TEST_USER_PW='...' ./scripts/capture-share-access-evidence.sh   # krb5p mount/write proof (external Fedora client; not loopback inside server)
 ```
+
+The generator also writes `/etc/nfs.conf` with `[gssd] use-machine-creds=0` so krb5p clients present user TGTs (not machine keytab only). `scripts/capture-share-access-evidence.sh` uses a separate `fedora:42` client container with `--network=host` because loopback mounts inside the server present `nfs/<host>@` machine creds.
+
+Expected Ganesha noise with `Manage_Gids = false`: `uid2grp_allocate_by_principal` WARN for `@` principals and `set_extended_groups` INFO for managed_gids fetch failures — these do not block writes when idhelper resolves the user uid.

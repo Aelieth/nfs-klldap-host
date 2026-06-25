@@ -233,12 +233,17 @@ pub(crate) fn run_daemon() {
         }
     }
 
-    // Always auto pre-resolve the *server's own* host principals at cold start.
+    // Always auto pre-resolve the *server's own* host + nfs service principals at cold start.
     for v in &server_variants {
-        let p = format!("host/{}@{}", v, realm);
-        let mut guard = cache.lock().unwrap();
-        let _ = resolve_principal(&p, &realm, &server_variants, &mut guard);
-        eprintln!("[idhelper] pre-resolved server host principal at startup: {}", p);
+        for prefix in ["host", "nfs"] {
+            let p = format!("{}/{}@{}", prefix, v, realm);
+            let mut guard = cache.lock().unwrap();
+            let _ = resolve_principal(&p, &realm, &server_variants, &mut guard);
+            eprintln!(
+                "[idhelper] pre-resolved server {} principal at startup: {}",
+                prefix, p
+            );
+        }
     }
 
     {

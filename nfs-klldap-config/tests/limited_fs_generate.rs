@@ -36,6 +36,7 @@ fn generation_paths(out: &std::path::Path) -> GenerationPaths {
         ganesha_conf: out.join("ganesha.conf"),
         exports_dir: out.join("exports.d"),
         idmap_conf: out.join("idmapd.conf"),
+        nfs_conf: out.join("nfs.conf"),
     }
 }
 

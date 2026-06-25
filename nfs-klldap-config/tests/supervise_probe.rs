@@ -81,6 +81,7 @@ fn supervise_probe_preconf_emits_ready_transcript() {
         .env("GANESHA_CONF", out.join("ganesha.conf"))
         .env("EXPORTS_DIR", out.join("exports.d"))
         .env("IDMAP_CONF", out.join("idmapd.conf"))
+        .env("NFS_CONF", out.join("nfs.conf"))
         .env(
             "PATH",
             format!(
@@ -155,6 +156,7 @@ fn supervise_probe_wizard_complete_recycle_touches_marker() {
         .env("GANESHA_CONF", out.join("ganesha.conf"))
         .env("EXPORTS_DIR", out.join("exports.d"))
         .env("IDMAP_CONF", out.join("idmapd.conf"))
+        .env("NFS_CONF", out.join("nfs.conf"))
         .env(
             "PATH",
             format!(
@@ -240,6 +242,7 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         .env("GANESHA_CONF", out.join("ganesha.conf"))
         .env("EXPORTS_DIR", out.join("exports.d"))
         .env("IDMAP_CONF", out.join("idmapd.conf"))
+        .env("NFS_CONF", out.join("nfs.conf"))
         .env(
             "PATH",
             format!(

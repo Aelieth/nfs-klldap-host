@@ -107,6 +107,7 @@ exec sleep 3600
         .env("GANESHA_CONF", out.join("ganesha.conf"))
         .env("EXPORTS_DIR", out.join("exports.d"))
         .env("IDMAP_CONF", out.join("idmapd.conf"))
+        .env("NFS_CONF", out.join("nfs.conf"))
         .env("NSS_PASSWD", out.join("nss_passwd"))
         .env("NSS_GROUP", out.join("nss_group"))
         .env("NFS_KLLDAP_WEBUI_LOG", out.join("webui.log"))

@@ -15,6 +15,7 @@ services:
     # Host networking required: NFS + Kerberos need host-reachable addresses (not 172.17.x.x bridge).
     network_mode: host
     uts: host
+    userns_mode: host
 
     # SYS_ADMIN + DAC_READ_SEARCH are recommended for reliable Ganesha VFS operation
     # against host bind-mounted trees and for the WebUI's recursive chown/chmod traversal.

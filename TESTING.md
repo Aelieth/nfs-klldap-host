@@ -10,7 +10,8 @@ Representative full-config generation: `nfs-klldap-config/tests/representative_g
 - `tempfile` trees for `FsManager`.
 - `tower::ServiceExt` oneshot tests for the Axum router.
 - Container/watcher/healthcheck via compose (not unit-tested).
-- Live krb5p NFS share access: `SCRATCH=/tmp/... NFS_TEST_USER_PW='...' ./scripts/capture-share-access-evidence.sh` (or `scripts/test-share-access.sh` wrapper).
+- Live krb5p NFS share access: `SCRATCH=/tmp/... NFS_TEST_USER_PW='...' ./scripts/capture-share-access-evidence.sh` (external `fedora:42` client; or `scripts/test-share-access.sh` wrapper).
+- Container verification bundle: `SCRATCH=/tmp/... ./scripts/run-container-verify.sh` (healthcheck, verify-ganesha, `ganesha-ctl fs-warnings`).
 
 ## Well-Tested Areas
 
@@ -53,6 +54,7 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | Core env overrides (NFS_KLLDAP_* only for ldap_uri, bind, realm, [webui] tls etc.) + [serde(default)] for omission | `nfs-klldap-config/src/validate.rs`, `config.rs`, lib.rs tests |
 | `all_managed_roots` / `is_allowed` + host<->container path mapping | `nfs-klldap-ui/src/config.rs`, `fs.rs` |
 | Generated sssd.conf shape + no dups + tls options | `nfs-klldap-config/src/lib.rs` |
+| Generated `/etc/nfs.conf` (`use-machine-creds=0`) | `nfs-klldap-config/src/generate.rs` |
 | Filesystem probe (mountinfo fixtures, acl_capable, effective flags) | `nfs-klldap-config/src/fs_probe.rs`, `tests/fs_probe_fixtures.rs` |
 | EXPORT Disable_ACL / Manage_Gids emission | `nfs-klldap-config/src/generate.rs`, `tests/limited_fs_generate.rs` |
 | Hostname consistency + keytab variants + docker-id detection | `nfs-klldap-config/src/hostname.rs`, `lib.rs` |

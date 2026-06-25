@@ -294,6 +294,8 @@ pub struct GenerationPaths {
     /// libnfsidmap, and client rpc.idmapd see consistent NFSv4 domain + Kerberos realm
     /// handling matching DIRECTORY_SERVICES.DomainName.
     pub idmap_conf: PathBuf,
+    /// nfs-utils client defaults (rpc.gssd use-machine-creds, pipefs path).
+    pub nfs_conf: PathBuf,
 }
 
 impl Default for GenerationPaths {
@@ -316,6 +318,7 @@ impl GenerationPaths {
             ganesha_conf: env_path("GANESHA_CONF", "/etc/ganesha/ganesha.conf"),
             exports_dir: env_path("EXPORTS_DIR", "/etc/ganesha/exports.d"),
             idmap_conf: env_path("IDMAP_CONF", "/etc/idmapd.conf"),
+            nfs_conf: env_path("NFS_CONF", "/etc/nfs.conf"),
         }
     }
 }

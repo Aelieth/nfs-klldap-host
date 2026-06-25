@@ -53,6 +53,7 @@ fn generation_paths(out: &std::path::Path) -> GenerationPaths {
         ganesha_conf: out.join("ganesha.conf"),
         exports_dir: out.join("exports.d"),
         idmap_conf: out.join("idmapd.conf"),
+        nfs_conf: out.join("nfs.conf"),
     }
 }
 
@@ -133,6 +134,7 @@ fn representative_config_cli_generate_exit_zero() {
             .env("GANESHA_CONF", out.join("ganesha.conf"))
             .env("EXPORTS_DIR", out.join("exports.d"))
             .env("IDMAP_CONF", out.join("idmapd.conf"))
+            .env("NFS_CONF", out.join("nfs.conf"))
             .output()
             .unwrap_or_else(|e| panic!("cli generate run {run}: {e}"));
 

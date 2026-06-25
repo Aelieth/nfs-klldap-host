@@ -31,6 +31,7 @@ nfs-klldap-config (validate + derive + generate)
         ├── /etc/sssd/sssd.conf   (root:root 0600)
         ├── /etc/krb5.conf
         ├── /etc/idmapd.conf      (Domain + Local-Realms + Method + GSS-Methods derived from nfs-klldap.conf + [sssd])
+        ├── /etc/nfs.conf         (rpc.gssd use-machine-creds=0 for krb5p user creds)
         └── /etc/ganesha/exports.d/*.conf
         │
         ▼ (inotify / SIGHUP)
@@ -58,6 +59,7 @@ docker run -d \
   --name nfs-klldap \
   --network=host \
   --uts=host \
+  --userns=host \
   --cap-add SYS_ADMIN --cap-add DAC_READ_SEARCH \
   -v /path/to/config:/config \
   -v /media/:/export \
@@ -194,7 +196,7 @@ All owner/group/mode changes performed by the WebUI go through `FsManager` + `pr
 
 - **Symlink policy**: The recursive engine (WalkDir) **never recurses into symlinks** (`follow_links(false)` + `filter_entry`). `chown`/`chmod` calls follow symlinks for the entries that are mutated (standard std behavior, matching historical `chown(2)`). Symlink inodes themselves are skipped by default. This prevents accidental escape from the declared `host_path` trees (a previous risk with the old `Path::is_dir()` recursion).
 - **UID/GID are numeric only on disk**: The engine and WebUI always write raw `u32` values (sourced from LLDAP `uidNumber`/`gidNumber` or direct numeric entry in the editor). Friendly names are resolved only for display.
-- **Bind-mount UID namespace assumption**: The container must run as real root with the data directories bind-mounted such that the numeric UIDs written *inside* the container are exactly the IDs visible on the Docker host filesystem. `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts will cause the on-disk owners to be wrong from the host/NFS client perspective.
+- **Bind-mount UID namespace assumption**: The container must run as real root with the data directories bind-mounted such that the numeric UIDs written *inside* the container are exactly the IDs visible on the Docker host filesystem. Use `--userns=host` (or avoid Docker's default user namespace) so bind-mounted files show LLDAP uid/gid on the host, not mapped `nobody` (65534). `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts will cause the on-disk owners to be wrong from the host/NFS client perspective.
 
 See [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md) for the full security model.
 

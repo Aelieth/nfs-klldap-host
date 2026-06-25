@@ -32,6 +32,7 @@ struct SupervisorEnv {
     ganesha_conf: PathBuf,
     exports_dir: PathBuf,
     idmap_conf: PathBuf,
+    nfs_conf: PathBuf,
     config_bin: PathBuf,
     ui_bin: PathBuf,
     watcher_bin: PathBuf,
@@ -79,6 +80,7 @@ impl SupervisorEnv {
             ganesha_conf: env_path("GANESHA_CONF", "/etc/ganesha/ganesha.conf"),
             exports_dir: env_path("EXPORTS_DIR", "/etc/ganesha/exports.d"),
             idmap_conf: env_path("IDMAP_CONF", "/etc/idmapd.conf"),
+            nfs_conf: env_path("NFS_CONF", "/etc/nfs.conf"),
             config_bin: env_path("CONFIG_BIN", "/usr/local/bin/nfs-klldap-config"),
             ui_bin: env_path("UI_BIN", "/usr/local/bin/nfs-klldap-ui"),
             watcher_bin: env_path("WATCHER_BIN", "/usr/local/bin/nfs-klldap-conf-watcher"),
@@ -762,6 +764,7 @@ while :; do :; done
         chmod_file(&self.env.sssd_conf, 0o600);
         chmod_file(&self.env.krb5_conf, 0o644);
         chmod_file(&self.env.idmap_conf, 0o644);
+        chmod_file(&self.env.nfs_conf, 0o644);
         if self.env.ganesha_conf.is_file() {
             chmod_file(&self.env.ganesha_conf, 0o644);
         }

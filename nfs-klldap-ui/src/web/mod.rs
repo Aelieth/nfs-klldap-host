@@ -1390,6 +1390,7 @@ ldap_default_authtok = "sekret"
             .env("GANESHA_CONF", out.join("ganesha.conf"))
             .env("EXPORTS_DIR", out.join("exports.d"))
             .env("IDMAP_CONF", out.join("idmapd.conf"))
+            .env("NFS_CONF", out.join("nfs.conf"))
             .env(
                 "PATH",
                 format!(

@@ -31,7 +31,7 @@ fi
 if [[ ! -f "$REPORT" ]]; then
     cat >"$REPORT" <<'EOF'
 # Audit Report
-Unsafe eliminated via nix/signal-hook; runtime.rs centralizes HOST_NFS/hostname/realm; Ganesha 9.6 hybrid path unchanged.
+Unsafe eliminated via nix/signal-hook; hostname.rs holds HOST_NFS/hostname/realm helpers; Ganesha 9.6 hybrid path unchanged.
 EOF
 fi
 SCRATCH="$SCRATCH" "$ROOT/scripts/audit-scope.sh" >/dev/null

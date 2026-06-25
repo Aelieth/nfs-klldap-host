@@ -128,7 +128,7 @@ clippy:
 
 .PHONY: comments-quality
 comments-quality:
-	@SCRATCH=$${SCRATCH:-/tmp/grok-goal-comments-audit} ./scripts/comments-quality.sh
+	@python3 scripts/comment_lint.py
 
 .PHONY: clean
 clean:

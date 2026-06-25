@@ -32,7 +32,7 @@ COMMENT_FILES=(
     nfs-klldap-identity/src/krb5/principal.rs
     nfs-klldap-identity/src/lib.rs
     nfs-klldap-config/src/supervisor.rs
-    nfs-klldap-config/src/runtime.rs
+    nfs-klldap-config/src/hostname.rs
     nfs-klldap-config/src/signals.rs
 )
 
@@ -69,7 +69,7 @@ count_split_sites() {
 REFACTOR_FILES=(
     nfs-klldap-config/src/signals.rs
     nfs-klldap-config/src/signals_stub.rs
-    nfs-klldap-config/src/runtime.rs
+    nfs-klldap-config/src/hostname.rs
     nfs-klldap-config/src/supervisor.rs
     nfs-klldap-config/src/ganesha_liveness.rs
     nfs-klldap-config/src/lib.rs

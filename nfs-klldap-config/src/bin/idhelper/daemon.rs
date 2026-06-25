@@ -40,7 +40,8 @@ impl RebulkPaths<'_> {
     }
 }
 
-/// Outcome of rebulk_apply_sync for tests asserting materialize skip vs execute.
+/// Outcome of rebulk_apply_sync for tests asserting materialize skip vs.
+/// Execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RebulkOutcome {
     pub synced: usize,
@@ -195,12 +196,12 @@ pub(crate) fn run_daemon() {
     let realm = get_realm();
     let server_variants = get_server_variants();
 
-    // Ensure runtime directories
+    // Ensure runtime directories.
     let _ = fs::create_dir_all("/var/run/nfs-klldap");
     let _ = fs::create_dir_all("/var/lib/nfs-klldap");
     let _ = fs::create_dir_all("/var/lib/extrausers");
 
-    // Remove stale socket
+    // Remove stale socket.
     let _ = fs::remove_file(SOCKET_PATH);
 
     let listener = match UnixListener::bind(SOCKET_PATH) {
@@ -211,7 +212,7 @@ pub(crate) fn run_daemon() {
         }
     };
 
-    // Make socket world-accessible inside container (root only usage is also fine)
+    // Make socket world-accessible inside container (root only usage is also.
     let _ = fs::set_permissions(SOCKET_PATH, std::os::unix::fs::PermissionsExt::from_mode(0o666));
 
     // Load persisted cache; user rows refresh on first LDAP sync below.
@@ -232,8 +233,7 @@ pub(crate) fn run_daemon() {
         }
     }
 
-    // Always auto pre-resolve the *server's own* host nfs service
-    // Principals at cold start.
+    // Pre-resolve the server host and nfs principals at cold start.
     for v in &server_variants {
         for prefix in ["host", "nfs"] {
             let p = format!("{}/{}@{}", prefix, v, realm);

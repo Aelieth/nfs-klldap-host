@@ -45,8 +45,7 @@ pub fn container_primary_ipv4() -> Option<String> {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
-        // e.g.
-        // "2: eth0    inet 172.17.0.2/16 brd 172.17.255.255 scope global eth0"
+        // The e.g. "2 is eth0 inet 172.17.0.2/16 brd 172.17.255.255 scope.
         if let Some(inet_pos) = line.find("inet ") {
             let after = &line[inet_pos + 5..];
             let ip = after.split_whitespace().next()?.split('/').next()?;

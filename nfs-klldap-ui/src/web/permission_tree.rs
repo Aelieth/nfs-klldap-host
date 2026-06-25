@@ -1,4 +1,4 @@
-//! `/` permission tree, LLDAP search, and apply (chown/chmod via FsManager).
+//! Permission tree routes, LDAP search, and apply via FsManager.
 
 use askama::Template;
 use axum::{
@@ -21,8 +21,8 @@ struct IndexTemplate {
     shares: Vec<ShareInfo>,
     current_user: Option<String>,
     keytab_alert: Option<String>,
-    /// Mirrors AppState
-    /// Used by the template to adjust the top Ganesha reads note.
+    /// Mirrors AppState Used by the template to adjust the top Ganesha reads.
+    /// Note.
     host_nfs_mode: bool,
 }
 
@@ -53,9 +53,9 @@ struct ShareInfo {
     /// Full client NFS path, e.g. "myhost:/data" or "myhost:/exports/foo".
     pub nfs_path: String,
     pub host_path: String,
-    /// "RW" or "RO"
+    /// Access label is either RW or RO.
     pub access: String,
-    /// "no-squash" or "root-squash"
+    /// Squash label is either no-squash or root-squash.
     pub squash_label: String,
     pub cache_profile: String,
     pub warning: Option<String>,
@@ -115,7 +115,7 @@ async fn friendly_group_label(lldap: &crate::ldap::LdapClient, gid: u32) -> Stri
     gid.to_string()
 }
 
-// === Query/Form params ===
+// Query and form parameter types for the permission tree.
 
 #[derive(Deserialize)]
 pub(crate) struct TreeParams {
@@ -176,16 +176,14 @@ pub(crate) struct ApplyForm {
     mode: String,
     #[serde(default)]
     recursive: bool,
-    // Strings (not Option<u32>): dir-editor always posts hidden fields.
-    // Empty value="" or "0" must deserialize cleanly; we parse leniently below.
-    // This prevents 422 "cannot parse integer from empty string".
+    // Strings (not Option<u32>): dir-editor always posts hidden fields. Empty.
     #[serde(default)]
     owner_user_uid: String,
     #[serde(default)]
     owner_group_gid: String,
 }
 
-// === Handlers ===
+// HTTP handlers for the permission tree routes.
 
 pub(crate) async fn index(
     State(state): State<AppState>,
@@ -193,8 +191,7 @@ pub(crate) async fn index(
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
 
-    // Build display-oriented share cards. Centralizes: - Client NFS path from 
-    // Root-squash/no, and cache profile. Build share cards: NFS path from keyt
+    // Build display-oriented share cards. Centralizes is - Client NFS path.
     let server = &state.keytab_hostname;
     let display_shares: Vec<ShareInfo> = state
         .config
@@ -270,7 +267,7 @@ pub(crate) async fn index(
     Ok(Html(tpl.render().unwrap()))
 }
 
-/// Lazy-loads children of a directory (HTMX partial)
+/// Lazy-loads children of a directory (HTMX partial).
 pub(crate) async fn tree_fragment(
     State(state): State<AppState>,
     Query(params): Query<TreeParams>,
@@ -306,7 +303,7 @@ pub(crate) async fn tree_fragment(
         }
     }
 
-    // Return diagnostic HTML when tree build fails (bind mount / path translation).
+    // Return diagnostic HTML when tree build fails (bind mount / path.
     let safe_path = params
         .path
         .replace('&', "&amp;")
@@ -324,8 +321,7 @@ pub(crate) async fn tree_fragment(
     Ok(Html(msg))
 }
 
-/// 1-level children endpoint for lazy FS tree loading (HTMX on expand).
-/// Only O(1) cost; reuses the same TreeFragmentTemplate shape.
+/// Lazy-load one directory level for HTMX tree expansion.
 pub(crate) async fn fs_children(
     State(state): State<AppState>,
     Query(params): Query<TreeParams>,
@@ -350,7 +346,7 @@ pub(crate) async fn fs_children(
     Ok(Html(tpl.render().unwrap()))
 }
 
-// === Inline tree meta / editor handlers ===
+// Handlers for inline tree metadata and the editor.
 
 pub(crate) async fn dir_meta(
     State(state): State<AppState>,
@@ -423,7 +419,7 @@ pub(crate) async fn dir_editor(
     Ok(Html(tpl.render().unwrap()))
 }
 
-// === Live LLDAP Search Handlers (used by the permission editor) ===
+// Live LDAP search handlers for the permission editor.
 
 pub(crate) async fn search_users(
     State(state): State<AppState>,
@@ -489,7 +485,7 @@ pub(crate) async fn search_groups(
     Html(html)
 }
 
-// === Core permission apply handler ===
+// Core handler that applies permission changes.
 
 pub(crate) async fn apply_permissions(
     State(state): State<AppState>,
@@ -498,14 +494,12 @@ pub(crate) async fn apply_permissions(
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
 
-    // Numeric bypass (core of the inline editor UX): - Hidden uid/gid from sea
-    // Entry (no LDAP roundtrip) - Name → resolve via LLDAP (only when necessar
+    // Numeric bypass (core of the inline editor UX): - Hidden uid/gid from.
     let mut owner_uid: u32 = 0;
     let mut group_gid: u32 = 0;
     let mut needs_lock = false;
 
-    // Hidden fields arrive as strings (may be "", "0" or a valid number string
-    // Integer from the hidden 0 or empty means "not provided by search".
+    // Hidden fields arrive as strings (may be "", "0" or a valid number.
     if let Ok(n) = form.owner_user_uid.trim().parse::<u32>() {
         if n > 0 {
             owner_uid = n;
@@ -567,7 +561,7 @@ pub(crate) async fn apply_permissions(
 
     let mode = u32::from_str_radix(&form.mode, 8).unwrap_or(0o770);
 
-    // Build command string (used for immediate log and final result text)
+    // Build command string (used for immediate log and final result text).
     let cmd = if form.recursive {
         format!(
             "chown {uid}:{gid} -R {path}\nchmod {mode:o} -R {path}",
@@ -586,8 +580,7 @@ pub(crate) async fn apply_permissions(
         )
     };
 
-    // === Always async path (for live progress in Apply Log spinner while esti
-    // Even non-recursive on a dir with thousands of immediate entries benefits
+    // Always run apply asynchronously so the Apply Log can show progress.
     let progress = Arc::new(ApplyProgress::default());
     {
         let mut slot = state.apply_progress.lock().await;
@@ -606,8 +599,7 @@ pub(crate) async fn apply_permissions(
     let rec = form.recursive;
     let prog = progress.clone();
     tokio::spawn(async move {
-        // Count-as-you-go phase gives immediate visible feedback ("scanned N s
-        // Poller + render_apply_status_oob. No long silent pre-count.
+        // Count-as-you-go phase gives immediate visible feedback ("scanned N.
         *prog.phase.lock().unwrap() = "scanning".to_string();
         let _ = fs.count_applicable_with_live(std::path::Path::new(&pth), rec, &prog);
         let total = prog.processed.load(Ordering::Relaxed);
@@ -627,7 +619,7 @@ pub(crate) async fn apply_permissions(
                 let err_text = format!("Apply failed before walking tree: {}", e);
                 *prog.final_result_text.lock().expect("progress mutex poisoned") = Some(err_text);
                 prog.finished.store(true, Ordering::Relaxed);
-                // Still attempt cache invalidate (no-op) and exit task early
+                // Still attempt cache invalidate (no-op) and exit task early.
                 {
                     let fs2 = fs.clone();
                     let p2 = pth.clone();
@@ -639,7 +631,7 @@ pub(crate) async fn apply_permissions(
             }
         };
 
-        // Existing background cache invalidation (moved inside the task)
+        // Existing background cache invalidation (moved inside the task).
         {
             let fs2 = fs.clone();
             let p2 = pth.clone();
@@ -676,9 +668,7 @@ pub(crate) async fn apply_permissions(
         prog.finished.store(true, Ordering::Relaxed);
     });
 
-    // Immediate response: placeholder keeps the dir-meta target.
-    // JS data-applying + currentEditPath hold the edit lock until finished.
-    // Real meta + subtree refresh happen after the poller's final /dir-meta fetch.
+    // Immediate response: placeholder keeps the dir-meta target. JS.
     let placeholder = format!(
         r#"<div class="dir-meta-inner" data-path="{}" data-applying="1">
     <span style="color:var(--warning-text);">⏳ Applying permissions — see Apply Log for progress. Tree navigation locked until complete.</span>
@@ -686,7 +676,7 @@ pub(crate) async fn apply_permissions(
         form.path
     );
 
-    // Initial status (will be replaced by polls with live scanned/spinner or real %)
+    // Initial status (will be replaced by polls with live scanned/spinner or.
     let status_html = render_apply_status_oob(&cmd, "Stand-by, estimating total... (live updates below)", true);
 
     Ok(Html(format!("{}\n{}", placeholder, status_html)))
@@ -744,7 +734,7 @@ pub(crate) async fn apply_progress(
             let live_or_final = if finished {
                 prog.final_result_text.lock().expect("progress mutex poisoned").clone().unwrap_or_else(|| "Finished.".into())
             } else if total == 0 {
-                // Still estimating (count-as-you-go phase)
+                // Still estimating (count-as-you-go phase).
                 let spin_chars = ["|", "/", "-", "\\"];
                 let spin = spin_chars[proc % 4];
                 format!("Stand-by, estimating total... scanned {} so far {}", proc, spin)
@@ -758,7 +748,7 @@ pub(crate) async fn apply_progress(
 
             render_apply_status_oob(&cmd, &live_or_final, !finished)
         } else {
-            // Neutral / last-known state when no apply slot is active
+            // Neutral / last-known state when no apply slot is active.
             r#"<div id="apply-status" hx-swap-oob="true" class="apply-status" style="display:block;">
     <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">
       <span>Apply Log</span>

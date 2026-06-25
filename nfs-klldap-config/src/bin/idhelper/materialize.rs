@@ -60,7 +60,7 @@ pub(crate) fn passwd_line_for(r: &Resolved) -> String {
     let login = sanitize_for_nss(&r.name);
     // Gecos is purely informational here.
     let gecos = format!("kll:{}:{}", r.kind.as_str(), r.principal);
-    // /nonexistent + nologin: synthetic nss entries, not real local accounts.
+    // The /nonexistent + nologin is synthetic nss entries, not real local.
     format!(
         "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
         login, r.uid, r.gid, gecos
@@ -87,7 +87,8 @@ pub(crate) fn group_line_with_members(gid: u32, gname: &str, members: &[String])
     }
 }
 
-/// True when cache content changed after sync and nss files should be rewritten.
+/// True when cache content changed after sync and nss files should be.
+/// Rewritten.
 pub(crate) fn cache_changed_since(fp_before: u64, cache: &IdCache) -> bool {
     fp_before != cache.content_fingerprint()
 }
@@ -116,7 +117,7 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
     let mut best_per_uid: std::collections::HashMap<i32, (String, u32, u32)> =
         std::collections::HashMap::new();
 
-    // One entry per LDAP uid: prefer short posix names over UPN keys in snap.users.
+    // One entry per LDAP uid: prefer short posix names over UPN keys in.
     for (key, entry) in &snap.users {
         let uid = entry.uid;
         if uid == 0 {
@@ -173,12 +174,11 @@ pub(crate) fn materialize_nss_wrappers_at(
         let _ = fs::create_dir_all(parent);
     }
 
-    // Collect stable ordered list of entries (sort by principal for determinism)
+    // Collect stable ordered list of entries (sort by principal for.
     let mut items: Vec<_> = cache.entries.values().collect();
     items.sort_by(|a, b| a.principal.cmp(&b.principal));
 
-    // Build passwd content.
-    // We dedup by login name (last wins for stability; tiny set).
+    // Build passwd content. We dedup by login name (last wins for stability.
     let mut seen_login: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut passwd_lines: Vec<String> = Vec::new();
     let mut group_lines: Vec<String> = Vec::new();
@@ -186,18 +186,18 @@ pub(crate) fn materialize_nss_wrappers_at(
 
     for r in &items {
         let line = passwd_line_for(r);
-        // Extract login from the line we just built (before first ':')
+        // Extract login from the line we just built (before first ':').
         if let Some(login) = line.split(':').next() {
             if seen_login.insert(login.to_string()) {
                 passwd_lines.push(line);
             }
         }
 
-        // Machine principals: also emit sanitized local-part alias (e.g.
-        // host_blue-lt).
+        // Machine principals also emit a sanitized local-part alias.
         let local = principal_local_part(&r.principal);
         if local.contains('/') && MACHINE_PRINCIPAL_PREFIXES.iter().any(|p| local.starts_with(p)) {
-            let alias = sanitize_for_nss(local); // turns host/blue-lt into host_blue-lt etc.
+            // Map host/foo to host_foo for nss login names.
+            let alias = sanitize_for_nss(local);
             if seen_login.insert(alias.clone()) {
                 let gecos = format!("kll:machine-alias:{}", r.principal);
                 passwd_lines.push(format!(
@@ -207,8 +207,7 @@ pub(crate) fn materialize_nss_wrappers_at(
             }
         }
 
-        // User principals: also materialize full name@REALM.
-        // Covers principal2uid/getpwnam paths.
+        // User principals: also materialize full name@REALM. Covers.
         if r.kind != PrincipalKind::Machine {
             let full = r.principal.clone();
             if seen_login.insert(full.clone()) {
@@ -224,16 +223,16 @@ pub(crate) fn materialize_nss_wrappers_at(
             }
         }
 
-        // Groups (primary gid from resolved principal)
+        // Groups (primary gid from resolved principal).
         if seen_gid.insert(r.gid) {
             group_lines.push(group_line_for(r));
         }
-        // Also ensure the uid's primary group is represented if different (rare)
+        // Also ensure the uid's primary group is represented if different.
         if r.uid != r.gid && seen_gid.insert(r.uid) {
-            // Use same simple rule; uid as fallback group name
+            // Use same simple rule. Uid as fallback group name.
             if r.uid == 0 {
                 if seen_gid.insert(0) {
-                    // already handled
+                    // Already handled.
                 }
             } else {
                 group_lines.push(format!("u{}:x:{}:", r.uid, r.uid));
@@ -241,8 +240,7 @@ pub(crate) fn materialize_nss_wrappers_at(
         }
     }
 
-    // LDAP-preloaded groups with member lists.
-    // Supplementary groups for nss_wrapper getgrouplist.
+    // LDAP-preloaded groups with member lists. Supplementary groups for.
     if let Some(groups) = ldap_groups {
         let mut by_gid: HashMap<i32, &PosixGroupEntry> = HashMap::new();
         for entry in groups.values() {
@@ -263,13 +261,12 @@ pub(crate) fn materialize_nss_wrappers_at(
         }
     }
 
-    // Always ensure at least a root group entry. For machine principals (uid/g
-    // Set_extended_groups something to work with for root creds and reduces (b
+    // Always ensure at least a root group entry. For machine principals.
     if seen_gid.is_empty() || !seen_gid.contains(&0) {
         group_lines.push("root:x:0:root,daemon,bin".to_string());
     }
 
-    // root + nobody lines satisfy getpwuid_r(0) and unknown-principal fallback.
+    // Root + nobody lines satisfy getpwuid_r(0) and unknown-principal.
     if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
         passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
     }
@@ -284,8 +281,7 @@ pub(crate) fn materialize_nss_wrappers_at(
         let tmp = paths.nss_passwd.with_extension("tmp");
         let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
         let mut w = BufWriter::new(f);
-        // Nss_wrapper (Debian trixie) rejects '#' comment lines
-        // Emit entries only.
+        // Nss_wrapper (Debian trixie) rejects '#' comment lines Emit entries.
         for l in &passwd_lines {
             writeln!(w, "{}", l)?;
         }
@@ -310,7 +306,7 @@ pub(crate) fn materialize_nss_wrappers_at(
 
     // Write supplemental extrausers entries so machines map to 0 via nsswitch.
     {
-        // Ensure dir exists (harmless for nss_wrapper paths under /var/lib/nfs-klldap).
+        // Ensure dir exists (harmless for nss_wrapper paths under.
         if let Some(p) = paths.extrausers_passwd.parent() {
             let _ = fs::create_dir_all(p);
         }

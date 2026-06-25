@@ -13,12 +13,11 @@ pub(crate) const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
 pub(crate) const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
 const CACHE_VERSION: &str = "1";
 
-// nss_wrapper passwd/group for LD_PRELOAD principal→uid mapping in Ganesha.
+// Nss_wrapper passwd/group for LD_PRELOAD principal→uid mapping in Ganesha.
 pub(crate) const NSS_PASSWD_PATH: &str = "/var/lib/nfs-klldap/nss_passwd";
 pub(crate) const NSS_GROUP_PATH: &str = "/var/lib/nfs-klldap/nss_group";
 
-// Supplemental extrausers entries for machine→root mappings.
-// Written alongside SSSD users.
+// Supplemental extrausers entries for machine→root mappings. Written.
 pub(crate) const EXTRAUSERS_PASSWD: &str = "/var/lib/extrausers/passwd";
 pub(crate) const EXTRAUSERS_GROUP: &str = "/var/lib/extrausers/group";
 
@@ -31,7 +30,8 @@ pub(crate) const DEFAULT_REBULK_INTERVAL_SECS: u64 = 10 * 60;
 /// Debug logging enabled via KLLDAP_IDHELPER_DEBUG=true (or 1/yes/on).
 static DEBUG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// True when any share has Manage_Gids; controls supplementary-group log noise.
+/// True when any share has Manage_Gids. Controls supplementary-group log.
+/// Noise.
 pub(crate) fn manage_gids_expected() -> bool {
     let path =
         std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
@@ -101,7 +101,7 @@ pub struct Resolved {
 
 #[derive(Default)]
 pub struct IdCache {
-    // normalized principal -> entry
+    // Normalized principal  maps to  entry.
     pub(crate) entries: HashMap<String, Resolved>,
 }
 
@@ -152,7 +152,7 @@ impl IdCache {
                 if line.starts_with('#') || line.trim().is_empty() {
                     continue;
                 }
-                // principal|uid|gid|kind|source
+                // Principal|uid|gid|kind|source.
                 let parts: Vec<&str> = line.split('|').collect();
                 if parts.len() != 5 {
                     continue;
@@ -164,7 +164,7 @@ impl IdCache {
                         _ => PrincipalKind::Unknown,
                     };
                     let local = principal_local_part(parts[0]);
-                    // Machine principals use the trailing host segment as the nss login name.
+                    // Machine principals use the trailing host segment as the.
                     let name = if local.contains('/') {
                         machine_short_name(parts[0]).to_string()
                     } else {
@@ -195,7 +195,7 @@ impl IdCache {
             let mut w = BufWriter::new(f);
             writeln!(w, "# nfs-klldap-idhelper cache v{}", CACHE_VERSION)?;
             writeln!(w, "# principal|uid|gid|kind|source")?;
-            // Stable order for easier file processing / diffing
+            // Stable order for easier file processing / diffing.
             let mut items: Vec<_> = self.entries.values().collect();
             items.sort_by(|a, b| a.principal.cmp(&b.principal));
             for e in items {

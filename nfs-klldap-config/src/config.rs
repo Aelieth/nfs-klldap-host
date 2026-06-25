@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Top-level config (nfs-klldap.conf)
+/// Top-level config (nfs-klldap.conf).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NfsKlldapConfig {
     #[serde(default)]
@@ -113,8 +113,8 @@ pub struct SssdSection {
     pub ldap_default_bind_dn: String,
     #[serde(default)]
     pub ldap_default_authtok: String,
-    /// Derived 636/389 for reference
-    /// SSSD uses ldap_uri (port must be in the URI).
+    /// Derived 636/389 for reference SSSD uses ldap_uri (port must be in the.
+    /// URI).
     pub port: Option<u16>,
     pub ldap_user_search_base: Option<String>,
     pub ldap_group_search_base: Option<String>,
@@ -128,15 +128,14 @@ pub struct SssdSection {
     pub ldap_tls_cacert: Option<String>,
     pub ldap_id_use_start_tls: Option<bool>,
 
-    // POSIX attribute mapping (excellent LLDAP defaults override
-    // Only on schema mismatch).
+    // POSIX attribute mapping (excellent LLDAP defaults override Only on.
     pub enumerate: Option<bool>,
 
-    // Object classes (LLDAP typical: inetOrgPerson + posixAccount aux)
+    // Object classes (LLDAP typical is inetOrgPerson + posixAccount aux).
     pub ldap_user_object_class: Option<String>,
     pub ldap_group_object_class: Option<String>,
 
-    // User attr mappings (for UID/GID + home/shell)
+    // User attr mappings (for UID/GID + home/shell).
     pub ldap_user_name: Option<String>,
     pub ldap_user_uid_number: Option<String>,
     pub ldap_user_gid_number: Option<String>,
@@ -144,7 +143,7 @@ pub struct SssdSection {
     pub ldap_user_shell: Option<String>,
     pub ldap_user_fullname: Option<String>,
 
-    // Group attr mappings
+    // Group attr mappings.
     pub ldap_group_name: Option<String>,
     pub ldap_group_gid_number: Option<String>,
     pub ldap_group_member: Option<String>,
@@ -171,7 +170,8 @@ pub struct SssdSection {
 
 pub use nfs_klldap_identity::PosixAttributeMapping;
 
-/// Resolves POSIX attribute names from [sssd] overrides (or built-in defaults).
+/// Resolves POSIX attribute names from [sssd] overrides (or built-in.
+/// Defaults).
 pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapping {
     nfs_klldap_identity::resolve_posix_attribute_mapping(&crate::idmap::posix_mapping_input_from_sssd(
         sssd,
@@ -196,8 +196,8 @@ pub struct KerberosSection {
 pub struct GaneshaSection {
     #[serde(default = "default_security")]
     pub default_security: String,
-    /// Optional executable invoked by the supervisor after each successful generate.
-    /// Runs per share.
+    /// Optional executable invoked by the supervisor after each successful.
+    /// Generate. Runs per share.
     pub post_generate_hook: Option<String>,
 }
 
@@ -213,7 +213,8 @@ pub struct ManagementSection {
 /// Host deployment mode; host_nfs=true runs WebUI/SSSD only (host serves NFS).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HostSection {
-    /// Sidecar mode: host ganesha.nfsd reads bind-mounted /etc/ganesha fragments.
+    /// Sidecar mode: host ganesha.nfsd reads bind-mounted /etc/ganesha.
+    /// Fragments.
     pub host_nfs: Option<bool>,
 }
 
@@ -234,7 +235,7 @@ pub struct Share {
     /// Host-visible path for allow-list and chown/chmod.
     /// See docs/ganesha-architecture.md.
     pub host_path: PathBuf,
-    /// Client NFSv4 Pseudo path; FsManager uses host_path. Defaults to /<name>.
+    /// Client NFSv4 Pseudo path; defaults to slash-name when omitted.
     pub export_path: Option<String>,
     pub security: Option<String>,
     pub rw: Option<bool>,
@@ -282,9 +283,9 @@ pub struct GenerationPaths {
     pub krb5_conf: PathBuf,
     pub ganesha_conf: PathBuf,
     pub exports_dir: PathBuf,
-    /// Output path for generated idmapd.conf aligned with DIRECTORY_SERVICES.
+    /// This field is the output path for generated idmapd.conf.
     pub idmap_conf: PathBuf,
-    /// Output path for nfs-utils client defaults including use-machine-creds.
+    /// This field is the output path for nfs-utils client defaults.
     pub nfs_conf: PathBuf,
 }
 
@@ -295,8 +296,8 @@ impl Default for GenerationPaths {
 }
 
 impl GenerationPaths {
-    /// Resolve output paths from env (SSSD_CONF, GANESHA_CONF
-    /// …) or container defaults.
+    /// Resolve output paths from env (SSSD_CONF, GANESHA_CONF …) or container.
+    /// Defaults.
     pub fn from_env() -> Self {
         let env_path = |key: &str, default: &str| -> PathBuf {
             std::env::var(key)
@@ -314,8 +315,7 @@ impl GenerationPaths {
     }
 }
 
-// Cache Profiles (for [[shares]] dropdown name stored in TOML,
-// Resolved to Pref* at generate).
+// Cache Profiles (for [[shares]] dropdown name stored in TOML, Resolved to.
 
 /// The 5 supported share.cache_profile values.
 /// Order matches the WebUI dropdown.
@@ -327,8 +327,8 @@ pub const CACHE_PROFILES: &[&str] = &[
     "Write - Heavy",
 ];
 
-/// Resolve a cache profile name to the Ganesha tunables (PrefRead
-/// PrefWrite in bytes).
+/// Resolve a cache profile name to the Ganesha tunables (PrefRead PrefWrite.
+/// In. Bytes).
 pub fn resolve_cache_profile(profile: &str) -> Option<(u64, u64)> {
     match profile.trim() {
         "Default" => Some((1048576, 1048576)),

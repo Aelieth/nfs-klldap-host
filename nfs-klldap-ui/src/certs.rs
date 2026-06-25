@@ -1,6 +1,5 @@
-//! Ensure WebUI TLS: env override (NFS_KLLDAP_WEBUI_TLS_*) or rcgen self-signed.
-//! Self-signed certs use SANs for host and localhost.
-//! Self-signed written to a stable path under /var/lib (0600 key).
+//! Ensure WebUI TLS: env override (NFS_KLLDAP_WEBUI_TLS_*) or rcgen.
+//! Self-signed. Self-signed certs use SANs for host and localhost.
 
 use std::path::{Path, PathBuf};
 
@@ -41,7 +40,8 @@ pub fn webui_tls_disabled() -> bool {
     false
 }
 
-/// Priority: NFS_KLLDAP_WEBUI_TLS_* env > provided paths > generate self-signed.
+/// Priority: NFS_KLLDAP_WEBUI_TLS_* env > provided paths > generate.
+/// Self-signed.
 pub fn ensure_webui_tls_certs(
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,
@@ -52,7 +52,6 @@ pub fn ensure_webui_tls_certs(
     }
 
     // Allow external certificates via environment (container deployments).
-    // Only NFS_KLLDAP_* prefixed vars are honored.
     if let (Ok(cert), Ok(key)) = (
         std::env::var("NFS_KLLDAP_WEBUI_TLS_CERT"),
         std::env::var("NFS_KLLDAP_WEBUI_TLS_KEY"),
@@ -62,8 +61,7 @@ pub fn ensure_webui_tls_certs(
         if cert.exists() && key.exists() && pem_files_are_parsable(&cert, &key) {
             return Ok(TlsPaths { cert, key });
         }
-        // Fall through to provided paths or generation.
-        // Used when external certs are missing or invalid.
+        // Fall through to provided paths or generation. Used when external.
     }
 
     let cert_path = cert_path.as_ref().to_path_buf();
@@ -76,7 +74,7 @@ pub fn ensure_webui_tls_certs(
         });
     }
 
-    // Generate self-signed certificate
+    // Generate self-signed certificate.
     let (cert_pem, key_pem) = generate_self_signed(hostname)?;
 
     if let Some(parent) = cert_path.parent() {

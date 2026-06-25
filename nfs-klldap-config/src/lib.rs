@@ -1,6 +1,7 @@
 #![deny(unsafe_code, dead_code)]
 
-//! TOML validation, derivation, and generation of sssd.conf, krb5.conf, exports.
+//! TOML validation, derivation, and generation of sssd.conf, krb5.conf,.
+//! Exports.
 
 mod config;
 mod constants;
@@ -102,8 +103,7 @@ pub use nfs_klldap_identity::{
     KeytabInfo,
 };
 
-// Structured LDAP resolution (IdLdapResolver) shared with
-// Nfs-klldap-identity / WebUI LDAP client.
+// Structured LDAP resolution (IdLdapResolver) shared with Nfs-klldap-identity.
 pub mod idmap;
 pub use idmap::{
     classify_principal, escape_ldap_filter, extract_first_attr_value, from_sssd_section,
@@ -111,8 +111,7 @@ pub use idmap::{
     IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry,
 };
 
-// Centralized constants (Ganesha 9.6 trixie + hybrid
-// Principal + POSIX idmapd).
+// Centralized constants (Ganesha 9.6 trixie + hybrid Principal + POSIX.
 pub use constants::{
     DEFAULT_GROUP_GID_ATTR, DEFAULT_GROUP_NAME_ATTR, DEFAULT_GROUP_OBJECT_CLASS,
     DEFAULT_USER_FULLNAME_ATTR, DEFAULT_USER_GID_ATTR, DEFAULT_USER_HOME_ATTR,
@@ -159,6 +158,22 @@ mod tests {
         ENV_TEST_LOCK.lock().unwrap()
     }
 
+    #[test]
+    fn comments_quality_gate() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let script = root.join("scripts/comment_lint.py");
+        let out = std::process::Command::new("python3")
+            .arg(&script)
+            .current_dir(&root)
+            .output()
+            .expect("run comment_lint.py");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
     /// RAII guard restoring previous env var value on drop.
     struct EnvGuard {
         key: &'static str,
@@ -188,7 +203,8 @@ mod tests {
         }
     }
 
-    /// Clear NFS_KLLDAP_* env; hold guards alive across validate under ENV_LOCK.
+    /// Clear NFS_KLLDAP_* env. Hold guards alive across validate under.
+    /// ENV_LOCK.
     fn clean_core_env() -> Vec<EnvGuard> {
         let vars = [
             "NFS_KLLDAP_LDAP_URI",
@@ -208,15 +224,14 @@ mod tests {
             "NFS_KLLDAP_WEBUI_TLS",
             "NFS_KLLDAP_WEBUI_TLS_CERT",
             "NFS_KLLDAP_WEBUI_TLS_KEY",
-            // Debug toggles (bare names, not under the NFS_KLLDAP_ prefix)
+            // Debug toggles (bare names, not under the NFS_KLLDAP_ prefix).
             "GANESHA_DEBUG",
         ];
         vars.iter().map(|&k| EnvGuard::remove(k)).collect()
     }
 
     fn minimal_cfg() -> NfsKlldapConfig {
-        // Clear at construction time so the internal validate sees a clean env
-        // Result of clean_core_env() alive for the lifetime of the test (see u
+        // Clear at construction time so the internal validate sees a clean.
         let _guards = clean_core_env();
         let mut c = NfsKlldapConfig {
             ldap_uri: "ldaps://kllap.test:6360".into(),
@@ -293,8 +308,7 @@ mod tests {
         assert_eq!(sssd.matches("ldap_pwd_policy = none").count(), 1);
         assert!(sssd.contains("ignored_user_attributes"));
 
-        // Auto-derived Kerberos KDC settings (co-located same
-        // Host/realm as ldap + krb5.conf).
+        // Auto-derived Kerberos KDC settings (co-located same Host/realm as.
         assert!(sssd.contains("krb5_realm = TEST"));
         assert!(sssd.contains("krb5_server = kllap.test"));
         assert!(sssd.contains("krb5_kpasswd = kllap.test"));
@@ -325,18 +339,15 @@ mod tests {
         assert!(main.contains("idmapped_group_time_validity = 600;"));
         assert!(main.contains("EXPORT_DEFAULTS {\n    SecType = krb5p;\n    Protocols = 4;"));
         // Ganesha 9.6 trixie-backports: only these blocks are emitted.
-        // Classic port/Transports/Idmap keys are fatal at parser time.
         assert!(!main.contains("Transports"));
         assert!(!main.contains("Mountd_Port"));
         assert!(!main.contains("NLM_Port"));
         assert!(!main.contains("Rquota_Port"));
         assert!(!main.contains("IdmapConf"));
         assert!(!main.contains("UseGetpwnam"));
-        // Enable_*=false are safe and explicit the dangerous keys
-        // Above are omitted.
+        // Enable_*=false are safe and explicit the dangerous keys Above are.
 
-        // Baseline LOG always emitted (idhelper operators need
-        // Visibility on IDMAPPER).
+        // Baseline LOG always emitted (idhelper operators need Visibility on.
         assert!(
             main.contains("LOG {"),
             "baseline LOG block should be present even without GANESHA_DEBUG"
@@ -345,9 +356,9 @@ mod tests {
             !main.contains("IDMAPPER = FULL_DEBUG"),
             "FULL_DEBUG must be absent by default"
         );
-        // The lighter components we care about for principal discovery should be present
+        // The lighter components we care about for principal discovery should.
         assert!(main.contains("CLIENTID = DEBUG") || main.contains("IDMAPPER = EVENT"));
-        // Regression guard for CLIENT block parameters
+        // Regression guard for CLIENT block parameters.
         assert!(!main.contains("Principals ="));
 
         let exports: Vec<_> = fs::read_dir(&paths.exports_dir)
@@ -374,8 +385,7 @@ mod tests {
         let _env = env_lock();
         let _guards = clean_core_env();
 
-        // 1) Default (no GANESHA_DEBUG) baseline LOG (with CLIENTID etc) is in
-        // Now. Only the FULL_DEBUG variant is controlled by the env var.
+        // Default build emits baseline LOG without FULL_DEBUG.
         let cfg = minimal_cfg();
         let tmp = tempfile::tempdir().unwrap();
         let paths = GenerationPaths {
@@ -397,7 +407,7 @@ mod tests {
             "FULL_DEBUG must be absent without GANESHA_DEBUG=TRUE"
         );
 
-        // 2) With GANESHA_DEBUG=true (any common truthy spelling) -> FULL_DEBUG block
+        // GANESHA_DEBUG=true enables FULL_DEBUG in generated config.
         let _g = EnvGuard::set("GANESHA_DEBUG", "true");
         let cfg2 = minimal_cfg();
         let tmp2 = tempfile::tempdir().unwrap();
@@ -418,14 +428,13 @@ mod tests {
         );
         assert!(main_debug.contains("Default_Log_Level = DEBUG;"));
         assert!(main_debug.contains("IDMAPPER = FULL_DEBUG;"));
-        // FSAL only in fragments top-level NFS4 is DEBUG for
-        // Idhelper observer.
+        // FSAL only in fragments top-level NFS4 is DEBUG for Idhelper.
         assert!(main_debug.contains("NFS4 = DEBUG;"));
         assert!(
             !main_debug.contains("RECOVERY"),
             "RECOVERY is not a valid LOG component on Ganesha 9.6 trixie-backports"
         );
-        // Sanity: core config still there
+        // Sanity is core config still there.
         assert!(main_debug.contains("Protocols = 4;"));
         assert!(main_debug.contains("%include"));
     }
@@ -494,7 +503,7 @@ mod tests {
         c.shares[0].cache_profile = Some("Turbo".to_string());
         assert!(c.validate_and_derive().is_err(), "unknown profile must be rejected");
 
-        // All 5 official profiles must pass
+        // All 5 official profiles must pass.
         for prof in crate::CACHE_PROFILES {
             let mut c_ok = minimal_cfg();
             c_ok.shares[0].cache_profile = Some((*prof).to_string());
@@ -576,8 +585,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("partial.conf");
 
-        // Partial config (missing bind creds) load_host_paths_only
-        // Must still succeed.
+        // Partial config (missing bind creds) load_host_paths_only Must still.
         let partial = r#"
             ldap_uri = "ldaps://kllap.test:6360"
             [[shares]]
@@ -656,7 +664,8 @@ mod tests {
     #[test]
     fn core_env_overrides_for_ldap_uri_bind_and_webui_work() {
         let _env = env_lock();
-        let _guards = clean_core_env(); // clears everything first (under lock)
+        // Clear env vars first while holding the test lock.
+        let _guards = clean_core_env();
         let _g1 = EnvGuard::set("NFS_KLLDAP_LDAP_URI", "ldaps://envhost.testdomain.com:6360");
         let _g2 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN", "uid=envadmin,ou=people,dc=example,dc=com");
         let _g3 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK", "env-secret-123");
@@ -664,7 +673,7 @@ mod tests {
         let _g5 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT", "never");
 
         let mut c = NfsKlldapConfig {
-            // intentionally minimal / placeholder to prove env supplies
+            // Intentionally minimal / placeholder to prove env supplies.
             ldap_uri: "ldaps://placeholder:6360".into(),
             sssd: SssdSection {
                 ldap_default_bind_dn: "uid=placeholder,ou=people,dc=x,dc=com".into(),
@@ -683,7 +692,8 @@ mod tests {
         assert_eq!(c.sssd.ldap_default_bind_dn, "uid=envadmin,ou=people,dc=example,dc=com");
         assert_eq!(c.sssd.ldap_default_authtok, "env-secret-123");
         assert_eq!(c.sssd.ldap_tls_reqcert.as_deref(), Some("never"));
-        assert_eq!(c.webui.tls, Some(false)); // off -> disabled
+        // TLS=off should map to Some(false) in the webui section.
+        assert_eq!(c.webui.tls, Some(false));
     }
 
     #[test]
@@ -800,7 +810,7 @@ mod tests {
             }
         }
 
-        // IPv4
+        // IPv4.
         let mut c = make_minimal("ldaps://192.168.10.5:6360");
         let err = c.validate_and_derive().unwrap_err();
         let msg = err.to_string();
@@ -812,7 +822,7 @@ mod tests {
             msg
         );
 
-        // IPv6 (with brackets in URI)
+        // IPv6 (with brackets in URI).
         let mut c6 = make_minimal("ldaps://[2001:db8::1]:6360");
         let err6 = c6.validate_and_derive().unwrap_err();
         assert!(err6

@@ -38,8 +38,7 @@ async fn main() {
     // Install ring CryptoProvider before any LDAPS (KLLDAP/rustls compat).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // Support --config /path or NFS_KLLDAP_CONF env.
-    // Uses the shared volume path with the container.
+    // Support --config /path or NFS_KLLDAP_CONF env. Uses the shared volume.
     let mut config_path: Option<PathBuf> = std::env::var("NFS_KLLDAP_CONF").ok().map(PathBuf::from);
     let args: Vec<String> = std::env::args().collect();
     for i in 0..args.len() {
@@ -87,8 +86,7 @@ async fn main() {
         resolve_runtime_hostname_for_banner()
     };
 
-    // Realm from loaded config (same as krb5.conf). Placeholder only for
-    // Early "no valid config yet" case.
+    // Realm from loaded config (same as krb5.conf). Placeholder only for.
     let keytab_realm = config.display_realm();
 
     let principals = nfs_klldap_config::format_nfs_principal_list(&keytab_host, &keytab_realm);
@@ -99,8 +97,7 @@ async fn main() {
     let fs = Arc::new(crate::fs::FsManager::new((*config).clone()));
 
     let posix_attrs = nfs_klldap_config::resolve_posix_attribute_mapping(&config.sssd);
-    // display_realm is safe before validate_and_derive.
-    // Works for first-run template and setup wizard.
+    // Display_realm is safe before validate_and_derive. Works for first-run.
     let realm = config.display_realm();
     let (user_base, group_base) =
         nfs_klldap_config::effective_ldap_search_bases(&config.sssd, &realm);
@@ -143,8 +140,7 @@ async fn main() {
         eprintln!("Warning: KLLDAP auth failed at startup: {}", e);
     }
 
-    // Do not extract the RDN value from the bind DN and search using user_name
-    // "uid" that triggered KLLDAP warnings when strict ignored_*_attributes ar
+    // Do not extract the RDN value from the bind DN and search using.
 
     let lldap = Arc::new(Mutex::new(lldap));
 
@@ -159,7 +155,6 @@ async fn main() {
     }
 
     // Hybrid auth manager (localhost simple-pw sidecar + LLDAP + admin group).
-    // The sidecar lives next to the central config file.
     let admin_group = config.management.webui_admin_group.clone();
     let auth = Arc::new(crate::auth::AuthManager::new(&config_path, admin_group));
 
@@ -180,8 +175,7 @@ async fn main() {
         });
     }
 
-    // NFS_KLLDAP_WEBUI_BIND is used for TLS and plain-http modes.
-    // Plain-http covers reverse-proxy deployments.
+    // NFS_KLLDAP_WEBUI_BIND is used for TLS and plain-http modes. Plain-http.
     let addr = std::env::var("NFS_KLLDAP_WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
     // TLS: env `NFS_KLLDAP_WEBUI_TLS` wins, then [webui] tls (see certs.rs).
     let webui_tls_off = if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
@@ -226,8 +220,7 @@ async fn main() {
             .await
             .expect("WebUI HTTP server failed");
     } else {
-        // existing axum_server::bind_rustls path (TLS enabled)
-        // Determine hostname for self-signed certificate SANs (same logic as keytab)
+        // The existing axum_server is :bind_rustls path (TLS enabled).
         let cert_hostname = if let Some(h) = &config.server.hostname {
             if !h.trim().is_empty() {
                 h.trim().to_string()
@@ -238,8 +231,7 @@ async fn main() {
             resolve_runtime_hostname_for_banner()
         };
 
-        // Use a stable absolute path inside the container (created in Dockerfi
-        // Precedence: env > [webui] paths > built-in default. (Env handling + 
+        // Use a stable absolute path inside the container (created in.
         let default_cert = "/var/lib/nfs-klldap/webui-certs/webui.crt".to_string();
         let default_key = "/var/lib/nfs-klldap/webui-certs/webui.key".to_string();
         let cert_path = std::env::var("NFS_KLLDAP_WEBUI_TLS_CERT")
@@ -260,8 +252,7 @@ async fn main() {
         println!("\nTLS: enabled (self-signed or custom)");
         println!("Listening on https://{addr} (TLS enabled via axum-server)");
         println!("Certificate: {}", tls_paths.cert.display());
-        // Note: if NFS_KLLDAP_WEBUI_TLS_CERT/KEY or [webui] were used they are
-        // Reflected in the resolved tls_paths.
+        // Note: if NFS_KLLDAP_WEBUI_TLS_CERT/KEY or [webui] were used they.
 
         let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(
             &tls_paths.cert,

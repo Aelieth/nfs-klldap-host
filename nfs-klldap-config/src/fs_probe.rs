@@ -1,4 +1,5 @@
-//! Pure-Rust /proc/self/mountinfo probe for POSIX ACL capability on share paths.
+//! Pure-Rust /proc/self/mountinfo probe for POSIX ACL capability on share.
+//! Paths.
 
 use std::io;
 use std::path::Path;
@@ -39,7 +40,8 @@ pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
     Ok(probe_from_mountinfo(&content, path))
 }
 
-/// Probe path against fixture or live mountinfo content (unit-test entry point).
+/// Probe path against fixture or live mountinfo content (unit-test entry.
+/// Point).
 pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
     let entries = parse_mountinfo(content);
     let path_str = path.to_string_lossy();
@@ -86,8 +88,7 @@ fn parse_mountinfo(content: &str) -> Vec<MountEntry> {
 
 fn parse_mountinfo_line(line: &str) -> Option<MountEntry> {
     let parts: Vec<&str> = line.split_whitespace().collect();
-    // Mount_id parent_id major:minor root mount_point then fstype
-    // Source super_options.
+    // Mount_id parent_id major:minor root mount_point then fstype Source.
     if parts.len() < 10 {
         return None;
     }

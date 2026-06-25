@@ -194,8 +194,7 @@ mod tests {
             ..Default::default()
         };
         cfg.validate_and_derive().expect("valid");
-        // Without mountinfo override in unit test unknown path assumes
-        // Capable → manage_gids true.
+        // Without mountinfo override in unit test unknown path assumes.
         assert!(any_share_manage_gids_enabled(&cfg));
         cfg.shares[0].manage_gids = Some(false);
         assert!(!any_share_manage_gids_enabled(&cfg));

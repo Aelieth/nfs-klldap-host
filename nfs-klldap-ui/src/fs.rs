@@ -49,7 +49,7 @@ pub struct ApplyProgress {
     pub error_count: AtomicUsize,
     pub cancelled: AtomicBool,
     pub finished: AtomicBool,
-    /// "scanning" | "applying" | "done"
+    /// Phase string is scanning, applying, or done.
     pub phase: StdMutex<String>,
     pub cmd: StdMutex<Option<String>>,
     pub final_result_text: StdMutex<Option<String>>,
@@ -70,9 +70,10 @@ impl FsManager {
         Self { config }
     }
 
-    /// Build the permission tree in host_path namespace before privileged ops.
+    /// This builds the permission tree in host_path namespace before.
+    /// Privileged ops.
     pub fn build_tree(&self, root: &Path) -> Option<DirectoryNode> {
-        // Normalize early so trailing slashes don't break matching or child synthesis.
+        // Normalize early so trailing slashes don't break matching or child.
         let normalized = self.normalize_for_matching(root);
 
         if !self.is_allowed(&normalized) {
@@ -94,8 +95,7 @@ impl FsManager {
             children: vec![],
         };
 
-        // Recursively build children (directories only). We read from the real
-        // Namespace so that subsequent HTMX calls and is_allowed checks contin
+        // Recursively build children (directories only). We read from the.
         if let Ok(entries) = fs::read_dir(&real_root) {
             for entry in entries.flatten() {
                 if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
@@ -137,13 +137,13 @@ impl FsManager {
         let mut out = Vec::new();
         for entry in read.flatten() {
             if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                continue; // files and symlinks are not presented as browsable children
+                // Only directories are browsable in the lazy tree.
+                continue;
             }
             let child_name = entry.file_name();
             let logical_child = normalized.join(&child_name);
 
-            // We only need path name for the lazy tree UI (owner/mode come fro
-            // /dir-meta calls when the user selects a node).
+            // We only need path name for the lazy tree UI (owner/mode come.
             out.push(DirectoryNode {
                 path: logical_child.clone(),
                 name: child_name.to_string_lossy().into_owned(),
@@ -158,7 +158,6 @@ impl FsManager {
 
     /// Count variant that increments progress.processed as scanned so far.
     /// Drives live Stand-by / scanned-N spinner feedback and honours cancel.
-    /// Returns the final count (which becomes total).
     pub fn count_applicable_with_live(
         &self,
         path: &Path,
@@ -184,7 +183,8 @@ impl FsManager {
             .map_err(|e| format!("count failed: {}", e))
     }
 
-    /// Apply with progress atomics; caller should set progress.total from count.
+    /// Apply with progress atomics. Caller should set progress.total from.
+    /// Count.
     pub fn apply_permissions_with_progress(
         &self,
         path: &Path,
@@ -258,7 +258,8 @@ impl FsManager {
             .map_err(|e| format!("apply failed: {}", e))
     }
 
-    /// Whether this walk entry should receive chown/chmod under the current options.
+    /// Whether this walk entry should receive chown/chmod under the current.
+    /// Options.
     fn should_apply_entry(entry: &DirEntry, opts: &ApplyOptions) -> bool {
         let ft = entry.file_type();
         if ft.is_symlink() {
@@ -269,8 +270,7 @@ impl FsManager {
         if opts.recursive {
             return (is_dir && opts.apply_to_dirs) || (is_file && opts.apply_to_files);
         }
-        // Non-recursive: target directory (depth 0) immediate
-        // Files (depth 1) only.
+        // Non-recursive: target directory (depth 0) immediate Files (depth 1).
         let depth = entry.depth();
         (is_dir && opts.apply_to_dirs && depth == 0)
             || (is_file && opts.apply_to_files && depth == 1)
@@ -373,7 +373,7 @@ impl FsManager {
                 continue;
             }
 
-            // Record the path we are about to touch (for cancel reporting)
+            // Record the path we are about to touch (for cancel reporting).
             *progress.last_path.lock().expect("last_path mutex poisoned") = Some(p.display().to_string());
 
             if opts.dry_run {
@@ -418,7 +418,7 @@ impl FsManager {
 
     pub(crate) fn is_allowed(&self, path: &Path) -> bool {
         let normalized = self.normalize_for_matching(path);
-        // New central config: allowed = the host_path of every declared share
+        // New central config is allowed = the host_path of every declared.
         crate::config::all_managed_roots(&self.config)
             .iter()
             .any(|root| normalized.starts_with(self.normalize_for_matching(root)))
@@ -440,8 +440,7 @@ impl FsManager {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    // Translation tests: host_path first dir = implicit bind root tail
-    // Maps under container_root.
+    // Translation tests: host_path first dir = implicit bind root tail Maps.
     use super::*;
     use tempfile::TempDir;
 
@@ -544,7 +543,8 @@ mod tests {
 
         assert_eq!(root_node.path, Path::new(logical_host_path));
         assert_eq!(root_node.name, "mydata");
-        assert_eq!(root_node.children.len(), 2); // movies + backups
+        // Expect movies and backups as the two root children.
+        assert_eq!(root_node.children.len(), 2);
 
         let movies = root_node
             .children
@@ -586,11 +586,11 @@ mod tests {
         );
         let fs = FsManager::new(cfg);
 
-        // Exact share root
+        // Exact share root.
         let root = fs.host_path_to_container_path(Path::new("/hostroot/myshare")).unwrap();
         assert_eq!(root, PathBuf::from("/container/root/myshare"));
 
-        // Subdirectory
+        // Subdirectory.
         let sub = fs.host_path_to_container_path(Path::new("/hostroot/myshare/sub/dir")).unwrap();
         assert_eq!(sub, PathBuf::from("/container/root/myshare/sub/dir"));
     }
@@ -606,13 +606,13 @@ mod tests {
 
         let fs = FsManager::new(cfg);
 
-        // Root of the share
+        // Root of the share.
         let root = fs
             .host_path_to_container_path(Path::new("/media/HDD-RAID/media"))
             .unwrap();
         assert_eq!(root, PathBuf::from("/export/HDD-RAID/media"));
 
-        // Nested subdir must append the same relative tail
+        // Nested subdir must append the same relative tail.
         let sub = fs
             .host_path_to_container_path(Path::new("/media/HDD-RAID/media/videos/4k"))
             .unwrap();
@@ -656,7 +656,8 @@ mod tests {
         let container_root = tmp.path().join("cr");
         let real = container_root.join("s1");
         std::fs::create_dir_all(real.join("a")).unwrap();
-        std::fs::create_dir_all(real.join("b/c")).unwrap(); // deeper, should not appear
+        // Deeper paths should not appear in non-recursive listing.
+        std::fs::create_dir_all(real.join("b/c")).unwrap();
 
         let cfg = make_test_config_with_container_mapping("/hostroot/s1", container_root.to_str().unwrap(), "s1");
         let fs = FsManager::new(cfg);
@@ -666,7 +667,7 @@ mod tests {
         let names: Vec<_> = kids.iter().map(|n| n.name.as_str()).collect();
         assert!(names.contains(&"a"));
         assert!(names.contains(&"b"));
-        // Children vectors must be empty (lazy)
+        // Children vectors must be empty (lazy).
         assert!(kids.iter().all(|n| n.children.is_empty()));
     }
 
@@ -676,7 +677,7 @@ mod tests {
         let root = tmp.path().join("tree");
         std::fs::create_dir_all(root.join("d1")).unwrap();
         std::fs::create_dir_all(root.join("d2")).unwrap();
-        // Create a symlink to a dir (should be skipped, not descended)
+        // Create a symlink to a dir (should be skipped, not descended).
         #[cfg(unix)]
         {
             use std::os::unix::fs as ufs;
@@ -688,8 +689,7 @@ mod tests {
         let mut cfg = cfg;
         cfg.storage.container_root = root.to_string_lossy().into_owned();
         cfg.shares[0].name.clear();
-        // One-segment host_path: first-dir strip yields empty tail.
-        // Internal path maps to container_root from the test tree.
+        // One-segment host_path: first-dir strip yields empty tail. Internal.
 
         let fs = FsManager::new(cfg);
 
@@ -702,7 +702,7 @@ mod tests {
         };
 
         let res = fs.apply_tree_with_progress(&root, 1000, 1000, 0o755, &opts, &ApplyProgress::default()).expect("dry run");
-        // root + d1 + d2 = 3 changed; the symlink is skipped
+        // Root + d1 + d2 = 3 changed. The symlink is skipped.
         assert!(res.changed >= 3);
         assert!(res.skipped >= 1, "symlink should have been counted as skipped");
         assert!(res.errors.is_empty());
@@ -721,8 +721,7 @@ mod tests {
         let mut cfg = cfg;
         cfg.storage.container_root = root.to_string_lossy().into_owned();
         cfg.shares[0].name.clear();
-        // One-segment host_path: first-dir strip yields empty tail.
-        // Internal path maps to container_root from the test tree.
+        // One-segment host_path: first-dir strip yields empty tail. Internal.
 
         let fs = FsManager::new(cfg);
 
@@ -738,7 +737,7 @@ mod tests {
             .apply_tree_with_progress(&root, 1000, 1000, 0o755, &opts, &ApplyProgress::default())
             .expect("non-recursive dry run");
 
-        // target/ (dir) + top.txt — not subdir/ nor nested.txt
+        // Target/ (dir) + top.txt — not subdir/ nor nested.txt.
         assert_eq!(res.changed, 2, "expected root dir and one immediate file");
         assert!(res.errors.is_empty());
     }

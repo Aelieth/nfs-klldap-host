@@ -32,7 +32,8 @@ pub struct LdapClient {
     ldap_uri: String,
     /// Effective search base for users (supports child OUs via Subtree scope).
     user_base: String,
-    /// Effective search base for groups (supports child OUs via Subtree scope).
+    /// Effective search base for groups (supports child OUs via Subtree.
+    /// Scope).
     group_base: String,
 
     service_conn: Option<LdapConn>,
@@ -43,7 +44,7 @@ pub struct LdapClient {
     no_tls_verify: bool,
     start_tls: bool,
 
-    // std Mutex for Sync (Axum & across await via outer tokio Mutex).
+    // Std Mutex for Sync (Axum & across await via outer tokio Mutex).
     user_cache: Mutex<HashMap<String, CachedUser>>,
     group_cache: Mutex<HashMap<String, CachedGroup>>,
     // Reverse uid/gid→name caches for tree meta (10m TTL).
@@ -119,14 +120,13 @@ pub struct LdapCacheStats {
 
 #[derive(Debug, Clone)]
 struct CachedSearch {
-    results: Vec<(String, Option<i32>, String)>, // (id, numeric, display) — small and serializable enough
+    // Cached search rows store id, numeric value, and display label.
+    results: Vec<(String, Option<i32>, String)>,
     fetched_at: Instant,
 }
 
 impl LdapClient {
-    /// `user_base`/`group_base` from effective_ldap_search_bases.
-    /// Subtree scope covers child OUs.
-    /// Bind identity must be full DN (or verbatim) for LDAPS reliability.
+    /// Build a client using effective LDAP search bases and subtree scope.
     pub fn new_with_attributes(
         ldap_uri: &str,
         user_base: &str,
@@ -213,7 +213,7 @@ impl LdapClient {
         entries.into_iter().next().map(|se| se.dn)
     }
 
-    // connection settings (sync ldap3)
+    // Connection settings (sync ldap3).
 
     fn build_conn_settings(&self) -> LdapConnSettings {
         let mut s = LdapConnSettings::new();
@@ -223,14 +223,11 @@ impl LdapClient {
         if self.no_tls_verify {
             s = s.set_no_tls_verify(true);
         }
-        // TLS provider is installed early at application startup (see main.rs)
-        // Connections + explicit unbind() are intentional for compatibility wi
+        // TLS provider is installed early at application startup (see.
         s
     }
 
-    // -----------------------------------------------------------------
-    // Cache helpers (private). All callers must have already done evict.
-    // -----------------------------------------------------------------
+    // These tests cover cache helpers (private). all callers must have.
 
     fn evict_expired(&self) {
         let now = Instant::now();
@@ -238,7 +235,7 @@ impl LdapClient {
         self.user_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
         self.group_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
 
-        // Reverse uid/gid caches (same TTL)
+        // Reverse uid/gid caches (same TTL).
         self.user_by_uid_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
         self.group_by_gid_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
 
@@ -299,8 +296,7 @@ impl LdapClient {
         );
     }
 
-    // --- Reverse (uid/gid -> display) cache helpers ---
-    // Used for friendly meta display after FS stat.
+    // These tests cover reverse (uid/gid -> display) cache helpers --- used.
     fn cache_get_user_by_uid(&self, uid: i32) -> Option<CachedUser> {
         self.evict_expired();
         if let Some(hit) = self.user_by_uid_cache.lock().unwrap().get(&uid).cloned() {
@@ -436,8 +432,7 @@ impl LdapClient {
     }
 
     async fn get_or_bind_service(&mut self) -> Result<(), LdapError> {
-        // No-op for now (we use fresh connect+bind+op+unbind per call inside s
-        // KLLDAP compat). This keeps things simple and safe. Long-lived conn o
+        // No-op for now (we use fresh connect+bind+op+unbind per call inside.
         if self.username.is_none() || self.password.is_none() {
             return Err(LdapError::Auth("no service credentials".into()));
         }
@@ -460,7 +455,7 @@ impl LdapClient {
         let base = base.to_string();
         let filter = filter.to_string();
 
-        // retry on transient connect errors
+        // Retry on transient connect errors.
         for attempt in 0..3 {
             let result = tokio::task::spawn_blocking({
                 let uri = uri.clone();
@@ -504,7 +499,7 @@ impl LdapClient {
                     if attempt == 2 {
                         return Err(LdapError::Ldap(e));
                     }
-                    // Transient error, retry
+                    // Transient error, retry.
                     tokio::time::sleep(std::time::Duration::from_millis(200 * (attempt + 1) as u64)).await;
                 }
                 Err(e) => {
@@ -720,7 +715,7 @@ impl LdapClient {
         tokio::task::spawn_blocking(move || {
             let mut ldap = LdapConn::with_settings(settings, &uri).ok()?;
 
-            // Best-effort clean TLS shutdown via unbind even on bind rejection.
+            // Best-effort clean TLS shutdown via unbind even on bind.
             let bind_ok = ldap.simple_bind(&dn, &pw).ok().and_then(|r| r.success().ok()).is_some();
             let _ = ldap.unbind();
             if bind_ok { Some(()) } else { None }
@@ -781,7 +776,7 @@ impl LdapClient {
         self.fetch_entry_dn(&self.user_base, &filter).await
     }
 
-    // list/resolve (Subtree + shared PosixAttributeMapping)
+    // List/resolve (Subtree + shared PosixAttributeMapping).
 
     pub async fn resolve_group(&self, name: &str) -> Option<(i32, String)> {
         if let Some(hit) = self.cache_get_group(name) {
@@ -911,8 +906,7 @@ impl LdapClient {
             }
         }
 
-        // Recent search cache (2m): re-apply query filter stale keys
-        // Must not bypass typing.
+        // Recent search cache (2m): re-apply query filter stale keys Must not.
         let search_cached = self.cache_get_search(&cache_key, true);
         if let Some(cached) = search_cached.clone() {
             for (id, uid, display) in cached {
@@ -930,8 +924,7 @@ impl LdapClient {
             }
         }
 
-        // LDAP when caches miss, typed query misses or a stale empty
-        // __all__ cache blocks results.
+        // LDAP when caches miss, typed query misses or a stale empty __all__.
         let needs_ldap = if q_orig.is_empty() {
             search_cached.as_ref().is_none_or(|c| c.is_empty())
         } else {
@@ -1182,8 +1175,7 @@ impl LdapClient {
     }
 
     async fn user_is_member_of(&self, username: &str, group_name: &str) -> bool {
-        // Fast path: if we just verified this exact user use the memberOf
-        // List we already fetched.
+        // Fast path: if we just verified this exact user use the memberOf.
         if let Some(admin_dn) = self.resolve_admin_group_dn(group_name).await {
             if self.has_recent_memberof(username, &admin_dn) {
                 return true;
@@ -1209,8 +1201,7 @@ impl LdapClient {
             _ => return false,
         };
 
-        // After we have the group DN the recent verify data may still
-        // Help for this group.
+        // After we have the group DN the recent verify data may still Help.
         if self.has_recent_memberof(username, &group_dn) {
             return true;
         }

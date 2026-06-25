@@ -1,5 +1,5 @@
 //! Privileged chown/chmod on bind-mounted share trees after allow-list checks.
-//! Only called from fs::FsManager::apply_*; WalkDir skips symlinks (see fs.rs).
+//! Only called from fs::FsManager::apply_*. WalkDir skips symlinks (see.
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;

@@ -115,8 +115,7 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
             cfg.effective_hostname()
         );
 
-        // Two-tier runtime hostname (setup wizard/UI use this for keytab
-        // CI/sanity aid).
+        // Two-tier runtime hostname (setup wizard/UI use this for keytab.
         match get_consistent_hostname() {
             Ok(c) => {
                 println!(

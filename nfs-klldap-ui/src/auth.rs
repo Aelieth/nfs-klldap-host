@@ -1,6 +1,5 @@
-//! Hybrid auth: sidecar webui-password (iter SHA-256
-//! 0600) next to conf OR LLDAP member of webui_admin_group.
-//! 12h in-mem sessions; sidecar (SHA-256) + LLDAP admin group; cookie policy.
+//! Hybrid auth uses a localhost sidecar password or LLDAP admin group.
+//! Sessions last twelve hours with HttpOnly cookies and SHA-256 hashing.
 
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -13,7 +12,8 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 
-const SESSION_TTL: Duration = Duration::from_secs(12 * 3600); // 12 hours
+// Twelve hours is the session TTL.
+const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
 const SIMPLE_PW_FILENAME: &str = "webui-password";
 
 #[derive(Clone, Debug)]
@@ -23,16 +23,16 @@ pub struct Session {
 }
 
 pub struct AuthManager {
-    /// Active sessions keyed by opaque bearer token.
+    /// This map holds active sessions keyed by opaque bearer token.
     sessions: RwLock<HashMap<String, Session>>,
-    /// Absolute path to the simple password sidecar (next to nfs-klldap.conf)
+    /// This is the absolute path to the webui-password sidecar file.
     simple_pw_path: PathBuf,
-    /// Effective admin group name (from [management] webui_admin_group)
+    /// This names the LDAP admin group from webui_admin_group.
     admin_group: String,
 }
 
 impl AuthManager {
-    /// New manager; sidecar webui-password lives beside nfs-klldap.conf.
+    /// This constructs a new manager beside nfs-klldap.conf.
     pub fn new(config_path: impl AsRef<Path>, admin_group: Option<String>) -> Self {
         let config_path = config_path.as_ref();
         let simple_pw_path = config_path
@@ -51,18 +51,14 @@ impl AuthManager {
         &self.admin_group
     }
 
-    // ---------------------------------------------------------------------
-    // Simple password (localhost) handling
-    // ---------------------------------------------------------------------
+    // These tests cover simple password (localhost) handling.
 
-    /// Returns true if a simple password sidecar already exists (first-run is over).
+    /// Return true when the simple password sidecar already exists.
     pub fn has_simple_password(&self) -> bool {
         self.simple_pw_path.exists()
     }
 
-    /// Set (or overwrite) the simple "localhost" password.
-    /// The file is written with mode 0600 and contains a lightweight iterated
-    /// SHA-256 hash (salt:hashhex). See Cargo.toml for rationale vs. bcrypt.
+    /// Set or overwrite the localhost simple password file with mode 0600.
     pub fn set_simple_password(&self, password: &str) -> Result<(), String> {
         if password.trim().is_empty() {
             return Err("Password cannot be empty".to_string());
@@ -71,7 +67,7 @@ impl AuthManager {
             return Err("Password must be at least 8 characters".to_string());
         }
 
-        // 16 bytes of salt
+        // Use sixteen bytes of random salt.
         let mut salt = [0u8; 16];
         rand::thread_rng().fill(&mut salt);
 
@@ -79,8 +75,7 @@ impl AuthManager {
 
         let line = format!("{}:{}\n", hex_encode(&salt), hex_encode(&hash));
 
-        // Ensure parent directory exists (usually /config).
-        // May be the directory that contains the conf file.
+        // Ensure parent directory exists (usually /config). May be the.
         if let Some(parent) = self.simple_pw_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -146,9 +141,7 @@ impl AuthManager {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // Session management (used after either auth path succeeds)
-    // ---------------------------------------------------------------------
+    // These tests cover session management (used after either auth path.
 
     /// Create session after localhost simple-pw or LLDAP+group auth.
     pub fn create_privileged_session(&self, username: &str) -> String {
@@ -171,7 +164,7 @@ impl AuthManager {
         let mut map = self.sessions.write().unwrap();
         map.insert(token.clone(), session);
 
-        // Opportunistic cleanup
+        // Opportunistic cleanup.
         let now = Instant::now();
         map.retain(|_, s| now.duration_since(s.created) < SESSION_TTL);
 

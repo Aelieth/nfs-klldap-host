@@ -2,7 +2,8 @@
 
 use crate::constants::MACHINE_PRINCIPAL_PREFIXES;
 
-/// Local part of a Kerberos principal (before @), or the whole when unqualified.
+/// Local part of a Kerberos principal (before @), or the whole when.
+/// Unqualified.
 pub fn principal_local_part(p: &str) -> &str {
     let p = p.trim();
     p.split('@').next().unwrap_or(p)

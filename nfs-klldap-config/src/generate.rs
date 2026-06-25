@@ -45,10 +45,10 @@ pub fn generate_all(cfg: &NfsKlldapConfig, paths: &GenerationPaths) -> Result<()
     fs::create_dir_all(&paths.exports_dir)?;
     write_sssd_conf(cfg, &paths.sssd_conf)?;
     write_krb5_conf(cfg, &paths.krb5_conf)?;
-    // idmapd.conf shares realm/sssd with ganesha DomainName and idhelper.
+    // Idmapd.conf shares realm/sssd with ganesha DomainName and idhelper.
     write_idmap_conf(cfg, &paths.idmap_conf)?;
     write_nfs_conf(&paths.nfs_conf)?;
-    // Write fragments before main conf so %include targets exist at parse time.
+    // Write fragments before main conf so %include targets exist at parse.
     write_export_fragments(cfg, &paths.exports_dir)?;
     write_ganesha_main(cfg, &paths.ganesha_conf, &paths.exports_dir)?;
     Ok(())
@@ -255,23 +255,21 @@ access_provider = {access}"#,
         user_attr_list, group_attr_list
     ));
 
-    // krb5 auth: avoid extra LDAP roundtrips.
+    // The krb5 auth is avoid extra LDAP roundtrips.
     if auth_provider == "krb5" {
         out.push_str("\nchpass_provider = krb5");
-        // Krb5_validate=false avoids extra LDAP lookups for TGT validation in
-        // Many common LLDAP + krb5 setups.
+        // Krb5_validate=false avoids extra LDAP lookups for TGT validation in.
         if s.krb5_validate.is_none() {
             out.push_str("\nkrb5_validate = false");
         }
     }
 
-    // Krb5_realm/server/kpasswd: from effective_realm ldap_uri
-    // Host unless overridden.
+    // Krb5_realm/server/kpasswd: from effective_realm ldap_uri Host unless.
     let kdc_host = crate::extract_host_from_uri(&cfg.ldap_uri);
-    let realm = cfg.effective_realm(); // caller must have run validate_and_derive (or load)
+    // Caller must have run validate_and_derive before krb5 generation.
+    let realm = cfg.effective_realm();
 
-    // krb5_realm: always the effective realm (same as kerberos.realm and krb5.conf).
-    // No separate override field needed in this design (realm is single source).
+    // The krb5_realm is always the effective realm (same as kerberos.realm.
     out.push_str(&format!("\nkrb5_realm = {}", realm));
 
     let krb5_server_val = s
@@ -283,7 +281,7 @@ access_provider = {access}"#,
 
     out.push_str(&format!("\nkrb5_server = {}", krb5_server_val));
 
-    // kpasswd: auto to same host (common for co-located) unless explicitly set
+    // The kpasswd is auto to same host (common for co-located) unless.
     let krb5_kpasswd_val = s
         .krb5_kpasswd
         .as_ref()
@@ -292,7 +290,7 @@ access_provider = {access}"#,
         .unwrap_or_else(|| kdc_host.clone());
     out.push_str(&format!("\nkrb5_kpasswd = {}", krb5_kpasswd_val));
 
-    // Optional fields — only emit when explicitly set
+    // Optional fields — only emit when explicitly set.
     if let Some(v) = &s.ldap_tls_reqcert {
         if !v.trim().is_empty() {
             out.push_str(&format!("\nldap_tls_reqcert = {}", v.trim()));
@@ -331,7 +329,7 @@ access_provider = {access}"#,
         ));
     }
 
-    // Plain ldap:// safety flag
+    // Plain ldap is // safety flag.
     if is_plain_ldap
         && s.ldap_auth_disable_tls_never_use_in_production
             .unwrap_or(true)
@@ -405,8 +403,8 @@ use-machine-creds=0
     Ok(())
 }
 
-/// Write /etc/idmapd.conf: Domain from effective_realm()
-/// Method/GSS = nsswitch.
+/// Write /etc/idmapd.conf: Domain from effective_realm() Method/GSS =.
+/// Nsswitch.
 fn write_idmap_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError> {
     let realm = cfg.nfsv4_domain();
 
@@ -455,8 +453,7 @@ fn ganesha_debug_enabled() -> bool {
         .unwrap_or(false)
 }
 
-// Ganesha 9.6 pwnam=nsswitch idhelper materializes principals
-// For hybrid Kerberos.
+// Ganesha 9.6 pwnam=nsswitch idhelper materializes principals For hybrid.
 fn write_ganesha_main(
     cfg: &NfsKlldapConfig,
     out: &Path,
@@ -465,7 +462,7 @@ fn write_ganesha_main(
     let sec = &cfg.ganesha.default_security;
     let realm = cfg.nfsv4_domain();
 
-    // Explicit %include per share for deterministic load order (no glob races).
+    // Explicit %include per share for deterministic load order (no glob.
     let includes: String = cfg
         .shares
         .iter()
@@ -594,7 +591,7 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
 }
 
 fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(), ConfigError> {
-    // Remove prior managed fragments (we own exports.d/*.conf)
+    // Remove prior managed fragments (we own exports.d/*.conf).
     if exports_dir.exists() {
         for entry in fs::read_dir(exports_dir)? {
             let p = entry?.path();
@@ -610,9 +607,9 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         let export_id = derive_export_id(&share.name, 1000 + (i as u16 * 10));
         let path = cfg.serve_path_for(share);
         let default_pseudo = format!("/{}", share.name);
-        let pseudo_raw = share.export_path.as_deref().unwrap_or(&default_pseudo); // external (can differ / be short)
-        // Defensive absolutize validate_and_derive normally
-        // Guarantees absolute Pseudo.
+        // Client pseudo path may differ from the internal serve path.
+        let pseudo_raw = share.export_path.as_deref().unwrap_or(&default_pseudo);
+        // Defensive absolutize validate_and_derive normally Guarantees.
         let pseudo = if pseudo_raw.starts_with('/') {
             pseudo_raw.to_string()
         } else {
@@ -652,8 +649,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         let (disable_acl_line, manage_gids_line, auto_comment) =
             export_fs_directives(share, &caps);
 
-        // CLIENT block: Protocols=4 only.
-        // Read_Access_Check_Policy omitted (9.6 rejects it).
+        // CLIENT block: Protocols=4 only. Read_Access_Check_Policy omitted.
         let client_block = format!(
             r#"
     CLIENT {{
@@ -725,7 +721,7 @@ mod tests {
 
     #[test]
     fn pref_read_emitted_conditionally_in_export_fragment() {
-        // Minimal config + share with explicit PrefRead (legacy path)
+        // Minimal config + share with explicit PrefRead (legacy path).
         let mut cfg = crate::NfsKlldapConfig {
             ldap_uri: "ldaps://k.test:6360".into(),
             sssd: crate::SssdSection {
@@ -736,7 +732,8 @@ mod tests {
             shares: vec![crate::Share {
                 name: "stream".into(),
                 host_path: "/media/stream".into(),
-                cache_profile: None, // force direct pref_read path (legacy numeric in source)
+                // Force the direct pref_read path for legacy numeric tests.
+                cache_profile: None,
                 pref_read: Some(16 * 1024 * 1024),
                 ..Default::default()
             }],
@@ -758,7 +755,7 @@ mod tests {
 
         let frag_path = exports_dir.join("10-stream.conf");
         let frag = std::fs::read_to_string(&frag_path).unwrap_or_else(|_| {
-            // Fallback (name shift tolerance)
+            // Fallback (name shift tolerance).
             let mut s = String::new();
             if let Ok(rd) = std::fs::read_dir(&exports_dir) {
                 for e in rd.flatten() {
@@ -978,8 +975,7 @@ mod tests {
 
     #[test]
     fn per_share_export_respects_rw_and_security_overrides() {
-        // Exercise non-defaults: RO krb5i security -> EXPORT
-        // Must reflect them.
+        // Exercise non-defaults: RO krb5i security maps to EXPORT Must.
         let mut cfg = crate::NfsKlldapConfig {
             ldap_uri: "ldaps://k.test:6360".into(),
             sssd: crate::SssdSection {
@@ -1038,8 +1034,7 @@ mod tests {
 
     #[test]
     fn idmap_conf_generated_with_domain_from_realm_and_nsswitch() {
-        // Verifies standardized idmapd.conf generation follows effective_realm
-        // (nsswitch + direct POSIX). No new ganesha.conf keys.
+        // Verifies standardized idmapd.conf generation follows.
         let mut cfg = crate::NfsKlldapConfig {
             ldap_uri: "ldaps://k.test:6360".into(),
             sssd: crate::SssdSection {
@@ -1083,12 +1078,11 @@ mod tests {
         let nfs_conf = std::fs::read_to_string(paths.nfs_conf).expect("nfs.conf written");
         assert!(nfs_conf.contains("use-machine-creds=0"));
         assert!(nfs_conf.contains("pipefs-directory=/run/rpc_pipefs"));
-        // Ensure we did not pollute ganesha.conf with idmap keys
+        // Ensure we did not pollute ganesha.conf with idmap keys.
         let ganesha = std::fs::read_to_string(&paths.ganesha_conf).unwrap_or_default();
         assert!(!ganesha.contains("IdmapConf"));
         assert!(!ganesha.contains("idmapd.conf"));
-        // Read_Access_Check_Policy rejected by trixie 9.6
-        // Built-in default is pre.
+        // Read_Access_Check_Policy rejected by trixie 9.6 Built-in default is.
         assert!(
             !ganesha.contains("Read_Access_Check_Policy ="),
             "Read_Access_Check_Policy = must not appear in main ganesha.conf"

@@ -21,7 +21,7 @@ pub(crate) struct LoginTemplate {
     pub keytab_alert: Option<String>,
 }
 
-// keytab_alert is never passed to LoginTemplate; see keytab.rs.
+// Keytab_alert is never passed to LoginTemplate. See keytab.rs.
 
 /// Shared form for both normal login and first-run setup.
 #[derive(Deserialize)]
@@ -34,7 +34,7 @@ pub(crate) struct LoginForm {
 /// Surfaces auth failure reasons after a require_auth redirect.
 #[derive(Deserialize, Default)]
 pub(crate) struct LoginQuery {
-    /// ?error= value from require_auth redirect (e.g. session, required).
+    /// Carry the error query value from a require_auth redirect.
     error: Option<String>,
 }
 
@@ -89,8 +89,7 @@ pub async fn login(
             Err(e) => Err(e),
         }
     } else {
-        // LLDAP path — uses LdapClient::verify_user_is_admin (single lock clea
-        // Error for non-admins. The helper still benefits from the memberOf fa
+        // LLDAP path — uses LdapClient is :verify_user_is_admin (single lock.
         let l = state.lldap.lock().await;
         match l
             .verify_user_is_admin(username, password, state.auth.admin_group())
@@ -100,7 +99,7 @@ pub async fn login(
             Err(e) => {
                 // Log the real inner reason for operators.
                 eprintln!("LDAP admin login failed for '{}': {}", username, e);
-                // Present a friendly message to the browser (hides "service account" details).
+                // Present a friendly message to the browser (hides "service.
                 if e.to_string().contains("not a member of") {
                     Err(e.to_string())
                 } else {
@@ -112,7 +111,7 @@ pub async fn login(
 
     match result {
         Ok(user) => {
-            // Drop any prior session tokens (stale browser cookies after logout/restart).
+            // Drop any prior session tokens (stale browser cookies after.
             for old in extract_all_session_tokens_from_headers(&headers) {
                 state.auth.logout(&old);
             }
@@ -120,8 +119,7 @@ pub async fn login(
             let mut response_headers = HeaderMap::new();
             insert_session_cookie(&state, &headers, &mut response_headers, &token);
 
-            // Warm permission editor search caches on (web) login for instant 
-            // Permissions directory editor). The list_* calls populate both th
+            // Warm permission editor search caches on (web) login for instant.
             {
                 let lldap = state.lldap.clone();
                 tokio::spawn(async move {
@@ -131,8 +129,7 @@ pub async fn login(
                 });
             }
 
-            // Attach Set-Cookie explicitly on the Redirect (robust through 303
-            // Secure cookies).
+            // Attach Set-Cookie explicitly on the Redirect (robust through.
             let mut response = Redirect::to("/").into_response();
             response.headers_mut().extend(response_headers);
             response
@@ -205,7 +202,7 @@ pub async fn setup_password(
             let mut response_headers = HeaderMap::new();
             insert_session_cookie(&state, &headers, &mut response_headers, &token);
 
-            // Warm caches also for first-run setup (same benefit for editor UX).
+            // Warm caches also for first-run setup (same benefit for editor.
             {
                 let lldap = state.lldap.clone();
                 tokio::spawn(async move {
@@ -254,8 +251,7 @@ pub async fn logout(State(state): State<super::AppState>, headers: HeaderMap) ->
 /// Map ?error= query values to user-visible login messages.
 fn login_error_message(first_run: bool, error: Option<&str>) -> Option<String> {
     let code = error?;
-    // First-run visitors are not "logged out" suppress the
-    // Session-expired copy.
+    // First-run visitors are not "logged out" suppress the Session-expired.
     if first_run && matches!(code, "session" | "required" | "auth") {
         return None;
     }
@@ -378,7 +374,7 @@ pub(crate) fn validate_session_in_headers(
     None
 }
 
-// === Auth guard used by protected handlers ===
+// Auth guard helpers for protected routes.
 
 #[derive(Clone)]
 pub struct AuthUser(pub String);

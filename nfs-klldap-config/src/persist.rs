@@ -22,7 +22,7 @@ pub fn is_persistent_config(path: &Path) -> bool {
         Err(_) => return false,
     };
 
-    // dev != root => host volume (not container rootfs)
+    // Dev != root => host volume (not container rootfs).
     config_meta.dev() != root_meta.dev()
 }
 

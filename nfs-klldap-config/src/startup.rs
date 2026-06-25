@@ -12,7 +12,8 @@ use crate::{
 /// Default Kerberos keytab path inside the container image.
 pub const DEFAULT_KEYTAB_PATH: &str = "/etc/krb5.keytab";
 
-/// Keytab path (override via NFS_KLLDAP_KEYTAB_PATH for tests or custom mounts).
+/// Keytab path (override via NFS_KLLDAP_KEYTAB_PATH for tests or custom.
+/// Mounts).
 pub fn resolve_keytab_path() -> PathBuf {
     std::env::var("NFS_KLLDAP_KEYTAB_PATH")
         .map(PathBuf::from)
@@ -67,7 +68,7 @@ pub enum StartupStep {
 }
 
 impl StartupStep {
-    /// 1-based step index for wizard URLs (`/setup/1` .. `/setup/3`).
+    /// Return the one-based wizard URL step index when applicable.
     pub fn wizard_index(self) -> Option<u8> {
         match self {
             Self::WaitForPersistentVolume => Some(1),
@@ -88,7 +89,8 @@ impl StartupStep {
     }
 }
 
-/// Returns true when `step` is complete relative to the current `current` step.
+/// Returns true when `step` is complete relative to the current `current`.
+/// Step.
 pub fn is_step_complete(step: StartupStep, current: StartupStep) -> bool {
     if step == current {
         return false;
@@ -106,7 +108,7 @@ pub fn is_step_complete(step: StartupStep, current: StartupStep) -> bool {
 
 /// Persistent bind mount at the config path plus a root writability probe.
 pub fn check_persistent_writable(path: &Path) -> bool {
-    // Tests set NFS_KLLDAP_TEST_PERSISTENT=1 to skip inode bind-mount detection.
+    // Tests set NFS_KLLDAP_TEST_PERSISTENT=1 to skip inode bind-mount.
     if std::env::var("NFS_KLLDAP_TEST_PERSISTENT").is_ok_and(|v| v == "1") {
         let parent = path.parent().unwrap_or(Path::new("/config"));
         let test_file = parent.join(".nfs-klldap-persist-test");
@@ -162,7 +164,8 @@ pub fn ldap_uri_port(uri: &str) -> u16 {
         .unwrap_or(636)
 }
 
-/// Apply-log-style reachability report with setup-wizard troubleshooting hints.
+/// Apply-log-style reachability report with setup-wizard troubleshooting.
+/// Hints.
 pub fn format_reachability_probe(host: &str, uri: &str, result: &LdapReachability) -> String {
     let port = ldap_uri_port(uri);
     let mut out = format!(
@@ -186,7 +189,8 @@ pub fn format_reachability_probe(host: &str, uri: &str, result: &LdapReachabilit
     out
 }
 
-/// Apply-log-style bind probe report with SSSD hints (password never included).
+/// Apply-log-style bind probe report with SSSD hints (password never.
+/// Included).
 pub fn format_bind_probe(cfg: &NfsKlldapConfig, result: Result<(), String>) -> String {
     let dn = cfg.sssd.ldap_default_bind_dn.trim();
     let uri = cfg.ldap_uri.trim();
@@ -658,8 +662,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("nfs-klldap.conf");
         fs::write(&path, "[sssd]\nldap_default_bind_dn = \"uid=a,dc=x\"\n").unwrap();
-        // Ephemeral path still hits step 1 first test ordering via
-        // Direct bind check below.
+        // Ephemeral path still hits step 1 first test ordering via Direct.
         let step = compute_startup_step(&path);
         assert!(
             step == StartupStep::WaitForPersistentVolume || step == StartupStep::SetLdapUri
@@ -677,8 +680,7 @@ mod tests {
             },
             ..Default::default()
         };
-        // Empty DN still invokes ldapsearch on CI without LDAP it fails — we o
-        // Treats empty creds as step 3. Skips bind when credential fields are 
+        // Empty DN still invokes ldapsearch on CI without LDAP it fails — we.
         let step_path = {
             let tmp = tempfile::tempdir().unwrap();
             let p = tmp.path().join("c.conf");
@@ -691,8 +693,7 @@ mod tests {
             fs::write(&p, toml).unwrap();
             p
         };
-        // Ephemeral → step 1 the empty-cred branch is tested when persistent i
-        // Loaded cfg path use structural check on compute with empty fields:.
+        // Ephemeral → step 1 the empty-cred branch is tested when persistent.
         assert!(cfg.sssd.ldap_default_bind_dn.trim().is_empty());
         assert!(check_ldap_bind(&cfg).is_err() || cfg.sssd.ldap_default_authtok.is_empty());
         let _ = step_path;

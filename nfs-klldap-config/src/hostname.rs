@@ -153,7 +153,7 @@ pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsist
     let primary = match Command::new("hostname").output() {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         Ok(out) => {
-            // Command ran but exited non-zero — still capture stdout if any
+            // Command ran but exited non-zero — still capture stdout if any.
             let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if s.is_empty() {
                 return Err(HostnameInconsistency {
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn consistent_after_normalization_dots() {
-        // Both sides have trailing dots — should still agree
+        // Both sides have trailing dots — should still agree.
         let c = get_consistent_hostname_from_values("myserver.", "myserver.").unwrap();
         assert_eq!(c.hostname, "myserver");
     }
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn inconsistency_case_difference_is_flagged() {
-        // Case must match exactly for keytab principals
+        // Case must match exactly for keytab principals.
         let err = get_consistent_hostname_from_values("Aurora", "aurora").unwrap_err();
         assert!(err.primary.is_some());
     }
@@ -333,19 +333,18 @@ mod tests {
 
     #[test]
     fn real_get_consistent_hostname_smoke() {
-        // Real I/O path smoke (succeeds or well-formed inconsistency
-        // Never panic/garbage).
+        // Real I/O path smoke (succeeds or well-formed inconsistency Never.
         let result = get_consistent_hostname();
         match result {
             Ok(c) => {
                 assert!(!c.hostname.is_empty());
                 assert_eq!(c.primary.source, HostnameSource::Command);
                 assert_eq!(c.secondary.source, HostnameSource::ProcSysKernel);
-                // On a normal test machine the two sources must have agreed
+                // On a normal test machine the two sources must have agreed.
                 assert_eq!(c.primary.value, c.secondary.value);
             }
             Err(e) => {
-                // Acceptable in some CI sandboxes, but the error must be rich
+                // Acceptable in some CI sandboxes, but the error must be rich.
                 assert!(!e.reason.is_empty());
                 assert!(!e.remediation.is_empty());
             }

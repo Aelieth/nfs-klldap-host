@@ -19,8 +19,7 @@ fn minimal_default_config() -> Config {
 
 pub fn load_config_from(path: &Path) -> Result<Config, String> {
     if !path.exists() {
-        // Return a minimal default that still lets the UI start and show help text.
-        // The user is expected to point --config at the real shared volume.
+        // Return a minimal default that still lets the UI start and show help.
         return Ok(minimal_default_config());
     }
 
@@ -49,13 +48,12 @@ pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
         std::env::var("NFS_KLLDAP_LLDAP_PW"),
     ) {
         if !user.trim().is_empty() && !pass.trim().is_empty() {
-            // Verbatim: full DN or acceptable bind name is the operator's responsibility.
+            // Verbatim: full DN or acceptable bind name is the operator's.
             return (user.trim().to_string(), pass);
         }
     }
 
-    // Use the bind DN from config *verbatim*. ldap_default_bind_dn is already 
-    // Examples. Passing anything less (bare uid) causes bind failures or conne
+    // Use the bind DN from config *verbatim*. ldap_default_bind_dn is already.
     let bind_identity = cfg.sssd.ldap_default_bind_dn.clone();
     let password = cfg.sssd.ldap_default_authtok.clone();
     (bind_identity, password)
@@ -135,14 +133,13 @@ mod tests {
         // Serialize vs other env-manipulating tests (see ENV_LOCK).
         let _serial = ENV_LOCK.lock().unwrap();
 
-        // Force a clean env so parallel tests that set the LLDAP_*
-        // Overrides cannot affect this result.
+        // Force a clean env so parallel tests that set the LLDAP_* Overrides.
         let _c1 = EnvGuard::clear("NFS_KLLDAP_LLDAP_USER");
         let _c2 = EnvGuard::clear("NFS_KLLDAP_LLDAP_PW");
 
         let cfg = base_config();
         let (bind_id, pass) = ldap_service_creds(&cfg);
-        // Must return the full DN verbatim for proper simple_bind (not a stripped uid).
+        // Must return the full DN verbatim for proper simple_bind (not a.
         assert_eq!(bind_id, "uid=admin,ou=people,dc=example,dc=com");
         assert_eq!(pass, "sekret");
     }
@@ -181,16 +178,14 @@ mod tests {
         // Serialize vs other env-manipulating tests (see ENV_LOCK).
         let _serial = ENV_LOCK.lock().unwrap();
 
-        // Force a clean env so parallel tests that set the LLDAP_* overrides
-        // Cannot affect the cfg-path result.
+        // Force a clean env so parallel tests that set the LLDAP_* overrides.
         let _c1 = EnvGuard::clear("NFS_KLLDAP_LLDAP_USER");
         let _c2 = EnvGuard::clear("NFS_KLLDAP_LLDAP_PW");
 
         let mut cfg = base_config();
         cfg.sssd.ldap_default_bind_dn = "cn=weird,dc=example".into();
         let (bind_id, _) = ldap_service_creds(&cfg);
-        // Verbatim bind DN; server rejects bad values at bind time.
-        // Surfaces the correct error instead of a silent rewrite.
+        // Verbatim bind DN. Server rejects bad values at bind time. Surfaces.
         assert_eq!(bind_id, "cn=weird,dc=example");
     }
 }

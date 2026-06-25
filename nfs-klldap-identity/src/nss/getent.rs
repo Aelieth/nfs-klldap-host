@@ -1,6 +1,6 @@
 //! Strict parsers for getent passwd/group output.
 
-/// Parse `getent passwd` line: name:passwd:uid:gid:gecos:home:shell
+/// Parse `getent passwd` line is name:passwd:uid:gid:gecos:home:shell.
 pub fn parse_getent_passwd(line: &str) -> Option<(u32, u32)> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {

@@ -267,7 +267,8 @@ impl Supervisor {
         Ok(())
     }
 
-    /// CI one-shot: handle_sighup reload/skip and stop_ganesha against stub nfsd.
+    /// CI one-shot: handle_sighup reload/skip and stop_ganesha against stub.
+    /// Nfsd.
     fn run_supervise_recycle_probe(&mut self) -> Result<(), String> {
         self.log_info("Supervise-recycle-probe mode enabled");
         let stub_log = std::env::var("NFS_KLLDAP_RECYCLE_PROBE_GANESHA_LOG")
@@ -722,7 +723,8 @@ while :; do :; done
         Ok(())
     }
 
-    /// Signal WebUI restart poller that SSSD, idhelper, Ganesha, and WebUI are up.
+    /// Signal WebUI restart poller that SSSD, idhelper, Ganesha, and WebUI.
+    /// Are. Up.
     fn touch_recycle_marker(&self) {
         if let Ok(mut f) = OpenOptions::new()
             .write(true)
@@ -791,7 +793,8 @@ while :; do :; done
         }
     }
 
-    /// After start_ganesha spawn: real nfsd daemonizes and the launcher pid exits.
+    /// After start_ganesha spawn: real nfsd daemonizes and the launcher pid.
+    /// Exits.
     fn adopt_ganesha_daemon_pid_after_spawn(&mut self) {
         if !self.ganesha_managed || self.pids.ganesha.is_some_and(process_is_live) {
             return;
@@ -922,7 +925,7 @@ while :; do :; done
                     }
                 }
                 GaneshaAction::StopStart => {
-                    // Idempotent: wait out any stale pid/pgrep match before start.
+                    // Idempotent: wait out any stale pid/pgrep match before.
                     self.stop_ganesha();
                 }
             }
@@ -959,8 +962,7 @@ while :; do :; done
         }
     }
 
-    // LD_PRELOAD nss_wrapper so Ganesha getpwnam sees materialized passwd/group.
-    // Written by idhelper.
+    // LD_PRELOAD nss_wrapper so Ganesha getpwnam sees materialized.
     fn start_ganesha(&mut self) {
         self.quiet_winbind();
         let mut cmd = Command::new("ganesha.nfsd");

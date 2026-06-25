@@ -34,9 +34,8 @@ use nfs_klldap_config::{IdMapSnapshot, PosixUserEntry};
 use observer::{extract_candidate_principal, looks_like_client_hostname};
 use resolve::resolve_principal;
 
-/// Try to perform RESOLVE via the running daemon's unix socket.
-/// Returns Some(Resolved) on success (the daemon did the work + materialize).
-/// Returns None so the caller performs local resolve logic instead.
+/// Try to perform RESOLVE via the running daemon's unix socket. Returns.
+/// Some(Resolved) on success (the daemon did the work + materialize). Returns.
 fn try_resolve_via_socket(principal: &str) -> Option<Resolved> {
     let mut stream = UnixStream::connect(SOCKET_PATH).ok()?;
     let req = format!("RESOLVE {}\n", principal);
@@ -55,9 +54,7 @@ fn try_resolve_via_socket(principal: &str) -> Option<Resolved> {
                     "user" => PrincipalKind::User,
                     _ => PrincipalKind::Unknown,
                 };
-                // Name computation is done by the daemon's resolve_principal for the reply.
-                // For CLI printing we use the local part.
-                // Consistent with normal Resolved.name for users.
+                // Name computation is done by the daemon's resolve_principal.
                 let name = principal_local_part(parts[0]).to_string();
                 return Some(Resolved {
                     principal: parts[0].to_string(),
@@ -88,8 +85,7 @@ fn handle_cli(args: &[String]) {
             dlog!("cli RESOLVE p=\"{}\"", p);
             let json_flag = args.iter().any(|a| a == "--json" || a == "-j");
 
-            // Prefer live daemon cache/state via socket.
-            // Observer results become immediately visible to shim/CLI.
+            // Prefer live daemon cache/state via socket. Observer results.
             let r = if let Some(r) = try_resolve_via_socket(p) {
                 r
             } else {
@@ -124,8 +120,7 @@ fn handle_cli(args: &[String]) {
             println!("server_variants: {:?}", server_variants);
             println!("cache file: {}", CACHE_PATH);
             println!("socket: {}", SOCKET_PATH);
-            // Self-test with a real LDAP user when present.
-            // Avoids nobody/65534 noise from synthetic principals.
+            // Self-test with a real LDAP user when present. Avoids.
             let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
             let test_p = format!("testuser1@{}", realm);
             let r = resolve_principal(&test_p, &realm, &server_variants, &mut cache);
@@ -184,22 +179,20 @@ CLASSIFY, REBULK (force LDAP refresh).
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    // Support "nfs-klldap-idhelper daemon" or being started directly as the daemon.
+    // Support "nfs-klldap-idhelper daemon" or being started directly as the.
     if args.len() > 1 && (args[1] == "daemon" || args[1] == "--daemon") {
         run_daemon();
         return;
     }
 
-    // If no subcommand and we look like we were exec'd as the
-    // Main show help once.
+    // If no subcommand and we look like we were exec'd as the Main show help.
     if args.len() <= 1 {
         // Allow being started as a simple long-lived process via other means.
-        // Default to daemon behavior only if explicitly requested.
         print_help();
         return;
     }
 
-    // CLI mode: everything after the binary name
+    // CLI mode is everything after the binary name.
     let sub_args = &args[1..];
     handle_cli(sub_args);
 }
@@ -279,7 +272,7 @@ mod tests {
         assert!(r.is_none());
     }
 
-    // --- Regression tests for bogus tokens seen in real Ganesha logs ---
+    // These tests cover regression tests for bogus tokens seen in real.
     #[test]
     fn extract_rejects_unique_counter() {
         let line = r#"key_locate :CLIENT ID :F_DBG :Locate Unconfirmed Client ID seeking Key=0x... {Unique=0x6a374e99 Counter=0x00000001}"#;
@@ -291,7 +284,7 @@ mod tests {
     fn extract_rejects_ffff_from_ipv6() {
         let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)]"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
-        // It should find the real "blue-lt", never "ffff"
+        // It should find the real "blue-lt", never "ffff".
         if let Some(c) = r {
             assert!(c.contains("blue-lt"), "should still find the real hostname");
             assert!(!c.contains("ffff"), "must not emit host/ffff from IPv6 literal");
@@ -302,7 +295,7 @@ mod tests {
     fn extract_rejects_client_literal() {
         let line = "nfs4_op_destroy_clientid :CLIENT ID :DEBUG :DESTROY_CLIENTID clientid=...";
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
-        // Should not turn the word "CLIENT" into host/CLIENT
+        // Should not turn the word "CLIENT" into host/CLIENT.
         if let Some(c) = r {
             assert!(!c.to_ascii_lowercase().contains("client"), "must ignore literal CLIENT word");
         }
@@ -318,8 +311,7 @@ mod tests {
     #[test]
     fn materialize_writes_machine_as_root() {
         let _tmp = tempfile::tempdir().unwrap();
-        // Override const paths via temp dir is hard; monkey-patch via env fails.
-        // Instead directly test line builders and a small manual cache write.
+        // Override const paths via temp dir is hard. Monkey-patch via env.
         let mut c = IdCache::default();
         let machine = Resolved {
             principal: "host/blue-lt@EXAMPLE.COM".into(),
@@ -331,7 +323,6 @@ mod tests {
         };
         c.insert(machine);
         // We can't easily redirect const paths here without changing API.
-        // Test the formatting helpers in isolation.
         let line = passwd_line_for(c.get("host/blue-lt@EXAMPLE.COM").unwrap());
         assert!(line.starts_with("blue-lt:x:0:0:"));
         assert!(line.contains("kll:machine:"));
@@ -341,16 +332,14 @@ mod tests {
 
     #[test]
     fn materialize_always_includes_root_uid0_for_immediate_nss_hits() {
-        // Critical for cold-start: even with no principals materialized yet, n
-        // Logs.) We simulate the lines that materialize builds (the actual fun
+        // Critical for cold-start is even with no principals materialized.
         let mut passwd_lines: Vec<String> = vec![];
-        // Simulate the exact injection rule added to materialize_nss_wrappers
+        // Simulate the exact injection rule added to materialize_nss_wrappers.
         if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
             passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
         }
         assert!(passwd_lines[0].starts_with("root:x:0:0:"));
-        // When a machine is also present its name line + the root
-        // Group are there too.
+        // When a machine is also present its name line + the root Group are.
         let mut c = IdCache::default();
         let machine = Resolved { principal: "host/x@EX".into(), name: "x".into(), uid: 0, gid: 0, kind: PrincipalKind::Machine, source: "s".into() };
         c.insert(machine);
@@ -503,7 +492,7 @@ mod tests {
             kind: PrincipalKind::User,
             source: "bulk".into(),
         });
-        // sanitize_for_nss maps '@' to '_' in passwd login names
+        // Sanitize_for_nss maps '@' to '_' in passwd login names.
         assert!(full_line.starts_with("testuser1_SATOMLIN.COM:x:1001:1001:"));
     }
 
@@ -516,8 +505,7 @@ mod tests {
 
     #[test]
     fn extract_rejects_nil_from_conf_group() {
-        // Lines often contain conf = (nil) after a good name= group
-        // Must never emit host/nil.
+        // Lines often contain conf = (nil) after a good name= group Must.
         let line = r#"key_locate :CLIENT ID :F_DBG :Locate Client Record seeking Key=... {{... name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} ...}}"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         if let Some(c) = r {
@@ -556,10 +544,10 @@ mod tests {
         assert!(r.is_none() || !r.unwrap().contains("0x"));
     }
 
-    // --- Additional repros from the user's full trace after rebuild ---
+    // These tests cover additional repros from the user's full trace after.
     #[test]
     fn extract_rejects_pure_clientid_line() {
-        // Standalone clientid= lines must never produce a host/ candidate
+        // Standalone clientid= lines must never produce a host/ candidate.
         let line = r#"nfs4_op_destroy_clientid :CLIENT ID :DEBUG :DESTROY_CLIENTID clientid=Unique=0x6a375213 Counter=0x00000002"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         assert!(r.is_none() || !r.unwrap().to_ascii_lowercase().contains("clientid"), "pure clientid= line must not emit host/clientid");
@@ -567,7 +555,7 @@ mod tests {
 
     #[test]
     fn extract_only_good_from_full_clid_create_line() {
-        // The exact fs_create line from the trace must yield only the real host
+        // The exact fs_create line from the trace must yield only the real.
         let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)]"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         if let Some(c) = r {
@@ -575,13 +563,13 @@ mod tests {
             assert!(!c.contains("ffff"));
             assert!(!c.to_ascii_lowercase().contains("client"));
         } else {
-            // If it returns none that's also acceptable as long as it doesn't emit garbage
+            // If it returns none that's also acceptable as long as it doesn't.
         }
     }
 
     #[test]
     fn extract_rejects_conf_nil_groups_even_in_long_client_record() {
-        // Full client record blob with multiple (nil) after the good name=
+        // Full client record blob with multiple (nil) after the good name=.
         let line = r#"key_locate :CLIENT ID :F_DBG :Locate Client Record seeking Key=0x7f0c3082f530 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=1}}"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         if let Some(c) = r {
@@ -592,7 +580,7 @@ mod tests {
 
     #[test]
     fn extract_rejects_on_lines_with_only_unconf_and_counters() {
-        // Lines that only have unconf / counter noise after nfsv4 mention
+        // Lines that only have unconf / counter noise after nfsv4 mention.
         let line = r#"key_locate :CLIENT ID :F_DBG :Locate Unconfirmed Client ID seeking Key=0x7f0c3082f670 {Unique=0x6a375213 Counter=0x00000001}"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         assert!(r.is_none() || r.unwrap().contains("blue-lt") /* only if a good name was also present */);
@@ -600,8 +588,7 @@ mod tests {
 
     #[test]
     fn stress_extract_on_trace_fragments_no_garbage() {
-        // Regression: Ganesha log fragments must not yield host/nil
-        // Host/clientid, etc.
+        // Regression: Ganesha log fragments must not yield host/nil.
         let fragments = vec![
             r#"conf = (nil) {NULL} unconf = (nil) {NULL}"#,
             r#"clientid=Unique=0x6a375213 Counter=0x00000001"#,
@@ -610,11 +597,10 @@ mod tests {
             r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)]"#,
             r#"fs_rm_clid_impl :CLIENT ID :DEBUG :position=0 len=45  parent_path=/var/lib/nfs/ganesha/v4recov recov_dir=::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)"#,
             r#"dec_client_record_ref :CLIENT ID :F_DBG :Free {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=1}}"#,
-            // Long CLIENT ID lines with server_addr on Docker bridge
+            // Long CLIENT ID lines with server_addr on Docker bridge.
             r#"hashtable_getlatch :CLIENT ID :F_DBG :Get Client Record returning Value=0x7f0c14001df0 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=0}}"#,
             r#"hashtable_deletelatched :CLIENT ID :F_DBG :Delete Client Record Key=0x7f0c14001df0 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=0}} Value=0x7f0c14001df0 ... was removed"#,
-            // A line with nfsv4 early and later (nil) groups.
-            // No good Linux group after the marker (fallback case).
+            // A line with nfsv4 early and later (nil) groups. No good Linux.
             r#"some prefix NFSv4 stuff clientid=Unique=0x6a375213 conf = (nil) unconf = (nil) other tokens"#,
         ];
 
@@ -638,7 +624,7 @@ mod tests {
         let realm = "SATOMLIN.COM".to_string();
         let variants = vec!["zima-nas".to_string()];
 
-        // Regular host/ principal
+        // Regular host/ principal.
         let r1 = resolve_principal("host/blue-lt@SATOMLIN.COM", &realm, &variants, &mut cache);
         assert_eq!(r1.uid, 0);
         assert_eq!(r1.gid, 0);
@@ -646,14 +632,14 @@ mod tests {
         assert_eq!(r1.source, "special");
         assert_eq!(r1.name, "blue-lt");
 
-        // Synthetic / internal form (host/0x...) should also short-circuit to 0:0
+        // Synthetic / internal form (host/0x...) should also short-circuit to.
         let r2 = resolve_principal("host/0x6a375213@SATOMLIN.COM", &realm, &variants, &mut cache);
         assert_eq!(r2.uid, 0);
         assert_eq!(r2.gid, 0);
         assert_eq!(r2.kind, PrincipalKind::Machine);
         assert_eq!(r2.source, "special");
 
-        // nfs/ and root/ prefixes
+        // Nfs/ and root/ prefixes.
         let r3 = resolve_principal("nfs/somehost@SATOMLIN.COM", &realm, &variants, &mut cache);
         assert_eq!(r3.uid, 0);
         assert_eq!(r3.gid, 0);
@@ -664,7 +650,7 @@ mod tests {
         assert_eq!(r4.gid, 0);
         assert_eq!(r4.source, "special");
 
-        // Whitespace around machine principal must not leak into nss login name.
+        // Whitespace around machine principal must not leak into nss login.
         let r5 = resolve_principal(" host/blue-lt@SATOMLIN.COM ", &realm, &variants, &mut cache);
         assert_eq!(r5.uid, 0);
         assert_eq!(r5.name, "blue-lt");
@@ -673,8 +659,6 @@ mod tests {
     #[test]
     fn extract_catches_could_not_map_line_for_user_principal() {
         // This is the key new pattern for closing the first-use timing gap.
-        // Ganesha logs this when principal2uid can't map during nfs_req_creds.
-        // We must extract the principal so the observer resolves it promptly.
         let line = r#"nfs_req_creds :ID MAPPER :INFO :Could not map principal testuser1@SATOMLIN.COM to uid"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         assert_eq!(r, Some("testuser1@SATOMLIN.COM".to_string()));
@@ -683,7 +667,6 @@ mod tests {
     #[test]
     fn extract_catches_get_uid_using_nfsidmap_line() {
         // Early sighting: Ganesha calling the mapper for a user principal.
-        // Extracting here lets the observer resolve before/during the shim call.
         let line = r#"principal2uid : Get uid for testuser1@SATOMLIN.COM using nfsidmap"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         assert_eq!(r, Some("testuser1@SATOMLIN.COM".to_string()));

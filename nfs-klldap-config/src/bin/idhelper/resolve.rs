@@ -60,7 +60,7 @@ fn uid_gid_from_snapshot(snap: &IdMapSnapshot, full: &str, short: &str) -> Optio
     None
 }
 
-/// LDAP snapshot first; on miss reload full directory and retry resolve_user.
+/// Try the LDAP snapshot first and reload the directory on miss.
 fn resolve_via_structured_ldap(name_or_principal: &str) -> Option<(u32, u32)> {
     let (resolver, bind_dn, bind_pw) = get_or_init_resolver()?;
     let short = principal_local_part(name_or_principal);
@@ -87,8 +87,7 @@ fn load_resolver_from_config() -> Option<(IdLdapResolver, String, String)> {
     Some((resolver, cfg.sssd.ldap_default_bind_dn.clone(), cfg.sssd.ldap_default_authtok.clone()))
 }
 
-/// Lazy resolver init so 10m IdLdapResolver caches persist.
-/// Used across resolve/getent/observer calls.
+/// This OnceLock keeps the resolver alive for observer and getent paths.
 pub(crate) static ID_RESOLVER: OnceLock<Option<(IdLdapResolver, String, String)>> =
     OnceLock::new();
 
@@ -101,8 +100,7 @@ pub(crate) fn get_or_init_resolver() -> Option<(&'static IdLdapResolver, &'stati
 }
 
 fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
-    // Primary lookup is short posix name callers also try
-    // Full principal forms.
+    // Use the short POSIX name first, then try full principal forms.
     dlog!("getent passwd \"{}\" called", name);
     let out = Command::new("getent")
         .args(["passwd", name])
@@ -122,7 +120,7 @@ fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
     None
 }
 
-/// Classify machine→uid 0 or resolve user; materialize nss_wrapper on change.
+/// Resolve principals and materialize nss_wrapper when the cache changes.
 pub(crate) fn resolve_principal(
     principal: &str,
     realm: &str,
@@ -178,10 +176,9 @@ pub(crate) fn resolve_principal(
         PrincipalKind::User
     };
 
-    // Attempt resolution
+    // Attempt resolution.
     let resolved = if is_machine {
-        // Machine principals (host/, nfs/, root/ server variants): map
-        // 0:0 without getent/LDAP.
+        // Machine principals (host/, nfs/, root/ server variants): map 0:0.
         let short = machine_short_name(principal);
         if debug_enabled() {
             eprintln!(
@@ -215,7 +212,7 @@ pub(crate) fn resolve_principal(
                 source: src,
             }
         } else {
-            // Nobody fallback: materialize so getpwnam under nss_wrapper can resolve it.
+            // Nobody fallback: materialize so getpwnam under nss_wrapper can.
             eprintln!(
                 "[idhelper] FALLBACK {} for principal=\"{}\" (no uid/gid from getent or structured resolver)",
                 FALLBACK_NOBODY_UID, principal

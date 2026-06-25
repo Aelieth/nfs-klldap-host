@@ -239,7 +239,7 @@ pub async fn setup_redirect(State(state): State<super::AppState>) -> impl IntoRe
     Redirect::to(&setup_redirect_for_step(&state.config_path)).into_response()
 }
 
-/// GET /setup/1
+/// GET /setup/1.
 pub async fn setup_step1(State(state): State<super::AppState>) -> impl IntoResponse {
     if is_wizard_complete(&state) {
         return Redirect::to("/login").into_response();
@@ -274,7 +274,7 @@ pub async fn setup_step1(State(state): State<super::AppState>) -> impl IntoRespo
     .into_response()
 }
 
-/// POST /setup/1/verify
+/// POST /setup/1/verify.
 pub async fn setup_step1_verify(State(state): State<super::AppState>) -> impl IntoResponse {
     let config_path = state.config_path.clone();
     let verified = tokio::task::spawn_blocking(move || check_persistent_writable(&config_path))
@@ -306,7 +306,7 @@ pub async fn setup_step1_verify(State(state): State<super::AppState>) -> impl In
     }
 }
 
-/// GET /setup/2
+/// GET /setup/2.
 pub async fn setup_step2(State(state): State<super::AppState>) -> impl IntoResponse {
     if is_wizard_complete(&state) {
         return Redirect::to("/login").into_response();
@@ -422,7 +422,7 @@ fn clear_step2_test(state: &super::AppState) {
     state.setup_test.lock().unwrap().step2_uri = None;
 }
 
-/// GET /setup/3
+/// GET /setup/3.
 pub async fn setup_step3(State(state): State<super::AppState>) -> impl IntoResponse {
     if is_wizard_complete(&state) {
         return Redirect::to("/login").into_response();

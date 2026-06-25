@@ -118,7 +118,8 @@ First-run setup is handled by the WebUI wizard at https://<host>:9630/setup
     );
 }
 
-/// Poll until compute_startup_step returns Ready (used by tests and automation).
+/// Poll until compute_startup_step returns Ready (used by tests and.
+/// Automation).
 fn wait_until_ready(config_path: &Path) -> Result<(), String> {
     loop {
         let step = compute_startup_step(config_path);

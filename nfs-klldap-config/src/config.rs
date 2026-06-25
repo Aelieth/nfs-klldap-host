@@ -169,6 +169,15 @@ pub struct SssdSection {
 
 pub use nfs_klldap_identity::PosixAttributeMapping;
 
+/// POSIX mapping and LDAP search bases from [sssd] in one pass.
+pub fn sssd_ldap_derived(sssd: &SssdSection, realm: &str) -> (PosixAttributeMapping, (String, String)) {
+    let (posix, bases) = crate::idmap::sssd_ldap_inputs(sssd);
+    (
+        nfs_klldap_identity::resolve_posix_attribute_mapping(&posix),
+        nfs_klldap_identity::effective_ldap_search_bases(&bases, realm),
+    )
+}
+
 /// Resolves POSIX attribute names from [sssd] overrides or built-in defaults.
 pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapping {
     let (posix, _) = crate::idmap::sssd_ldap_inputs(sssd);

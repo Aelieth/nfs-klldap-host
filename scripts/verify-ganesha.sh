@@ -71,7 +71,7 @@ echo "[6] Principal mapping + Ganesha 9.6 policy..."
 ganesha-ctl id-map-test testuser1 2>/dev/null || echo "  id-map-test not available or failed (non-fatal)"
 if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
     if grep -q 'Read_Access_Check_Policy' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
-        echo "  WARN: Read_Access_Check_Policy present — trixie Ganesha 9.6 rejects this key"
+        echo "  WARN: Read_Access_Check_Policy present — omit it; 9.6 default pre applies"
     else
         echo "  OK: Read_Access_Check_Policy omitted in fragments"
     fi

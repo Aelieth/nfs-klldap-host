@@ -96,11 +96,9 @@ async fn main() {
     // Filesystem manager (real-time, no DB) — driven by central shares config.
     let fs = Arc::new(crate::fs::FsManager::new((*config).clone()));
 
-    let posix_attrs = nfs_klldap_config::resolve_posix_attribute_mapping(&config.sssd);
-    // Display_realm is safe before validate_and_derive. Works for first-run.
     let realm = config.display_realm();
-    let (user_base, group_base) =
-        nfs_klldap_config::effective_ldap_search_bases(&config.sssd, &realm);
+    let (posix_attrs, (user_base, group_base)) =
+        nfs_klldap_config::sssd_ldap_derived(&config.sssd, &realm);
 
     let (no_tls_verify, start_tls) = nfs_klldap_config::ldap_tls_policy(
         &config.ldap_uri,

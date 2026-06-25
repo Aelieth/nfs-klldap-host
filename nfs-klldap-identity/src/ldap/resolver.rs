@@ -631,50 +631,87 @@ impl IdLdapResolver {
         )
     }
 
+    fn build_posix_list_filter(
+        obj_class: &str,
+        num_attr: &str,
+        name_attr: &str,
+        extra_name_attr: Option<&str>,
+        query: &str,
+    ) -> String {
+        if query.is_empty() {
+            return format!("(&(objectClass={})({}=*))", obj_class, num_attr);
+        }
+        let esc = escape_ldap_filter(query);
+        let num_clause = if let Ok(n) = query.parse::<i32>() {
+            format!("({}={})", num_attr, n)
+        } else {
+            format!("({}=*{}*)", num_attr, esc)
+        };
+        let extra = extra_name_attr
+            .map(|a| format!("({}=*{}*)", a, esc))
+            .unwrap_or_default();
+        format!(
+            "(&(objectClass={})({}=*)(|({}=*{}*)(cn=*{}*)(displayName=*{}*){}{}))",
+            obj_class, num_attr, name_attr, esc, esc, esc, extra, num_clause
+        )
+    }
+
+    fn search_list_posix(
+        &self,
+        base: &str,
+        ldap_filter: &str,
+        name_attr: &str,
+        num_attr: &str,
+        display_attr: &str,
+        bind_dn: &str,
+        bind_pw: &str,
+        limit: usize,
+    ) -> Vec<(String, Option<i32>, String, String)> {
+        let attrs = vec![
+            name_attr.into(),
+            num_attr.into(),
+            "cn".into(),
+            "displayName".into(),
+            display_attr.into(),
+        ];
+        let entries = self
+            .service_search(base, ldap_filter, attrs, bind_dn, bind_pw)
+            .unwrap_or_default();
+        let mut out = Vec::new();
+        for se in entries {
+            let id = Self::extract_first_attr(&se, name_attr).unwrap_or_default();
+            if id.is_empty() {
+                continue;
+            }
+            let display = Self::extract_display_name(&se, display_attr, &id);
+            let num = Self::extract_first_attr(&se, num_attr).and_then(|s| s.parse::<i32>().ok());
+            out.push((id, num, display, se.dn));
+            if out.len() >= limit {
+                break;
+            }
+        }
+        out
+    }
+
     /// Subtree filter for POSIX users with uidNumber.
     pub fn build_user_list_filter(&self, query: &str) -> String {
-        let obj = &self.posix_attributes.user_object_class;
-        let uid_attr = &self.posix_attributes.user_uid_number;
-        let name_attr = &self.posix_attributes.user_name;
-        let full = &self.posix_attributes.user_full_name;
-
-        if query.is_empty() {
-            return format!("(&(objectClass={})({}=*))", obj, uid_attr);
-        }
-
-        let esc = escape_ldap_filter(query);
-        let uid_clause = if let Ok(n) = query.parse::<i32>() {
-            format!("({}={})", uid_attr, n)
-        } else {
-            format!("({}=*{}*)", uid_attr, esc)
-        };
-
-        format!(
-            "(&(objectClass={})({}=*)(|({}=*{}*)(cn=*{}*)(displayName=*{}*)({}=*{}*){}))",
-            obj, uid_attr, name_attr, esc, esc, esc, full, esc, uid_clause
+        Self::build_posix_list_filter(
+            &self.posix_attributes.user_object_class,
+            &self.posix_attributes.user_uid_number,
+            &self.posix_attributes.user_name,
+            Some(&self.posix_attributes.user_full_name),
+            query,
         )
     }
 
     /// Subtree filter listing POSIX groups with gidNumber.
     pub fn build_group_list_filter(&self, query: &str) -> String {
-        let obj = &self.posix_attributes.group_object_class;
-        let gid_attr = &self.posix_attributes.group_gid_number;
-        let name_attr = &self.posix_attributes.group_name;
-
-        if query.is_empty() {
-            return format!("(&(objectClass={})({}=*))", obj, gid_attr);
-        }
-
-        let esc = escape_ldap_filter(query);
-        let gid_clause = if let Ok(n) = query.parse::<i32>() {
-            format!("({}={})", gid_attr, n)
-        } else {
-            format!("({}=*{}*)", gid_attr, esc)
-        };
-
-        format!(
-            "(&(objectClass={})({}=*)(|({}=*{}*)(cn=*{}*)(displayName=*{}*){}))",
-            obj, gid_attr, name_attr, esc, esc, esc, gid_clause
+        Self::build_posix_list_filter(
+            &self.posix_attributes.group_object_class,
+            &self.posix_attributes.group_gid_number,
+            &self.posix_attributes.group_name,
+            None,
+            query,
         )
     }
 
@@ -686,36 +723,16 @@ impl IdLdapResolver {
         bind_pw: &str,
         limit: usize,
     ) -> Vec<(String, Option<i32>, String, String)> {
-        let ldap_filter = self.build_user_list_filter(query);
-        let name_attr = self.posix_attributes.user_name.clone();
-        let uid_attr = self.posix_attributes.user_uid_number.clone();
-        let full_attr = self.posix_attributes.user_full_name.clone();
-        let attrs: Vec<String> = vec![
-            name_attr.clone(),
-            uid_attr.clone(),
-            "cn".into(),
-            "displayName".into(),
-            full_attr.clone(),
-        ];
-
-        let entries = self
-            .service_search(&self.user_base, &ldap_filter, attrs, bind_dn, bind_pw)
-            .unwrap_or_default();
-
-        let mut out = Vec::new();
-        for se in entries {
-            let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
-            if id.is_empty() {
-                continue;
-            }
-            let display = Self::extract_display_name(&se, &full_attr, &id);
-            let uid = Self::extract_first_attr(&se, &uid_attr).and_then(|s| s.parse::<i32>().ok());
-            out.push((id, uid, display, se.dn));
-            if out.len() >= limit {
-                break;
-            }
-        }
-        out
+        self.search_list_posix(
+            &self.user_base,
+            &self.build_user_list_filter(query),
+            &self.posix_attributes.user_name,
+            &self.posix_attributes.user_uid_number,
+            &self.posix_attributes.user_full_name,
+            bind_dn,
+            bind_pw,
+            limit,
+        )
     }
 
     /// Returns the DN of the first LDAP entry matching filter under base.
@@ -795,34 +812,16 @@ impl IdLdapResolver {
         bind_pw: &str,
         limit: usize,
     ) -> Vec<(String, Option<i32>, String, String)> {
-        let ldap_filter = self.build_group_list_filter(query);
-        let name_attr = self.posix_attributes.group_name.clone();
-        let gid_attr = self.posix_attributes.group_gid_number.clone();
-        let attrs: Vec<String> = vec![
-            name_attr.clone(),
-            gid_attr.clone(),
-            "cn".into(),
-            "displayName".into(),
-        ];
-
-        let entries = self
-            .service_search(&self.group_base, &ldap_filter, attrs, bind_dn, bind_pw)
-            .unwrap_or_default();
-
-        let mut out = Vec::new();
-        for se in entries {
-            let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_default();
-            if id.is_empty() {
-                continue;
-            }
-            let display = Self::extract_display_name(&se, &name_attr, &id);
-            let gid = Self::extract_first_attr(&se, &gid_attr).and_then(|s| s.parse::<i32>().ok());
-            out.push((id, gid, display, se.dn));
-            if out.len() >= limit {
-                break;
-            }
-        }
-        out
+        self.search_list_posix(
+            &self.group_base,
+            &self.build_group_list_filter(query),
+            &self.posix_attributes.group_name,
+            &self.posix_attributes.group_gid_number,
+            &self.posix_attributes.group_name,
+            bind_dn,
+            bind_pw,
+            limit,
+        )
     }
 
     pub fn cache_stats(&self) -> (u64, u64) {

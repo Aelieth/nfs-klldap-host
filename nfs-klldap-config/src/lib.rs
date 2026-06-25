@@ -26,6 +26,7 @@ mod validate;
 
 pub use config::{
     effective_ldap_search_bases, resolve_cache_profile, resolve_posix_attribute_mapping,
+    sssd_ldap_derived,
     ShareFieldWarning, CACHE_PROFILES, GaneshaSection, GenerationPaths, HostSection,
     KerberosSection, ManagementSection, NfsKlldapConfig, PosixAttributeMapping, ServerSection,
     Share, SssdSection, StorageSection, WebuiSection, SHARE_KNOWN_KEYS,

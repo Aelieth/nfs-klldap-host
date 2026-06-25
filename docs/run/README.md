@@ -132,7 +132,7 @@ These are less commonly needed:
 |------------------------------|-----------|---------|-------------|
 | `LOG_FORMAT`                 | `text`    | `json`  | Container stdout log format: `text` (default) or `json`. |
 | `SSSD_DEBUG_LEVEL`           | *(unset)* | `4`     | When set, passed as `-d $SSSD_DEBUG_LEVEL` to the `sssd` daemon for increased verbosity. |
-| `GANESHA_DEBUG`              | *(unset)* | `true`  | When set to a truthy value (`true`/`1`/`yes`/`on`, case-insensitive), upgrades the generated `LOG` block to `Default_Log_Level = DEBUG` with `CLIENTID`/`SESSIONS`/`IDMAPPER = FULL_DEBUG` and `NFS4`/`DISPATCH`/`XPRT = DEBUG` (baseline without it is `INFO` + `CLIENTID`/`SESSIONS`/`IDMAPPER`/`XPRT = EVENT`). For deep Ganesha troubleshooting only. |
+| `GANESHA_DEBUG`              | *(unset)* | `TRUE`  | When set exactly to `TRUE`, the generator emits a `LOG { Default_Log_Level = DEBUG; Components { IDMAPPER/FSAL/NFS4 = FULL_DEBUG; } }` block into `ganesha.conf`. For deep Ganesha troubleshooting only. |
 | `WATCHER_DEBOUNCE_SECONDS`   | `2`       | `1`     | Seconds to sleep after detecting a config file change (via inotify) before signaling the supervisor for reload. |
 | `HOST_NFS` (or `NFS_KLLDAP_HOST_NFS`) | `false` | `true` | When truthy, runs the container as a management sidecar only. Ganesha fragments are still generated and written to host-visible paths (mount the host's `/etc/ganesha`); the container does not start or manage the NFS server. See the dedicated "HOST_NFS mode" section below for compose, keytab, UI, and ZimaOS notes. |
 | `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS` | `600` | `0` | Seconds between idhelper LDAP→nss_passwd syncs (`0` disables periodic rebulk). |
@@ -207,14 +207,13 @@ This project exports real directories from the Docker *host* via Ganesha VFS ins
 - `host_path` values in `nfs-klldap.conf` (and the UI) are **absolute paths on the Docker host** (unchanged by this layout).
 - Inside the container the data for a share is visible at the *internal* location derived from `storage.container_root` + (tail of the share's `host_path` after its first directory component). The first dir component of `host_path` acts as the implicit per-share bind root (e.g. host `/media/NVME-RAID/nvme` → internal `/export/NVME-RAID/nvme`). `export_path` (editable in the Shares section; defaults to `/<name>`) is used *only* for the client-visible Pseudo path and can be a short/friendly name independently of the internal layout.
 - Translation (host_path → real container path for chown/chmod/readdir) happens only at the syscall boundary (`FsManager` + `privileged.rs`).
-- **Numeric UID/GID identity must be identical** on the host and inside the container for the bind-mounted trees. Add `--userns=host` so Docker does not remap container uids on bind mounts (without it, host paths often show 65534/nobody while the container sees LLDAP ids). Do **not** use `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts. The on-disk owners written by the WebUI (and seen by NFS clients) are the raw numbers from LLDAP `uidNumber`/`gidNumber`.
+- **Numeric UID/GID identity must be identical** on the host and inside the container for the bind-mounted trees. Do **not** use `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts. The on-disk owners written by the WebUI (and seen by NFS clients) are the raw numbers from LLDAP `uidNumber`/`gidNumber`.
 
 ### Recommended container flags
 ```yaml
 # (or equivalent docker run flags)
 network_mode: host
 uts: host
-userns_mode: host
 cap_add:
   - SYS_ADMIN
   - DAC_READ_SEARCH
@@ -308,7 +307,7 @@ Key points:
 - `DomainName` is uppercase `effective_realm()` (matches `/etc/idmapd.conf` Domain).
 - Kerberos configuration via NFS_KRB5 and Root_Kerberos_Principal (host, nfs, root).
 - Explicit `%include` lines (one per share fragment) for deterministic loading.
-- `Read_Access_Check_Policy` omitted everywhere (trixie Ganesha 9.6 rejects it; built-in default `pre` applies).
+- `Read_Access_Check_Policy` omitted everywhere (9.6 default `pre` applies).
 - Only the options above + safe NFSV4/EXPORT_DEFAULTS are emitted. Idmap* keys are deliberately not present in ganesha.conf (use the idhelper + shim + /etc/idmapd.conf + nss materialization instead; see man nfsidmap / idmapd.conf). Other legacy options are omitted because they are not accepted by the ganesha 9.6 parser on trixie-backports.
 
 Each per-share fragment contains an EXPORT with Path (internal), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block for access control, and the VFS FSAL. Additional CLIENT blocks can be appended manually (they will be lost on regeneration).
@@ -324,7 +323,7 @@ See also the reference shape in `examples/ganesha-exports.d/10-example.conf`.
 - "No such file or directory" when mounting a VFS export, or Ganesha failing to traverse the tree → missing `SYS_ADMIN`/`DAC_READ_SEARCH` or the bind mount not actually visible at the expected internal Path (container_root + tail of host_path after its first dir component) inside the container. (export_path is only for the Pseudo; check that the first dir of the share's host_path matches the bind source you mounted.)
 - WebUI "apply" fails with permission errors on subdirectories → numeric UIDs don't match across the host/container boundary, or the DAC cap is absent.
 - Ganesha fails to start with dbus/socket errors → the entrypoint dbus launch didn't produce `/run/dbus/system_bus_socket` in time (rare; the readiness loop helps), or the package was not present in an old image.
-- Kerberos principal / hostname mismatches → missing `--uts=host` (or `uts: host` in compose) and/or keytab principals that don't match the name the container sees. For krb5p **client** mounts, use the server FQDN in the mount source (`server.example.com:/export`), not `localhost` — the NFS service principal must match the keytab (`nfs/<fqdn>@REALM`).
+- Kerberos principal / hostname mismatches → missing `--uts=host` (or `uts: host` in compose) and/or keytab principals that don't match the name the container sees.
 - Ganesha CLIENT records show `server_addr = 172.17.x.x` while clients connect from external addresses → container is on Docker bridge networking instead of host mode. Restart with `network_mode: host` / `--network=host`. `verify-ganesha.sh` and `nfs-klldap-startup check` warn when the container primary IPv4 is in `172.17.0.0/16`.
 - UDP clients or legacy `showmount` tools complain → `Enable_UDP = false` in `NFS_CORE_PARAM` (NFSv4 TCP only); rpcbind is still present for compatibility; open the ports you actually need.
 - Mounts repeatedly fail / get torn down with Fedora Immutable clients (host keytab + user TGT) → the `nfs-klldap-idhelper` daemon must be running (started automatically after SSSD). Ganesha uses nss_wrapper preload by default (`USE_NSS_WRAPPER=1`); set `USE_NSS_WRAPPER=0` to rely on extrausers alone. Use `ganesha-ctl id-check`, `ganesha-ctl id-resolve '<principal>'`, and inspect `/var/lib/nfs-klldap/nss_passwd` to verify. See [docs/ldap-integration.md](../ldap-integration.md).
@@ -340,15 +339,5 @@ This combination (bind mounts + root inside + the two caps + `--uts=host` + expl
 /container/healthcheck.sh
 verify-ganesha.sh            # in-container Ganesha/export + network checks (/usr/local/bin/)
 ganesha-ctl show-fragments
-ganesha-ctl id-check
-ganesha-ctl fs-warnings      # limited-FS / ACL diagnostics per share
 getent passwd <user>
-SCRATCH=/tmp/... ./scripts/run-container-verify.sh [container]   # bundles the above into container-verify.log
-SCRATCH=/tmp/... NFS_TEST_USER_PW='...' ./scripts/capture-share-access-evidence.sh   # krb5p mount/write proof (external Fedora client; not loopback inside server)
 ```
-
-The generator also writes `/etc/nfs.conf` with `[gssd] use-machine-creds=0` so krb5p clients present user TGTs (not machine keytab only). `scripts/capture-share-access-evidence.sh` uses a separate `fedora:42` client container with `--network=host` because loopback mounts inside the server present `nfs/<host>@` machine creds.
-
-Expected Ganesha noise with `Manage_Gids = false`: `uid2grp_allocate_by_principal` WARN for `@` principals and `set_extended_groups` INFO for managed_gids fetch failures — these do not block writes when idhelper resolves the user uid.
-
-On hosts where your login shell runs in a nested user namespace, plain `stat` on bind mounts may show `65534/nobody` even when the init namespace (and container) see the real LLDAP uid. Verify host ownership with `docker run --rm --pid=host --userns=host ... stat` or the capture script's init-ns checks.

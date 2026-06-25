@@ -508,7 +508,7 @@ NFSV4 {{
 EXPORT_DEFAULTS {{
     SecType = {sec};
     Protocols = {proto};
-    # Read_Access_Check_Policy omitted (trixie 9.6 rejects it; default is pre).
+    # Read_Access_Check_Policy omitted (9.6 default pre applies).
 }}
 "#,
         realm = realm,
@@ -781,7 +781,7 @@ mod tests {
         assert!(frag.contains("Protocols = 4;"), "CLIENT should explicitly list Protocols = 4 to avoid core/client mismatch warning");
         assert!(
             !frag.contains("Read_Access_Check_Policy"),
-            "Read_Access_Check_Policy must not appear in CLIENT blocks (ganesha 9.6 trixie-backports rejects it)"
+            "Read_Access_Check_Policy must not appear in CLIENT blocks (9.6 default pre applies)"
         );
     }
 
@@ -851,7 +851,7 @@ mod tests {
         assert!(frag.contains("Protocols = 4;"), "CLIENT should explicitly list Protocols = 4 to avoid core/client mismatch warning");
         assert!(
             !frag.contains("Read_Access_Check_Policy"),
-            "Read_Access_Check_Policy must not appear in CLIENT blocks (ganesha 9.6 trixie-backports rejects it)"
+            "Read_Access_Check_Policy must not appear in CLIENT blocks (9.6 default pre applies)"
         );
     }
 
@@ -1028,7 +1028,7 @@ mod tests {
         assert!(frag.contains("Protocols = 4;"), "CLIENT should explicitly list Protocols = 4 to avoid core/client mismatch warning");
         assert!(
             !frag.contains("Read_Access_Check_Policy"),
-            "Read_Access_Check_Policy must not appear in CLIENT blocks (ganesha 9.6 trixie-backports rejects it)"
+            "Read_Access_Check_Policy must not appear in CLIENT blocks (9.6 default pre applies)"
         );
     }
 
@@ -1082,7 +1082,7 @@ mod tests {
         let ganesha = std::fs::read_to_string(&paths.ganesha_conf).unwrap_or_default();
         assert!(!ganesha.contains("IdmapConf"));
         assert!(!ganesha.contains("idmapd.conf"));
-        // Read_Access_Check_Policy rejected by trixie 9.6 Built-in default is.
+        // Read_Access_Check_Policy omitted. 9.6 default pre applies.
         assert!(
             !ganesha.contains("Read_Access_Check_Policy ="),
             "Read_Access_Check_Policy = must not appear in main ganesha.conf"

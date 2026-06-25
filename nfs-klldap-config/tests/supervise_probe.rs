@@ -1,9 +1,13 @@
 //! Integration test: drives the real nfs-klldap-startup supervise-probe path with COMPLETE_TOML defaults.
 
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const COMPLETE_TOML: &str = r#"
 ldap_uri = "ldaps://kllap.test:6360"
@@ -263,15 +267,37 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         .expect("spawn supervise loop-probe");
 
     let mut stdout = child.stdout.take().expect("supervisor stdout pipe");
+    let loop_ready = Arc::new(AtomicBool::new(false));
+    let loop_ready_reader = Arc::clone(&loop_ready);
     let log_handle = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        String::from_utf8_lossy(&buf).to_string()
+        let mut buf = [0u8; 4096];
+        let mut log = String::new();
+        loop {
+            match stdout.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buf[..n]);
+                    log.push_str(&chunk);
+                    if log.contains("First-run setup required") {
+                        loop_ready_reader.store(true, Ordering::SeqCst);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        log
     });
 
     let pid = child.id();
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    let ready_deadline = Instant::now() + Duration::from_secs(30);
+    while !loop_ready.load(Ordering::SeqCst) {
+        assert!(
+            ready_deadline > Instant::now(),
+            "supervisor never entered supervise loop"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(100));
     assert!(
         !recycle_marker.is_file(),
         "recycle marker must be absent before SIGHUP"
@@ -285,13 +311,13 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         "must deliver real SIGHUP to supervisor child"
     );
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let marker_deadline = Instant::now() + Duration::from_secs(15);
     while !recycle_marker.is_file() {
         assert!(
-            deadline > std::time::Instant::now(),
+            marker_deadline > Instant::now(),
             "recycle marker missing after real SIGHUP"
         );
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(100));
     }
     assert!(
         fs::metadata(&recycle_marker).map(|m| m.len()).unwrap_or(0) > 0,

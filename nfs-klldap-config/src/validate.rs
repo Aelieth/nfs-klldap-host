@@ -427,7 +427,7 @@ impl NfsKlldapConfig {
         }
 
         // Apply HOST_NFS env override for sidecar mode.
-        if let Some(val) = crate::runtime::host_nfs_from_env() {
+        if let Some(val) = crate::host_nfs_from_env() {
             self.host.host_nfs = Some(val);
         }
 

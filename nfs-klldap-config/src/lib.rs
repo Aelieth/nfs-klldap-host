@@ -8,7 +8,6 @@ mod error;
 mod exports_fingerprint;
 mod ganesha_liveness;
 mod recycle_plan;
-mod runtime;
 #[cfg(unix)]
 mod signals;
 #[cfg(not(unix))]
@@ -47,11 +46,6 @@ pub use ganesha_liveness::{
 pub use recycle_plan::{
     plan_from_changes, ganesha_sighup_failed, GaneshaAction, ServiceRecyclePlan,
 };
-pub use runtime::{
-    host_nfs_active, host_nfs_from_env, parse_host_nfs_env_value, resolve_host_nfs_mode,
-    runtime_hostname, runtime_realm, runtime_realm_from_disk, runtime_server_variants,
-    runtime_server_variants_from_disk,
-};
 #[cfg(unix)]
 pub use signals::{
     install_signal_handlers, reap_one_child, request_sighup, shutdown_requested,
@@ -77,9 +71,11 @@ pub use fs_warnings::{
 pub use hook::{effective_post_generate_hook, run_post_generate_hooks};
 pub use generate::generate_all;
 pub use hostname::{
-    format_nfs_principal_list, get_consistent_hostname, looks_like_docker_default_hostname,
-    nfs_keytab_host_matches, nfs_keytab_host_variants, ConsistentHostname, HostnameInconsistency,
-    HostnameObservation, HostnameSource,
+    format_nfs_principal_list, get_consistent_hostname, host_nfs_active, host_nfs_from_env,
+    looks_like_docker_default_hostname, nfs_keytab_host_matches, nfs_keytab_host_variants,
+    parse_host_nfs_env_value, resolve_host_nfs_mode, runtime_hostname, runtime_realm,
+    runtime_realm_from_disk, runtime_server_variants, runtime_server_variants_from_disk,
+    ConsistentHostname, HostnameInconsistency, HostnameObservation, HostnameSource,
 };
 pub use persist::{is_persistent_config, load_host_paths_only};
 pub use startup::{

@@ -30,6 +30,19 @@ fn recycle_marker_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(RECYCLE_MARKER_DEFAULT))
 }
 
+fn loop_probe_ready_path() -> Option<PathBuf> {
+    std::env::var("NFS_KLLDAP_LOOP_PROBE_READY")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
+fn touch_loop_probe_ready() {
+    if let Some(path) = loop_probe_ready_path() {
+        let _ = fs::write(&path, b"ready\n");
+    }
+}
+
 /// Runtime paths and binaries (override via env for CI).
 struct SupervisorEnv {
     nfs_config: PathBuf,
@@ -617,6 +630,7 @@ while :; do :; done
             self.log_info("Supervise probe complete — exiting");
             return Ok(());
         }
+        touch_loop_probe_ready();
         let bounded = self.env.supervise_wizard_probe;
         let max_ticks = if bounded {
             self.env.supervisor_max_ticks

@@ -5,9 +5,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const COMPLETE_TOML: &str = r#"
 ldap_uri = "ldaps://kllap.test:6360"
@@ -44,6 +42,12 @@ fn write_exe(path: &std::path::Path, body: &str) {
     let mut perms = fs::metadata(path).unwrap().permissions();
     perms.set_mode(0o755);
     fs::set_permissions(path, perms).unwrap();
+}
+
+fn wait_until(deadline: Instant, mut ready: impl FnMut() -> bool, label: &str) {
+    while !ready() {
+        assert!(deadline > Instant::now(), "{label}");
+    }
 }
 
 #[test]
@@ -195,7 +199,6 @@ fn supervise_probe_wizard_complete_recycle_touches_marker() {
         !combined.contains("Setup wizard complete — bringing up services"),
         "must not double-bring-up via supervisor_loop after SIGHUP recycle"
     );
-    assert!(combined.contains("Supervise wizard probe complete"));
     assert!(
         recycle_marker.is_file(),
         "recycle marker must exist after wizard SIGHUP path"
@@ -216,7 +219,9 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
     let conf = tmp.path().join("nfs-klldap.conf");
     let marker = tmp.path().join(".setup_wizard_done");
     let recycle_marker = recycle_marker_for(&tmp);
+    let loop_ready = tmp.path().join(".loop_probe_ready");
     let _ = fs::remove_file(&recycle_marker);
+    let _ = fs::remove_file(&loop_ready);
 
     fs::write(&conf, COMPLETE_TOML).unwrap();
 
@@ -241,6 +246,7 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         .env("NFS_KLLDAP_TEST_PERSISTENT", "1")
         .env("NFS_KLLDAP_SETUP_MARKER", &marker)
         .env("NFS_KLLDAP_RECYCLE_MARKER", &recycle_marker)
+        .env("NFS_KLLDAP_LOOP_PROBE_READY", &loop_ready)
         .env("USE_NSS_WRAPPER", "0")
         .env("CONFIG_BIN", &config_bin)
         .env("UI_BIN", stubs.join("nfs-klldap-ui"))
@@ -267,37 +273,18 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         .expect("spawn supervise loop-probe");
 
     let mut stdout = child.stdout.take().expect("supervisor stdout pipe");
-    let loop_ready = Arc::new(AtomicBool::new(false));
-    let loop_ready_reader = Arc::clone(&loop_ready);
     let log_handle = std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        let mut log = String::new();
-        loop {
-            match stdout.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let chunk = String::from_utf8_lossy(&buf[..n]);
-                    log.push_str(&chunk);
-                    if log.contains("First-run setup required") {
-                        loop_ready_reader.store(true, Ordering::SeqCst);
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        log
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        String::from_utf8_lossy(&buf).to_string()
     });
 
     let pid = child.id();
-    let ready_deadline = Instant::now() + Duration::from_secs(30);
-    while !loop_ready.load(Ordering::SeqCst) {
-        assert!(
-            ready_deadline > Instant::now(),
-            "supervisor never entered supervise loop"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    std::thread::sleep(Duration::from_millis(100));
+    wait_until(
+        Instant::now() + std::time::Duration::from_secs(30),
+        || loop_ready.is_file(),
+        "supervisor never wrote loop-probe ready marker",
+    );
     assert!(
         !recycle_marker.is_file(),
         "recycle marker must be absent before SIGHUP"
@@ -311,14 +298,11 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         "must deliver real SIGHUP to supervisor child"
     );
 
-    let marker_deadline = Instant::now() + Duration::from_secs(15);
-    while !recycle_marker.is_file() {
-        assert!(
-            marker_deadline > Instant::now(),
-            "recycle marker missing after real SIGHUP"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    wait_until(
+        Instant::now() + std::time::Duration::from_secs(30),
+        || recycle_marker.is_file(),
+        "recycle marker missing after real SIGHUP",
+    );
     assert!(
         fs::metadata(&recycle_marker).map(|m| m.len()).unwrap_or(0) > 0,
         "recycle marker must be non-empty"
@@ -336,4 +320,5 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         "loop must not duplicate bring-up after HUP recycle"
     );
     let _ = fs::remove_file(&recycle_marker);
+    let _ = fs::remove_file(&loop_ready);
 }

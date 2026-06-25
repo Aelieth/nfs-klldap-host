@@ -7,7 +7,7 @@ Companion app for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos), this
 Debian 13-slim runtime (Rust build stages remain on Fedora minimal) providing a complete Kerberized NFSv4 server (NFS-Ganesha) with KLLDAP-backed POSIX UID/GID mapping via SSSD. The multi-stage build keeps the three Rust compilation stages on Fedora for reliable cargo-chef + cross-compilation while the final runtime uses Debian 13-slim (with Ganesha from backports for configuration compatibility) for smaller size and packaging stability.
 
 <img
-  src="https://raw.githubusercontent.com/Aelieth/nfs-klldap-host/refs/heads/0.9.x/screenshot.png"
+  src="https://raw.githubusercontent.com/Aelieth/nfs-klldap-host/refs/heads/main/screenshot.png"
   alt="Screenshot of the nfs shares"
   width="50%"
 />
@@ -49,17 +49,16 @@ See [docs/ganesha-architecture.md](docs/ganesha-architecture.md) for the `host_p
 **Recommended:** use [examples/docker-compose.yml](examples/docker-compose.yml) with `network_mode: host` and `uts: host` so NFS and Kerberos see the real host identity. Port mapping in a bridged `docker run` can work for lab use but host networking is the supported production pattern.
 
 ```bash
-docker compose -f examples/docker-compose.yml up -d   # builds the image locally
+docker compose -f examples/docker-compose.yml up -d
 ```
 
-**Alternative** (`docker run` with host networking — required for NFS + Kerberos; pre-built image):
+**Alternative** (`docker run` with host networking — required for NFS + Kerberos):
 
 ```bash
 docker run -d \
   --name nfs-klldap \
   --network=host \
   --uts=host \
-  --userns=host \
   --cap-add SYS_ADMIN --cap-add DAC_READ_SEARCH \
   -v /path/to/config:/config \
   -v /media/:/export \
@@ -166,8 +165,6 @@ Not every advanced `[sssd]` option is exposed via env. The core options (LDAP UR
 
 A new top-level switch `HOST_NFS=true` (or `NFS_KLLDAP_HOST_NFS=true`) runs the container as a management sidecar for a *host* NFS server (Ganesha at `/etc/ganesha`). Shares, Kerberos config, and the WebUI permission tools continue to work normally; the container does not start ganesha.nfsd. See docs/run/README.md for compose volumes, keytab sharing, UI gray-out behavior, and ZimaOS-style appliance notes.
 
-Set `GANESHA_DEBUG=true` (truthy spellings accepted) to upgrade generated Ganesha logging to DEBUG/FULL_DEBUG for `CLIENTID`/`SESSIONS`/`IDMAPPER` plus `NFS4`/`DISPATCH`/`XPRT` — see docs/run/README.md.
-
 Example in compose:
 
 ```
@@ -196,7 +193,7 @@ All owner/group/mode changes performed by the WebUI go through `FsManager` + `pr
 
 - **Symlink policy**: The recursive engine (WalkDir) **never recurses into symlinks** (`follow_links(false)` + `filter_entry`). `chown`/`chmod` calls follow symlinks for the entries that are mutated (standard std behavior, matching historical `chown(2)`). Symlink inodes themselves are skipped by default. This prevents accidental escape from the declared `host_path` trees (a previous risk with the old `Path::is_dir()` recursion).
 - **UID/GID are numeric only on disk**: The engine and WebUI always write raw `u32` values (sourced from LLDAP `uidNumber`/`gidNumber` or direct numeric entry in the editor). Friendly names are resolved only for display.
-- **Bind-mount UID namespace assumption**: The container must run as real root with the data directories bind-mounted such that the numeric UIDs written *inside* the container are exactly the IDs visible on the Docker host filesystem. Use `--userns=host` (or avoid Docker's default user namespace) so bind-mounted files show LLDAP uid/gid on the host, not mapped `nobody` (65534). `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts will cause the on-disk owners to be wrong from the host/NFS client perspective.
+- **Bind-mount UID namespace assumption**: The container must run as real root with the data directories bind-mounted such that the numeric UIDs written *inside* the container are exactly the IDs visible on the Docker host filesystem. `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts will cause the on-disk owners to be wrong from the host/NFS client perspective.
 
 See [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md) for the full security model.
 
@@ -218,7 +215,7 @@ See [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md) for the ful
 
 ## Identity & Kerberos (idhelper)
 
-`nfs-klldap-idhelper` classifies Kerberos principals (machine `host/`/`nfs/`/`root/` vs LDAP users), resolves them to uid/gid via SSSD/getent with structured LDAP fallback (`nfs-klldap-identity`), and bulk-seeds/materializes decisions into nss_wrapper + extrausers before Ganesha starts. Ganesha 9.6 `principal2uid` uses in-process libnfsidmap (`nfs4_gss_princ_to_ids` → `getpwnam` under `LD_PRELOAD=nss_wrapper`), not the nfsidmap binary; the shim remains for operator/rpc.idmapd-style fallback calls.
+`nfs-klldap-idhelper` classifies Kerberos principals (machine `host/`/`nfs/` vs LDAP users), resolves them to uid/gid via SSSD/getent with structured LDAP fallback (`nfs-klldap-identity`), and bulk-seeds/materializes decisions into nss_wrapper + extrausers before Ganesha starts. Ganesha 9.6 `principal2uid` uses in-process libnfsidmap (`nfs4_gss_princ_to_ids` → `getpwnam` under `LD_PRELOAD=nss_wrapper`), not the nfsidmap binary; the shim remains for operator/rpc.idmapd-style fallback calls.
 
 Inside the container:
 

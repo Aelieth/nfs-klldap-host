@@ -123,11 +123,14 @@ fn handle_cli(args: &[String]) {
             println!("server_variants: {:?}", server_variants);
             println!("cache file: {}", CACHE_PATH);
             println!("socket: {}", SOCKET_PATH);
-            // Quick self test (local path)
+            // Self-test with a real LDAP user when present (avoids nobody/65534 noise from synthetic principals).
             let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
-            let test_p = format!("user-test@{}", realm);
-            let _ = resolve_principal(&test_p, &realm, &server_variants, &mut cache);
-            println!("self-test resolve executed (may be unknown without real LDAP)");
+            let test_p = format!("testuser1@{}", realm);
+            let r = resolve_principal(&test_p, &realm, &server_variants, &mut cache);
+            println!(
+                "self-test: {} -> uid={} gid={} kind={} source={}",
+                r.principal, r.uid, r.gid, r.kind.as_str(), r.source
+            );
         }
         "explain" => {
             println!("nfs-klldap-idhelper — machine vs user Kerberos principal resolver");

@@ -350,3 +350,5 @@ SCRATCH=/tmp/... NFS_TEST_USER_PW='...' ./scripts/capture-share-access-evidence.
 The generator also writes `/etc/nfs.conf` with `[gssd] use-machine-creds=0` so krb5p clients present user TGTs (not machine keytab only). `scripts/capture-share-access-evidence.sh` uses a separate `fedora:42` client container with `--network=host` because loopback mounts inside the server present `nfs/<host>@` machine creds.
 
 Expected Ganesha noise with `Manage_Gids = false`: `uid2grp_allocate_by_principal` WARN for `@` principals and `set_extended_groups` INFO for managed_gids fetch failures — these do not block writes when idhelper resolves the user uid.
+
+On hosts where your login shell runs in a nested user namespace, plain `stat` on bind mounts may show `65534/nobody` even when the init namespace (and container) see the real LLDAP uid. Verify host ownership with `docker run --rm --pid=host --userns=host ... stat` or the capture script's init-ns checks.

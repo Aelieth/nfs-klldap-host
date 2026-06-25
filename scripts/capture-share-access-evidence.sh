@@ -28,6 +28,15 @@ fail() {
   exit 1
 }
 
+# Host agent shells may run in a nested user namespace (stat shows 65534/nobody).
+# Read bind-mount ownership from the init user namespace instead.
+host_stat_init_ns() {
+  local host_path="$1" fmt="$2"
+  docker run --rm --pid=host --userns=host \
+    -v "$(dirname "$host_path"):/mnt:ro" \
+    "$CLIENT_IMAGE" stat -c "$fmt" "/mnt/$(basename "$host_path")"
+}
+
 SERVER_FQDN="$(docker exec "$CONTAINER" hostname -f | tr -d '\r')"
 [[ -n "$SERVER_FQDN" && "$SERVER_FQDN" != "localhost" ]] || fail "hostname -f must be non-localhost (got: ${SERVER_FQDN:-empty})"
 
@@ -112,8 +121,10 @@ RUN_TS="$(date -Is)"
   echo "probe=${PROBE}"
   docker exec "$CONTAINER" stat -c 'container stuff: %u %g %i %n' "/export/stuff/${PROBE}"
   docker exec "$CONTAINER" stat -c 'container junk: %u %g %i %n' "/export/junk/${PROBE}"
-  stat "${HOST_STUFF}/${PROBE}" 2>&1 || echo "host stuff stat: FAIL"
-  stat "${HOST_JUNK}/${PROBE}" 2>&1 || echo "host junk stat: FAIL"
+  host_stat_init_ns "${HOST_STUFF}/${PROBE}" 'host init-ns stuff: %u %g %i %n' || echo "host init-ns stuff stat: FAIL"
+  host_stat_init_ns "${HOST_JUNK}/${PROBE}" 'host init-ns junk: %u %g %i %n' || echo "host init-ns junk stat: FAIL"
+  stat -c 'agent-shell stuff: %u %g (nested userns view)' "${HOST_STUFF}/${PROBE}" 2>&1 || true
+  stat -c 'agent-shell junk: %u %g (nested userns view)' "${HOST_JUNK}/${PROBE}" 2>&1 || true
   echo "stuff_content=$(cat "${HOST_STUFF}/${PROBE}")"
   echo "junk_content=$(cat "${HOST_JUNK}/${PROBE}")"
 } >>"$HOST_ART" 2>&1
@@ -132,13 +143,19 @@ junk_uid="$(docker exec "$CONTAINER" stat -c '%u' "/export/junk/${PROBE}")"
 [[ "$stuff_uid" == "$EXPECTED_UID" ]] || fail "stuff uid ${stuff_uid} != expected ${EXPECTED_UID}"
 [[ "$junk_uid" == "$EXPECTED_UID" ]] || fail "junk uid ${junk_uid} != expected ${EXPECTED_UID}"
 
+host_stuff_uid="$(host_stat_init_ns "${HOST_STUFF}/${PROBE}" '%u')"
+host_junk_uid="$(host_stat_init_ns "${HOST_JUNK}/${PROBE}" '%u')"
+[[ "$host_stuff_uid" == "$EXPECTED_UID" ]] || fail "host init-ns stuff uid ${host_stuff_uid} != expected ${EXPECTED_UID}"
+[[ "$host_junk_uid" == "$EXPECTED_UID" ]] || fail "host init-ns junk uid ${host_junk_uid} != expected ${EXPECTED_UID}"
+
 test -r "${HOST_STUFF}/${PROBE}" || fail "host cannot read stuff probe"
 test -r "${HOST_JUNK}/${PROBE}" || fail "host cannot read junk probe"
 grep -q "^stuff_content=${STUFF_PAYLOAD}$" "$HOST_ART" || fail "host stuff content mismatch"
 grep -q "^junk_content=${JUNK_PAYLOAD}$" "$HOST_ART" || fail "host junk content mismatch"
 
 grep -qF "$PROBE" "$GANESHA_OUT" || fail "ganesha slice missing probe filename"
-grep -qiE 'testuser1@|Resolve principal testuser1' "$GANESHA_OUT" || fail "ganesha slice missing testuser1 principal"
+grep -qF "name=${PROBE}" "$GANESHA_OUT" || fail "ganesha slice missing OP_LOOKUP for probe filename"
+grep -qiE 'Get uid for testuser1@|testuser1@TESTLABBY\.LOCAL' "$GANESHA_OUT" || fail "ganesha slice missing testuser1 uid resolution"
 grep -qiE 'name=stuff|/export/stuff' "$GANESHA_OUT" || fail "ganesha slice missing stuff export"
 grep -qiE 'name=junk|/export/junk' "$GANESHA_OUT" || fail "ganesha slice missing junk export"
 grep -q 'OP_WRITE' "$GANESHA_OUT" || fail "ganesha slice missing OP_WRITE"

@@ -22,4 +22,10 @@ OUT="$SCRATCH/container-verify.log"
   docker exec "$CONTAINER" ganesha-ctl fs-warnings
 } >"$OUT" 2>&1
 
+# Hard gates on captured output (expected noise is annotated, not a failure).
+grep -q 'OK: Ganesha (2049)' "$OUT" || { echo "FAIL: healthcheck missing Ganesha OK" >&2; exit 1; }
+grep -q 'verify-ganesha exit=0' "$OUT" || { echo "FAIL: verify-ganesha non-zero" >&2; exit 1; }
+grep -q 'self-test: testuser1@' "$OUT" || { echo "FAIL: id-check missing testuser1 self-test" >&2; exit 1; }
+grep -qE 'self-test: testuser1@.*uid=3001' "$OUT" || { echo "FAIL: id-check testuser1 uid != 3001" >&2; exit 1; }
+
 echo "OK: container verification log: $OUT"

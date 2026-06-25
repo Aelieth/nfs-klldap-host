@@ -29,7 +29,7 @@ else
 fi
 
 HEAD_TS=$(git -C "$ROOT" log -1 --format=%ct)
-for f in changes.txt loc-evidence.txt comment-audit.txt; do
+for f in changes.txt loc-evidence.txt comment-audit.txt docs-sync.txt; do
     if [[ ! -f "$SCRATCH/$f" ]]; then
         fail "missing $SCRATCH/$f after capture"
     elif [[ $(stat -c %Y "$SCRATCH/$f") -lt "$HEAD_TS" ]]; then

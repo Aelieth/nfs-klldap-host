@@ -19,24 +19,20 @@ use crate::materialize::{materialize_nss_wrappers_at, NssMaterializePaths};
 
 /// getent (NSS) path for "same lookup a client would see". Falls back to resolver snapshot.
 fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
-    let short = principal_local_part(name_or_principal);
-    if let Some(res) = resolve_getent(name_or_principal) {
+    let trimmed = name_or_principal.trim();
+    let short = principal_local_part(trimmed);
+    if let Some(res) = resolve_getent(trimmed) {
         return Some(res);
     }
-    if short != name_or_principal {
+    if short != trimmed {
         if let Some(res) = resolve_getent(short) {
             return Some(res);
         }
     }
 
-    // Structured LDAP fallback via IdLdapResolver (same mapping/filters as the WebUI LdapClient).
-    if let Some((uid, gid)) = resolve_via_structured_ldap(short) {
-        dlog!(
-            "getent passwd \"{}\" -> ldap fallback uid={} gid={}",
-            short,
-            uid,
-            gid
-        );
+    // LDAP fallback: pass full principal so snapshot/UPN and short posix paths both run inside.
+    if let Some((uid, gid)) = resolve_via_structured_ldap(trimmed) {
+        dlog!("ldap fallback principal=\"{}\" uid={} gid={}", trimmed, uid, gid);
         return Some((uid, gid, "ldap".to_string()));
     }
     None
@@ -131,6 +127,7 @@ pub(crate) fn resolve_principal(
     server_variants: &[String],
     cache: &mut IdCache,
 ) -> Resolved {
+    let principal = principal.trim();
     let start = Instant::now();
     let norm = normalize_principal(principal);
 
@@ -138,7 +135,7 @@ pub(crate) fn resolve_principal(
     dlog!("  normalized=\"{}\"", norm);
 
     if principal.contains('@') {
-        dlog!("  (kerberos principal form - will attempt full + short + principal attr paths)");
+        dlog!("  kerberos form: getent/LDAP try full principal then short name");
     }
 
     if let Some(existing) = cache.get(&norm).cloned() {
@@ -286,4 +283,25 @@ pub(crate) fn resolve_principal(
     dlog!("  elapsed={:?}", elapsed);
 
     resolved
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nfs_klldap_config::PosixUserEntry;
+
+    #[test]
+    fn snapshot_lookup_needs_full_principal_key() {
+        let mut snap = IdMapSnapshot::default();
+        snap.users.insert(
+            "alice@REALM".into(),
+            PosixUserEntry {
+                uid: 1001,
+                gid: 1001,
+                display: "alice".into(),
+            },
+        );
+        assert_eq!(uid_gid_from_snapshot(&snap, "alice@REALM", "alice"), Some((1001, 1001)));
+        assert_eq!(uid_gid_from_snapshot(&snap, "alice", "alice"), None);
+    }
 }

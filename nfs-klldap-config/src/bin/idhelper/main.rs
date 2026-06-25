@@ -217,6 +217,7 @@ mod tests {
     #[test]
     fn normalize_keeps_local_preserves_upper_realm() {
         assert_eq!(normalize_principal("alice@exAmPle.com"), "alice@EXAMPLE.COM");
+        assert_eq!(normalize_principal(" alice@exAmPle.com "), "alice@EXAMPLE.COM");
         assert_eq!(normalize_principal("host/box"), "host/box");
     }
 
@@ -657,6 +658,11 @@ mod tests {
         assert_eq!(r4.uid, 0);
         assert_eq!(r4.gid, 0);
         assert_eq!(r4.source, "special");
+
+        // Whitespace around machine principal must not leak into nss login name.
+        let r5 = resolve_principal(" host/blue-lt@SATOMLIN.COM ", &realm, &variants, &mut cache);
+        assert_eq!(r5.uid, 0);
+        assert_eq!(r5.name, "blue-lt");
     }
 
     #[test]

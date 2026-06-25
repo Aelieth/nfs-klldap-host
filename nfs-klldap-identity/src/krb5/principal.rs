@@ -4,6 +4,7 @@ use crate::constants::MACHINE_PRINCIPAL_PREFIXES;
 
 /// Local part of a Kerberos principal (before @), or the whole string when unqualified.
 pub fn principal_local_part(p: &str) -> &str {
+    let p = p.trim();
     p.split('@').next().unwrap_or(p)
 }
 
@@ -52,6 +53,12 @@ mod tests {
     fn machine_short_name_takes_trailing_segment() {
         assert_eq!(machine_short_name("host/blue-lt@REALM"), "blue-lt");
         assert_eq!(machine_short_name("alice@REALM"), "alice");
+    }
+
+    #[test]
+    fn principal_local_part_and_machine_short_name_trim_input() {
+        assert_eq!(principal_local_part(" alice@REALM "), "alice");
+        assert_eq!(machine_short_name(" host/blue-lt@REALM "), "blue-lt");
     }
 
     #[test]

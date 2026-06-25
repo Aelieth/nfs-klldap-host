@@ -222,12 +222,13 @@ pub fn is_machine_principal(
 pub(crate) use nfs_klldap_config::{machine_short_name, principal_local_part};
 
 /// Normalize a principal for cache key and lookup.
-/// Lowercases the realm part; keeps the local part as presented.
+/// Uppercases realm; local part matches principal_local_part (trim + first @ segment).
 pub fn normalize_principal(p: &str) -> String {
     let p = p.trim();
-    if let Some(at) = p.rfind('@') {
-        let (local, realm) = p.split_at(at);
-        format!("{}{}", local, realm.to_ascii_uppercase())
+    if let Some(at) = p.find('@') {
+        let local = principal_local_part(p);
+        let realm = p[at + 1..].trim();
+        format!("{}@{}", local, realm.to_ascii_uppercase())
     } else {
         p.to_string()
     }

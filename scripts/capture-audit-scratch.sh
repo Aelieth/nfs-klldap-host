@@ -109,6 +109,27 @@ read -r split_calls split_defs split_total < <(count_split_sites)
     done
 } >"$SCRATCH/comment-audit.txt"
 
+# --- docs-sync.txt (plan step 4: all listed READMEs) ---
+{
+    echo "=== doc review excerpts (Ganesha/idhelper/idmap/hybrid keywords) ==="
+    for f in \
+        README.md \
+        docs/run/README.md \
+        docs/ldap-integration.md \
+        docs/ganesha-architecture.md \
+        nfs-klldap-ui/README.md \
+        examples/secrets/README.md \
+        TESTING.md \
+        container/README.md; do
+        echo "--- $f ---"
+        if [[ -f "$ROOT/$f" ]]; then
+            grep -n -iE 'ganesha|idhelper|idmap|kerberos|Root_Kerberos|hybrid|principal|9\.6|trixie' "$ROOT/$f" 2>/dev/null | head -8 || echo "(no matches — OK if out of scope)"
+        else
+            echo "MISSING"
+        fi
+    done
+} >"$SCRATCH/docs-sync.txt"
+
 # --- gating ---
 FAIL=0
 if [[ "$idh_delta" -ge 0 ]]; then
@@ -125,5 +146,5 @@ if [[ "$split_defs" -ne 1 ]]; then
 fi
 
 echo "capture-audit-scratch: idhelper delta=$idh_delta split_calls=$split_calls split_defs=$split_defs"
-echo "wrote $SCRATCH/{changes.txt,loc-evidence.txt,comment-audit.txt}"
+echo "wrote $SCRATCH/{changes.txt,loc-evidence.txt,comment-audit.txt,docs-sync.txt}"
 exit "$FAIL"

@@ -128,7 +128,16 @@ pub fn share_fs_warning_message_with_mountinfo(
     }
 }
 
+/// True when any share will emit Manage_Gids (explicit or probe default).
+pub fn any_share_manage_gids_enabled(cfg: &NfsKlldapConfig) -> bool {
+    cfg.shares.iter().any(|share| {
+        let caps = caps_for_share(cfg, share);
+        compute_effective_flags(share, &caps).manage_gids
+    })
+}
+
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use crate::{Share, SssdSection};
@@ -166,6 +175,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn any_share_manage_gids_false_when_all_limited_auto() {
         let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
         std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");
@@ -189,12 +199,4 @@ mod tests {
         cfg.shares[0].manage_gids = Some(false);
         assert!(!any_share_manage_gids_enabled(&cfg));
     }
-}
-
-/// True when any share will emit Manage_Gids (explicit or probe default).
-pub fn any_share_manage_gids_enabled(cfg: &NfsKlldapConfig) -> bool {
-    cfg.shares.iter().any(|share| {
-        let caps = caps_for_share(cfg, share);
-        compute_effective_flags(share, &caps).manage_gids
-    })
 }

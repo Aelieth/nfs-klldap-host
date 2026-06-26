@@ -506,8 +506,11 @@ NFS_KRB5 {{
 NFSV4 {{
     Allow_Numeric_Owners = false;
     RecoveryBackend = fs;
-    Lease_Lifetime = 20;
-    Grace_Period = 20;
+    # Increased from 20s for production stability on krb5p (reduces session/lease churn causing
+    # sporadic EIO and "access denied" flaps on clients like Dolphin during getattr/readdir
+    # especially on immutable or reconnecting clients). 60/45 is a common Ganesha prod default.
+    Lease_Lifetime = 60;
+    Grace_Period = 45;
 }}
 
 EXPORT_DEFAULTS {{
@@ -655,10 +658,8 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             export_fs_directives(share, &caps);
 
         // krb5* default manage_gids=false to avoid uid2grp_allocate_by_principal + managed-groups failure.
-        if sec.starts_with("krb5") {
-            if share.manage_gids != Some(true) {
-                manage_gids_line = "    Manage_Gids = false;\n".to_string();
-            }
+        if sec.starts_with("krb5") && share.manage_gids != Some(true) {
+            manage_gids_line = "    Manage_Gids = false;\n".to_string();
         }
 
         // CLIENT block keeps Protocols=4 and skips access check policy.
@@ -1193,5 +1194,42 @@ mod tests {
         // krb5p default: manage_gids=false + note present
         assert!(frag.contains("Manage_Gids = false;"));
         assert!(frag.contains("krb5*: manage_gids=false default"));
+    }
+
+    #[test]
+    fn ganesha_main_emits_production_lease_and_grace() {
+        // Drives the shipped write_ganesha_main + constants; verifies lease/Grace fix for krb5p stability.
+        let mut cfg = crate::NfsKlldapConfig {
+            ldap_uri: "ldaps://k.test:6360".into(),
+            sssd: crate::SssdSection {
+                ldap_default_bind_dn: "uid=admin,ou=people,dc=test,dc=com".into(),
+                ldap_default_authtok: "sekret".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cfg.validate_and_derive().expect("valid");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let exports_dir = tmp.path().join("exports.d");
+        std::fs::create_dir_all(&exports_dir).unwrap();
+        let paths = crate::GenerationPaths {
+            sssd_conf: tmp.path().join("sssd.conf"),
+            krb5_conf: tmp.path().join("krb5.conf"),
+            ganesha_conf: tmp.path().join("ganesha.conf"),
+            exports_dir: exports_dir.clone(),
+            idmap_conf: tmp.path().join("idmapd.conf"),
+            nfs_conf: tmp.path().join("nfs.conf"),
+        };
+        crate::generate_all(&cfg, &paths).expect("generate");
+
+        let main = std::fs::read_to_string(&paths.ganesha_conf).unwrap();
+        let lease_line = main.lines().find(|l| l.contains("Lease_Lifetime")).unwrap_or("MISSING");
+        let grace_line = main.lines().find(|l| l.contains("Grace_Period")).unwrap_or("MISSING");
+        eprintln!("LEASE_EVIDENCE: {}", lease_line);
+        eprintln!("GRACE_EVIDENCE: {}", grace_line);
+        assert!(main.contains("Lease_Lifetime = 60;"), "production lease value must be emitted");
+        assert!(main.contains("Grace_Period = 45;"), "production grace value must be emitted");
+        assert!(main.contains("Increased from 20s for production stability"));
     }
 }

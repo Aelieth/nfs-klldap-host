@@ -245,6 +245,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn compute_effective_flags_explicit_override() {
         let mut share = Share::default();
         share.disable_acl = Some(false);

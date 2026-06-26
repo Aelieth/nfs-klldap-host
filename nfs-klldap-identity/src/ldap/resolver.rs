@@ -96,6 +96,17 @@ pub struct PosixGroupEntry {
     pub members: Vec<String>,
 }
 
+/// Parameters for list search (avoids clippy::too_many_arguments on the helper).
+struct PosixListParams<'a> {
+    base: &'a str,
+    filter: &'a str,
+    name_attr: &'a str,
+    num_attr: &'a str,
+    display_attr: &'a str,
+    bind_dn: &'a str,
+    bind_pw: &'a str,
+}
+
 impl IdLdapResolver {
     pub fn new(
         ldap_uri: &str,
@@ -660,35 +671,25 @@ impl IdLdapResolver {
         )
     }
 
-    fn search_list_posix(
-        &self,
-        base: &str,
-        ldap_filter: &str,
-        name_attr: &str,
-        num_attr: &str,
-        display_attr: &str,
-        bind_dn: &str,
-        bind_pw: &str,
-        limit: usize,
-    ) -> Vec<(String, Option<i32>, String, String)> {
+    fn search_list_posix(&self, p: &PosixListParams, limit: usize) -> Vec<(String, Option<i32>, String, String)> {
         let attrs = vec![
-            name_attr.into(),
-            num_attr.into(),
+            p.name_attr.into(),
+            p.num_attr.into(),
             "cn".into(),
             "displayName".into(),
-            display_attr.into(),
+            p.display_attr.into(),
         ];
         let entries = self
-            .service_search(base, ldap_filter, attrs, bind_dn, bind_pw)
+            .service_search(p.base, p.filter, attrs, p.bind_dn, p.bind_pw)
             .unwrap_or_default();
         let mut out = Vec::new();
         for se in entries {
-            let id = Self::extract_first_attr(&se, name_attr).unwrap_or_default();
+            let id = Self::extract_first_attr(&se, p.name_attr).unwrap_or_default();
             if id.is_empty() {
                 continue;
             }
-            let display = Self::extract_display_name(&se, display_attr, &id);
-            let num = Self::extract_first_attr(&se, num_attr).and_then(|s| s.parse::<i32>().ok());
+            let display = Self::extract_display_name(&se, p.display_attr, &id);
+            let num = Self::extract_first_attr(&se, p.num_attr).and_then(|s| s.parse::<i32>().ok());
             out.push((id, num, display, se.dn));
             if out.len() >= limit {
                 break;
@@ -713,16 +714,16 @@ impl IdLdapResolver {
             Some(&pa.user_full_name),
             query,
         );
-        self.search_list_posix(
-            &self.user_base,
-            &filter,
-            &pa.user_name,
-            &pa.user_uid_number,
-            &pa.user_full_name,
+        let params = PosixListParams {
+            base: &self.user_base,
+            filter: &filter,
+            name_attr: &pa.user_name,
+            num_attr: &pa.user_uid_number,
+            display_attr: &pa.user_full_name,
             bind_dn,
             bind_pw,
-            limit,
-        )
+        };
+        self.search_list_posix(&params, limit)
     }
 
     /// Returns the DN of the first LDAP entry matching filter under base.
@@ -810,16 +811,16 @@ impl IdLdapResolver {
             None,
             query,
         );
-        self.search_list_posix(
-            &self.group_base,
-            &filter,
-            &pa.group_name,
-            &pa.group_gid_number,
-            &pa.group_name,
+        let params = PosixListParams {
+            base: &self.group_base,
+            filter: &filter,
+            name_attr: &pa.group_name,
+            num_attr: &pa.group_gid_number,
+            display_attr: &pa.group_name,
             bind_dn,
             bind_pw,
-            limit,
-        )
+        };
+        self.search_list_posix(&params, limit)
     }
 
     pub fn cache_stats(&self) -> (u64, u64) {

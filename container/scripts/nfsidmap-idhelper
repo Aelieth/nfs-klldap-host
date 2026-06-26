@@ -80,6 +80,8 @@ if [ -z "$principal" ]; then
     exec "$REAL_NFSIDMAP" "$@"
 fi
 
+# Verbose on principal input (always for diagnosis; Ganesha may call for uid2grp group cases).
+echo "[nfsidmap-idhelper] principal=$principal mode=$mode" >&2
 log "lookup mode=$mode principal=$principal"
 
 # For principals with @ (user or host/...), proactively warm sss/getent using the
@@ -96,14 +98,11 @@ if [ -n "$principal" ] && echo "$principal" | grep -q '@'; then
 fi
 
 if [ -x "$IDHELPER" ]; then
-    # Always attempt our resolve first. This has the critical side-effect of
-    # classifying + materializing into nss_wrapper/extrausers (and IdCache) so that
-    # Ganesha's getpwnam / subsequent cred paths see the mapping even if this
-    # particular call is for a principal that has never been seen before.
-    # We try --json, then fall back to plain text output for parsing (more tolerant).
+    # Always attempt our resolve first. Critical side-effect: classify+materialize to nss_wrapper so Ganesha getpwnam sees it.
     resolved_uid=""
     resolved_gid=""
 
+    # Delegate cleanly for both uid and gid (group alloc) cases; supports user@REALM.
     if json="$($IDHELPER resolve "$principal" --json 2>/dev/null || true)"; then
         if [ -n "$json" ]; then
             if [ "$mode" = "uid" ]; then
@@ -114,7 +113,7 @@ if [ -x "$IDHELPER" ]; then
         fi
     fi
 
-    # Text fallback (the non-json "resolve" output contains "uid=NNN" / "gid=NNN")
+    # Text fallback
     if [ -z "$resolved_uid" ] && [ -z "$resolved_gid" ]; then
         txt="$($IDHELPER resolve "$principal" 2>/dev/null || true)"
         if [ -n "$txt" ]; then
@@ -137,27 +136,30 @@ if [ -x "$IDHELPER" ]; then
         exit 0
     fi
 
-    # For user principals (contain @ and not an obvious machine service), do a short
-    # retry. This gives any concurrent observer, sss population, or previous
-    # materialize a moment to become visible to a follow-up resolve call.
-    # Cheap on cache hit; helps win the race for the first principal2uid in a compound.
+    # For user@ principals do short retry for gid cases too (group alloc).
     if [ -n "$principal" ] && echo "$principal" | grep -q '@' && ! echo "$principal" | grep -qiE '^(host| nfs|root)/'; then
-        if [ "$mode" = "uid" ] && [ -z "$resolved_uid" ]; then
+        if [ -z "$resolved_uid" ] || [ -z "$resolved_gid" ]; then
             sleep 0.15
             if json2="$($IDHELPER resolve "$principal" --json 2>/dev/null || true)"; then
-                resolved_uid=$(printf '%s' "$json2" | sed -n 's/.*"uid":\([0-9][0-9]*\).*/\1/p' | head -1)
+                [ -z "$resolved_uid" ] && resolved_uid=$(printf '%s' "$json2" | sed -n 's/.*"uid":\([0-9][0-9]*\).*/\1/p' | head -1)
+                [ -z "$resolved_gid" ] && resolved_gid=$(printf '%s' "$json2" | sed -n 's/.*"gid":\([0-9][0-9]*\).*/\1/p' | head -1)
             fi
-            if [ -z "$resolved_uid" ]; then
+            if [ -z "$resolved_uid" ] && [ -z "$resolved_gid" ]; then
                 txt2="$($IDHELPER resolve "$principal" 2>/dev/null || true)"
-                resolved_uid=$(printf '%s' "$txt2" | grep -o 'uid=[0-9]*' | head -1 | cut -d= -f2)
-            fi
-            if [ -n "$resolved_uid" ]; then
-                log "resolved via idhelper (retry) -> uid=$resolved_uid"
-                printf '%s\n' "$resolved_uid"
-                exit 0
+                [ -z "$resolved_uid" ] && resolved_uid=$(printf '%s' "$txt2" | grep -o 'uid=[0-9]*' | head -1 | cut -d= -f2)
+                [ -z "$resolved_gid" ] && resolved_gid=$(printf '%s' "$txt2" | grep -o 'gid=[0-9]*' | head -1 | cut -d= -f2)
             fi
         fi
-        # similar for gid if needed (omitted for brevity; uid is the hot path for ACCESS)
+        if [ "$mode" = "uid" ] && [ -n "$resolved_uid" ]; then
+            log "resolved via idhelper (retry) -> uid=$resolved_uid"
+            printf '%s\n' "$resolved_uid"
+            exit 0
+        fi
+        if [ "$mode" = "gid" ] && [ -n "$resolved_gid" ]; then
+            log "resolved via idhelper (retry) -> gid=$resolved_gid"
+            printf '%s\n' "$resolved_gid"
+            exit 0
+        fi
     fi
 fi
 

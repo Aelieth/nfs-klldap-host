@@ -99,11 +99,10 @@ docker:
 	$(BUILDX) build \
 		--platform linux/amd64/v2 \
 		--tag $(FULL_IMAGE):$(VERSION) \
-		--tag $(IMAGE_NAME):latest \
 		$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(FULL_IMAGE):latest,) \
 		$(if $(filter true,$(DOCKER_PUSH)),--push,--load) \
 		.
-
+#		--tag $(IMAGE_NAME):latest \
 
 .PHONY: docker-multi
 docker-multi:

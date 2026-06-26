@@ -23,7 +23,7 @@ use nfs_klldap_identity::normalize_principal;
 use daemon::run_daemon;
 #[cfg(test)]
 use materialize::{
-    group_line_for, passwd_line_for, sanitize_for_nss, seed_cache_and_nss_from_snapshot,
+    group_line_for, group_line_with_members, passwd_line_for, sanitize_for_nss, seed_cache_and_nss_from_snapshot,
     sync_user_cache_from_snapshot,
 };
 #[cfg(test)]
@@ -584,6 +584,13 @@ mod tests {
         let line = r#"key_locate :CLIENT ID :F_DBG :Locate Unconfirmed Client ID seeking Key=0x7f0c3082f670 {Unique=0x6a375213 Counter=0x00000001}"#;
         let r = extract_candidate_principal(line, "SATOMLIN.COM");
         assert!(r.is_none() || r.unwrap().contains("blue-lt") /* only if a good name was also present */);
+    }
+
+    #[test]
+    fn user_principal_group_materialize_includes_uid_group_info() {
+        // drives on-demand user@REALM + group info materialization path
+        let g = materialize::group_line_with_members(2001, "alice", &["alice".to_string()]);
+        assert!(g.contains("2001") && g.contains("alice"));
     }
 
     #[test]

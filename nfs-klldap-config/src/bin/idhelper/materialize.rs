@@ -225,7 +225,13 @@ pub(crate) fn materialize_nss_wrappers_at(
 
         // Groups (primary gid from resolved principal).
         if seen_gid.insert(r.gid) {
-            group_lines.push(group_line_for(r));
+            if r.kind != PrincipalKind::Machine && r.gid != 0 {
+                // include user in its primary group line for uid2grp materialization
+                let gname = sanitize_for_nss(&r.name);
+                group_lines.push(format!("{}:x:{}:{}", gname, r.gid, sanitize_for_nss(&r.name)));
+            } else {
+                group_lines.push(group_line_for(r));
+            }
         }
         // Also ensure the uid's primary group is represented if different.
         if r.uid != r.gid && seen_gid.insert(r.uid) {

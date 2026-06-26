@@ -988,6 +988,7 @@ while :; do :; done
             .args(["-L", "/var/log/ganesha.log"])
             .env("PATH", format!("/usr/local/bin:{}", std::env::var("PATH").unwrap_or_default()));
         if self.env.use_nss_wrapper {
+            // covers passwd + group for seeded LDAP; inherited by ganesha tree
             cmd.env("NSS_WRAPPER_PASSWD", &self.env.nss_passwd)
                 .env("NSS_WRAPPER_GROUP", &self.env.nss_group)
                 .env("LD_PRELOAD", &self.env.nss_wrapper_so);

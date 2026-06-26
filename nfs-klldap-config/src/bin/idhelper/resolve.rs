@@ -33,6 +33,8 @@ fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
     // LDAP fallback tries full principal and short posix name inside resolver.
     if let Some((uid, gid)) = resolve_via_structured_ldap(trimmed) {
         dlog!("ldap fallback principal=\"{}\" uid={} gid={}", trimmed, uid, gid);
+        // log group fetch path for uid2grp allocator visibility
+        dlog!("group fetch (primary) uid={} gid={}", uid, gid);
         return Some((uid, gid, "ldap".to_string()));
     }
     None
@@ -73,7 +75,12 @@ fn resolve_via_structured_ldap(name_or_principal: &str) -> Option<(u32, u32)> {
         return Some(ids);
     }
     let _ = resolver.load_full_identities(bind_dn, bind_pw);
-    try_resolve(&resolver.snapshot())
+    let ids = try_resolve(&resolver.snapshot());
+    // On-demand user@REALM: also resolve primary group by gid so group info materializes for uid2grp.
+    if let Some((_u, g)) = ids {
+        let _ = resolver.resolve_group_by_gid(g as i32, bind_dn, bind_pw);
+    }
+    ids
 }
 
 /// Load resolver + bind creds from NfsKlldapConfig (NFS_CONFIG).
@@ -203,6 +210,11 @@ pub(crate) fn resolve_principal(
 
         if let Some((uid, gid, src)) = looked {
             let name = principal_local_part(principal).to_string();
+            // ensure group for uid2grp even on on-demand user@REALM
+            if let Some((r, dn, pw)) = get_or_init_resolver() {
+                let _ = r.resolve_group_by_gid(gid as i32, dn, pw);
+                dlog!("group fetch on-demand for gid={}", gid);
+            }
             Resolved {
                 principal: principal.to_string(),
                 name,

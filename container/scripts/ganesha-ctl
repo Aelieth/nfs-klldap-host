@@ -46,8 +46,8 @@ Usage:
   show-fragments             # list on-disk exports.d fragments (not live D-Bus state)
   show-exports               # alias for show-fragments (deprecated)
   reload                     # signal supervisor (regenerate + full service recycle)
-  id-resolve <principal>     # resolve/classify a Kerberos principal via idhelper
-  id-check                   # quick health of the idhelper translator
+  id-resolve <principal>     # resolve full user@REALM (exercises uid2grp/getent group); surfaces ID MAPPER
+  id-check                   # quick health of the idhelper translator + ID MAPPER greps
   id-map-test [name]         # verify getent + principal mapping parity (testuser1 + host/...) for 9.6 mount stability
   fs-warnings                # list limited-filesystem share warnings from nfs-klldap.conf
 
@@ -188,10 +188,18 @@ case "$CMD" in
         fi
         if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
             /usr/local/bin/nfs-klldap-idhelper resolve "$P"
+            # exercise uid2grp path via getent on gid (covers nss_wrapper group db)
+            GID=$( /usr/local/bin/nfs-klldap-idhelper resolve "$P" --json 2>/dev/null | sed -n 's/.*"gid":\([0-9]*\).*/\1/p' | head -1 )
+            [ -n "$GID" ] && getent group "$GID" 2>/dev/null || true
         else
             echo "idhelper not found; falling back to getent on short name"
             SHORT=$(echo "$P" | sed 's/@.*//; s#.*/##')
             getent passwd "$SHORT" || echo "no NSS entry for $SHORT"
+        fi
+        # surface ID MAPPER from ganesha.log (uid2grp_allocate_by_principal, unsupported)
+        if [ -f /var/log/ganesha.log ]; then
+            echo "[ganesha-ctl] ID MAPPER lines for $P:"
+            grep -iE 'ID MAPPER|uid2grp_allocate_by_principal|Unsupported code path|Could not map' /var/log/ganesha.log | tail -5 || echo "  (no recent ID MAPPER matches)"
         fi
         ;;
     id-check)
@@ -200,6 +208,11 @@ case "$CMD" in
         else
             echo "idhelper binary missing"
             exit 1
+        fi
+        # surface exact ID MAPPER warnings
+        if [ -f /var/log/ganesha.log ]; then
+            echo "[ganesha-ctl] recent ID MAPPER from ganesha.log:"
+            grep -iE 'ID MAPPER|uid2grp|Unsupported' /var/log/ganesha.log | tail -10 || echo "  (none)"
         fi
         ;;
     fs-warnings)

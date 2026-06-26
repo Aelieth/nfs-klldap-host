@@ -60,4 +60,7 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | ApplyOptions (continue, dry, recursive policy, symlink skip) + WalkDir safety | `nfs-klldap-ui/src/fs.rs` |
 | Ldap list filters, normalize query, cache behavior (unit) | `nfs-klldap-ui/src/ldap.rs` (list_search_tests) |
 
+## Kerberos user principal idmap verification
+Run: cargo test --workspace (idmap, resolve, generate, supervisor probes). Invoke idhelper resolve 'user@REALM' (exercises on-demand + group). Use capture_idmap_principal.sh (kinit+mount+ls non-int + grep uid2grp_allocate_by_principal + "Unsupported code path") fed by scripts/build_diagnosis.sh (append+tee-a). Check emitted idmapd.conf (Domain/Local-Realms/Method/GSS-Methods=nsswitch + krb notes) and krb5* fragments (Manage_Gids=false + note). ganesha-ctl id-resolve/id-check surface ID MAPPER from ganesha.log.
+
 Documentation and tests should be updated together when behavior changes. (See also fs.rs symlink policy comments and privileged.rs boundary.)

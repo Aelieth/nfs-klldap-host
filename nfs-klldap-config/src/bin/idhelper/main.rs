@@ -23,8 +23,8 @@ use nfs_klldap_identity::normalize_principal;
 use daemon::run_daemon;
 #[cfg(test)]
 use materialize::{
-    group_line_for, group_line_with_members, passwd_line_for, sanitize_for_nss, seed_cache_and_nss_from_snapshot,
-    sync_user_cache_from_snapshot,
+    group_line_for, materialize_nss_wrappers_at, passwd_line_for, sanitize_for_nss,
+    NssMaterializePaths, seed_cache_and_nss_from_snapshot, sync_user_cache_from_snapshot,
 };
 #[cfg(test)]
 use daemon::rebulk_ldap_users;
@@ -492,7 +492,7 @@ mod tests {
             kind: PrincipalKind::User,
             source: "bulk".into(),
         });
-        // Sanitize_for_nss maps '@' to '_' in passwd login names.
+        // sanitize_for_nss used for safe logins; alias emission uses raw principal for getpwnam(user@REALM)
         assert!(full_line.starts_with("testuser1_SATOMLIN.COM:x:1001:1001:"));
     }
 
@@ -661,6 +661,56 @@ mod tests {
         let r5 = resolve_principal(" host/blue-lt@SATOMLIN.COM ", &realm, &variants, &mut cache);
         assert_eq!(r5.uid, 0);
         assert_eq!(r5.name, "blue-lt");
+    }
+
+    #[test]
+    fn resolve_principal_user_at_realm_on_demand_via_getent_non_fallback() {
+        // Drives the shipped on-demand user@REALM path (cache miss -> resolve_via_nss -> getent(full) success -> non-fallback uid/gid + group materialize side effects).
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_dir = tmp.path().join("fakebin");
+        std::fs::create_dir_all(&fake_dir).unwrap();
+        let getent_script = fake_dir.join("getent");
+        let script = "#!/bin/sh\nif [ \"$1\" = \"passwd\" ] && echo \"$2\" | grep -q '@'; then\n  echo \"$2:x:4242:4242:ondemand user:$2:/bin/false\"\n  exit 0\nfi\nexec /usr/bin/getent \"$@\" || exec /bin/getent \"$@\"\n";
+        std::fs::write(&getent_script, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut p = std::fs::metadata(&getent_script).unwrap().permissions();
+        p.set_mode(0o755);
+        std::fs::set_permissions(&getent_script, p).unwrap();
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", fake_dir.display(), old_path));
+
+        let mut cache = IdCache::default();
+        let realm = "TEST.COM".to_string();
+        let variants: Vec<String> = vec![];
+        let r = resolve_principal("ondemanduser@TEST.COM", &realm, &variants, &mut cache);
+
+        std::env::set_var("PATH", old_path);
+
+        assert_eq!(r.principal, "ondemanduser@TEST.COM");
+        assert_eq!(r.uid, 4242);
+        assert_eq!(r.gid, 4242);
+        assert_eq!(r.source, "sss");  // from resolve_getent success path for full principal
+        assert!(r.kind == PrincipalKind::User || r.kind == PrincipalKind::Unknown);
+
+        // also drive ldap source branch via shim for a different user@REALM
+        std::env::set_var("TEST_FORCE_LDAP_UID_GID", "7777:7777");
+        let r_ldap = resolve_principal("ldapuser@TESTLDAP.COM", &realm, &variants, &mut cache);
+        std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
+        assert_eq!(r_ldap.uid, 7777);
+        assert_eq!(r_ldap.gid, 7777);
+        assert_eq!(r_ldap.source, "ldap");
+
+        // also drive materialize with the result (uses raw principal for alias entry)
+        let tpaths = NssMaterializePaths {
+            nss_passwd: &tmp.path().join("nss_passwd"),
+            nss_group: &tmp.path().join("nss_group"),
+            extrausers_passwd: &tmp.path().join("extra_passwd"),
+            extrausers_group: &tmp.path().join("extra_group"),
+        };
+        let _ = materialize_nss_wrappers_at(&cache, &tpaths, None);
+        let pw = std::fs::read_to_string(tpaths.nss_passwd).unwrap_or_default();
+        assert!(pw.contains("ondemanduser@TEST.COM:x:4242:4242:"));
     }
 
     #[test]

@@ -207,19 +207,12 @@ pub(crate) fn materialize_nss_wrappers_at(
             }
         }
 
-        // User principals also materialize the full name@REALM alias.
+        // User principals also materialize the full name@REALM alias (use raw principal as login so getpwnam(user@REALM) matches nss_passwd).
         if r.kind != PrincipalKind::Machine {
             let full = r.principal.clone();
             if seen_login.insert(full.clone()) {
-                let line_full = passwd_line_for(&Resolved {
-                    principal: full.clone(),
-                    name: full.clone(),
-                    uid: r.uid,
-                    gid: r.gid,
-                    kind: r.kind.clone(),
-                    source: r.source.clone(),
-                });
-                passwd_lines.push(line_full);
+                let gecos = format!("kll:{}:{}", r.kind.as_str(), r.principal);
+                passwd_lines.push(format!("{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin", full, r.uid, r.gid, gecos));
             }
         }
 

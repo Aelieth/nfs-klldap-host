@@ -30,6 +30,18 @@ fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
         }
     }
 
+    // test shim (TEST_FORCE_LDAP_UID_GID=uid:gid) to exercise ldap source branch of on-demand user@ without live service
+    if trimmed.contains('@') {
+        if let Ok(uv) = std::env::var("TEST_FORCE_LDAP_UID_GID") {
+            if let Some((us, gs)) = uv.split_once(':') {
+                if let (Ok(u), Ok(g)) = (us.trim().parse::<u32>(), gs.trim().parse::<u32>()) {
+                    dlog!("test-forced ldap for {} -> {}/{}", trimmed, u, g);
+                    return Some((u, g, "ldap".to_string()));
+                }
+            }
+        }
+    }
+
     // LDAP fallback tries full principal and short posix name inside resolver.
     if let Some((uid, gid)) = resolve_via_structured_ldap(trimmed) {
         dlog!("ldap fallback principal=\"{}\" uid={} gid={}", trimmed, uid, gid);

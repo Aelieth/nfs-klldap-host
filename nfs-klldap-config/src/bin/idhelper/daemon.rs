@@ -31,11 +31,24 @@ pub(crate) struct RebulkPaths<'a> {
 }
 
 impl RebulkPaths<'_> {
+    // production() always returns the real fixed /var paths (shipped behavior).
+    // Tests must use RebulkPaths::under(tmp) + pass explicit paths to apply_sync.
     pub(crate) fn production() -> RebulkPaths<'static> {
         RebulkPaths {
             cache_path: Path::new(CACHE_PATH),
             bulk_seed_marker: Path::new(BULK_SEED_MARKER),
             nss: NssMaterializePaths::production(),
+        }
+    }
+
+    /// For tests: explicit temp paths (unshimmed drive of real apply + materialize).
+    #[cfg(test)]
+    pub(crate) fn under(base: &Path) -> RebulkPaths<'static> {
+        let leak = |p: std::path::PathBuf| -> &'static Path { Box::leak(p.into_boxed_path()) };
+        RebulkPaths {
+            cache_path: leak(base.join("idmap.cache")),
+            bulk_seed_marker: leak(base.join(".bulk_seed_done")),
+            nss: NssMaterializePaths::under(base),
         }
     }
 }
@@ -104,13 +117,6 @@ pub(crate) mod test_rebulk {
             *slot.borrow_mut() = None;
         });
         out
-    }
-
-    // clear override so rebulk_ldap_users takes the real load_full + primary-gid resolve path
-    pub(crate) fn clear_test_rebulk_override() {
-        TEST_REBULK.with(|slot| {
-            *slot.borrow_mut() = None;
-        });
     }
 
     pub(crate) fn rebulk_paths_in(base: &Path) -> RebulkPaths<'static> {

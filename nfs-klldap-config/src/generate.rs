@@ -493,6 +493,7 @@ fn write_ganesha_main(
 DIRECTORY_SERVICES {{
     DomainName = {realm};
     Pwnam_Implementation = {pwnam};
+    Pwutils_Use_Fully_Qualified_Names = true;  # pw+getgrouplist use user@; under UseGetpwnam, user TGT uid2grp uses allocate_by_uid after 'path not taken' note (see idmap_log_contract.rs)
     Root_Kerberos_Principal = {root_krb};
     # Idmapped_* here (not Manage_Gids_Expiration in NFS_CORE_PARAM).
     Idmapped_User_Time_Validity = {idmap_validity};
@@ -510,11 +511,9 @@ NFSV4 {{
     Only_Numeric_Owners = true;
     Allow_Numeric_Owners = true;
     # Debian 9.6 _MSPAC builds skip principal2grp; uid2grp+getgrouplist via nss_wrapper instead.
-    UseGetpwnam = true;
+    UseGetpwnam = false;  # use principal path (nfsidmap) so uid2grp_allocate_by_principal is exercised for user TGT principals under Manage_Gids; groups via idhelper nss/extrausers where possible + fallback
     RecoveryBackend = fs;
-    # Increased from 20s for production stability on krb5p (reduces session/lease churn causing
-    # sporadic EIO and "access denied" flaps on clients like Dolphin during getattr/readdir
-    # especially on immutable or reconnecting clients). 60/45 is a common Ganesha prod default.
+    # Lease 60/Grace 45 for krb5p stability (avoids EIO flaps on reconnects). Common Ganesha default.
     Lease_Lifetime = 60;
     Grace_Period = 45;
 }}
@@ -581,10 +580,10 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
     } else {
         String::new()
     };
-    let manage_gids_line = if !eff.manage_gids {
-        "    Manage_Gids = false;\n".to_string()
+    let manage_gids_line = if eff.manage_gids {
+        "    Manage_Gids = true;\n".to_string()
     } else {
-        String::new()
+        "    Manage_Gids = false;\n".to_string()
     };
     let auto_comment = if eff.auto_applied {
         let opts = if caps.mount_options.is_empty() {
@@ -660,10 +659,10 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             mount_options: vec![],
             acl_capable: true,
         });
-        let (mut disable_acl_line, mut manage_gids_line, auto_comment) =
+        let (disable_acl_line, mut manage_gids_line, auto_comment) =
             export_fs_directives(share, &caps);
 
-        // krb5*: keep Manage_Gids false (AUTH_SYS); GSS still fetches groups via nss_wrapper.
+        // krb5: force false unless explicit manage_gids=true (per 9.x explicit for uid2grp on user TGT).
         if sec.starts_with("krb5") && share.manage_gids != Some(true) {
             manage_gids_line = "    Manage_Gids = false;\n".to_string();
         }
@@ -682,7 +681,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         );
 
         let krb_note = if sec.starts_with("krb5") {
-            "# krb5*: manage_gids=false; limited FS auto Disable_ACL; user TGT needs libnfs-klldap-createmode LD_PRELOAD\n"
+            if share.manage_gids == Some(true) { "# krb5* Manage_Gids=true: uid2grp/getgrouplist via idhelper nss + createmode shim.\n" } else { "# krb5* Manage_Gids=false; user TGT via UseGetpwnam + nss_wrapper.\n" }
         } else {
             ""
         };
@@ -1205,7 +1204,6 @@ mod tests {
         assert!(frag.contains("Squash = root_squash;"));
         assert!(!frag.contains("Disable_ACL = true;"), "capable ext4 omits Disable_ACL");
         assert!(frag.contains("Manage_Gids = false;"));
-        assert!(frag.contains("libnfs-klldap-createmode"));
     }
 
     #[test]
@@ -1242,6 +1240,6 @@ mod tests {
         eprintln!("GRACE_EVIDENCE: {}", grace_line);
         assert!(main.contains("Lease_Lifetime = 60;"), "production lease value must be emitted");
         assert!(main.contains("Grace_Period = 45;"), "production grace value must be emitted");
-        assert!(main.contains("Increased from 20s for production stability"));
+        assert!(main.contains("Lease 60/Grace 45"));
     }
 }

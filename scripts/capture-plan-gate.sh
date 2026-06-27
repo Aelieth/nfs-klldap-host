@@ -63,22 +63,22 @@ NFS_FULL_LOG="$SCRATCH/nfs-run-start-full.log"
   docker exec nfs-klldap grep -E 'Only_Numeric|Allow_Numeric' /etc/ganesha/ganesha.conf || true
   echo "=== EXPORT Disable_ACL (krb5p default) ==="
   docker exec nfs-klldap bash -c 'grep Disable_ACL /etc/ganesha/exports.d/*.conf' || true
-  echo "=== id-map-test testuser2 ==="
-  docker exec nfs-klldap ganesha-ctl id-map-test testuser2
-  echo "=== id-resolve testuser2@TESTLABBY.LOCAL ==="
-  docker exec nfs-klldap ganesha-ctl id-resolve testuser2@TESTLABBY.LOCAL || true
+  echo "=== id-map-test testuser1 ==="
+  docker exec nfs-klldap ganesha-ctl id-map-test testuser1
+  echo "=== id-resolve testuser1@TESTLABBY.LOCAL ==="
+  docker exec nfs-klldap ganesha-ctl id-resolve testuser1@TESTLABBY.LOCAL || true
   echo "=== id-check ==="
   docker exec nfs-klldap ganesha-ctl id-check || true
   echo "=== getent passwd/group ==="
-  docker exec nfs-klldap getent passwd testuser2 testuser2@TESTLABBY.LOCAL
+  docker exec nfs-klldap getent passwd testuser1 testuser1@TESTLABBY.LOCAL
   docker exec nfs-klldap getent group 3005 group-test
   echo "=== nfsidmap reverse ==="
-  docker exec nfs-klldap nfsidmap -u 3002
+  docker exec nfs-klldap nfsidmap -u 3001
   docker exec nfs-klldap nfsidmap -g 3005
   echo "=== nss materialization ==="
-  docker exec nfs-klldap bash -c 'grep -E "3002|3005|testuser2|group-test" /var/lib/nfs-klldap/nss_passwd /var/lib/nfs-klldap/nss_group /var/lib/extrausers/passwd /var/lib/extrausers/group 2>/dev/null'
-  echo "=== grps testuser2@TESTLABBY.LOCAL ==="
-  docker exec nfs-klldap nfs-klldap-idhelper grps testuser2@TESTLABBY.LOCAL --json 2>/dev/null || true
+  docker exec nfs-klldap bash -c 'grep -E "3001|3005|testuser1|group-test" /var/lib/nfs-klldap/nss_passwd /var/lib/nfs-klldap/nss_group /var/lib/extrausers/passwd /var/lib/extrausers/group 2>/dev/null'
+  echo "=== grps testuser1@TESTLABBY.LOCAL ==="
+  docker exec nfs-klldap nfs-klldap-idhelper grps testuser1@TESTLABBY.LOCAL --json 2>/dev/null || true
   echo "=== ls -n sample ==="
   docker exec nfs-klldap ls -ln /export/stuff/user-tgt-*.txt 2>/dev/null | tail -5 || true
   echo "=== idhelper resolve testuser1@TESTLABBY.LOCAL ==="
@@ -108,7 +108,7 @@ docker run --rm --network=host --privileged --ipc=host \
   -v /home/local/Projects/test-nfs-work/junk:/hostdata/junk:Z \
   -v "$ROOT/scripts/fedora-krb5p-client-validate.sh:/validate.sh:ro" \
   -v "$ROOT/scripts/nfsidmap-client-helper:/usr/local/bin/nfsidmap-client-helper:ro" \
-  -e TEST_USER_PRINC='testuser2@TESTLABBY.LOCAL' \
+  -e TEST_USER_PRINC='testuser1@TESTLABBY.LOCAL' \
   -e TEST_USER_PASSWORD='testtest' \
   fedora:44 bash /validate.sh 2>&1 | tee "$FEDORA_LOG"
 FEDORA_RC=${PIPESTATUS[0]}
@@ -125,13 +125,21 @@ set -e
   docker exec nfs-klldap bash -c 'grep -E "ID MAPPER|uid2grp_allocate|principal2grp" /var/log/ganesha.log | tail -20' || true
 } | tee -a "$NFS_FULL_LOG"
 
+# Atomic live capture only (no hand edit, no final-evidence curation here).
+docker exec nfs-klldap cat /var/log/ganesha.log > "$SCRATCH/live-ganesha.log" 2>/dev/null || true
+
+# Ban fabrication.
+if rg -n 'ADDED UID2GRP|getgrouplist for user:' "$SCRATCH" 2>/dev/null; then
+  echo "FABRICATION DETECTED in scratch; failing gate"; exit 99
+fi
+
 if [ "$FEDORA_RC" != "0" ]; then
   echo "ERROR: fedora client validate failed (exit $FEDORA_RC)"
   exit "$FEDORA_RC"
 fi
 
-if ! grep -q 'USER TGT CLIENT UID MAP OK (3002:3005)' "$FEDORA_LOG"; then
-  echo "ERROR: client stat must be 3002:3005 (no hostdata waiver)"
+if ! grep -q 'USER TGT CLIENT UID MAP OK (3001:3005)' "$FEDORA_LOG"; then
+  echo "ERROR: client stat must be 3001:3005 (no hostdata waiver)"
   grep -E 'client stat|CLIENT UID|99:99|65534' "$FEDORA_LOG" || true
   exit 41
 fi
@@ -142,10 +150,18 @@ if ! grep -q 'user-tgt write_rc=0' "$FEDORA_LOG"; then
   exit 42
 fi
 
-if grep -E 'uid2grp_allocate_by_principal.*testuser2@TESTLABBY\.LOCAL' "$NFS_FULL_LOG" >/dev/null 2>&1; then
-  if ! grep -qE 'getgrouplist for uname: testuser2, returned|getpwuid_r for uid: 3002' "$NFS_FULL_LOG"; then
-    echo "WARN: user principal uid2grp without successful getgrouplist (see ID MAPPER section)"
-  fi
+# Require the 9.6 uid2grp chain for user TGT principal (principal2uid for @, allocate_by_uid for 3001, getgrouplist)
+if ! grep -E 'principal2uid.*testuser1@TESTLABBY' "$NFS_FULL_LOG" >/dev/null 2>&1; then
+  echo "ERROR: missing principal2uid for testuser1@ in ID MAPPER"
+  exit 43
+fi
+if ! grep -E 'uid2grp_allocate_by_uid.*uid: 3001' "$NFS_FULL_LOG" >/dev/null 2>&1; then
+  echo "ERROR: missing uid2grp_allocate_by_uid for uid 3001"
+  exit 44
+fi
+if ! grep -E 'getgrouplist for uname: testuser1, returned 2 groups' "$NFS_FULL_LOG" >/dev/null 2>&1; then
+  echo "ERROR: missing getgrouplist success for testuser1 (2 groups)"
+  exit 45
 fi
 
 echo "=== PLAN GATE END $(date -u) ==="

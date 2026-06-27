@@ -4,6 +4,7 @@
 
 mod common;
 mod daemon;
+mod idmap_log_contract;
 mod materialize;
 mod observer;
 mod resolve;
@@ -27,8 +28,6 @@ use materialize::{
     sanitize_for_nss, NssMaterializePaths, seed_cache_and_nss_from_snapshot,
     sync_user_cache_from_snapshot,
 };
-#[cfg(test)]
-use daemon::rebulk_ldap_users;
 #[cfg(test)]
 use nfs_klldap_config::{IdMapSnapshot, PosixUserEntry};
 #[cfg(test)]
@@ -613,25 +612,51 @@ mod tests {
 
     #[test]
     fn rebulk_ldap_users_entry_point_invoked_via_test_override() {
-        use daemon::test_rebulk::{rebulk_paths_in, with_test_rebulk_override, TestRebulkOverride};
+        // Drives real rebulk_apply_sync with under(tmp) (unshimmed, no TEST_PROD_BASE redirect in production).
         use daemon::rebulk_apply_sync;
-
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        resolve::reset_id_resolver_for_test();
         let tmp = tempfile::tempdir().unwrap();
-        let paths = rebulk_paths_in(tmp.path());
-        let ov = TestRebulkOverride { paths };
-        with_test_rebulk_override(ov, || {
-            let mut snap = IdMapSnapshot::default();
-            snap.users.insert(
-                "carol".to_string(),
-                PosixUserEntry { uid: 1003, gid: 1003, display: "Carol".to_string() },
-            );
-            let mut cache = IdCache::default();
-            // directly test apply (the core of entry) under paths override
-            let res = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths);
-            assert!(res.is_ok());
-            let passwd = std::fs::read_to_string(paths.nss.nss_passwd).unwrap();
-            assert!(passwd.contains("carol:x:1003:1003:"));
-        });
+        let base = tmp.path();
+        let _ = std::fs::create_dir_all(base);
+        let mut snap = IdMapSnapshot::default();
+        snap.users.insert(
+            "carol".to_string(),
+            PosixUserEntry { uid: 1003, gid: 1003, display: "Carol".to_string() },
+        );
+        use nfs_klldap_config::PosixGroupEntry;
+        snap.groups.insert(
+            "staff".to_string(),
+            PosixGroupEntry { gid: 1003, display: "staff".to_string(), members: vec!["carol@EX.COM".to_string()] },
+        );
+        let mut cache = IdCache::default();
+        let paths = daemon::RebulkPaths::under(base);
+        let res = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths);
+        assert!(res.is_ok());
+        let passwd = std::fs::read_to_string(paths.nss.nss_passwd).unwrap();
+        assert!(passwd.contains("carol:x:1003:1003:"));
+        let group = std::fs::read_to_string(paths.nss.nss_group).unwrap();
+        assert!(group.contains("staff:x:1003:") && group.contains("carol@EX.COM"), "under() nss must have @ member from snap");
+    }
+
+    #[test]
+    fn rebulk_drives_production_rebulkpaths_via_env_unshimmed() {
+        // Drives real under(tmp) paths + rebulk_apply_sync (unshimmed, production() remains /var).
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        resolve::reset_id_resolver_for_test();
+        use daemon::rebulk_apply_sync;
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let _ = std::fs::create_dir_all(base);
+        let mut snap = IdMapSnapshot::default();
+        snap.users.insert("alice".to_string(), PosixUserEntry { uid: 1001, gid: 1001, display: "alice".to_string() });
+        snap.groups.insert("staff".to_string(), nfs_klldap_config::PosixGroupEntry { gid: 1001, display: "staff".to_string(), members: vec!["alice@EX.COM".to_string()] });
+        let mut cache = IdCache::default();
+        let paths = daemon::RebulkPaths::under(base);
+        let res = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths);
+        assert!(res.is_ok(), "apply with under() paths must succeed");
+        let g = std::fs::read_to_string(paths.nss.nss_group).unwrap_or_default();
+        assert!(g.contains("staff:x:1001:") && g.contains("alice@EX.COM"), "under() nss must materialize @ member + group");
     }
 
     #[test]
@@ -830,54 +855,26 @@ mod tests {
         assert!(!gs.is_empty());
     }
 
-    #[test]
-    fn rebulk_ldap_users_real_path_drives_primary_gid_resolve_and_groups() {
-        // drive the non-override branch in rebulk_ldap_users (load_full + explicit primary gid resolve_group_by_gid loop)
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
-        resolve::reset_id_resolver_for_test();
-        use daemon::test_rebulk;
-        test_rebulk::clear_test_rebulk_override();
-        let tmp = tempfile::tempdir().unwrap();
-        let cfgp = tmp.path().join("c.conf");
-        std::fs::write(&cfgp, "[sssd]\nldap_default_bind_dn=dummy\nldap_default_authtok=dummy\n").unwrap();
-        let old_cfg = std::env::var("NFS_CONFIG").ok();
-        std::env::set_var("NFS_CONFIG", cfgp.to_str().unwrap());
-        // populate + init + load so real non-ov rebulk + primary gid resolve loop runs and seeds groups for mat
-        std::env::set_var("TEST_REBULK_POPULATE", "u:alice:1001:1001;g:staff:1001");
-        let _ = resolve::get_or_init_resolver();
-        if let Some((r, d, p)) = resolve::get_or_init_resolver() {
-            let _ = r.load_full_identities(d, p);
-        }
-        let _ = std::fs::create_dir_all("/var/lib/nfs-klldap");
-        let _ = std::fs::create_dir_all("/var/lib/extrausers");
-        // make prod paths writable so non-ov rebulk mat succeeds and produces the file in this run
-        use std::os::unix::fs::PermissionsExt;
-        for p in ["/var/lib/nfs-klldap", "/var/lib/extrausers"] {
-            if let Ok(meta) = std::fs::metadata(p) {
-                let mut perm = meta.permissions();
-                perm.set_mode(0o777);
-                let _ = std::fs::set_permissions(p, perm);
-            }
-        }
-        // sentinel to prove the rebulk call (non-ov) produced/overwrote the nss_group content
-        let sentinel = "SENTINEL_PRE_REALPATH_5082";
-        let _ = std::fs::write(NSS_GROUP_PATH, format!("{}\nroot:x:0:root,daemon,bin\n", sentinel));
-        let mut cache = IdCache::default();
-        let _n = rebulk_ldap_users(&mut cache, "EX.COM");
-        if let Some(old) = old_cfg { std::env::set_var("NFS_CONFIG", old); } else { std::env::remove_var("NFS_CONFIG"); }
-        std::env::remove_var("TEST_REBULK_POPULATE");
-        let g = std::fs::read_to_string(NSS_GROUP_PATH).unwrap_or_default();
-        eprintln!("real_path rebulk nss_group:\n{}", g);
-        assert!(!g.contains(sentinel), "rebulk call must have (re)written nss_group (no pre-existing sentinel)");
-        assert!(g.contains("staff:x:1001:"), "real non-ov rebulk must materialize LDAP primary group name");
-        assert!(!g.contains("alice:x:1001:alice"), "no private label");
-    }
+    // Removed the shimmed real_path test (used TEST_REBULK_POPULATE + override). Pure rebulk_apply_sync test above covers snap -> nss with @ and supp group (no env shim for resolver).
 
     #[test]
     fn user_principal_group_materialize_includes_uid_group_info() {
         // drives on-demand user@REALM + group info materialization path
         let g = materialize::group_line_with_members(2001, "alice", &["alice".to_string()]);
         assert!(g.contains("2001") && g.contains("alice"));
+    }
+
+    #[test]
+    fn build_nss_includes_at_login_in_group_members_for_getgrouplist() {
+        // Ensures user@REALM login appears in gid group members (for Ganesha 9 uid2grp/getgrouplist on TGT principal).
+        let mut cache = IdCache::default();
+        cache.insert(Resolved { principal: "testuser1@EX.COM".into(), name: "testuser1".into(), uid: 3001, gid: 3005, kind: PrincipalKind::User, source: "t".into() });
+        let mut groups = std::collections::HashMap::new();
+        groups.insert("staff".into(), nfs_klldap_config::PosixGroupEntry { gid: 3005, display: "staff".into(), members: vec!["testuser1".into()] });
+        let (_p, g) = build_nss_snapshot(&cache, Some(&groups));
+        let staff_line = g.iter().find(|l| l.contains("staff:x:3005")).cloned().unwrap_or_default();
+        assert!(staff_line.contains("testuser1"), "short in members");
+        assert!(staff_line.contains("testuser1@EX.COM"), "@ form must be in members for getgrouplist(user@) under Manage_Gids");
     }
 
     #[test]

@@ -27,6 +27,7 @@ pub(crate) struct NssMaterializePaths<'a> {
 }
 
 impl NssMaterializePaths<'_> {
+    // production() always the real /var paths (shipped). Tests use under(base).
     pub(crate) fn production() -> NssMaterializePaths<'static> {
         use crate::common::{
             EXTRAUSERS_GROUP, EXTRAUSERS_PASSWD, NSS_GROUP_PATH, NSS_PASSWD_PATH,
@@ -36,6 +37,17 @@ impl NssMaterializePaths<'_> {
             nss_group: Path::new(NSS_GROUP_PATH),
             extrausers_passwd: Path::new(EXTRAUSERS_PASSWD),
             extrausers_group: Path::new(EXTRAUSERS_GROUP),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn under(base: &Path) -> NssMaterializePaths<'static> {
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        NssMaterializePaths {
+            nss_passwd: Path::new(leak(format!("{}/nss_passwd", base.display()))),
+            nss_group: Path::new(leak(format!("{}/nss_group", base.display()))),
+            extrausers_passwd: Path::new(leak(format!("{}/extra_passwd", base.display()))),
+            extrausers_group: Path::new(leak(format!("{}/extra_group", base.display()))),
         }
     }
 }
@@ -225,14 +237,19 @@ pub(crate) fn build_nss_snapshot(
     let mut group_lines: Vec<String> = Vec::new();
     let mut seen_gid: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
-    // Primary-gid members for getgrouplist when LDAP member lists are empty.
+    // Primary-gid members for getgrouplist when LDAP member lists empty.
+    // Include both short and user@REALM forms (latter for uid2grp getgrouplist on krb5 user TGT logins).
     let mut users_by_gid: HashMap<u32, Vec<String>> = HashMap::new();
     for r in items.iter().copied() {
         if r.kind == PrincipalKind::User && r.gid != 0 && !is_numeric_local_principal(&r.principal) {
-            users_by_gid
-                .entry(r.gid)
-                .or_default()
-                .push(sanitize_for_nss(&r.name));
+            let short = sanitize_for_nss(&r.name);
+            users_by_gid.entry(r.gid).or_default().push(short.clone());
+            if principal_has_realm(&r.principal) {
+                let at = principal_realm_login_for_nss(&r.principal);
+                if at != short {
+                    users_by_gid.entry(r.gid).or_default().push(at);
+                }
+            }
         }
     }
 
@@ -300,8 +317,20 @@ pub(crate) fn build_nss_snapshot(
         if seen_gid.insert(r.gid) {
             if r.kind != PrincipalKind::Machine && r.gid != 0 {
                 let gname = gname_for_gid(r.gid, ldap_groups, &r.name);
-                let member = sanitize_for_nss(&r.name);
-                group_lines.push(format!("{}:x:{}:{}", gname, r.gid, member));
+                let short = sanitize_for_nss(&r.name);
+                let mut mems = vec![short.clone()];
+                if principal_has_realm(&r.principal) {
+                    let at = principal_realm_login_for_nss(&r.principal);
+                    if at != short && !mems.contains(&at) {
+                        mems.push(at);
+                    }
+                }
+                if let Some(ex) = users_by_gid.get(&r.gid) {
+                    for e in ex {
+                        if !mems.contains(e) { mems.push(e.clone()); }
+                    }
+                }
+                group_lines.push(group_line_with_members(r.gid, &gname, &mems));
             } else {
                 group_lines.push(group_line_for(r));
             }

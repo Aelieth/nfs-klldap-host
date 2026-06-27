@@ -413,7 +413,7 @@ mod tests {
         assert!(!main.contains("NLM_Port"));
         assert!(!main.contains("Rquota_Port"));
         assert!(!main.contains("IdmapConf"));
-        assert!(main.contains("UseGetpwnam = true"));
+        assert!(main.contains("UseGetpwnam = false"));
         // Enable_*=false are safe and explicit the dangerous keys Above are.
 
         // Baseline LOG is always emitted for idhelper operator visibility.

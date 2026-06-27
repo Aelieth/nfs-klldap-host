@@ -74,8 +74,8 @@ fn assert_ganesha_96_compliant(ganesha: &str, idmap: &str) {
         assert!(ganesha.contains(key), "ganesha.conf missing {key}");
     }
     assert!(
-        ganesha.contains("UseGetpwnam = true"),
-        "ganesha.conf must emit UseGetpwnam for krb5 GSS managed_gids on Debian 9.6"
+        ganesha.contains("UseGetpwnam = false"),
+        "ganesha.conf must emit UseGetpwnam=false to take principal2grp/allocate_by_principal path for user TGT under Manage_Gids (9.x)"
     );
     for forbidden in [
         "Read_Access_Check_Policy =",

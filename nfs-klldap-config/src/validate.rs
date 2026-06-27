@@ -9,6 +9,19 @@ use crate::{
     Share,
 };
 
+/// True for empty realm or uppercase placeholder sentinels (EXAMPLE.COM / EXAMPLE).
+/// Lowercase FQDN-style realms (e.g. example.com) are real values, not placeholders.
+pub(crate) fn is_kerberos_placeholder_realm(r: &str) -> bool {
+    let t = r.trim();
+    if t.is_empty() {
+        return true;
+    }
+    if t.chars().any(|c| c.is_ascii_lowercase()) {
+        return false;
+    }
+    t.eq_ignore_ascii_case("EXAMPLE.COM") || t.eq_ignore_ascii_case("EXAMPLE")
+}
+
 fn log_share_warnings(warnings: &[ShareFieldWarning]) {
     for w in warnings {
         eprintln!("WARN [nfs-klldap-config] {}", w.display_message());
@@ -168,10 +181,7 @@ impl NfsKlldapConfig {
         // Require real realm (no EXAMPLE.COM placeholder or empty).
         {
             let r = self.kerberos.realm.as_deref().unwrap_or("").trim();
-            if r.is_empty()
-                || r.eq_ignore_ascii_case("EXAMPLE.COM")
-                || r.eq_ignore_ascii_case("EXAMPLE")
-            {
+            if is_kerberos_placeholder_realm(r) {
                 return Err(ConfigError::Validation(
                     "kerberos.realm is required (auto-derivation from ldap_uri failed or produced a placeholder).\n\
                      Set [kerberos] realm = \"YOUR.REALM\" in nfs-klldap.conf, or provide NFS_KLLDAP_KERBEROS_REALM env var.\n\

@@ -61,6 +61,9 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | Ldap list filters, normalize query, cache behavior (unit) | `nfs-klldap-ui/src/ldap.rs` (list_search_tests) |
 
 ## Kerberos user principal idmap verification
-Run: cargo test --workspace (idmap, resolve, generate, supervisor probes). Invoke idhelper resolve 'user@REALM' (exercises on-demand + group). Use capture_idmap_principal.sh (kinit+mount+ls non-int + grep uid2grp_allocate_by_principal + "Unsupported code path") fed by scripts/build_diagnosis.sh (append+tee-a). Check emitted idmapd.conf (Domain/Local-Realms/Method/GSS-Methods=nsswitch + krb notes) and krb5* fragments (Manage_Gids=false + note). ganesha-ctl id-resolve/id-check surface ID MAPPER from ganesha.log.
+Run: `cargo test --workspace` (idmap, resolve, generate, supervisor probes). Idhelper env-mutating tests serialize on `common::ENV_TEST_LOCK` and reset `ID_RESOLVER` via `reset_id_resolver_for_test()` so parallel `cargo test` does not poison `TEST_REBULK_POPULATE` / `NFS_CONFIG`. Invoke `idhelper resolve 'user@REALM'` (on-demand + group). Use `capture_idmap_principal.sh` + `scripts/build_diagnosis.sh` for uid2grp noise. Check emitted `idmapd.conf` and krb5* fragments (`Manage_Gids=false`). `ganesha-ctl id-resolve` / `id-check` surface ID MAPPER lines.
+
+## Fedora 44 krb5p client (container)
+`scripts/fedora-krb5p-client-validate.sh` — machine `kinit -k` + `sec=krb5p` mount/IO (host bind visibility). User TGT additionally needs a Kerberos-synced principal on the KDC (LLDAP password change must log “Kerberos sync started”); client `[gssd] use-machine-creds=0` in `/etc/nfs.conf` when mounting with user tickets only.
 
 Documentation and tests should be updated together when behavior changes. (See also fs.rs symlink policy comments and privileged.rs boundary.)

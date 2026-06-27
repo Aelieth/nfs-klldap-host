@@ -396,9 +396,6 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
 mod managed_gids_log_tests {
     use super::*;
     use std::fs;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn write_limited_fs_config(dir: &std::path::Path) -> std::path::PathBuf {
         let mountinfo = dir.join("mountinfo");
@@ -430,7 +427,7 @@ host_path = "/media/data"
 
     #[test]
     fn maybe_log_managed_gids_noise_downgrades_via_manage_gids_expected() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         write_limited_fs_config(tmp.path());
         assert!(
@@ -446,7 +443,7 @@ host_path = "/media/data"
 
     #[test]
     fn maybe_log_managed_gids_noise_verbose_when_manage_gids_on() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let conf = tmp.path().join("nfs-klldap.conf");
         fs::write(
@@ -473,7 +470,7 @@ manage_gids = true
 
     #[test]
     fn maybe_log_managed_gids_noise_ignores_unrelated_lines() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         write_limited_fs_config(tmp.path());
         assert_eq!(maybe_log_managed_gids_noise("nfs4_op succeeded"), None);

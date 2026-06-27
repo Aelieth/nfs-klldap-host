@@ -3,7 +3,7 @@
 use crate::dlog;
 use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use nfs_klldap_config::{
@@ -146,16 +146,27 @@ fn load_resolver_from_config() -> Option<(IdLdapResolver, String, String)> {
     Some((resolver, cfg.sssd.ldap_default_bind_dn.clone(), cfg.sssd.ldap_default_authtok.clone()))
 }
 
-/// The shared resolver stays alive for observer and getent resolution paths.
-pub(crate) static ID_RESOLVER: OnceLock<Option<(IdLdapResolver, String, String)>> =
-    OnceLock::new();
+/// Shared resolver for observer and getent paths. Tests reset via reset_id_resolver_for_test.
+static ID_RESOLVER: Mutex<Option<&'static (IdLdapResolver, String, String)>> =
+    Mutex::new(None);
+
+fn id_resolver_slot() -> std::sync::MutexGuard<'static, Option<&'static (IdLdapResolver, String, String)>> {
+    ID_RESOLVER.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 pub(crate) fn get_or_init_resolver() -> Option<(&'static IdLdapResolver, &'static str, &'static str)> {
-    if ID_RESOLVER.get().and_then(|o| o.as_ref()).is_none() {
-        let _ = ID_RESOLVER.set(Some(load_resolver_from_config()?));
+    let mut slot = id_resolver_slot();
+    if slot.is_none() {
+        let loaded = load_resolver_from_config()?;
+        let leaked: &'static (IdLdapResolver, String, String) = Box::leak(Box::new(loaded));
+        *slot = Some(leaked);
     }
-    let c = ID_RESOLVER.get().and_then(|o| o.as_ref())?;
-    Some((&c.0, &c.1, &c.2))
+    slot.map(|t| (&t.0, t.1.as_str(), t.2.as_str()))
+}
+
+#[cfg(test)]
+pub(crate) fn reset_id_resolver_for_test() {
+    *id_resolver_slot() = None;
 }
 
 fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {

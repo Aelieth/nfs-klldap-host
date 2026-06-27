@@ -645,6 +645,8 @@ mod tests {
     #[test]
     fn rebulk_ldap_users_real_path_drives_primary_gid_resolve_and_groups() {
         // drive the non-override branch in rebulk_ldap_users (load_full + explicit primary gid resolve_group_by_gid loop)
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        resolve::reset_id_resolver_for_test();
         use daemon::test_rebulk;
         test_rebulk::clear_test_rebulk_override();
         let tmp = tempfile::tempdir().unwrap();

@@ -31,6 +31,10 @@ pub(crate) const DEFAULT_REBULK_INTERVAL_SECS: u64 = 10 * 60;
 /// Debug logging enabled via KLLDAP_IDHELPER_DEBUG=true (or 1/yes/on).
 static DEBUG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
+/// Serializes env-mutating idhelper tests under parallel cargo test.
+#[cfg(test)]
+pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Returns true when any share enables Manage_Gids logging.
 pub(crate) fn manage_gids_expected() -> bool {
     let path =

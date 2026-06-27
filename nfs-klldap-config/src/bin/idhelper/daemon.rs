@@ -20,7 +20,7 @@ use crate::materialize::{
     sync_user_cache_from_snapshot, NssMaterializePaths,
 };
 use crate::observer::start_ganesha_observer;
-use crate::resolve::{get_or_init_resolver, resolve_groups_for_principal, resolve_principal, ID_RESOLVER};
+use crate::resolve::{get_or_init_resolver, resolve_groups_for_principal, resolve_principal};
 
 /// Paths rebulk writes: idmap cache, bulk-seed marker, nss_wrapper outputs.
 #[derive(Clone, Copy)]
@@ -94,6 +94,8 @@ pub(crate) mod test_rebulk {
     where
         F: FnOnce() -> R,
     {
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        crate::resolve::reset_id_resolver_for_test();
         TEST_REBULK.with(|slot| {
             *slot.borrow_mut() = Some(ov);
         });
@@ -133,11 +135,7 @@ pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usiz
     #[cfg(test)]
     if let Some(ov) = test_rebulk::current_override() {
         // paths-only override; still run real resolver load + primary-gid loop (data via TEST_REBULK_POPULATE)
-        // ensure resolver inited (tests set dummy NFS_CONFIG + populate)
-        if ID_RESOLVER.get().and_then(|o| o.as_ref()).is_none() {
-            let _ = get_or_init_resolver();
-        }
-        let (r, dn, pw) = match ID_RESOLVER.get().and_then(|o| o.as_ref()) {
+        let (r, dn, pw) = match get_or_init_resolver() {
             Some(t) => t,
             None => return None,
         };
@@ -170,7 +168,7 @@ pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usiz
         };
     }
 
-    let (r, dn, pw) = ID_RESOLVER.get().and_then(|o| o.as_ref())?;
+    let (r, dn, pw) = get_or_init_resolver()?;
     let loaded = r.load_full_identities(dn, pw);
     // Explicitly resolve each user's primary gid so snap.groups has LDAP display name.
     let pre = r.snapshot();
@@ -602,6 +600,8 @@ mod grps_socket_tests {
     #[test]
     fn handle_client_grps_emits_ok_with_numeric_gids() {
         // drive full GRPS path: RESOLVE (uid) -> resolver memberOf/gidNumber + supp groups
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        crate::resolve::reset_id_resolver_for_test();
         let old_force = std::env::var("TEST_FORCE_LDAP_UID_GID").ok();
         let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
         std::env::set_var("TEST_FORCE_LDAP_UID_GID", "1001:1001");

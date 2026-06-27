@@ -114,4 +114,25 @@ rm -f /mnt/stuff/krb5p-success-marker.txt
 umount /mnt/stuff /mnt/junk 2>/dev/null || true
 kill "$GSSD_PID" 2>/dev/null || true
 
+# Optional user TGT phase (requires Kerberos-synced user on KDC, e.g. testuser2 after LLDAP password sync).
+if [ -n "${TEST_USER_PRINC:-}" ] && [ -n "${TEST_USER_PASSWORD:-}" ]; then
+  echo "=== USER TGT PHASE (${TEST_USER_PRINC}) ==="
+  cat > /etc/nfs.conf <<'NFSCONF'
+[general]
+pipefs-directory=/var/lib/nfs/rpc_pipefs
+[gssd]
+use-machine-creds=0
+NFSCONF
+  export KRB5CCNAME=FILE:/tmp/ccuser
+  printf '%s\n' "$TEST_USER_PASSWORD" | kinit -c /tmp/ccuser "$TEST_USER_PRINC" 2>&1
+  mount -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/stuff /mnt/stuff
+  echo "user-tgt-$(date +%s)" > "/mnt/stuff/user-tgt-${TEST_USER_PRINC%%@*}.txt"
+  sync
+  uid=$(stat -c %u "/mnt/stuff/user-tgt-${TEST_USER_PRINC%%@*}.txt")
+  gid=$(stat -c %g "/mnt/stuff/user-tgt-${TEST_USER_PRINC%%@*}.txt")
+  echo "user-tgt uid:gid = ${uid}:${gid}"
+  test "$uid" != "65534" -a "$gid" != "65534" || exit 41
+  umount /mnt/stuff
+fi
+
 echo "=== FEDORA KRB5P VALIDATE END $(date -u) ==="

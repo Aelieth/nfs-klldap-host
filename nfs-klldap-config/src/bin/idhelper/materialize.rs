@@ -184,6 +184,26 @@ pub(crate) fn materialize_nss_wrappers_at(
     let mut group_lines: Vec<String> = Vec::new();
     let mut seen_gid: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
+    // LDAP groups first so their display names win for gids that are also user primaries.
+    if let Some(groups) = ldap_groups {
+        let mut by_gid: HashMap<i32, &PosixGroupEntry> = HashMap::new();
+        for entry in groups.values() {
+            by_gid.entry(entry.gid).or_insert(entry);
+        }
+        for entry in by_gid.values() {
+            let gid = entry.gid as u32;
+            if seen_gid.insert(gid) {
+                let gname = sanitize_for_nss(&entry.display);
+                let members: Vec<String> = entry
+                    .members
+                    .iter()
+                    .map(|m| sanitize_for_nss(m))
+                    .collect();
+                group_lines.push(group_line_with_members(gid, &gname, &members));
+            }
+        }
+    }
+
     for r in &items {
         let line = passwd_line_for(r);
         // Extract login from the line we just built (before first ':').
@@ -216,7 +236,7 @@ pub(crate) fn materialize_nss_wrappers_at(
             }
         }
 
-        // Groups (primary gid from resolved principal).
+        // Primary group from this user: only if LDAP didn't already provide a row for the gid.
         if seen_gid.insert(r.gid) {
             if r.kind != PrincipalKind::Machine && r.gid != 0 {
                 // include user in its primary group line for uid2grp materialization
@@ -234,27 +254,6 @@ pub(crate) fn materialize_nss_wrappers_at(
             } else {
                 group_lines.push(format!("u{}:x:{}:", r.uid, r.uid));
             }
-        }
-    }
-
-    // LDAP-preloaded groups with member lists supply supplementary groups.
-    if let Some(groups) = ldap_groups {
-        let mut by_gid: HashMap<i32, &PosixGroupEntry> = HashMap::new();
-        for entry in groups.values() {
-            by_gid.entry(entry.gid).or_insert(entry);
-        }
-        for entry in by_gid.values() {
-            let gid = entry.gid as u32;
-            if !seen_gid.insert(gid) {
-                continue;
-            }
-            let gname = sanitize_for_nss(&entry.display);
-            let members: Vec<String> = entry
-                .members
-                .iter()
-                .map(|m| sanitize_for_nss(m))
-                .collect();
-            group_lines.push(group_line_with_members(gid, &gname, &members));
         }
     }
 

@@ -95,8 +95,48 @@ fn resolve_via_structured_ldap(name_or_principal: &str) -> Option<(u32, u32)> {
     ids
 }
 
+/// Merge primary + supplemental gids (primary first, deduped). Pure helper, easy to test with distinct values.
+pub(crate) fn merge_group_gids(primary: u32, supplemental: &[u32]) -> Vec<u32> {
+    let mut out = vec![primary];
+    for &g in supplemental {
+        if !out.contains(&g) {
+            out.push(g);
+        }
+    }
+    out
+}
+
+/// Resolve groups for principal: RESOLVE (uid) then resolver membership (memberOf/member/gidNumber).
+/// Primary first; includes LDAP display groups for primary gid resolution side-effect.
+pub(crate) fn resolve_groups_for_principal(
+    principal: &str,
+    realm: &str,
+    server_variants: &[String],
+    cache: &mut IdCache,
+) -> Vec<u32> {
+    let r = resolve_principal(principal, realm, server_variants, cache);
+    if r.kind == PrincipalKind::Machine {
+        return vec![0];
+    }
+    let primary = r.gid;
+    let mut extra: Vec<u32> = vec![];
+    if let Some((resolver, dn, pw)) = get_or_init_resolver() {
+        let more = resolver.resolve_groups_for_principal(principal, dn, pw);
+        extra = more.into_iter().map(|g| g as u32).collect();
+        // Ensure primary gid group row uses LDAP name (not user-private) when materializing.
+        let _ = resolver.resolve_group_by_gid(r.gid as i32, dn, pw);
+    }
+    merge_group_gids(primary, &extra)
+}
+
 /// Load resolver + bind creds from NfsKlldapConfig (NFS_CONFIG).
 fn load_resolver_from_config() -> Option<(IdLdapResolver, String, String)> {
+    #[cfg(test)]
+    if std::env::var("TEST_REBULK_POPULATE").is_ok() {
+        // dummy so get_or_init succeeds for rebulk/GRPS tests; data from TEST spec in override
+        let r = IdLdapResolver::from_inputs(&::nfs_klldap_identity::LdapResolverInputs::default());
+        return Some((r, "dn".into(), "pw".into()));
+    }
     let path = std::env::var("NFS_CONFIG").unwrap_or_else(|_| "/config/nfs-klldap.conf".to_string());
     let cfg = NfsKlldapConfig::load(std::path::Path::new(&path)).ok()?;
     if cfg.sssd.ldap_default_bind_dn.trim().is_empty() || cfg.sssd.ldap_default_authtok.trim().is_empty() {
@@ -327,5 +367,12 @@ mod tests {
         );
         assert_eq!(uid_gid_from_snapshot(&snap, "alice@REALM", "alice"), Some((1001, 1001)));
         assert_eq!(uid_gid_from_snapshot(&snap, "alice", "alice"), None);
+    }
+
+    #[test]
+    fn merge_group_gids_primary_first_distinct_dedup() {
+        assert_eq!(merge_group_gids(1001, &[1001, 2002]), vec![1001, 2002]);
+        assert_eq!(merge_group_gids(1001, &[2002, 1001, 2002]), vec![1001, 2002]);
+        assert_eq!(merge_group_gids(4242, &[]), vec![4242]);
     }
 }

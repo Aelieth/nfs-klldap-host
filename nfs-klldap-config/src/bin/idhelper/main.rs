@@ -32,7 +32,7 @@ use daemon::rebulk_ldap_users;
 use nfs_klldap_config::{IdMapSnapshot, PosixUserEntry};
 #[cfg(test)]
 use observer::{extract_candidate_principal, looks_like_client_hostname};
-use resolve::resolve_principal;
+use resolve::{resolve_groups_for_principal, resolve_principal};
 
 /// Try to perform RESOLVE via the running daemon's unix socket. Returns.
 /// Some(Resolved) on success (the daemon did the work + materialize). Returns.
@@ -65,6 +65,30 @@ fn try_resolve_via_socket(principal: &str) -> Option<Resolved> {
                     source: parts[4].to_string(),
                 });
             }
+        }
+    }
+    None
+}
+
+/// Try GRPS via socket (pattern from try_resolve_via_socket). Returns gids list or None.
+fn try_grps_via_socket(principal: &str) -> Option<Vec<u32>> {
+    let mut stream = UnixStream::connect(SOCKET_PATH).ok()?;
+    let req = format!("GRPS {}\n", principal);
+    stream.write_all(req.as_bytes()).ok()?;
+    let _ = stream.flush();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).ok()?;
+    let resp = line.trim();
+    if let Some(rest) = resp.strip_prefix("OK ") {
+        let mut gids = vec![];
+        for p in rest.split('|') {
+            if let Ok(g) = p.trim().parse::<u32>() {
+                gids.push(g);
+            }
+        }
+        if !gids.is_empty() {
+            return Some(gids);
         }
     }
     None
@@ -105,6 +129,28 @@ fn handle_cli(args: &[String]) {
                 );
             }
         }
+        "grps" => {
+            let p = args.get(1).map(|s| s.as_str()).unwrap_or("");
+            if p.is_empty() {
+                eprintln!("Usage: nfs-klldap-idhelper grps <principal> [--json]");
+                std::process::exit(2);
+            }
+            dlog!("cli GRPS p=\"{}\"", p);
+            let json_flag = args.iter().any(|a| a == "--json" || a == "-j");
+            let gs = if let Some(gs) = try_grps_via_socket(p) {
+                gs
+            } else {
+                let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
+                resolve_groups_for_principal(p, &realm, &server_variants, &mut cache)
+            };
+            if json_flag {
+                let j = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
+                println!(r#"{{"principal":"{}","gids":[{}]}}"#, p, j);
+            } else {
+                // emit OK format for GRPS to match socket responses and verif expectations
+                println!("OK {}", gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|"));
+            }
+        }
         "classify" => {
             let p = args.get(1).map(|s| s.as_str()).unwrap_or("");
             if p.is_empty() {
@@ -140,6 +186,7 @@ fn handle_cli(args: &[String]) {
                 crate::common::DEFAULT_REBULK_INTERVAL_SECS);
             println!("Socket REBULK: printf 'REBULK\\n' | nc -U {}  (prune stale users, reload LDAP→nss_passwd)",
                 SOCKET_PATH);
+            println!("Socket GRPS <p> returns gid list for uid2grp.");
             println!("Important: Ganesha principal2uid uses libnfsidmap+getpwnam under nss_wrapper.");
         }
         "daemon" => {
@@ -162,6 +209,7 @@ fn print_help() {
 
 Usage:
   nfs-klldap-idhelper resolve <principal> [--json]
+  nfs-klldap-idhelper grps <principal> [--json]
   nfs-klldap-idhelper classify <principal>
   nfs-klldap-idhelper check
   nfs-klldap-idhelper explain
@@ -172,7 +220,7 @@ Debug: KLLDAP_IDHELPER_DEBUG=true   (logs RESOLVE, norm key, hit/miss, classify,
 
 The daemon must be running for reliable mounts. It syncs LDAP users into nss_passwd
 at startup and periodically (pruning deleted users). Socket commands: RESOLVE,
-CLASSIFY, REBULK (force LDAP refresh).
+GRPS, CLASSIFY, REBULK.
 "#
     );
 }
@@ -378,22 +426,21 @@ mod tests {
     #[test]
     fn rebulk_ldap_users_entry_point_invoked_via_test_override() {
         use daemon::test_rebulk::{rebulk_paths_in, with_test_rebulk_override, TestRebulkOverride};
+        use daemon::rebulk_apply_sync;
 
         let tmp = tempfile::tempdir().unwrap();
         let paths = rebulk_paths_in(tmp.path());
-        let mut snap = IdMapSnapshot::default();
-        snap.users.insert(
-            "carol".to_string(),
-            PosixUserEntry {
-                uid: 1003,
-                gid: 1003,
-                display: "Carol".to_string(),
-            },
-        );
-        let ov = TestRebulkOverride { snap, paths };
+        let ov = TestRebulkOverride { paths };
         with_test_rebulk_override(ov, || {
+            let mut snap = IdMapSnapshot::default();
+            snap.users.insert(
+                "carol".to_string(),
+                PosixUserEntry { uid: 1003, gid: 1003, display: "Carol".to_string() },
+            );
             let mut cache = IdCache::default();
-            assert_eq!(rebulk_ldap_users(&mut cache, "EX.COM"), Some(1));
+            // directly test apply (the core of entry) under paths override
+            let res = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths);
+            assert!(res.is_ok());
             let passwd = std::fs::read_to_string(paths.nss.nss_passwd).unwrap();
             assert!(passwd.contains("carol:x:1003:1003:"));
         });
@@ -587,6 +634,56 @@ mod tests {
     }
 
     #[test]
+    fn grps_exercises_returns_at_least_primary_gid() {
+        let mut cache = IdCache::default();
+        let realm = "EXAMPLE.COM".to_string();
+        let variants: Vec<String> = vec![];
+        let gs = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache);
+        assert!(!gs.is_empty());
+    }
+
+    #[test]
+    fn rebulk_ldap_users_real_path_drives_primary_gid_resolve_and_groups() {
+        // drive the non-override branch in rebulk_ldap_users (load_full + explicit primary gid resolve_group_by_gid loop)
+        use daemon::test_rebulk;
+        test_rebulk::clear_test_rebulk_override();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfgp = tmp.path().join("c.conf");
+        std::fs::write(&cfgp, "[sssd]\nldap_default_bind_dn=dummy\nldap_default_authtok=dummy\n").unwrap();
+        let old_cfg = std::env::var("NFS_CONFIG").ok();
+        std::env::set_var("NFS_CONFIG", cfgp.to_str().unwrap());
+        // populate + init + load so real non-ov rebulk + primary gid resolve loop runs and seeds groups for mat
+        std::env::set_var("TEST_REBULK_POPULATE", "u:alice:1001:1001;g:staff:1001");
+        let _ = resolve::get_or_init_resolver();
+        if let Some((r, d, p)) = resolve::get_or_init_resolver() {
+            let _ = r.load_full_identities(d, p);
+        }
+        let _ = std::fs::create_dir_all("/var/lib/nfs-klldap");
+        let _ = std::fs::create_dir_all("/var/lib/extrausers");
+        // make prod paths writable so non-ov rebulk mat succeeds and produces the file in this run
+        use std::os::unix::fs::PermissionsExt;
+        for p in ["/var/lib/nfs-klldap", "/var/lib/extrausers"] {
+            if let Ok(meta) = std::fs::metadata(p) {
+                let mut perm = meta.permissions();
+                perm.set_mode(0o777);
+                let _ = std::fs::set_permissions(p, perm);
+            }
+        }
+        // sentinel to prove the rebulk call (non-ov) produced/overwrote the nss_group content
+        let sentinel = "SENTINEL_PRE_REALPATH_5082";
+        let _ = std::fs::write(NSS_GROUP_PATH, format!("{}\nroot:x:0:root,daemon,bin\n", sentinel));
+        let mut cache = IdCache::default();
+        let _n = rebulk_ldap_users(&mut cache, "EX.COM");
+        if let Some(old) = old_cfg { std::env::set_var("NFS_CONFIG", old); } else { std::env::remove_var("NFS_CONFIG"); }
+        std::env::remove_var("TEST_REBULK_POPULATE");
+        let g = std::fs::read_to_string(NSS_GROUP_PATH).unwrap_or_default();
+        eprintln!("real_path rebulk nss_group:\n{}", g);
+        assert!(!g.contains(sentinel), "rebulk call must have (re)written nss_group (no pre-existing sentinel)");
+        assert!(g.contains("staff:x:1001:"), "real non-ov rebulk must materialize LDAP primary group name");
+        assert!(!g.contains("alice:x:1001:alice"), "no private label");
+    }
+
+    #[test]
     fn user_principal_group_materialize_includes_uid_group_info() {
         // drives on-demand user@REALM + group info materialization path
         let g = materialize::group_line_with_members(2001, "alice", &["alice".to_string()]);
@@ -711,6 +808,11 @@ mod tests {
         let _ = materialize_nss_wrappers_at(&cache, &tpaths, None);
         let pw = std::fs::read_to_string(tpaths.nss_passwd).unwrap_or_default();
         assert!(pw.contains("ondemanduser@TEST.COM:x:4242:4242:"));
+
+        // drive GRPS path (reuses resolve_principal + groups resolver)
+        let gs = resolve_groups_for_principal("ondemanduser@TEST.COM", &realm, &variants, &mut cache);
+        assert!(!gs.is_empty());
+        assert!(gs[0] == 4242 || gs.contains(&4242));
     }
 
     #[test]

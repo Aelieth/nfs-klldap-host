@@ -101,14 +101,28 @@ if [ -x "$IDHELPER" ]; then
     # Always attempt our resolve first. Critical side-effect: classify+materialize to nss_wrapper so Ganesha getpwnam sees it.
     resolved_uid=""
     resolved_gid=""
+    resolved_gids=""
+
+    # For gid mode on user principals (uid2grp/manage_gids path), prefer GRPS to get primary+supp gids.
+    if [ "$mode" = "gid" ] && [ -n "$principal" ] && echo "$principal" | grep -q '@' && ! echo "$principal" | grep -qiE '^(host| nfs|root)/'; then
+        # always --json for grps to avoid name digits in text output polluting list
+        if glist="$($IDHELPER grps "$principal" --json 2>/dev/null || true)"; then
+            if [ -n "$glist" ]; then
+                resolved_gids=$(printf '%s' "$glist" | sed -n 's/.*"gids":\[\([^]]*\)\].*/\1/p' | sed 's/,/ /g' | tr -s ' ' | sed 's/^ //;s/ $//')
+                resolved_gid=$(echo "$resolved_gids" | cut -d' ' -f1)
+            fi
+        fi
+    fi
 
     # Delegate cleanly for both uid and gid (group alloc) cases; supports user@REALM.
-    if json="$($IDHELPER resolve "$principal" --json 2>/dev/null || true)"; then
-        if [ -n "$json" ]; then
-            if [ "$mode" = "uid" ]; then
-                resolved_uid=$(printf '%s' "$json" | sed -n 's/.*"uid":\([0-9][0-9]*\).*/\1/p' | head -1)
-            else
-                resolved_gid=$(printf '%s' "$json" | sed -n 's/.*"gid":\([0-9][0-9]*\).*/\1/p' | head -1)
+    if [ -z "$resolved_gid" ]; then
+        if json="$($IDHELPER resolve "$principal" --json 2>/dev/null || true)"; then
+            if [ -n "$json" ]; then
+                if [ "$mode" = "uid" ]; then
+                    resolved_uid=$(printf '%s' "$json" | sed -n 's/.*"uid":\([0-9][0-9]*\).*/\1/p' | head -1)
+                else
+                    resolved_gid=$(printf '%s' "$json" | sed -n 's/.*"gid":\([0-9][0-9]*\).*/\1/p' | head -1)
+                fi
             fi
         fi
     fi
@@ -131,8 +145,9 @@ if [ -x "$IDHELPER" ]; then
         exit 0
     fi
     if [ "$mode" = "gid" ] && [ -n "$resolved_gid" ]; then
-        log "resolved via idhelper -> gid=$resolved_gid"
-        printf '%s\n' "$resolved_gid"
+        log "resolved via idhelper -> gids=$resolved_gids"
+        # emit numeric gid(s) for uid2grp paths (first is primary; space sep if multi)
+        printf '%s\n' "${resolved_gids:-$resolved_gid}"
         exit 0
     fi
 
@@ -140,9 +155,17 @@ if [ -x "$IDHELPER" ]; then
     if [ -n "$principal" ] && echo "$principal" | grep -q '@' && ! echo "$principal" | grep -qiE '^(host| nfs|root)/'; then
         if [ -z "$resolved_uid" ] || [ -z "$resolved_gid" ]; then
             sleep 0.15
-            if json2="$($IDHELPER resolve "$principal" --json 2>/dev/null || true)"; then
-                [ -z "$resolved_uid" ] && resolved_uid=$(printf '%s' "$json2" | sed -n 's/.*"uid":\([0-9][0-9]*\).*/\1/p' | head -1)
-                [ -z "$resolved_gid" ] && resolved_gid=$(printf '%s' "$json2" | sed -n 's/.*"gid":\([0-9][0-9]*\).*/\1/p' | head -1)
+            if [ "$mode" = "gid" ] && [ -z "$resolved_gid" ]; then
+                # always --json for grps (retry) to avoid principal digits pollution in text
+                glist2="$($IDHELPER grps "$principal" --json 2>/dev/null || true)"
+                resolved_gids=$(printf '%s' "$glist2" | sed -n 's/.*"gids":\[\([^]]*\)\].*/\1/p' | sed 's/,/ /g' | tr -s ' ' | sed 's/^ //;s/ $//')
+                resolved_gid=$(echo "$resolved_gids" | cut -d' ' -f1)
+            fi
+            if [ -z "$resolved_uid" ] || [ -z "$resolved_gid" ]; then
+                if json2="$($IDHELPER resolve "$principal" --json 2>/dev/null || true)"; then
+                    [ -z "$resolved_uid" ] && resolved_uid=$(printf '%s' "$json2" | sed -n 's/.*"uid":\([0-9][0-9]*\).*/\1/p' | head -1)
+                    [ -z "$resolved_gid" ] && resolved_gid=$(printf '%s' "$json2" | sed -n 's/.*"gid":\([0-9][0-9]*\).*/\1/p' | head -1)
+                fi
             fi
             if [ -z "$resolved_uid" ] && [ -z "$resolved_gid" ]; then
                 txt2="$($IDHELPER resolve "$principal" 2>/dev/null || true)"
@@ -156,8 +179,8 @@ if [ -x "$IDHELPER" ]; then
             exit 0
         fi
         if [ "$mode" = "gid" ] && [ -n "$resolved_gid" ]; then
-            log "resolved via idhelper (retry) -> gid=$resolved_gid"
-            printf '%s\n' "$resolved_gid"
+            log "resolved via idhelper (retry) -> gids=$resolved_gids"
+            printf '%s\n' "${resolved_gids:-$resolved_gid}"
             exit 0
         fi
     fi

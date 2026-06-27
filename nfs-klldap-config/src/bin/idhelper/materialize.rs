@@ -182,24 +182,11 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
     seeded
 }
 
-/// Atomically write nss_wrapper passwd/group for ganesha.nfsd LD_PRELOAD.
-/// Also writes extrausers supplement.
-pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
-    materialize_nss_wrappers_at(cache, &NssMaterializePaths::production(), None)
-}
-
-/// Same as materialize_nss_wrappers but writes to caller-supplied paths.
-/// Used in rebulk tests.
-pub(crate) fn materialize_nss_wrappers_at(
+/// Build passwd/group line vectors from cache + optional LDAP group snapshot.
+pub(crate) fn build_nss_snapshot(
     cache: &IdCache,
-    paths: &NssMaterializePaths<'_>,
     ldap_groups: Option<&HashMap<String, PosixGroupEntry>>,
-) -> io::Result<()> {
-    if let Some(parent) = paths.nss_passwd.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-
-    // Collect a stable ordered list of entries sorted by principal (skip bare user@ rows).
+) -> (Vec<String>, Vec<String>) {
     let mut items: Vec<_> = cache
         .entries
         .values()
@@ -207,13 +194,11 @@ pub(crate) fn materialize_nss_wrappers_at(
         .collect();
     items.sort_by(|a, b| a.principal.cmp(&b.principal));
 
-    // Build passwd content. We dedup by login name (last wins for stability.
     let mut seen_login: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut passwd_lines: Vec<String> = Vec::new();
     let mut group_lines: Vec<String> = Vec::new();
     let mut seen_gid: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
-    // LDAP groups first so their display names win for gids that are also user primaries.
     if let Some(groups) = ldap_groups {
         let mut by_gid: HashMap<i32, &PosixGroupEntry> = HashMap::new();
         for entry in groups.values() {
@@ -235,17 +220,14 @@ pub(crate) fn materialize_nss_wrappers_at(
 
     for r in &items {
         let line = passwd_line_for(r);
-        // Extract login from the line we just built (before first ':').
         if let Some(login) = line.split(':').next() {
             if seen_login.insert(login.to_string()) {
                 passwd_lines.push(line);
             }
         }
 
-        // Machine principals also emit a sanitized local-part alias.
         let local = principal_local_part(&r.principal);
         if local.contains('/') && MACHINE_PRINCIPAL_PREFIXES.iter().any(|p| local.starts_with(p)) {
-            // Map host/foo to host_foo for nss login names.
             let alias = sanitize_for_nss(local);
             if seen_login.insert(alias.clone()) {
                 let gecos = gecos_for(r);
@@ -256,7 +238,6 @@ pub(crate) fn materialize_nss_wrappers_at(
             }
         }
 
-        // Full principal@REALM alias so Ganesha getpwnam matches hybrid krb5 clients (users and machines).
         let full = r.principal.clone();
         if principal_has_realm(&full) {
             let gecos = gecos_for(r);
@@ -268,7 +249,6 @@ pub(crate) fn materialize_nss_wrappers_at(
             }
         }
 
-        // Primary group from this user: only if LDAP didn't already provide a row for the gid.
         if seen_gid.insert(r.gid) {
             if r.kind != PrincipalKind::Machine && r.gid != 0 {
                 let gname = gname_for_gid(r.gid, ldap_groups, &r.name);
@@ -278,9 +258,7 @@ pub(crate) fn materialize_nss_wrappers_at(
                 group_lines.push(group_line_for(r));
             }
         }
-        // Also ensure the uid's primary group is represented if different.
         if r.uid != r.gid && seen_gid.insert(r.uid) {
-            // Use same simple rule. Uid as fallback group name.
             if r.uid == 0 {
                 seen_gid.insert(0);
             } else {
@@ -289,12 +267,10 @@ pub(crate) fn materialize_nss_wrappers_at(
         }
     }
 
-    // Always ensure at least a root group entry. For machine principals.
     if seen_gid.is_empty() || !seen_gid.contains(&0) {
         group_lines.push("root:x:0:root,daemon,bin".to_string());
     }
 
-    // Root + nobody lines satisfy getpwuid_r(0) and unknown-principal.
     if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
         passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
     }
@@ -304,6 +280,28 @@ pub(crate) fn materialize_nss_wrappers_at(
             FALLBACK_NOBODY_UID, FALLBACK_NOBODY_GID
         ));
     }
+
+    (passwd_lines, group_lines)
+}
+
+/// Atomically write nss_wrapper passwd/group for ganesha.nfsd LD_PRELOAD.
+/// Also writes extrausers supplement.
+pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
+    materialize_nss_wrappers_at(cache, &NssMaterializePaths::production(), None)
+}
+
+/// Same as materialize_nss_wrappers but writes to caller-supplied paths.
+/// Used in rebulk tests.
+pub(crate) fn materialize_nss_wrappers_at(
+    cache: &IdCache,
+    paths: &NssMaterializePaths<'_>,
+    ldap_groups: Option<&HashMap<String, PosixGroupEntry>>,
+) -> io::Result<()> {
+    if let Some(parent) = paths.nss_passwd.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let (passwd_lines, group_lines) = build_nss_snapshot(cache, ldap_groups);
 
     {
         let tmp = paths.nss_passwd.with_extension("tmp");

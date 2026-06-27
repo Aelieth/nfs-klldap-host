@@ -23,8 +23,9 @@ use nfs_klldap_identity::normalize_principal;
 use daemon::run_daemon;
 #[cfg(test)]
 use materialize::{
-    gecos_for, group_line_for, materialize_nss_wrappers_at, passwd_line_for, sanitize_for_nss,
-    NssMaterializePaths, seed_cache_and_nss_from_snapshot, sync_user_cache_from_snapshot,
+    build_nss_snapshot, gecos_for, group_line_for, materialize_nss_wrappers_at, passwd_line_for,
+    sanitize_for_nss, NssMaterializePaths, seed_cache_and_nss_from_snapshot,
+    sync_user_cache_from_snapshot,
 };
 #[cfg(test)]
 use daemon::rebulk_ldap_users;
@@ -378,6 +379,35 @@ mod tests {
         assert_eq!(cache.prune_malformed_principals(), 1);
         assert!(cache.get("testuser1@REALM").is_some());
         assert!(cache.get("testuser1@").is_none());
+    }
+
+    #[test]
+    fn build_nss_snapshot_golden_ldap_group_and_principal_alias() {
+        use nfs_klldap_config::PosixGroupEntry;
+        let mut groups = std::collections::HashMap::new();
+        groups.insert(
+            "group-test".into(),
+            PosixGroupEntry {
+                gid: 3005,
+                display: "group-test".into(),
+                members: vec!["testuser2".into()],
+            },
+        );
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "testuser2@TESTLABBY.LOCAL".into(),
+            name: "testuser2".into(),
+            uid: 3002,
+            gid: 3005,
+            kind: PrincipalKind::User,
+            source: "bulk".into(),
+        });
+        let (passwd, group) = build_nss_snapshot(&cache, Some(&groups));
+        assert!(passwd.iter().any(|l| l.starts_with("root:")));
+        assert!(passwd.iter().any(|l| l.starts_with("testuser2:x:3002:3005:")));
+        assert!(passwd.iter().any(|l| l.starts_with("testuser2@TESTLABBY.LOCAL:x:3002:3005:")));
+        assert!(group.iter().any(|l| l.starts_with("group-test:x:3005:")));
+        assert!(!group.iter().any(|l| l.starts_with("testuser2:x:3005:")));
     }
 
     #[test]

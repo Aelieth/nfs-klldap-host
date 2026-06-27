@@ -291,7 +291,12 @@ pub(crate) fn run_daemon() {
 
     {
         let guard = cache.lock().unwrap();
-        let _ = materialize_nss_wrappers(&guard);
+        if let Some((r, _, _)) = get_or_init_resolver() {
+            let snap = r.snapshot();
+            let _ = materialize_nss_wrappers_at(&guard, &NssMaterializePaths::production(), Some(&snap.groups));
+        } else {
+            let _ = materialize_nss_wrappers(&guard);
+        }
     }
 
     if let Ok(list) = std::env::var("NFS_KLLDAP_IDHELPER_PRERESOLVE") {

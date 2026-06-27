@@ -504,7 +504,7 @@ NFS_KRB5 {{
 }}
 
 NFSV4 {{
-    # false keeps NFSv4 ACL + hybrid krb5p machine writes working; idhelper maps principals on the server.
+    # false keeps hybrid krb5p machine writes; idhelper maps principals on the server.
     Allow_Numeric_Owners = false;
     RecoveryBackend = fs;
     # Increased from 20s for production stability on krb5p (reduces session/lease churn causing
@@ -655,14 +655,13 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             mount_options: vec![],
             acl_capable: true,
         });
-        let (disable_acl_line, mut manage_gids_line, auto_comment) =
+        let (mut disable_acl_line, mut manage_gids_line, auto_comment) =
             export_fs_directives(share, &caps);
 
         // krb5* default manage_gids=false to avoid uid2grp_allocate_by_principal + managed-groups failure.
         if sec.starts_with("krb5") && share.manage_gids != Some(true) {
             manage_gids_line = "    Manage_Gids = false;\n".to_string();
         }
-
         // CLIENT block keeps Protocols=4 and skips access check policy.
         let client_block = format!(
             r#"

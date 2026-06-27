@@ -119,7 +119,11 @@ if [ -n "${TEST_USER_PRINC:-}" ] && [ -n "${TEST_USER_PASSWORD:-}" ]; then
   echo "=== USER TGT PHASE (${TEST_USER_PRINC}) ==="
   realm="${TEST_USER_PRINC#*@}"
   short="${TEST_USER_PRINC%%@*}"
-  # Client idmapd must match server Domain/Local-Realms; stub passwd supplies uid/gid for nsswitch.
+  # Client idmapd + passwd/group stubs (or host SSSD) map owner@ to numeric uid/gid.
+  cat > /etc/nsswitch.conf <<EOF
+passwd: files
+group: files
+EOF
   cat > /etc/idmapd.conf <<EOF
 [General]
 Domain = ${realm}
@@ -140,7 +144,7 @@ EOF
   grep -q "^${short}:" /etc/passwd || echo "${short}:x:${exp_uid}:${exp_gid}:user TGT test:/tmp:/sbin/nologin" >> /etc/passwd
   grep -q "^${short}@${realm}:" /etc/passwd || echo "${short}@${realm}:x:${exp_uid}:${exp_gid}:user TGT test:/tmp:/sbin/nologin" >> /etc/passwd
   grep -q "^group-test:" /etc/group || echo "group-test:x:${exp_gid}:${short}" >> /etc/group
-  getent passwd "${short}@${realm}" || { echo "ERROR: client passwd stub missing for ${short}@${realm}"; exit 41; }
+  getent passwd "${short}" || { echo "ERROR: client passwd stub missing for ${short}"; exit 41; }
   getent group group-test || { echo "ERROR: client group stub missing for gid ${exp_gid}"; exit 41; }
   cat > /etc/nfs.conf <<'NFSCONF'
 [general]
@@ -148,6 +152,7 @@ pipefs-directory=/var/lib/nfs/rpc_pipefs
 [gssd]
 use-machine-creds=0
 NFSCONF
+  dbus-daemon --system --fork 2>/dev/null || true
   export KRB5CCNAME=FILE:/tmp/ccuser
   printf '%s\n' "$TEST_USER_PASSWORD" | kinit -c /tmp/ccuser "$TEST_USER_PRINC" 2>&1
   klist -c /tmp/ccuser
@@ -182,8 +187,11 @@ NFSCONF
   fi
   if [ "$uid" = "$exp_uid" ] && [ "$gid" = "$exp_gid" ]; then
     echo "USER TGT CLIENT UID MAP OK (${uid}:${gid})"
+  elif [ "$srv_uid" = "$exp_uid" ] && [ "$srv_gid" = "$exp_gid" ] && { [ "$uid" = "99" ] || [ "$uid" = "65534" ]; }; then
+    echo "USER TGT SERVER OWNERSHIP OK (${srv_uid}:${srv_gid}); client display ${uid}:${gid} (docker nfsidmap keyring limit)"
   else
-    echo "WARN: client display ${uid}:${gid} (server idhelper ${srv_uid}:${srv_gid} is authoritative)"
+    echo "ERROR: client stat ${uid}:${gid} expected ${exp_uid}:${exp_gid} (server ${srv_uid}:${srv_gid})"
+    exit 41
   fi
   umount /mnt/stuff
   kill "$GSSD_USER_PID" "$IDMAP_PID" 2>/dev/null || true

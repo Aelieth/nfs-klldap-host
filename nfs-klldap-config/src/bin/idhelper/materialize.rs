@@ -56,11 +56,31 @@ pub(crate) fn sanitize_for_nss(name: &str) -> String {
     out
 }
 
+/// Prefer LDAP group display name for a gid when snapshot data is available.
+fn gname_for_gid(gid: u32, ldap_groups: Option<&HashMap<String, PosixGroupEntry>>, fallback: &str) -> String {
+    if let Some(groups) = ldap_groups {
+        if let Some(entry) = groups.values().find(|g| g.gid as u32 == gid) {
+            return sanitize_for_nss(&entry.display);
+        }
+    }
+    sanitize_for_nss(fallback)
+}
+
+/// Gecos safe for passwd/extrausers: no ':' (libnss-extrausers splits on colons).
+pub(crate) fn gecos_for(r: &Resolved) -> String {
+    let tag = if principal_has_realm(&r.principal) {
+        r.principal.as_str()
+    } else {
+        r.name.as_str()
+    };
+    let safe: String = tag.chars().filter(|&c| c != ':').collect();
+    format!("kll {} {}", r.kind.as_str(), safe)
+}
+
 /// Builds a passwd(5) line and assigns uid and gid zero to machines.
 pub(crate) fn passwd_line_for(r: &Resolved) -> String {
     let login = sanitize_for_nss(&r.name);
-    // Gecos must not contain ':' — libnss-extrausers splits on every colon.
-    let gecos = format!("kll {} {}", r.kind.as_str(), r.principal);
+    let gecos = gecos_for(r);
     // The /nonexistent + nologin is synthetic nss entries, not real local.
     format!(
         "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
@@ -228,7 +248,7 @@ pub(crate) fn materialize_nss_wrappers_at(
             // Map host/foo to host_foo for nss login names.
             let alias = sanitize_for_nss(local);
             if seen_login.insert(alias.clone()) {
-                let gecos = format!("kll machine-alias {}", r.principal);
+                let gecos = gecos_for(r);
                 passwd_lines.push(format!(
                     "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
                     alias, r.uid, r.gid, gecos
@@ -238,20 +258,22 @@ pub(crate) fn materialize_nss_wrappers_at(
 
         // Full principal@REALM alias so Ganesha getpwnam matches hybrid krb5 clients (users and machines).
         let full = r.principal.clone();
-        if principal_has_realm(&full) && seen_login.insert(full.clone()) {
-            let gecos = format!("kll {} {}", r.kind.as_str(), r.principal);
-            passwd_lines.push(format!(
-                "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
-                full, r.uid, r.gid, gecos
-            ));
+        if principal_has_realm(&full) {
+            let gecos = gecos_for(r);
+            if seen_login.insert(full.clone()) {
+                passwd_lines.push(format!(
+                    "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
+                    full, r.uid, r.gid, gecos
+                ));
+            }
         }
 
         // Primary group from this user: only if LDAP didn't already provide a row for the gid.
         if seen_gid.insert(r.gid) {
             if r.kind != PrincipalKind::Machine && r.gid != 0 {
-                // include user in its primary group line for uid2grp materialization
-                let gname = sanitize_for_nss(&r.name);
-                group_lines.push(format!("{}:x:{}:{}", gname, r.gid, sanitize_for_nss(&r.name)));
+                let gname = gname_for_gid(r.gid, ldap_groups, &r.name);
+                let member = sanitize_for_nss(&r.name);
+                group_lines.push(format!("{}:x:{}:{}", gname, r.gid, member));
             } else {
                 group_lines.push(group_line_for(r));
             }

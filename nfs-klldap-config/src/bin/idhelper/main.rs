@@ -23,7 +23,7 @@ use nfs_klldap_identity::normalize_principal;
 use daemon::run_daemon;
 #[cfg(test)]
 use materialize::{
-    group_line_for, materialize_nss_wrappers_at, passwd_line_for, sanitize_for_nss,
+    gecos_for, group_line_for, materialize_nss_wrappers_at, passwd_line_for, sanitize_for_nss,
     NssMaterializePaths, seed_cache_and_nss_from_snapshot, sync_user_cache_from_snapshot,
 };
 #[cfg(test)]
@@ -378,6 +378,55 @@ mod tests {
         assert_eq!(cache.prune_malformed_principals(), 1);
         assert!(cache.get("testuser1@REALM").is_some());
         assert!(cache.get("testuser1@").is_none());
+    }
+
+    #[test]
+    fn materialize_prefers_ldap_group_name_over_user_primary() {
+        use nfs_klldap_config::PosixGroupEntry;
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = NssMaterializePaths {
+            nss_passwd: &tmp.path().join("nss_passwd"),
+            nss_group: &tmp.path().join("nss_group"),
+            extrausers_passwd: &tmp.path().join("extra_passwd"),
+            extrausers_group: &tmp.path().join("extra_group"),
+        };
+        let mut groups = std::collections::HashMap::new();
+        groups.insert(
+            "group-test".into(),
+            PosixGroupEntry {
+                gid: 3005,
+                display: "group-test".into(),
+                members: vec![],
+            },
+        );
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "admin@REALM".into(),
+            name: "admin".into(),
+            uid: 3000,
+            gid: 3005,
+            kind: PrincipalKind::User,
+            source: "bulk".into(),
+        });
+        materialize_nss_wrappers_at(&cache, &paths, Some(&groups)).unwrap();
+        let grp = std::fs::read_to_string(paths.extrausers_group).unwrap();
+        assert!(grp.contains("group-test:x:3005:"), "grp={grp}");
+        assert!(!grp.contains("admin:x:3005:"));
+    }
+
+    #[test]
+    fn gecos_for_uses_short_name_when_realm_missing() {
+        let r = Resolved {
+            principal: "testuser1@".into(),
+            name: "testuser1".into(),
+            uid: 3001,
+            gid: 3005,
+            kind: PrincipalKind::User,
+            source: "sss".into(),
+        };
+        let g = gecos_for(&r);
+        assert_eq!(g, "kll user testuser1");
+        assert!(!g.contains('@'));
     }
 
     #[test]

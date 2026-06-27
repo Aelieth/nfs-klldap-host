@@ -64,6 +64,6 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 Run: `cargo test --workspace` (idmap, resolve, generate, supervisor probes). Idhelper env-mutating tests serialize on `common::ENV_TEST_LOCK` and reset `ID_RESOLVER` via `reset_id_resolver_for_test()` so parallel `cargo test` does not poison `TEST_REBULK_POPULATE` / `NFS_CONFIG`. Invoke `idhelper resolve 'user@REALM'` (on-demand + group). Use `capture_idmap_principal.sh` + `scripts/build_diagnosis.sh` for uid2grp noise. Check emitted `idmapd.conf` and krb5* fragments (`Manage_Gids=false`). `ganesha-ctl id-resolve` / `id-check` surface ID MAPPER lines.
 
 ## Fedora 44 krb5p client (container)
-`scripts/fedora-krb5p-client-validate.sh` — machine `kinit -k` + `sec=krb5p` mount/IO (host bind visibility). Optional user TGT phase needs a Kerberos-synced principal, client `[gssd] use-machine-creds=0`, passwd/group stubs, and asserts server bind-mount uid/gid (idhelper authoritative).
+`scripts/fedora-krb5p-client-validate.sh` — machine `kinit -k` + `sec=krb5p` mount/IO (host bind visibility). Optional user TGT phase needs a Kerberos-synced principal, client `[gssd] use-machine-creds=0`, passwd/group stubs, server bind-mount uid/gid (authoritative), and accepts docker `stat` 99:99 when server ownership matches (nfsidmap keyring limit in minimal containers).
 
 Documentation and tests should be updated together when behavior changes. (See also fs.rs symlink policy comments and privileged.rs boundary.)

@@ -11,7 +11,8 @@ use nfs_klldap_config::{
     FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
 };
 use nfs_klldap_identity::{
-    classify_principal, machine_short_name, normalize_principal, principal_local_part,
+    canonicalize_principal, classify_principal, machine_short_name, normalize_principal,
+    principal_has_realm, principal_local_part,
 };
 
 use crate::common::{
@@ -246,9 +247,9 @@ pub(crate) fn resolve_principal(
     server_variants: &[String],
     cache: &mut IdCache,
 ) -> Resolved {
-    let principal = principal.trim();
+    let principal = canonicalize_principal(principal.trim(), realm);
     let start = Instant::now();
-    let norm = normalize_principal(principal);
+    let norm = normalize_principal(&principal);
 
     dlog!("RESOLVE principal=\"{}\"", principal);
     dlog!("  normalized=\"{}\"", norm);
@@ -278,7 +279,7 @@ pub(crate) fn resolve_principal(
         eprintln!("[idhelper] cache=MISS key=\"{}\"", norm);
     }
 
-    let (is_machine, reason) = classify_principal(principal, realm, server_variants);
+    let (is_machine, reason) = classify_principal(&principal, realm, server_variants);
     dlog!("  classify is_machine={} reason=\"{}\"", is_machine, reason);
     if debug_enabled() {
         eprintln!(
@@ -298,7 +299,7 @@ pub(crate) fn resolve_principal(
     // Resolve machine principals to root or users via NSS and LDAP.
     let resolved = if is_machine {
         // Machine principals (host/, nfs/, root/ server variants): map 0:0.
-        let short = machine_short_name(principal);
+        let short = machine_short_name(&principal);
         if debug_enabled() {
             eprintln!(
                 "[idhelper] short_name_extracted=\"{}\" (machine path, principal=\"{}\")",
@@ -308,7 +309,7 @@ pub(crate) fn resolve_principal(
 
         // No resolve_via_nss / getent calls for machines.
         Resolved {
-            principal: principal.to_string(),
+            principal: principal.clone(),
             name: short.to_string(),
             uid: 0,
             gid: 0,
@@ -317,11 +318,11 @@ pub(crate) fn resolve_principal(
         }
     } else {
         dlog!("  user_path principal=\"{}\"", principal);
-        let looked = resolve_via_nss(principal);
+        let looked = resolve_via_nss(&principal);
         dlog!("  nss_getent final_got={:?}", looked.as_ref().map(|(u, g, s)| (*u, *g, s.as_str())));
 
             if let Some((uid, gid, src)) = looked {
-            let name = principal_local_part(principal).to_string();
+            let name = principal_local_part(&principal).to_string();
             // ensure group for uid2grp even on on-demand user@REALM
             if let Some((r, dn, pw)) = get_or_init_resolver() {
                 let _ = r.resolve_group_by_gid(gid as i32, dn, pw);
@@ -331,7 +332,7 @@ pub(crate) fn resolve_principal(
                 dlog!("materialized group gid={} name={}", gid, gname);
             }
             Resolved {
-                principal: principal.to_string(),
+                principal: principal.clone(),
                 name,
                 uid,
                 gid,
@@ -344,9 +345,9 @@ pub(crate) fn resolve_principal(
                 "[idhelper] FALLBACK {} for principal=\"{}\" (no uid/gid from getent or structured resolver)",
                 FALLBACK_NOBODY_UID, principal
             );
-            let name = principal_local_part(principal).to_string();
+            let name = principal_local_part(&principal).to_string();
             Resolved {
-                principal: principal.to_string(),
+                principal: principal.clone(),
                 name,
                 uid: FALLBACK_NOBODY_UID,
                 gid: FALLBACK_NOBODY_GID,
@@ -374,7 +375,10 @@ pub(crate) fn resolve_principal(
     }
 
     let fp_before = cache.content_fingerprint();
-    cache.insert(resolved.clone());
+    if principal_has_realm(&resolved.principal) {
+        cache.insert(resolved.clone());
+    }
+    let _ = cache.prune_malformed_principals();
     if fp_before != cache.content_fingerprint() {
         let write_res = cache.write_to_file(Path::new(CACHE_PATH));
         dlog!(

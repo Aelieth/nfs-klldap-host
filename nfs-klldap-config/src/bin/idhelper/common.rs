@@ -9,7 +9,9 @@ use nfs_klldap_config::{
     any_share_manage_gids_enabled, runtime_realm_from_disk,
     runtime_server_variants_from_disk, NfsKlldapConfig,
 };
-use nfs_klldap_identity::{machine_short_name, normalize_principal, principal_local_part};
+use nfs_klldap_identity::{
+    machine_short_name, normalize_principal, principal_has_realm, principal_local_part,
+};
 pub(crate) const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
 pub(crate) const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
 const CACHE_VERSION: &str = "1";
@@ -145,6 +147,13 @@ impl IdCache {
         let before = self.entries.len();
         self.entries
             .retain(|_, r| r.kind == PrincipalKind::Machine);
+        before.saturating_sub(self.entries.len())
+    }
+
+    /// Drop cache rows whose principal lacks a real @REALM (e.g. testuser1@ from id-map-test).
+    pub(crate) fn prune_malformed_principals(&mut self) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|_, r| principal_has_realm(&r.principal));
         before.saturating_sub(self.entries.len())
     }
 

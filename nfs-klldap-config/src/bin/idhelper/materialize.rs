@@ -12,7 +12,7 @@ use nfs_klldap_config::{
     MACHINE_PRINCIPAL_PREFIXES,
 };
 
-use nfs_klldap_identity::principal_local_part;
+use nfs_klldap_identity::{principal_has_realm, principal_local_part};
 
 use crate::common::{IdCache, PrincipalKind, Resolved};
 
@@ -103,7 +103,12 @@ pub(crate) fn sync_user_cache_from_snapshot(
     if pruned > 0 {
         dlog!("sync_user_cache pruned {} stale non-machine entries", pruned);
     }
-    seed_cache_and_nss_from_snapshot(snap, realm, cache)
+    let n = seed_cache_and_nss_from_snapshot(snap, realm, cache);
+    let bad = cache.prune_malformed_principals();
+    if bad > 0 {
+        dlog!("sync_user_cache pruned {} malformed principal keys", bad);
+    }
+    n
 }
 
 /// Insert LDAP users from snapshot into cache.
@@ -174,8 +179,12 @@ pub(crate) fn materialize_nss_wrappers_at(
         let _ = fs::create_dir_all(parent);
     }
 
-    // Collect a stable ordered list of entries sorted by principal.
-    let mut items: Vec<_> = cache.entries.values().collect();
+    // Collect a stable ordered list of entries sorted by principal (skip bare user@ rows).
+    let mut items: Vec<_> = cache
+        .entries
+        .values()
+        .filter(|r| principal_has_realm(&r.principal))
+        .collect();
     items.sort_by(|a, b| a.principal.cmp(&b.principal));
 
     // Build passwd content. We dedup by login name (last wins for stability.
@@ -229,7 +238,7 @@ pub(crate) fn materialize_nss_wrappers_at(
 
         // Full principal@REALM alias so Ganesha getpwnam matches hybrid krb5 clients (users and machines).
         let full = r.principal.clone();
-        if seen_login.insert(full.clone()) {
+        if principal_has_realm(&full) && seen_login.insert(full.clone()) {
             let gecos = format!("kll {} {}", r.kind.as_str(), r.principal);
             passwd_lines.push(format!(
                 "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",

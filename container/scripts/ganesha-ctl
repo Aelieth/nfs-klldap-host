@@ -227,13 +227,20 @@ case "$CMD" in
     id-map-test)
         # Exercise client-parity lookups: getent short name + idhelper principal resolve.
         TESTP="${1:-testuser1}"
+        REALM=""
+        if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
+            REALM="$(/usr/local/bin/nfs-klldap-idhelper check 2>/dev/null | sed -n 's/^realm: //p' | head -1)"
+        fi
+        if [ -z "$REALM" ] && [ -f /etc/krb5.conf ]; then
+            REALM="$(awk '/default_realm/{print $3}' /etc/krb5.conf | tr -d '[:space:]' | head -1)"
+        fi
         echo "[ganesha-ctl] id-map-test for short name: getent passwd $TESTP"
         getent passwd "$TESTP" || echo "  (getent short name returned non-zero; may be expected pre-user-create)"
-        if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
-            echo "[ganesha-ctl] id-map-test for principal form: $TESTP@ (via idhelper)"
-            /usr/local/bin/nfs-klldap-idhelper resolve "${TESTP}@" --json 2>/dev/null || /usr/local/bin/nfs-klldap-idhelper resolve "$TESTP" 2>/dev/null || true
+        if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1 && [ -n "$REALM" ]; then
+            echo "[ganesha-ctl] id-map-test for principal form: ${TESTP}@${REALM} (via idhelper)"
+            /usr/local/bin/nfs-klldap-idhelper resolve "${TESTP}@${REALM}" --json 2>/dev/null || true
             echo "[ganesha-ctl] also testing a host principal form (common for clients):"
-            /usr/local/bin/nfs-klldap-idhelper resolve "host/localhost@" 2>/dev/null || true
+            /usr/local/bin/nfs-klldap-idhelper resolve "host/localhost@${REALM}" 2>/dev/null || true
         fi
         echo "[ganesha-ctl] fragment CLIENT block check (if exports exist):"
         if grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep -q 'Read_Access_Check_Policy' 2>/dev/null; then

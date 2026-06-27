@@ -357,6 +357,30 @@ mod tests {
     }
 
     #[test]
+    fn prune_malformed_principals_drops_bare_at_suffix() {
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "testuser1@".into(),
+            name: "testuser1".into(),
+            uid: 3001,
+            gid: 3005,
+            kind: PrincipalKind::User,
+            source: "sss".into(),
+        });
+        cache.insert(Resolved {
+            principal: "testuser1@REALM".into(),
+            name: "testuser1".into(),
+            uid: 3001,
+            gid: 3005,
+            kind: PrincipalKind::User,
+            source: "bulk".into(),
+        });
+        assert_eq!(cache.prune_malformed_principals(), 1);
+        assert!(cache.get("testuser1@REALM").is_some());
+        assert!(cache.get("testuser1@").is_none());
+    }
+
+    #[test]
     fn materialize_emits_principal_alias_and_comment_free_extrausers() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = NssMaterializePaths {

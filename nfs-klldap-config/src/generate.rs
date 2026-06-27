@@ -504,6 +504,7 @@ NFS_KRB5 {{
 }}
 
 NFSV4 {{
+    # false keeps NFSv4 ACL + hybrid krb5p machine writes working; idhelper maps principals on the server.
     Allow_Numeric_Owners = false;
     RecoveryBackend = fs;
     # Increased from 20s for production stability on krb5p (reduces session/lease churn causing

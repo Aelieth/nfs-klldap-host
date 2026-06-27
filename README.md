@@ -229,7 +229,7 @@ ganesha-ctl id-check
 See [docs/ldap-integration.md](docs/ldap-integration.md) for SSSD/POSIX requirements, TLS behavior, idhelper architecture, and verification commands.
 
 ## Kerberos user principal idmap
-Supported path: user@REALM (via idhelper resolve + nss_wrapper + sssd/getpwnam under libnfsidmap; strengthened idmapd Domain/Local-Realms/Method=GSS-Methods=nsswitch). Bulk seed + on-demand LDAP fallback materialize UID+primary group. krb5p shares default Manage_Gids=false (avoids uid2grp_allocate_by_principal unsupported + managed-groups failure in Ganesha); explicit true honored but not recommended. Use ganesha-ctl id-resolve 'user@REALM' and capture_idmap_principal.sh for repro.
+Supported path: user@REALM (idhelper resolve + nss_wrapper + extrausers/sss; server bind-mount uid/gid is authoritative). Bulk seed + on-demand LDAP fallback materialize UID+primary group (LDAP group names win over user-primary stubs). krb5p shares default Manage_Gids=false; explicit true honored but not recommended. Client `rpc.idmapd` + passwd/group stubs help owner display; minimal containers may show nobody until idmapd is fully wired. Use ganesha-ctl id-resolve 'user@REALM' for repro.
 
 Ganesha 9.6 omits `Read_Access_Check_Policy` (default `pre` applies). The idhelper syncs LDAP users into `nss_passwd` at startup and every 10 minutes (pruning deletions, refreshing uid/gid). Set `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS=0` to disable periodic sync; the log observer still resolves new principals between syncs.
 

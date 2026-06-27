@@ -56,6 +56,33 @@ pub fn classify_principal(principal: &str, realm: &str, server_variants: &[Strin
     (false, "treated as regular user principal".to_string())
 }
 
+/// True when principal has a non-empty realm after '@'.
+pub fn principal_has_realm(p: &str) -> bool {
+    let p = p.trim();
+    p.rsplit_once('@')
+        .map(|(_, r)| !r.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Fill an empty or missing realm from the configured Kerberos realm.
+pub fn canonicalize_principal(p: &str, realm: &str) -> String {
+    let p = p.trim();
+    let realm_u = realm.trim().to_ascii_uppercase();
+    if realm_u.is_empty() {
+        return normalize_principal(p);
+    }
+    if let Some(at) = p.find('@') {
+        let local = &p[..at];
+        let r = p[at + 1..].trim();
+        if r.is_empty() {
+            return format!("{}@{}", local, realm_u);
+        }
+    } else if p.contains('/') || !p.is_empty() {
+        return format!("{}@{}", p, realm_u);
+    }
+    normalize_principal(p)
+}
+
 /// Normalize principal for cache lookup. Uppercase realm, trim local part.
 pub fn normalize_principal(p: &str) -> String {
     let p = p.trim();
@@ -107,6 +134,29 @@ mod tests {
         let (u2, r2) = classify_principal("alice@OTHER.REALM", "MY.REALM", &[]);
         assert!(!u2);
         assert!(r2.contains("OTHER.REALM"));
+    }
+
+    #[test]
+    fn principal_has_realm_rejects_bare_at_suffix() {
+        assert!(!principal_has_realm("testuser1@"));
+        assert!(!principal_has_realm("host/localhost@"));
+        assert!(principal_has_realm("testuser1@REALM"));
+    }
+
+    #[test]
+    fn canonicalize_fills_empty_realm() {
+        assert_eq!(
+            canonicalize_principal("testuser1@", "testlabby.local"),
+            "testuser1@TESTLABBY.LOCAL"
+        );
+        assert_eq!(
+            canonicalize_principal("host/localhost@", "REALM"),
+            "host/localhost@REALM"
+        );
+        assert_eq!(
+            canonicalize_principal("alice@REALM", "OTHER"),
+            "alice@REALM"
+        );
     }
 
     #[test]

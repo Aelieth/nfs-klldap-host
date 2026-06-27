@@ -6,7 +6,7 @@ set -euo pipefail
 
 echo "=== FEDORA KRB5P VALIDATE START $(date -u) ==="
 
-dnf install -y --quiet nfs-utils krb5-workstation rpcbind
+dnf install -y --quiet nfs-utils krb5-workstation rpcbind keyutils
 
 # Expect volumes:
 #   /test/krb5.conf   (working krb5.conf from server)
@@ -131,8 +131,17 @@ Nobody-Group = nobody
 Method = nsswitch
 GSS-Methods = nsswitch
 EOF
-  grep -q "^${short}:" /etc/passwd || echo "${short}:x:3002:3005:user TGT test:/tmp:/sbin/nologin" >> /etc/passwd
-  grep -q "^${short}@${realm}:" /etc/passwd || echo "${short}@${realm}:x:3002:3005:user TGT test:/tmp:/sbin/nologin" >> /etc/passwd
+  case "${short}" in
+    testuser1) exp_uid=3001 ;;
+    testuser2) exp_uid=3002 ;;
+    *) exp_uid=3002 ;;
+  esac
+  exp_gid=3005
+  grep -q "^${short}:" /etc/passwd || echo "${short}:x:${exp_uid}:${exp_gid}:user TGT test:/tmp:/sbin/nologin" >> /etc/passwd
+  grep -q "^${short}@${realm}:" /etc/passwd || echo "${short}@${realm}:x:${exp_uid}:${exp_gid}:user TGT test:/tmp:/sbin/nologin" >> /etc/passwd
+  grep -q "^group-test:" /etc/group || echo "group-test:x:${exp_gid}:${short}" >> /etc/group
+  getent passwd "${short}@${realm}" || { echo "ERROR: client passwd stub missing for ${short}@${realm}"; exit 41; }
+  getent group group-test || { echo "ERROR: client group stub missing for gid ${exp_gid}"; exit 41; }
   cat > /etc/nfs.conf <<'NFSCONF'
 [general]
 pipefs-directory=/var/lib/nfs/rpc_pipefs
@@ -147,6 +156,9 @@ NFSCONF
   rpc.gssd -f &
   GSSD_USER_PID=$!
   sleep 2
+  idmap_uid=""
+  idmap_uid=$(nfsidmap -u "${TEST_USER_PRINC}" 2>/dev/null | tail -1 | tr -d '[:space:]' || true)
+  echo "nfsidmap -u ${TEST_USER_PRINC} -> ${idmap_uid:-<empty>}"
   mount -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/stuff /mnt/stuff
   out="/mnt/stuff/user-tgt-${short}-$(date +%s).txt"
   echo "user-tgt-$(date +%s)" > "$out"
@@ -154,11 +166,24 @@ NFSCONF
   uid=$(stat -c %u "$out")
   gid=$(stat -c %g "$out")
   echo "user-tgt client stat uid:gid = ${uid}:${gid}"
-  echo "SERVER_VERIFY=${out#/mnt/stuff}" > /hostdata/stuff/.user-tgt-verify
-  if [ "$uid" = "3002" ] && [ "$gid" = "3005" ]; then
-    echo "USER TGT CLIENT UID MAP OK"
+  base="${out#/mnt/stuff/}"
+  echo "SERVER_VERIFY=${base}" > /hostdata/stuff/.user-tgt-verify
+  srv_uid=""; srv_gid=""
+  if [ -f "/hostdata/stuff/${base}" ]; then
+    srv_uid=$(stat -c %u "/hostdata/stuff/${base}")
+    srv_gid=$(stat -c %g "/hostdata/stuff/${base}")
+    echo "user-tgt server bind stat uid:gid = ${srv_uid}:${srv_gid}"
+  fi
+  if [ "$srv_uid" = "$exp_uid" ] && [ "$srv_gid" = "$exp_gid" ]; then
+    echo "USER TGT SERVER UID MAP OK (${srv_uid}:${srv_gid})"
   else
-    echo "WARN: client display ${uid}:${gid} — server idhelper maps ${TEST_USER_PRINC} -> 3002:3005; configure client idmapd+SSSD (or passwd) for owner@ parity"
+    echo "ERROR: server bind stat ${srv_uid:-?}:${srv_gid:-?} expected ${exp_uid}:${exp_gid} for ${TEST_USER_PRINC}"
+    exit 41
+  fi
+  if [ "$uid" = "$exp_uid" ] && [ "$gid" = "$exp_gid" ]; then
+    echo "USER TGT CLIENT UID MAP OK (${uid}:${gid})"
+  else
+    echo "WARN: client display ${uid}:${gid} (server idhelper ${srv_uid}:${srv_gid} is authoritative)"
   fi
   umount /mnt/stuff
   kill "$GSSD_USER_PID" "$IDMAP_PID" 2>/dev/null || true

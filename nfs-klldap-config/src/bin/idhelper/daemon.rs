@@ -253,7 +253,13 @@ pub(crate) fn run_daemon() {
     let _ = fs::set_permissions(SOCKET_PATH, std::os::unix::fs::PermissionsExt::from_mode(0o666));
 
     // Load the persisted cache and refresh user rows on the first LDAP sync.
-    let cache = Arc::new(Mutex::new(IdCache::load_from_file(Path::new(CACHE_PATH))));
+    let mut initial = IdCache::load_from_file(Path::new(CACHE_PATH));
+    let bad = initial.prune_malformed_principals();
+    if bad > 0 {
+        let _ = initial.write_to_file(Path::new(CACHE_PATH));
+        eprintln!("[idhelper] pruned {} malformed principal cache entries on startup", bad);
+    }
+    let cache = Arc::new(Mutex::new(initial));
 
     println!("[idhelper] daemon listening on {}", SOCKET_PATH);
     println!("[idhelper] realm={} variants={:?}", realm, server_variants);

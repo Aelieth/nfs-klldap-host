@@ -141,14 +141,11 @@ pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usiz
     #[cfg(test)]
     if let Some(ov) = test_rebulk::current_override() {
         // paths-only override; still run real resolver load + primary-gid loop (data via TEST_REBULK_POPULATE)
-        let (r, dn, pw) = match get_or_init_resolver() {
-            Some(t) => t,
-            None => return None,
-        };
+        let (r, dn, pw) = get_or_init_resolver()?;
         let loaded = r.load_full_identities(dn, pw);
         let pre = r.snapshot();
-        for (_, u) in &pre.users {
-            let _ = r.resolve_group_by_gid(u.gid as i32, dn, pw);
+        for u in pre.users.values() {
+            let _ = r.resolve_group_by_gid(u.gid, dn, pw);
         }
         let snap = r.snapshot();
         let fp_before = cache.content_fingerprint();
@@ -178,8 +175,8 @@ pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usiz
     let loaded = r.load_full_identities(dn, pw);
     // Explicitly resolve each user's primary gid so snap.groups has LDAP display name.
     let pre = r.snapshot();
-    for (_, u) in &pre.users {
-        let _ = r.resolve_group_by_gid(u.gid as i32, dn, pw);
+    for u in pre.users.values() {
+        let _ = r.resolve_group_by_gid(u.gid, dn, pw);
     }
     let snap = r.snapshot();
     let fp_before = cache.content_fingerprint();

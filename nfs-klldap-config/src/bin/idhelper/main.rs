@@ -4,6 +4,7 @@
 
 mod common;
 mod daemon;
+#[cfg(test)]
 mod idmap_log_contract;
 mod materialize;
 mod observer;

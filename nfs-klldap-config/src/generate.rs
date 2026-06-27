@@ -480,6 +480,7 @@ fn write_ganesha_main(
     let mut content = format!(
         r#"NFS_CORE_PARAM {{
     Protocols = {proto};
+    Enable_UDP = false;
     Bind_addr = 0.0.0.0;
     NFS_Port = 2049;
     Enable_RQUOTA = false;

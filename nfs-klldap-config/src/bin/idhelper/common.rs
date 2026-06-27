@@ -25,18 +25,6 @@ pub(crate) const NSS_GROUP_PATH: &str = "/var/lib/nfs-klldap/nss_group";
 pub(crate) const EXTRAUSERS_PASSWD: &str = "/var/lib/extrausers/passwd";
 pub(crate) const EXTRAUSERS_GROUP: &str = "/var/lib/extrausers/group";
 
-// test base helpers kept only for legacy resolver shims; production() and under() are the real path drivers.
-#[cfg(test)]
-pub(crate) fn test_nss_override_base() -> Option<String> {
-    std::env::var("TEST_PROD_NSS_BASE").ok()
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn test_prod_base() -> Option<String> {
-    std::env::var("TEST_PROD_BASE").ok().or_else(|| test_nss_override_base())
-}
-
 /// The entrypoint waits on this marker after LDAP bulk-seed finishes.
 pub(crate) const BULK_SEED_MARKER: &str = "/var/lib/nfs-klldap/.bulk_seed_done";
 

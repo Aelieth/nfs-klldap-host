@@ -57,7 +57,7 @@ fn is_numeric_login(login: &str) -> bool {
     !login.is_empty() && login.chars().all(|c| c.is_ascii_digit())
 }
 
-/// Passwd login for user@REALM principals; keeps @ for getpwnam while stripping unsafe chars.
+/// Passwd login for user@REALM principals; keeps @ for getpwnam while stripping invalid chars.
 pub(crate) fn principal_realm_login_for_nss(principal: &str) -> String {
     let mut out = String::with_capacity(principal.len());
     for c in principal.chars() {

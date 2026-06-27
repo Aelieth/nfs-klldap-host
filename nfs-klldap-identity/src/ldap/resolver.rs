@@ -663,11 +663,9 @@ impl IdLdapResolver {
     /// Resolve gids for principal (primary + supp) via memberOf + member/gidNumber after RESOLVE uid.
     pub fn resolve_groups_for_principal(&self, name_or_principal: &str, bind_dn: &str, bind_pw: &str) -> Vec<i32> {
         let mut gids: Vec<i32> = vec![];
-        if let Some((_, pg, _)) = self.resolve_user(name_or_principal, bind_dn, bind_pw) {
-            if let Some(g) = pg {
-                if !gids.contains(&g) {
-                    gids.push(g);
-                }
+        if let Some((_, Some(g), _)) = self.resolve_user(name_or_principal, bind_dn, bind_pw) {
+            if !gids.contains(&g) {
+                gids.push(g);
             }
         }
         let try_memberof = |n: &str| -> Option<Vec<String>> {
@@ -677,7 +675,7 @@ impl IdLdapResolver {
         if memberofs.is_none() {
             let short = principal_local_part(name_or_principal);
             if short != name_or_principal {
-                memberofs = try_memberof(&short);
+                memberofs = try_memberof(short);
             }
         }
         if let Some(mofs) = memberofs {
@@ -691,11 +689,11 @@ impl IdLdapResolver {
         }
         let short = principal_local_part(name_or_principal);
         let snap = self.snapshot();
-        for (_, ge) in &snap.groups {
-            if ge.members.iter().any(|m| m.eq_ignore_ascii_case(&short) || m.eq_ignore_ascii_case(name_or_principal)) {
-                if !gids.contains(&ge.gid) {
-                    gids.push(ge.gid);
-                }
+        for ge in snap.groups.values() {
+            if ge.members.iter().any(|m| m.eq_ignore_ascii_case(short) || m.eq_ignore_ascii_case(name_or_principal))
+                && !gids.contains(&ge.gid)
+            {
+                gids.push(ge.gid);
             }
         }
         gids

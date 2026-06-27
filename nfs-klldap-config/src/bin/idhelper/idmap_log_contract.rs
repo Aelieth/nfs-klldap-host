@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn validate_user_tgt_idmap_log(log_path: &Path, user_at: &str) -> Result<(), Vec<&'static str>> {
     let content = fs::read_to_string(log_path).unwrap_or_default();
     let mut errs = vec![];

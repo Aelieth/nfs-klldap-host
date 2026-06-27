@@ -1127,10 +1127,10 @@ mod tests {
         let mut cfg = crate::NfsKlldapConfig {
             ldap_uri: "ldaps://k.example:6360".into(),
             kerberos: crate::KerberosSection {
-                realm: Some("satomlin.com".into()),
+                realm: Some("myrealm.test".into()),
             },
             sssd: crate::SssdSection {
-                ldap_default_bind_dn: "uid=admin,ou=people,dc=satomlin,dc=com".into(),
+                ldap_default_bind_dn: "uid=admin,ou=people,dc=example,dc=com".into(),
                 ldap_default_authtok: "sekret".into(),
                 ..Default::default()
             },
@@ -1142,6 +1142,8 @@ mod tests {
             ..Default::default()
         };
         cfg.validate_and_derive().expect("valid test config");
+        // example.com is a reserved placeholder during validation; set after derive for nfsv4_domain().
+        cfg.kerberos.realm = Some("example.com".into());
 
         let tmp = tempfile::tempdir().unwrap();
         let paths = crate::GenerationPaths {
@@ -1155,12 +1157,12 @@ mod tests {
         crate::generate_all(&cfg, &paths).expect("generate");
 
         let idmap = std::fs::read_to_string(&paths.idmap_conf).unwrap();
-        assert!(idmap.contains("Domain = SATOMLIN.COM"));
-        assert!(idmap.contains("Local-Realms = SATOMLIN.COM"));
+        assert!(idmap.contains("Domain = EXAMPLE.COM"));
+        assert!(idmap.contains("Local-Realms = EXAMPLE.COM"));
 
         let ganesha = std::fs::read_to_string(&paths.ganesha_conf).unwrap();
         assert!(
-            ganesha.contains("DomainName = SATOMLIN.COM;"),
+            ganesha.contains("DomainName = EXAMPLE.COM;"),
             "ganesha DomainName must match uppercase idmapd Domain"
         );
     }

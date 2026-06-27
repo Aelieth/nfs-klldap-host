@@ -292,31 +292,31 @@ mod tests {
     #[test]
     fn extract_candidate_finds_explicit_principal() {
         let r = extract_candidate_principal(
-            "some log with principal user@SATOMLIN.COM and other stuff",
-            "SATOMLIN.COM",
+            "some log with principal user@EXAMPLE.COM and other stuff",
+            "EXAMPLE.COM",
         );
-        assert_eq!(r, Some("user@SATOMLIN.COM".to_string()));
+        assert_eq!(r, Some("user@EXAMPLE.COM".to_string()));
     }
 
     #[test]
     fn extract_candidate_finds_host_style() {
         let r = extract_candidate_principal(
             "name=(21:Linux NFSv4.2 blue-lt) client stuff",
-            "SATOMLIN.COM",
+            "EXAMPLE.COM",
         );
-        assert_eq!(r, Some("host/blue-lt@SATOMLIN.COM".to_string()));
+        assert_eq!(r, Some("host/blue-lt@EXAMPLE.COM".to_string()));
     }
 
     #[test]
     fn extract_candidate_finds_in_ganesha_client_id_lines() {
         let line = r#"name=(21:Linux NFSv4.2 blue-lt) conf = 0x... server_addr = 172.17.0.2"#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
-        assert_eq!(r, Some("host/blue-lt@SATOMLIN.COM".to_string()));
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
+        assert_eq!(r, Some("host/blue-lt@EXAMPLE.COM".to_string()));
     }
 
     #[test]
     fn extract_candidate_ignores_irrelevant() {
-        let r = extract_candidate_principal("just some random log without principals", "SATOMLIN.COM");
+        let r = extract_candidate_principal("just some random log without principals", "EXAMPLE.COM");
         assert!(r.is_none());
     }
 
@@ -324,14 +324,14 @@ mod tests {
     #[test]
     fn extract_rejects_unique_counter() {
         let line = r#"key_locate :CLIENT ID :F_DBG :Locate Unconfirmed Client ID seeking Key=0x... {Unique=0x6a374e99 Counter=0x00000001}"#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
         assert!(r.is_none() || !r.unwrap().contains("Unique"), "must not turn Unique= counter into a host principal");
     }
 
     #[test]
     fn extract_rejects_ffff_from_ipv6() {
         let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)]"#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
         // It should find the real "blue-lt", never "ffff".
         if let Some(c) = r {
             assert!(c.contains("blue-lt"), "should still find the real hostname");
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn extract_rejects_client_literal() {
         let line = "nfs4_op_destroy_clientid :CLIENT ID :DEBUG :DESTROY_CLIENTID clientid=...";
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
         // Should not turn the word "CLIENT" into host/CLIENT.
         if let Some(c) = r {
             assert!(!c.to_ascii_lowercase().contains("client"), "must ignore literal CLIENT word");
@@ -352,8 +352,8 @@ mod tests {
     #[test]
     fn extract_still_finds_good_name_even_with_noise() {
         let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)] clientid=Unique=..."#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
-        assert_eq!(r, Some("host/blue-lt@SATOMLIN.COM".to_string()));
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
+        assert_eq!(r, Some("host/blue-lt@EXAMPLE.COM".to_string()));
     }
 
     #[test]
@@ -732,10 +732,10 @@ mod tests {
         snap.by_uid.insert(1001, "testuser1".to_string());
 
         let mut cache = IdCache::default();
-        let n = seed_cache_and_nss_from_snapshot(&snap, "SATOMLIN.COM", &mut cache);
+        let n = seed_cache_and_nss_from_snapshot(&snap, "EXAMPLE.COM", &mut cache);
         assert_eq!(n, 1);
 
-        let r = cache.get("testuser1@SATOMLIN.COM").expect("principal key");
+        let r = cache.get("testuser1@EXAMPLE.COM").expect("principal key");
         assert_eq!(r.name, "testuser1");
         assert_eq!(r.uid, 1001);
         assert_eq!(r.gid, 1001);
@@ -745,15 +745,15 @@ mod tests {
         let short_line = passwd_line_for(r);
         assert!(short_line.starts_with("testuser1:x:1001:1001:"));
         let full_line = passwd_line_for(&Resolved {
-            principal: "testuser1@SATOMLIN.COM".into(),
-            name: "testuser1@SATOMLIN.COM".into(),
+            principal: "testuser1@EXAMPLE.COM".into(),
+            name: "testuser1@EXAMPLE.COM".into(),
             uid: 1001,
             gid: 1001,
             kind: PrincipalKind::User,
             source: "bulk".into(),
         });
         // sanitize_for_nss used for safe logins; alias emission uses raw principal for getpwnam(user@REALM)
-        assert!(full_line.starts_with("testuser1_SATOMLIN.COM:x:1001:1001:"));
+        assert!(full_line.starts_with("testuser1_EXAMPLE.COM:x:1001:1001:"));
     }
 
     #[test]
@@ -767,7 +767,7 @@ mod tests {
     fn extract_rejects_nil_from_conf_group() {
         // Lines often contain conf = (nil) after a good name= group Must.
         let line = r#"key_locate :CLIENT ID :F_DBG :Locate Client Record seeking Key=... {{... name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} ...}}"#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
         if let Some(c) = r {
             assert!(c.contains("blue-lt"), "should find real host");
             assert!(!c.contains("nil"), "must never emit host/nil");
@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn extract_rejects_clientid_token() {
         let line = r#"nfs4_op_exchange_id ... clientid=Unique=0x6a375213 Counter=0x00000001 name=(21:Linux NFSv4.2 blue-lt)"#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
         if let Some(c) = r {
             assert!(c.contains("blue-lt"));
             assert!(!c.to_ascii_lowercase().contains("clientid"), "must not emit host/clientid");
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn extract_rejects_nfsv4_line_with_only_hex_tokens() {
         let line = r#"NFSv4 seeking Key=0x7f0c3082f670 {0x6a375213 other tokens}"#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
         assert!(r.is_none() || !r.unwrap().contains("0x"));
     }
 
@@ -809,7 +809,7 @@ mod tests {
     fn extract_rejects_pure_clientid_line() {
         // Standalone clientid= lines must never produce a host/ candidate.
         let line = r#"nfs4_op_destroy_clientid :CLIENT ID :DEBUG :DESTROY_CLIENTID clientid=Unique=0x6a375213 Counter=0x00000002"#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
         assert!(r.is_none() || !r.unwrap().to_ascii_lowercase().contains("clientid"), "pure clientid= line must not emit host/clientid");
     }
 
@@ -817,7 +817,7 @@ mod tests {
     fn extract_only_good_from_full_clid_create_line() {
         // The exact fs_create line from the trace must yield only the real.
         let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)]"#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
         if let Some(c) = r {
             assert!(c.contains("blue-lt"));
             assert!(!c.contains("ffff"));
@@ -831,7 +831,7 @@ mod tests {
     fn extract_rejects_conf_nil_groups_even_in_long_client_record() {
         // Full client record blob with multiple (nil) after the good name=.
         let line = r#"key_locate :CLIENT ID :F_DBG :Locate Client Record seeking Key=0x7f0c3082f530 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=1}}"#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
         if let Some(c) = r {
             assert!(c.contains("blue-lt"));
             assert!(!c.contains("nil"), "must not emit host/nil from conf = (nil) groups");
@@ -842,7 +842,7 @@ mod tests {
     fn extract_rejects_on_lines_with_only_unconf_and_counters() {
         // Lines that only have unconf / counter noise after nfsv4 mention.
         let line = r#"key_locate :CLIENT ID :F_DBG :Locate Unconfirmed Client ID seeking Key=0x7f0c3082f670 {Unique=0x6a375213 Counter=0x00000001}"#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
         assert!(r.is_none() || r.unwrap().contains("blue-lt") /* only if a good name was also present */);
     }
 
@@ -896,7 +896,7 @@ mod tests {
         ];
 
         for frag in &fragments {
-            let r = extract_candidate_principal(frag, "SATOMLIN.COM");
+            let r = extract_candidate_principal(frag, "EXAMPLE.COM");
             if let Some(c) = r {
                 let bad = c.to_ascii_lowercase();
                 assert!(!bad.contains("nil"), "frag produced host/nil: {}", frag);
@@ -911,17 +911,17 @@ mod tests {
     #[test]
     fn machine_principal_short_circuits_to_zero_without_getent() {
         let mut cache = IdCache::default();
-        let realm = "SATOMLIN.COM".to_string();
+        let realm = "EXAMPLE.COM".to_string();
         let variants = vec!["zima-nas".to_string()];
 
-        let r1 = resolve_principal("host/blue-lt@SATOMLIN.COM", &realm, &variants, &mut cache);
+        let r1 = resolve_principal("host/blue-lt@EXAMPLE.COM", &realm, &variants, &mut cache);
         assert_eq!(r1.uid, 0); assert_eq!(r1.gid, 0); assert_eq!(r1.kind, PrincipalKind::Machine);
 
-        let gs0 = resolve_groups_for_principal("host/blue-lt@SATOMLIN.COM", &realm, &variants, &mut cache);
+        let gs0 = resolve_groups_for_principal("host/blue-lt@EXAMPLE.COM", &realm, &variants, &mut cache);
         assert_eq!(gs0, vec![0]);
 
-        let r2 = resolve_principal("testuser1@SATOMLIN.COM", &realm, &variants, &mut cache);
-        let gs_user = resolve_groups_for_principal("testuser1@SATOMLIN.COM", &realm, &variants, &mut cache);
+        let r2 = resolve_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache);
+        let gs_user = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache);
         assert!(!gs_user.is_empty());
         assert!(r2.kind != PrincipalKind::Machine);
     }
@@ -984,16 +984,16 @@ mod tests {
     #[test]
     fn extract_catches_could_not_map_line_for_user_principal() {
         // The could-not-map line pattern closes the first-use timing gap.
-        let line = r#"nfs_req_creds :ID MAPPER :INFO :Could not map principal testuser1@SATOMLIN.COM to uid"#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
-        assert_eq!(r, Some("testuser1@SATOMLIN.COM".to_string()));
+        let line = r#"nfs_req_creds :ID MAPPER :INFO :Could not map principal testuser1@EXAMPLE.COM to uid"#;
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
+        assert_eq!(r, Some("testuser1@EXAMPLE.COM".to_string()));
     }
 
     #[test]
     fn extract_catches_get_uid_using_nfsidmap_line() {
         // Early Get uid lines resolve user principals before materialize.
-        let line = r#"principal2uid : Get uid for testuser1@SATOMLIN.COM using nfsidmap"#;
-        let r = extract_candidate_principal(line, "SATOMLIN.COM");
-        assert_eq!(r, Some("testuser1@SATOMLIN.COM".to_string()));
+        let line = r#"principal2uid : Get uid for testuser1@EXAMPLE.COM using nfsidmap"#;
+        let r = extract_candidate_principal(line, "EXAMPLE.COM");
+        assert_eq!(r, Some("testuser1@EXAMPLE.COM".to_string()));
     }
 }

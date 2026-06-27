@@ -2,6 +2,12 @@
 
 use crate::constants::MACHINE_PRINCIPAL_PREFIXES;
 
+/// True when the local part is only ASCII digits (uid/gid reverse-map noise).
+pub fn is_numeric_local_principal(p: &str) -> bool {
+    let local = principal_local_part(p);
+    !local.is_empty() && local.chars().all(|c| c.is_ascii_digit())
+}
+
 /// Returns the local part of a Kerberos principal before @.
 /// Returns the whole string when the principal is unqualified.
 pub fn principal_local_part(p: &str) -> &str {
@@ -134,6 +140,14 @@ mod tests {
         let (u2, r2) = classify_principal("alice@OTHER.REALM", "MY.REALM", &[]);
         assert!(!u2);
         assert!(r2.contains("OTHER.REALM"));
+    }
+
+    #[test]
+    fn is_numeric_local_principal_detects_uid_gids() {
+        assert!(is_numeric_local_principal("3002@REALM"));
+        assert!(is_numeric_local_principal("3005"));
+        assert!(!is_numeric_local_principal("testuser2@REALM"));
+        assert!(!is_numeric_local_principal("host/client@REALM"));
     }
 
     #[test]

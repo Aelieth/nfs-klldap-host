@@ -255,9 +255,13 @@ pub(crate) fn run_daemon() {
     // Load the persisted cache and refresh user rows on the first LDAP sync.
     let mut initial = IdCache::load_from_file(Path::new(CACHE_PATH));
     let bad = initial.prune_malformed_principals();
-    if bad > 0 {
+    let numeric = initial.prune_numeric_user_entries();
+    if bad > 0 || numeric > 0 {
         let _ = initial.write_to_file(Path::new(CACHE_PATH));
-        eprintln!("[idhelper] pruned {} malformed principal cache entries on startup", bad);
+        eprintln!(
+            "[idhelper] pruned {} malformed + {} numeric principal cache entries on startup",
+            bad, numeric
+        );
     }
     let cache = Arc::new(Mutex::new(initial));
 

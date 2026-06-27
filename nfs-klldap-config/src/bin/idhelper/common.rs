@@ -10,7 +10,8 @@ use nfs_klldap_config::{
     runtime_server_variants_from_disk, NfsKlldapConfig,
 };
 use nfs_klldap_identity::{
-    machine_short_name, normalize_principal, principal_has_realm, principal_local_part,
+    is_numeric_local_principal, machine_short_name, normalize_principal, principal_has_realm,
+    principal_local_part,
 };
 pub(crate) const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
 pub(crate) const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
@@ -154,6 +155,15 @@ impl IdCache {
     pub(crate) fn prune_malformed_principals(&mut self) -> usize {
         let before = self.entries.len();
         self.entries.retain(|_, r| principal_has_realm(&r.principal));
+        before.saturating_sub(self.entries.len())
+    }
+
+    /// Drop user rows whose local part is purely numeric (uid/gid reverse-map pollution).
+    pub(crate) fn prune_numeric_user_entries(&mut self) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|_, r| {
+            r.kind == PrincipalKind::Machine || !is_numeric_local_principal(&r.principal)
+        });
         before.saturating_sub(self.entries.len())
     }
 

@@ -12,7 +12,7 @@ pub use keytab::{
     read_default_keytab_nfs_principals, read_keytab_nfs_principals, KeytabInfo,
 };
 pub use principal::{
-    canonicalize_principal, classify_principal, machine_short_name, normalize_principal,
-    principal_has_realm, principal_local_part,
+    canonicalize_principal, classify_principal, is_numeric_local_principal, machine_short_name,
+    normalize_principal, principal_has_realm, principal_local_part,
 };
 pub use realm::{derive_realm_from_uri, extract_host_from_uri, host_is_ip};

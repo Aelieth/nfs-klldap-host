@@ -5,7 +5,7 @@ set -euo pipefail
 
 echo "=== FEDORA KRB5P VALIDATE START $(date -u) ==="
 
-dnf install -y --quiet nfs-utils krb5-workstation rpcbind keyutils dbus
+dnf install -y --quiet nfs-utils krb5-workstation rpcbind keyutils dbus kmod
 
 if [ ! -f /test/krb5.conf ] || [ ! -f /test/krb5.keytab ]; then
   echo "ERROR: missing /test/krb5.conf or /test/krb5.keytab"
@@ -16,8 +16,13 @@ cp /test/krb5.conf /etc/krb5.conf
 cp /test/krb5.keytab /etc/krb5.keytab
 chmod 600 /etc/krb5.keytab
 
+modprobe nfs 2>/dev/null || true
+
 mkdir -p /var/lib/nfs/rpc_pipefs
-mount -t rpc_pipefs rpc_pipefs /var/lib/nfs/rpc_pipefs 2>/dev/null || true
+# Host bind mount of rpc_pipefs (see capture-plan-gate.sh) is required for gssd/idmap in Docker.
+if ! mountpoint -q /var/lib/nfs/rpc_pipefs 2>/dev/null; then
+  mount -t rpc_pipefs rpc_pipefs /var/lib/nfs/rpc_pipefs 2>/dev/null || true
+fi
 
 rpcbind || true
 rpc.gssd -f &
@@ -113,9 +118,14 @@ if [ -n "${TEST_USER_PRINC:-}" ] && [ -n "${TEST_USER_PASSWORD:-}" ]; then
 passwd: files
 group: files
 EOF
-  grep -q "^${short}:" /etc/passwd || echo "${short}:x:${exp_uid}:${exp_gid}:user TGT test:/tmp:/sbin/nologin" >> /etc/passwd
+  grep -q "^group-test:" /etc/group || groupadd -g "${exp_gid}" group-test 2>/dev/null || echo "group-test:x:${exp_gid}:${short}" >> /etc/group
+  if ! getent passwd "${short}" >/dev/null 2>&1; then
+    useradd -u "${exp_uid}" -g "${exp_gid}" -M -s /sbin/nologin "${short}" 2>/dev/null \
+      || echo "${short}:x:${exp_uid}:${exp_gid}:user TGT test:/tmp:/sbin/nologin" >> /etc/passwd
+  fi
   grep -q "^${short}@${realm}:" /etc/passwd || echo "${short}@${realm}:x:${exp_uid}:${exp_gid}:user TGT test:/tmp:/sbin/nologin" >> /etc/passwd
   grep -q "^group-test:" /etc/group || echo "group-test:x:${exp_gid}:${short}" >> /etc/group
+  usermod -aG group-test "${short}" 2>/dev/null || true
 
   cat > /etc/idmapd.conf <<EOF
 [General]
@@ -136,12 +146,18 @@ nfs4-disable-idmapping=0
 use-machine-creds=0
 use-gss-proxy=0
 NFSCONF
-
-  echo N > /sys/module/nfs/parameters/nfs4_disable_idmapping 2>/dev/null || true
+  echo 0 > /sys/module/nfs/parameters/nfs4_disable_idmapping 2>/dev/null || true
 
   getent passwd "${short}" >/dev/null || { echo "ERROR: client passwd stub missing for ${short}"; exit 41; }
   getent passwd "${TEST_USER_PRINC}" >/dev/null || { echo "ERROR: client passwd stub missing for ${TEST_USER_PRINC}"; exit 41; }
   getent group group-test >/dev/null || { echo "ERROR: client group stub missing for gid ${exp_gid}"; exit 41; }
+
+  if [ -x /usr/local/bin/nfsidmap-client-helper ]; then
+    cat > /etc/request-key.d/id_resolver.conf <<'RKCONF'
+create id_resolver * * /usr/local/bin/nfsidmap-client-helper %k %d
+negate id_resolver * * /bin/keyctl negate %k 0 %c
+RKCONF
+  fi
 
   dbus-daemon --system --fork 2>/dev/null || true
   export KRB5CCNAME=FILE:/tmp/ccuser
@@ -154,19 +170,47 @@ NFSCONF
   sleep 2
 
   mount -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/stuff /mnt/stuff
-  out="/mnt/stuff/user-tgt-${short}-$(date +%s).txt"
-  echo "user-tgt-$(date +%s)" > "$out"
+  marker="user-tgt-${short}-$(date +%s)"
+  out="/mnt/stuff/${marker}.txt"
+  rm -f "$out"
+  set +e
+  printf '%s\n' "$marker" | tee "$out" >/dev/null
+  write_rc=$?
+  set -e
   sync
+  if [ "$write_rc" != "0" ]; then
+    echo "ERROR: user TGT write failed on $out (write_rc=${write_rc})"
+    ls -ln "$out" 2>/dev/null || true
+    exit 41
+  fi
+  if [ ! -e "$out" ]; then
+    echo "ERROR: user TGT file missing after write: $out"
+    exit 41
+  fi
+  read_back="$(cat "$out" 2>/dev/null || true)"
+  if [ "$read_back" != "$marker" ]; then
+    echo "ERROR: user TGT client read-back '${read_back}' != '${marker}'"
+    exit 41
+  fi
   uid=$(stat -c %u "$out")
   gid=$(stat -c %g "$out")
+  echo "user-tgt write_rc=${write_rc}"
   echo "user-tgt client stat uid:gid = ${uid}:${gid}"
-  base="${out#/mnt/stuff/}"
+  base="${marker}.txt"
   echo "SERVER_VERIFY=${base}" > /hostdata/stuff/.user-tgt-verify
   srv_uid=""; srv_gid=""
   if [ -f "/hostdata/stuff/${base}" ]; then
     srv_uid=$(stat -c %u "/hostdata/stuff/${base}")
     srv_gid=$(stat -c %g "/hostdata/stuff/${base}")
+    host_back="$(cat "/hostdata/stuff/${base}" 2>/dev/null || true)"
     echo "user-tgt hostdata bind stat uid:gid = ${srv_uid}:${srv_gid}"
+    if [ "$host_back" != "$marker" ]; then
+      echo "ERROR: hostdata content '${host_back}' != '${marker}'"
+      exit 41
+    fi
+  else
+    echo "ERROR: hostdata bind missing ${base}"
+    exit 41
   fi
   if [ "$srv_uid" = "$exp_uid" ] && [ "$srv_gid" = "$exp_gid" ]; then
     echo "USER TGT HOSTDATA UID MAP OK (${srv_uid}:${srv_gid})"

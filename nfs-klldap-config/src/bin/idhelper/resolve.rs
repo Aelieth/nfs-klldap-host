@@ -11,8 +11,8 @@ use nfs_klldap_config::{
     FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
 };
 use nfs_klldap_identity::{
-    canonicalize_principal, classify_principal, machine_short_name, normalize_principal,
-    principal_has_realm, principal_local_part,
+    canonicalize_principal, classify_principal, is_numeric_local_principal, machine_short_name,
+    normalize_principal, principal_has_realm, principal_local_part,
 };
 
 use crate::common::{
@@ -251,6 +251,19 @@ pub(crate) fn resolve_principal(
     let start = Instant::now();
     let norm = normalize_principal(&principal);
 
+    // libnfsidmap uid/gid reverse lookups must not be cached as Kerberos principals.
+    if is_numeric_local_principal(&principal) {
+        dlog!("reject numeric principal lookup \"{}\"", principal);
+        return Resolved {
+            principal,
+            name: principal_local_part(&norm).to_string(),
+            uid: FALLBACK_NOBODY_UID,
+            gid: FALLBACK_NOBODY_GID,
+            kind: PrincipalKind::Unknown,
+            source: "rejected-numeric".to_string(),
+        };
+    }
+
     dlog!("RESOLVE principal=\"{}\"", principal);
     dlog!("  normalized=\"{}\"", norm);
 
@@ -259,6 +272,10 @@ pub(crate) fn resolve_principal(
     }
 
     if let Some(existing) = cache.get(&norm).cloned() {
+        if is_numeric_local_principal(&existing.principal) {
+            cache.entries.remove(&norm);
+            dlog!("evicted numeric principal cache hit \"{}\"", norm);
+        } else {
         let mut e = existing;
         e.source = "cache".to_string();
         if debug_enabled() {
@@ -274,6 +291,7 @@ pub(crate) fn resolve_principal(
             e.uid, e.gid, e.kind.as_str(), e.source, elapsed
         );
         return e;
+        }
     }
     if debug_enabled() {
         eprintln!("[idhelper] cache=MISS key=\"{}\"", norm);
@@ -379,6 +397,7 @@ pub(crate) fn resolve_principal(
         cache.insert(resolved.clone());
     }
     let _ = cache.prune_malformed_principals();
+    let _ = cache.prune_numeric_user_entries();
     if fp_before != cache.content_fingerprint() {
         let write_res = cache.write_to_file(Path::new(CACHE_PATH));
         dlog!(
@@ -464,6 +483,15 @@ mod tests {
         let content = "# groups\n\ndevs:x:3005:alice,bob\n";
         assert_eq!(lookup_group_in_content(content, 3005), Some("devs".into()));
         assert_eq!(lookup_group_in_content(content, 9999), None);
+    }
+
+    #[test]
+    fn resolve_rejects_numeric_principal_without_caching() {
+        let mut cache = IdCache::default();
+        let r = resolve_principal("3002", "REALM", &[], &mut cache);
+        assert_eq!(r.uid, FALLBACK_NOBODY_UID);
+        assert_eq!(r.source, "rejected-numeric");
+        assert!(cache.get("3002@REALM").is_none());
     }
 
     #[test]

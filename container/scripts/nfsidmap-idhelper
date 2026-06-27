@@ -80,6 +80,24 @@ if [ -z "$principal" ]; then
     exec "$REAL_NFSIDMAP" "$@"
 fi
 
+# libnfsidmap passes numeric ids for uid/gid reverse lookups; use getent, not idhelper resolve.
+if [ "$principal" -eq "$principal" ] 2>/dev/null; then
+    if [ "$mode" = "uid" ]; then
+        name=$(getent passwd "$principal" 2>/dev/null | cut -d: -f1 | head -1)
+        if [ -n "$name" ]; then
+            printf '%s\n' "$name"
+            exit 0
+        fi
+    elif [ "$mode" = "gid" ]; then
+        name=$(getent group "$principal" 2>/dev/null | cut -d: -f1 | head -1)
+        if [ -n "$name" ]; then
+            printf '%s\n' "$name"
+            exit 0
+        fi
+    fi
+    exec "$REAL_NFSIDMAP" -"$mode" "$principal"
+fi
+
 # Verbose on principal input (always for diagnosis; Ganesha may call for uid2grp group cases).
 echo "[nfsidmap-idhelper] principal=$principal mode=$mode" >&2
 log "lookup mode=$mode principal=$principal"

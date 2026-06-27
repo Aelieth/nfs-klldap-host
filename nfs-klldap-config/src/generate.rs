@@ -486,6 +486,8 @@ fn write_ganesha_main(
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
+    # Fallback to RPC cred groups when uid2grp/getgrouplist fails under krb5 GSS.
+    enable_rpc_cred_fallback = true;
 }}
 
 DIRECTORY_SERVICES {{
@@ -504,8 +506,11 @@ NFS_KRB5 {{
 }}
 
 NFSV4 {{
-    # false keeps hybrid krb5p machine writes; idhelper maps principals on the server.
-    Allow_Numeric_Owners = false;
+    # Only_Numeric_Owners wires stat uid/gid; Allow_* is the lookup-fail fallback only.
+    Only_Numeric_Owners = true;
+    Allow_Numeric_Owners = true;
+    # Debian 9.6 _MSPAC builds skip principal2grp; uid2grp+getgrouplist via nss_wrapper instead.
+    UseGetpwnam = true;
     RecoveryBackend = fs;
     # Increased from 20s for production stability on krb5p (reduces session/lease churn causing
     # sporadic EIO and "access denied" flaps on clients like Dolphin during getattr/readdir
@@ -658,7 +663,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         let (mut disable_acl_line, mut manage_gids_line, auto_comment) =
             export_fs_directives(share, &caps);
 
-        // krb5* default manage_gids=false to avoid uid2grp_allocate_by_principal + managed-groups failure.
+        // krb5*: keep Manage_Gids false (AUTH_SYS); GSS still fetches groups via nss_wrapper.
         if sec.starts_with("krb5") && share.manage_gids != Some(true) {
             manage_gids_line = "    Manage_Gids = false;\n".to_string();
         }
@@ -676,7 +681,11 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             proto = constants::GANESHA_PROTOCOLS,
         );
 
-        let krb_note = if sec.starts_with("krb5") { "# krb5*: manage_gids=false default (group fetch unsupported in libnfsidmap nss path; see ganesha-ctl)\n" } else { "" };
+        let krb_note = if sec.starts_with("krb5") {
+            "# krb5*: manage_gids=false; limited FS auto Disable_ACL; user TGT needs libnfs-klldap-createmode LD_PRELOAD\n"
+        } else {
+            ""
+        };
         let block = format!(
             r#"# Generated from nfs-klldap.conf share "{}"
 {auto_comment}{krb_note}EXPORT {{
@@ -978,14 +987,17 @@ mod tests {
         };
         crate::generate_all(&cfg, &paths).expect("generate");
 
-        for name in ["10-acl-off.conf", "11-acl-default.conf"] {
-            let frag = std::fs::read_to_string(exports_dir.join(name)).unwrap();
-            assert!(
-                !frag.contains("Disable_ACL"),
-                "Disable_ACL must be absent in {}",
-                name
-            );
-        }
+        let off = std::fs::read_to_string(exports_dir.join("10-acl-off.conf")).unwrap();
+        assert!(
+            !off.contains("Disable_ACL = true;"),
+            "explicit disable_acl=false must omit Disable_ACL on krb5p"
+        );
+        let default = std::fs::read_to_string(exports_dir.join("11-acl-default.conf")).unwrap();
+        assert!(
+            !default.contains("Disable_ACL = true;"),
+            "capable ext4 krb5p must not force Disable_ACL"
+        );
+        assert!(default.contains("Manage_Gids = false;"));
     }
 
     #[test]
@@ -1191,9 +1203,9 @@ mod tests {
         write_export_fragments(&cfg, &exports_dir).expect("fragments");
         let frag = std::fs::read_to_string(exports_dir.join("10-data.conf")).unwrap();
         assert!(frag.contains("Squash = root_squash;"));
-        // krb5p default: manage_gids=false + note present
+        assert!(!frag.contains("Disable_ACL = true;"), "capable ext4 omits Disable_ACL");
         assert!(frag.contains("Manage_Gids = false;"));
-        assert!(frag.contains("krb5*: manage_gids=false default"));
+        assert!(frag.contains("libnfs-klldap-createmode"));
     }
 
     #[test]

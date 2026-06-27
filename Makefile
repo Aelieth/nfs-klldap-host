@@ -96,12 +96,21 @@ dist: build-cross
 .PHONY: docker
 docker:
 	@echo "==> Building container image for linux/amd64/v2..."
-	$(BUILDX) build \
-		--platform linux/amd64/v2 \
-		--tag $(FULL_IMAGE):$(VERSION) \
-		$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(FULL_IMAGE):latest,) \
-		$(if $(filter true,$(DOCKER_PUSH)),--push,--load) \
-		.
+	@if [ "$(DOCKER_PUSH)" = "true" ]; then \
+		$(BUILDX) build \
+			$(if $(filter true,$(DOCKER_NO_CACHE)),--no-cache,) \
+			--platform linux/amd64/v2 \
+			--tag $(FULL_IMAGE):$(VERSION) \
+			$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(FULL_IMAGE):latest,) \
+			--push \
+			.; \
+	else \
+		$(DOCKER) build \
+			$(if $(filter true,$(DOCKER_NO_CACHE)),--no-cache,) \
+			--tag $(IMAGE_NAME):$(VERSION) \
+			$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(IMAGE_NAME):latest,) \
+			.; \
+	fi
 #		--tag $(IMAGE_NAME):latest \
 
 .PHONY: docker-multi

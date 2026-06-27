@@ -65,17 +65,22 @@ fn assert_ganesha_96_compliant(ganesha: &str, idmap: &str) {
         "Root_Kerberos_Principal = host, nfs, root",
         "Idmapped_User_Time_Validity = 600",
         "Idmapped_Group_Time_Validity = 600",
+        "Only_Numeric_Owners = true",
+        "Allow_Numeric_Owners = true",
         "NFS_KRB5",
         "PrincipalName = \"nfs\"",
         "Active_krb5 = TRUE",
     ] {
         assert!(ganesha.contains(key), "ganesha.conf missing {key}");
     }
+    assert!(
+        ganesha.contains("UseGetpwnam = true"),
+        "ganesha.conf must emit UseGetpwnam for krb5 GSS managed_gids on Debian 9.6"
+    );
     for forbidden in [
         "Read_Access_Check_Policy =",
         "Manage_Gids_Expiration =",
         "IdmapConf =",
-        "UseGetpwnam =",
         "Transports =",
     ] {
         assert!(

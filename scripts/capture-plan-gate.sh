@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRATCH="${SCRATCH:-/tmp/grok-plan-gate-$$}"
 LOG="$SCRATCH/plan-gate.log"
+rm -rf "$SCRATCH"
 mkdir -p "$SCRATCH"
 
 exec > >(tee -a "$LOG") 2>&1
@@ -14,11 +15,16 @@ echo "=== PLAN GATE START $(date -u) ==="
 echo "SCRATCH=$SCRATCH"
 echo "ROOT=$ROOT"
 
-echo "=== CARGO TEST ==="
-(cd "$ROOT" && cargo test --workspace)
+echo "=== CLEAN BUILD ==="
+{
+  cd "$ROOT"
+  make clean
+  cargo clean
+  make docker IMAGE_NAME=nfs-klldap-host DOCKER_TAG_LATEST=true DOCKER_NO_CACHE=true
+} 2>&1 | tee "$SCRATCH/build.log"
 
-echo "=== DOCKER BUILD ==="
-(cd "$ROOT" && make docker IMAGE_NAME=nfs-klldap-host DOCKER_TAG_LATEST=true)
+echo "=== CARGO TEST ==="
+(cd "$ROOT" && cargo test --workspace) 2>&1 | tee "$SCRATCH/cargo-test.log"
 
 DOCKER_RUN='docker run -d \
   --name nfs-klldap \
@@ -46,30 +52,102 @@ for i in $(seq 1 60); do
   sleep 5
 done
 
-echo "=== IN-CONTAINER IDHELPER / NSS STRESS ==="
-docker exec nfs-klldap ganesha-ctl id-map-test testuser2
-docker exec nfs-klldap ganesha-ctl id-resolve testuser2@TESTLABBY.LOCAL || true
-docker exec nfs-klldap getent passwd testuser2@TESTLABBY.LOCAL
-docker exec nfs-klldap getent group 3005
-docker exec nfs-klldap bash -c 'grep 3005 /var/lib/nfs-klldap/nss_group /var/lib/extrausers/group'
+NFS_FULL_LOG="$SCRATCH/nfs-run-start-full.log"
+{
+  echo "=== NFS RUN START FULL $(date -u) ==="
+  echo "=== DOCKER RUN (verbatim) ==="
+  echo "$DOCKER_RUN"
+  echo "=== HEALTH ==="
+  docker inspect -f '{{.State.Health.Status}}' nfs-klldap 2>/dev/null || true
+  echo "=== GANESHA NFSV4 id wire options ==="
+  docker exec nfs-klldap grep -E 'Only_Numeric|Allow_Numeric' /etc/ganesha/ganesha.conf || true
+  echo "=== EXPORT Disable_ACL (krb5p default) ==="
+  docker exec nfs-klldap bash -c 'grep Disable_ACL /etc/ganesha/exports.d/*.conf' || true
+  echo "=== id-map-test testuser2 ==="
+  docker exec nfs-klldap ganesha-ctl id-map-test testuser2
+  echo "=== id-resolve testuser2@TESTLABBY.LOCAL ==="
+  docker exec nfs-klldap ganesha-ctl id-resolve testuser2@TESTLABBY.LOCAL || true
+  echo "=== id-check ==="
+  docker exec nfs-klldap ganesha-ctl id-check || true
+  echo "=== getent passwd/group ==="
+  docker exec nfs-klldap getent passwd testuser2 testuser2@TESTLABBY.LOCAL
+  docker exec nfs-klldap getent group 3005 group-test
+  echo "=== nfsidmap reverse ==="
+  docker exec nfs-klldap nfsidmap -u 3002
+  docker exec nfs-klldap nfsidmap -g 3005
+  echo "=== nss materialization ==="
+  docker exec nfs-klldap bash -c 'grep -E "3002|3005|testuser2|group-test" /var/lib/nfs-klldap/nss_passwd /var/lib/nfs-klldap/nss_group /var/lib/extrausers/passwd /var/lib/extrausers/group 2>/dev/null'
+  echo "=== grps testuser2@TESTLABBY.LOCAL ==="
+  docker exec nfs-klldap nfs-klldap-idhelper grps testuser2@TESTLABBY.LOCAL --json 2>/dev/null || true
+  echo "=== ls -n sample ==="
+  docker exec nfs-klldap ls -ln /export/stuff/user-tgt-*.txt 2>/dev/null | tail -5 || true
+  echo "=== idhelper resolve testuser1@TESTLABBY.LOCAL ==="
+  docker exec nfs-klldap nfs-klldap-idhelper resolve testuser1@TESTLABBY.LOCAL --json 2>/dev/null || true
+  echo "=== grps testuser1@TESTLABBY.LOCAL ==="
+  docker exec nfs-klldap nfs-klldap-idhelper grps testuser1@TESTLABBY.LOCAL --json 2>/dev/null || true
+  echo "=== id-map-test testuser1 ==="
+  docker exec nfs-klldap ganesha-ctl id-map-test testuser1 2>/dev/null || true
+  echo "=== ID MAPPER uid2grp (recent) ==="
+  docker exec nfs-klldap bash -c 'grep -E "ID MAPPER|uid2grp_allocate|principal2grp|Unsupported code path" /var/log/ganesha.log | tail -40' || true
+  echo "=== ls -ln export stuff (numeric) ==="
+  docker exec nfs-klldap ls -ln /export/stuff 2>/dev/null | tail -10 || true
+} | tee "$NFS_FULL_LOG"
 
-KRB5_EXTRACT="$SCRATCH/krb5.conf"
+KRB5_EXTRACT="$SCRATCH/krb5-extract.conf"
 docker exec nfs-klldap cat /etc/krb5.conf > "$KRB5_EXTRACT"
 
 echo "=== FEDORA CLIENT VALIDATE ==="
 FEDORA_LOG="$SCRATCH/fedora-client.log"
+set +e
 docker run --rm --network=host --privileged --ipc=host \
+  -v /lib/modules:/lib/modules:ro \
+  -v /run/host/var/lib/nfs/rpc_pipefs:/var/lib/nfs/rpc_pipefs:shared \
   -v "$KRB5_EXTRACT:/test/krb5.conf:ro" \
   -v /home/local/Projects/test-nfs-work/keytab/krb5.keytab:/test/krb5.keytab:ro \
   -v /home/local/Projects/test-nfs-work/stuff:/hostdata/stuff:Z \
   -v /home/local/Projects/test-nfs-work/junk:/hostdata/junk:Z \
   -v "$ROOT/scripts/fedora-krb5p-client-validate.sh:/validate.sh:ro" \
+  -v "$ROOT/scripts/nfsidmap-client-helper:/usr/local/bin/nfsidmap-client-helper:ro" \
   -e TEST_USER_PRINC='testuser2@TESTLABBY.LOCAL' \
   -e TEST_USER_PASSWORD='testtest' \
   fedora:44 bash /validate.sh 2>&1 | tee "$FEDORA_LOG"
+FEDORA_RC=${PIPESTATUS[0]}
+set -e
 
-echo "=== SERVER BIND STAT (authoritative container view) ==="
-docker exec nfs-klldap bash -c 'f=$(cat /export/stuff/.user-tgt-verify 2>/dev/null | sed -n "s/^SERVER_VERIFY=//p"); [ -n "$f" ] && stat -c "%u:%g %n" "/export/stuff/$f" || echo no-verify-file'
+{
+  echo "=== FEDORA CLIENT VALIDATE (full transcript) ==="
+  cat "$FEDORA_LOG"
+  echo "=== FEDORA CLIENT EXIT ==="
+  echo "exit_code=$FEDORA_RC"
+  echo "=== SERVER BIND STAT (container view after client) ==="
+  docker exec nfs-klldap bash -c 'f=$(cat /export/stuff/.user-tgt-verify 2>/dev/null | sed -n "s/^SERVER_VERIFY=//p"); [ -n "$f" ] && stat -c "%u:%g %n" "/export/stuff/$f" || echo no-verify-file'
+  echo "=== POST-CLIENT ID MAPPER (recent) ==="
+  docker exec nfs-klldap bash -c 'grep -E "ID MAPPER|uid2grp_allocate|principal2grp" /var/log/ganesha.log | tail -20' || true
+} | tee -a "$NFS_FULL_LOG"
+
+if [ "$FEDORA_RC" != "0" ]; then
+  echo "ERROR: fedora client validate failed (exit $FEDORA_RC)"
+  exit "$FEDORA_RC"
+fi
+
+if ! grep -q 'USER TGT CLIENT UID MAP OK (3002:3005)' "$FEDORA_LOG"; then
+  echo "ERROR: client stat must be 3002:3005 (no hostdata waiver)"
+  grep -E 'client stat|CLIENT UID|99:99|65534' "$FEDORA_LOG" || true
+  exit 41
+fi
+
+if ! grep -q 'user-tgt write_rc=0' "$FEDORA_LOG"; then
+  echo "ERROR: user TGT write must succeed (write_rc=0)"
+  grep -E 'write_rc|write failed|read-back|hostdata content' "$FEDORA_LOG" || true
+  exit 42
+fi
+
+if grep -E 'uid2grp_allocate_by_principal.*testuser2@TESTLABBY\.LOCAL' "$NFS_FULL_LOG" >/dev/null 2>&1; then
+  if ! grep -qE 'getgrouplist for uname: testuser2, returned|getpwuid_r for uid: 3002' "$NFS_FULL_LOG"; then
+    echo "WARN: user principal uid2grp without successful getgrouplist (see ID MAPPER section)"
+  fi
+fi
 
 echo "=== PLAN GATE END $(date -u) ==="
 echo "LOG=$LOG"
+echo "NFS_FULL_LOG=$NFS_FULL_LOG"

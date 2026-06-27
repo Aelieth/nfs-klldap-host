@@ -358,6 +358,54 @@ mod tests {
     }
 
     #[test]
+    fn prune_numeric_user_entries_drops_uid_gids() {
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "3002@REALM".into(),
+            name: "3002".into(),
+            uid: 3002,
+            gid: 3005,
+            kind: PrincipalKind::User,
+            source: "direct".into(),
+        });
+        cache.insert(Resolved {
+            principal: "testuser2@REALM".into(),
+            name: "testuser2".into(),
+            uid: 3002,
+            gid: 3005,
+            kind: PrincipalKind::User,
+            source: "bulk".into(),
+        });
+        assert_eq!(cache.prune_numeric_user_entries(), 1);
+        assert!(cache.get("testuser2@REALM").is_some());
+        assert!(cache.get("3002@REALM").is_none());
+    }
+
+    #[test]
+    fn build_nss_snapshot_skips_numeric_login_pollution() {
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "3002@REALM".into(),
+            name: "3002".into(),
+            uid: 3002,
+            gid: 3005,
+            kind: PrincipalKind::User,
+            source: "direct".into(),
+        });
+        cache.insert(Resolved {
+            principal: "testuser2@REALM".into(),
+            name: "testuser2".into(),
+            uid: 3002,
+            gid: 3005,
+            kind: PrincipalKind::User,
+            source: "bulk".into(),
+        });
+        let (passwd, _) = build_nss_snapshot(&cache, None);
+        assert!(!passwd.iter().any(|l| l.starts_with("3002:")));
+        assert!(passwd.iter().any(|l| l.starts_with("testuser2:x:3002:3005:")));
+    }
+
+    #[test]
     fn prune_malformed_principals_drops_bare_at_suffix() {
         let mut cache = IdCache::default();
         cache.insert(Resolved {
@@ -406,7 +454,7 @@ mod tests {
         assert!(passwd.iter().any(|l| l.starts_with("root:")));
         assert!(passwd.iter().any(|l| l.starts_with("testuser2:x:3002:3005:")));
         assert!(passwd.iter().any(|l| l.starts_with("testuser2@TESTLABBY.LOCAL:x:3002:3005:")));
-        assert!(group.iter().any(|l| l.starts_with("group-test:x:3005:")));
+        assert!(group.iter().any(|l| l.starts_with("group-test:x:3005:testuser2")));
         assert!(!group.iter().any(|l| l.starts_with("testuser2:x:3005:")));
     }
 
@@ -480,8 +528,8 @@ mod tests {
         materialize_nss_wrappers_at(&cache, &paths, None).unwrap();
         let extra = std::fs::read_to_string(paths.extrausers_passwd).unwrap();
         assert!(!extra.lines().any(|l| l.starts_with('#')));
-        assert!(extra.contains("nfs/aurora@TESTLABBY.LOCAL:x:0:0:"));
         assert!(extra.contains("nfs_aurora:x:0:0:"));
+        assert!(!extra.contains("nfs/aurora@TESTLABBY.LOCAL:x:0:0:"));
     }
 
     #[test]
@@ -521,6 +569,18 @@ mod tests {
         c.insert(machine);
         let gl = group_line_for(c.get("host/x@EX").unwrap());
         assert!(gl.starts_with("root:x:0:"));
+    }
+
+    #[test]
+    fn principal_realm_login_sanitizes_unsafe_chars_keeps_at() {
+        assert_eq!(
+            materialize::principal_realm_login_for_nss("testuser2@TESTLABBY.LOCAL"),
+            "testuser2@TESTLABBY.LOCAL"
+        );
+        assert_eq!(
+            materialize::principal_realm_login_for_nss("bad:user@REALM"),
+            "bad_user@REALM"
+        );
     }
 
     #[test]

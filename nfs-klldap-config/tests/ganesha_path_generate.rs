@@ -67,7 +67,6 @@ ganesha_path = "/export/staging/movies"
 "#;
     let frag = generate_with_mountinfo(MOUNTINFO_MIXED, toml);
     assert!(frag.contains("Path = /export/staging/movies;"));
-    assert!(!frag.contains("Disable_ACL = true"));
-    // krb5p default: Manage_Gids=false even on capable fs (prevents managed groups failure)
-    assert!(frag.contains("Manage_Gids = false;") || !frag.contains("Manage_Gids"));
+    assert!(!frag.contains("Disable_ACL = true;"), "staging ext4 keeps ACL enabled");
+    assert!(frag.contains("Manage_Gids = false;"));
 }

@@ -1002,11 +1002,18 @@ while :; do :; done
             .env("PATH", format!("/usr/local/bin:{}", std::env::var("PATH").unwrap_or_default()));
         cmd.env("NSS_EXTRAUSERS_PASSWD", &self.env.extrausers_passwd)
             .env("NSS_EXTRAUSERS_GROUP", &self.env.extrausers_group);
+        let createmode_so = PathBuf::from("/usr/local/lib/libnfs-klldap-createmode.so");
+        let mut preload: Vec<String> = Vec::new();
+        if createmode_so.is_file() {
+            preload.push(createmode_so.display().to_string());
+        }
         if self.env.use_nss_wrapper {
-            // covers passwd + group for seeded LDAP; inherited by ganesha tree
             cmd.env("NSS_WRAPPER_PASSWD", &self.env.nss_passwd)
-                .env("NSS_WRAPPER_GROUP", &self.env.nss_group)
-                .env("LD_PRELOAD", &self.env.nss_wrapper_so);
+                .env("NSS_WRAPPER_GROUP", &self.env.nss_group);
+            preload.push(self.env.nss_wrapper_so.display().to_string());
+        }
+        if !preload.is_empty() {
+            cmd.env("LD_PRELOAD", preload.join(":"));
         }
         if let Ok(child) = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
             self.pids.ganesha = Some(child.id());

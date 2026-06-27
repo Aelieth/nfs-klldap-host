@@ -12,7 +12,7 @@ use nfs_klldap_config::{
     MACHINE_PRINCIPAL_PREFIXES,
 };
 
-use nfs_klldap_identity::{principal_has_realm, principal_local_part};
+use nfs_klldap_identity::{is_numeric_local_principal, principal_has_realm, principal_local_part};
 
 use crate::common::{IdCache, PrincipalKind, Resolved};
 
@@ -38,6 +38,27 @@ impl NssMaterializePaths<'_> {
             extrausers_group: Path::new(EXTRAUSERS_GROUP),
         }
     }
+}
+
+/// Skip passwd logins that are only digits; they break getpwuid for real users.
+fn is_numeric_login(login: &str) -> bool {
+    !login.is_empty() && login.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Passwd login for user@REALM principals; keeps @ for getpwnam while stripping unsafe chars.
+pub(crate) fn principal_realm_login_for_nss(principal: &str) -> String {
+    let mut out = String::with_capacity(principal.len());
+    for c in principal.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '@' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push_str("unknown");
+    }
+    out
 }
 
 /// Sanitize a string for use as a passwd login name (allow alnum + _ - .).
@@ -125,8 +146,13 @@ pub(crate) fn sync_user_cache_from_snapshot(
     }
     let n = seed_cache_and_nss_from_snapshot(snap, realm, cache);
     let bad = cache.prune_malformed_principals();
-    if bad > 0 {
-        dlog!("sync_user_cache pruned {} malformed principal keys", bad);
+    let numeric = cache.prune_numeric_user_entries();
+    if bad > 0 || numeric > 0 {
+        dlog!(
+            "sync_user_cache pruned {} malformed + {} numeric principal keys",
+            bad,
+            numeric
+        );
     }
     n
 }
@@ -199,6 +225,17 @@ pub(crate) fn build_nss_snapshot(
     let mut group_lines: Vec<String> = Vec::new();
     let mut seen_gid: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
+    // Primary-gid members for getgrouplist when LDAP member lists are empty.
+    let mut users_by_gid: HashMap<u32, Vec<String>> = HashMap::new();
+    for r in items.iter().copied() {
+        if r.kind == PrincipalKind::User && r.gid != 0 && !is_numeric_local_principal(&r.principal) {
+            users_by_gid
+                .entry(r.gid)
+                .or_default()
+                .push(sanitize_for_nss(&r.name));
+        }
+    }
+
     if let Some(groups) = ldap_groups {
         let mut by_gid: HashMap<i32, &PosixGroupEntry> = HashMap::new();
         for entry in groups.values() {
@@ -208,20 +245,30 @@ pub(crate) fn build_nss_snapshot(
             let gid = entry.gid as u32;
             if seen_gid.insert(gid) {
                 let gname = sanitize_for_nss(&entry.display);
-                let members: Vec<String> = entry
+                let mut members: Vec<String> = entry
                     .members
                     .iter()
                     .map(|m| sanitize_for_nss(m))
                     .collect();
+                if let Some(logins) = users_by_gid.get(&gid) {
+                    for login in logins {
+                        if !members.iter().any(|m| m == login) {
+                            members.push(login.clone());
+                        }
+                    }
+                }
                 group_lines.push(group_line_with_members(gid, &gname, &members));
             }
         }
     }
 
     for r in &items {
+        if is_numeric_local_principal(&r.principal) {
+            continue;
+        }
         let line = passwd_line_for(r);
         if let Some(login) = line.split(':').next() {
-            if seen_login.insert(login.to_string()) {
+            if !is_numeric_login(login) && seen_login.insert(login.to_string()) {
                 passwd_lines.push(line);
             }
         }
@@ -229,7 +276,7 @@ pub(crate) fn build_nss_snapshot(
         let local = principal_local_part(&r.principal);
         if local.contains('/') && MACHINE_PRINCIPAL_PREFIXES.iter().any(|p| local.starts_with(p)) {
             let alias = sanitize_for_nss(local);
-            if seen_login.insert(alias.clone()) {
+            if !is_numeric_login(&alias) && seen_login.insert(alias.clone()) {
                 let gecos = gecos_for(r);
                 passwd_lines.push(format!(
                     "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
@@ -238,13 +285,14 @@ pub(crate) fn build_nss_snapshot(
             }
         }
 
-        let full = r.principal.clone();
-        if principal_has_realm(&full) {
+        // User principal@REALM login is required for Ganesha getpwnam(user@REALM) on krb5 auth.
+        if r.kind == PrincipalKind::User && principal_has_realm(&r.principal) {
+            let login = principal_realm_login_for_nss(&r.principal);
             let gecos = gecos_for(r);
-            if seen_login.insert(full.clone()) {
+            if !is_numeric_login(&login) && seen_login.insert(login.clone()) {
                 passwd_lines.push(format!(
                     "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
-                    full, r.uid, r.gid, gecos
+                    login, r.uid, r.gid, gecos
                 ));
             }
         }

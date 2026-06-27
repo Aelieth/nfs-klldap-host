@@ -482,7 +482,6 @@ fn write_ganesha_main(
     Protocols = {proto};
     Bind_addr = 0.0.0.0;
     NFS_Port = 2049;
-    Enable_UDP = false;
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;

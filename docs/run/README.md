@@ -248,7 +248,7 @@ ganesha.nfsd ...
 
 ### Generated ganesha.conf and exports
 
-The generator writes a minimal `ganesha.conf` plus one fragment per share under `/etc/ganesha/exports.d/`. Ganesha 9.6 on trixie-backports emits only parser-safe keys: `Protocols = 4`, `Enable_UDP = false`, `DIRECTORY_SERVICES` with `Pwnam_Implementation = nsswitch`, `Root_Kerberos_Principal = host, nfs, root`, and `Idmapped_User/Group_Time_Validity = 600`. We omit `Manage_Gids_Expiration`, `Read_Access_Check_Policy` (default `pre`), and legacy Idmap* blocks — live uid/gid mapping uses idhelper + nss_wrapper. See `nfs-klldap-config/tests/representative_generate.rs` and `examples/ganesha-exports.d/10-example.conf` for the exact shape.
+The generator writes a minimal `ganesha.conf` plus one fragment per share under `/etc/ganesha/exports.d/`. Ganesha 9.x emits Protocols=4, UDP=false, DIRECTORY_SERVICES nsswitch, Root_Kerberos, Idmapped_*=600, Only/Allow_Numeric. Omits Manage_Gids_Expiration etc. Live idmap: UseGetpwnam=false + Manage_Gids=true (idhelper for uid2grp_allocate + groups). See tests/representative_generate.rs.
 
 Each per-share fragment contains an EXPORT with Path (internal), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block for access control, and the VFS FSAL. Additional CLIENT blocks can be appended manually (they will be lost on regeneration).
 

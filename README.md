@@ -126,7 +126,7 @@ default_security = "krb5p"                                      # security, krb5
 # security = "krb5p"                                            # optional per-share override (krb5p|krb5i|krb5); default from [ganesha]
 # rw = true                                                     # default RW; set false for RO
 # disable_acl = true                                            # optional; emit Disable_ACL = true in Ganesha EXPORT
-# manage_gids = false                                           # optional; emit Manage_Gids = false (auto on limited FS)
+# manage_gids = true                                            # optional; default true (false auto on limited FS) for krb5* uid2grp
 # ganesha_path = "/export/staging/movies"                       # optional; Ganesha EXPORT Path= + probe target (staging)
 ```
 
@@ -215,7 +215,7 @@ See [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md) for the ful
 
 ## Identity & Kerberos (idhelper)
 
-`nfs-klldap-idhelper` classifies Kerberos principals (machine `host/`/`nfs/`/`root/` vs LDAP users), resolves them to uid/gid via SSSD/getent with structured LDAP fallback (`nfs-klldap-identity`), and bulk-seeds/materializes decisions into nss_wrapper + extrausers before Ganesha starts. Container NSS is `files extrausers sss` with `NSS_EXTRAUSERS_*` pointing at idhelper-written files (comment-free). Ganesha 9.6 `principal2uid` uses in-process libnfsidmap (`nfs4_gss_princ_to_ids` → `getpwnam` under `LD_PRELOAD=nss_wrapper`), not the nfsidmap binary; the shim remains for operator/rpc.idmapd-style fallback calls.
+`nfs-klldap-idhelper` classifies machine (host/nfs/root) vs user principals, resolves uid/gid via getent + LDAP, materializes to nss_wrapper/extrausers. Ganesha 9.x principal2uid uses libnfsidmap + nss_wrapper; nfsidmap shim for fallback.
 
 Inside the container:
 
@@ -229,7 +229,7 @@ ganesha-ctl id-check
 See [docs/ldap-integration.md](docs/ldap-integration.md) for SSSD/POSIX requirements, TLS behavior, idhelper architecture, and verification commands.
 
 ## Kerberos user principal idmap
-Supported path: user@REALM (idhelper resolve + nss_wrapper + extrausers/sss; server bind-mount uid/gid is authoritative). Numeric uid/gid reverse-map inputs are rejected so getpwuid(3002) stays stable. Bulk seed + on-demand LDAP fallback materialize UID+primary group (LDAP group names win over user-primary stubs). Ganesha 9.6 sets `Only_Numeric_Owners=true` (wire uid/gid) plus `Allow_Numeric_Owners=true` (lookup-fail fallback); clients with matching POSIX ids see correct `stat` without rpc.idmapd. krb5p defaults Manage_Gids=false (explicit=true emits for uid2grp on user TGTs via idhelper/extrausers + getgrouplist). UseGetpwnam=false to drive principal2grp/uid2grp_allocate_by_principal for user TGTs under Manage_Gids; idhelper/extrausers backs nss/getgrouplist. Use ganesha-ctl id-resolve 'user@REALM'.
+Supported: user@REALM via idhelper + nss/extrausers (bind uid/gid authoritative). Numeric reverse rejected for stable getpwuid. Ganesha uses Only_Numeric + Allow_Numeric. Default krb5p: Manage_Gids=true, UseGetpwnam=false so uid2grp_allocate_by_principal + idhelper resolve groups for user TGTs + machines. Use ganesha-ctl id-resolve.
 
 Ganesha 9.6 omits `Read_Access_Check_Policy` (default `pre` applies). The idhelper syncs LDAP users into `nss_passwd` at startup and every 10 minutes (pruning deletions, refreshing uid/gid). Set `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS=0` to disable periodic sync; the log observer still resolves new principals between syncs.
 

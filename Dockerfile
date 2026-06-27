@@ -94,7 +94,7 @@ ENV NSS_EXTRAUSERS_GROUP=/var/lib/extrausers/group
 # seds previously made the whole RUN succeed even when apt-get install failed.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates gcc libc6-dev; \
+    apt-get install -y --no-install-recommends ca-certificates; \
     echo 'deb https://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends -t trixie-backports \
@@ -132,11 +132,6 @@ RUN cp /output/nfs-klldap-config /usr/local/bin/ && \
     cp /output/nfs-klldap-ui /usr/local/bin/ && \
     chmod +x /usr/local/bin/nfs-klldap-config /usr/local/bin/nfs-klldap-startup /usr/local/bin/nfs-klldap-idhelper /usr/local/bin/nfs-klldap-ui && \
     rm -rf /output
-
-COPY container/libnfs-klldap-createmode.c /container/libnfs-klldap-createmode.c
-RUN gcc -shared -fPIC -o /usr/local/lib/libnfs-klldap-createmode.so /container/libnfs-klldap-createmode.c -ldl && \
-    rm -f /container/libnfs-klldap-createmode.c && \
-    apt-get purge -y gcc libc6-dev && apt-get autoremove -y && apt-get clean
 
 COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl
 COPY container/scripts/nfs-klldap-conf-watcher /usr/local/bin/nfs-klldap-conf-watcher

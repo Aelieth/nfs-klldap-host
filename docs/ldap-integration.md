@@ -71,7 +71,7 @@ Client `rpc.idmapd` (Method=nsswitch) still helps pretty `ls` output on NFS clie
 
 ## Ganesha 9.6 id mapping (generated config)
 
-The generator emits `DIRECTORY_SERVICES` with `DomainName`, `Pwnam_Implementation=nsswitch`, `Root_Kerberos_Principal=host, nfs, root`, and `Idmapped_User/Group_Time_Validity=600` (Ganesha 9.6 keys), with `Only_Numeric_Owners = true` and `Allow_Numeric_Owners = true` (wire numeric uid/gid; Allow is lookup-fail fallback only). krb5p exports default `Manage_Gids = false`; `Disable_ACL` applies only when FS probe detects limited ACL (btrfs+noacl, vfat, ntfs). Hybrid krb5p user TGT uses UseGetpwnam=false (principal2uid + principal2grp/allocate_by_principal path for Manage_Gids), libnfs-klldap-createmode.so LD_PRELOAD + idhelper nss_wrapper/extrausers for getgrouplist backing. We omit Manage_Gids_Expiration and Read_Access_Check_Policy (9.6 default pre applies).
+The generator emits `DIRECTORY_SERVICES` with `DomainName`, `Pwnam_Implementation=nsswitch`, `Root_Kerberos_Principal=host, nfs, root`, and `Idmapped_User/Group_Time_Validity=600` (Ganesha 9.6 keys), with `Only_Numeric_Owners = true` and `Allow_Numeric_Owners = true` (wire numeric uid/gid; Allow is lookup-fail fallback only). Default krb5p: Manage_Gids=true (probe or explicit); limited FS -> false. UseGetpwnam=false drives uid2grp_allocate_by_principal for user TGTs (Manage_Gids) + idhelper nss/extrausers. Omit Manage_Gids_Expiration, Read_Access_Check_Policy.
 
 ## Machine vs User Principals (Fedora Immutable + host keytabs)
 
@@ -86,7 +86,7 @@ If Ganesha maps these inconsistently (or falls back to nobody/65534 for machine 
 - It classifies and normalizes principals via `classify_principal` and `normalize_principal` in `nfs-klldap-identity`.
 - It resolves via NSS/SSSD (users) or forces uid/gid 0 (machines).
 - On every resolution it materializes machine overrides (uid 0) into both the nss_wrapper files and `/var/lib/extrausers/{passwd,group}` (supplemental).
-- Ganesha runs with nss_wrapper LD_PRELOAD by default (`USE_NSS_WRAPPER=1`); extrausers is supplemental. Machine principals map to 0; LDAP users resolve via sss. Idhelper classification prevents mixed-credential session teardown on immutable clients.
+- nss_wrapper LD_PRELOAD when USE=1; extrausers supplemental. Machines -> 0, LDAP users via sss. Idhelper for hybrid machine+user TGT.
 - It also keeps its classic fast cache + unix socket (used by `ganesha-ctl id-resolve`, the log observer, and diagnostics).
 
 Use from inside the container:
@@ -98,7 +98,7 @@ cat /var/lib/nfs-klldap/nss_passwd   # what Ganesha sees for these names
 getent passwd testuser1
 ```
 
-The server must perform the same lookups clients do (`getent passwd testuser1` + principal forms). For ganesha 9.6 on Debian trixie, `principal2uid` calls in-process libnfsidmap (`nfs4_gss_princ_to_ids`), which does `getpwnam` inside ganesha.nfsd under nss_wrapper — so LDAP users must be present in `/var/lib/nfs-klldap/nss_passwd`. The idhelper syncs LDAP→nss_wrapper at startup and every 10 minutes by default (`NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS`, `0` disables). Each sync prunes non-machine cache entries then reloads from LDAP (adds, uid/gid changes, and deletions propagate). Manual refresh: `echo REBULK | nc -U /var/run/nfs-klldap/idhelper.sock` or config SIGHUP (restarts idhelper). The nfsidmap binary shim does not intercept the principal2uid path. `Read_Access_Check_Policy` is omitted (ganesha 9.6 trixie default `pre` applies). Machine principals map to 0; group-fetch INFO for uid 0 and winbind noise are expected.
+The server must perform the same lookups clients do (`getent passwd testuser1` + principal forms). For ganesha 9.6 on Debian trixie, `principal2uid` calls in-process libnfsidmap (`nfs4_gss_princ_to_ids`), which does `getpwnam` inside ganesha.nfsd under nss_wrapper — so LDAP users must be present in `/var/lib/nfs-klldap/nss_passwd`. The idhelper syncs LDAP→nss_wrapper at startup and every 10 minutes by default (`NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS`, `0` disables). Each sync prunes non-machine cache entries then reloads from LDAP (adds, uid/gid changes, and deletions propagate). Manual refresh: `echo REBULK | nc -U /var/run/nfs-klldap/idhelper.sock` or config SIGHUP (restarts idhelper). The nfsidmap shim is only for fallback/rpc.idmapd calls. `Read_Access_Check_Policy` is omitted (ganesha 9.6 trixie default `pre` applies). Machine principals map to 0; group-fetch INFO for uid 0 and winbind noise are expected.
 
 This is what actually makes the idhelper work "in conjunction" with Ganesha and SSSD. It does **not** inject untrusted data into `ganesha.conf` (Ganesha uses static `Root_Kerberos_Principal = host, nfs, root`; live uid/gid translation lives in the nss_wrapper view controlled by the idhelper).
 

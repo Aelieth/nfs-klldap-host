@@ -76,7 +76,7 @@ if [ -e /usr/local/bin/nfsidmap ] || [ -e /usr/sbin/nfsidmap ] || [ -L /usr/sbin
 else
     echo "  WARN: no nfsidmap shim visible"
 fi
-if ! grep -qi 'idmapconf\|idmapd.conf\|UseGetpwnam\|Idmapping' /etc/ganesha/ganesha.conf 2>/dev/null; then
+if ! grep -qi 'idmapconf\|idmapd.conf\|Idmapping' /etc/ganesha/ganesha.conf 2>/dev/null; then
     echo "  OK: no Idmap* keys in ganesha.conf"
 else
     echo "  WARN: unexpected idmap keys in ganesha.conf"

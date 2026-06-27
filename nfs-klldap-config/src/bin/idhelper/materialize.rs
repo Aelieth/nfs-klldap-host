@@ -89,7 +89,7 @@ pub(crate) fn sanitize_for_nss(name: &str) -> String {
     out
 }
 
-/// Prefer LDAP group display name for a gid when snapshot data is available.
+/// LDAP group display name takes priority over user-name stub for gid groups.
 fn gname_for_gid(gid: u32, ldap_groups: Option<&HashMap<String, PosixGroupEntry>>, fallback: &str) -> String {
     if let Some(groups) = ldap_groups {
         if let Some(entry) = groups.values().find(|g| g.gid as u32 == gid) {
@@ -99,15 +99,10 @@ fn gname_for_gid(gid: u32, ldap_groups: Option<&HashMap<String, PosixGroupEntry>
     sanitize_for_nss(fallback)
 }
 
-/// Gecos safe for passwd/extrausers: no ':' (libnss-extrausers splits on colons).
+/// Gecos: principal or name, colon-free for libnss-extrausers.
 pub(crate) fn gecos_for(r: &Resolved) -> String {
-    let tag = if principal_has_realm(&r.principal) {
-        r.principal.as_str()
-    } else {
-        r.name.as_str()
-    };
-    let safe: String = tag.chars().filter(|&c| c != ':').collect();
-    format!("kll {} {}", r.kind.as_str(), safe)
+    let tag = if principal_has_realm(&r.principal) { &r.principal } else { &r.name };
+    tag.chars().filter(|&c| c != ':').collect()
 }
 
 /// Builds a passwd(5) line and assigns uid and gid zero to machines.

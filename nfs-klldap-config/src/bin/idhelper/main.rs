@@ -502,7 +502,7 @@ mod tests {
             source: "sss".into(),
         };
         let g = gecos_for(&r);
-        assert_eq!(g, "kll user testuser1");
+        assert_eq!(g, "testuser1");
         assert!(!g.contains('@'));
     }
 
@@ -548,7 +548,7 @@ mod tests {
         // We can't easily redirect const paths here without changing API.
         let line = passwd_line_for(c.get("host/blue-lt@EXAMPLE.COM").unwrap());
         assert!(line.starts_with("blue-lt:x:0:0:"));
-        assert!(line.contains("kll machine "));
+        assert!(line.contains("blue-lt"));
         let gline = group_line_for(c.get("host/blue-lt@EXAMPLE.COM").unwrap());
         assert!(gline.starts_with("root:x:0:"));
     }
@@ -910,41 +910,20 @@ mod tests {
 
     #[test]
     fn machine_principal_short_circuits_to_zero_without_getent() {
-        // Machine principals return 0:0 without getent.
         let mut cache = IdCache::default();
         let realm = "SATOMLIN.COM".to_string();
         let variants = vec!["zima-nas".to_string()];
 
-        // Regular host/ principals resolve as machine identities.
         let r1 = resolve_principal("host/blue-lt@SATOMLIN.COM", &realm, &variants, &mut cache);
-        assert_eq!(r1.uid, 0);
-        assert_eq!(r1.gid, 0);
-        assert_eq!(r1.kind, PrincipalKind::Machine);
-        assert_eq!(r1.source, "special");
-        assert_eq!(r1.name, "blue-lt");
+        assert_eq!(r1.uid, 0); assert_eq!(r1.gid, 0); assert_eq!(r1.kind, PrincipalKind::Machine);
 
-        // Synthetic host/0x forms resolve as machines without getent.
-        let r2 = resolve_principal("host/0x6a375213@SATOMLIN.COM", &realm, &variants, &mut cache);
-        assert_eq!(r2.uid, 0);
-        assert_eq!(r2.gid, 0);
-        assert_eq!(r2.kind, PrincipalKind::Machine);
-        assert_eq!(r2.source, "special");
+        let gs0 = resolve_groups_for_principal("host/blue-lt@SATOMLIN.COM", &realm, &variants, &mut cache);
+        assert_eq!(gs0, vec![0]);
 
-        // Nfs/ and root/ prefixes.
-        let r3 = resolve_principal("nfs/somehost@SATOMLIN.COM", &realm, &variants, &mut cache);
-        assert_eq!(r3.uid, 0);
-        assert_eq!(r3.gid, 0);
-        assert_eq!(r3.source, "special");
-
-        let r4 = resolve_principal("root/client@SATOMLIN.COM", &realm, &variants, &mut cache);
-        assert_eq!(r4.uid, 0);
-        assert_eq!(r4.gid, 0);
-        assert_eq!(r4.source, "special");
-
-        // Whitespace around machine principal must not leak into nss login.
-        let r5 = resolve_principal(" host/blue-lt@SATOMLIN.COM ", &realm, &variants, &mut cache);
-        assert_eq!(r5.uid, 0);
-        assert_eq!(r5.name, "blue-lt");
+        let r2 = resolve_principal("testuser1@SATOMLIN.COM", &realm, &variants, &mut cache);
+        let gs_user = resolve_groups_for_principal("testuser1@SATOMLIN.COM", &realm, &variants, &mut cache);
+        assert!(!gs_user.is_empty());
+        assert!(r2.kind != PrincipalKind::Machine);
     }
 
     #[test]

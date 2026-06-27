@@ -1,5 +1,4 @@
-//! Single-source validator for live Ganesha 9.x idmap logs under Manage_Gids for user TGTs.
-//! With UseGetpwnam=false (to take principal path), principal2uid + principal2grp calls uid2grp_allocate_by_principal for full 'user@' ; getgrouplist succeeds via nss/extrausers materialization for @ entries (Pwutils). See generate.rs.
+//! Validate 9.x idmap logs: Manage_Gids + UseGetpwnam=false drives uid2grp_allocate_by_principal for user@ TGT; getgrouplist via idhelper materialization.
 
 use std::fs;
 use std::path::Path;

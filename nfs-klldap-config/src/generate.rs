@@ -486,16 +486,15 @@ fn write_ganesha_main(
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
-    # Fallback to RPC cred groups when uid2grp/getgrouplist fails under krb5 GSS.
-    enable_rpc_cred_fallback = true;
+    enable_rpc_cred_fallback = true;  # fallback groups if uid2grp fails under krb5.
 }}
 
 DIRECTORY_SERVICES {{
     DomainName = {realm};
     Pwnam_Implementation = {pwnam};
-    Pwutils_Use_Fully_Qualified_Names = true;  # pw+getgrouplist use user@; under UseGetpwnam, user TGT uid2grp uses allocate_by_uid after 'path not taken' note (see idmap_log_contract.rs)
+    Pwutils_Use_Fully_Qualified_Names = true;  # getpwnam/getgrouplist use user@ form for principal path.
     Root_Kerberos_Principal = {root_krb};
-    # Idmapped_* here (not Manage_Gids_Expiration in NFS_CORE_PARAM).
+    # Idmapped_* (not Manage_Gids_Expiration).
     Idmapped_User_Time_Validity = {idmap_validity};
     Idmapped_Group_Time_Validity = {idmap_validity};
 }}
@@ -507,13 +506,10 @@ NFS_KRB5 {{
 }}
 
 NFSV4 {{
-    # Only_Numeric_Owners wires stat uid/gid; Allow_* is the lookup-fail fallback only.
     Only_Numeric_Owners = true;
     Allow_Numeric_Owners = true;
-    # Debian 9.6 _MSPAC builds skip principal2grp; uid2grp+getgrouplist via nss_wrapper instead.
-    UseGetpwnam = false;  # use principal path (nfsidmap) so uid2grp_allocate_by_principal is exercised for user TGT principals under Manage_Gids; groups via idhelper nss/extrausers where possible + fallback
+    UseGetpwnam = false;  # principal path (uid2grp_allocate_by_principal) for user TGTs.
     RecoveryBackend = fs;
-    # Lease 60/Grace 45 for krb5p stability (avoids EIO flaps on reconnects). Common Ganesha default.
     Lease_Lifetime = 60;
     Grace_Period = 45;
 }}
@@ -521,7 +517,7 @@ NFSV4 {{
 EXPORT_DEFAULTS {{
     SecType = {sec};
     Protocols = {proto};
-    # Read_Access_Check_Policy omitted (9.6 default pre applies).
+    # Read_Access_Check_Policy omitted (9.6 default).
 }}
 "#,
         realm = realm,
@@ -659,13 +655,8 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             mount_options: vec![],
             acl_capable: true,
         });
-        let (disable_acl_line, mut manage_gids_line, auto_comment) =
+        let (disable_acl_line, manage_gids_line, auto_comment) =
             export_fs_directives(share, &caps);
-
-        // krb5: force false unless explicit manage_gids=true (per 9.x explicit for uid2grp on user TGT).
-        if sec.starts_with("krb5") && share.manage_gids != Some(true) {
-            manage_gids_line = "    Manage_Gids = false;\n".to_string();
-        }
         // CLIENT block keeps Protocols=4 and skips access check policy.
         let client_block = format!(
             r#"
@@ -680,11 +671,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             proto = constants::GANESHA_PROTOCOLS,
         );
 
-        let krb_note = if sec.starts_with("krb5") {
-            if share.manage_gids == Some(true) { "# krb5* Manage_Gids=true: uid2grp/getgrouplist via idhelper nss + createmode shim.\n" } else { "# krb5* Manage_Gids=false; user TGT via UseGetpwnam + nss_wrapper.\n" }
-        } else {
-            ""
-        };
+        let krb_note = if sec.starts_with("krb5") && manage_gids_line.contains("true") { "# krb5* Manage_Gids=true: uid2grp_allocate_by_principal + idhelper.\n" } else { "" };
         let block = format!(
             r#"# Generated from nfs-klldap.conf share "{}"
 {auto_comment}{krb_note}EXPORT {{
@@ -996,7 +983,7 @@ mod tests {
             !default.contains("Disable_ACL = true;"),
             "capable ext4 krb5p must not force Disable_ACL"
         );
-        assert!(default.contains("Manage_Gids = false;"));
+        assert!(default.contains("Manage_Gids = true;"));
     }
 
     #[test]
@@ -1203,7 +1190,7 @@ mod tests {
         let frag = std::fs::read_to_string(exports_dir.join("10-data.conf")).unwrap();
         assert!(frag.contains("Squash = root_squash;"));
         assert!(!frag.contains("Disable_ACL = true;"), "capable ext4 omits Disable_ACL");
-        assert!(frag.contains("Manage_Gids = false;"));
+        assert!(frag.contains("Manage_Gids = true;"));
     }
 
     #[test]
@@ -1240,6 +1227,5 @@ mod tests {
         eprintln!("GRACE_EVIDENCE: {}", grace_line);
         assert!(main.contains("Lease_Lifetime = 60;"), "production lease value must be emitted");
         assert!(main.contains("Grace_Period = 45;"), "production grace value must be emitted");
-        assert!(main.contains("Lease 60/Grace 45"));
     }
 }

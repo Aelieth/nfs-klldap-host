@@ -117,6 +117,6 @@ host_path = "/media/movies"
 "#;
     let (_tmp, frag, _) = generate_with_mountinfo(MOUNTINFO_EXT4, ext4_toml);
     assert!(!frag.contains("Disable_ACL = true;"), "capable ext4 omits Disable_ACL");
-    assert!(frag.contains("Manage_Gids = false;"));
+    assert!(frag.contains("Manage_Gids = true;"));
     assert!(!frag.contains("Auto-detected:"));
 }

@@ -53,7 +53,7 @@ pub const SHARE_KNOWN_KEYS: &[&str] = &[
     "cache_profile",
     "pref_read",
     "pref_write",
-    "disable_acl",
+    "enable_acl",
     "manage_gids",
     "ganesha_path",
 ];
@@ -227,8 +227,10 @@ pub struct Share {
     pub pref_read: Option<u64>,
     /// Sets raw PrefWrite bytes but cache_profile usually supplies the value.
     pub pref_write: Option<u64>,
-    /// Emits Disable_ACL=true in the Ganesha EXPORT block when set.
-    pub disable_acl: Option<bool>,
+    /// enable_acl=false (explicit or auto on limited FS) emits Disable_ACL=true for the EXPORT.
+    /// enable_acl=true (or auto on capable FS) uses full native ACLs (Ganesha default for capable).
+    /// Limited FS (noacl btrfs, vfat, ntfs) default to false automatically.
+    pub enable_acl: Option<bool>,
     /// Emits Manage_Gids=false in the Ganesha EXPORT block when set.
     pub manage_gids: Option<bool>,
     /// Uses this path verbatim as Ganesha EXPORT Path and for fs probes.
@@ -247,7 +249,7 @@ impl Default for Share {
             cache_profile: Some("Default".to_string()),
             pref_read: None,
             pref_write: None,
-            disable_acl: None,
+            enable_acl: None,
             manage_gids: None,
             ganesha_path: None,
         }

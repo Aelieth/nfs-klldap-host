@@ -18,7 +18,7 @@ fn fixture_btrfs_noacl_limited() {
     assert_eq!(caps.fstype, "btrfs");
     assert!(!caps.acl_capable);
     let eff = compute_effective_flags(&Share::default(), &caps);
-    assert!(eff.disable_acl);
+    assert!(!eff.enable_acl);
     assert!(!eff.manage_gids);
 }
 
@@ -28,7 +28,7 @@ fn fixture_ext4_xfs_capable() {
         let caps = probe_from_mountinfo(FIXTURE, Path::new(path));
         assert!(caps.acl_capable, "{path}");
         let eff = compute_effective_flags(&Share::default(), &caps);
-        assert!(!eff.disable_acl);
+        assert!(eff.enable_acl);
         assert!(eff.manage_gids);
     }
 }

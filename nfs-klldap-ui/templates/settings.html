@@ -184,11 +184,11 @@
             <button type="button" onclick="this.closest('.share-row-block').remove()">×</button>
         </div>
         <div class="share-advanced-row" style="display:flex;gap:6px;margin:0 0 4px 24px;font-size:0.85em;flex-wrap:wrap;">
-            <label title="Emit Disable_ACL in Ganesha export (auto = probe decides)">Disable ACL
-                <select name="share_disable_acl_{{ row.idx }}" style="width:72px;margin-left:4px;">
-                    <option value="auto" {% if row.disable_acl == "auto" %}selected{% endif %}>auto</option>
-                    <option value="true" {% if row.disable_acl == "true" %}selected{% endif %}>on</option>
-                    <option value="false" {% if row.disable_acl == "false" %}selected{% endif %}>off</option>
+            <label title="Enable ACLs in Ganesha (auto = probe decides; off for limited FS like btrfs+noacl)">Enable ACL
+                <select name="share_enable_acl_{{ row.idx }}" style="width:72px;margin-left:4px;">
+                    <option value="auto" {% if row.enable_acl == "auto" %}selected{% endif %}>auto</option>
+                    <option value="true" {% if row.enable_acl == "true" %}selected{% endif %}>on</option>
+                    <option value="false" {% if row.enable_acl == "false" %}selected{% endif %}>off</option>
                 </select>
             </label>
             <label title="Emit Manage_Gids in Ganesha export (auto = probe decides)">Manage GIDs

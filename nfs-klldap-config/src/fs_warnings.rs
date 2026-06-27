@@ -17,7 +17,7 @@ pub struct FsShareWarning {
     pub serve_path: String,
     pub fstype: String,
     pub acl_capable: bool,
-    pub effective_disable_acl: bool,
+    pub effective_enable_acl: bool,
     pub effective_manage_gids: bool,
     pub message: String,
 }
@@ -33,13 +33,13 @@ impl FsShareWarning {
         } else {
             format!(
                 "share={} host_path={} container_path={} serve_path={} fstype={} acl_capable=false \
-                 effective_disable_acl={} effective_manage_gids={} — {}",
+                 effective_enable_acl={} effective_manage_gids={} — {}",
                 self.share_name,
                 self.host_path,
                 self.container_path,
                 self.serve_path,
                 self.fstype,
-                self.effective_disable_acl,
+                self.effective_enable_acl,
                 self.effective_manage_gids,
                 self.message
             )
@@ -93,7 +93,7 @@ pub fn collect_fs_warnings(cfg: &NfsKlldapConfig) -> Vec<FsShareWarning> {
                 serve_path: cfg.serve_path_for(share),
                 fstype: caps.fstype.clone(),
                 acl_capable: caps.acl_capable,
-                effective_disable_acl: eff.disable_acl,
+                effective_enable_acl: eff.enable_acl,
                 effective_manage_gids: eff.manage_gids,
                 message,
             }
@@ -170,7 +170,7 @@ mod tests {
         cfg.validate_and_derive().expect("valid");
         let msg = share_fs_warning_message_with_mountinfo(&cfg, &cfg.shares[0], Some(&mountinfo))
             .expect("limited fixture must yield warning");
-        assert!(msg.contains("lacks POSIX ACL support"));
+        assert!(msg.contains("limited filesystem") || msg.contains("conservative mode"));
         assert!(share_fs_warning_message(&cfg, &cfg.shares[0]).is_none());
     }
 

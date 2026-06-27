@@ -125,7 +125,7 @@ default_security = "krb5p"                                      # security, krb5
 # export_path = "/movies"                                       # optional; the *external* client Pseudo (short/friendly name OK). The internal container dir (Ganesha Path + permission tree) is auto-derived from host_path (its first dir component is the implicit bind root) + container_root. Derives to /<name> when absent.
 # security = "krb5p"                                            # optional per-share override (krb5p|krb5i|krb5); default from [ganesha]
 # rw = true                                                     # default RW; set false for RO
-# disable_acl = true                                            # optional; emit Disable_ACL = true in Ganesha EXPORT
+# enable_acl = false                                            # optional; set false (or omit for auto) to emit Disable_ACL = true on limited FS
 # manage_gids = true                                            # optional; default true (false auto on limited FS) for krb5* uid2grp
 # ganesha_path = "/export/staging/movies"                       # optional; Ganesha EXPORT Path= + probe target (staging)
 ```
@@ -134,7 +134,7 @@ default_security = "krb5p"                                      # security, krb5
 
 The generator derives ports, search bases, sssd.conf, krb5.conf, /etc/idmapd.conf (following [sssd] + realm), and Ganesha fragments. `kllldap_ignored_attributes = true` (default) emits recommended server-side ignore lists.
 
-Per-share Ganesha options include `cache_profile` (recommended), `disable_acl`, `manage_gids`, `ganesha_path` (staging override), and raw `pref_read` / `pref_write`. The generator probes each share's **serve path** (`ganesha_path` when set, else the derived container path) and auto-applies safe ACL settings on btrfs+noacl, vfat, or ntfs. Optional `[ganesha] post_generate_hook` (or `NFS_KLLDAP_POST_GENERATE_HOOK`) runs after every generate — see `examples/post-generate-staging-sync.sh`. Use `nfs-klldap-config fs-warnings` or `ganesha-ctl fs-warnings` for limited-FS diagnostics. The WebUI **Cache Profile** dropdown writes e.g. `cache_profile = "Read - Heavy"`; the generator resolves it on every regen. Unrecognized `[[shares]]` keys are ignored and surfaced as warnings.
+Per-share Ganesha options include `cache_profile` (recommended), `enable_acl`, `manage_gids`, `ganesha_path` (staging override), and raw `pref_read` / `pref_write`. The generator probes each share's **serve path** (`ganesha_path` when set, else the derived container path) and auto-applies conservative settings (enable_acl=false, manage_gids=false) on limited filesystems (btrfs+noacl, vfat, ntfs via mount options or fstype) while using full native Ganesha 9.x behavior on capable volumes. The system adapts automatically with no extra config. Optional `[ganesha] post_generate_hook` (or `NFS_KLLDAP_POST_GENERATE_HOOK`) runs after every generate — see `examples/post-generate-staging-sync.sh`. Use `nfs-klldap-config fs-warnings` or `ganesha-ctl fs-warnings` for limited-FS diagnostics. The WebUI **Cache Profile** dropdown writes e.g. `cache_profile = "Read - Heavy"`; the generator resolves it on every regen. Unrecognized `[[shares]]` keys are ignored and surfaced as warnings.
 
 ### Cache Profiles (Shares tuning)
 

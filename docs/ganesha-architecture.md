@@ -39,4 +39,4 @@ At validate/generate time nfs-klldap-config probes `/proc/self/mountinfo` for ea
 | btrfs + `noacl` | Auto limited mode |
 | vfat/fat, ntfs | Auto limited mode |
 
-Explicit `disable_acl` / `manage_gids` in nfs-klldap.conf override probe defaults.
+Explicit `enable_acl` / `manage_gids` in nfs-klldap.conf override probe defaults. On limited filesystems (detected via mountinfo), `enable_acl=false` and `manage_gids=false` are applied automatically; capable filesystems default to full native behavior. Both modes are first-class and automatic.

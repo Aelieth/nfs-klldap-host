@@ -198,13 +198,13 @@ fn print_share_probe_line(cfg: &NfsKlldapConfig, s: &Share, dry_run: bool) {
     if !caps.acl_capable {
         let eff = compute_effective_flags(s, &caps);
         println!(
-            "  - {} → host:{}  container:{}  serve:{}  fs:{} acl_capable=false effective_disable_acl={} effective_manage_gids={}",
+            "  - {} → host:{}  container:{}  serve:{}  fs:{} acl_capable=false effective_enable_acl={} effective_manage_gids={}",
             s.name,
             s.host_path.display(),
             container,
             serve,
             caps.fstype,
-            eff.disable_acl,
+            eff.enable_acl,
             eff.manage_gids
         );
         return;

@@ -568,10 +568,10 @@ EXPORT_DEFAULTS {{
 }
 
 /// Build Ganesha 9.6 EXPORT ACL lines.
-/// Auto-detect comment from probe results.
+/// Auto-detect comment from probe results. enable_acl semantics: !enable => Disable_ACL.
 pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String) {
     let eff = compute_effective_flags(share, caps);
-    let disable_acl_line = if eff.disable_acl {
+    let disable_acl_line = if !eff.enable_acl {
         "    Disable_ACL = true;\n".to_string()
     } else {
         String::new()
@@ -877,7 +877,7 @@ mod tests {
             shares: vec![crate::Share {
                 name: "noacl".into(),
                 host_path: "/media/noacl".into(),
-                disable_acl: Some(true),
+                enable_acl: Some(false),
                 ..Default::default()
             }],
             ..Default::default()
@@ -948,7 +948,7 @@ mod tests {
                 crate::Share {
                     name: "acl-off".into(),
                     host_path: "/media/acl-off".into(),
-                    disable_acl: Some(false),
+                    enable_acl: Some(true),
                     ..Default::default()
                 },
                 crate::Share {
@@ -976,7 +976,7 @@ mod tests {
         let off = std::fs::read_to_string(exports_dir.join("10-acl-off.conf")).unwrap();
         assert!(
             !off.contains("Disable_ACL = true;"),
-            "explicit disable_acl=false must omit Disable_ACL on krb5p"
+            "explicit enable_acl=true must omit Disable_ACL on krb5p"
         );
         let default = std::fs::read_to_string(exports_dir.join("11-acl-default.conf")).unwrap();
         assert!(

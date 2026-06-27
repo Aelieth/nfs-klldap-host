@@ -14,9 +14,10 @@ pub struct FsCapabilities {
 }
 
 /// Effective EXPORT flags after TOML overrides and probe results.
+/// enable_acl=false means emit Disable_ACL=true (conservative on limited FS).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveShareFlags {
-    pub disable_acl: bool,
+    pub enable_acl: bool,
     pub manage_gids: bool,
     /// True when probe (not explicit TOML) drove the safe defaults.
     pub auto_applied: bool,
@@ -61,15 +62,16 @@ pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
 }
 
 /// Merges explicit share flags with probe results.
-/// Limited FS defaults to safe krb5p EXPORT settings.
+/// Limited FS defaults to conservative settings (enable_acl=false, manage_gids=false).
+/// Capable FS defaults to full (enable_acl=true, manage_gids=true). First-class modes.
 pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> EffectiveShareFlags {
     let probe_limited = !caps.acl_capable;
-    let disable_acl = share.disable_acl.unwrap_or(probe_limited);
+    let enable_acl = share.enable_acl.unwrap_or(!probe_limited);
     let manage_gids = share.manage_gids.unwrap_or(!probe_limited);
     let auto_applied =
-        probe_limited && share.disable_acl.is_none() && share.manage_gids.is_none();
+        probe_limited && share.enable_acl.is_none() && share.manage_gids.is_none();
     EffectiveShareFlags {
-        disable_acl,
+        enable_acl,
         manage_gids,
         auto_applied,
     }
@@ -154,6 +156,7 @@ fn acl_capable_from_mount(fstype: &str, options: &[String], mount_source: &str) 
 }
 
 /// One-line WARN for limited-FS shares (validate/dry-run/startup).
+/// Used as informational (non-blocking) note in WebUI and CLI fs-warnings.
 pub fn limited_fs_warning(share_name: &str, caps: &FsCapabilities) -> String {
     let opts = if caps.mount_options.is_empty() {
         String::new()
@@ -161,8 +164,7 @@ pub fn limited_fs_warning(share_name: &str, caps: &FsCapabilities) -> String {
         format!(" ({})", caps.mount_options.join(","))
     };
     format!(
-        "share \"{share_name}\": filesystem {fstype}{opts} lacks POSIX ACL support — \
-         auto Disable_ACL=true and Manage_Gids=false for krb5p safety; remount with acl or accept limited mode",
+        "share \"{share_name}\": {fstype}{opts} limited filesystem — conservative mode (enable_acl=false, manage_gids=false); relies on idhelper for identities",
         share_name = share_name,
         fstype = caps.fstype,
         opts = opts
@@ -239,7 +241,7 @@ mod tests {
             acl_capable: false,
         };
         let eff = compute_effective_flags(&share, &caps);
-        assert!(eff.disable_acl);
+        assert!(!eff.enable_acl);
         assert!(!eff.manage_gids);
         assert!(eff.auto_applied);
     }
@@ -248,7 +250,7 @@ mod tests {
     #[allow(clippy::field_reassign_with_default)]
     fn compute_effective_flags_explicit_override() {
         let mut share = Share::default();
-        share.disable_acl = Some(false);
+        share.enable_acl = Some(true);
         share.manage_gids = Some(true);
         let caps = FsCapabilities {
             fstype: "btrfs".into(),
@@ -256,7 +258,7 @@ mod tests {
             acl_capable: false,
         };
         let eff = compute_effective_flags(&share, &caps);
-        assert!(!eff.disable_acl);
+        assert!(eff.enable_acl);
         assert!(eff.manage_gids);
         assert!(!eff.auto_applied);
     }

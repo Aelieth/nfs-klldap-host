@@ -454,9 +454,9 @@ host_path = "/media/data"
         let token = auth.create_privileged_session("testadmin");
         let app = router(state);
 
-        let warn_snippet = "lacks POSIX ACL support";
+        let warn_snippet = "limited filesystem";
         let body = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_export_0=&share_rw_0=true\
-&share_cache_profile_0=Default&share_disable_acl_0=false&share_manage_gids_0=false\
+&share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=false\
 &share_ganesha_path_0=%2Fexport%2Fstaging%2Fdata";
         let req = Request::builder()
             .method("POST")
@@ -470,7 +470,7 @@ host_path = "/media/data"
         assert_eq!(response.status(), StatusCode::OK);
 
         let written = std::fs::read_to_string(&config_path).unwrap();
-        assert!(written.contains("disable_acl = false"));
+        assert!(written.contains("enable_acl = false"));
         assert!(written.contains("manage_gids = false"));
         assert!(written.contains("ganesha_path = \"/export/staging/data\""));
 
@@ -478,7 +478,7 @@ host_path = "/media/data"
             .await
             .unwrap();
         let html = String::from_utf8(body_bytes.to_vec()).unwrap();
-        assert!(html.contains("share_disable_acl_0"));
+        assert!(html.contains("share_enable_acl_0"));
         assert!(html.contains("share_manage_gids_0"));
         assert!(html.contains("share_ganesha_path_0"));
         assert!(html.contains("/export/staging/data"));
@@ -499,7 +499,7 @@ host_path = "/media/data"
         let token = auth.create_privileged_session("testadmin");
         let app = router(state);
 
-        let warn_snippet = "lacks POSIX ACL support";
+        let warn_snippet = "limited filesystem";
 
         let index_req = Request::builder()
             .method("GET")

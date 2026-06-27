@@ -195,7 +195,7 @@ struct ShareFormRow {
     // Legacy numeric pref_read values are still parsed when posted.
     pref_read: Option<String>,
     pref_write: Option<String>,
-    disable_acl: Option<bool>,
+    enable_acl: Option<bool>,
     manage_gids: Option<bool>,
     ganesha_path: Option<String>,
 }
@@ -212,7 +212,7 @@ struct ShareTemplateRow {
     rw: bool,
     root_squash: bool,
     cache_profile: String,
-    disable_acl: String,
+    enable_acl: String,
     manage_gids: String,
     ganesha_path: String,
     warning: Option<String>,
@@ -317,7 +317,7 @@ fn build_settings_template(
                 .clone()
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| infer_profile_from_prefs(s.pref_read, s.pref_write)),
-            disable_acl: match s.disable_acl {
+            enable_acl: match s.enable_acl {
                 Some(true) => "true".to_string(),
                 Some(false) => "false".to_string(),
                 None => "auto".to_string(),
@@ -440,8 +440,8 @@ fn collect_shares_from_structured_form(
                         _ => None,
                     })
                 };
-                let disable_acl =
-                    parse_tri_bool(&format!("share_disable_acl_{}", idx));
+                let enable_acl =
+                    parse_tri_bool(&format!("share_enable_acl_{}", idx));
                 let manage_gids =
                     parse_tri_bool(&format!("share_manage_gids_{}", idx));
                 let ganesha_path = extra
@@ -459,7 +459,7 @@ fn collect_shares_from_structured_form(
                     cache_profile,
                     pref_read,
                     pref_write,
-                    disable_acl,
+                    enable_acl,
                     manage_gids,
                     ganesha_path,
                 });
@@ -485,7 +485,7 @@ fn collect_shares_from_structured_form(
             cache_profile: r.cache_profile,
             pref_read: r.pref_read.and_then(|s| s.trim().parse::<u64>().ok()),
             pref_write: r.pref_write.and_then(|s| s.trim().parse::<u64>().ok()),
-            disable_acl: r.disable_acl,
+            enable_acl: r.enable_acl,
             manage_gids: r.manage_gids,
             ganesha_path: r.ganesha_path,
         })
@@ -856,8 +856,8 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
                 t["pref_write"] = toml_edit::value(pw as i64);
             }
         }
-        if let Some(v) = s.disable_acl {
-            t["disable_acl"] = toml_edit::value(v);
+        if let Some(v) = s.enable_acl {
+            t["enable_acl"] = toml_edit::value(v);
         }
         if let Some(v) = s.manage_gids {
             t["manage_gids"] = toml_edit::value(v);

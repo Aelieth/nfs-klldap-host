@@ -596,14 +596,14 @@ mod tests {
             [[shares]]
             name = "movies"
             host_path = "/media/movies"
-            disable_acll = true
+            enable_acll = true
         "#;
         fs::write(&path, toml).unwrap();
 
         let cfg = NfsKlldapConfig::load(&path).expect("must load despite unknown key");
         assert_eq!(cfg.shares.len(), 1);
         assert_eq!(cfg.share_warnings.len(), 1);
-        assert_eq!(cfg.share_warnings[0].unknown_keys, vec!["disable_acll"]);
+        assert_eq!(cfg.share_warnings[0].unknown_keys, vec!["enable_acll"]);
         assert_eq!(cfg.share_warnings[0].share_name.as_deref(), Some("movies"));
     }
 
@@ -629,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn share_disable_acl_valid_no_warnings() {
+    fn share_enable_acl_valid_no_warnings() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("ok.conf");
         let toml = r#"
@@ -640,13 +640,13 @@ mod tests {
             [[shares]]
             name = "movies"
             host_path = "/media/movies"
-            disable_acl = true
+            enable_acl = false
         "#;
         fs::write(&path, toml).unwrap();
 
         let cfg = NfsKlldapConfig::load(&path).expect("load");
         assert!(cfg.share_warnings.is_empty());
-        assert_eq!(cfg.shares[0].disable_acl, Some(true));
+        assert_eq!(cfg.shares[0].enable_acl, Some(false));
     }
 
     #[test]

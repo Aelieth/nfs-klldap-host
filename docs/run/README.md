@@ -261,5 +261,6 @@ SELinux hosts may need `:Z` on bind mounts. Common failures: missing caps or wro
 /container/healthcheck.sh
 verify-ganesha.sh            # in-container Ganesha/export + network checks (/usr/local/bin/)
 ganesha-ctl show-fragments
-getent passwd <user>
+getent passwd <user>          # nss: files extrausers sss; extrausers gecos must not contain ':'
+ganesha-ctl id-resolve 'user@REALM' --grps
 ```

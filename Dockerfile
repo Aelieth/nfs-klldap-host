@@ -87,6 +87,8 @@ LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-hos
 
 # Runtime: Ganesha 9.6 (trixie-backports). Config is strictly limited to supported 9.6 options.
 ENV DEBIAN_FRONTEND=noninteractive
+ENV NSS_EXTRAUSERS_PASSWD=/var/lib/extrausers/passwd
+ENV NSS_EXTRAUSERS_GROUP=/var/lib/extrausers/group
 # ca-certificates must be installed before adding the HTTPS backports source.
 # Keep apt installs separate from nsswitch sed: a trailing "|| true" on those
 # seds previously made the whole RUN succeed even when apt-get install failed.
@@ -108,16 +110,12 @@ RUN set -eux; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 RUN set -eux; \
-    # Ensure NSS integration:
-    # - sss for LDAP users/groups from LLDAP
-    # - extrausers after files so the idhelper can write machine principal overrides
-    #   (host/..., client names) that resolve to uid 0 without hiding real SSSD users.
-    sed -i 's/^\(passwd:.*\)/\1 sss/' /etc/nsswitch.conf; \
-    sed -i 's/^\(group:.*\)/\1 sss/' /etc/nsswitch.conf; \
-    sed -i 's/^\(shadow:.*\)/\1 sss/' /etc/nsswitch.conf || true; \
-    # Insert extrausers between files and sss (idempotent best-effort).
-    sed -i '/^passwd:/ s/ sss/ extrausers sss/' /etc/nsswitch.conf; \
-    sed -i '/^group:/  s/ sss/ extrausers sss/' /etc/nsswitch.conf || true
+    # nsswitch: files → extrausers (idhelper) → sss (LLDAP). Single-shot avoids duplicate sss.
+    sed -i 's/^passwd:.*/passwd:         files extrausers sss/' /etc/nsswitch.conf; \
+    sed -i 's/^group:.*/group:          files extrausers sss/' /etc/nsswitch.conf; \
+    sed -i 's/^shadow:.*/shadow:         files sss/' /etc/nsswitch.conf; \
+    # libnss-extrausers installs to /usr/lib; glibc loads from triplet dir.
+    ln -sf /usr/lib/libnss_extrausers.so.2 /usr/lib/x86_64-linux-gnu/libnss_extrausers.so.2
 
 RUN mkdir -p \
     /etc/ganesha /etc/ganesha/exports.d /var/log/ganesha \

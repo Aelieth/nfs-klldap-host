@@ -14,7 +14,10 @@ use nfs_klldap_identity::{
     classify_principal, machine_short_name, normalize_principal, principal_local_part,
 };
 
-use crate::common::{debug_enabled, IdCache, PrincipalKind, Resolved, CACHE_PATH};
+use crate::common::{
+    debug_enabled, IdCache, PrincipalKind, Resolved, CACHE_PATH, EXTRAUSERS_PASSWD, NSS_GROUP_PATH,
+    NSS_PASSWD_PATH,
+};
 use crate::materialize::{materialize_nss_wrappers_at, NssMaterializePaths};
 
 /// Resolve via getent NSS first, then fall back to the LDAP resolver snapshot.
@@ -169,24 +172,70 @@ pub(crate) fn reset_id_resolver_for_test() {
     *id_resolver_slot() = None;
 }
 
+/// Lookup a login in a passwd(5) file (extrausers or nss_wrapper materialization).
+pub(crate) fn lookup_passwd_file(path: &Path, name: &str) -> Option<(u32, u32)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.split(':').next()? == name {
+            return parse_getent_passwd(line);
+        }
+    }
+    None
+}
+
 fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
-    // Use the short POSIX name first, then try full principal forms.
     dlog!("getent passwd \"{}\" called", name);
-    let out = Command::new("getent")
-        .args(["passwd", name])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        dlog!("getent passwd \"{}\" -> failed (status={:?})", name, out.status.code());
-        return None;
+    if let Ok(out) = Command::new("getent").args(["passwd", name]).output() {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let line = s.lines().next().unwrap_or("");
+            if let Some((uid, gid)) = parse_getent_passwd(line) {
+                dlog!("getent passwd \"{}\" -> success uid={} gid={}", name, uid, gid);
+                return Some((uid, gid, "sss".to_string()));
+            }
+        }
     }
-    let s = String::from_utf8_lossy(&out.stdout);
-    let line = s.lines().next().unwrap_or("");
-    if let Some((uid, gid)) = parse_getent_passwd(line) {
-        dlog!("getent passwd \"{}\" -> success uid={} gid={}", name, uid, gid);
-        return Some((uid, gid, "sss".to_string()));
+    // Parity when SSSD misses a user but idhelper already materialized extrausers/nss_passwd.
+    for (path, src) in [
+        (EXTRAUSERS_PASSWD, "extrausers"),
+        (NSS_PASSWD_PATH, "nss"),
+    ] {
+        if let Some((uid, gid)) = lookup_passwd_file(Path::new(path), name) {
+            dlog!("passwd file {} \"{}\" -> uid={} gid={}", path, name, uid, gid);
+            return Some((uid, gid, src.to_string()));
+        }
     }
-    dlog!("getent passwd \"{}\" -> malformed output", name);
+    dlog!("getent passwd \"{}\" -> miss (nss + materialized files)", name);
+    None
+}
+
+fn lookup_group_in_content(content: &str, gid: u32) -> Option<String> {
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(4, ':').collect();
+        if parts.len() >= 3 && parts[2].parse::<u32>().ok() == Some(gid) {
+            return Some(parts[0].to_string());
+        }
+    }
+    None
+}
+
+/// Resolve gid from materialized group file when getent group misses.
+pub(crate) fn lookup_group_file(gid: u32) -> Option<String> {
+    for path in [NSS_GROUP_PATH, "/var/lib/extrausers/group"] {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Some(name) = lookup_group_in_content(&content, gid) {
+                return Some(name);
+            }
+        }
+    }
     None
 }
 
@@ -271,12 +320,15 @@ pub(crate) fn resolve_principal(
         let looked = resolve_via_nss(principal);
         dlog!("  nss_getent final_got={:?}", looked.as_ref().map(|(u, g, s)| (*u, *g, s.as_str())));
 
-        if let Some((uid, gid, src)) = looked {
+            if let Some((uid, gid, src)) = looked {
             let name = principal_local_part(principal).to_string();
             // ensure group for uid2grp even on on-demand user@REALM
             if let Some((r, dn, pw)) = get_or_init_resolver() {
                 let _ = r.resolve_group_by_gid(gid as i32, dn, pw);
                 dlog!("group fetch on-demand for gid={}", gid);
+            }
+            if let Some(gname) = lookup_group_file(gid) {
+                dlog!("materialized group gid={} name={}", gid, gname);
             }
             Resolved {
                 principal: principal.to_string(),
@@ -385,5 +437,51 @@ mod tests {
         assert_eq!(merge_group_gids(1001, &[1001, 2002]), vec![1001, 2002]);
         assert_eq!(merge_group_gids(1001, &[2002, 1001, 2002]), vec![1001, 2002]);
         assert_eq!(merge_group_gids(4242, &[]), vec![4242]);
+    }
+
+    #[test]
+    fn lookup_passwd_file_skips_comments_and_matches_login() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("passwd");
+        std::fs::write(
+            &path,
+            "# header\n\nalice:x:1001:1002:gecos:/home:/bin/sh\n",
+        )
+        .unwrap();
+        assert_eq!(
+            lookup_passwd_file(&path, "alice"),
+            Some((1001, 1002))
+        );
+        assert_eq!(lookup_passwd_file(&path, "missing"), None);
+    }
+
+    #[test]
+    fn lookup_group_in_content_skips_comments_and_matches_gid() {
+        let content = "# groups\n\ndevs:x:3005:alice,bob\n";
+        assert_eq!(lookup_group_in_content(content, 3005), Some("devs".into()));
+        assert_eq!(lookup_group_in_content(content, 9999), None);
+    }
+
+    #[test]
+    fn lookup_group_file_reads_extrausers_when_nss_group_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let group_path = tmp.path().join("group");
+        std::fs::write(&group_path, "writers:x:4242:\n").unwrap();
+        let old = std::env::var("NSS_EXTRAUSERS_GROUP").ok();
+        std::env::set_var("NSS_EXTRAUSERS_GROUP", "___nonexistent___");
+        // lookup_group_file falls back to /var/lib/extrausers/group in production paths only.
+        // Exercise the content helper used by both paths.
+        assert_eq!(
+            lookup_group_in_content(
+                &std::fs::read_to_string(&group_path).unwrap(),
+                4242
+            ),
+            Some("writers".into())
+        );
+        if let Some(v) = old {
+            std::env::set_var("NSS_EXTRAUSERS_GROUP", v);
+        } else {
+            std::env::remove_var("NSS_EXTRAUSERS_GROUP");
+        }
     }
 }

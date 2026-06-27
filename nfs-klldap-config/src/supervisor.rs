@@ -23,6 +23,14 @@ use nfs_klldap_config::{
 const BULK_SEED_MARKER: &str = "/var/lib/nfs-klldap/.bulk_seed_done";
 const RECYCLE_MARKER_DEFAULT: &str = "/tmp/.nfs-klldap-services-recycled";
 const NSS_PIPE: &str = "/var/lib/sss/pipes/nss";
+const EXTRAUSERS_PASSWD_DEFAULT: &str = "/var/lib/extrausers/passwd";
+const EXTRAUSERS_GROUP_DEFAULT: &str = "/var/lib/extrausers/group";
+
+/// libnss-extrausers reads these paths from the process environment.
+fn ensure_nss_extrausers_env(passwd: &Path, group: &Path) {
+    std::env::set_var("NSS_EXTRAUSERS_PASSWD", passwd);
+    std::env::set_var("NSS_EXTRAUSERS_GROUP", group);
+}
 
 fn recycle_marker_path() -> PathBuf {
     std::env::var("NFS_KLLDAP_RECYCLE_MARKER")
@@ -59,6 +67,8 @@ struct SupervisorEnv {
     healthcheck: PathBuf,
     nss_passwd: PathBuf,
     nss_group: PathBuf,
+    extrausers_passwd: PathBuf,
+    extrausers_group: PathBuf,
     nss_wrapper_so: PathBuf,
     use_nss_wrapper: bool,
     log_format_json: bool,
@@ -107,6 +117,8 @@ impl SupervisorEnv {
             healthcheck: env_path("HEALTHCHECK", "/container/healthcheck.sh"),
             nss_passwd: env_path("NSS_PASSWD", "/var/lib/nfs-klldap/nss_passwd"),
             nss_group: env_path("NSS_GROUP", "/var/lib/nfs-klldap/nss_group"),
+            extrausers_passwd: env_path("NSS_EXTRAUSERS_PASSWD", EXTRAUSERS_PASSWD_DEFAULT),
+            extrausers_group: env_path("NSS_EXTRAUSERS_GROUP", EXTRAUSERS_GROUP_DEFAULT),
             nss_wrapper_so: resolve_nss_wrapper_so(),
             use_nss_wrapper: use_nss,
             log_format_json: std::env::var("LOG_FORMAT")
@@ -170,6 +182,7 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
     };
 
     sup.log_info("=== Starting nfs-klldap-host (Rust supervisor) ===");
+    ensure_nss_extrausers_env(&sup.env.extrausers_passwd, &sup.env.extrausers_group);
     if sup.env.host_nfs_mode {
         sup.log_info("HOST_NFS mode active — container is management sidecar only.");
         sup.log_info("  Ganesha fragments will be written for the *host* NFS server (e.g. at /etc/ganesha).");
@@ -987,6 +1000,8 @@ while :; do :; done
             .arg(&self.env.ganesha_conf)
             .args(["-L", "/var/log/ganesha.log"])
             .env("PATH", format!("/usr/local/bin:{}", std::env::var("PATH").unwrap_or_default()));
+        cmd.env("NSS_EXTRAUSERS_PASSWD", &self.env.extrausers_passwd)
+            .env("NSS_EXTRAUSERS_GROUP", &self.env.extrausers_group);
         if self.env.use_nss_wrapper {
             // covers passwd + group for seeded LDAP; inherited by ganesha tree
             cmd.env("NSS_WRAPPER_PASSWD", &self.env.nss_passwd)
@@ -1099,7 +1114,9 @@ while :; do :; done
         thread::sleep(Duration::from_millis(200));
         self.log_info("Starting nfs-klldap-idhelper...");
         let mut cmd = Command::new(&self.env.idhelper_bin);
-        cmd.arg("daemon");
+        cmd.arg("daemon")
+            .env("NSS_EXTRAUSERS_PASSWD", &self.env.extrausers_passwd)
+            .env("NSS_EXTRAUSERS_GROUP", &self.env.extrausers_group);
         match OpenOptions::new()
             .create(true)
             .append(true)

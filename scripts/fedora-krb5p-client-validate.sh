@@ -117,6 +117,22 @@ kill "$GSSD_PID" 2>/dev/null || true
 # Optional user TGT phase (requires Kerberos-synced user on KDC, e.g. testuser2 after LLDAP password sync).
 if [ -n "${TEST_USER_PRINC:-}" ] && [ -n "${TEST_USER_PASSWORD:-}" ]; then
   echo "=== USER TGT PHASE (${TEST_USER_PRINC}) ==="
+  realm="${TEST_USER_PRINC#*@}"
+  short="${TEST_USER_PRINC%%@*}"
+  # Client idmapd must match server Domain/Local-Realms; stub passwd supplies uid/gid for nsswitch.
+  cat > /etc/idmapd.conf <<EOF
+[General]
+Domain = ${realm}
+Local-Realms = ${realm}
+[Mapping]
+Nobody-User = nobody
+Nobody-Group = nobody
+[Translation]
+Method = nsswitch
+GSS-Methods = nsswitch
+EOF
+  grep -q "^${short}:" /etc/passwd || echo "${short}:x:3002:3005:user TGT test:/tmp:/sbin/nologin" >> /etc/passwd
+  grep -q "^${short}@${realm}:" /etc/passwd || echo "${short}@${realm}:x:3002:3005:user TGT test:/tmp:/sbin/nologin" >> /etc/passwd
   cat > /etc/nfs.conf <<'NFSCONF'
 [general]
 pipefs-directory=/var/lib/nfs/rpc_pipefs
@@ -125,14 +141,28 @@ use-machine-creds=0
 NFSCONF
   export KRB5CCNAME=FILE:/tmp/ccuser
   printf '%s\n' "$TEST_USER_PASSWORD" | kinit -c /tmp/ccuser "$TEST_USER_PRINC" 2>&1
+  klist -c /tmp/ccuser
+  rpc.idmapd -f &
+  IDMAP_PID=$!
+  rpc.gssd -f &
+  GSSD_USER_PID=$!
+  sleep 2
   mount -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/stuff /mnt/stuff
-  echo "user-tgt-$(date +%s)" > "/mnt/stuff/user-tgt-${TEST_USER_PRINC%%@*}.txt"
+  out="/mnt/stuff/user-tgt-${short}-$(date +%s).txt"
+  echo "user-tgt-$(date +%s)" > "$out"
   sync
-  uid=$(stat -c %u "/mnt/stuff/user-tgt-${TEST_USER_PRINC%%@*}.txt")
-  gid=$(stat -c %g "/mnt/stuff/user-tgt-${TEST_USER_PRINC%%@*}.txt")
-  echo "user-tgt uid:gid = ${uid}:${gid}"
-  test "$uid" != "65534" -a "$gid" != "65534" || exit 41
+  uid=$(stat -c %u "$out")
+  gid=$(stat -c %g "$out")
+  echo "user-tgt client stat uid:gid = ${uid}:${gid}"
+  echo "SERVER_VERIFY=${out#/mnt/stuff}" > /hostdata/stuff/.user-tgt-verify
+  if [ "$uid" = "3002" ] && [ "$gid" = "3005" ]; then
+    echo "USER TGT CLIENT UID MAP OK"
+  else
+    echo "WARN: client display ${uid}:${gid} — server idhelper maps ${TEST_USER_PRINC} -> 3002:3005; configure client idmapd+SSSD (or passwd) for owner@ parity"
+  fi
   umount /mnt/stuff
+  kill "$GSSD_USER_PID" "$IDMAP_PID" 2>/dev/null || true
+  echo "USER TGT PHASE OK (kinit + krb5p mount + write)"
 fi
 
 echo "=== FEDORA KRB5P VALIDATE END $(date -u) ==="

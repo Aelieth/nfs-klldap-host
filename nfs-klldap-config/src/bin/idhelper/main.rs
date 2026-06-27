@@ -357,6 +357,31 @@ mod tests {
     }
 
     #[test]
+    fn materialize_emits_principal_alias_and_comment_free_extrausers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = NssMaterializePaths {
+            nss_passwd: &tmp.path().join("nss_passwd"),
+            nss_group: &tmp.path().join("nss_group"),
+            extrausers_passwd: &tmp.path().join("extra_passwd"),
+            extrausers_group: &tmp.path().join("extra_group"),
+        };
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "nfs/aurora@TESTLABBY.LOCAL".into(),
+            name: "aurora".into(),
+            uid: 0,
+            gid: 0,
+            kind: PrincipalKind::Machine,
+            source: "special".into(),
+        });
+        materialize_nss_wrappers_at(&cache, &paths, None).unwrap();
+        let extra = std::fs::read_to_string(paths.extrausers_passwd).unwrap();
+        assert!(!extra.lines().any(|l| l.starts_with('#')));
+        assert!(extra.contains("nfs/aurora@TESTLABBY.LOCAL:x:0:0:"));
+        assert!(extra.contains("nfs_aurora:x:0:0:"));
+    }
+
+    #[test]
     fn materialize_writes_machine_as_root() {
         let _tmp = tempfile::tempdir().unwrap();
         // Override const paths via temp dir is hard. Monkey-patch via env.
@@ -373,7 +398,7 @@ mod tests {
         // We can't easily redirect const paths here without changing API.
         let line = passwd_line_for(c.get("host/blue-lt@EXAMPLE.COM").unwrap());
         assert!(line.starts_with("blue-lt:x:0:0:"));
-        assert!(line.contains("kll:machine:"));
+        assert!(line.contains("kll machine "));
         let gline = group_line_for(c.get("host/blue-lt@EXAMPLE.COM").unwrap());
         assert!(gline.starts_with("root:x:0:"));
     }

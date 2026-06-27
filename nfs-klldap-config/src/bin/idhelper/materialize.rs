@@ -59,8 +59,8 @@ pub(crate) fn sanitize_for_nss(name: &str) -> String {
 /// Builds a passwd(5) line and assigns uid and gid zero to machines.
 pub(crate) fn passwd_line_for(r: &Resolved) -> String {
     let login = sanitize_for_nss(&r.name);
-    // Gecos is purely informational here.
-    let gecos = format!("kll:{}:{}", r.kind.as_str(), r.principal);
+    // Gecos must not contain ':' — libnss-extrausers splits on every colon.
+    let gecos = format!("kll {} {}", r.kind.as_str(), r.principal);
     // The /nonexistent + nologin is synthetic nss entries, not real local.
     format!(
         "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
@@ -219,7 +219,7 @@ pub(crate) fn materialize_nss_wrappers_at(
             // Map host/foo to host_foo for nss login names.
             let alias = sanitize_for_nss(local);
             if seen_login.insert(alias.clone()) {
-                let gecos = format!("kll:machine-alias:{}", r.principal);
+                let gecos = format!("kll machine-alias {}", r.principal);
                 passwd_lines.push(format!(
                     "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
                     alias, r.uid, r.gid, gecos
@@ -227,13 +227,14 @@ pub(crate) fn materialize_nss_wrappers_at(
             }
         }
 
-        // User principals also materialize the full name@REALM alias (use raw principal as login so getpwnam(user@REALM) matches nss_passwd).
-        if r.kind != PrincipalKind::Machine {
-            let full = r.principal.clone();
-            if seen_login.insert(full.clone()) {
-                let gecos = format!("kll:{}:{}", r.kind.as_str(), r.principal);
-                passwd_lines.push(format!("{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin", full, r.uid, r.gid, gecos));
-            }
+        // Full principal@REALM alias so Ganesha getpwnam matches hybrid krb5 clients (users and machines).
+        let full = r.principal.clone();
+        if seen_login.insert(full.clone()) {
+            let gecos = format!("kll {} {}", r.kind.as_str(), r.principal);
+            passwd_lines.push(format!(
+                "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
+                full, r.uid, r.gid, gecos
+            ));
         }
 
         // Primary group from this user: only if LDAP didn't already provide a row for the gid.
@@ -310,7 +311,7 @@ pub(crate) fn materialize_nss_wrappers_at(
             let tmp = paths.extrausers_passwd.with_extension("tmp");
             let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
             let mut w = BufWriter::new(f);
-            writeln!(w, "# nfs-klldap-idhelper extrausers (machine overrides + seen users)")?;
+            // libnss-extrausers rejects '#' lines; emit passwd entries only.
             for l in &passwd_lines {
                 writeln!(w, "{}", l)?;
             }
@@ -320,7 +321,6 @@ pub(crate) fn materialize_nss_wrappers_at(
             let tmp = paths.extrausers_group.with_extension("tmp");
             let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
             let mut w = BufWriter::new(f);
-            writeln!(w, "# nfs-klldap-idhelper extrausers group")?;
             for l in &group_lines {
                 writeln!(w, "{}", l)?;
             }

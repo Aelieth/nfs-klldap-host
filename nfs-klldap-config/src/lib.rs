@@ -113,14 +113,22 @@ pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool
         }
     }
     let m = if ok { format!("idhelper check OK: {}", msgs.join(" ")) } else { format!("idhelper resolution incomplete (user+host principals): {}", msgs.join("; ")) };
-    // extend: direct socket GRPS probe confirms runtime ID_MAPPER group supply (daemon path) not only cli preflight
+    // extend runtime validation: socket GRPS probe + parse gids to confirm groups (not just OK); user@ must not be fallback-only
     if std::path::Path::new("/var/run/nfs-klldap/idhelper.sock").exists() {
         if let Ok(mut st) = std::os::unix::net::UnixStream::connect("/var/run/nfs-klldap/idhelper.sock") {
             let req = format!("GRPS {}\n", user_p);
             { use std::io::Write; let _ = st.write_all(req.as_bytes()); let _ = st.flush(); }
             let mut rd = std::io::BufReader::new(&mut st);
             let mut ln = String::new();
-            if std::io::BufRead::read_line(&mut rd, &mut ln).is_ok() && ln.contains("OK ") { msgs.push("idmap-runtime-ok".into()); }
+            if std::io::BufRead::read_line(&mut rd, &mut ln).is_ok() {
+                if let Some(rest) = ln.strip_prefix("OK ") {
+                    let gids: Vec<u32> = rest.split(|c: char| "| ,".contains(c)).filter_map(|t| t.trim().parse().ok()).collect();
+                    if !gids.is_empty() {
+                        if gids.iter().all(|&g| g==65534 || g==0) { ok=false; msgs.push(format!("user({}):incomplete-fallback", user_p)); }
+                        else { msgs.push("socket-grps:groups-ok".into()); }
+                    }
+                }
+            }
         }
     }
     (ok, m)

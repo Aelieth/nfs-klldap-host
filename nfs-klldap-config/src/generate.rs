@@ -600,7 +600,7 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
             format!(
                 "# posix-only conservative mode for noacl btrfs (ZimaOS)\n\
                  # Disable_ACL + Manage_Gids=false + Read_Access_Check_Policy=post\n\
-                 # basic POSIX + krb5p readdir/stat supported; no NFSv4 ACL features.\n\
+                 # basic POSIX + krb5p readdir/stat/ls via runtime idhelper groups; no NFSv4 ACLs.\n\
                  # Auto-detected: {}{opts} — ACL-dependent NFSv4 ops disabled for compatibility.\n\
                  # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
                 caps.fstype,

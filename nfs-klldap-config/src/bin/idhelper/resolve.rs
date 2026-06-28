@@ -19,7 +19,7 @@ use crate::common::{
     debug_enabled, IdCache, PrincipalKind, Resolved, CACHE_PATH, EXTRAUSERS_PASSWD, NSS_GROUP_PATH,
     NSS_PASSWD_PATH,
 };
-use crate::materialize::{materialize_nss_wrappers_at, NssMaterializePaths};
+use crate::materialize::{build_nss_snapshot, materialize_nss_wrappers_at, NssMaterializePaths};
 
 /// Resolve via getent NSS first, then fall back to the LDAP resolver snapshot.
 fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
@@ -118,23 +118,47 @@ pub(crate) fn resolve_groups_for_principal(
     server_variants: &[String],
     cache: &mut IdCache,
 ) -> Vec<u32> {
+    publish_identity_for_ganesha(principal, realm, server_variants, cache).gids
+}
+
+/// One publish pipeline: resolve + groups + materialize supplemental rows so Ganesha's
+/// getgrouplist (after uid2grp_allocate_by_principal) sees the members in NSS.
+pub(crate) fn publish_identity_for_ganesha(
+    principal: &str,
+    realm: &str,
+    server_variants: &[String],
+    cache: &mut IdCache,
+) -> PublishOutcome {
     let r = resolve_principal(principal, realm, server_variants, cache);
-    if r.kind == PrincipalKind::Machine {
-        // Host/machine principals (host/xxx@REALM etc) map to nobody-equivalent group for
-        // uid2grp / GRPS path (per conservative noacl handling); resolve_principal itself
-        // still returns uid/gid 0 for machine creds.
-        return vec![FALLBACK_NOBODY_GID];
-    }
-    let primary = r.gid;
-    let mut extra: Vec<u32> = vec![];
-    if let Some((resolver, dn, pw)) = get_or_init_resolver() {
-        // route group supply for uid2grp/principal2grp through identity's resolve_groups_for_principal (now handles both forms)
-        let more = nfs_klldap_identity::resolve_groups_for_principal(resolver, principal, dn, pw);
-        extra = more.into_iter().map(|g| g as u32).collect();
-        // Ensure primary gid group row uses LDAP name (not user-private) when materializing.
-        let _ = resolver.resolve_group_by_gid(r.gid as i32, dn, pw);
-    }
-    merge_group_gids(primary, &extra)
+    let gids = if r.kind == PrincipalKind::Machine {
+        vec![FALLBACK_NOBODY_GID]
+    } else {
+        let primary = r.gid;
+        let mut extra: Vec<u32> = vec![];
+        if let Some((resolver, dn, pw)) = get_or_init_resolver() {
+            let more = nfs_klldap_identity::resolve_groups_for_principal(resolver, principal, dn, pw);
+            extra = more.into_iter().map(|g| g as u32).collect();
+            let _ = resolver.resolve_group_by_gid(primary as i32, dn, pw);
+            for &g in &extra {
+                if g != primary {
+                    let _ = resolver.resolve_group_by_gid(g as i32, dn, pw);
+                }
+            }
+        }
+        merge_group_gids(primary, &extra)
+    };
+    // force nss rows for all gids (incl supp) so getgrouplist on qualified name works
+    let snap_groups = get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups);
+    let _ = materialize_nss_wrappers_at(cache, &NssMaterializePaths::production(), snap_groups.as_ref());
+    let (pw, gr) = build_nss_snapshot(cache, snap_groups.as_ref());
+    PublishOutcome { gids, nss_passwd: pw, nss_group: gr }
+}
+
+#[allow(dead_code)]
+pub(crate) struct PublishOutcome {
+    pub gids: Vec<u32>,
+    pub nss_passwd: Vec<String>,
+    pub nss_group: Vec<String>,
 }
 
 /// Load resolver + bind creds from NfsKlldapConfig (NFS_CONFIG).
@@ -519,5 +543,48 @@ mod tests {
         } else {
             std::env::remove_var("NSS_EXTRAUSERS_GROUP");
         }
+    }
+
+    #[test]
+    fn publish_nss_includes_supp_group_rows_for_user_principal_no_shims() {
+        // drives real build_nss_snapshot + group row creation for primary + supp (from ldap_groups)
+        // no TEST_* envs; uses direct cache seed + explicit groups map (simulates publish after groups resolve)
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "testuser1@EX.COM".into(),
+            name: "testuser1".into(),
+            uid: 3001,
+            gid: 100,
+            kind: PrincipalKind::User,
+            source: "seed".into(),
+        });
+        let mut lgs: std::collections::HashMap<String, nfs_klldap_config::PosixGroupEntry> = std::collections::HashMap::new();
+        lgs.insert("staff".into(), nfs_klldap_config::PosixGroupEntry { gid: 2002, display: "staff".into(), members: vec!["testuser1".into()] });
+        let (pw, gr) = build_nss_snapshot(&cache, Some(&lgs));
+        assert!(pw.iter().any(|l| l.contains("testuser1@EX.COM:x:3001:100")), "@ form for getpwnam");
+        assert!(gr.iter().any(|l| l.contains("staff:x:2002:testuser1")), "supp group row with member");
+    }
+
+    #[test]
+    fn resolve_principal_and_groups_on_qualified_form_drives_file_lookup_and_publish_no_shims() {
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let old_force = std::env::var("TEST_FORCE_LDAP_UID_GID").ok();
+        std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
+        let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
+        std::env::remove_var("TEST_REBULK_POPULATE");
+        // write qualified entry to NSS_PASSWD_PATH so lookup_passwd_file (fallback in resolve_getent for @) resolves it
+        let nss_dir = std::path::Path::new("/var/lib/nfs-klldap");
+        let _ = std::fs::create_dir_all(nss_dir);
+        let nss_passwd = nss_dir.join("nss_passwd");
+        std::fs::write(&nss_passwd, "testuser1@EX.COM:x:3001:100:Test:/nonexistent:/usr/sbin/nologin\n").unwrap();
+        let mut cache = IdCache::default();
+        let r = resolve_principal("testuser1@EX.COM", "EX.COM", &[], &mut cache);
+        let gs = resolve_groups_for_principal("testuser1@EX.COM", "EX.COM", &[], &mut cache);
+        if let Some(v) = old_force { std::env::set_var("TEST_FORCE_LDAP_UID_GID", v); }
+        if let Some(v) = old_pop { std::env::set_var("TEST_REBULK_POPULATE", v); }
+        assert_eq!(r.uid, 3001, "resolve_principal on @ form via file lookup (no shims)");
+        assert!(gs.contains(&100));
+        let pc = std::fs::read_to_string(nss_passwd).unwrap_or_default();
+        assert!(pc.contains("testuser1@EX.COM") || pc.contains("testuser1:x:3001"));
     }
 }

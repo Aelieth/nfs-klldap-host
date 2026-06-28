@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::constants::IDENTITY_CACHE_TTL_SECS;
-use crate::krb5::principal_local_part;
+use crate::constants::{FALLBACK_NOBODY_GID, IDENTITY_CACHE_TTL_SECS};
+use crate::krb5::{classify_principal, principal_local_part};
 use crate::ldap::filter::escape_ldap_filter;
 use crate::ldap::posix::{
     effective_ldap_search_bases, resolve_posix_attribute_mapping, LdapSearchBasesInput,
@@ -661,7 +661,13 @@ impl IdLdapResolver {
     }
 
     /// Resolve gids for principal (primary + supp) via memberOf + member/gidNumber after RESOLVE uid.
+    /// Now handles uid2grp_allocate_by_principal + principal2grp for user@REALM and host/...@REALM.
     pub fn resolve_groups_for_principal(&self, name_or_principal: &str, bind_dn: &str, bind_pw: &str) -> Vec<i32> {
+        // machine (host/...@ etc) -> nobody gid for conservative posix path; user forms use LDAP
+        let (is_machine, _) = classify_principal(name_or_principal, "", &[]);
+        if is_machine {
+            return vec![FALLBACK_NOBODY_GID as i32];
+        }
         let mut gids: Vec<i32> = vec![];
         if let Some((_, Some(g), _)) = self.resolve_user(name_or_principal, bind_dn, bind_pw) {
             if !gids.contains(&g) {
@@ -1117,6 +1123,17 @@ pub fn extract_first_attr_value(se: &SearchEntry, name: &str) -> Option<String> 
     IdLdapResolver::extract_first_attr(se, name)
 }
 
+/// Thin free fn so resolve_groups_for_principal is directly usable/registered from identity
+/// (wires uid2grp_allocate_by_principal + principal2grp for user@ and host/...@ forms).
+pub fn resolve_groups_for_principal(
+    resolver: &IdLdapResolver,
+    name_or_principal: &str,
+    bind_dn: &str,
+    bind_pw: &str,
+) -> Vec<i32> {
+    resolver.resolve_groups_for_principal(name_or_principal, bind_dn, bind_pw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1149,5 +1166,18 @@ mod tests {
         assert!(all.contains("(uidNumber=*)"));
         let num = IdLdapResolver::build_posix_list_filter("posixGroup", "gidNumber", "cn", None, "1001");
         assert!(num.contains("(gidNumber=1001)"));
+    }
+
+    #[test]
+    fn resolve_groups_for_principal_wires_user_and_host_forms() {
+        // direct drive of shipped resolve_groups_for_principal (via free fn too) on both forms
+        std::env::set_var("TEST_REBULK_POPULATE", "u:testuser1:3001:100;g:staff:2002");
+        let r = IdLdapResolver::from_inputs(&LdapResolverInputs::default());
+        let _ = r.load_full_identities("dn", "pw");
+        let gs_user = resolve_groups_for_principal(&r, "testuser1@REALM", "dn", "pw");
+        let gs_host = r.resolve_groups_for_principal("host/box@REALM", "dn", "pw");
+        std::env::remove_var("TEST_REBULK_POPULATE");
+        assert!(!gs_user.is_empty(), "user@ must resolve groups via ldap paths");
+        assert_eq!(gs_host, vec![FALLBACK_NOBODY_GID as i32]);
     }
 }

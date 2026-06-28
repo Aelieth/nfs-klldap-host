@@ -401,6 +401,7 @@ fn handle_client(
             } else {
                 dlog!("socket GRPS arg=\"{}\"", arg);
                 let mut guard = cache.lock().unwrap();
+                // GRPS handler supplies ID_MAPPER groups at runtime via (now identity-routed) resolve
                 let gs = resolve_groups_for_principal(arg, realm, server_variants, &mut guard);
                 let list = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|");
                 out.push_str(&format!("OK {}\n", list));

@@ -248,7 +248,7 @@ ganesha.nfsd ...
 
 ### Generated ganesha.conf and exports
 
-The generator writes a minimal `ganesha.conf` plus one fragment per share under `/etc/ganesha/exports.d/`. Ganesha 9.x emits Protocols=4, UDP=false, DIRECTORY_SERVICES nsswitch, Root_Kerberos, Idmapped_*=600, Only/Allow_Numeric. Omits Manage_Gids_Expiration etc. Live idmap: UseGetpwnam=false + Manage_Gids=true (idhelper for uid2grp_allocate + groups). Limited FS emits Read_Access_Check_Policy="post". A lightweight resolution check (user@ + host/) runs after generate/validate/startup and warns on failure. See tests/representative_generate.rs.
+The generator writes a minimal `ganesha.conf` plus one fragment per share under `/etc/ganesha/exports.d/`. Ganesha 9.x emits Protocols=4, UDP=false, DIRECTORY_SERVICES nsswitch, Root_Kerberos, Idmapped_*=600, Only/Allow_Numeric. Omits Manage_Gids_Expiration etc. Live idmap: UseGetpwnam=false + Manage_Gids=true (idhelper for uid2grp_allocate + groups). Limited FS emits Read_Access_Check_Policy="post". idhelper supplies groups to ID_MAPPER at runtime for access ops. Lightweight check after generate. See tests.
 
 Each per-share fragment contains an EXPORT with Path (internal), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block for access control, and the VFS FSAL. Additional CLIENT blocks can be appended manually (they will be lost on regeneration).
 

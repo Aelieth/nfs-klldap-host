@@ -8,6 +8,6 @@ pub use posix::{
     PosixAttributeMapping, PosixMappingInput,
 };
 pub use resolver::{
-    extract_first_attr_value, IdLdapResolver, IdMapSnapshot, LdapResolverInputs, PosixGroupEntry,
+    extract_first_attr_value, resolve_groups_for_principal, IdLdapResolver, IdMapSnapshot, LdapResolverInputs, PosixGroupEntry,
     PosixUserEntry,
 };

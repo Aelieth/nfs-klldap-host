@@ -69,7 +69,7 @@ fn limited_fs_opts_suffix(caps: &FsCapabilities) -> String {
 pub fn limited_fs_warning(share_name: &str, caps: &FsCapabilities) -> String {
     let opts = limited_fs_opts_suffix(caps);
     format!(
-        "share \"{share_name}\": {fstype}{opts} limited filesystem — conservative mode (enable_acl=false, manage_gids=false, Read_Access_Check_Policy=post); posix-only (no NFSv4 ACL features); basic POSIX + krb5p readdir/stat is the supported contract; relies on idhelper for identities",
+        "share \"{share_name}\": {fstype}{opts} limited filesystem — conservative mode (enable_acl=false, manage_gids=false, Read_Access_Check_Policy=post); posix-only (no NFSv4 ACL features); basic POSIX + krb5p readdir/stat/ls supported via runtime idhelper groups",
         share_name = share_name,
         fstype = caps.fstype,
         opts = opts
@@ -84,7 +84,7 @@ pub fn limited_fs_warning_settings_ui(
 ) -> String {
     let opts = limited_fs_opts_suffix(caps);
     format!(
-        "share \"{share_name}\": {fstype}{opts} limited filesystem — posix-only conservative (enable_acl={enable_acl}, manage_gids={manage_gids}, Read_Access_Check_Policy=post); no NFSv4 ACLs; basic POSIX+krb5p supported",
+        "share \"{share_name}\": {fstype}{opts} limited filesystem — posix-only conservative (enable_acl={enable_acl}, manage_gids={manage_gids}, Read_Access_Check_Policy=post); no NFSv4 ACLs; basic POSIX+krb5p supported (idhelper runtime groups)",
         share_name = share_name,
         fstype = caps.fstype,
         opts = opts,

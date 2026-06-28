@@ -128,7 +128,8 @@ pub(crate) fn resolve_groups_for_principal(
     let primary = r.gid;
     let mut extra: Vec<u32> = vec![];
     if let Some((resolver, dn, pw)) = get_or_init_resolver() {
-        let more = resolver.resolve_groups_for_principal(principal, dn, pw);
+        // route group supply for uid2grp/principal2grp through identity's resolve_groups_for_principal (now handles both forms)
+        let more = nfs_klldap_identity::resolve_groups_for_principal(resolver, principal, dn, pw);
         extra = more.into_iter().map(|g| g as u32).collect();
         // Ensure primary gid group row uses LDAP name (not user-private) when materializing.
         let _ = resolver.resolve_group_by_gid(r.gid as i32, dn, pw);

@@ -79,6 +79,7 @@ fn assert_ganesha_96_compliant(ganesha: &str, idmap: &str) {
     );
     for forbidden in [
         "Read_Access_Check_Policy =",
+        // note: limited path now relies on idhelper runtime groups supply for OP_ACCESS
         "Manage_Gids_Expiration =",
         "IdmapConf =",
         "Transports =",

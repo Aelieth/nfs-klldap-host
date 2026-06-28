@@ -152,6 +152,7 @@ fn handle_cli(args: &[String]) {
                 gs
             } else {
                 let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
+                // cli grps path routes groups via wrapper (which calls identity resolve_groups_for_principal)
                 resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache)
             };
             if json_flag {

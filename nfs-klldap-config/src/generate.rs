@@ -584,6 +584,7 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
         "    Manage_Gids = false;\n".to_string()
     };
     let read_access_line = if !eff.enable_acl {
+        // no addl Ganesha 9.6 ACL-mask suppress opts (Disable+post+mg=false is set); Read post already present
         "    Read_Access_Check_Policy = \"post\";\n"
     } else {
         ""

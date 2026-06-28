@@ -85,6 +85,7 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
     assert!(frag.contains("Manage_Gids = false;"), "fragment:\n{frag}");
     assert!(frag.contains("Read_Access_Check_Policy = \"post\";"), "limited must have post policy:\n{frag}");
     assert!(frag.contains("posix-only conservative mode for noacl btrfs (ZimaOS)"), "limited comment:\n{frag}");
+    // runtime group supply (checklist 1-2) + these opts enable ls without NOTSUPP; idhelper test covered separately
     for forbidden in [
         "Manage_Gids_Expiration =",
         "IdmapConf =",

@@ -1058,13 +1058,13 @@ mod tests {
         let mut cache = IdCache::default();
         // Force runtime realm different from principal's
         // (the CLI paths now extract eff_realm from p; classify early-returns machine for prefix)
-        let r_host = resolve_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &vec![], &mut cache);
+        let r_host = resolve_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &[], &mut cache);
         assert_eq!(r_host.kind, PrincipalKind::Machine, "host/ must classify machine even on realm mismatch");
-        let gs_host = resolve_groups_for_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &vec![], &mut cache);
+        let gs_host = resolve_groups_for_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &[], &mut cache);
         assert_eq!(gs_host, vec![FALLBACK_NOBODY_GID]);
 
         // user@ mismatch should go user path (may fallback)
-        let r_user = resolve_principal("testuser1@OTHERREALM", "SATOMLIN.COM", &vec![], &mut cache);
+        let r_user = resolve_principal("testuser1@OTHERREALM", "SATOMLIN.COM", &[], &mut cache);
         assert!(r_user.kind != PrincipalKind::Machine);
     }
 }

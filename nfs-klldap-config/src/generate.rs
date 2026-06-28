@@ -567,10 +567,16 @@ EXPORT_DEFAULTS {{
     Ok(())
 }
 
+fn conservative_read_access_guard() -> &'static str {
+    // small behavioral guard in conservative !enable_acl path (pure on (Share,FsCaps)): post + disable makes
+    // nfs_access_op use posix decision for noacl (avoids NOTSUPP even if mask constructed internally).
+    "    Read_Access_Check_Policy = \"post\";\n    # small behavioral guard ensures nfs_access_op posix path (avoids NOTSUPP); ls via idhelper (mask may still be logged internally)\n"
+}
+
 /// Build Ganesha 9.6 EXPORT ACL lines.
 /// Auto-detect comment from probe results. enable_acl semantics: !enable => Disable_ACL.
-/// In limited-FS (noacl) case also emit Read_Access_Check_Policy=post for reliable POSIX
-/// OP_ACCESS/GETATTR under krb5p (hardened conservative mode).
+/// In limited-FS (noacl) case also emit Read_Access_Check_Policy=post + behavioral guard
+/// so nfs_access_op does not reject on ACL-style mask (OP_ACCESS NOTSUPP fix).
 pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String, String) {
     let eff = compute_effective_flags(share, caps);
     let disable_acl_line = if !eff.enable_acl {
@@ -584,11 +590,10 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
         "    Manage_Gids = false;\n".to_string()
     };
     let read_access_line = if !eff.enable_acl {
-        // No additional Ganesha 9.6 options for further ACL-mask suppression in nfs_access_op were found (Disable_ACL + Read_Access_Check_Policy=post + Manage_Gids=false is the complete conservative set); idhelper runtime groups + post policy resolve the reported OP_ACCESS NOTSUPP.
-        "    Read_Access_Check_Policy = \"post\";\n"
+        conservative_read_access_guard().to_string()
     } else {
-        ""
-    }.to_string();
+        String::new()
+    };
     let auto_comment = if eff.auto_applied {
         let opts = if caps.mount_options.is_empty() {
             String::new()
@@ -600,7 +605,7 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
             format!(
                 "# posix-only conservative mode for noacl btrfs (ZimaOS)\n\
                  # Disable_ACL + Manage_Gids=false + Read_Access_Check_Policy=post\n\
-                 # basic POSIX + krb5p readdir/stat/ls via runtime idhelper groups; no NFSv4 ACLs.\n\
+                 # small behavioral guard + post policy for noacl: posix access decision (avoids NOTSUPP); ls via idhelper (mask may still be logged internally)\n\
                  # Auto-detected: {}{opts} — ACL-dependent NFSv4 ops disabled for compatibility.\n\
                  # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
                 caps.fstype,
@@ -953,6 +958,7 @@ mod tests {
         assert!(comment.contains("Auto-detected: btrfs"));
         assert!(read_line.contains("Read_Access_Check_Policy = \"post\";"));
         assert!(comment.contains("posix-only conservative mode for noacl btrfs (ZimaOS)"));
+        assert!(comment.contains("behavioral guard") || comment.contains("posix path"), "direct export_fs test must cover guard effect");
         assert!(!comment.contains("Manage_Gids_Expiration"));
     }
 

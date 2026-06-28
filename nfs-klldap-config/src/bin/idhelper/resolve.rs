@@ -19,7 +19,9 @@ use crate::common::{
     debug_enabled, IdCache, PrincipalKind, Resolved, CACHE_PATH, EXTRAUSERS_PASSWD, NSS_GROUP_PATH,
     NSS_PASSWD_PATH,
 };
-use crate::materialize::{build_nss_snapshot, materialize_nss_wrappers_at, NssMaterializePaths};
+use crate::materialize::{materialize_nss_wrappers_at, NssMaterializePaths};
+#[cfg(test)]
+use crate::materialize::build_nss_snapshot;
 
 /// Resolve via getent NSS first, then fall back to the LDAP resolver snapshot.
 fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
@@ -112,23 +114,14 @@ pub(crate) fn merge_group_gids(primary: u32, supplemental: &[u32]) -> Vec<u32> {
 
 /// Resolve groups for principal: RESOLVE (uid) then resolver membership (memberOf/member/gidNumber).
 /// Primary first; includes LDAP display groups for primary gid resolution side-effect.
+/// Materializes supplemental NSS rows so Ganesha's getgrouplist (after uid2grp_allocate_by_principal)
+/// sees the members in NSS.
 pub(crate) fn resolve_groups_for_principal(
     principal: &str,
     realm: &str,
     server_variants: &[String],
     cache: &mut IdCache,
 ) -> Vec<u32> {
-    publish_identity_for_ganesha(principal, realm, server_variants, cache).gids
-}
-
-/// One publish pipeline: resolve + groups + materialize supplemental rows so Ganesha's
-/// getgrouplist (after uid2grp_allocate_by_principal) sees the members in NSS.
-pub(crate) fn publish_identity_for_ganesha(
-    principal: &str,
-    realm: &str,
-    server_variants: &[String],
-    cache: &mut IdCache,
-) -> PublishOutcome {
     let r = resolve_principal(principal, realm, server_variants, cache);
     let gids = if r.kind == PrincipalKind::Machine {
         vec![FALLBACK_NOBODY_GID]
@@ -150,15 +143,7 @@ pub(crate) fn publish_identity_for_ganesha(
     // force nss rows for all gids (incl supp) so getgrouplist on qualified name works
     let snap_groups = get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups);
     let _ = materialize_nss_wrappers_at(cache, &NssMaterializePaths::production(), snap_groups.as_ref());
-    let (pw, gr) = build_nss_snapshot(cache, snap_groups.as_ref());
-    PublishOutcome { gids, nss_passwd: pw, nss_group: gr }
-}
-
-#[allow(dead_code)]
-pub(crate) struct PublishOutcome {
-    pub gids: Vec<u32>,
-    pub nss_passwd: Vec<String>,
-    pub nss_group: Vec<String>,
+    gids
 }
 
 /// Load resolver + bind creds from NfsKlldapConfig (NFS_CONFIG).

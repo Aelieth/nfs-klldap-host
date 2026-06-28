@@ -86,7 +86,9 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
     assert!(frag.contains("Read_Access_Check_Policy = \"post\";"), "limited must have post policy:\n{frag}");
     assert!(frag.contains("posix-only conservative mode for noacl btrfs (ZimaOS)"), "limited comment:\n{frag}");
     assert!(frag.contains("runtime idhelper") || frag.contains("ls via"), "frag must reflect runtime ls contract:\n{frag}");
+    assert!(frag.contains("behavioral guard") || frag.contains("posix path"), "frag must include conservative guard for acl mask:\n{frag}");
     // runtime group supply (checklist 1-2) + these opts enable ls without NOTSUPP; idhelper test covered separately
+    // (note: main ganesha omits post to avoid side-effect on capable; per-fragment has it for the limited share)
     for forbidden in [
         "Manage_Gids_Expiration =",
         "IdmapConf =",

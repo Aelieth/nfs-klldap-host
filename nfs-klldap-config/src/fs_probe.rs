@@ -155,19 +155,40 @@ fn acl_capable_from_mount(fstype: &str, options: &[String], mount_source: &str) 
     }
 }
 
-/// One-line WARN for limited-FS shares (validate/dry-run/startup).
-/// Used as informational (non-blocking) note in WebUI and CLI fs-warnings.
-pub fn limited_fs_warning(share_name: &str, caps: &FsCapabilities) -> String {
-    let opts = if caps.mount_options.is_empty() {
+fn limited_fs_opts_suffix(caps: &FsCapabilities) -> String {
+    if caps.mount_options.is_empty() {
         String::new()
     } else {
         format!(" ({})", caps.mount_options.join(","))
-    };
+    }
+}
+
+/// One-line WARN for limited-FS shares (validate/dry-run/startup).
+/// Used as informational (non-blocking) note in CLI fs-warnings and boot logs.
+pub fn limited_fs_warning(share_name: &str, caps: &FsCapabilities) -> String {
+    let opts = limited_fs_opts_suffix(caps);
     format!(
         "share \"{share_name}\": {fstype}{opts} limited filesystem — conservative mode (enable_acl=false, manage_gids=false); relies on idhelper for identities",
         share_name = share_name,
         fstype = caps.fstype,
         opts = opts
+    )
+}
+
+/// Shorter limited-FS line for the WebUI System Settings share badge.
+pub fn limited_fs_warning_settings_ui(
+    share_name: &str,
+    caps: &FsCapabilities,
+    eff: &EffectiveShareFlags,
+) -> String {
+    let opts = limited_fs_opts_suffix(caps);
+    format!(
+        "share \"{share_name}\": {fstype}{opts} limited filesystem — enable_acl={enable_acl}, manage_gids={manage_gids};",
+        share_name = share_name,
+        fstype = caps.fstype,
+        opts = opts,
+        enable_acl = eff.enable_acl,
+        manage_gids = eff.manage_gids,
     )
 }
 

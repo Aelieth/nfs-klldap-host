@@ -183,7 +183,7 @@
             </select>
             <button type="button" onclick="this.closest('.share-row-block').remove()">×</button>
         </div>
-        <div class="share-advanced-row" style="display:flex;gap:6px;margin:0 0 4px 24px;font-size:0.85em;flex-wrap:wrap;">
+        <div class="share-advanced-row" style="display:flex;gap:6px;margin:0 0 4px 0;font-size:0.85em;flex-wrap:wrap;align-items:center;">
             <label title="Enable ACLs in Ganesha (auto = probe decides; off for limited FS like btrfs+noacl)">Enable ACL
                 <select name="share_enable_acl_{{ row.idx }}" style="width:72px;margin-left:4px;">
                     <option value="auto" {% if row.enable_acl == "auto" %}selected{% endif %}>auto</option>
@@ -198,8 +198,10 @@
                     <option value="false" {% if row.manage_gids == "false" %}selected{% endif %}>off</option>
                 </select>
             </label>
-            <label style="flex:1;min-width:200px;" title="Optional Ganesha EXPORT Path= override (staging tree on ACL-capable FS)">Ganesha path
-                <input name="share_ganesha_path_{{ row.idx }}" value="{{ row.ganesha_path }}" style="width:100%;margin-top:2px;" placeholder="/export/staging/...">
+            <label style="display:flex;align-items:center;gap:4px;flex:1;min-width:240px;" title="Optional Ganesha EXPORT Path= override (staging tree on ACL-capable FS)">
+                <input type="checkbox" name="share_override_ganesha_path_{{ row.idx }}" value="true" {% if row.override_ganesha_path %}checked{% endif %}>
+                Ganesha Path
+                <input id="share_ganesha_path_{{ row.idx }}" name="share_ganesha_path_{{ row.idx }}" value="{{ row.ganesha_path }}" data-default-path="{{ row.default_ganesha_path }}" style="flex:1;min-width:120px;" placeholder="{% if row.override_ganesha_path %}/export/staging/...{% else %}derived from Host Path{% endif %}" {% if !row.override_ganesha_path %}disabled{% endif %}>
             </label>
         </div>
         </div>
@@ -220,14 +222,28 @@
 // never collide with existing idx values used for name/host/security fields.
 
 let nextShareIdx = {{ next_share_idx }};
+const storageContainerRoot = "{{ storage_container_root }}";
+
+function deriveGaneshaPath(hostPath, shareName, containerRoot) {
+  const root = (containerRoot || '/export').replace(/\/+$/, '');
+  const trimmed = (hostPath || '').trim().replace(/\/+$/, '');
+  const segments = trimmed.split('/').filter((s) => s.length > 0);
+  if (segments.length > 0) {
+    const tail = segments.length > 1 ? segments.slice(1).join('/') : '';
+    return tail ? `${root}/${tail}` : root;
+  }
+  const name = (shareName || '').trim();
+  return name ? `${root}/${name}` : root;
+}
 
 function addShareRow() {
     const c = document.getElementById('shares-container');
     const idx = nextShareIdx++;
-    const d = document.createElement('div');
-    d.className = 'share-row';
-    d.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;';
-    d.innerHTML = `<input name="share_name_${idx}" placeholder="name" style="width:115px">
+    const block = document.createElement('div');
+    block.className = 'share-row-block';
+    block.style.cssText = 'margin-bottom:8px;';
+    block.innerHTML = `<div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
+                   <input name="share_name_${idx}" placeholder="name" style="width:115px">
                    <input name="share_host_${idx}" placeholder="host_path" style="flex:1">
                    <input name="share_export_${idx}" placeholder="export_path (external/Pseudo)" style="width:130px" title="Export Path (external/Pseudo) — short/friendly client name. Internal container location is derived from Host Path first dir + tail under container_root.">
                    <select name="share_security_${idx}" style="width:90px">
@@ -248,8 +264,32 @@ function addShareRow() {
                      <option value="Mixed Use">Mixed Use</option>
                      <option value="Write - Heavy">Write - Heavy</option>
                    </select>
-                   <button type="button" onclick="this.closest('.share-row').remove()">×</button>`;
-    c.appendChild(d);
+                   <button type="button" onclick="this.closest('.share-row-block').remove()">×</button>
+                 </div>
+                 <div class="share-advanced-row" style="display:flex;gap:6px;margin:0 0 4px 0;font-size:0.85em;flex-wrap:wrap;align-items:center;">
+                   <label title="Enable ACLs in Ganesha (auto = probe decides; off for limited FS like btrfs+noacl)">Enable ACL
+                     <select name="share_enable_acl_${idx}" style="width:72px;margin-left:4px;">
+                       <option value="auto" selected>auto</option>
+                       <option value="true">on</option>
+                       <option value="false">off</option>
+                     </select>
+                   </label>
+                   <label title="Emit Manage_Gids in Ganesha export (auto = probe decides)">Manage GIDs
+                     <select name="share_manage_gids_${idx}" style="width:72px;margin-left:4px;">
+                       <option value="auto" selected>auto</option>
+                       <option value="true">on</option>
+                       <option value="false">off</option>
+                     </select>
+                   </label>
+                   <label style="display:flex;align-items:center;gap:4px;flex:1;min-width:240px;" title="Optional Ganesha EXPORT Path= override (staging tree on ACL-capable FS)">
+                     <input type="checkbox" name="share_override_ganesha_path_${idx}" value="true">
+                     Ganesha Path
+                     <input id="share_ganesha_path_${idx}" name="share_ganesha_path_${idx}" data-default-path="" style="flex:1;min-width:120px;" placeholder="derived from Host Path" disabled>
+                   </label>
+                 </div>`;
+    c.appendChild(block);
+    wireShareGaneshaOverrides();
+    wireShareHostPathListeners(block);
 }
 
 // Wire override checkboxes to enable/disable their associated fields.
@@ -288,6 +328,70 @@ wireOverride('input[name="override_sssd_ldap_tls_reqcert"]', '#sssd_ldap_tls_req
 wireOverride('input[name="override_sssd_ldap_tls_cacert"]', '#sssd_ldap_tls_cacert');
 wireOverride('input[name="override_sssd_ldap_id_use_start_tls"]', '#sssd_ldap_id_use_start_tls');
 wireOverride('input[name="override_sssd_enumerate"]', '#sssd_enumerate');
+
+function wireShareGaneshaOverride(checkbox) {
+  const id = checkbox.getAttribute('name').replace('share_override_ganesha_path_', 'share_ganesha_path_');
+  const field = document.getElementById(id);
+  if (!field) return;
+  function update() {
+    const isOverriding = checkbox.checked;
+    field.disabled = !isOverriding;
+    if (isOverriding) {
+      field.style.opacity = '';
+      field.style.backgroundColor = '';
+      field.placeholder = '/export/staging/...';
+    } else {
+      field.value = field.dataset.defaultPath || '';
+      field.placeholder = 'derived from Host Path';
+    }
+  }
+  checkbox.addEventListener('change', update);
+  update();
+}
+
+function wireShareGaneshaOverrides() {
+  document.querySelectorAll('input[name^="share_override_ganesha_path_"]').forEach((cb) => {
+    if (!cb.dataset.wired) {
+      cb.dataset.wired = '1';
+      wireShareGaneshaOverride(cb);
+    }
+  });
+}
+
+function wireShareHostPathListeners(block) {
+  const hostInput = block.querySelector('input[name^="share_host_"]');
+  const nameInput = block.querySelector('input[name^="share_name_"]');
+  const pathInput = block.querySelector('input[id^="share_ganesha_path_"]');
+  const overrideCb = block.querySelector('input[name^="share_override_ganesha_path_"]');
+  if (!hostInput || !pathInput) return;
+  if (hostInput.dataset.ganeshaWired) return;
+  hostInput.dataset.ganeshaWired = '1';
+
+  function refreshDefault() {
+    const derived = deriveGaneshaPath(
+      hostInput.value,
+      nameInput ? nameInput.value : '',
+      storageContainerRoot,
+    );
+    pathInput.dataset.defaultPath = derived;
+    if (!overrideCb || !overrideCb.checked) {
+      pathInput.value = derived;
+    }
+  }
+
+  hostInput.addEventListener('input', refreshDefault);
+  if (nameInput) nameInput.addEventListener('input', refreshDefault);
+  refreshDefault();
+}
+
+function wireAllShareHostPathListeners() {
+  document.querySelectorAll('.share-row-block').forEach((block) => {
+    wireShareHostPathListeners(block);
+  });
+}
+
+wireShareGaneshaOverrides();
+wireAllShareHostPathListeners();
 </script>
 
 <hr>

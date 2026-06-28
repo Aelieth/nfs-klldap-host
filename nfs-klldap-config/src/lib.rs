@@ -51,12 +51,13 @@ pub use signals::{
 pub use constants::PROC_COMM_NAME_MAX;
 
 pub use fs_probe::{
-    compute_effective_flags, limited_fs_warning, probe_from_mountinfo, probe_fs_capabilities,
-    EffectiveShareFlags, FsCapabilities,
+    compute_effective_flags, limited_fs_warning, limited_fs_warning_settings_ui,
+    probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags, FsCapabilities,
 };
 pub use fs_warnings::{
     any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warnings_only,
-    share_fs_warning_message, share_fs_warning_message_with_mountinfo, FsShareWarning,
+    share_fs_acl_limited, share_fs_acl_limited_with_mountinfo, share_fs_warning_message,
+    share_fs_warning_message_with_mountinfo, FsShareWarning,
 };
 pub use hook::{effective_post_generate_hook, run_post_generate_hooks};
 pub use generate::generate_all;

@@ -214,7 +214,11 @@ struct ShareTemplateRow {
     cache_profile: String,
     enable_acl: String,
     manage_gids: String,
+    override_ganesha_path: bool,
+    /// Effective value shown in the Ganesha Path input (explicit override or derived default).
     ganesha_path: String,
+    /// Derived container path from host_path; used for data-default-path and when override is off.
+    default_ganesha_path: String,
     warning: Option<String>,
     fs_warning: Option<String>,
 }
@@ -240,6 +244,17 @@ fn get_explicit_str(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> O
             .and_then(|t| t.get(key))
     };
     val.and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+/// True when ganesha_path is explicit in raw TOML for a share row.
+fn share_override_ganesha_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize) -> bool {
+    let Some(arr) = doc.get("shares").and_then(|s| s.as_array_of_tables()) else {
+        return false;
+    };
+    let Some(tbl) = arr.get(idx) else {
+        return false;
+    };
+    tbl.get("ganesha_path").is_some()
 }
 
 /// Share export_path for the editor when explicit in raw TOML.
@@ -304,7 +319,15 @@ fn build_settings_template(
         .shares
         .iter()
         .enumerate()
-        .map(|(idx, s)| ShareTemplateRow {
+        .map(|(idx, s)| {
+            let override_ganesha_path = share_override_ganesha_path_from_raw(&doc, idx);
+            let default_ganesha_path = cfg.container_path_for(s);
+            let ganesha_path = if override_ganesha_path {
+                s.ganesha_path.clone().unwrap_or_default()
+            } else {
+                default_ganesha_path.clone()
+            };
+            ShareTemplateRow {
             idx,
             name: s.name.clone(),
             host_path: s.host_path.display().to_string(),
@@ -327,7 +350,9 @@ fn build_settings_template(
                 Some(false) => "false".to_string(),
                 None => "auto".to_string(),
             },
-            ganesha_path: s.ganesha_path.clone().unwrap_or_default(),
+            override_ganesha_path,
+            ganesha_path,
+            default_ganesha_path,
             warning: nfs_klldap_config::ShareFieldWarning::for_share(
                 &cfg.share_warnings,
                 idx,
@@ -339,6 +364,7 @@ fn build_settings_template(
                 s,
                 fs_probe_mountinfo_path,
             ),
+        }
         })
         .collect();
     let next_share_idx = current_shares.len();
@@ -444,10 +470,16 @@ fn collect_shares_from_structured_form(
                     parse_tri_bool(&format!("share_enable_acl_{}", idx));
                 let manage_gids =
                     parse_tri_bool(&format!("share_manage_gids_{}", idx));
-                let ganesha_path = extra
-                    .get(&format!("share_ganesha_path_{}", idx))
-                    .cloned()
-                    .filter(|s| !s.trim().is_empty());
+                let override_ganesha_path =
+                    extra.contains_key(&format!("share_override_ganesha_path_{}", idx));
+                let ganesha_path = if override_ganesha_path {
+                    extra
+                        .get(&format!("share_ganesha_path_{}", idx))
+                        .cloned()
+                        .filter(|s| !s.trim().is_empty())
+                } else {
+                    None
+                };
                 share_rows.push(ShareFormRow {
                     idx,
                     name,

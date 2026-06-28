@@ -454,10 +454,10 @@ host_path = "/media/data"
         let token = auth.create_privileged_session("testadmin");
         let app = router(state);
 
-        let warn_snippet = "limited filesystem";
+        let warn_snippet = "enable_acl=false";
         let body = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_export_0=&share_rw_0=true\
 &share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=false\
-&share_ganesha_path_0=%2Fexport%2Fstaging%2Fdata";
+&share_override_ganesha_path_0=true&share_ganesha_path_0=%2Fexport%2Fstaging%2Fdata";
         let req = Request::builder()
             .method("POST")
             .uri("/settings/save-shares")
@@ -481,6 +481,7 @@ host_path = "/media/data"
         assert!(html.contains("share_enable_acl_0"));
         assert!(html.contains("share_manage_gids_0"));
         assert!(html.contains("share_ganesha_path_0"));
+        assert!(html.contains("share_override_ganesha_path_0"));
         assert!(html.contains("/export/staging/data"));
         assert!(
             html.contains("alert-warning"),
@@ -488,7 +489,7 @@ host_path = "/media/data"
         );
         assert!(
             html.contains(warn_snippet),
-            "save-shares response must include limited-fs guidance text"
+            "save-shares response must include limited-fs settings guidance text"
         );
     }
 
@@ -499,7 +500,7 @@ host_path = "/media/data"
         let token = auth.create_privileged_session("testadmin");
         let app = router(state);
 
-        let warn_snippet = "limited filesystem";
+        let settings_warn_snippet = "enable_acl=false";
 
         let index_req = Request::builder()
             .method("GET")
@@ -513,12 +514,16 @@ host_path = "/media/data"
             String::from_utf8(axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec())
                 .unwrap();
         assert!(
-            index_html.contains("alert-warning"),
-            "index must render fs_warning badge"
+            index_html.contains("ACL support disabled."),
+            "index must render subtle ACL-disabled note"
         );
         assert!(
-            index_html.contains(warn_snippet),
-            "index badge must include limited-fs guidance"
+            !index_html.contains("limited filesystem"),
+            "index must not render the detailed limited-fs warning badge"
+        );
+        assert!(
+            !index_html.contains("class=\"alert alert-warning\" style=\"margin: 0 0 6px 0"),
+            "index share card must not use warning alert for limited FS"
         );
 
         let settings_req = Request::builder()
@@ -537,8 +542,86 @@ host_path = "/media/data"
             "settings must render fs_warning badge"
         );
         assert!(
-            settings_html.contains(warn_snippet),
+            settings_html.contains(settings_warn_snippet),
             "settings badge must include limited-fs guidance"
+        );
+        assert!(
+            settings_html.contains("share_override_ganesha_path_0"),
+            "settings must render ganesha path override checkbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_renders_derived_ganesha_path_when_override_off() {
+        let (state, _tmp, _guard) = make_test_state_with_limited_fs_mountinfo();
+        let auth = state.auth.clone();
+        let token = auth.create_privileged_session("testadmin");
+        let app = router(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/settings")
+            .body(Body::empty())
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html =
+            String::from_utf8(axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec())
+                .unwrap();
+
+        assert!(
+            html.contains("id=\"share_ganesha_path_0\"")
+                && html.contains("value=\"/export/data\"")
+                && html.contains("data-default-path=\"/export/data\""),
+            "settings must show derived ganesha path in disabled field when override is off"
+        );
+        assert!(
+            !html.contains("share_override_ganesha_path_0\" value=\"true\" checked")
+                && !html.contains("share_override_ganesha_path_0\" checked value=\"true\""),
+            "override checkbox must be unchecked when ganesha_path is absent from TOML"
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_save_shares_omits_ganesha_path_and_rerenders_derived_default() {
+        let (state, _tmp, _guard) = make_test_state_with_limited_fs_mountinfo();
+        let config_path = state.config_path.clone();
+        let auth = state.auth.clone();
+        let token = auth.create_privileged_session("testadmin");
+        let app = router(state);
+
+        let body = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_export_0=&share_rw_0=true\
+&share_cache_profile_0=Default&share_enable_acl_0=auto&share_manage_gids_0=auto";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/settings/save-shares")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let written = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            !written.contains("ganesha_path"),
+            "save without override must not write ganesha_path to TOML"
+        );
+
+        let html = String::from_utf8(
+            axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(
+            html.contains("value=\"/export/data\"")
+                && html.contains("data-default-path=\"/export/data\""),
+            "post-save re-render must show derived ganesha path in disabled field"
         );
     }
 

@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use crate::{
-    compute_effective_flags, limited_fs_warning, probe_from_mountinfo, probe_fs_capabilities,
-    FsCapabilities, NfsKlldapConfig, Share,
+    compute_effective_flags, limited_fs_warning, limited_fs_warning_settings_ui,
+    probe_from_mountinfo, probe_fs_capabilities, FsCapabilities, NfsKlldapConfig, Share,
 };
 
 /// One line of fs-warnings output for a share.
@@ -109,12 +109,12 @@ pub fn limited_fs_warnings_only(cfg: &NfsKlldapConfig) -> Vec<FsShareWarning> {
         .collect()
 }
 
-/// UI badge text when serve path is on a limited filesystem.
+/// System Settings badge text when serve path is on a limited filesystem.
 pub fn share_fs_warning_message(cfg: &NfsKlldapConfig, share: &Share) -> Option<String> {
     share_fs_warning_message_with_mountinfo(cfg, share, None)
 }
 
-/// UI badge text using an explicit mountinfo fixture (tests).
+/// System Settings badge text using an explicit mountinfo fixture (tests).
 pub fn share_fs_warning_message_with_mountinfo(
     cfg: &NfsKlldapConfig,
     share: &Share,
@@ -124,8 +124,24 @@ pub fn share_fs_warning_message_with_mountinfo(
     if caps.acl_capable {
         None
     } else {
-        Some(limited_fs_warning(&share.name, &caps))
+        let eff = compute_effective_flags(share, &caps);
+        Some(limited_fs_warning_settings_ui(&share.name, &caps, &eff))
     }
+}
+
+/// True when the share serve path is on a limited (non-ACL-capable) filesystem.
+pub fn share_fs_acl_limited(cfg: &NfsKlldapConfig, share: &Share) -> bool {
+    share_fs_acl_limited_with_mountinfo(cfg, share, None)
+}
+
+/// Same as [`share_fs_acl_limited`] with an explicit mountinfo fixture (tests).
+pub fn share_fs_acl_limited_with_mountinfo(
+    cfg: &NfsKlldapConfig,
+    share: &Share,
+    mountinfo_path: Option<&Path>,
+) -> bool {
+    let caps = caps_for_share_with_mountinfo(cfg, share, mountinfo_path);
+    !caps.acl_capable
 }
 
 /// True when any share will emit Manage_Gids (explicit or probe default).
@@ -170,8 +186,16 @@ mod tests {
         cfg.validate_and_derive().expect("valid");
         let msg = share_fs_warning_message_with_mountinfo(&cfg, &cfg.shares[0], Some(&mountinfo))
             .expect("limited fixture must yield warning");
-        assert!(msg.contains("limited filesystem") || msg.contains("conservative mode"));
+        assert!(msg.contains("limited filesystem"));
+        assert!(msg.contains("enable_acl=false"));
+        assert!(!msg.contains("conservative mode"));
         assert!(share_fs_warning_message(&cfg, &cfg.shares[0]).is_none());
+        assert!(share_fs_acl_limited_with_mountinfo(
+            &cfg,
+            &cfg.shares[0],
+            Some(&mountinfo)
+        ));
+        assert!(!share_fs_acl_limited(&cfg, &cfg.shares[0]));
     }
 
     #[test]

@@ -57,7 +57,8 @@ pub fn plan_from_changes(
         ganesha,
         restart_sssd: identity_changed,
         restart_idhelper: identity_changed,
-        restart_webui: identity_changed,
+        // WebUI loads shares at startup; recycle whenever exports or identity change.
+        restart_webui: exports_changed || identity_changed,
     }
 }
 
@@ -78,12 +79,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exports_only_sighup_without_identity_recycle() {
+    fn exports_only_sighup_and_webui_recycle_without_identity_recycle() {
         let plan = plan_from_changes(true, false, false, true);
         assert_eq!(plan.ganesha, GaneshaAction::Sighup);
         assert!(!plan.restart_sssd);
         assert!(!plan.restart_idhelper);
-        assert!(!plan.restart_webui);
+        assert!(plan.restart_webui);
     }
 
     #[test]
@@ -115,6 +116,7 @@ mod tests {
         let plan = plan_from_changes(true, false, false, false);
         assert_eq!(plan.ganesha, GaneshaAction::StopStart);
         assert!(!plan.restart_sssd);
+        assert!(plan.restart_webui);
     }
 
     #[test]
@@ -122,5 +124,15 @@ mod tests {
         let plan = plan_from_changes(true, true, true, true);
         assert_eq!(plan.ganesha, GaneshaAction::Skip);
         assert!(plan.restart_sssd);
+        assert!(plan.restart_webui);
+    }
+
+    #[test]
+    fn host_nfs_export_only_recycles_webui_not_ganesha() {
+        let plan = plan_from_changes(true, false, true, true);
+        assert_eq!(plan.ganesha, GaneshaAction::Skip);
+        assert!(!plan.restart_sssd);
+        assert!(!plan.restart_idhelper);
+        assert!(plan.restart_webui);
     }
 }

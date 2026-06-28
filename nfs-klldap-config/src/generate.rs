@@ -584,7 +584,7 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
         "    Manage_Gids = false;\n".to_string()
     };
     let read_access_line = if !eff.enable_acl {
-        // no addl Ganesha 9.6 ACL-mask suppress opts (Disable+post+mg=false is set); Read post already present
+        // No additional Ganesha 9.6 options for further ACL-mask suppression in nfs_access_op were found (Disable_ACL + Read_Access_Check_Policy=post + Manage_Gids=false is the complete conservative set); idhelper runtime groups + post policy resolve the reported OP_ACCESS NOTSUPP.
         "    Read_Access_Check_Policy = \"post\";\n"
     } else {
         ""

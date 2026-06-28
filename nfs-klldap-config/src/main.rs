@@ -31,6 +31,20 @@ The binaries are intended to be called by the container entrypoint and the host 
     );
 }
 
+/// Emit share-unknown and limited-FS warnings exactly once for a loaded config.
+/// Called only from the generate/validate CLI paths (generate subprocess + direct CLI)
+/// so that supervisor idle ticks and internal loads stay silent.
+fn log_config_warnings(cfg: &NfsKlldapConfig) {
+    for w in &cfg.share_warnings {
+        eprintln!("WARN [nfs-klldap-config] {}", w.display_message());
+    }
+    for w in limited_fs_warnings_only(cfg) {
+        if !w.message.is_empty() {
+            eprintln!("WARN [nfs-klldap-config] {}", w.message);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -107,6 +121,7 @@ fn handle_init(path: &Path) -> Result<(), ConfigError> {
 
 fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
     let cfg = NfsKlldapConfig::load(path)?;
+    log_config_warnings(&cfg);
 
     if dry_run {
         println!("=== DRY RUN — would generate from {} ===", path.display());
@@ -169,6 +184,7 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
 
 fn handle_validate(path: &Path) -> Result<(), ConfigError> {
     let cfg = NfsKlldapConfig::load(path)?;
+    log_config_warnings(&cfg);
     println!("OK: {} is valid", path.display());
     println!("  ldap_uri : {}", cfg.ldap_uri);
     println!("  realm    : {}", cfg.effective_realm());

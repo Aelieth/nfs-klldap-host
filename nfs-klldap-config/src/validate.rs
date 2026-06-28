@@ -1,12 +1,11 @@
 //! Validates nfs-klldap.conf and builds realm, LDAP bases, and defaults.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::{
     config::{ShareFieldWarning, SHARE_KNOWN_KEYS},
-    compute_effective_flags, limited_fs_warning, probe_fs_capabilities, ConfigError, NfsKlldapConfig,
-    Share,
+    ConfigError, NfsKlldapConfig, Share,
 };
 
 /// True for empty realm or uppercase placeholder sentinels (EXAMPLE.COM / EXAMPLE).
@@ -20,30 +19,6 @@ pub(crate) fn is_kerberos_placeholder_realm(r: &str) -> bool {
         return false;
     }
     t.eq_ignore_ascii_case("EXAMPLE.COM") || t.eq_ignore_ascii_case("EXAMPLE")
-}
-
-fn log_share_warnings(warnings: &[ShareFieldWarning]) {
-    for w in warnings {
-        eprintln!("WARN [nfs-klldap-config] {}", w.display_message());
-    }
-}
-
-fn warn_share_filesystem_limited(cfg: &NfsKlldapConfig, share: &Share) {
-    let serve_path = cfg.serve_path_for(share);
-    let caps = probe_fs_capabilities(Path::new(&serve_path)).unwrap_or_else(|_| {
-        crate::FsCapabilities {
-            fstype: "unknown".into(),
-            mount_options: vec![],
-            acl_capable: true,
-        }
-    });
-    if !caps.acl_capable {
-        eprintln!(
-            "WARN [nfs-klldap-config] {}",
-            limited_fs_warning(&share.name, &caps)
-        );
-    }
-    let _ = compute_effective_flags(share, &caps);
 }
 
 /// Scan raw TOML for unrecognized keys in `[[shares]]` tables.
@@ -110,7 +85,6 @@ impl NfsKlldapConfig {
         })?;
 
         cfg.share_warnings = detect_share_unknown_keys(&contents);
-        log_share_warnings(&cfg.share_warnings);
         Ok(cfg)
     }
 
@@ -327,10 +301,6 @@ impl NfsKlldapConfig {
                     )));
                 }
             }
-        }
-
-        for share in &self.shares {
-            warn_share_filesystem_limited(self, share);
         }
 
         // Require bind credentials for sssd.

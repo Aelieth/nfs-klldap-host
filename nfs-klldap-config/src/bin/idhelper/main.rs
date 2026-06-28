@@ -30,7 +30,7 @@ use materialize::{
     sync_user_cache_from_snapshot,
 };
 #[cfg(test)]
-use nfs_klldap_config::{IdMapSnapshot, PosixUserEntry};
+use nfs_klldap_config::{FALLBACK_NOBODY_GID, IdMapSnapshot, PosixUserEntry};
 #[cfg(test)]
 use observer::{extract_candidate_principal, looks_like_client_hostname};
 use resolve::{resolve_groups_for_principal, resolve_principal};
@@ -110,12 +110,17 @@ fn handle_cli(args: &[String]) {
             dlog!("cli RESOLVE p=\"{}\"", p);
             let json_flag = args.iter().any(|a| a == "--json" || a == "-j");
 
+            // Prefer the principal's own @REALM for classify (mismatch robustness for host/user@).
+            let eff_realm = if let Some((_, r)) = p.rsplit_once('@') {
+                if !r.trim().is_empty() { r.trim().to_string() } else { realm.clone() }
+            } else { realm.clone() };
+
             // Prefer live daemon cache/state via socket. Observer results.
             let r = if let Some(r) = try_resolve_via_socket(p) {
                 r
             } else {
                 let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
-                resolve_principal(p, &realm, &server_variants, &mut cache)
+                resolve_principal(p, &eff_realm, &server_variants, &mut cache)
             };
 
             if json_flag {
@@ -138,11 +143,16 @@ fn handle_cli(args: &[String]) {
             }
             dlog!("cli GRPS p=\"{}\"", p);
             let json_flag = args.iter().any(|a| a == "--json" || a == "-j");
+            // Prefer the principal's own @REALM for classify (supports mismatch cases
+            // e.g. host/foo@OTHER when runtime get_realm() is different).
+            let eff_realm = if let Some((_, r)) = p.rsplit_once('@') {
+                if !r.trim().is_empty() { r.trim().to_string() } else { realm.clone() }
+            } else { realm.clone() };
             let gs = if let Some(gs) = try_grps_via_socket(p) {
                 gs
             } else {
                 let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
-                resolve_groups_for_principal(p, &realm, &server_variants, &mut cache)
+                resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache)
             };
             if json_flag {
                 let j = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
@@ -919,7 +929,7 @@ mod tests {
         assert_eq!(r1.uid, 0); assert_eq!(r1.gid, 0); assert_eq!(r1.kind, PrincipalKind::Machine);
 
         let gs0 = resolve_groups_for_principal("host/blue-lt@EXAMPLE.COM", &realm, &variants, &mut cache);
-        assert_eq!(gs0, vec![0]);
+        assert_eq!(gs0, vec![FALLBACK_NOBODY_GID]);
 
         let r2 = resolve_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache);
         let gs_user = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache);
@@ -996,5 +1006,64 @@ mod tests {
         let line = r#"principal2uid : Get uid for testuser1@EXAMPLE.COM using nfsidmap"#;
         let r = extract_candidate_principal(line, "EXAMPLE.COM");
         assert_eq!(r, Some("testuser1@EXAMPLE.COM".to_string()));
+    }
+
+    #[test]
+    fn resolve_groups_for_principal_supports_full_user_and_host_forms_via_ldap_primitives() {
+        // Step 1: direct drive of shipped resolve_groups_for_principal on full principal forms.
+        // Uses TEST shims (same as SSSD resolver path) so no live LDAP required.
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        crate::resolve::reset_id_resolver_for_test();
+        let old_force = std::env::var("TEST_FORCE_LDAP_UID_GID").ok();
+        let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        // ensure getent misses @ so TEST_FORCE + resolver groups path exercised (self contained)
+        let tmpf = tempfile::tempdir().unwrap();
+        let fbin = tmpf.path().join("bin");
+        std::fs::create_dir_all(&fbin).unwrap();
+        let gsh = fbin.join("getent");
+        std::fs::write(&gsh, "#!/bin/sh\nif [ \"$1\" = \"passwd\" ] && echo \"$2\" | grep -q '@'; then exit 1; fi\nexec /usr/bin/getent \"$@\" || exec /bin/getent \"$@\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut p = std::fs::metadata(&gsh).unwrap().permissions();
+        p.set_mode(0o755);
+        std::fs::set_permissions(&gsh, p).unwrap();
+        std::env::set_var("PATH", format!("{}:{}", fbin.display(), old_path));
+        std::env::set_var("TEST_FORCE_LDAP_UID_GID", "3788:100");
+        // u: and g: shims seed primary + supplemental posix groups for the user@ form (reuse resolver primitives)
+        // "staff" is special-cased in lookup + group_gid_from_dn shims when TEST_REBULK_POPULATE set
+        std::env::set_var("TEST_REBULK_POPULATE", "u:testuser1:3788:100;g:staff:2002");
+        let mut cache = IdCache::default();
+        let realm = "SATOMLIN.COM".to_string();
+        let variants: Vec<String> = vec![];
+        let gs_user = resolve_groups_for_principal("testuser1@SATOMLIN.COM", &realm, &variants, &mut cache);
+        let gs_host = resolve_groups_for_principal("host/blue-lt@SATOMLIN.COM", &realm, &variants, &mut cache);
+        std::env::set_var("PATH", old_path);
+        if let Some(v) = old_force { std::env::set_var("TEST_FORCE_LDAP_UID_GID", v); } else { std::env::remove_var("TEST_FORCE_LDAP_UID_GID"); }
+        if let Some(v) = old_pop { std::env::set_var("TEST_REBULK_POPULATE", v); } else { std::env::remove_var("TEST_REBULK_POPULATE"); }
+        // user@REALM must return posix group list with >1 entries (primary + at least one supp via resolver)
+        assert!(gs_user.len() > 1, "user@ form must yield >1 posix gids via LDAP path, got {:?}", gs_user);
+        assert!(gs_user.contains(&2002), "user groups must include supplemental from memberOf/gid path");
+        // host/hostname@REALM maps to nobody-equivalent dedicated group (not [0])
+        assert_eq!(gs_host, vec![FALLBACK_NOBODY_GID], "host principal must map groups to nobody-equivalent");
+    }
+
+    #[test]
+    fn cli_grps_and_resolve_handle_host_user_principal_realm_mismatch() {
+        // Evidence for gap fix: grps/resolve on full form with @OTHERREALM while runtime get_realm() may differ.
+        // classify must still treat host/ as Machine (via prefix) and user@ as user path.
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        crate::resolve::reset_id_resolver_for_test();
+        // no TEST_ force here; will fallback but classify path must not early-reject machine
+        let mut cache = IdCache::default();
+        // Force runtime realm different from principal's
+        // (the CLI paths now extract eff_realm from p; classify early-returns machine for prefix)
+        let r_host = resolve_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &vec![], &mut cache);
+        assert_eq!(r_host.kind, PrincipalKind::Machine, "host/ must classify machine even on realm mismatch");
+        let gs_host = resolve_groups_for_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &vec![], &mut cache);
+        assert_eq!(gs_host, vec![FALLBACK_NOBODY_GID]);
+
+        // user@ mismatch should go user path (may fallback)
+        let r_user = resolve_principal("testuser1@OTHERREALM", "SATOMLIN.COM", &vec![], &mut cache);
+        assert!(r_user.kind != PrincipalKind::Machine);
     }
 }

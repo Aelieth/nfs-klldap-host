@@ -209,6 +209,12 @@ case "$CMD" in
             echo "idhelper binary missing"
             exit 1
         fi
+        # also exercise the config-level id resolution check (startup/validate path)
+        CONFIG="${NFS_CONFIG:-/config/nfs-klldap.conf}"
+        CONFIG_BIN_PATH="$(resolve_config_bin)" || true
+        if [ -n "$CONFIG_BIN_PATH" ] && [ -f "$CONFIG" ]; then
+            "$CONFIG_BIN_PATH" validate --config "$CONFIG" >/dev/null 2>&1 || true
+        fi
         # surface exact ID MAPPER warnings
         if [ -f /var/log/ganesha.log ]; then
             echo "[ganesha-ctl] recent ID MAPPER from ganesha.log:"

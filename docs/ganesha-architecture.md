@@ -28,7 +28,7 @@ See container/healthcheck.sh for service checks. See TESTING.md for test coverag
 
 ## ACL and filesystem compatibility
 
-At validate/generate time nfs-klldap-config probes `/proc/self/mountinfo` for each share's **serve path** (`ganesha_path` when set, otherwise the derived container path from `host_path`). Normal filesystems (ext4, xfs, btrfs with ACL) need no extra configuration. Limited filesystems (btrfs+noacl, vfat/fat, ntfs) automatically get `Disable_ACL = true` and `Manage_Gids = false` in the Ganesha 9.6 EXPORT block plus a single WARN — basic file access works without client error 524.
+At validate/generate time nfs-klldap-config probes `/proc/self/mountinfo` for each share's **serve path** (`ganesha_path` when set, otherwise the derived container path from `host_path`). Normal filesystems (ext4, xfs, btrfs with ACL) need no extra configuration. Limited filesystems (btrfs+noacl, vfat/fat, ntfs) automatically get `Disable_ACL = true; Manage_Gids = false; Read_Access_Check_Policy = "post";` plus the comment "posix-only conservative mode for noacl btrfs (ZimaOS)" in the Ganesha 9.6 EXPORT block plus a WARN — the hardened conservative path delivers reliable POSIX access + readdir/stat under krb5p (idhelper provides groups for user@REALM and host/ forms). No NFSv4 ACL features are supported or enabled; the contract is basic POSIX modes + krb5p.
 
 **Staging pattern:** set `ganesha_path` to an ACL-capable tree (e.g. ext4 under `/export/staging/...`) while keeping `host_path` for WebUI chown and validation. Use `[ganesha] post_generate_hook` (see `examples/post-generate-staging-sync.sh`) to sync data into the staging path after each generate.
 
@@ -36,7 +36,7 @@ At validate/generate time nfs-klldap-config probes `/proc/self/mountinfo` for ea
 |------------|------------------|
 | ext4, xfs | Full NFSv4.2 ACL features (default) |
 | btrfs + `acl` | Full features |
-| btrfs + `noacl` | Auto limited mode |
+| btrfs + `noacl` | Auto limited/posix-only conservative mode (no NFSv4 ACLs; Disable_ACL+Read_Access_Check_Policy=post; basic POSIX+krb5p readdir/stat) |
 | vfat/fat, ntfs | Auto limited mode |
 
-Explicit `enable_acl` / `manage_gids` in nfs-klldap.conf override probe defaults. On limited filesystems (detected via mountinfo), `enable_acl=false` and `manage_gids=false` are applied automatically; capable filesystems default to full native behavior. Both modes are first-class and automatic.
+Explicit `enable_acl` / `manage_gids` in nfs-klldap.conf override probe defaults. On limited filesystems (detected via mountinfo), the conservative flags + policy are applied automatically; capable filesystems default to full native behavior. Both modes are first-class and automatic. Current limitations: no NFSv4 ACL features; ACL-dependent ops return NOTSUPP by design.

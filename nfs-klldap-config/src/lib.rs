@@ -51,16 +51,71 @@ pub use signals::{
 pub use constants::PROC_COMM_NAME_MAX;
 
 pub use fs_probe::{
-    compute_effective_flags, limited_fs_warning, limited_fs_warning_settings_ui,
-    probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags, FsCapabilities,
+    compute_effective_flags, probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags,
+    FsCapabilities,
 };
 pub use fs_warnings::{
-    any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warnings_only,
-    share_fs_acl_limited, share_fs_acl_limited_with_mountinfo, share_fs_warning_message,
+    any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warning,
+    limited_fs_warning_settings_ui, limited_fs_warnings_only, share_fs_acl_limited,
+    share_fs_acl_limited_with_mountinfo, share_fs_warning_message,
     share_fs_warning_message_with_mountinfo, FsShareWarning,
 };
 pub use hook::{effective_post_generate_hook, run_post_generate_hooks};
 pub use generate::generate_all;
+
+/// Lightweight check (for post-generate / startup) that idhelper CLI can resolve
+/// at least one user@REALM and one host/hostname@REALM using the GRPS path
+/// (the hook Ganesha idmapper relies on). Returns (success, message).
+/// Emits no side effects; caller logs WARN only on !ok. Reuses existing CLI.
+pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool, String) {
+    if std::env::var("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK").is_ok() {
+        return (true, "skipped".into());
+    }
+    let idh = {
+        if let Ok(p) = std::env::var("IDHELPER_BIN") {
+            if !p.trim().is_empty() { p } else { String::new() }
+        } else { String::new() }
+    };
+    let idh = if !idh.is_empty() { idh } else if let Ok(exe) = std::env::current_exe() {
+        if let Some(d) = exe.parent() {
+            let c = d.join("nfs-klldap-idhelper");
+            if c.exists() { c.display().to_string() } else { "nfs-klldap-idhelper".into() }
+        } else { "nfs-klldap-idhelper".into() }
+    } else { "nfs-klldap-idhelper".into() };
+    // Allow tests to force a specific user principal (to exercise the fallback/incomplete path)
+    let user_sample = std::env::var("TEST_IDHELPER_CHECK_USER_PRINCIPAL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| format!("testuser1@{}", realm));
+    let host_p = format!("host/{}@{}", host_short, realm);
+    let user_p = if user_sample.contains('@') { user_sample } else { format!("{}@{}", user_sample, realm) };
+    let mut msgs = vec![];
+    let mut ok = true;
+    for (lab, p) in [("user", user_p.as_str()), ("host", host_p.as_str())] {
+        match std::process::Command::new(&idh).arg("grps").arg(p).output() {
+            Ok(o) if o.status.success() => {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                let parts: Vec<&str> = s.strip_prefix("OK ").unwrap_or(&s).split(|c: char| "| ,".contains(c)).filter(|t| !t.trim().is_empty()).collect();
+                let gids: Vec<u32> = parts.iter().filter_map(|t| t.trim().parse::<u32>().ok()).collect();
+                if gids.is_empty() {
+                    ok = false;
+                    msgs.push(format!("{}({}): empty", lab, p));
+                } else if lab == "user" && gids.iter().all(|&g| g == 65534 || g == 0) {
+                    // Step1/3: user@ must get real posix groups; fallback-only is incomplete
+                    ok = false;
+                    msgs.push(format!("{}({}): incomplete (only fallback {})", lab, p, gids[0]));
+                } else {
+                    msgs.push(format!("{}({}):{}gids", lab, p, gids.len()));
+                }
+            }
+            Ok(_o) => { ok=false; msgs.push(format!("{}({}):exit", lab, p)); }
+            Err(_) => { ok=false; msgs.push(format!("{}({}):noexec", lab, p)); }
+        }
+    }
+    let m = if ok { format!("idhelper check OK: {}", msgs.join(" ")) } else { format!("idhelper resolution incomplete (user+host principals): {}", msgs.join("; ")) };
+    (ok, m)
+}
+
 pub use hostname::{
     format_nfs_principal_list, get_consistent_hostname, host_nfs_active, host_nfs_from_env,
     looks_like_docker_default_hostname, nfs_keytab_host_matches, nfs_keytab_host_variants,
@@ -931,5 +986,53 @@ mod tests {
             Some("HOST.TESTDOMAIN.LOCAL".into())
         );
         assert_eq!(derive_realm_from_uri(""), None);
+    }
+
+    #[test]
+    fn check_idhelper_sample_resolutions_detects_user_fallback_as_incomplete() {
+        // Drives the shipped check_idhelper_sample_resolutions fn with conditions that
+        // cause the spawned idhelper (for a user principal) to return only the nobody fallback.
+        // This exercises the "incomplete (only fallback)" branch added for Step 3.
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
+        // Ensure no TEST shims that would give good groups
+        let old_test_force = std::env::var("TEST_FORCE_LDAP_UID_GID").ok();
+        let old_rebulk = std::env::var("TEST_REBULK_POPULATE").ok();
+        std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
+        std::env::remove_var("TEST_REBULK_POPULATE");
+
+        // Make getent fail for any @ name so the idhelper child falls back for the user sample
+        let td = tempfile::tempdir().unwrap();
+        let fbin = td.path().join("bin");
+        std::fs::create_dir_all(&fbin).unwrap();
+        let gsh = fbin.join("getent");
+        std::fs::write(&gsh, "#!/bin/sh\nif [ \"$1\" = \"passwd\" ] && echo \"$2\" | grep -q '@'; then exit 1; fi\nexec /usr/bin/getent \"$@\" || exec /bin/getent \"$@\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut p = std::fs::metadata(&gsh).unwrap().permissions(); p.set_mode(0o755); std::fs::set_permissions(&gsh, p).unwrap();
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", fbin.display(), old_path));
+
+        // Use a controlled wrapper as the "idhelper" so the check fn (shipped code) is exercised
+        // and always returns only the fallback gid for the user principal (no real binary dependency).
+        let wrap = fbin.join("idhelper-wrap");
+        std::fs::write(&wrap, "#!/bin/sh\nif [ \"$1\" = \"grps\" ]; then echo 'OK 65534'; exit 0; fi\nexit 0\n").unwrap();
+        let mut wp = std::fs::metadata(&wrap).unwrap().permissions(); wp.set_mode(0o755); std::fs::set_permissions(&wrap, wp).unwrap();
+        std::env::set_var("IDHELPER_BIN", wrap.to_string_lossy().to_string());
+
+        // Override the user principal used by the check to a fresh name (to avoid any cache hit in child)
+        std::env::set_var("TEST_IDHELPER_CHECK_USER_PRINCIPAL", "unknownuser987@SATOMLIN.COM");
+
+        // Call the shipped fn directly (this is the real exported check used by generate/validate/startup)
+        let (ok, msg) = check_idhelper_sample_resolutions("SATOMLIN.COM", "localhost");
+        // Restore env
+        std::env::set_var("PATH", old_path);
+        std::env::remove_var("IDHELPER_BIN");
+        if let Some(v) = old_test_force { std::env::set_var("TEST_FORCE_LDAP_UID_GID", v); } else { std::env::remove_var("TEST_FORCE_LDAP_UID_GID"); }
+        if let Some(v) = old_rebulk { std::env::set_var("TEST_REBULK_POPULATE", v); } else { std::env::remove_var("TEST_REBULK_POPULATE"); }
+        std::env::remove_var("TEST_IDHELPER_CHECK_USER_PRINCIPAL");
+
+        assert!(!ok, "check must return false for user fallback-only case");
+        assert!(msg.contains("incomplete (only fallback"), "expected incomplete message, got: {}", msg);
+        assert!(msg.contains("unknownuser987"), "message should mention the forced user principal");
     }
 }

@@ -1,10 +1,11 @@
 //! Filesystem compatibility warnings for shares (reuses fs_probe).
+//! Warning text strings for limited-FS (Step 4 / acceptance) live here.
 
 use std::path::Path;
 
 use crate::{
-    compute_effective_flags, limited_fs_warning, limited_fs_warning_settings_ui,
-    probe_from_mountinfo, probe_fs_capabilities, FsCapabilities, NfsKlldapConfig, Share,
+    compute_effective_flags, probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags,
+    FsCapabilities, NfsKlldapConfig, Share,
 };
 
 /// One line of fs-warnings output for a share.
@@ -53,6 +54,43 @@ fn default_capable_unknown() -> FsCapabilities {
         mount_options: vec![],
         acl_capable: true,
     }
+}
+
+fn limited_fs_opts_suffix(caps: &FsCapabilities) -> String {
+    if caps.mount_options.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", caps.mount_options.join(","))
+    }
+}
+
+/// One-line WARN for limited-FS shares (validate/dry-run/startup).
+/// Hardened text (Step4) lives in fs_warnings.rs per acceptance criteria.
+pub fn limited_fs_warning(share_name: &str, caps: &FsCapabilities) -> String {
+    let opts = limited_fs_opts_suffix(caps);
+    format!(
+        "share \"{share_name}\": {fstype}{opts} limited filesystem — conservative mode (enable_acl=false, manage_gids=false, Read_Access_Check_Policy=post); posix-only (no NFSv4 ACL features); basic POSIX + krb5p readdir/stat is the supported contract; relies on idhelper for identities",
+        share_name = share_name,
+        fstype = caps.fstype,
+        opts = opts
+    )
+}
+
+/// Shorter limited-FS line for the WebUI System Settings share badge.
+pub fn limited_fs_warning_settings_ui(
+    share_name: &str,
+    caps: &FsCapabilities,
+    eff: &EffectiveShareFlags,
+) -> String {
+    let opts = limited_fs_opts_suffix(caps);
+    format!(
+        "share \"{share_name}\": {fstype}{opts} limited filesystem — posix-only conservative (enable_acl={enable_acl}, manage_gids={manage_gids}, Read_Access_Check_Policy=post); no NFSv4 ACLs; basic POSIX+krb5p supported",
+        share_name = share_name,
+        fstype = caps.fstype,
+        opts = opts,
+        enable_acl = eff.enable_acl,
+        manage_gids = eff.manage_gids,
+    )
 }
 
 fn caps_for_share(cfg: &NfsKlldapConfig, share: &Share) -> FsCapabilities {
@@ -188,7 +226,7 @@ mod tests {
             .expect("limited fixture must yield warning");
         assert!(msg.contains("limited filesystem"));
         assert!(msg.contains("enable_acl=false"));
-        assert!(!msg.contains("conservative mode"));
+        assert!(msg.contains("posix-only") || msg.contains("conservative"));
         assert!(share_fs_warning_message(&cfg, &cfg.shares[0]).is_none());
         assert!(share_fs_acl_limited_with_mountinfo(
             &cfg,

@@ -25,6 +25,19 @@ pub fn machine_short_name(principal: &str) -> &str {
 /// Classify machine vs user principals for Ganesha Root_Kerberos_Principal.
 pub fn classify_principal(principal: &str, realm: &str, server_variants: &[String]) -> (bool, String) {
     let principal = principal.trim();
+    let local = principal_local_part(principal).to_ascii_lowercase();
+
+    // Machine prefixes (host/, nfs/, root/) are structural; classify as machine even if
+    // the principal's @REALM mismatches the runtime/config realm (CLI grps/check, shim
+    // and Ganesha calls may present host/ with client view of realm). Realm mismatch
+    // reject is only for non-machine user principals.
+    if MACHINE_PRINCIPAL_PREFIXES
+        .iter()
+        .any(|pref| local.starts_with(pref))
+    {
+        return (true, format!("matches well-known machine prefix in {}", local));
+    }
+
     let realm_u = realm.trim().to_ascii_uppercase();
     if !realm_u.is_empty() && principal.contains('@') {
         let p_realm = principal
@@ -37,15 +50,6 @@ pub fn classify_principal(principal: &str, realm: &str, server_variants: &[Strin
                 format!("principal realm {} != configured {}", p_realm, realm_u),
             );
         }
-    }
-
-    let local = principal_local_part(principal).to_ascii_lowercase();
-
-    if MACHINE_PRINCIPAL_PREFIXES
-        .iter()
-        .any(|pref| local.starts_with(pref))
-    {
-        return (true, format!("matches well-known machine prefix in {}", local));
     }
 
     for v in server_variants {

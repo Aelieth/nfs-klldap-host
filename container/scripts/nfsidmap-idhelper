@@ -121,8 +121,9 @@ if [ -x "$IDHELPER" ]; then
     resolved_gid=""
     resolved_gids=""
 
-    # For gid mode on user principals (uid2grp/manage_gids path), prefer GRPS to get primary+supp gids.
-    if [ "$mode" = "gid" ] && [ -n "$principal" ] && echo "$principal" | grep -q '@' && ! echo "$principal" | grep -qiE '^(host| nfs|root)/'; then
+    # For gid mode on @ principals (uid2grp/manage_gids path), prefer GRPS (idhelper now handles both user@REALM and host/xxx@REALM).
+    # Host forms return nobody-equivalent group list; users return full posix supplemental list. Reuses LDAP primitives.
+    if [ "$mode" = "gid" ] && [ -n "$principal" ] && echo "$principal" | grep -q '@'; then
         # always --json for grps to avoid name digits in text output polluting list
         if glist="$($IDHELPER grps "$principal" --json 2>/dev/null || true)"; then
             if [ -n "$glist" ]; then
@@ -169,8 +170,8 @@ if [ -x "$IDHELPER" ]; then
         exit 0
     fi
 
-    # For user@ principals do short retry for gid cases too (group alloc).
-    if [ -n "$principal" ] && echo "$principal" | grep -q '@' && ! echo "$principal" | grep -qiE '^(host| nfs|root)/'; then
+    # Retry for any @ principals (user or host forms) in gid cases too.
+    if [ -n "$principal" ] && echo "$principal" | grep -q '@'; then
         if [ -z "$resolved_uid" ] || [ -z "$resolved_gid" ]; then
             sleep 0.15
             if [ "$mode" = "gid" ] && [ -z "$resolved_gid" ]; then

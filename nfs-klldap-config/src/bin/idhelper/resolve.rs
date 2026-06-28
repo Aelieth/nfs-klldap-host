@@ -120,7 +120,10 @@ pub(crate) fn resolve_groups_for_principal(
 ) -> Vec<u32> {
     let r = resolve_principal(principal, realm, server_variants, cache);
     if r.kind == PrincipalKind::Machine {
-        return vec![0];
+        // Host/machine principals (host/xxx@REALM etc) map to nobody-equivalent group for
+        // uid2grp / GRPS path (per conservative noacl handling); resolve_principal itself
+        // still returns uid/gid 0 for machine creds.
+        return vec![FALLBACK_NOBODY_GID];
     }
     let primary = r.gid;
     let mut extra: Vec<u32> = vec![];

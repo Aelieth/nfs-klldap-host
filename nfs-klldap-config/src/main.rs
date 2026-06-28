@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::process::exit;
 
 use nfs_klldap_config::{
-    compute_effective_flags, generate_all, get_consistent_hostname, limited_fs_warnings_only,
-    probe_fs_capabilities, write_default_config_if_missing, ConfigError, FsCapabilities,
-    GenerationPaths, NfsKlldapConfig, Share,
+    check_idhelper_sample_resolutions, compute_effective_flags, generate_all,
+    get_consistent_hostname, limited_fs_warnings_only, probe_fs_capabilities,
+    write_default_config_if_missing, ConfigError, FsCapabilities, GenerationPaths,
+    NfsKlldapConfig, Share,
 };
 
 fn usage() {
@@ -169,6 +170,20 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
     }
     generate_all(&cfg, &paths)?;
 
+    // Step 3: lightweight post-generate idhelper resolution check (non-fatal WARN only).
+    // Drives the real CLI "grps" path so Ganesha idmapper will receive groups for
+    // user@REALM and host/hostname@REALM forms on the exports.
+    let realm = cfg.effective_realm();
+    let host_short = get_consistent_hostname()
+        .map(|h| h.hostname.split('.').next().unwrap_or(&h.hostname).to_string())
+        .unwrap_or_else(|_| "localhost".to_string());
+    let (id_ok, id_msg) = check_idhelper_sample_resolutions(&realm, &host_short);
+    if id_ok {
+        eprintln!("INFO [nfs-klldap-config] {}", id_msg);
+    } else {
+        eprintln!("WARN [nfs-klldap-config] {}", id_msg);
+    }
+
     println!("Generated configs from {}", path.display());
     println!("  sssd:    {}", paths.sssd_conf.display());
     println!("  krb5:    {}", paths.krb5_conf.display());
@@ -185,6 +200,17 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
 fn handle_validate(path: &Path) -> Result<(), ConfigError> {
     let cfg = NfsKlldapConfig::load(path)?;
     log_config_warnings(&cfg);
+    // Also run the lightweight idhelper check on validate/startup paths (per objective)
+    let realm = cfg.effective_realm();
+    let host_short = get_consistent_hostname()
+        .map(|h| h.hostname.split('.').next().unwrap_or(&h.hostname).to_string())
+        .unwrap_or_else(|_| "localhost".to_string());
+    let (id_ok, id_msg) = check_idhelper_sample_resolutions(&realm, &host_short);
+    if id_ok {
+        eprintln!("INFO [nfs-klldap-config] {}", id_msg);
+    } else {
+        eprintln!("WARN [nfs-klldap-config] {}", id_msg);
+    }
     println!("OK: {} is valid", path.display());
     println!("  ldap_uri : {}", cfg.ldap_uri);
     println!("  realm    : {}", cfg.effective_realm());

@@ -352,7 +352,7 @@ access_provider = {access}"#,
     out
 }
 
-fn write_krb5_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError> {
+fn write_krb5_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError> { 
     let realm = cfg.effective_realm();
     let kdc_host = crate::extract_host_from_uri(&cfg.ldap_uri);
 
@@ -569,7 +569,9 @@ EXPORT_DEFAULTS {{
 
 /// Build Ganesha 9.6 EXPORT ACL lines.
 /// Auto-detect comment from probe results. enable_acl semantics: !enable => Disable_ACL.
-pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String) {
+/// In limited-FS (noacl) case also emit Read_Access_Check_Policy=post for reliable POSIX
+/// OP_ACCESS/GETATTR under krb5p (hardened conservative mode).
+pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String, String) {
     let eff = compute_effective_flags(share, caps);
     let disable_acl_line = if !eff.enable_acl {
         "    Disable_ACL = true;\n".to_string()
@@ -581,22 +583,40 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
     } else {
         "    Manage_Gids = false;\n".to_string()
     };
+    let read_access_line = if !eff.enable_acl {
+        "    Read_Access_Check_Policy = \"post\";\n"
+    } else {
+        ""
+    }.to_string();
     let auto_comment = if eff.auto_applied {
         let opts = if caps.mount_options.is_empty() {
             String::new()
         } else {
             format!(" ({})", caps.mount_options.join(","))
         };
-        format!(
-            "# Auto-detected: {}{opts} — ACL-dependent NFSv4 ops disabled for compatibility.\n\
-             # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
-            caps.fstype,
-            opts = opts
-        )
+        // distinct comment block for hardened posix-only on noacl (ZimaOS) as specified
+        if !eff.enable_acl {
+            format!(
+                "# posix-only conservative mode for noacl btrfs (ZimaOS)\n\
+                 # Disable_ACL + Manage_Gids=false + Read_Access_Check_Policy=post\n\
+                 # basic POSIX + krb5p readdir/stat supported; no NFSv4 ACL features.\n\
+                 # Auto-detected: {}{opts} — ACL-dependent NFSv4 ops disabled for compatibility.\n\
+                 # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
+                caps.fstype,
+                opts = opts
+            )
+        } else {
+            format!(
+                "# Auto-detected: {}{opts} — ACL-dependent NFSv4 ops disabled for compatibility.\n\
+                 # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
+                caps.fstype,
+                opts = opts
+            )
+        }
     } else {
         String::new()
     };
-    (disable_acl_line, manage_gids_line, auto_comment)
+    (disable_acl_line, manage_gids_line, auto_comment, read_access_line)
 }
 
 fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(), ConfigError> {
@@ -655,7 +675,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             mount_options: vec![],
             acl_capable: true,
         });
-        let (disable_acl_line, manage_gids_line, auto_comment) =
+        let (disable_acl_line, manage_gids_line, auto_comment, read_access_line) =
             export_fs_directives(share, &caps);
         // CLIENT block keeps Protocols=4 and skips access check policy.
         let client_block = format!(
@@ -680,7 +700,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
     Pseudo = {};
     SecType = {};
     Squash = {};
-{disable_acl_line}{manage_gids_line}{pref_read_line}{pref_write_line}{client_block}    FSAL {{
+{disable_acl_line}{manage_gids_line}{read_access_line}{pref_read_line}{pref_write_line}{client_block}    FSAL {{
         Name = VFS;
     }}
 }}
@@ -695,6 +715,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             krb_note = krb_note,
             disable_acl_line = disable_acl_line,
             manage_gids_line = manage_gids_line,
+            read_access_line = read_access_line,
             pref_read_line = pref_read_line,
             pref_write_line = pref_write_line,
             client_block = client_block
@@ -913,7 +934,7 @@ mod tests {
             mount_options: vec![],
             acl_capable: true,
         };
-        let (_, manage_line, _) = export_fs_directives(&share, &caps);
+        let (_, manage_line, _, _) = export_fs_directives(&share, &caps);
         assert!(manage_line.contains("Manage_Gids = false;"));
     }
 
@@ -925,11 +946,12 @@ mod tests {
             mount_options: vec!["noacl".into()],
             acl_capable: false,
         };
-        let (disable_line, manage_line, comment) = export_fs_directives(&share, &caps);
+        let (disable_line, manage_line, comment, read_line) = export_fs_directives(&share, &caps);
         assert!(disable_line.contains("Disable_ACL = true;"));
         assert!(manage_line.contains("Manage_Gids = false;"));
         assert!(comment.contains("Auto-detected: btrfs"));
-        assert!(!comment.contains("Read_Access_Check_Policy"));
+        assert!(read_line.contains("Read_Access_Check_Policy = \"post\";"));
+        assert!(comment.contains("posix-only conservative mode for noacl btrfs (ZimaOS)"));
         assert!(!comment.contains("Manage_Gids_Expiration"));
     }
 

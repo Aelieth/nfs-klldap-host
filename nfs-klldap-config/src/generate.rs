@@ -517,7 +517,7 @@ NFSV4 {{
 EXPORT_DEFAULTS {{
     SecType = {sec};
     Protocols = {proto};
-    # Read_Access_Check_Policy omitted (9.6 default).
+    # Read_Access_Check_Policy omitted (9.6 default `pre`). Limited/noacl shares emit `post` + comment in per-export fragments.
 }}
 "#,
         realm = realm,
@@ -1131,7 +1131,7 @@ mod tests {
         let ganesha = std::fs::read_to_string(&paths.ganesha_conf).unwrap_or_default();
         assert!(!ganesha.contains("IdmapConf"));
         assert!(!ganesha.contains("idmapd.conf"));
-        // Read_Access_Check_Policy omitted. 9.6 default pre applies.
+        // Read_Access_Check_Policy omitted (9.6 default `pre`). Limited FS uses `post`.
         assert!(
             !ganesha.contains("Read_Access_Check_Policy ="),
             "Read_Access_Check_Policy = must not appear in main ganesha.conf"

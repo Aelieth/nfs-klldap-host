@@ -123,9 +123,16 @@ pub(crate) fn resolve_groups_for_principal(
     cache: &mut IdCache,
 ) -> Vec<u32> {
     let r = resolve_principal(principal, realm, server_variants, cache);
-    // Any host/*@REALM machine principal maps to root gid for uid2grp/getgrouplist.
+    // Machine principals: delegate supplemental gids to identity (uid2grp_allocate_by_principal path).
     let gids = if r.kind == PrincipalKind::Machine {
-        vec![MACHINE_GID]
+        if let Some((resolver, dn, pw)) = get_or_init_resolver() {
+            nfs_klldap_identity::resolve_groups_for_principal(resolver, principal, dn, pw)
+                .into_iter()
+                .map(|g| g as u32)
+                .collect()
+        } else {
+            vec![MACHINE_GID]
+        }
     } else {
         let primary = r.gid;
         let mut extra: Vec<u32> = vec![];
@@ -549,6 +556,23 @@ mod tests {
         let (pw, gr) = build_nss_snapshot(&cache, Some(&lgs));
         assert!(pw.iter().any(|l| l.contains("testuser1@EX.COM:x:3001:100")), "@ form for getpwnam");
         assert!(gr.iter().any(|l| l.contains("staff:x:2002:testuser1")), "supp group row with member");
+    }
+
+    #[test]
+    fn resolve_groups_machine_principal_delegates_to_identity_root_gid() {
+        // Drives shipped idhelper resolve_groups_for_principal (uid2grp/GRPS entry) for host/*@REALM.
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        reset_id_resolver_for_test();
+        std::env::set_var("TEST_REBULK_POPULATE", "u:ignored:1:1");
+        let mut cache = IdCache::default();
+        let gs = resolve_groups_for_principal("host/blue-lt@SATOMLIN.COM", "SATOMLIN.COM", &[], &mut cache);
+        std::env::remove_var("TEST_REBULK_POPULATE");
+        eprintln!(
+            "[idhelper-test] host/blue-lt@SATOMLIN.COM gids={:?} via identity delegation (expect [0])",
+            gs
+        );
+        assert_eq!(gs, vec![MACHINE_GID], "machine principal must return root gid via identity path");
+        assert!(!gs.contains(&FALLBACK_NOBODY_GID));
     }
 
     #[test]

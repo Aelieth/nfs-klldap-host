@@ -1180,6 +1180,11 @@ mod tests {
         let gs_host = resolve_groups_for_principal(&r, "host/blue-lt@SATOMLIN.COM", "dn", "pw");
         let gs_host_box = r.resolve_groups_for_principal("host/box@REALM", "dn", "pw");
         std::env::remove_var("TEST_REBULK_POPULATE");
+        eprintln!(
+            "[identity-test] machine host/blue-lt@SATOMLIN.COM gids={:?} (expect [0], not 65534)",
+            gs_host
+        );
+        eprintln!("[identity-test] user testuser1@REALM gids={:?}", gs_user);
         assert!(!gs_user.is_empty(), "user@ must resolve groups via ldap paths");
         assert_eq!(gs_host, vec![MACHINE_GID as i32], "host/*@REALM must return root gid, not 65534");
         assert_eq!(gs_host_box, vec![MACHINE_GID as i32]);

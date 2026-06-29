@@ -1137,7 +1137,8 @@ pub fn resolve_groups_for_principal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::FALLBACK_NOBODY_GID;
+    use crate::constants::{FALLBACK_NOBODY_GID, MACHINE_UID};
+    use crate::krb5::classify_principal;
 
 
     #[test]
@@ -1171,20 +1172,34 @@ mod tests {
 
     #[test]
     fn resolve_groups_for_principal_wires_user_and_host_forms() {
-        // direct drive of shipped resolve_groups_for_principal (via free fn too) on both forms;
-        // machine principal forms must not panic or unwrap
+        // uid2grp_allocate_by_principal / principal2grp wire: public free fn + classify_principal.
+        // machine principal forms must not panic or unwrap.
+        const HOST: &str = "host/blue-lt@SATOMLIN.COM";
+        let (is_machine, classify_reason) = classify_principal(HOST, "SATOMLIN.COM", &[]);
+        assert!(is_machine, "host/*@REALM must classify as machine: {classify_reason}");
+        assert_eq!(MACHINE_UID, 0, "machine principals map to uid 0");
+
         std::env::set_var("TEST_REBULK_POPULATE", "u:testuser1:3001:100;g:staff:2002");
         let r = IdLdapResolver::from_inputs(&LdapResolverInputs::default());
         let _ = r.load_full_identities("dn", "pw");
+        // public entry wired for uid2grp_allocate_by_principal / principal2grp
         let gs_user = resolve_groups_for_principal(&r, "testuser1@REALM", "dn", "pw");
-        let gs_host = resolve_groups_for_principal(&r, "host/blue-lt@SATOMLIN.COM", "dn", "pw");
+        let gs_host = resolve_groups_for_principal(&r, HOST, "dn", "pw");
         let gs_host_box = r.resolve_groups_for_principal("host/box@REALM", "dn", "pw");
         std::env::remove_var("TEST_REBULK_POPULATE");
-        eprintln!(
-            "[identity-test] machine host/blue-lt@SATOMLIN.COM gids={:?} (expect [0], not 65534)",
-            gs_host
+
+        let evidence = format!(
+            "classify_principal({HOST}) -> is_machine={is_machine} reason={classify_reason:?}\n\
+             resolve_groups_for_principal({HOST}) -> gids={gs_host:?} machine_uid={MACHINE_UID}\n\
+             resolve_groups_for_principal(testuser1@REALM) -> gids={gs_user:?}\n\
+             contains_65534={}\n",
+            gs_host.contains(&(FALLBACK_NOBODY_GID as i32))
         );
-        eprintln!("[identity-test] user testuser1@REALM gids={:?}", gs_user);
+        eprintln!("[identity-evidence]\n{evidence}");
+        if let Ok(scratch) = std::env::var("GROK_GOAL_SCRATCH") {
+            let _ = std::fs::write(format!("{scratch}/machine_principal_evidence.txt"), &evidence);
+        }
+
         assert!(!gs_user.is_empty(), "user@ must resolve groups via ldap paths");
         assert_eq!(gs_host, vec![MACHINE_GID as i32], "host/*@REALM must return root gid, not 65534");
         assert_eq!(gs_host_box, vec![MACHINE_GID as i32]);

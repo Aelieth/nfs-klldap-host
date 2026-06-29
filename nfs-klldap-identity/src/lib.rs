@@ -22,6 +22,7 @@ pub use krb5::{
     nfs_keytab_host_matches, nfs_keytab_host_variants, parse_klist_nfs_hosts,
     canonicalize_principal, is_numeric_local_principal, parse_klist_nfs_principals,
     normalize_principal, principal_has_realm, principal_local_part,
+    supplemental_gids_for_machine_principal,
     read_default_keytab_nfs_principals,
     read_keytab_nfs_principals, KeytabInfo,
 };

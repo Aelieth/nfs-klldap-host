@@ -121,15 +121,25 @@ if [ -x "$IDHELPER" ]; then
     resolved_gid=""
     resolved_gids=""
 
-    # For gid mode on @ principals (uid2grp/manage_gids path), prefer GRPS (idhelper now handles both user@REALM and host/xxx@REALM).
-    # Host forms return nobody-equivalent group list; users return full posix supplemental list. Reuses LDAP primitives.
+    # For gid mode on @ principals (uid2grp path), prefer socket GRPS then idhelper CLI (user + host/*@REALM).
+    IDHELPER_SOCK="${NFS_KLLDAP_IDHELPER_SOCKET:-/var/run/nfs-klldap/idhelper.sock}"
     if [ "$mode" = "gid" ] && [ -n "$principal" ] && echo "$principal" | grep -q '@'; then
+        if [ -S "$IDHELPER_SOCK" ]; then
+            sock_resp=$(printf 'GRPS %s\n' "$principal" | timeout 3 socat - UNIX-CONNECT:"$IDHELPER_SOCK" 2>/dev/null \
+                || printf 'GRPS %s\n' "$principal" | timeout 3 nc -U -w 2 "$IDHELPER_SOCK" 2>/dev/null || true)
+            if echo "$sock_resp" | grep -q '^OK '; then
+                resolved_gids=$(echo "$sock_resp" | sed 's/^OK //' | tr '|' ' ')
+                resolved_gid=$(echo "$resolved_gids" | cut -d' ' -f1)
+            fi
+        fi
+        if [ -z "$resolved_gid" ]; then
         # always --json for grps to avoid name digits in text output polluting list
         if glist="$($IDHELPER grps "$principal" --json 2>/dev/null || true)"; then
             if [ -n "$glist" ]; then
                 resolved_gids=$(printf '%s' "$glist" | sed -n 's/.*"gids":\[\([^]]*\)\].*/\1/p' | sed 's/,/ /g' | tr -s ' ' | sed 's/^ //;s/ $//')
                 resolved_gid=$(echo "$resolved_gids" | cut -d' ' -f1)
             fi
+        fi
         fi
     fi
 

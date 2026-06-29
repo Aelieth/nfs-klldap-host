@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use nfs_klldap_config::{
     from_sssd_section, parse_getent_passwd, IdLdapResolver, IdMapSnapshot, NfsKlldapConfig,
-    FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
+    FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID, MACHINE_GID,
 };
 use nfs_klldap_identity::{
     canonicalize_principal, classify_principal, is_numeric_local_principal, machine_short_name,
@@ -123,8 +123,9 @@ pub(crate) fn resolve_groups_for_principal(
     cache: &mut IdCache,
 ) -> Vec<u32> {
     let r = resolve_principal(principal, realm, server_variants, cache);
+    // Any host/*@REALM machine principal maps to root gid for uid2grp/getgrouplist.
     let gids = if r.kind == PrincipalKind::Machine {
-        vec![FALLBACK_NOBODY_GID]
+        vec![MACHINE_GID]
     } else {
         let primary = r.gid;
         let mut extra: Vec<u32> = vec![];
@@ -142,7 +143,9 @@ pub(crate) fn resolve_groups_for_principal(
     };
     // force nss rows for all gids (incl supp) so getgrouplist on qualified name works
     let snap_groups = get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups);
-    let _ = materialize_nss_wrappers_at(cache, &NssMaterializePaths::production(), snap_groups.as_ref());
+    let (np, ng, ep, eg) = NssMaterializePaths::materialize_paths_owned();
+    let paths = NssMaterializePaths::from_owned(&np, &ng, &ep, &eg);
+    let _ = materialize_nss_wrappers_at(cache, &paths, snap_groups.as_ref());
     gids
 }
 
@@ -418,11 +421,9 @@ pub(crate) fn resolve_principal(
             if write_res.is_ok() { "ok" } else { "err" }
         );
         let snap_groups = get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups);
-        if let Err(e) = materialize_nss_wrappers_at(
-            cache,
-            &NssMaterializePaths::production(),
-            snap_groups.as_ref(),
-        ) {
+        let (np, ng, ep, eg) = NssMaterializePaths::materialize_paths_owned();
+        let paths = NssMaterializePaths::from_owned(&np, &ng, &ep, &eg);
+        if let Err(e) = materialize_nss_wrappers_at(cache, &paths, snap_groups.as_ref()) {
             dlog!("  nss_wrapper_write err={}", e);
         }
     }

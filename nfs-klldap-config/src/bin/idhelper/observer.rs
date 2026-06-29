@@ -12,7 +12,7 @@ use nfs_klldap_identity::principal_local_part;
 
 use crate::common::{manage_gids_expected, IdCache};
 use crate::dlog;
-use crate::resolve::resolve_principal;
+use crate::resolve::{resolve_groups_for_principal, resolve_principal};
 
 /// Best-effort: tail ganesha.log for early principal hints (feeds resolve).
 pub(crate) fn start_ganesha_observer(
@@ -74,8 +74,10 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                                     eprintln!("[idhelper] observed from ganesha log: {}", candidate);
                                     {
                                         let mut guard = cache.lock().unwrap();
-                                        // Resolve and classify. Debug env.
                                         let _ = resolve_principal(&candidate, realm, variants, &mut guard);
+                                        let _ = resolve_groups_for_principal(
+                                            &candidate, realm, variants, &mut guard,
+                                        );
                                     }
                                 }
                             }
@@ -288,6 +290,15 @@ fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
 pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<String> {
     let realm_lower = realm.to_ascii_lowercase();
 
+    // uid2grp unsupported path: resolve machine principal on first sighting.
+    if let Some(start) = line.find("Unsupported code path for principal ") {
+        let rest = &line[start + "Unsupported code path for principal ".len()..];
+        let cand = rest.split_whitespace().next().unwrap_or(rest).trim();
+        if cand.contains('@') {
+            return Some(cand.to_string());
+        }
+    }
+
     // Match Get uid for user@REALM lines to resolve user principals.
     if let Some(start) = line.find("Get uid for ") {
         let rest = &line[start + "Get uid for ".len()..];
@@ -474,5 +485,14 @@ manage_gids = true
         let tmp = tempfile::tempdir().unwrap();
         write_limited_fs_config(tmp.path());
         assert_eq!(maybe_log_managed_gids_noise("nfs4_op succeeded"), None);
+    }
+
+    #[test]
+    fn extract_unsupported_code_path_machine_principal() {
+        let line = "uid2grp_allocate_by_principal :ID MAPPER :WARN :Unsupported code path for principal host/blue-lt@SATOMLIN.COM";
+        assert_eq!(
+            extract_candidate_principal(line, "SATOMLIN.COM"),
+            Some("host/blue-lt@SATOMLIN.COM".to_string())
+        );
     }
 }

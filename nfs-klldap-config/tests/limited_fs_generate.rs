@@ -83,10 +83,19 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
 
     assert!(frag.contains("Disable_ACL = true;"), "fragment:\n{frag}");
     assert!(frag.contains("Manage_Gids = false;"), "fragment:\n{frag}");
+    let disable_pos = frag.find("Disable_ACL = true;").expect("Disable_ACL");
+    let sec_pos = frag.find("SecType =").expect("SecType");
+    assert!(
+        disable_pos < sec_pos,
+        "posix directives must precede SecType for limited FS:\n{frag}"
+    );
     assert!(frag.contains("Read_Access_Check_Policy = \"post\";"), "limited must have post policy:\n{frag}");
     assert!(frag.contains("posix-only conservative mode for noacl btrfs (ZimaOS)"), "limited comment:\n{frag}");
-    assert!(frag.contains("runtime idhelper") || frag.contains("ls via"), "frag must reflect runtime ls contract:\n{frag}");
-    assert!(frag.contains("behavioral guard") || frag.contains("posix path"), "frag must include conservative guard for acl mask:\n{frag}");
+    assert!(frag.contains("POSIX_ONLY_EXPORT"), "frag must include conservative guard marker:\n{frag}");
+    if let Ok(scratch) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {
+        let dest = std::path::PathBuf::from(scratch).join("10-users-limited.conf");
+        let _ = fs::write(&dest, &frag);
+    }
     // runtime group supply (checklist 1-2) + these opts enable ls without NOTSUPP; idhelper test covered separately
     // (note: main ganesha omits post to avoid side-effect on capable; per-fragment has it for the limited share)
     for forbidden in [

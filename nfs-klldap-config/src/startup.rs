@@ -382,7 +382,7 @@ pub fn compute_wizard_step(config_path: &Path) -> StartupStep {
         let realm = cfg.effective_realm();
         let hs = crate::get_consistent_hostname().map(|h| h.hostname.split('.').next().unwrap_or(&h.hostname).to_string()).unwrap_or_else(|_| "localhost".to_string());
         let (ok, msg) = crate::check_idhelper_sample_resolutions(&realm, &hs);
-        if !ok { eprintln!("WARN [nfs-klldap-config] {}", msg); } else { eprintln!("INFO [nfs-klldap-config] {}", msg); }
+        crate::emit_idhelper_check_log(ok, &msg);
     }
 
     if cfg.ldap_uri.trim().is_empty() {
@@ -418,7 +418,7 @@ pub fn compute_startup_step(config_path: &Path) -> StartupStep {
         let realm = cfg.effective_realm();
         let hs = crate::get_consistent_hostname().map(|h| h.hostname.split('.').next().unwrap_or(&h.hostname).to_string()).unwrap_or_else(|_| "localhost".to_string());
         let (ok, msg) = crate::check_idhelper_sample_resolutions(&realm, &hs);
-        if !ok { eprintln!("WARN [nfs-klldap-config] {}", msg); } else { eprintln!("INFO [nfs-klldap-config] {}", msg); }
+        crate::emit_idhelper_check_log(ok, &msg);
     }
 
     if cfg.ldap_uri.trim().is_empty() {

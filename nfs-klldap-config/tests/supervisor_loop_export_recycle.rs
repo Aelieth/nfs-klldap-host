@@ -78,15 +78,11 @@ touch /var/lib/sss/pipes/nss
 exec sleep 3600
 "#,
     );
-    write_exe(
-        &stubs.join("nfs-klldap-idhelper"),
-        r#"#!/bin/sh
-mkdir -p /var/lib/nfs-klldap
-echo probe > /var/lib/nfs-klldap/.bulk_seed_done
-echo 'root:x:0:0:root:/root:/bin/sh' > /var/lib/nfs-klldap/nss_passwd
-exec sleep 3600
-"#,
-    );
+    let idhelper_stub = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/idhelper-probe-stub.sh"),
+    )
+    .unwrap();
+    write_exe(&stubs.join("nfs-klldap-idhelper"), &idhelper_stub);
     write_exe(&stubs.join("nfs-klldap-ui"), "#!/bin/sh\nexec sleep 3600\n");
     write_exe(
         &stubs.join("nfs-klldap-conf-watcher"),

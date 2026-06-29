@@ -16,8 +16,8 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use common::{
-    get_realm, get_server_variants, IdCache, PrincipalKind, Resolved, CACHE_PATH, NSS_GROUP_PATH,
-    NSS_PASSWD_PATH, SOCKET_PATH,
+    get_realm, get_server_variants, socket_path, IdCache, PrincipalKind, Resolved, CACHE_PATH,
+    NSS_GROUP_PATH, NSS_PASSWD_PATH,
 };
 use nfs_klldap_identity::{classify_principal, principal_local_part};
 #[cfg(test)]
@@ -30,7 +30,7 @@ use materialize::{
     sync_user_cache_from_snapshot,
 };
 #[cfg(test)]
-use nfs_klldap_config::{FALLBACK_NOBODY_GID, IdMapSnapshot, PosixUserEntry};
+use nfs_klldap_config::{IdMapSnapshot, PosixUserEntry};
 #[cfg(test)]
 use observer::{extract_candidate_principal, looks_like_client_hostname};
 use resolve::{resolve_groups_for_principal, resolve_principal};
@@ -38,7 +38,7 @@ use resolve::{resolve_groups_for_principal, resolve_principal};
 /// Try to perform RESOLVE via the running daemon's unix socket. Returns.
 /// Some(Resolved) on success (the daemon did the work + materialize). Returns.
 fn try_resolve_via_socket(principal: &str) -> Option<Resolved> {
-    let mut stream = UnixStream::connect(SOCKET_PATH).ok()?;
+    let mut stream = UnixStream::connect(socket_path()).ok()?;
     let req = format!("RESOLVE {}\n", principal);
     stream.write_all(req.as_bytes()).ok()?;
     let _ = stream.flush();
@@ -71,9 +71,14 @@ fn try_resolve_via_socket(principal: &str) -> Option<Resolved> {
     None
 }
 
+/// Pipeline/preflight sets NSS_PASSWD to a tempdir; must materialize locally, not via daemon socket.
+fn grps_use_local_materialize() -> bool {
+    std::env::var("NSS_PASSWD").is_ok()
+}
+
 /// Try GRPS via socket (pattern from try_resolve_via_socket). Returns gids list or None.
 fn try_grps_via_socket(principal: &str) -> Option<Vec<u32>> {
-    let mut stream = UnixStream::connect(SOCKET_PATH).ok()?;
+    let mut stream = UnixStream::connect(socket_path()).ok()?;
     let req = format!("GRPS {}\n", principal);
     stream.write_all(req.as_bytes()).ok()?;
     let _ = stream.flush();
@@ -148,11 +153,13 @@ fn handle_cli(args: &[String]) {
             let eff_realm = if let Some((_, r)) = p.rsplit_once('@') {
                 if !r.trim().is_empty() { r.trim().to_string() } else { realm.clone() }
             } else { realm.clone() };
-            let gs = if let Some(gs) = try_grps_via_socket(p) {
+            let gs = if grps_use_local_materialize() {
+                let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
+                resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache)
+            } else if let Some(gs) = try_grps_via_socket(p) {
                 gs
             } else {
                 let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
-                // cli grps path routes groups via wrapper (which calls identity resolve_groups_for_principal)
                 resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache)
             };
             if json_flag {
@@ -177,7 +184,7 @@ fn handle_cli(args: &[String]) {
             println!("realm: {}", realm);
             println!("server_variants: {:?}", server_variants);
             println!("cache file: {}", CACHE_PATH);
-            println!("socket: {}", SOCKET_PATH);
+            println!("socket: {}", socket_path());
             // Self-test with a real LDAP user when present. Avoids.
             let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
             let test_p = format!("testuser1@{}", realm);
@@ -192,12 +199,12 @@ fn handle_cli(args: &[String]) {
             println!("realm: {}", realm);
             println!("server host variants: {:?}", server_variants);
             println!("Cache lives at {} (simple | delimited, easy to process with grep/awk).", CACHE_PATH);
-            println!("Daemon listens on {} (unix socket).", SOCKET_PATH);
+            println!("Daemon listens on {} (unix socket).", socket_path());
             println!("NSS wrapper files (for Ganesha under libnss_wrapper): {} and {}", NSS_PASSWD_PATH, NSS_GROUP_PATH);
             println!("LDAP sync: startup + every {}s (NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS, 0=off)",
                 crate::common::DEFAULT_REBULK_INTERVAL_SECS);
             println!("Socket REBULK: printf 'REBULK\\n' | nc -U {}  (prune stale users, reload LDAP→nss_passwd)",
-                SOCKET_PATH);
+                socket_path());
             println!("Socket GRPS <p> returns gid list for uid2grp.");
             println!("Important: Ganesha principal2uid uses libnfsidmap+getpwnam under nss_wrapper.");
         }
@@ -930,7 +937,7 @@ mod tests {
         assert_eq!(r1.uid, 0); assert_eq!(r1.gid, 0); assert_eq!(r1.kind, PrincipalKind::Machine);
 
         let gs0 = resolve_groups_for_principal("host/blue-lt@EXAMPLE.COM", &realm, &variants, &mut cache);
-        assert_eq!(gs0, vec![FALLBACK_NOBODY_GID]);
+        assert_eq!(gs0, vec![0]);
 
         let r2 = resolve_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache);
         let gs_user = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache);
@@ -1044,8 +1051,7 @@ mod tests {
         // user@REALM must return posix group list with >1 entries (primary + at least one supp via resolver)
         assert!(gs_user.len() > 1, "user@ form must yield >1 posix gids via LDAP path, got {:?}", gs_user);
         assert!(gs_user.contains(&2002), "user groups must include supplemental from memberOf/gid path");
-        // host/hostname@REALM maps to nobody-equivalent dedicated group (not [0])
-        assert_eq!(gs_host, vec![FALLBACK_NOBODY_GID], "host principal must map groups to nobody-equivalent");
+        assert_eq!(gs_host, vec![0], "host/client@REALM must map to root gid");
     }
 
     #[test]
@@ -1061,10 +1067,33 @@ mod tests {
         let r_host = resolve_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &[], &mut cache);
         assert_eq!(r_host.kind, PrincipalKind::Machine, "host/ must classify machine even on realm mismatch");
         let gs_host = resolve_groups_for_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &[], &mut cache);
-        assert_eq!(gs_host, vec![FALLBACK_NOBODY_GID]);
+        assert_eq!(gs_host, vec![0]);
 
         // user@ mismatch should go user path (may fallback)
         let r_user = resolve_principal("testuser1@OTHERREALM", "SATOMLIN.COM", &[], &mut cache);
         assert!(r_user.kind != PrincipalKind::Machine);
+    }
+
+    #[test]
+    fn nss_contract_after_materialize_host_blue_lt() {
+        use nfs_klldap_config::{evaluate_nss_contract, GaneshaNssEnv};
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let td = tempfile::tempdir().unwrap();
+        let paths = NssMaterializePaths::under(td.path());
+        let mut cache = IdCache::default();
+        let realm = "TEST.COM";
+        let principal = "host/blue-lt@TEST.COM";
+        let r = resolve_principal(principal, realm, &[], &mut cache);
+        assert_eq!(r.kind, PrincipalKind::Machine);
+        let _ = resolve_groups_for_principal(principal, realm, &[], &mut cache);
+        materialize_nss_wrappers_at(&cache, &paths, None).expect("materialize");
+        let env = GaneshaNssEnv::from_paths(paths.nss_passwd, paths.nss_group);
+        if !env.wrapper_available() {
+            eprintln!("skip: libnss_wrapper.so not on host");
+            return;
+        }
+        let (ok, msg) = evaluate_nss_contract(principal, &env, true);
+        assert!(ok, "nss contract after materialize: {msg}");
+        assert!(msg.starts_with("nss-contract:ok"));
     }
 }

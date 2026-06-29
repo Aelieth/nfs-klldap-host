@@ -67,7 +67,11 @@ fn supervise_probe_runs_post_generate_hook() {
         &stubs.join("nfs-klldap-conf-watcher"),
         "#!/bin/sh\nexec sleep 3600\n",
     );
-    write_exe(&stubs.join("nfs-klldap-idhelper"), "#!/bin/sh\nexit 0\n");
+    let idhelper_stub = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/idhelper-probe-stub.sh"),
+    )
+    .unwrap();
+    write_exe(&stubs.join("nfs-klldap-idhelper"), &idhelper_stub);
     write_exe(&stubs.join("healthcheck.sh"), "#!/bin/sh\nexit 0\n");
     write_exe(&stubs.join("inotifywait"), "#!/bin/sh\nexit 0\n");
 

@@ -11,6 +11,8 @@ mod recycle_plan;
 
 mod fs_probe;
 mod fs_warnings;
+mod ganesha_identity_pipeline;
+mod ganesha_nss_contract;
 mod generate;
 mod hook;
 mod hostname;
@@ -54,6 +56,12 @@ pub use fs_probe::{
     compute_effective_flags, probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags,
     FsCapabilities,
 };
+pub use ganesha_identity_pipeline::{
+    identity_principals_for_check, run_identity_pipeline, IdentityPrincipals,
+};
+pub use ganesha_nss_contract::{
+    evaluate_nss_contract, nss_lookup_names, probe_nss_groups, probe_nss_passwd, GaneshaNssEnv,
+};
 pub use fs_warnings::{
     any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warning,
     limited_fs_warning_settings_ui, limited_fs_warnings_only, share_fs_acl_limited,
@@ -63,74 +71,321 @@ pub use fs_warnings::{
 pub use hook::{effective_post_generate_hook, run_post_generate_hooks};
 pub use generate::generate_all;
 
-/// Lightweight check (for post-generate / startup) that idhelper CLI can resolve
-/// at least one user@REALM and one host/hostname@REALM using the GRPS path
-/// (the hook Ganesha idmapper relies on). Returns (success, message).
-/// Emits no side effects; caller logs WARN only on !ok. Reuses existing CLI.
+static LAST_IDHELPER_CHECK_MSG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Unix socket for idhelper GRPS/RESOLVE (overridable via `NFS_KLLDAP_IDHELPER_SOCKET`).
+pub fn idhelper_socket_path() -> String {
+    std::env::var("NFS_KLLDAP_IDHELPER_SOCKET")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "/var/run/nfs-klldap/idhelper.sock".to_string())
+}
+
+/// Log idhelper check once per unique message (suppresses supervisor-tick INFO spam).
+pub fn emit_idhelper_check_log(ok: bool, msg: &str) {
+    let mut last = LAST_IDHELPER_CHECK_MSG.lock().unwrap_or_else(|e| e.into_inner());
+    if last.as_deref() == Some(msg) {
+        return;
+    }
+    *last = Some(msg.to_string());
+    if ok {
+        eprintln!("INFO [nfs-klldap-config] {}", msg);
+    } else {
+        eprintln!("WARN [nfs-klldap-config] {}", msg);
+    }
+}
+
+fn parse_grps_output(stdout: &str) -> Vec<u32> {
+    let s = stdout.trim();
+    let body = s.strip_prefix("OK ").unwrap_or(s);
+    body.split(|c: char| "| ,".contains(c))
+        .filter_map(|t| t.trim().parse::<u32>().ok())
+        .collect()
+}
+
+fn probe_grps_via_socket(principal: &str) -> Option<Vec<u32>> {
+    let sock = idhelper_socket_path();
+    if !std::path::Path::new(&sock).exists() {
+        return None;
+    }
+    let mut st = std::os::unix::net::UnixStream::connect(&sock).ok()?;
+    let req = format!("GRPS {principal}\n");
+    use std::io::Write;
+    st.write_all(req.as_bytes()).ok()?;
+    st.flush().ok()?;
+    let mut rd = std::io::BufReader::new(&mut st);
+    let mut ln = String::new();
+    std::io::BufRead::read_line(&mut rd, &mut ln).ok()?;
+    if ln.starts_with("OK ") {
+        Some(parse_grps_output(&ln))
+    } else {
+        None
+    }
+}
+
+fn probe_grps_via_cli(idh: &str, principal: &str) -> Result<Vec<u32>, String> {
+    let mut cmd = std::process::Command::new(idh);
+    cmd.args(["grps", principal]);
+    if std::path::Path::new("/usr/bin/timeout").exists() {
+        cmd = std::process::Command::new("timeout");
+        cmd.args(["8", idh, "grps", principal]);
+    }
+    let o = cmd.output().map_err(|_| "noexec".to_string())?;
+    if !o.status.success() {
+        return Err("exit".into());
+    }
+    let gids = parse_grps_output(&String::from_utf8_lossy(&o.stdout));
+    if gids.is_empty() {
+        Err("empty".into())
+    } else {
+        Ok(gids)
+    }
+}
+
+fn resolve_idhelper_bin() -> String {
+    if let Ok(p) = std::env::var("IDHELPER_BIN") {
+        if !p.trim().is_empty() {
+            return p;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(d) = exe.parent() {
+            let c = d.join("nfs-klldap-idhelper");
+            if c.exists() {
+                return c.display().to_string();
+            }
+        }
+    }
+    "nfs-klldap-idhelper".into()
+}
+
+fn resolve_ganesha_ctl_bin() -> Option<String> {
+    if let Ok(p) = std::env::var("GANESHA_CTL_BIN") {
+        let p = p.trim().to_string();
+        if !p.is_empty() && std::path::Path::new(&p).exists() {
+            return Some(p);
+        }
+    }
+    for cand in [
+        "/usr/local/bin/ganesha-ctl",
+        "/container/scripts/ganesha-ctl",
+    ] {
+        if std::path::Path::new(cand).exists() {
+            return Some(cand.to_string());
+        }
+    }
+    None
+}
+
+/// ganesha-ctl id-resolve exercises uid2grp/getent group path (shipped Ganesha diagnostic).
+fn probe_ganesha_id_resolve(principal: &str) -> Option<(bool, String)> {
+    let ctl = resolve_ganesha_ctl_bin()?;
+    let idh = resolve_idhelper_bin();
+    let nss = GaneshaNssEnv::from_runtime_defaults();
+    let mut cmd = std::process::Command::new(&ctl);
+    cmd.args(["id-resolve", principal]).env("IDHELPER_BIN", &idh);
+    cmd.env("NSS_PASSWD", &nss.nss_passwd).env("NSS_GROUP", &nss.nss_group);
+    if let Some(ref so) = nss.ld_preload {
+        cmd.env("NSS_WRAPPER_SO", so);
+    }
+    let o = cmd.output().ok()?;
+    let out = String::from_utf8_lossy(&o.stdout);
+    if o.status.success() && !out.trim().is_empty() {
+        Some((true, format!("ganesha-id-resolve:ok:{principal}")))
+    } else {
+        Some((false, format!("ganesha-id-resolve:exit:{principal}")))
+    }
+}
+
+/// Trigger idhelper grps into production/runtime nss paths (Ganesha env after supervisor start).
+fn materialize_via_idhelper_grps(idh: &str, principal: &str) {
+    let mut cmd = std::process::Command::new(idh);
+    cmd.args(["grps", principal]);
+    if std::path::Path::new("/usr/bin/timeout").exists() {
+        cmd = std::process::Command::new("timeout");
+        cmd.args(["8", idh, "grps", principal]);
+    }
+    let _ = cmd.output();
+}
+
+fn probe_socket_grps_tag(principal: &str, expect_machine: bool) -> String {
+    let sock = idhelper_socket_path();
+    if !std::path::Path::new(&sock).exists() {
+        return format!("socket-grps:unavailable:{principal}");
+    }
+    match probe_grps_via_socket(principal) {
+        Some(gids) if expect_machine && gids == [MACHINE_GID] => {
+            format!("socket-grps:machine-ok:{principal}")
+        }
+        Some(gids) if !expect_machine && !gids.is_empty()
+            && !gids.iter().all(|&g| g == FALLBACK_NOBODY_GID || g == 0) =>
+        {
+            format!("socket-grps:groups-ok:{principal}:{}gids", gids.len())
+        }
+        Some(gids) => format!("socket-grps:incomplete:{principal}:{gids:?}"),
+        None => format!("socket-grps:connect-fail:{principal}"),
+    }
+}
+
+/// Surface uid2grp_allocate_by_principal hits from ganesha.log (absent log is tagged, not silent).
+fn probe_ganesha_log_uid2grp(principal: &str) -> Option<String> {
+    let log = std::path::Path::new("/var/log/ganesha.log");
+    if !log.is_file() {
+        return Some("ganesha-log:no-file".into());
+    }
+    let content = std::fs::read_to_string(log).ok()?;
+    let short = nfs_klldap_identity::machine_short_name(principal);
+    let hit = content.lines().any(|ln| {
+        ln.contains("uid2grp_allocate_by_principal")
+            && (ln.contains(principal) || ln.contains(short))
+    });
+    if hit {
+        Some(format!("ganesha-log:uid2grp:{principal}"))
+    } else {
+        Some(format!("ganesha-log:no-uid2grp:{principal}"))
+    }
+}
+
+/// When ganesha.nfsd is live, verify its NSS_WRAPPER/LD_PRELOAD env matches supervisor injection.
+fn probe_ganesha_runtime_wiring() -> String {
+    let Some(pid) = discover_ganesha_daemon_pid() else {
+        return "ganesha-runtime:not-running".into();
+    };
+    let mut tags = vec![format!("ganesha-runtime:live:pid={pid}")];
+    let expected = GaneshaNssEnv::from_runtime_defaults();
+    let Ok(raw) = std::fs::read(format!("/proc/{pid}/environ")) else {
+        tags.push("ganesha-runtime:environ-unreadable".into());
+        return tags.join(" ");
+    };
+    let proc_env: std::collections::HashMap<String, String> = raw
+        .split(|&b| b == 0)
+        .filter_map(|chunk| {
+            let s = std::str::from_utf8(chunk).ok()?;
+            let (k, v) = s.split_once('=')?;
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect();
+    if proc_env.contains_key("NFS_KLLDAP_IDHELPER_SOCKET") {
+        tags.push("ganesha-runtime:idhelper-socket-env".into());
+    }
+    if proc_env
+        .get("NSS_WRAPPER_PASSWD")
+        .is_some_and(|p| std::path::Path::new(p) == expected.nss_passwd)
+    {
+        tags.push("ganesha-runtime:nss_passwd-env".into());
+    } else {
+        tags.push("ganesha-runtime:nss_passwd-miss".into());
+    }
+    if let Some(ref so) = expected.ld_preload {
+        if proc_env
+            .get("LD_PRELOAD")
+            .is_some_and(|v| v.contains(&so.to_string_lossy().to_string()))
+        {
+            tags.push("ganesha-runtime:ld_preload-env".into());
+        } else {
+            tags.push("ganesha-runtime:ld_preload-miss".into());
+        }
+    }
+    tags.join(" ")
+}
+
+/// Preflight: CLI grps + pipeline + runtime nss contract + socket + ganesha-ctl id-resolve.
 pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool, String) {
     if std::env::var("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK").is_ok() {
         return (true, "skipped".into());
     }
-    let idh = {
-        if let Ok(p) = std::env::var("IDHELPER_BIN") {
-            if !p.trim().is_empty() { p } else { String::new() }
-        } else { String::new() }
-    };
-    let idh = if !idh.is_empty() { idh } else if let Ok(exe) = std::env::current_exe() {
-        if let Some(d) = exe.parent() {
-            let c = d.join("nfs-klldap-idhelper");
-            if c.exists() { c.display().to_string() } else { "nfs-klldap-idhelper".into() }
-        } else { "nfs-klldap-idhelper".into() }
-    } else { "nfs-klldap-idhelper".into() };
-    // Allow tests to force a specific user principal (to exercise the fallback/incomplete path)
-    let user_sample = std::env::var("TEST_IDHELPER_CHECK_USER_PRINCIPAL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| format!("testuser1@{}", realm));
-    let host_p = format!("host/{}@{}", host_short, realm);
-    let user_p = if user_sample.contains('@') { user_sample } else { format!("{}@{}", user_sample, realm) };
+    let idh = resolve_idhelper_bin();
+    let principals = identity_principals_for_check(realm, host_short);
     let mut msgs = vec![];
     let mut ok = true;
-    for (lab, p) in [("user", user_p.as_str()), ("host", host_p.as_str())] {
-        match std::process::Command::new(&idh).arg("grps").arg(p).output() {
-            Ok(o) if o.status.success() => {
-                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                let parts: Vec<&str> = s.strip_prefix("OK ").unwrap_or(&s).split(|c: char| "| ,".contains(c)).filter(|t| !t.trim().is_empty()).collect();
-                let gids: Vec<u32> = parts.iter().filter_map(|t| t.trim().parse::<u32>().ok()).collect();
-                if gids.is_empty() {
-                    ok = false;
-                    msgs.push(format!("{}({}): empty", lab, p));
-                } else if lab == "user" && gids.iter().all(|&g| g == 65534 || g == 0) {
-                    // Step1/3: user@ must get real posix groups; fallback-only is incomplete
-                    ok = false;
-                    msgs.push(format!("{}({}): incomplete (only fallback {})", lab, p, gids[0]));
-                } else {
-                    msgs.push(format!("{}({}):{}gids", lab, p, gids.len()));
-                }
+    for (lab, p, expect_machine) in [
+        ("user", principals.user.as_str(), false),
+        ("host-server", principals.server_host.as_str(), true),
+        ("host-client", principals.client_host.as_str(), true),
+    ] {
+        let gids = match probe_grps_via_cli(&idh, p) {
+            Ok(g) => g,
+            Err(e) => {
+                ok = false;
+                msgs.push(format!("{}({}):{}", lab, p, e));
+                continue;
             }
-            Ok(_o) => { ok=false; msgs.push(format!("{}({}):exit", lab, p)); }
-            Err(_) => { ok=false; msgs.push(format!("{}({}):noexec", lab, p)); }
+        };
+        if expect_machine {
+            if gids != [MACHINE_GID] {
+                ok = false;
+                msgs.push(format!(
+                    "{}({}): expected gid={}, got {:?}",
+                    lab, p, MACHINE_GID, gids
+                ));
+            } else {
+                msgs.push(format!("{}({}):root-gid", lab, p));
+            }
+        } else if gids.iter().all(|&g| g == FALLBACK_NOBODY_GID || g == 0) {
+            ok = false;
+            msgs.push(format!("{}({}): incomplete (only fallback {})", lab, p, gids[0]));
+        } else {
+            msgs.push(format!("{}({}):{}gids", lab, p, gids.len()));
         }
     }
-    let m = if ok { format!("idhelper check OK: {}", msgs.join(" ")) } else { format!("idhelper resolution incomplete (user+host principals): {}", msgs.join("; ")) };
-    // extend runtime validation: socket GRPS probe + parse gids to confirm groups (not just OK); user@ must not be fallback-only
-    if std::path::Path::new("/var/run/nfs-klldap/idhelper.sock").exists() {
-        if let Ok(mut st) = std::os::unix::net::UnixStream::connect("/var/run/nfs-klldap/idhelper.sock") {
-            let req = format!("GRPS {}\n", user_p);
-            { use std::io::Write; let _ = st.write_all(req.as_bytes()); let _ = st.flush(); }
-            let mut rd = std::io::BufReader::new(&mut st);
-            let mut ln = String::new();
-            if std::io::BufRead::read_line(&mut rd, &mut ln).is_ok() {
-                if let Some(rest) = ln.strip_prefix("OK ") {
-                    let gids: Vec<u32> = rest.split(|c: char| "| ,".contains(c)).filter_map(|t| t.trim().parse().ok()).collect();
-                    if !gids.is_empty() {
-                        if gids.iter().all(|&g| g==65534 || g==0) { ok=false; msgs.push(format!("user({}):incomplete-fallback", user_p)); }
-                        else { msgs.push("socket-grps:groups-ok".into()); }
-                    }
-                }
+    let (pipe_ok, pipe_msg) = run_identity_pipeline(realm, host_short, &idh);
+    if !pipe_ok {
+        ok = false;
+    }
+    msgs.push(pipe_msg);
+    for p in [
+        &principals.user,
+        &principals.server_host,
+        &principals.client_host,
+    ] {
+        materialize_via_idhelper_grps(&idh, p);
+    }
+    let nss_env = GaneshaNssEnv::from_runtime_defaults();
+    for (p, expect_machine) in [
+        (principals.user.as_str(), false),
+        (principals.client_host.as_str(), true),
+    ] {
+        let tag = probe_socket_grps_tag(p, expect_machine);
+        if tag.contains("incomplete") || tag.contains("connect-fail") {
+            ok = false;
+        }
+        msgs.push(tag);
+    }
+    for (lab, p, expect_machine) in [
+        ("user", principals.user.as_str(), false),
+        ("host-server", principals.server_host.as_str(), true),
+        ("host-client", principals.client_host.as_str(), true),
+    ] {
+        let (contract_ok, contract_msg) = evaluate_nss_contract(p, &nss_env, expect_machine);
+        if !contract_ok {
+            ok = false;
+        }
+        msgs.push(format!("{contract_msg}:{lab}"));
+    }
+    msgs.push(probe_ganesha_runtime_wiring());
+    for p in [
+        &principals.user,
+        &principals.server_host,
+        &principals.client_host,
+    ] {
+        if let Some((ctl_ok, ctl_msg)) = probe_ganesha_id_resolve(p) {
+            if !ctl_ok {
+                ok = false;
             }
+            msgs.push(ctl_msg);
+        }
+        if let Some(tag) = probe_ganesha_log_uid2grp(p) {
+            msgs.push(tag);
         }
     }
+    let m = if ok {
+        format!("idhelper check OK: {}", msgs.join(" "))
+    } else {
+        format!(
+            "idhelper resolution incomplete (user+host principals): {}",
+            msgs.join("; ")
+        )
+    };
     (ok, m)
 }
 
@@ -1007,6 +1262,104 @@ mod tests {
     }
 
     #[test]
+    fn check_idhelper_sample_resolutions_gates_on_nss_contract() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
+        *LAST_IDHELPER_CHECK_MSG.lock().unwrap() = None;
+        let td = tempfile::tempdir().unwrap();
+        let fbin = td.path().join("bin");
+        let nss_dir = td.path().join("nss");
+        std::fs::create_dir_all(&fbin).unwrap();
+        std::fs::create_dir_all(&nss_dir).unwrap();
+        let idh = fbin.join("nfs-klldap-idhelper");
+        let ctl = fbin.join("ganesha-ctl");
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let id_stub = fs::read_to_string(manifest.join("tests/fixtures/idhelper-probe-stub.sh")).unwrap();
+        let ctl_stub = fs::read_to_string(manifest.join("tests/fixtures/ganesha-ctl-probe-stub.sh")).unwrap();
+        fs::write(&idh, id_stub).unwrap();
+        fs::write(&ctl, ctl_stub).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        for p in [&idh, &ctl] {
+            let mut perm = fs::metadata(p).unwrap().permissions();
+            perm.set_mode(0o755);
+            fs::set_permissions(p, perm).unwrap();
+        }
+        fs::write(
+            nss_dir.join("nss_passwd"),
+            "testuser1@TEST.COM:x:3788:3002:u:/nonexistent:/usr/sbin/nologin\n\
+             server:x:0:0:host:/nonexistent:/usr/sbin/nologin\n\
+             blue-lt:x:0:0:host:/nonexistent:/usr/sbin/nologin\n\
+             host/blue-lt@TEST.COM:x:0:0:host:/nonexistent:/usr/sbin/nologin\n",
+        )
+        .unwrap();
+        fs::write(
+            nss_dir.join("nss_group"),
+            "root:x:0:\nstaff:x:3002:testuser1@TEST.COM\naux:x:3007:testuser1@TEST.COM\n",
+        )
+        .unwrap();
+        std::env::set_var("IDHELPER_BIN", idh.to_string_lossy().to_string());
+        std::env::set_var("GANESHA_CTL_BIN", ctl.to_string_lossy().to_string());
+        std::env::set_var(
+            "NFS_KLLDAP_IDHELPER_SOCKET",
+            nss_dir.join("no-daemon.sock").to_string_lossy().to_string(),
+        );
+        std::env::set_var(
+            "NSS_PASSWD",
+            nss_dir.join("nss_passwd").to_string_lossy().to_string(),
+        );
+        std::env::set_var(
+            "NSS_GROUP",
+            nss_dir.join("nss_group").to_string_lossy().to_string(),
+        );
+        let env = GaneshaNssEnv::from_runtime_defaults();
+        if !env.wrapper_available() {
+            std::env::remove_var("IDHELPER_BIN");
+            std::env::remove_var("NSS_PASSWD");
+            std::env::remove_var("NSS_GROUP");
+            eprintln!("skip: libnss_wrapper.so not available for nss contract gate test");
+            return;
+        }
+        let (ok, msg) = check_idhelper_sample_resolutions("TEST.COM", "server");
+        std::env::remove_var("IDHELPER_BIN");
+        std::env::remove_var("GANESHA_CTL_BIN");
+        std::env::remove_var("NFS_KLLDAP_IDHELPER_SOCKET");
+        std::env::remove_var("NSS_PASSWD");
+        std::env::remove_var("NSS_GROUP");
+        assert!(ok, "expected ok with nss contract, got: {msg}");
+        assert!(
+            msg.contains("nss-contract:ok:") && msg.contains(":user"),
+            "msg must gate on user nss contract: {msg}"
+        );
+        assert!(
+            msg.contains("identity-pipeline:ok:host-client"),
+            "msg must include pipeline ok for client machine: {msg}"
+        );
+        assert!(msg.contains("ganesha-id-resolve:ok:host/blue-lt@TEST.COM"), "msg must include ganesha-ctl path: {msg}");
+        assert!(
+            msg.contains("socket-grps:unavailable"),
+            "msg must report socket-grps status when daemon absent: {msg}"
+        );
+        assert!(msg.contains("host-client(host/blue-lt@TEST.COM):root-gid"));
+    }
+
+    #[test]
+    fn emit_idhelper_check_log_suppresses_repeat_message() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
+        *LAST_IDHELPER_CHECK_MSG.lock().unwrap() = None;
+        emit_idhelper_check_log(true, "idhelper check OK: test");
+        assert_eq!(
+            LAST_IDHELPER_CHECK_MSG.lock().unwrap().as_deref(),
+            Some("idhelper check OK: test")
+        );
+        emit_idhelper_check_log(true, "idhelper check OK: test");
+        emit_idhelper_check_log(false, "idhelper resolution incomplete: changed");
+        assert_eq!(
+            LAST_IDHELPER_CHECK_MSG.lock().unwrap().as_deref(),
+            Some("idhelper resolution incomplete: changed")
+        );
+        *LAST_IDHELPER_CHECK_MSG.lock().unwrap() = None;
+    }
+
+    #[test]
     fn check_idhelper_sample_resolutions_detects_user_fallback_as_incomplete() {
         // Drives the shipped check_idhelper_sample_resolutions fn with conditions that
         // cause the spawned idhelper (for a user principal) to return only the nobody fallback.
@@ -1033,7 +1386,7 @@ mod tests {
         // Use a controlled wrapper as the "idhelper" so the check fn (shipped code) is exercised
         // and always returns only the fallback gid for the user principal (no real binary dependency).
         let wrap = fbin.join("idhelper-wrap");
-        std::fs::write(&wrap, "#!/bin/sh\nif [ \"$1\" = \"grps\" ]; then echo 'OK 65534'; exit 0; fi\nexit 0\n").unwrap();
+        std::fs::write(&wrap, "#!/bin/sh\nif [ \"$1\" = \"grps\" ]; then\n  case \"$2\" in host/*) echo 'OK 0'; exit 0;; esac\n  echo 'OK 65534'; exit 0\nfi\nexit 0\n").unwrap();
         let mut wp = std::fs::metadata(&wrap).unwrap().permissions(); wp.set_mode(0o755); std::fs::set_permissions(&wrap, wp).unwrap();
         std::env::set_var("IDHELPER_BIN", wrap.to_string_lossy().to_string());
 

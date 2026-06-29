@@ -13,7 +13,10 @@ use nfs_klldap_identity::{
     is_numeric_local_principal, machine_short_name, normalize_principal, principal_has_realm,
     principal_local_part,
 };
-pub(crate) const SOCKET_PATH: &str = "/var/run/nfs-klldap/idhelper.sock";
+/// Default socket path; runtime path honors `NFS_KLLDAP_IDHELPER_SOCKET`.
+pub(crate) fn socket_path() -> String {
+    nfs_klldap_config::idhelper_socket_path()
+}
 pub(crate) const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
 const CACHE_VERSION: &str = "1";
 

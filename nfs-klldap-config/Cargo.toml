@@ -31,6 +31,7 @@ path = "src/bin/idhelper/main.rs"
 [dependencies]
 serde = { workspace = true }
 toml = { workspace = true }
+tempfile = { workspace = true }
 nfs-klldap-identity = { path = "../nfs-klldap-identity" }
 # thiserror kept out for tiny container binary size; manual error impl below
 

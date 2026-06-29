@@ -27,6 +27,38 @@ pub(crate) struct NssMaterializePaths<'a> {
 }
 
 impl NssMaterializePaths<'_> {
+    /// Owned paths from NSS_PASSWD/NSS_GROUP env (pipeline tempdir or production defaults).
+    pub(crate) fn materialize_paths_owned() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        use crate::common::{
+            EXTRAUSERS_GROUP, EXTRAUSERS_PASSWD, NSS_GROUP_PATH, NSS_PASSWD_PATH,
+        };
+        let env_path = |key: &str, default: &str| -> std::path::PathBuf {
+            std::env::var(key)
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from(default))
+        };
+        (
+            env_path("NSS_PASSWD", NSS_PASSWD_PATH),
+            env_path("NSS_GROUP", NSS_GROUP_PATH),
+            env_path("NSS_EXTRAUSERS_PASSWD", EXTRAUSERS_PASSWD),
+            env_path("NSS_EXTRAUSERS_GROUP", EXTRAUSERS_GROUP),
+        )
+    }
+
+    pub(crate) fn from_owned<'a>(
+        np: &'a std::path::Path,
+        ng: &'a std::path::Path,
+        ep: &'a std::path::Path,
+        eg: &'a std::path::Path,
+    ) -> NssMaterializePaths<'a> {
+        NssMaterializePaths {
+            nss_passwd: np,
+            nss_group: ng,
+            extrausers_passwd: ep,
+            extrausers_group: eg,
+        }
+    }
+
     // production() always the real /var paths (shipped). Tests use under(base).
     pub(crate) fn production() -> NssMaterializePaths<'static> {
         use crate::common::{
@@ -293,6 +325,18 @@ pub(crate) fn build_nss_snapshot(
                 passwd_lines.push(format!(
                     "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
                     alias, r.uid, r.gid, gecos
+                ));
+            }
+        }
+
+        // Machine host/client@REALM form for Ganesha getpwnam on client cred paths.
+        if r.kind == PrincipalKind::Machine && principal_has_realm(&r.principal) {
+            let login = principal_realm_login_for_nss(&r.principal);
+            let gecos = gecos_for(r);
+            if !is_numeric_login(&login) && seen_login.insert(login.clone()) {
+                passwd_lines.push(format!(
+                    "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
+                    login, r.uid, r.gid, gecos
                 ));
             }
         }

@@ -1,4 +1,5 @@
 //! Validate 9.x idmap logs: Manage_Gids + UseGetpwnam=false drives uid2grp_allocate_by_principal for user@ TGT; getgrouplist via idhelper materialization.
+//! B1 contract: OP_GETATTR/NOTSUPP on readdir compounds ties to broken identity (B2/B3), not export flags alone.
 
 use std::fs;
 use std::path::Path;
@@ -19,6 +20,44 @@ pub fn validate_user_tgt_idmap_log(log_path: &Path, user_at: &str) -> Result<(),
     }
     if !content.contains("getgrouplist") || !content.contains("returned 2 groups") {
         errs.push("missing getgrouplist result with groups for TGT");
+    }
+    if errs.is_empty() { Ok(()) } else { Err(errs) }
+}
+
+/// B1 diagnostic contract: NOTSUPP on OP_GETATTR follows identity failure (uid2grp unsupported).
+#[cfg(test)]
+pub fn validate_readdir_getattr_not_notsupp_when_identity_ok(log_path: &Path) -> Result<(), Vec<&'static str>> {
+    let content = fs::read_to_string(log_path).unwrap_or_default();
+    let mut errs = vec![];
+    let identity_broken = content.contains("Unsupported code path for principal")
+        || content.contains("Could not map");
+    let getattr_notsupp = content.contains("OP_GETATTR") && content.contains("NFS4ERR_NOTSUPP");
+    if getattr_notsupp && identity_broken {
+        errs.push("OP_GETATTR NOTSUPP co-occurs with identity mapping failure (fix B2/B3 first)");
+    }
+    if getattr_notsupp && !identity_broken {
+        errs.push("OP_GETATTR NOTSUPP without identity failure — export posix guard insufficient");
+    }
+    if errs.is_empty() { Ok(()) } else { Err(errs) }
+}
+
+/// Export fragment must emit posix guard before SecType (measurable B1 change vs diagnostic 0.9.57).
+#[cfg(test)]
+pub fn validate_posix_only_export_fragment(frag: &str) -> Result<(), Vec<&'static str>> {
+    let mut errs = vec![];
+    if !frag.contains("Disable_ACL = true;") {
+        errs.push("missing Disable_ACL");
+    }
+    if !frag.contains("Read_Access_Check_Policy = \"post\";") {
+        errs.push("missing Read_Access_Check_Policy=post");
+    }
+    if !frag.contains("POSIX_ONLY_EXPORT") {
+        errs.push("missing POSIX_ONLY_EXPORT marker");
+    }
+    let disable = frag.find("Disable_ACL = true;");
+    let sec = frag.find("SecType =");
+    if disable.is_none() || sec.is_none() || disable.unwrap() >= sec.unwrap() {
+        errs.push("Disable_ACL must precede SecType");
     }
     if errs.is_empty() { Ok(()) } else { Err(errs) }
 }
@@ -46,6 +85,33 @@ my_getgrouplist_alloc :ID MAPPER :INFO :getgrouplist for uname: testuser1, retur
 "#;
         std::fs::write(&p, log).unwrap();
         assert!(validate_user_tgt_idmap_log(&p, "testuser1@TESTLABBY.LOCAL").is_ok());
+    }
+
+    #[test]
+    fn posix_only_export_fragment_contract_matches_b1_guard() {
+        let frag = r#"EXPORT {
+    Disable_ACL = true;
+    Manage_Gids = false;
+    Read_Access_Check_Policy = "post";
+    # POSIX_ONLY_EXPORT: posix getattr/access only (no ACL mask)
+    SecType = krb5p;
+}"#;
+        assert!(validate_posix_only_export_fragment(frag).is_ok());
+    }
+
+    #[test]
+    fn diagnostic_b1_notsupp_tied_to_identity_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("diag.log");
+        let log = r#"
+uid2grp_allocate_by_principal :ID MAPPER :WARN :Unsupported code path for principal host/blue-lt@SATOMLIN.COM
+process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
+complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
+"#;
+        std::fs::write(&p, log).unwrap();
+        let res = validate_readdir_getattr_not_notsupp_when_identity_ok(&p);
+        assert!(res.is_err(), "diagnostic log must flag identity+NOTSUPP coupling");
+        assert!(res.unwrap_err()[0].contains("B2/B3"));
     }
 
     #[test]

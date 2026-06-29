@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use nfs_klldap_config::{
     compute_startup_step, compute_wizard_step, fingerprint_exports_dir,
-    fingerprint_identity_artifacts, ganesha_sighup_failed,
+    fingerprint_identity_artifacts, ganesha_sighup_failed, idhelper_socket_path,
     install_signal_handlers, is_preconfigured_deployment, is_setup_wizard_complete,
     discover_ganesha_daemon_pid, mark_setup_wizard_complete, plan_from_changes, process_is_live,
     reap_one_child, resolve_host_nfs_mode, resolve_keytab_path,
@@ -994,7 +994,19 @@ while :; do :; done
         }
     }
 
+    fn wait_for_idhelper_socket(&self) {
+        let sock = idhelper_socket_path();
+        for _ in 0..30 {
+            if Path::new(&sock).exists() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        self.log_warn("idhelper socket not ready before Ganesha start — principal mapping may lag");
+    }
+
     fn start_ganesha(&mut self) {
+        self.wait_for_idhelper_socket();
         self.quiet_winbind();
         let mut cmd = Command::new("ganesha.nfsd");
         cmd.args(["-f"])
@@ -1002,7 +1014,9 @@ while :; do :; done
             .args(["-L", "/var/log/ganesha.log"])
             .env("PATH", format!("/usr/local/bin:{}", std::env::var("PATH").unwrap_or_default()));
         cmd.env("NSS_EXTRAUSERS_PASSWD", &self.env.extrausers_passwd)
-            .env("NSS_EXTRAUSERS_GROUP", &self.env.extrausers_group);
+            .env("NSS_EXTRAUSERS_GROUP", &self.env.extrausers_group)
+            .env("IDHELPER_BIN", &self.env.idhelper_bin)
+            .env("NFS_KLLDAP_IDHELPER_SOCKET", idhelper_socket_path());
         let mut preload: Vec<String> = Vec::new();
         if self.env.use_nss_wrapper {
             cmd.env("NSS_WRAPPER_PASSWD", &self.env.nss_passwd)
@@ -1095,9 +1109,19 @@ while :; do :; done
         let host = runtime_hostname(cfg.as_ref());
         let realm = runtime_realm(cfg.as_ref());
         let short = host.split('.').next().unwrap_or(&host).to_string();
+        let client_short = std::env::var("NFS_KLLDAP_IDHELPER_CLIENT_HOST")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "blue-lt".to_string());
         let mut pre = std::env::var("NFS_KLLDAP_IDHELPER_PRERESOLVE").unwrap_or_default();
-        for v in [&host, &short] {
-            let p = format!("host/{v}@{realm}");
+        for v in [&host, &short, &client_short] {
+            let p = if v.contains('@') {
+                v.clone()
+            } else if v.contains('/') {
+                format!("{v}@{realm}")
+            } else {
+                format!("host/{v}@{realm}")
+            };
             if !pre.split(',').any(|x| x == p) {
                 if !pre.is_empty() {
                     pre.push(',');
@@ -1271,6 +1295,7 @@ fn resolve_nss_wrapper_so() -> PathBuf {
         }
     }
     for cand in [
+        "/usr/lib64/libnss_wrapper.so",
         "/usr/lib/x86_64-linux-gnu/libnss_wrapper.so",
         "/usr/lib/aarch64-linux-gnu/libnss_wrapper.so",
         "/usr/lib/libnss_wrapper.so",

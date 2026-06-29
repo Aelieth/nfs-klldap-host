@@ -567,10 +567,13 @@ EXPORT_DEFAULTS {{
     Ok(())
 }
 
+/// Per-export posix-only directives emitted before SecType (measurable block; avoids ACL-mask NOTSUPP).
+fn posix_only_export_directives() -> &'static str {
+    "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    # POSIX_ONLY_EXPORT: posix getattr/access only (no ACL mask)\n"
+}
+
 fn conservative_read_access_guard() -> &'static str {
-    // small behavioral guard in conservative !enable_acl path (pure on (Share,FsCaps)): post + disable makes
-    // nfs_access_op use posix decision for noacl (avoids NOTSUPP even if mask constructed internally).
-    "    Read_Access_Check_Policy = \"post\";\n    # small behavioral guard ensures nfs_access_op posix path (avoids NOTSUPP); ls via idhelper (mask may still be logged internally)\n"
+    posix_only_export_directives()
 }
 
 /// Build Ganesha 9.6 EXPORT ACL lines.
@@ -579,20 +582,17 @@ fn conservative_read_access_guard() -> &'static str {
 /// so nfs_access_op does not reject on ACL-style mask (OP_ACCESS NOTSUPP fix).
 pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String, String) {
     let eff = compute_effective_flags(share, caps);
-    let disable_acl_line = if !eff.enable_acl {
-        "    Disable_ACL = true;\n".to_string()
+    // Limited/noacl: consolidated posix block (Disable_ACL+Manage_Gids=false+post) before SecType.
+    let (disable_acl_line, manage_gids_line, read_access_line) = if !eff.enable_acl {
+        let block = conservative_read_access_guard().to_string();
+        (block.clone(), String::new(), String::new())
     } else {
-        String::new()
-    };
-    let manage_gids_line = if eff.manage_gids {
-        "    Manage_Gids = true;\n".to_string()
-    } else {
-        "    Manage_Gids = false;\n".to_string()
-    };
-    let read_access_line = if !eff.enable_acl {
-        conservative_read_access_guard().to_string()
-    } else {
-        String::new()
+        let manage = if eff.manage_gids {
+            "    Manage_Gids = true;\n".to_string()
+        } else {
+            "    Manage_Gids = false;\n".to_string()
+        };
+        (String::new(), manage, String::new())
     };
     let auto_comment = if eff.auto_applied {
         let opts = if caps.mount_options.is_empty() {
@@ -605,7 +605,7 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
             format!(
                 "# posix-only conservative mode for noacl btrfs (ZimaOS)\n\
                  # Disable_ACL + Manage_Gids=false + Read_Access_Check_Policy=post\n\
-                 # small behavioral guard + post policy for noacl: posix access decision (avoids NOTSUPP); ls via idhelper (mask may still be logged internally)\n\
+                 # POSIX_ONLY_EXPORT: Disable_ACL+Manage_Gids=false+post — posix getattr/access only\n\
                  # Auto-detected: {}{opts} — ACL-dependent NFSv4 ops disabled for compatibility.\n\
                  # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
                 caps.fstype,
@@ -704,9 +704,9 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
     Export_Id = {};
     Path = {};
     Pseudo = {};
-    SecType = {};
+{disable_acl_line}    SecType = {};
     Squash = {};
-{disable_acl_line}{manage_gids_line}{read_access_line}{pref_read_line}{pref_write_line}{client_block}    FSAL {{
+{manage_gids_line}{read_access_line}{pref_read_line}{pref_write_line}{client_block}    FSAL {{
         Name = VFS;
     }}
 }}
@@ -952,13 +952,16 @@ mod tests {
             mount_options: vec!["noacl".into()],
             acl_capable: false,
         };
-        let (disable_line, manage_line, comment, read_line) = export_fs_directives(&share, &caps);
-        assert!(disable_line.contains("Disable_ACL = true;"));
-        assert!(manage_line.contains("Manage_Gids = false;"));
+        let (posix_block, manage_line, comment, read_line) = export_fs_directives(&share, &caps);
+        assert!(posix_block.contains("Disable_ACL = true;"));
+        assert!(!posix_block.contains("Enable_ACL"));
+        assert!(posix_block.contains("Manage_Gids = false;"));
+        assert!(posix_block.contains("Read_Access_Check_Policy = \"post\";"));
+        assert!(manage_line.is_empty() && read_line.is_empty(), "limited uses consolidated block");
         assert!(comment.contains("Auto-detected: btrfs"));
-        assert!(read_line.contains("Read_Access_Check_Policy = \"post\";"));
         assert!(comment.contains("posix-only conservative mode for noacl btrfs (ZimaOS)"));
-        assert!(comment.contains("behavioral guard") || comment.contains("posix path"), "direct export_fs test must cover guard effect");
+        assert!(posix_block.contains("POSIX_ONLY_EXPORT"), "conservative guard must emit measurable marker");
+        assert!(comment.contains("POSIX_ONLY_EXPORT"), "direct export_fs test must cover guard effect");
         assert!(!comment.contains("Manage_Gids_Expiration"));
     }
 

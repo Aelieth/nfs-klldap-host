@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::common::{
     get_realm, get_server_variants, IdCache, BULK_SEED_MARKER, CACHE_PATH,
-    DEFAULT_REBULK_INTERVAL_SECS, SOCKET_PATH,
+    socket_path, DEFAULT_REBULK_INTERVAL_SECS,
 };
 use nfs_klldap_config::{classify_principal, IdMapSnapshot};
 
@@ -241,19 +241,20 @@ pub(crate) fn run_daemon() {
     let _ = fs::create_dir_all("/var/lib/nfs-klldap");
     let _ = fs::create_dir_all("/var/lib/extrausers");
 
+    let sock = socket_path();
     // Remove a stale socket from a prior daemon instance.
-    let _ = fs::remove_file(SOCKET_PATH);
+    let _ = fs::remove_file(&sock);
 
-    let listener = match UnixListener::bind(SOCKET_PATH) {
+    let listener = match UnixListener::bind(&sock) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("FATAL: cannot bind idhelper socket at {}: {}", SOCKET_PATH, e);
+            eprintln!("FATAL: cannot bind idhelper socket at {}: {}", sock, e);
             std::process::exit(1);
         }
     };
 
     // Make socket world-accessible inside container (root only usage is also.
-    let _ = fs::set_permissions(SOCKET_PATH, std::os::unix::fs::PermissionsExt::from_mode(0o666));
+    let _ = fs::set_permissions(&sock, std::os::unix::fs::PermissionsExt::from_mode(0o666));
 
     // Load the persisted cache and refresh user rows on the first LDAP sync.
     let mut initial = IdCache::load_from_file(Path::new(CACHE_PATH));
@@ -268,7 +269,7 @@ pub(crate) fn run_daemon() {
     }
     let cache = Arc::new(Mutex::new(initial));
 
-    println!("[idhelper] daemon listening on {}", SOCKET_PATH);
+    println!("[idhelper] daemon listening on {}", sock);
     println!("[idhelper] realm={} variants={:?}", realm, server_variants);
 
     // Eagerly bulk-load the full user+group map into the 10m resolver cache.

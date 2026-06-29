@@ -186,11 +186,31 @@ case "$CMD" in
         if [ -z "$P" ]; then
             die "Usage: ganesha-ctl id-resolve <principal>"
         fi
-        if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
-            /usr/local/bin/nfs-klldap-idhelper resolve "$P"
-            # exercise uid2grp path via getent on gid (covers nss_wrapper group db)
-            GID=$( /usr/local/bin/nfs-klldap-idhelper resolve "$P" --json 2>/dev/null | sed -n 's/.*"gid":\([0-9]*\).*/\1/p' | head -1 )
+        IDHELPER="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
+        if [ -x "$IDHELPER" ]; then
+            "$IDHELPER" grps "$P" >/dev/null 2>&1 || true
+            "$IDHELPER" resolve "$P"
+            GID=$( "$IDHELPER" resolve "$P" --json 2>/dev/null | sed -n 's/.*"gid":\([0-9]*\).*/\1/p' | head -1 )
             [ -n "$GID" ] && getent group "$GID" 2>/dev/null || true
+            NP="${NSS_PASSWD:-/var/lib/nfs-klldap/nss_passwd}"
+            NG="${NSS_GROUP:-/var/lib/nfs-klldap/nss_group}"
+            SO="${NSS_WRAPPER_SO:-}"
+            if [ -z "$SO" ]; then
+                for cand in /usr/lib64/libnss_wrapper.so /usr/lib/x86_64-linux-gnu/libnss_wrapper.so /usr/lib/libnss_wrapper.so; do
+                    [ -f "$cand" ] && SO="$cand" && break
+                done
+            fi
+            if [ -n "$SO" ] && [ -f "$NP" ]; then
+                SHORT=$(echo "$P" | sed 's/@.*//; s#.*/##')
+                echo "[ganesha-ctl] nss_wrapper getent passwd $P:"
+                LD_PRELOAD="$SO" NSS_WRAPPER_PASSWD="$NP" NSS_WRAPPER_GROUP="$NG" \
+                    getent passwd "$P" 2>/dev/null || LD_PRELOAD="$SO" NSS_WRAPPER_PASSWD="$NP" NSS_WRAPPER_GROUP="$NG" \
+                    getent passwd "$SHORT" 2>/dev/null || echo "  (nss_wrapper miss)"
+                echo "[ganesha-ctl] nss_wrapper id -G $P:"
+                LD_PRELOAD="$SO" NSS_WRAPPER_PASSWD="$NP" NSS_WRAPPER_GROUP="$NG" \
+                    id -G "$P" 2>/dev/null || LD_PRELOAD="$SO" NSS_WRAPPER_PASSWD="$NP" NSS_WRAPPER_GROUP="$NG" \
+                    id -G "$SHORT" 2>/dev/null || echo "  (nss_wrapper groups miss)"
+            fi
         else
             echo "idhelper not found; falling back to getent on short name"
             SHORT=$(echo "$P" | sed 's/@.*//; s#.*/##')
@@ -199,7 +219,12 @@ case "$CMD" in
         # surface ID MAPPER from ganesha.log (uid2grp_allocate_by_principal, unsupported)
         if [ -f /var/log/ganesha.log ]; then
             echo "[ganesha-ctl] ID MAPPER lines for $P:"
-            grep -iE 'ID MAPPER|uid2grp_allocate_by_principal|Unsupported code path|Could not map' /var/log/ganesha.log | tail -5 || echo "  (no recent ID MAPPER matches)"
+            grep -iE "ID MAPPER|uid2grp_allocate_by_principal|Unsupported code path|Could not map|$P" /var/log/ganesha.log | tail -8 || echo "  (no recent ID MAPPER matches)"
+            if grep -q "uid2grp_allocate_by_principal" /var/log/ganesha.log 2>/dev/null; then
+                echo "[ganesha-ctl] ganesha-log:uid2grp-present"
+            else
+                echo "[ganesha-ctl] ganesha-log:no-uid2grp (ganesha.nfsd not exercised)"
+            fi
         fi
         ;;
     id-check)

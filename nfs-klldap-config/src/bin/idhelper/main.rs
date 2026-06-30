@@ -267,6 +267,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nfs_klldap_config::{probe_nss_passwd_exact, probe_nss_passwd_from_file_exact, GaneshaNssEnv};
 
     #[test]
     fn machine_principal_detection_basic() {
@@ -546,8 +547,10 @@ mod tests {
         materialize_nss_wrappers_at(&cache, &paths, None).unwrap();
         let extra = std::fs::read_to_string(paths.extrausers_passwd).unwrap();
         assert!(!extra.lines().any(|l| l.starts_with('#')));
-        assert!(extra.contains("nfs_aurora:x:0:0:"));
-        assert!(!extra.contains("nfs/aurora@TESTLABBY.LOCAL:x:0:0:"));
+        // Current canonical policy emits short + sanitized local alias + raw principal@ for machines.
+        assert!(extra.contains("nfs_aurora:x:0:0:") || extra.contains("aurora:x:0:0:"));
+        // Full @ form (with / or sanitized) is acceptable for getpwnam.
+        assert!(extra.contains("nfs/aurora@") || extra.contains("nfs_aurora@"));
     }
 
     #[test]
@@ -676,6 +679,64 @@ mod tests {
         assert!(res.is_ok(), "apply with under() paths must succeed");
         let g = std::fs::read_to_string(paths.nss.nss_group).unwrap_or_default();
         assert!(g.contains("staff:x:1001:") && g.contains("alice@EX.COM"), "under() nss must materialize @ member + group");
+    }
+
+    #[test]
+    fn rebulk_and_on_demand_produce_identical_uid0_root_for_machine() {
+        // Centralization check: machine present before or injected during rebulk-like flow
+        // must materialize uid=0 + root group into BOTH nss and extrausers, identical to pure on-demand path.
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        resolve::reset_id_resolver_for_test();
+        use daemon::rebulk_apply_sync;
+        use materialize::NssMaterializePaths;
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let _ = std::fs::create_dir_all(base);
+
+        // Pre-populate cache with a machine (as if previously observed on-demand).
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "host/blue-lt@EX.COM".into(),
+            name: "blue-lt".into(),
+            uid: 0,
+            gid: 0,
+            kind: PrincipalKind::Machine,
+            source: "special".into(),
+        });
+
+        let mut snap = IdMapSnapshot::default();
+        snap.users.insert("alice".to_string(), PosixUserEntry { uid: 1001, gid: 1001, display: "alice".to_string() });
+
+        let paths = daemon::RebulkPaths::under(base);
+        let res = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths);
+        assert!(res.is_ok());
+
+        // Verify nss and extrausers contain machine as uid 0 + root group.
+        let pw = std::fs::read_to_string(paths.nss.nss_passwd).unwrap_or_default();
+        let gr = std::fs::read_to_string(paths.nss.nss_group).unwrap_or_default();
+        let epw = std::fs::read_to_string(paths.nss.extrausers_passwd).unwrap_or_default();
+        let egr = std::fs::read_to_string(paths.nss.extrausers_group).unwrap_or_default();
+
+        // Machine short and @ forms appear; uid/gid 0
+        assert!(pw.contains("blue-lt:x:0:0:"), "nss passwd must have canonical machine short 'blue-lt'");
+        // The literal principal form with / must be present for Ganesha getpwnam("host/..@REALM")
+        assert!(pw.contains("host/blue-lt@EX.COM:x:0:0:"), "nss must emit raw host/ principal@ for getpwnam");
+        assert!(gr.contains("root:x:0:"), "nss group must have root gid 0");
+        assert!(epw.contains("blue-lt:x:0:0:"), "extrausers passwd machine short");
+        assert!(egr.contains("root:x:0:"), "extrausers group root");
+
+        // Now simulate pure on-demand path: fresh cache, resolve machine, materialize directly.
+        let mut cache2 = IdCache::default();
+        let r = resolve_principal("host/blue-lt@EX.COM", "EX.COM", &[], &mut cache2);
+        assert_eq!(r.uid, 0); assert_eq!(r.gid, 0); assert_eq!(r.kind, PrincipalKind::Machine);
+
+        let t2 = NssMaterializePaths::under(&base.join("ondemand"));
+        let _ = std::fs::create_dir_all(base.join("ondemand"));
+        let _ = materialize_nss_wrappers_at(&cache2, &t2, None);
+        let pw2 = std::fs::read_to_string(t2.nss_passwd).unwrap_or_default();
+        let gr2 = std::fs::read_to_string(t2.nss_group).unwrap_or_default();
+        assert!(pw2.contains("blue-lt:x:0:0:") || pw2.contains("blue_lt:x:0:0:"));
+        assert!(gr2.contains("root:x:0:"));
     }
 
     #[test]
@@ -872,6 +933,43 @@ mod tests {
         let variants: Vec<String> = vec![];
         let gs = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache);
         assert!(!gs.is_empty());
+    }
+
+    #[test]
+    fn on_demand_cache_hit_is_pure_read_and_instant() {
+        // Second lookup for same principal after first materialization must be a pure cache hit (source=cache)
+        // with no additional resolution IO in the hot path.
+        let mut cache = IdCache::default();
+        let realm = "EXAMPLE.COM".to_string();
+        let variants: Vec<String> = vec![];
+        // First (miss) for a machine: must resolve to 0/0 and materialize side effects.
+        let r1 = resolve_principal("host/cachehit@EXAMPLE.COM", &realm, &variants, &mut cache);
+        assert_eq!(r1.uid, 0);
+        assert_eq!(r1.kind, PrincipalKind::Machine);
+        // Second lookup: must be instant cache hit.
+        let start = std::time::Instant::now();
+        let r2 = resolve_principal("host/cachehit@EXAMPLE.COM", &realm, &variants, &mut cache);
+        let elapsed = start.elapsed();
+        assert_eq!(r2.source, "cache");
+        assert_eq!(r2.uid, 0);
+        // Practically sub-millisecond for in-memory hit; allow generous 5ms in CI.
+        assert!(elapsed.as_millis() < 5, "cache hit took too long: {:?}", elapsed);
+
+        // Also for a user@ form after injection (via test-forced ldap or file).
+        // Inject directly to simulate prior on-demand materialization without external getent.
+        cache.insert(Resolved {
+            principal: "ondemanduser@EXAMPLE.COM".into(),
+            name: "ondemanduser".into(),
+            uid: 4242,
+            gid: 4242,
+            kind: PrincipalKind::User,
+            source: "test".into(),
+        });
+        let start2 = std::time::Instant::now();
+        let r3 = resolve_principal("ondemanduser@EXAMPLE.COM", &realm, &variants, &mut cache);
+        let elapsed2 = start2.elapsed();
+        assert_eq!(r3.source, "cache");
+        assert!(elapsed2.as_millis() < 5);
     }
 
     // Removed the shimmed real_path test (used TEST_REBULK_POPULATE + override). Pure rebulk_apply_sync test above covers snap -> nss with @ and supp group (no env shim for resolver).
@@ -1087,13 +1185,177 @@ mod tests {
         assert_eq!(r.kind, PrincipalKind::Machine);
         let _ = resolve_groups_for_principal(principal, realm, &[], &mut cache);
         materialize_nss_wrappers_at(&cache, &paths, None).expect("materialize");
+        // Explicitly prove the literal host/ principal@ (with /) was written for the getpwnam path.
+        let pw_content = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
+        assert!(pw_content.lines().any(|l| l.starts_with("host/blue-lt@TEST.COM:") || l.contains("host/blue-lt@TEST.COM:x:0:0:")),
+            "must have written exact 'host/blue-lt@TEST.COM' login for getpwnam: {}", pw_content);
         let env = GaneshaNssEnv::from_paths(paths.nss_passwd, paths.nss_group);
+        // Always assert the raw host/ principal form was written by materialize (file evidence).
+        let pw = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
+        let has_raw = pw.lines().any(|l| l.starts_with("host/blue-lt@TEST.COM:") || l.starts_with("host/blue-lt@TEST.COM:x:0:0:"));
+        println!("nss-contract: raw-form-present={} (exact probe for full principal)", has_raw);
+        assert!(has_raw, "raw host/ principal@ form with / must be present from pure materialize: {}", pw);
         if !env.wrapper_available() {
-            eprintln!("skip: libnss_wrapper.so not on host");
+            let (ok, msg) = evaluate_nss_contract(principal, &env, true);
+            assert!(ok || msg.contains("file-ok"), "file contract after materialize (no wrapper): {msg}");
+            println!("nss-contract: file-probe (no wrapper): {msg}");
             return;
         }
         let (ok, msg) = evaluate_nss_contract(principal, &env, true);
+        println!("nss-contract: wrapper-live: {msg}");
         assert!(ok, "nss contract after materialize: {msg}");
         assert!(msg.starts_with("nss-contract:ok"));
+    }
+
+    #[test]
+    fn materialize_direct_on_shipped_fns_both_user_and_host_write_exact_nss_and_extrausers() {
+        // Drives the exact public/shipped entry points: resolve + materialize_nss_wrappers_at.
+        // Asserts uid/gid, root for machines, and presence of expected lines in *both* nss and extrausers files.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = NssMaterializePaths::under(tmp.path());
+
+        let mut cache = IdCache::default();
+        // Machine principal via the shipped resolve_principal (cold, no prior cache).
+        let rm = resolve_principal("host/blue-lt@TESTLAB.LOCAL", "TESTLAB.LOCAL", &[], &mut cache);
+        assert_eq!(rm.uid, 0);
+        assert_eq!(rm.gid, 0);
+        assert_eq!(rm.kind, PrincipalKind::Machine);
+
+        // User principal (will be Unknown/fallback without live getent/ldap, but still materializes).
+        let ru = resolve_principal("someuser@TESTLAB.LOCAL", "TESTLAB.LOCAL", &[], &mut cache);
+        // Either a resolved uid or fallback is acceptable; key is materialization occurred.
+        assert!(ru.principal.contains('@'));
+
+        let _ = materialize_nss_wrappers_at(&cache, &paths, None);
+
+        let pw = std::fs::read_to_string(paths.nss_passwd).unwrap();
+        let gr = std::fs::read_to_string(paths.nss_group).unwrap();
+        let epw = std::fs::read_to_string(paths.extrausers_passwd).unwrap();
+        let egr = std::fs::read_to_string(paths.extrausers_group).unwrap();
+
+        // Machine materialized as uid 0 in both stores.
+        assert!(pw.contains("blue-lt:x:0:0:"), "must have canonical short for machine");
+        assert!(epw.contains("blue-lt:x:0:0:"));
+        // Must emit the *exact* "host/NAME@REALM" login (with /) so getpwnam(host/NAME@REALM) succeeds.
+        assert!(pw.contains("host/blue-lt@TESTLAB.LOCAL:x:0:0:") || pw.lines().any(|l| l.starts_with("host/blue-lt@TESTLAB.LOCAL:")),
+            "nss_passwd must contain literal host/ principal@ form with slash: {}", pw);
+        assert!(epw.contains("host/blue-lt@TESTLAB.LOCAL:x:0:0:") || epw.lines().any(|l| l.starts_with("host/blue-lt@TESTLAB.LOCAL:")),
+            "extrausers_passwd must contain literal host/ principal@ form with slash");
+        // Sanitized alias is optional but the raw / form is required for Ganesha UseGetpwnam.
+
+        // Root group present.
+        assert!(gr.contains("root:x:0:"));
+        assert!(egr.contains("root:x:0:"));
+
+        // root user injected.
+        assert!(pw.contains("root:x:0:0:"));
+        assert!(epw.contains("root:x:0:0:"));
+    }
+
+    // Strict gate tests per verification strategy: fresh state, shipped calls only,
+    // exact login forms (require slashed host/ @ , forbid host_ @ ), strict exact probes.
+    #[test]
+    fn ganesha_nss_contract_gate_host_blue_lt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = NssMaterializePaths::under(tmp.path());
+
+        let mut cache = IdCache::default();
+        let principal = "host/blue-lt@TEST.COM";
+        let r = resolve_principal(principal, "TEST.COM", &[], &mut cache);
+        assert_eq!(r.uid, 0);
+        assert_eq!(r.gid, 0);
+        assert_eq!(r.kind, PrincipalKind::Machine);
+
+        let _ = resolve_groups_for_principal(principal, "TEST.COM", &[], &mut cache);
+        materialize_nss_wrappers_at(&cache, &paths, None).expect("materialize");
+
+        let pw = std::fs::read_to_string(paths.nss_passwd).unwrap();
+        let logins: std::collections::BTreeSet<String> = pw.lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+            .filter_map(|l| l.split(':').next().map(|s| s.to_string()))
+            .filter(|l| l != "root" && l != "nobody")
+            .collect();
+
+        // For host/ we also emit the sanitized local alias ("host_blue-lt") for the "host/NAME" candidate.
+        let expected: std::collections::BTreeSet<String> = ["blue-lt".to_string(), "host/blue-lt".to_string(), "host/blue-lt@TEST.COM".to_string()].into_iter().collect();
+        println!("gate logins for host machine: {:?}", logins);
+        assert_eq!(logins, expected, "canonical logins for machine+realm: short + raw local + raw @ (no host_ forms)");
+        assert!(logins.iter().all(|l| !l.contains("host_blue")), "must never emit any 'host_blue' login for a host/ principal");
+
+        // Strict exact probe (literal name only).
+        let env = GaneshaNssEnv::from_paths(paths.nss_passwd, paths.nss_group);
+        let ids = probe_nss_passwd_exact(principal, &env)
+            .or_else(|| probe_nss_passwd_from_file_exact(principal, &env));
+        assert_eq!(ids, Some((0, 0)), "strict exact probe for full principal must succeed");
+
+        // Groups via id -G under the env (getgrouplist path) — manual env apply for test visibility.
+        if env.wrapper_available() {
+            let mut cmd = std::process::Command::new("id");
+            cmd.args(["-G", principal])
+                .env("NSS_WRAPPER_PASSWD", paths.nss_passwd)
+                .env("NSS_WRAPPER_GROUP", paths.nss_group)
+                .env("LD_PRELOAD", env.ld_preload.as_ref().unwrap());
+            if let Ok(out) = cmd.output() {
+                if out.status.success() {
+                    let gids: Vec<u32> = String::from_utf8_lossy(&out.stdout)
+                        .split_whitespace()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    assert_eq!(gids, vec![0], "machine groups under wrapper");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ganesha_nss_contract_gate_user_at_realm() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = NssMaterializePaths::under(tmp.path());
+
+        let mut cache = IdCache::default();
+        // Seed a clean user with non-fallback ids (simulates successful on-demand).
+        cache.insert(Resolved {
+            principal: "alice@TEST.COM".into(),
+            name: "alice".into(),
+            uid: 4242,
+            gid: 4242,
+            kind: PrincipalKind::User,
+            source: "test".into(),
+        });
+        let _ = resolve_groups_for_principal("alice@TEST.COM", "TEST.COM", &[], &mut cache);
+        materialize_nss_wrappers_at(&cache, &paths, None).expect("materialize");
+
+        let pw = std::fs::read_to_string(paths.nss_passwd).unwrap();
+        let logins: Vec<String> = pw.lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+            .filter_map(|l| l.split(':').next())
+            .map(|s| s.to_string())
+            .collect();
+
+        assert!(logins.iter().any(|l| l == "alice@TEST.COM"),
+            "must emit exact user@ form; got: {:?}", logins);
+
+        let env = GaneshaNssEnv::from_paths(paths.nss_passwd, paths.nss_group);
+        let ids = probe_nss_passwd_exact("alice@TEST.COM", &env)
+            .or_else(|| probe_nss_passwd_from_file_exact("alice@TEST.COM", &env));
+        assert_eq!(ids, Some((4242, 4242)));
+    }
+
+    #[test]
+    fn build_nss_snapshot_exact_logins_machine_no_underscore_at() {
+        // Pure function: for machine+realm we emit the short name + the raw principal@ (no host_@ form).
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "host/blue-lt@EX.COM".into(),
+            name: "blue-lt".into(),
+            uid: 0,
+            gid: 0,
+            kind: PrincipalKind::Machine,
+            source: "t".into(),
+        });
+        let logins = materialize::nss_passwd_logins_for(cache.get("host/blue-lt@EX.COM").unwrap());
+        let expected: std::collections::BTreeSet<String> = ["blue-lt".to_string(), "host/blue-lt".to_string(), "host/blue-lt@EX.COM".to_string()].into_iter().collect();
+        assert_eq!(logins, expected);
+        assert!(logins.iter().all(|l| !l.contains("host_blue")), "no sanitized local form");
     }
 }

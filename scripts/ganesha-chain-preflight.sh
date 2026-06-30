@@ -50,8 +50,8 @@ exec 3>&1
   echo "=== rebulk supplemental nss_group (lldap_sudohost at startup) ==="
   docker exec "$CONTAINER" grep -E 'lldap_sudohost:x:3004:testuser1' /var/lib/nfs-klldap/nss_group /var/lib/extrausers/group
 
-  echo "=== grps + getgrouplist shim (single exec) ==="
-  docker exec "$CONTAINER" bash -c "nfs-klldap-idhelper grps $REALM_PRINC --json; /container/scripts/test-getgrouplist-shim.sh"
+  echo "=== grps (materialization-backed getpwnam/getgrouplist under nss_wrapper) ==="
+  docker exec "$CONTAINER" bash -c "nfs-klldap-idhelper grps $REALM_PRINC --json; echo 'NSSHANDOFF: grps exercised (no shim required)'"
 
   echo "=== id-map-test testuser1 (no ganesha.log uid2grp grep pre-mount) ==="
   docker exec "$CONTAINER" ganesha-ctl id-map-test testuser1

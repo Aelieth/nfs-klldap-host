@@ -61,7 +61,8 @@ pub use ganesha_identity_pipeline::{
 };
 pub use ganesha_nss_contract::{
     evaluate_nss_contract, nss_lookup_names, probe_nss_groups, probe_nss_passwd,
-    GaneshaNssEnv, GANESHA_GETGROUPLIST_SHIM_SO,
+    probe_nss_passwd_exact, probe_nss_passwd_from_file_exact,
+    GaneshaNssEnv,
 };
 pub use fs_warnings::{
     any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warning,

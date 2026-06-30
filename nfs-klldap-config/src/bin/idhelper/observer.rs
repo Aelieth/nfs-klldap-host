@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use nfs_klldap_config::MACHINE_PRINCIPAL_PREFIXES;
+
 
 use nfs_klldap_identity::principal_local_part;
 
@@ -290,7 +290,7 @@ fn extract_linux_nfs_hostname(line: &str) -> Option<String> {
 pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<String> {
     let realm_lower = realm.to_ascii_lowercase();
 
-    // uid2grp unsupported path: resolve machine principal on first sighting.
+    // uid2grp unsupported path (legacy): resolve on stub message. Still useful if seen.
     if let Some(start) = line.find("Unsupported code path for principal ") {
         let rest = &line[start + "Unsupported code path for principal ".len()..];
         let cand = rest.split_whitespace().next().unwrap_or(rest).trim();
@@ -299,17 +299,90 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
         }
     }
 
-    // Match Get uid for user@REALM lines to resolve user principals.
-    if let Some(start) = line.find("Get uid for ") {
-        let rest = &line[start + "Get uid for ".len()..];
-        if let Some(end) = rest.find(|c: char| !c.is_alphanumeric() && c != '@' && c != '.' && c != '-' && c != '_') {
-            let cand = &rest[..end].trim();
-            if cand.contains('@') && cand.to_ascii_lowercase().contains(&realm_lower) {
-                // Only treat non-machine service forms as user candidates.
-                if !MACHINE_PRINCIPAL_PREFIXES.iter().any(|p| cand.to_ascii_lowercase().starts_with(p)) {
-                    return Some(cand.to_string());
+    // getpwnam/getgrouplist/idmapper indicators for on-demand under UseGetpwnam=true.
+    // Ganesha (and libnfsidmap under nss_wrapper) may log the names it looks up.
+    // Catch both user@REALM and host/*@REALM (and bare host segments that we promote).
+    {
+        let lower = line.to_ascii_lowercase();
+        let markers = ["getpwnam", "getgrouplist", "getgrnam", "idmapper"];
+        let has_marker = markers.iter().any(|m| lower.contains(m));
+        if has_marker {
+            // Robust: scan for any whitespace/paren/quote-delimited token containing @ and our realm.
+            // This catches getpwnam("user@REALM"), getpwnam(host/foo@REALM), etc.
+            // Token scan below splits on common delimiters to find @-bearing principals.
+            let delims = |c: char| c.is_whitespace() || matches!(c, '(' | ')' | '"' | '\'' | '[' | ']' | ',' | ':' | '=' | '<' | '>');
+            for w in line.split(delims) {
+                let t = w.trim();
+                if t.contains('@') && t.to_ascii_lowercase().contains(&realm_lower) {
+                    // Clean surrounding punctuation from the token.
+                    let cand = t.trim_matches(|c: char| !c.is_alphanumeric() && c != '@' && c != '/' && c != '.' && c != '-' && c != '_');
+                    if cand.contains('@') && cand.to_ascii_lowercase().contains(&realm_lower) {
+                        return Some(cand.to_string());
+                    }
                 }
             }
+            // Host promotion (only for host segments near markers when no @ form was present).
+            for m in &markers {
+                if let Some(pos) = lower.find(m) {
+                    let tail = &line[pos + m.len()..];
+                    if let Some(hp) = tail.find("host/") {
+                        let rest = &tail[hp + 5..];
+                        let short: String = rest.chars()
+                            .take_while(|&c| c.is_alphanumeric() || c == '-' || c == '.')
+                            .collect();
+                        if looks_like_client_hostname(&short) && !is_noise_hostname(&short) {
+                            return Some(format!("host/{}@{}", short, realm));
+                        }
+                    }
+                    // Parenthesized/quoted hostname after marker (Linux NFS client style or bare).
+                    for &open in &['(', '"', '\'', '[', '<'] {
+                        if let Some(op) = tail.find(open) {
+                            let inner_start = op + 1;
+                            if let Some(close_rel) = tail[inner_start..].find(|c: char| matches!(c, ')' | '"' | '\'' | ']' | '>')) {
+                                let inside = &tail[inner_start..inner_start + close_rel];
+                                for token in inside.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '.') {
+                                    let t = token.trim();
+                                    if t.is_empty() || is_noise_hostname(t) { continue; }
+                                    if looks_like_client_hostname(t) {
+                                        return Some(format!("host/{}@{}", t, realm));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Very conservative bare token: only if it contains '.' (looks like fqdn) or is a classic short lowercase host.
+                    for w in tail.split(|c: char| c.is_whitespace() || c == '=' || c == ':' || c == ',') {
+                        let t = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '.' && c != '/');
+                        if t.is_empty() { continue; }
+                        if is_noise_hostname(t) { continue; }
+                        let tl = t.to_ascii_lowercase();
+                        if ["failed", "trying", "returned", "no", "entry", "missing", "not", "found", "for", "client", "user", "getpwnam", "getgrouplist"].contains(&tl.as_str()) {
+                            continue;
+                        }
+                        if tl.starts_with("host/") {
+                            let short = tl.trim_start_matches("host/");
+                            if looks_like_client_hostname(short) {
+                                return Some(format!("host/{}@{}", short, realm));
+                            }
+                        }
+                        if t.contains('.') && looks_like_client_hostname(t) {
+                            return Some(format!("host/{}@{}", t, realm));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Match Get uid for user@REALM (or host/*@REALM) lines. Under UseGetpwnam the
+    // getpwnam path produces these; allow both user and machine forms for on-demand.
+    if let Some(start) = line.find("Get uid for ") {
+        let rest = &line[start + "Get uid for ".len()..];
+        let end = rest.find(|c: char| !c.is_alphanumeric() && c != '@' && c != '.' && c != '-' && c != '_' && c != '/')
+            .unwrap_or(rest.len());
+        let cand = &rest[..end].trim();
+        if cand.contains('@') && cand.to_ascii_lowercase().contains(&realm_lower) {
+            return Some(cand.to_string());
         }
     }
 
@@ -512,6 +585,50 @@ manage_gids = true
         assert_eq!(
             managed_gids_log_level(line, true),
             Some(ManagedGidsLogLevel::Verbose)
+        );
+    }
+
+    #[test]
+    fn extract_getpwnam_triggers_user_principal() {
+        // UseGetpwnam path: Ganesha does getpwnam(user@REALM) -> observer must react.
+        let line = r#"idmapper :ID MAPPER :DEBUG :getpwnam("testuser42@EXAMPLE.COM") failed, trying short"#;
+        assert_eq!(
+            extract_candidate_principal(line, "EXAMPLE.COM"),
+            Some("testuser42@EXAMPLE.COM".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_getgrouplist_triggers_machine_principal() {
+        // getgrouplist on host segment or qualified host/ form must fire on-demand.
+        let line1 = r#"ganesha : getgrouplist host/blue-lt@REALM"#;
+        assert_eq!(
+            extract_candidate_principal(line1, "REALM"),
+            Some("host/blue-lt@REALM".to_string())
+        );
+        let line2 = r#"getgrouplist(blue-lt) for client cred"#;
+        assert_eq!(
+            extract_candidate_principal(line2, "REALM"),
+            Some("host/blue-lt@REALM".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_getpwnam_host_qualified_direct() {
+        let line = r#"getpwnam host/server42@CLUSTER.LOCAL returned no entry"#;
+        assert_eq!(
+            extract_candidate_principal(line, "CLUSTER.LOCAL"),
+            Some("host/server42@CLUSTER.LOCAL".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_getuid_for_machine_form() {
+        // "Get uid for " now accepts host/*@ forms too (getpwnam path can log this).
+        let line = "Get uid for host/worker3@MYREALM.ORG";
+        assert_eq!(
+            extract_candidate_principal(line, "MYREALM.ORG"),
+            Some("host/worker3@MYREALM.ORG".to_string())
         );
     }
 }

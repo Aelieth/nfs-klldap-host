@@ -133,19 +133,8 @@ RUN cp /output/nfs-klldap-config /usr/local/bin/ && \
     chmod +x /usr/local/bin/nfs-klldap-config /usr/local/bin/nfs-klldap-startup /usr/local/bin/nfs-klldap-idhelper /usr/local/bin/nfs-klldap-ui && \
     rm -rf /output
 
-COPY container/getgrouplist_ganesha_shim.c /container/getgrouplist_ganesha_shim.c
-COPY container/test_getgrouplist_shim.c /container/test_getgrouplist_shim.c
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends gcc libc6-dev; \
-    gcc -shared -fPIC -O2 -o /usr/local/lib/libganesha_getgrouplist_shim.so /container/getgrouplist_ganesha_shim.c -ldl; \
-    gcc -o /usr/local/bin/test_getgrouplist_shim /container/test_getgrouplist_shim.c; \
-    apt-get purge -y gcc libc6-dev; \
-    apt-get autoremove -y; \
-    apt-get clean; \
-    rm -rf /var/lib/apt/lists/*
-
-COPY scripts/test-getgrouplist-shim.sh /container/scripts/test-getgrouplist-shim.sh
+# No getgrouplist shim is built or used. The idhelper materialization + nss_wrapper is the sole path.
+# (Legacy C sources in container/ are not copied or compiled in this image.)
 COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl
 COPY container/scripts/nfs-klldap-conf-watcher /usr/local/bin/nfs-klldap-conf-watcher
 COPY container/scripts/nfsidmap-idhelper /usr/local/bin/nfsidmap-idhelper

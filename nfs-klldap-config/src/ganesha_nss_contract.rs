@@ -143,6 +143,39 @@ pub fn probe_nss_passwd(name: &str, env: &GaneshaNssEnv) -> Option<(u32, u32)> {
     probe_nss_passwd_from_file(name, env)
 }
 
+/// Strict exact probe: query *only* the literal name (no nss_lookup_names expansion).
+/// Used by gate tests to prove the precise principal string Ganesha passes is present.
+pub fn probe_nss_passwd_exact(name: &str, env: &GaneshaNssEnv) -> Option<(u32, u32)> {
+    if env.wrapper_available() {
+        let mut cmd = Command::new("getent");
+        cmd.args(["passwd", name]);
+        env.apply_to_cmd(&mut cmd);
+        if let Ok(o) = cmd.output() {
+            if o.status.success() {
+                let line = String::from_utf8_lossy(&o.stdout);
+                if let Some((uid, gid)) = line.lines().next().and_then(parse_getent_passwd) {
+                    return Some((uid, gid));
+                }
+            }
+        }
+    }
+    probe_nss_passwd_from_file_exact(name, env)
+}
+
+pub fn probe_nss_passwd_from_file_exact(name: &str, env: &GaneshaNssEnv) -> Option<(u32, u32)> {
+    let content = std::fs::read_to_string(&env.nss_passwd).ok()?;
+    for line in content.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let login = line.split(':').next()?;
+        if login == name {
+            return parse_getent_passwd(line);
+        }
+    }
+    None
+}
+
 /// getgrouplist contract (via `id -G` numeric gids under same env).
 pub fn probe_nss_groups(name: &str, env: &GaneshaNssEnv) -> Vec<u32> {
     if !env.wrapper_available() {
@@ -217,25 +250,13 @@ pub fn evaluate_nss_contract(
     }
 }
 
-pub const GANESHA_GETGROUPLIST_SHIM_SO: &str =
-    "/usr/local/lib/libganesha_getgrouplist_shim.so";
-
 fn ld_preload_for_ganesha_nss() -> PathBuf {
-    let mut parts: Vec<PathBuf> = Vec::new();
-    let shim = PathBuf::from(GANESHA_GETGROUPLIST_SHIM_SO);
-    if shim.is_file() {
-        parts.push(shim);
-    }
+    // Only nss_wrapper is preloaded. Materialization into nss_wrapper (and extrausers)
+    // is the sole source of truth for getpwnam/getgrouplist under UseGetpwnam=true.
     if let Some(so) = resolve_nss_wrapper_so() {
-        parts.push(so);
+        return so;
     }
-    PathBuf::from(
-        parts
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(":"),
-    )
+    PathBuf::new()
 }
 
 fn resolve_nss_wrapper_so() -> Option<PathBuf> {
@@ -312,5 +333,17 @@ mod tests {
         let (ok, msg) = evaluate_nss_contract("testuser1@TEST.COM", &env, false);
         assert!(!ok, "fallback user must fail contract");
         assert!(msg.contains("fallback"), "msg={msg}");
+    }
+
+    #[test]
+    fn ganesha_ld_preload_is_nss_wrapper_only() {
+        let preload = ld_preload_for_ganesha_nss();
+        let s = preload.to_string_lossy();
+        // Must contain nss_wrapper (when present on the system).
+        if !s.is_empty() {
+            assert!(s.contains("nss_wrapper") || s.contains("libnss_wrapper"), "preload must be nss_wrapper only: {}", s);
+        }
+        // Must not reference the old getgrouplist shim.
+        assert!(!s.contains("getgrouplist_shim"), "preload must not contain legacy shim: {}", s);
     }
 }

@@ -89,11 +89,14 @@ fn is_numeric_login(login: &str) -> bool {
     !login.is_empty() && login.chars().all(|c| c.is_ascii_digit())
 }
 
-/// Passwd login for user@REALM principals; keeps @ for getpwnam while stripping invalid chars.
+/// Passwd login for user@REALM (and host/NAME@REALM) principals.
+/// Keeps '@' and '/' (so getpwnam("host/blue-lt@REALM") under UseGetpwnam=true
+/// finds the literal principal name that Ganesha passes). Only replace truly
+/// unsafe chars for the nss_wrapper file format.
 pub(crate) fn principal_realm_login_for_nss(principal: &str) -> String {
     let mut out = String::with_capacity(principal.len());
     for c in principal.chars() {
-        if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '@' {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '@' || c == '/' {
             out.push(c);
         } else {
             out.push('_');
@@ -103,6 +106,33 @@ pub(crate) fn principal_realm_login_for_nss(principal: &str) -> String {
         out.push_str("unknown");
     }
     out
+}
+
+/// Canonical set of passwd login names to emit for a resolved principal.
+/// Machine+realm: exactly the raw principal@ form (with / preserved).
+/// User+realm: short sanitized name + the @ form (when they differ).
+pub(crate) fn nss_passwd_logins_for(r: &Resolved) -> std::collections::BTreeSet<String> {
+    let mut s = std::collections::BTreeSet::new();
+    let short = sanitize_for_nss(&r.name);
+    s.insert(short.clone());
+    if r.kind == PrincipalKind::Machine && principal_has_realm(&r.principal) {
+        // Canonical for machine+realm:
+        // - the short sanitized name (for getpwnam on the host segment)
+        // - the raw local "host/NAME" (with / preserved) for the local candidate
+        // - the full principal@ form (with /) for the full principal candidate
+        // Never emit any "host_NAME" (sanitized local) form.
+        let local = principal_local_part(&r.principal);
+        if local != short {
+            s.insert(local.to_string()); // raw "host/blue-lt"
+        }
+        s.insert(principal_realm_login_for_nss(&r.principal)); // raw "host/blue-lt@REALM"
+    } else if principal_has_realm(&r.principal) {
+        let at = principal_realm_login_for_nss(&r.principal);
+        if at != short {
+            s.insert(at);
+        }
+    }
+    s
 }
 
 /// Sanitize a string for use as a passwd login name (allow alnum + _ - .).
@@ -138,6 +168,7 @@ pub(crate) fn gecos_for(r: &Resolved) -> String {
 }
 
 /// Builds a passwd(5) line and assigns uid and gid zero to machines.
+#[allow(dead_code)]
 pub(crate) fn passwd_line_for(r: &Resolved) -> String {
     let login = sanitize_for_nss(&r.name);
     let gecos = gecos_for(r);
@@ -370,42 +401,10 @@ pub(crate) fn build_nss_snapshot(
         if is_numeric_local_principal(&r.principal) {
             continue;
         }
-        let line = passwd_line_for(r);
-        if let Some(login) = line.split(':').next() {
-            if !is_numeric_login(login) && seen_login.insert(login.to_string()) {
-                passwd_lines.push(line);
-            }
-        }
-
-        let local = principal_local_part(&r.principal);
-        if local.contains('/') && MACHINE_PRINCIPAL_PREFIXES.iter().any(|p| local.starts_with(p)) {
-            let alias = sanitize_for_nss(local);
-            if !is_numeric_login(&alias) && seen_login.insert(alias.clone()) {
+        // Use the single canonical policy for which logins to emit.
+        for login in nss_passwd_logins_for(r) {
+            if !is_numeric_login(&login) && seen_login.insert(login.clone()) {
                 let gecos = gecos_for(r);
-                passwd_lines.push(format!(
-                    "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
-                    alias, r.uid, r.gid, gecos
-                ));
-            }
-        }
-
-        // Machine host/client@REALM form for Ganesha getpwnam on client cred paths.
-        if r.kind == PrincipalKind::Machine && principal_has_realm(&r.principal) {
-            let login = principal_realm_login_for_nss(&r.principal);
-            let gecos = gecos_for(r);
-            if !is_numeric_login(&login) && seen_login.insert(login.clone()) {
-                passwd_lines.push(format!(
-                    "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
-                    login, r.uid, r.gid, gecos
-                ));
-            }
-        }
-
-        // User principal@REALM login is required for Ganesha getpwnam(user@REALM) on krb5 auth.
-        if r.kind == PrincipalKind::User && principal_has_realm(&r.principal) {
-            let login = principal_realm_login_for_nss(&r.principal);
-            let gecos = gecos_for(r);
-            if !is_numeric_login(&login) && seen_login.insert(login.clone()) {
                 passwd_lines.push(format!(
                     "{}:x:{}:{}:{}:/nonexistent:/usr/sbin/nologin",
                     login, r.uid, r.gid, gecos

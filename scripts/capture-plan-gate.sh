@@ -154,10 +154,12 @@ if ! grep -q 'UseGetpwnam = true' "$SCRATCH/ganesha.conf"; then
   echo "ERROR: ganesha.conf snapshot missing UseGetpwnam = true"
   exit 53
 fi
-if ! grep -q 'GETGROUPLIST_SHIM_OK' "$NFS_FULL_LOG"; then
-  echo "ERROR: missing GETGROUPLIST_SHIM_OK in preflight"
-  exit 54
+# Shim is no longer preloaded or required. Success is via idhelper materialization into nss_wrapper + standard getpwnam/getgrouplist.
+# Do not fail on absence of GETGROUPLIST_SHIM_OK.
+if grep -q 'GETGROUPLIST_SHIM_OK' "$NFS_FULL_LOG"; then
+  echo "note: legacy shim OK seen (ignored; nss materialization is authoritative)"
 fi
+echo "plan-gate: shim requirement removed; relying on nss contract via materialization"
 if grep -q 'ganesha-log:no-uid2grp' "$NFS_FULL_LOG"; then
   echo "ERROR: preflight must not emit ganesha-log:no-uid2grp (uid2grp is post-client)"
   exit 55

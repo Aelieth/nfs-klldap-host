@@ -1021,9 +1021,8 @@ while :; do :; done
         if self.env.use_nss_wrapper {
             cmd.env("NSS_WRAPPER_PASSWD", &self.env.nss_passwd)
                 .env("NSS_WRAPPER_GROUP", &self.env.nss_group);
-            if ganesha_getgrouplist_shim_so().is_file() {
-                preload.push(ganesha_getgrouplist_shim_so().display().to_string());
-            }
+            // Only nss_wrapper is preloaded for getpwnam/getgrouplist. The idhelper
+            // materialization is the authoritative source; no custom getgrouplist shim.
             preload.push(self.env.nss_wrapper_so.display().to_string());
         }
         if !preload.is_empty() {
@@ -1279,9 +1278,7 @@ fn chmod_file(path: &Path, mode: u32) {
     let _ = (path, mode);
 }
 
-fn ganesha_getgrouplist_shim_so() -> PathBuf {
-    PathBuf::from(nfs_klldap_config::GANESHA_GETGROUPLIST_SHIM_SO)
-}
+// (shim support removed; only nss_wrapper is used for getpwnam/getgrouplist)
 
 fn resolve_nss_wrapper_so() -> PathBuf {
     if let Ok(p) = std::env::var("NSS_WRAPPER_SO") {

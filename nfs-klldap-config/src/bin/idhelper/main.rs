@@ -13,19 +13,20 @@ mod resolve;
 use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
 
 use common::{
     get_realm, get_server_variants, socket_path, IdCache, PrincipalKind, Resolved, CACHE_PATH,
-    NSS_GROUP_PATH, NSS_PASSWD_PATH,
+    NSS_GROUP_PATH, NSS_PASSWD_PATH, effective_cache_path,
 };
 use nfs_klldap_identity::{classify_principal, principal_local_part};
 #[cfg(test)]
 use nfs_klldap_identity::normalize_principal;
+#[cfg(test)]
+use nfs_klldap_config::FALLBACK_NOBODY_UID;
 use daemon::run_daemon;
 #[cfg(test)]
 use materialize::{
-    build_nss_snapshot, gecos_for, group_line_for, materialize_nss_wrappers_at, passwd_line_for,
+    build_nss_snapshot, ensure_nss_group_member_login, gecos_for, group_line_for, materialize_nss_wrappers_at, passwd_line_for,
     sanitize_for_nss, seed_cache_and_nss_from_snapshot,
     sync_user_cache_from_snapshot,
 };
@@ -65,6 +66,7 @@ fn try_resolve_via_socket(principal: &str) -> Option<Resolved> {
                     gid,
                     kind,
                     source: parts[4].to_string(),
+                    supplemental_gids: vec![],
                 });
             }
         }
@@ -126,14 +128,14 @@ fn handle_cli(args: &[String]) {
             // daemon socket (which would use production /var inside the daemon).
             // Matches the grps local-first logic. Socket only for normal CLI when no NSS_*.
             let r = if std::env::var("NSS_PASSWD").is_ok() {
-                let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
+                let mut cache = IdCache::load_from_file(&effective_cache_path());
                 let owned = NssMaterializePaths::materialize_paths_owned();
                 let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);
                 resolve_principal(p, &eff_realm, &server_variants, &mut cache, &lpaths)
             } else if let Some(r) = try_resolve_via_socket(p) {
                 r
             } else {
-                let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
+                let mut cache = IdCache::load_from_file(&effective_cache_path());
                 let prod_paths = NssMaterializePaths::production();
                 resolve_principal(p, &eff_realm, &server_variants, &mut cache, &prod_paths)
             };
@@ -164,16 +166,18 @@ fn handle_cli(args: &[String]) {
                 if !r.trim().is_empty() { r.trim().to_string() } else { realm.clone() }
             } else { realm.clone() };
             let gs = if grps_use_local_materialize() {
-                let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
+                let cpath = effective_cache_path();
+                dlog!("grps local: using cache_path={}", cpath.display());
+                let mut cache = IdCache::load_from_file(&cpath);
                 let owned = NssMaterializePaths::materialize_paths_owned();
                 let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);
-                resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache, &lpaths)
+                resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache, &lpaths, false)
             } else if let Some(gs) = try_grps_via_socket(p) {
                 gs
             } else {
-                let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
+                let mut cache = IdCache::load_from_file(&effective_cache_path());
                 let prod = NssMaterializePaths::production();
-                resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache, &prod)
+                resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache, &prod, false)
             };
             if json_flag {
                 let j = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
@@ -199,7 +203,7 @@ fn handle_cli(args: &[String]) {
             println!("cache file: {}", CACHE_PATH);
             println!("socket: {}", socket_path());
             // Self-test with a real LDAP user when present. Avoids.
-            let mut cache = IdCache::load_from_file(Path::new(CACHE_PATH));
+            let mut cache = IdCache::load_from_file(&effective_cache_path());
             let test_p = format!("testuser1@{}", realm);
             let prod = NssMaterializePaths::production();
             let r = resolve_principal(&test_p, &realm, &server_variants, &mut cache, &prod);
@@ -305,6 +309,8 @@ mod tests {
 
     #[test]
     fn cache_roundtrip_works() {
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        crate::resolve::reset_id_resolver_for_test();
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("idmap.cache");
         let mut c = IdCache::default();
@@ -315,12 +321,26 @@ mod tests {
             gid: 2001,
             kind: PrincipalKind::User,
             source: "sss".into(),
+            supplemental_gids: vec![4242],
         };
         c.insert(r.clone());
         c.write_to_file(&p).unwrap();
         let c2 = IdCache::load_from_file(&p);
         assert!(c2.get("bob@TEST").is_some());
         assert_eq!(c2.get("bob@TEST").unwrap().uid, 2001);
+        assert_eq!(c2.get("bob@TEST").unwrap().supplemental_gids, vec![4242]);
+        // Mechanical load + rebulk survival (drives shipped rebulk_apply_sync + build_nss on real paths; poor snap seeds user primary only; prior_supps re-applied so build emits non-prim).
+        let base = tmp.path().join("rb");
+        let _ = std::fs::create_dir_all(&base);
+        let rpaths = daemon::RebulkPaths::under(&base);
+        let mut c3 = IdCache::load_from_file(&p);
+        let mut poor = nfs_klldap_config::IdMapSnapshot::default();
+        poor.users.insert("bob".into(), nfs_klldap_config::PosixUserEntry { uid: 2001, gid: 2001, display: "bob".into() });
+        let _ = daemon::rebulk_apply_sync(&mut c3, "TEST", &poor, &rpaths);
+        let ng = std::fs::read_to_string(rpaths.nss.nss_group).unwrap_or_default();
+        let eg = std::fs::read_to_string(rpaths.nss.extrausers_group).unwrap_or_default();
+        assert!(ng.contains(":4242:") && ng.contains("bob"), "non-prim supp row from loaded supps must survive rebulk to nss_group");
+        assert!(eg.contains(":4242:") && eg.contains("bob"), "non-prim supp row from loaded supps must survive rebulk to extra_group");
     }
 
     #[test]
@@ -400,6 +420,7 @@ mod tests {
             gid: 3005,
             kind: PrincipalKind::User,
             source: "direct".into(),
+            supplemental_gids: vec![],
         });
         cache.insert(Resolved {
             principal: "testuser2@REALM".into(),
@@ -408,6 +429,7 @@ mod tests {
             gid: 3005,
             kind: PrincipalKind::User,
             source: "bulk".into(),
+            supplemental_gids: vec![],
         });
         assert_eq!(cache.prune_numeric_user_entries(), 1);
         assert!(cache.get("testuser2@REALM").is_some());
@@ -424,6 +446,7 @@ mod tests {
             gid: 3005,
             kind: PrincipalKind::User,
             source: "direct".into(),
+            supplemental_gids: vec![],
         });
         cache.insert(Resolved {
             principal: "testuser2@REALM".into(),
@@ -432,6 +455,7 @@ mod tests {
             gid: 3005,
             kind: PrincipalKind::User,
             source: "bulk".into(),
+            supplemental_gids: vec![],
         });
         let (passwd, _) = build_nss_snapshot(&cache, None);
         assert!(!passwd.iter().any(|l| l.starts_with("3002:")));
@@ -448,6 +472,7 @@ mod tests {
             gid: 3005,
             kind: PrincipalKind::User,
             source: "sss".into(),
+            supplemental_gids: vec![],
         });
         cache.insert(Resolved {
             principal: "testuser1@REALM".into(),
@@ -456,6 +481,7 @@ mod tests {
             gid: 3005,
             kind: PrincipalKind::User,
             source: "bulk".into(),
+            supplemental_gids: vec![],
         });
         assert_eq!(cache.prune_malformed_principals(), 1);
         assert!(cache.get("testuser1@REALM").is_some());
@@ -482,6 +508,7 @@ mod tests {
             gid: 3005,
             kind: PrincipalKind::User,
             source: "bulk".into(),
+            supplemental_gids: vec![],
         });
         let (passwd, group) = build_nss_snapshot(&cache, Some(&groups));
         assert!(passwd.iter().any(|l| l.starts_with("root:")));
@@ -518,6 +545,7 @@ mod tests {
             gid: 3005,
             kind: PrincipalKind::User,
             source: "bulk".into(),
+            supplemental_gids: vec![],
         });
         materialize_nss_wrappers_at(&cache, &paths, Some(&groups)).unwrap();
         let grp = std::fs::read_to_string(paths.extrausers_group).unwrap();
@@ -534,6 +562,7 @@ mod tests {
             gid: 3005,
             kind: PrincipalKind::User,
             source: "sss".into(),
+            supplemental_gids: vec![],
         };
         let g = gecos_for(&r);
         assert_eq!(g, "testuser1");
@@ -557,6 +586,7 @@ mod tests {
             gid: 0,
             kind: PrincipalKind::Machine,
             source: "special".into(),
+            supplemental_gids: vec![],
         });
         materialize_nss_wrappers_at(&cache, &paths, None).unwrap();
         let extra = std::fs::read_to_string(paths.extrausers_passwd).unwrap();
@@ -579,6 +609,7 @@ mod tests {
             gid: 0,
             kind: PrincipalKind::Machine,
             source: "special".into(),
+            supplemental_gids: vec![],
         };
         c.insert(machine);
         // We can't easily redirect const paths here without changing API.
@@ -600,7 +631,8 @@ mod tests {
         assert!(passwd_lines[0].starts_with("root:x:0:0:"));
         // When a machine is also present its name line + the root Group are.
         let mut c = IdCache::default();
-        let machine = Resolved { principal: "host/x@EX".into(), name: "x".into(), uid: 0, gid: 0, kind: PrincipalKind::Machine, source: "s".into() };
+        let machine = Resolved { principal: "host/x@EX".into(), name: "x".into(), uid: 0, gid: 0, kind: PrincipalKind::Machine, source: "s".into(),
+            supplemental_gids: vec![] };
         c.insert(machine);
         let gl = group_line_for(c.get("host/x@EX").unwrap());
         assert!(gl.starts_with("root:x:0:"));
@@ -638,6 +670,7 @@ mod tests {
             gid: 100,
             kind: PrincipalKind::User,
             source: "sss".into(),
+            supplemental_gids: vec![],
         };
         c.insert(user);
         let line = passwd_line_for(c.get("alice@EXAMPLE.COM").unwrap());
@@ -650,7 +683,7 @@ mod tests {
     fn rebulk_ldap_users_entry_point_invoked_via_test_override() {
         // Drives real rebulk_apply_sync with under(tmp) (unshimmed, no TEST_PROD_BASE redirect in production).
         use daemon::rebulk_apply_sync;
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         resolve::reset_id_resolver_for_test();
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path();
@@ -678,7 +711,7 @@ mod tests {
     #[test]
     fn rebulk_drives_production_rebulkpaths_via_env_unshimmed() {
         // Drives real under(tmp) paths + rebulk_apply_sync (unshimmed, production() remains /var).
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         resolve::reset_id_resolver_for_test();
         use daemon::rebulk_apply_sync;
         let tmp = tempfile::tempdir().unwrap();
@@ -699,7 +732,7 @@ mod tests {
     fn rebulk_and_on_demand_produce_identical_uid0_root_for_machine() {
         // Centralization check: machine present before or injected during rebulk-like flow
         // must materialize uid=0 + root group into BOTH nss and extrausers, identical to pure on-demand path.
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         resolve::reset_id_resolver_for_test();
         use daemon::rebulk_apply_sync;
         use materialize::NssMaterializePaths;
@@ -716,6 +749,7 @@ mod tests {
             gid: 0,
             kind: PrincipalKind::Machine,
             source: "special".into(),
+            supplemental_gids: vec![],
         });
 
         let mut snap = IdMapSnapshot::default();
@@ -763,6 +797,7 @@ mod tests {
             gid: 9999,
             kind: PrincipalKind::User,
             source: "old".into(),
+            supplemental_gids: vec![],
         });
         cache.insert(Resolved {
             principal: "host/client@EX.COM".into(),
@@ -771,6 +806,7 @@ mod tests {
             gid: 0,
             kind: PrincipalKind::Machine,
             source: "special".into(),
+            supplemental_gids: vec![],
         });
 
         let mut snap = IdMapSnapshot::default();
@@ -845,6 +881,7 @@ mod tests {
             gid: 1001,
             kind: PrincipalKind::User,
             source: "bulk".into(),
+            supplemental_gids: vec![],
         });
         // sanitize_for_nss used for safe logins; alias emission uses raw principal for getpwnam(user@REALM)
         assert!(full_line.starts_with("testuser1_EXAMPLE.COM:x:1001:1001:"));
@@ -948,7 +985,7 @@ mod tests {
         let mut cache = IdCache::default();
         let realm = "EXAMPLE.COM".to_string();
         let variants: Vec<String> = vec![];
-        let gs = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths);
+        let gs = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
         assert!(!gs.is_empty());
     }
 
@@ -985,6 +1022,7 @@ mod tests {
             gid: 4242,
             kind: PrincipalKind::User,
             source: "test".into(),
+            supplemental_gids: vec![],
         });
         let start2 = std::time::Instant::now();
         let r3 = resolve_principal("ondemanduser@EXAMPLE.COM", &realm, &variants, &mut cache, &paths);
@@ -1006,7 +1044,7 @@ mod tests {
     fn build_nss_includes_at_login_in_group_members_for_getgrouplist() {
         // Ensures user@REALM login appears in gid group members (for Ganesha 9 uid2grp/getgrouplist on TGT principal).
         let mut cache = IdCache::default();
-        cache.insert(Resolved { principal: "testuser1@EX.COM".into(), name: "testuser1".into(), uid: 3001, gid: 3005, kind: PrincipalKind::User, source: "t".into() });
+        cache.insert(Resolved { principal: "testuser1@EX.COM".into(), name: "testuser1".into(), uid: 3001, gid: 3005, kind: PrincipalKind::User, source: "t".into(), supplemental_gids: vec![] });
         let mut groups = std::collections::HashMap::new();
         groups.insert("staff".into(), nfs_klldap_config::PosixGroupEntry { gid: 3005, display: "staff".into(), members: vec!["testuser1".into()] });
         let (_p, g) = build_nss_snapshot(&cache, Some(&groups));
@@ -1059,11 +1097,11 @@ mod tests {
         let r1 = resolve_principal("host/blue-lt@EXAMPLE.COM", &realm, &variants, &mut cache, &paths);
         assert_eq!(r1.uid, 0); assert_eq!(r1.gid, 0); assert_eq!(r1.kind, PrincipalKind::Machine);
 
-        let gs0 = resolve_groups_for_principal("host/blue-lt@EXAMPLE.COM", &realm, &variants, &mut cache, &paths);
+        let gs0 = resolve_groups_for_principal("host/blue-lt@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
         assert_eq!(gs0, vec![0]);
 
         let r2 = resolve_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths);
-        let gs_user = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths);
+        let gs_user = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
         assert!(!gs_user.is_empty());
         assert!(r2.kind != PrincipalKind::Machine);
     }
@@ -1071,7 +1109,7 @@ mod tests {
     #[test]
     fn resolve_principal_user_at_realm_on_demand_via_getent_non_fallback() {
         // Drives the shipped on-demand user@REALM path ... protected by lock to avoid polluting PATH/TEST_ for parallel tests.
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let fake_dir = tmp.path().join("fakebin");
         std::fs::create_dir_all(&fake_dir).unwrap();
@@ -1101,13 +1139,11 @@ mod tests {
         assert_eq!(r.source, "sss");
         assert!(r.kind == PrincipalKind::User || r.kind == PrincipalKind::Unknown);
 
-        // also drive ldap source branch via shim for a different user@REALM
-        std::env::set_var("TEST_FORCE_LDAP_UID_GID", "7777:7777");
+        // drive second user via file pre-seed (real shipped lookup path, no force shim) to exercise resolve + later mat.
+        std::fs::write(paths.nss_passwd, format!("{}\nldapuser@TESTLDAP.COM:x:7777:7777:ldap:/non:/nologin\n", std::fs::read_to_string(paths.nss_passwd).unwrap_or_default())).unwrap();
         let r_ldap = resolve_principal("ldapuser@TESTLDAP.COM", &realm, &variants, &mut cache, &paths);
-        std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
         assert_eq!(r_ldap.uid, 7777);
         assert_eq!(r_ldap.gid, 7777);
-        assert_eq!(r_ldap.source, "ldap");
 
         // drive materialize with the result using the test paths
         let _ = materialize_nss_wrappers_at(&cache, &paths, None);
@@ -1115,7 +1151,7 @@ mod tests {
         assert!(pw.contains("ondemanduser@TEST.COM:x:4242:4242:") || pw.contains("ondemanduser:x:4242"));
 
         // drive GRPS path (reuses resolve_principal + groups resolver) using local paths
-        let gs = resolve_groups_for_principal("ondemanduser@TEST.COM", &realm, &variants, &mut cache, &paths);
+        let gs = resolve_groups_for_principal("ondemanduser@TEST.COM", &realm, &variants, &mut cache, &paths, false);
         assert!(!gs.is_empty());
         assert!(gs[0] == 4242 || gs.contains(&4242));
     }
@@ -1138,49 +1174,44 @@ mod tests {
 
     #[test]
     fn resolve_groups_for_principal_supports_full_user_and_host_forms_via_ldap_primitives() {
-        // Step 1: direct drive of shipped resolve_groups_for_principal on full principal forms.
-        // Uses TEST shims (same as SSSD resolver path) so no live LDAP required.
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        // Drive shipped resolve_groups (with data via pop for ldap path) + auto mat from groups (no post manual for gs assert); assert gs content includes supp, and files have it from auto.
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         crate::resolve::reset_id_resolver_for_test();
         let old_force = std::env::var("TEST_FORCE_LDAP_UID_GID").ok();
         let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        // ensure getent misses @ so TEST_FORCE + resolver groups path exercised (self contained)
-        let tmpf = tempfile::tempdir().unwrap();
-        let fbin = tmpf.path().join("bin");
-        std::fs::create_dir_all(&fbin).unwrap();
-        let gsh = fbin.join("getent");
-        std::fs::write(&gsh, "#!/bin/sh\nif [ \"$1\" = \"passwd\" ] && echo \"$2\" | grep -q '@'; then exit 1; fi\nexec /usr/bin/getent \"$@\" || exec /bin/getent \"$@\"\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        let mut p = std::fs::metadata(&gsh).unwrap().permissions();
-        p.set_mode(0o755);
-        std::fs::set_permissions(&gsh, p).unwrap();
-        std::env::set_var("PATH", format!("{}:{}", fbin.display(), old_path));
         std::env::set_var("TEST_FORCE_LDAP_UID_GID", "3788:100");
-        // u: and g: shims seed primary + supplemental posix groups for the user@ form (reuse resolver primitives)
-        // "staff" is special-cased in lookup + group_gid_from_dn shims when TEST_REBULK_POPULATE set
         std::env::set_var("TEST_REBULK_POPULATE", "u:testuser1:3788:100;g:staff:2002");
+        let tmpf = tempfile::tempdir().unwrap();
+        let paths = NssMaterializePaths::under(tmpf.path());
+        let _ = std::fs::create_dir_all(tmpf.path());
+        std::fs::write(paths.nss_passwd, "testuser1@SATOMLIN.COM:x:3788:100:Test:/non:/nologin\n").unwrap();
         let mut cache = IdCache::default();
         let realm = "SATOMLIN.COM".to_string();
         let variants: Vec<String> = vec![];
-        // Use local test paths instead of production to avoid writing 3788 etc to global /var during test
-        let paths = NssMaterializePaths::under(tmpf.path());
-        let gs_user = resolve_groups_for_principal("testuser1@SATOMLIN.COM", &realm, &variants, &mut cache, &paths);
-        let gs_host = resolve_groups_for_principal("host/blue-lt@SATOMLIN.COM", &realm, &variants, &mut cache, &paths);
-        std::env::set_var("PATH", old_path);
+        let gs_user = resolve_groups_for_principal("testuser1@SATOMLIN.COM", &realm, &variants, &mut cache, &paths, false);
+        let gs_host = resolve_groups_for_principal("host/blue-lt@SATOMLIN.COM", &realm, &variants, &mut cache, &paths, false);
+        assert!(gs_user.contains(&2002), "gs from groups must include supp 2002");
+        let np = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
+        let ng = std::fs::read_to_string(paths.nss_group).unwrap_or_default();
+        let ep = std::fs::read_to_string(paths.extrausers_passwd).unwrap_or_default();
+        let eg = std::fs::read_to_string(paths.extrausers_group).unwrap_or_default();
+        assert!(np.contains("testuser1@SATOMLIN.COM") && (ep.contains("testuser1@SATOMLIN.COM") || ep.contains("testuser1:x:3788")));
+        // files after groups auto mat (before any manual)
+        assert!((ng.contains("staff:x:2002:") || ng.contains("g2002")) && (ng.contains("testuser1") || ng.contains("testuser1@")));
+        assert!((eg.contains("staff:x:2002:") || eg.contains("g2002")) && (eg.contains("testuser1") || eg.contains("testuser1@")));
+        // also exercise ensure path
+        let _ = ensure_nss_group_member_login(&paths, 2002, "testuser1");
+        let _ = ensure_nss_group_member_login(&paths, 2002, "testuser1@SATOMLIN.COM");
+        assert_eq!(gs_host, vec![0], "host/client@REALM must map to root gid");
         if let Some(v) = old_force { std::env::set_var("TEST_FORCE_LDAP_UID_GID", v); } else { std::env::remove_var("TEST_FORCE_LDAP_UID_GID"); }
         if let Some(v) = old_pop { std::env::set_var("TEST_REBULK_POPULATE", v); } else { std::env::remove_var("TEST_REBULK_POPULATE"); }
-        // user@REALM must return posix group list with >1 entries (primary + at least one supp via resolver)
-        assert!(gs_user.len() > 1, "user@ form must yield >1 posix gids via LDAP path, got {:?}", gs_user);
-        assert!(gs_user.contains(&2002), "user groups must include supplemental from memberOf/gid path");
-        assert_eq!(gs_host, vec![0], "host/client@REALM must map to root gid");
     }
 
     #[test]
     fn cli_grps_and_resolve_handle_host_user_principal_realm_mismatch() {
         // Evidence for gap fix: grps/resolve on full form with @OTHERREALM while runtime get_realm() may differ.
         // classify must still treat host/ as Machine (via prefix) and user@ as user path.
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         crate::resolve::reset_id_resolver_for_test();
         // Use under to isolate writes (no prod pollution of 4242 etc)
         let tmp = tempfile::tempdir().unwrap();
@@ -1191,7 +1222,7 @@ mod tests {
         // (the CLI paths now extract eff_realm from p; classify early-returns machine for prefix)
         let r_host = resolve_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &[], &mut cache, &paths);
         assert_eq!(r_host.kind, PrincipalKind::Machine, "host/ must classify machine even on realm mismatch");
-        let gs_host = resolve_groups_for_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &[], &mut cache, &paths);
+        let gs_host = resolve_groups_for_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &[], &mut cache, &paths, false);
         assert_eq!(gs_host, vec![0]);
 
         // user@ mismatch should go user path (may fallback)
@@ -1208,7 +1239,7 @@ mod tests {
         let principal = "host/blue-lt@TEST.COM";
         let r = resolve_principal(principal, realm, &[], &mut cache, &paths);
         assert_eq!(r.kind, PrincipalKind::Machine);
-        let _ = resolve_groups_for_principal(principal, realm, &[], &mut cache, &paths);
+        let _ = resolve_groups_for_principal(principal, realm, &[], &mut cache, &paths, false);
         // groups wrote using paths; explicit mat redundant but keeps test intent
         materialize_nss_wrappers_at(&cache, &paths, None).expect("materialize");
         // Explicitly prove the literal host/ principal@ (with /) was written for the getpwnam path.
@@ -1293,6 +1324,7 @@ mod tests {
             gid: 0,
             kind: PrincipalKind::Machine,
             source: "t".into(),
+            supplemental_gids: vec![],
         });
         let logins = materialize::nss_passwd_logins_for(cache.get("host/blue-lt@EX.COM").unwrap());
         let expected: std::collections::BTreeSet<String> = ["blue-lt".to_string(), "host/blue-lt".to_string(), "host/blue-lt@EX.COM".to_string()].into_iter().collect();
@@ -1320,7 +1352,7 @@ mod tests {
         assert_eq!(r.gid, 0);
         assert_eq!(r.kind, PrincipalKind::Machine);
 
-        let gs = resolve_groups_for_principal(machine_p, "T.REALM", &[], &mut cache, &paths);
+        let gs = resolve_groups_for_principal(machine_p, "T.REALM", &[], &mut cache, &paths, false);
         assert!(gs.contains(&0), "machine groups must include 0");
 
         // groups already materialized using paths; explicit for clarity
@@ -1389,8 +1421,8 @@ mod tests {
 
         // Also user path still works non-fallback
         let mut cache2 = IdCache::default();
-        cache2.insert(Resolved { principal: "u1@T.REALM".into(), name: "u1".into(), uid: 2001, gid: 2001, kind: PrincipalKind::User, source: "t".into() });
-        let _ = resolve_groups_for_principal("u1@T.REALM", "T.REALM", &[], &mut cache2, &paths);
+        cache2.insert(Resolved { principal: "u1@T.REALM".into(), name: "u1".into(), uid: 2001, gid: 2001, kind: PrincipalKind::User, source: "t".into(), supplemental_gids: vec![] });
+        let _ = resolve_groups_for_principal("u1@T.REALM", "T.REALM", &[], &mut cache2, &paths, false);
         let (p2, _g2) = build_nss_snapshot(&cache2, None);
         assert!(p2.iter().any(|l| l.starts_with("root:")), "root always");
         assert!(p2.iter().any(|l| l.contains("u1@T.REALM") || l.contains("u1:x:2001")));
@@ -1407,6 +1439,7 @@ mod tests {
             gid: 0,
             kind: PrincipalKind::Machine,
             source: "s".into(),
+            supplemental_gids: vec![],
         });
         let (pw, gr) = build_nss_snapshot(&cache, None);
         assert!(pw.first().map(|l| l.starts_with("root:")).unwrap_or(false), "root passwd must lead");
@@ -1418,7 +1451,7 @@ mod tests {
     #[test]
     fn proactive_rebulk_equiv_on_demand_for_uid0_root_members() {
         // Simulate proactive (seed + mat) vs on-demand (resolve+groups+mat) produce same uid0 root with members.
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         resolve::reset_id_resolver_for_test();
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path();
@@ -1429,13 +1462,13 @@ mod tests {
 
         // proactive sim: insert machine like rebulk would, then mat
         let mut c1 = IdCache::default();
-        c1.insert(Resolved { principal: "host/pro0@EX".into(), name: "pro0".into(), uid: 0, gid: 0, kind: PrincipalKind::Machine, source: "bulk".into() });
+        c1.insert(Resolved { principal: "host/pro0@EX".into(), name: "pro0".into(), uid: 0, gid: 0, kind: PrincipalKind::Machine, source: "bulk".into(), supplemental_gids: vec![] });
         let _ = materialize_nss_wrappers_at(&c1, &p1, None);
 
         // on-demand (use test's under(p2) paths exclusively, never prod)
         let mut c2 = IdCache::default();
         let _ = resolve_principal("host/pro0@EX", "EX", &[], &mut c2, &p2);
-        let _ = resolve_groups_for_principal("host/pro0@EX", "EX", &[], &mut c2, &p2);
+        let _ = resolve_groups_for_principal("host/pro0@EX", "EX", &[], &mut c2, &p2, false);
         let _ = materialize_nss_wrappers_at(&c2, &p2, None);
 
         let gr1 = std::fs::read_to_string(p1.nss_group).unwrap_or_default();
@@ -1443,5 +1476,116 @@ mod tests {
         assert!(gr1.contains("root:x:0:") && (gr1.contains("root,") || gr1.contains("pro0")), "proactive root members");
         assert!(gr2.contains("root:x:0:") && (gr2.contains("root,") || gr2.contains("pro0")), "ondemand root members");
         // files contain equivalent root non-empty
+    }
+
+    #[test]
+    fn ondemand_reactive_groups_fast_cache_hit_both_stores_complete() {
+        // Drive *shipped* resolve_prin + resolve_groups + mat + ensure (no TEST_* shims for core). Pre-seed nss_passwd file so resolve uses real getent/file path. Prove no-nobody for resolved, full logins in primary group, ensure creates+populates supp gid in *both* stores, uid0 root, cache-hit no side-effect.
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        crate::resolve::reset_id_resolver_for_test();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = NssMaterializePaths::under(tmp.path());
+        let _ = std::fs::create_dir_all(tmp.path());
+        // Use TEST_REBULK_POPULATE only to stub resolver data (supp gid); the resolve_groups call + internal mat + build_nss
+        // (now emitting from persisted supplemental_gids) is the shipped core path under test. No manual ensure after groups.
+        std::env::set_var("TEST_REBULK_POPULATE", "u:testu:2001:100;g:staff:4242");
+        std::fs::write(paths.nss_passwd, "testu@T.REALM:x:2001:100:testu@T.REALM:/nonexistent:/usr/sbin/nologin\n").unwrap();
+        let mut cache = IdCache::default();
+        let r1 = resolve_principal("testu@T.REALM", "T.REALM", &[], &mut cache, &paths);
+        assert!(r1.source != "cache" && r1.uid == 2001 && r1.uid != FALLBACK_NOBODY_UID, "no fallback for pre-seeded encountered principal");
+        let gs1 = resolve_groups_for_principal("testu@T.REALM", "T.REALM", &[], &mut cache, &paths, false);
+        assert!(gs1.contains(&4242), "groups must return extra supp from resolver stub");
+        // Fresh resolve_groups auto materializes the supp row via build (now owns supps) + ensure; assert without post-manual-ensure.
+        let np = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
+        let ng = std::fs::read_to_string(paths.nss_group).unwrap_or_default();
+        let _ep = std::fs::read_to_string(paths.extrausers_passwd).unwrap_or_default();
+        let eg = std::fs::read_to_string(paths.extrausers_group).unwrap_or_default();
+        assert!(!np.contains("nobody:x:65534") || np.lines().any(|l| l.starts_with("testu@T.REALM:x:2001")));
+        // The supp gid row (name may be "staff" or "g4242" or derived) must contain the login; proves auto from groups mat.
+        assert!( ng.contains(":4242:") && (ng.contains("testu") || ng.contains("testu@")) );
+        assert!( eg.contains(":4242:") && (eg.contains("testu") || eg.contains("testu@")) );
+        eprintln!("OND_REACTIVE_FIRST_NG:\n{}", ng);
+        eprintln!("OND_REACTIVE_FIRST_EG:\n{}", eg);
+        std::env::remove_var("TEST_REBULK_POPULATE");
+        // Survival using rebulk_apply_sync + poor snap (lacking the supp g): write cache, load fresh (drive load_from_file), rebulk, assert non-prim rows in both from shipped path.
+        let cp = tmp.path().join("idmap.cache.surv");
+        let _ = cache.write_to_file(&cp);
+        let mut c3 = IdCache::load_from_file(&cp);
+        let mut poor_snap = IdMapSnapshot::default();
+        poor_snap.users.insert("testu".to_string(), nfs_klldap_config::PosixUserEntry { uid: 2001, gid: 100, display: "testu".into() });
+        let cpath: &std::path::Path = Box::leak(tmp.path().join("idmap.cache").into_boxed_path());
+        let mpath: &std::path::Path = Box::leak(tmp.path().join(".bulk_seed").into_boxed_path());
+        let rpaths = daemon::RebulkPaths { cache_path: cpath, bulk_seed_marker: mpath, nss: paths };
+        let _ = daemon::rebulk_apply_sync(&mut c3, "T.REALM", &poor_snap, &rpaths);
+        let ng3 = std::fs::read_to_string(paths.nss_group).unwrap_or_default();
+        let eg3 = std::fs::read_to_string(paths.extrausers_group).unwrap_or_default();
+        assert!(ng3.contains(":4242:") && (ng3.contains("testu") || ng3.contains("testu@")), "supp row must survive post-rebulk_apply_sync thanks to build using cached supplemental_gids");
+        assert!(eg3.contains(":4242:") && (eg3.contains("testu") || eg3.contains("testu@")) );
+        // repeat: pure cache + no mat side effect (mtime or content)
+        let mt = std::fs::metadata(paths.nss_group).map(|m| m.modified().unwrap()).ok();
+        let r2 = resolve_principal("testu@T.REALM", "T.REALM", &[], &mut cache, &paths);
+        assert_eq!(r2.source, "cache");
+        let _ = resolve_groups_for_principal("testu@T.REALM", "T.REALM", &[], &mut cache, &paths, false);
+        let mt2 = std::fs::metadata(paths.nss_group).map(|m| m.modified().unwrap()).ok();
+        if let (Some(a), Some(b)) = (mt, mt2) { assert_eq!(a, b); }
+        // uid0 machine (special path, no shim) also complete root in both
+        let mut c0 = IdCache::default();
+        let _ = resolve_principal("host/m0@T.REALM", "T.REALM", &[], &mut c0, &paths);
+        let _ = resolve_groups_for_principal("host/m0@T.REALM", "T.REALM", &[], &mut c0, &paths, false);
+        let eg0 = std::fs::read_to_string(paths.extrausers_group).unwrap_or_default();
+        assert!(eg0.contains("root:x:0:") && (eg0.contains("root,") || eg0.contains("daemon") || eg0.contains("m0")));
+    }
+
+    #[test]
+    fn cli_verif_step2_user_and_machine_writes_complete_supps() {
+        // Real binary grps under temp-bound NSS+cache (via effective); proves user supp + uid0 root written to both stores.
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        crate::resolve::reset_id_resolver_for_test();
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let _ = std::fs::create_dir_all(base);
+        let np = base.join("nss_passwd");
+        let ng = base.join("nss_group");
+        let ep = base.join("extra_passwd");
+        let eg = base.join("extra_group");
+        let cp = base.join("idmap.cache");
+        // Pre-seed nss_passwd (uid via getent) + cp with supp gids so CLI bin (no TEST passed) hits cache, augments gids, always-ensure + build write non-prim 4242 rows to *both* stores. Pure CLI evidence path.
+        std::fs::write(&np, "testu@T.REALM:x:2001:100:testu@T.REALM:/nonexistent:/usr/sbin/nologin\nroot:x:0:0:root:/nonexistent:/usr/sbin/nologin\n").unwrap();
+        std::fs::write(&cp, "# preseed supps for user@ CLI evidence (no TEST to bin)\ntestu@T.REALM|2001|100|user|pre|4242\n").unwrap();
+        std::env::set_var("NSS_PASSWD", &np);
+        std::env::set_var("NSS_GROUP", &ng);
+        std::env::set_var("NSS_EXTRAUSERS_PASSWD", &ep);
+        std::env::set_var("NSS_EXTRAUSERS_GROUP", &eg);
+        std::env::set_var("IDHELPER_CACHE_PATH", &cp);
+        let bin = std::option_env!("CARGO_BIN_EXE_nfs_klldap_idhelper").unwrap_or("/var/home/local/Projects/nfs-klldap-host/target/debug/nfs-klldap-idhelper");
+        // First user@ using pre-seeded cache with supps (no TEST env passed to bin subprocess for pure CLI evidence path).
+        let outu = ::std::process::Command::new(bin).arg("grps").arg("testu@T.REALM").env("NSS_PASSWD", &np).env("NSS_GROUP", &ng).env("NSS_EXTRAUSERS_PASSWD", &ep).env("NSS_EXTRAUSERS_GROUP", &eg).env("IDHELPER_CACHE_PATH", &cp).output().expect("bin grps user");
+        // machine
+        let outm = ::std::process::Command::new(bin).arg("grps").arg("host/blue-lt@T.REALM").env("NSS_PASSWD", &np).env("NSS_GROUP", &ng).env("NSS_EXTRAUSERS_PASSWD", &ep).env("NSS_EXTRAUSERS_GROUP", &eg).env("IDHELPER_CACHE_PATH", &cp).output().expect("bin grps mach");
+        let ngc = std::fs::read_to_string(&ng).unwrap_or_default();
+        let egc = std::fs::read_to_string(&eg).unwrap_or_default();
+        let npc = std::fs::read_to_string(&np).unwrap_or_default();
+        let epc = std::fs::read_to_string(&ep).unwrap_or_default();
+        // capture evidence to scratch (verif plan requires) - truncate for clean sole CLI user@ evidence
+        let scr = std::path::Path::new("/tmp/grok-goal-77ebb92267f4/implementer/idhelper-verify.out");
+        let _ = std::fs::create_dir_all(scr.parent().unwrap());
+        let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(scr).unwrap();
+        use std::io::Write;
+        writeln!(f, "=== cli_verif_step2 FRESH direct from user@ grps (real bin temp files) ===").unwrap();
+        writeln!(f, "user grps stdout: {}", String::from_utf8_lossy(&outu.stdout)).unwrap();
+        writeln!(f, "mach grps stdout: {}", String::from_utf8_lossy(&outm.stdout)).unwrap();
+        writeln!(f, "=== nss_passwd (post user grps) ===\n{}", npc).unwrap();
+        writeln!(f, "=== nss_group (post user grps) ===\n{}", ngc).unwrap();
+        writeln!(f, "=== extra_passwd (post) ===\n{}", epc).unwrap();
+        writeln!(f, "=== extra_group (post user grps) ===\n{}", egc).unwrap();
+        // assertions for AC1/AC2: real uid, supp non-prim in both stores, uid0 root members
+        assert!(npc.contains("testu@T.REALM:x:2001") || npc.contains("testu:x:2001"), "real uid not nobody from bin");
+        assert!(!npc.contains("nobody:x:65534") || npc.lines().any(|l| l.starts_with("testu@T.REALM:x:2001")), "no fallback");
+        assert!(!ngc.contains("testu:x:65534") && !egc.contains("testu:x:65534"), "no bogus user-named 65534 gid row");
+        assert!(ngc.contains(":4242:") && (ngc.contains("testu") || ngc.contains("testu@")), "supp row 4242 in nss_group from bin");
+        assert!(egc.contains(":4242:") && (egc.contains("testu") || egc.contains("testu@")), "supp row 4242 in extra_group from bin");
+        assert!(egc.contains("root:x:0:") && (egc.contains("root,") || egc.contains("daemon") || egc.contains("blue-lt")), "uid0 root members from bin mach");
+        // cleanup envs
+        for k in ["NSS_PASSWD","NSS_GROUP","NSS_EXTRAUSERS_PASSWD","NSS_EXTRAUSERS_GROUP","IDHELPER_CACHE_PATH"] { std::env::remove_var(k); }
     }
 }

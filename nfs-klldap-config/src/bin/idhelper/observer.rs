@@ -77,7 +77,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                                         let prod = crate::materialize::NssMaterializePaths::production();
                                         let _ = resolve_principal(&candidate, realm, variants, &mut guard, &prod);
                                         let _ = resolve_groups_for_principal(
-                                            &candidate, realm, variants, &mut guard, &prod,
+                                            &candidate, realm, variants, &mut guard, &prod, false,
                                         );
                                     }
                                 }

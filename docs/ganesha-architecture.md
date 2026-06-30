@@ -1,6 +1,6 @@
 # Ganesha Architecture & Bind-Mount Contract
 
-Ganesha 9.6 (trixie): DIRECTORY_SERVICES + idhelper for hybrid (user@ TGT via LDAP/SSSD; host/* machine ->0). UseGetpwnam + nss_wrapper for uid2grp. Only 9.6 keys emitted.
+Ganesha 9.6: DIRECTORY_SERVICES + idhelper (proactive+reactive, cache) authoritative for uid0+supp groups in nss/extrausers; UseGetpwnam + nss_wrapper getgrouplist.
 
 Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+derives+generates sssd/krb5/ganesha fragments. nfs-klldap-startup supervise (pid1) + watcher (SIGHUP) + ganesha-ctl handle reloads/bounces. nfs-klldap-ui (9630 HTTPS) edits TOML + direct chown/chmod (root, on allowed host_path trees). Ganesha VFS + SSSD (from LLDAP POSIX) serve NFSv4 krb5. No host kernel NFS.
 

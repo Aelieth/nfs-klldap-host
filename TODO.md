@@ -7,7 +7,7 @@
 - **0.9.x branch** (git `0.9.0`); Cargo workspace version remains 0.8.52 until release tag.
 
 ## Kerberos user principal idmap
-Supported: nsswitch path via idhelper+resolver+materialize (LDAP fallback on miss for user@REALM; UID+group materialized). krb5p shares default Manage_Gids=false. Use capture_idmap_principal.sh + build_diagnosis.sh + ganesha-ctl id-resolve for mechanical repro (see README/TESTING).
+Supported: idhelper (proactive+reactive+cache) authoritative for complete supps+uid0 in nss+extrausers (UseGetpwnam/getgrouplist). See plan.
 
 ## Diagnosed I/O / sporadic access issues (krb5p, Dolphin, immutable clients) - 2026-06 goal run
 From clean build (make clean + cargo clean + docker buildx), container launch (verbatim command), Fedora 44 client runs using the committed strict script, ganesha.log during the run, and generation tests:

@@ -154,6 +154,9 @@ pub(crate) fn sanitize_for_nss(name: &str) -> String {
 
 /// LDAP group display name takes priority over user-name stub for gid groups.
 fn gname_for_gid(gid: u32, ldap_groups: Option<&HashMap<String, PosixGroupEntry>>, fallback: &str) -> String {
+    if gid == FALLBACK_NOBODY_GID {
+        return "nobody".to_string();
+    }
     if let Some(groups) = ldap_groups {
         if let Some(entry) = groups.values().find(|g| g.gid as u32 == gid) {
             return sanitize_for_nss(&entry.display);
@@ -183,9 +186,10 @@ pub(crate) fn passwd_line_for(r: &Resolved) -> String {
 /// Build a group(5) line for the primary gid of this resolved entry.
 pub(crate) fn group_line_for(r: &Resolved) -> String {
     if r.gid == 0 {
-        // Always emit non-empty members for root gid so getgrouplist(0,...) / getgrouplist("root",0)
-        // succeeds reliably under nss_wrapper for machine principals (uid 0).
+        // non-empty base for root so getgrouplist(0) reliable (central base used here too).
         group_line_with_members(0, "root", &["root".to_string(), "daemon".to_string(), "bin".to_string()])
+    } else if r.gid == FALLBACK_NOBODY_GID {
+        group_line_with_members(FALLBACK_NOBODY_GID, "nobody", &[])
     } else {
         let gname = sanitize_for_nss(&r.name);
         group_line_with_members(r.gid, &gname, &[])
@@ -203,6 +207,7 @@ pub(crate) fn group_line_with_members(gid: u32, gname: &str, members: &[String])
 }
 
 /// Ensure a login appears in the member field for a gid (getgrouplist scans members, not memberOf).
+/// Creates a minimal group row (gN fallback) if the gid is absent so supplemental membership is always recorded in both stores.
 pub(crate) fn ensure_nss_group_member_login(
     paths: &NssMaterializePaths<'_>,
     gid: u32,
@@ -212,14 +217,29 @@ pub(crate) fn ensure_nss_group_member_login(
     if login.is_empty() {
         return Ok(());
     }
+    // helper to find display name from either store for this gid
+    let find_name = |p: &Path| -> Option<String> {
+        if let Ok(c) = fs::read_to_string(p) {
+            for line in c.lines() {
+                let t = line.trim();
+                if t.is_empty() || t.starts_with('#') { continue; }
+                let parts: Vec<&str> = t.splitn(4, ':').collect();
+                if parts.len() >= 3 && parts[2].parse::<u32>().ok() == Some(gid) {
+                    return Some(parts[0].to_string());
+                }
+            }
+        }
+        None
+    };
     for path in [paths.nss_group, paths.extrausers_group] {
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(e),
         };
         let mut changed = false;
         let mut out: Vec<String> = Vec::new();
+        let mut saw = false;
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -230,6 +250,7 @@ pub(crate) fn ensure_nss_group_member_login(
             if parts.len() >= 3 {
                 if let Ok(g) = parts[2].parse::<u32>() {
                     if g == gid {
+                        saw = true;
                         let members = if parts.len() >= 4 { parts[3] } else { "" };
                         let already = members.split(',').any(|m| m == login);
                         if !already {
@@ -253,6 +274,14 @@ pub(crate) fn ensure_nss_group_member_login(
             }
             out.push(line.to_string());
         }
+        if !saw {
+            // create stub so getgrouplist sees membership for this gid even if snap lacked the group row
+            let mut gname = find_name(paths.nss_group).or_else(|| find_name(paths.extrausers_group))
+                .unwrap_or_else(|| if gid == 0 { "root".to_string() } else { format!("g{}", gid) });
+            if gid == FALLBACK_NOBODY_GID { gname = "nobody".to_string(); }
+            out.push(format!("{}:x:{}:{}", gname, gid, login));
+            changed = true;
+        }
         if changed {
             let tmp = path.with_extension("memtmp");
             fs::write(&tmp, out.join("\n") + "\n")?;
@@ -273,11 +302,29 @@ pub(crate) fn sync_user_cache_from_snapshot(
     realm: &str,
     cache: &mut IdCache,
 ) -> usize {
+    // Preserve on-demand supplemental gids for users across prune+reseed, so build_nss will still
+    // emit their supp rows even if this bulk snap doesn't include the g or user lists it.
+    let mut prior_supps: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
+    for (k, r) in &cache.entries {
+        if r.kind == PrincipalKind::User && principal_has_realm(&r.principal) && !r.supplemental_gids.is_empty() {
+            prior_supps.insert(k.clone(), r.supplemental_gids.clone());
+        }
+    }
     let pruned = cache.prune_non_machine_users();
     if pruned > 0 {
         dlog!("sync_user_cache pruned {} stale non-machine entries", pruned);
     }
     let n = seed_cache_and_nss_from_snapshot(snap, realm, cache);
+    // re-apply preserved supps to any re-seeded users
+    for (k, sups) in prior_supps {
+        if let Some(e) = cache.entries.get_mut(&k) {
+            for s in sups {
+                if !e.supplemental_gids.contains(&s) {
+                    e.supplemental_gids.push(s);
+                }
+            }
+        }
+    }
     let bad = cache.prune_malformed_principals();
     let numeric = cache.prune_numeric_user_entries();
     if bad > 0 || numeric > 0 {
@@ -334,11 +381,26 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
             gid,
             kind: PrincipalKind::User,
             source: "bulk".to_string(),
+            supplemental_gids: vec![],
         });
         seeded += 1;
     }
 
     seeded
+}
+
+/// Return canonical root group members: base set + all machine (uid0) logins from cache.
+/// Single source for root:x:0: non-empty lists so getgrouplist(0) succeeds for machines.
+fn root_group_members(cache: &IdCache) -> Vec<String> {
+    let mut m = vec!["root".to_string(), "daemon".to_string(), "bin".to_string()];
+    for r in cache.entries.values().filter(|r| principal_has_realm(&r.principal)) {
+        for login in nss_passwd_logins_for(r) {
+            if (r.uid == 0 || r.gid == 0) && !m.iter().any(|x| x == &login) {
+                m.push(login);
+            }
+        }
+    }
+    m
 }
 
 /// Build passwd/group line vectors from cache + optional LDAP group snapshot.
@@ -374,9 +436,28 @@ pub(crate) fn build_nss_snapshot(
         }
     }
 
-    // Base + machine (uid0) members for root group: guarantees non-empty root:x:0:...
-    // and appropriate membership for getgrouplist(0) + machine principal names.
-    let mut root_group_members: Vec<String> = vec!["root".to_string(), "daemon".to_string(), "bin".to_string()];
+    // Members for *all* gids claimed by cached entries (primary + supplemental_gids stored on Resolved).
+    // This centralizes complete supplemental membership inside build_nss_snapshot so rebulk
+    // rewrites cannot drop runtime supps added by on-demand resolve_groups.
+    let mut members_by_gid: HashMap<u32, Vec<String>> = HashMap::new();
+    for r in items.iter().copied() {
+        let mut gs = vec![r.gid];
+        gs.extend_from_slice(&r.supplemental_gids);
+        for &g in &gs {
+            if g == 0 { continue; }
+            for login in nss_passwd_logins_for(r) {
+                if !is_numeric_login(&login) {
+                    let v = members_by_gid.entry(g).or_default();
+                    if !v.iter().any(|m| m == &login) {
+                        v.push(login);
+                    }
+                }
+            }
+        }
+    }
+
+    // Centralized root members (base + machines) for reliable getgrouplist(0) in both stores.
+    let mut root_group_members: Vec<String> = root_group_members(cache);
 
     if let Some(groups) = ldap_groups {
         let mut by_gid: HashMap<i32, &PosixGroupEntry> = HashMap::new();
@@ -386,13 +467,21 @@ pub(crate) fn build_nss_snapshot(
         for entry in by_gid.values() {
             let gid = entry.gid as u32;
             if seen_gid.insert(gid) {
-                let gname = sanitize_for_nss(&entry.display);
+                let mut gname = sanitize_for_nss(&entry.display);
+                if gid == FALLBACK_NOBODY_GID { gname = "nobody".to_string(); }
                 let mut members: Vec<String> = entry
                     .members
                     .iter()
                     .map(|m| sanitize_for_nss(m))
                     .collect();
                 if let Some(logins) = users_by_gid.get(&gid) {
+                    for login in logins {
+                        if !members.iter().any(|m| m == login) {
+                            members.push(login.clone());
+                        }
+                    }
+                }
+                if let Some(logins) = members_by_gid.get(&gid) {
                     for login in logins {
                         if !members.iter().any(|m| m == login) {
                             members.push(login.clone());
@@ -424,30 +513,33 @@ pub(crate) fn build_nss_snapshot(
             }
         }
 
-        if seen_gid.insert(r.gid) {
-            if r.gid == 0 {
-                // Force-correct: always a root group line with members (base + any machines)
-                // so it is never left empty by machine processing. This is exercised by both
-                // proactive and on-demand paths via build_nss_snapshot.
-                group_lines.push(group_line_with_members(0, "root", &root_group_members));
-            } else if r.kind != PrincipalKind::Machine && r.gid != 0 {
-                let gname = gname_for_gid(r.gid, ldap_groups, &r.name);
-                let short = sanitize_for_nss(&r.name);
-                let mut mems = vec![short.clone()];
-                if principal_has_realm(&r.principal) {
-                    let at = principal_realm_login_for_nss(&r.principal);
-                    if at != short && !mems.contains(&at) {
-                        mems.push(at);
+        // Emit group rows for every gid this entry claims (its primary + any supplemental_gids
+        // persisted from resolve_groups). This ensures build_nss is the single writer; supps
+        // survive rebulk.
+        let claimed: Vec<u32> = std::iter::once(r.gid).chain(r.supplemental_gids.iter().copied()).collect();
+        for g in claimed {
+            if seen_gid.insert(g) {
+                if g == 0 {
+                    group_lines.push(group_line_with_members(0, "root", &root_group_members));
+                } else if r.kind != PrincipalKind::Machine && g != 0 {
+                    // Use group name from snap if present, else stable "g{gid}" fallback; never r.name (which would be user name for pure supp gids).
+                    let mut gname = gname_for_gid(g, ldap_groups, &format!("g{}", g));
+                    if g == FALLBACK_NOBODY_GID { gname = "nobody".to_string(); }
+                    let short = sanitize_for_nss(&r.name);
+                    let mut mems: Vec<String> = members_by_gid.get(&g).cloned().unwrap_or_default();
+                    if !mems.iter().any(|m| m == &short) {
+                        mems.push(short.clone());
                     }
-                }
-                if let Some(ex) = users_by_gid.get(&r.gid) {
-                    for e in ex {
-                        if !mems.contains(e) { mems.push(e.clone()); }
+                    if principal_has_realm(&r.principal) {
+                        let at = principal_realm_login_for_nss(&r.principal);
+                        if at != short && !mems.iter().any(|m| m == &at) {
+                            mems.push(at);
+                        }
                     }
+                    group_lines.push(group_line_with_members(g, &gname, &mems));
+                } else {
+                    group_lines.push(group_line_for(r));
                 }
-                group_lines.push(group_line_with_members(r.gid, &gname, &mems));
-            } else {
-                group_lines.push(group_line_for(r));
             }
         }
         if r.uid != r.gid && seen_gid.insert(r.uid) {

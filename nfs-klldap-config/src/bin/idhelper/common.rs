@@ -20,6 +20,15 @@ pub(crate) fn socket_path() -> String {
 pub(crate) const CACHE_PATH: &str = "/var/lib/nfs-klldap/idmap.cache";
 const CACHE_VERSION: &str = "1";
 
+/// Effective cache path honors IDHELPER_CACHE_PATH or (under NSS_PASSWD) siblings the temp nss dir for isolation.
+pub(crate) fn effective_cache_path() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("IDHELPER_CACHE_PATH") { return std::path::PathBuf::from(p); }
+    if let Ok(np) = std::env::var("NSS_PASSWD") {
+        let mut pb = std::path::PathBuf::from(np); pb.set_file_name("idmap.cache"); return pb;
+    }
+    std::path::PathBuf::from(CACHE_PATH)
+}
+
 // Nss_wrapper passwd/group for LD_PRELOAD principal→uid mapping in Ganesha.
 pub(crate) const NSS_PASSWD_PATH: &str = "/var/lib/nfs-klldap/nss_passwd";
 pub(crate) const NSS_GROUP_PATH: &str = "/var/lib/nfs-klldap/nss_group";
@@ -107,6 +116,8 @@ pub struct Resolved {
     pub gid: u32,
     pub kind: PrincipalKind,
     pub source: String,
+    /// supplemental groups (non-primary) for this principal; populated by resolve_groups and used by build_nss_snapshot so bulk re-mats preserve complete membership.
+    pub supplemental_gids: Vec<u32>,
 }
 
 #[derive(Default)]
@@ -138,6 +149,7 @@ impl IdCache {
                     .chain(r.uid.to_le_bytes())
                     .chain(r.gid.to_le_bytes())
                     .chain(r.kind.as_str().bytes())
+                    .chain(r.supplemental_gids.iter().flat_map(|g| g.to_le_bytes()))
                 {
                     h = h.wrapping_mul(0x100000001b3) ^ u64::from(b);
                 }
@@ -178,9 +190,9 @@ impl IdCache {
                 if line.starts_with('#') || line.trim().is_empty() {
                     continue;
                 }
-                // Principal|uid|gid|kind|source.
+                // Principal|uid|gid|kind|source|supplemental (comma-sep, optional for compat).
                 let parts: Vec<&str> = line.split('|').collect();
-                if parts.len() != 5 {
+                if parts.len() < 5 {
                     continue;
                 }
                 if let (Ok(uid), Ok(gid)) = (parts[1].parse::<u32>(), parts[2].parse::<u32>()) {
@@ -196,6 +208,9 @@ impl IdCache {
                     } else {
                         local.to_string()
                     };
+                    let supps = if parts.len() >= 6 {
+                        parts[5].split(',').filter_map(|s| s.trim().parse::<u32>().ok()).collect()
+                    } else { vec![] };
                     let res = Resolved {
                         principal: parts[0].to_string(),
                         name,
@@ -203,6 +218,7 @@ impl IdCache {
                         gid,
                         kind,
                         source: parts[4].to_string(),
+                        supplemental_gids: supps,
                     };
                     c.insert(res);
                 }
@@ -220,15 +236,16 @@ impl IdCache {
             let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
             let mut w = BufWriter::new(f);
             writeln!(w, "# nfs-klldap-idhelper cache v{}", CACHE_VERSION)?;
-            writeln!(w, "# principal|uid|gid|kind|source")?;
+            writeln!(w, "# principal|uid|gid|kind|source|supplemental (comma sep, may be empty)")?;
             // Stable order for easier file processing / diffing.
             let mut items: Vec<_> = self.entries.values().collect();
             items.sort_by(|a, b| a.principal.cmp(&b.principal));
             for e in items {
+                let supps = e.supplemental_gids.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
                 writeln!(
                     w,
-                    "{}|{}|{}|{}|{}",
-                    e.principal, e.uid, e.gid, e.kind.as_str(), e.source
+                    "{}|{}|{}|{}|{}|{}",
+                    e.principal, e.uid, e.gid, e.kind.as_str(), e.source, supps
                 )?;
             }
         }
@@ -259,6 +276,7 @@ mod fingerprint_tests {
             gid: 1001,
             kind: PrincipalKind::User,
             source: "sss".into(),
+            supplemental_gids: vec![],
         };
         c.insert(r.clone());
         let fp = c.content_fingerprint();
@@ -276,6 +294,7 @@ mod fingerprint_tests {
             gid: 1001,
             kind: PrincipalKind::User,
             source: "sss".into(),
+            supplemental_gids: vec![],
         });
         let fp = c.content_fingerprint();
         c.insert(Resolved {
@@ -285,6 +304,7 @@ mod fingerprint_tests {
             gid: 1001,
             kind: PrincipalKind::User,
             source: "ldap".into(),
+            supplemental_gids: vec![],
         });
         assert_ne!(fp, c.content_fingerprint());
     }

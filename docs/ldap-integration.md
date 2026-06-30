@@ -81,11 +81,11 @@ When clients use Kerberos host keytabs (e.g. `/etc/krb5.keytab` on Fedora Immuta
 
 If Ganesha maps these inconsistently (or falls back to nobody/65534 for machine names), the client can see credential mixing that causes NFSv4 session teardown or permission failures.
 
-`nfs-klldap-idhelper` (IdLdapResolver shared with UI list/search/filter paths, plus getent for client parity) is the authoritative layer for this. At daemon start it eagerly inits the resolver (the "ldap cache") and pre-resolves server host principals + forces a root uid0 entry so nsswitch (sss + extrausers + wrapper for ganesha) has user/machine info *immediately* after startup, avoiding cold first-access races ("Could not map", getpwuid 0 fails for host/ principals).
+`nfs-klldap-idhelper` is the authoritative source: proactive startup + reactive (observer + resolve/GRPS) + cache ensure every UID (incl uid0 machines) has complete supp groups in nss_wrapper + extrausers for Ganesha 9.6 UseGetpwnam getgrouplist. Pre-resolves hosts, forces root uid0.
 
 - It classifies and normalizes principals via `classify_principal` and `normalize_principal` in `nfs-klldap-identity`.
 - It resolves via NSS/SSSD (users) or forces uid/gid 0 (machines).
-- On every resolution it materializes machine overrides (uid 0) into both the nss_wrapper files and `/var/lib/extrausers/{passwd,group}` (supplemental).
+- On resolution (startup/reactive) materializes uid0 + all supps to both nss+extrausers stores.
 - nss_wrapper LD_PRELOAD when USE=1; extrausers supplemental. Machines -> 0, LDAP users via sss. Idhelper for hybrid machine+user TGT.
 - It also keeps its classic fast cache + unix socket (used by `ganesha-ctl id-resolve`, the log observer, and diagnostics).
 
@@ -98,7 +98,7 @@ cat /var/lib/nfs-klldap/nss_passwd   # what Ganesha sees for these names
 getent passwd testuser1
 ```
 
-The server must perform the same lookups clients do (`getent passwd testuser1` + principal forms). For ganesha 9.6 on Debian trixie, `principal2uid` calls in-process libnfsidmap (`nfs4_gss_princ_to_ids`), which does `getpwnam` inside ganesha.nfsd under nss_wrapper — so LDAP users and client machine principals (`host/<client>@REALM`) must be present in `/var/lib/nfs-klldap/nss_passwd`. The idhelper syncs LDAP→nss_wrapper at startup and every 10 minutes by default (`NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS`, `0` disables). Preflight checks user TGT + server host + client host via CLI GRPS, `ganesha_nss_contract` live getent under `NSS_WRAPPER_*`, and `ganesha-ctl id-resolve` when present. Manual refresh: `echo REBULK | nc -U /var/run/nfs-klldap/idhelper.sock` or config SIGHUP (restarts idhelper). Machine principals map to uid/gid 0 (not 65534 fallback).
+The server must perform the same lookups clients do (`getent passwd testuser1` + principal forms). For ganesha 9.6 on Debian trixie, `principal2uid` calls in-process libnfsidmap (`nfs4_gss_princ_to_ids`), which does `getpwnam` inside ganesha.nfsd under nss_wrapper — so LDAP users and client machine principals (`host/<client>@REALM`) must be present in `/var/lib/nfs-klldap/nss_passwd`. Idhelper ensures complete supps (uid0 getgrouplist reliable) via reactive+startup; rebulk secondary (interval configurable, 0 disables). Observer drives on-demand for new principals from ganesha.log. Machine->0; preflight via GRPS/contract.
 
 `nfs-klldap-idhelper grps` (and resolve) fully supports `user@REALM` (supplemental POSIX groups via LDAP) and `host/hostname@REALM` (root gid 0 for any client/server machine principal). Preflight checks user TGT + server host + client host via GRPS, socket, nfsidmap `-g`, and `ganesha-ctl id-resolve` when available.
 

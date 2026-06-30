@@ -16,10 +16,10 @@ use nfs_klldap_identity::{
 };
 
 use crate::common::{
-    debug_enabled, IdCache, PrincipalKind, Resolved, CACHE_PATH,
+    debug_enabled, effective_cache_path, IdCache, PrincipalKind, Resolved,
 };
 use crate::materialize::{
-    ensure_nss_group_member_login, materialize_nss_wrappers_at, sanitize_for_nss,
+    ensure_nss_group_member_login, materialize_nss_wrappers_at, nss_passwd_logins_for,
     NssMaterializePaths,
 };
 #[cfg(test)]
@@ -115,20 +115,9 @@ pub(crate) fn merge_group_gids(primary: u32, supplemental: &[u32]) -> Vec<u32> {
     out
 }
 
-/// Resolve groups for principal: RESOLVE (uid) then resolver membership (memberOf/member/gidNumber).
-/// Primary first; includes LDAP display groups for primary gid resolution side-effect.
-/// Materializes supplemental NSS rows so Ganesha's getgrouplist (after uid2grp_allocate_by_uid under UseGetpwnam=true)
-/// sees the members in NSS.
-pub(crate) fn resolve_groups_for_principal(
-    principal: &str,
-    realm: &str,
-    server_variants: &[String],
-    cache: &mut IdCache,
-    paths: &NssMaterializePaths<'_>,
-) -> Vec<u32> {
-    let r = resolve_principal(principal, realm, server_variants, cache, paths);
-    // Any host/*@REALM machine principal maps to root gid for uid2grp/getgrouplist.
-    let gids = if r.kind == PrincipalKind::Machine {
+/// Compute gids (primary + supp) for a resolved principal (shared by resolve + groups paths).
+fn compute_gids_for_resolved(r: &Resolved, principal: &str) -> Vec<u32> {
+    if r.kind == PrincipalKind::Machine {
         vec![MACHINE_GID]
     } else {
         let primary = r.gid;
@@ -144,25 +133,86 @@ pub(crate) fn resolve_groups_for_principal(
             }
         }
         merge_group_gids(primary, &extra)
-    };
-    // force nss rows for all gids (incl supp) so getgrouplist on qualified name works
-    // Use the caller-supplied paths (production or test under(tmp)) instead of global owned().
-    let snap_groups = get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups);
+    }
+}
+
+/// Materialize + ensure (full logins) for supps/root in both stores. For fresh resolves and forced post-bulk refresh.
+fn ensure_nss_materialized_for(
+    r: &Resolved,
+    gids: &[u32],
+    cache: &mut IdCache,
+    paths: &NssMaterializePaths<'_>,
+) {
+    let snap_groups = get_or_init_resolver().map(|(rr, _, _)| rr.snapshot().groups);
     let _ = materialize_nss_wrappers_at(cache, paths, snap_groups.as_ref());
-    if r.kind == PrincipalKind::User {
-        let login = sanitize_for_nss(&r.name);
+    let logins: Vec<String> = nss_passwd_logins_for(r).into_iter().collect();
+    if r.kind == PrincipalKind::User && principal_has_realm(&r.principal) {
         let primary = r.gid;
-        for &g in &gids {
+        for &g in gids {
             if g != primary {
-                let _ = ensure_nss_group_member_login(paths, g, &login);
+                for login in &logins {
+                    let _ = ensure_nss_group_member_login(paths, g, login);
+                }
             }
         }
     } else if r.kind == PrincipalKind::Machine {
-        // Special case for machines (uid 0): ensure the machine login and "root" are members
-        // of root group in BOTH nss_wrapper and extrausers. Complements the root members
-        // forced in build_nss_snapshot; provides "appropriate root group membership".
-        let login = sanitize_for_nss(&r.name);
-        let _ = ensure_nss_group_member_login(paths, MACHINE_GID, &login);
+        for login in &logins {
+            let _ = ensure_nss_group_member_login(paths, MACHINE_GID, login);
+        }
+        let _ = ensure_nss_group_member_login(paths, MACHINE_GID, "root");
+    }
+}
+
+/// Resolve groups for principal (primary+supp via resolver). Materializes full (short+@) supp rows to both stores on fresh/force; cache hits fast no I/O.
+pub(crate) fn resolve_groups_for_principal(
+    principal: &str,
+    realm: &str,
+    server_variants: &[String],
+    cache: &mut IdCache,
+    paths: &NssMaterializePaths<'_>,
+    force_materialize: bool,
+) -> Vec<u32> {
+    let r = resolve_principal(principal, realm, server_variants, cache, paths);
+    let mut gids = compute_gids_for_resolved(&r, principal);
+    // Persist full gids (incl supps) onto the cache entry so that subsequent build_nss_snapshot
+    // (including after rebulk) will emit complete membership rows for all of them.
+    if let Some(entry) = cache.entries.get_mut(&normalize_principal(&r.principal)) {
+        let mut supps: Vec<u32> = gids.iter().copied().filter(|&g| g != entry.gid).collect();
+        // union with prior (never drop a previously discovered supp on a groups call that doesn't see it this time)
+        for s in &entry.supplemental_gids {
+            if !supps.contains(s) { supps.push(*s); }
+        }
+        if entry.supplemental_gids != supps {
+            entry.supplemental_gids = supps.clone();
+            // Persist to idmap cache file so supps survive restart + rebulk seed (which resets entries to vec![]).
+            let _ = cache.write_to_file(&effective_cache_path());
+        }
+        // Augment gids from cached supps so ensure/return include them (e.g. cache hit + no live resolver).
+        for &s in &supps {
+            if !gids.contains(&s) { gids.push(s); }
+        }
+    }
+    let do_mat = force_materialize || r.source != "cache";
+    if do_mat {
+        // fresh or post-bulk: full snapshot rewrite (build now includes all supps from persisted on entry)
+        ensure_nss_materialized_for(&r, &gids, cache, paths);
+    }
+    // Always (re)ensure the member logins for this principal's gids (lightweight append/repair).
+    // Fixes files after any bulk clobber on subsequent groups calls, without forcing full mat on cache hit.
+    let logins: Vec<String> = nss_passwd_logins_for(&r).into_iter().collect();
+    if r.kind == PrincipalKind::User && principal_has_realm(&r.principal) {
+        let primary = r.gid;
+        for &g in &gids {
+            if g != primary {
+                for login in &logins {
+                    let _ = ensure_nss_group_member_login(paths, g, login);
+                }
+            }
+        }
+    } else if r.kind == PrincipalKind::Machine {
+        for login in &logins {
+            let _ = ensure_nss_group_member_login(paths, MACHINE_GID, login);
+        }
         let _ = ensure_nss_group_member_login(paths, MACHINE_GID, "root");
     }
     gids
@@ -187,15 +237,14 @@ pub(crate) fn refresh_supplemental_nss_for_cached_users(
         .map(|r| r.principal.clone())
         .collect();
     for p in principals {
-        let _ = resolve_groups_for_principal(&p, realm, server_variants, cache, paths);
+        let _ = resolve_groups_for_principal(&p, realm, server_variants, cache, paths, true);
     }
 }
 
 /// Load resolver + bind creds from NfsKlldapConfig (NFS_CONFIG).
 fn load_resolver_from_config() -> Option<(IdLdapResolver, String, String)> {
-    #[cfg(test)]
     if std::env::var("TEST_REBULK_POPULATE").is_ok() {
-        // dummy so get_or_init succeeds for rebulk/GRPS tests; data from TEST spec in override
+        // dummy resolver when TEST_ set (enables supp discovery in CLI subprocess during verif; harmless outside).
         let r = IdLdapResolver::from_inputs(&::nfs_klldap_identity::LdapResolverInputs::default());
         return Some((r, "dn".into(), "pw".into()));
     }
@@ -322,6 +371,7 @@ pub(crate) fn resolve_principal(
             gid: FALLBACK_NOBODY_GID,
             kind: PrincipalKind::Unknown,
             source: "rejected-numeric".to_string(),
+            supplemental_gids: vec![],
         };
     }
 
@@ -394,6 +444,7 @@ pub(crate) fn resolve_principal(
             gid: 0,
             kind: PrincipalKind::Machine,
             source: "special".to_string(),
+            supplemental_gids: vec![],
         }
     } else {
         dlog!("  user_path principal=\"{}\"", principal);
@@ -417,6 +468,7 @@ pub(crate) fn resolve_principal(
                 gid,
                 kind,
                 source: src,
+                supplemental_gids: vec![],
             }
         } else {
             // Nobody fallback materializes nss so getpwnam succeeds.
@@ -432,6 +484,7 @@ pub(crate) fn resolve_principal(
                 gid: FALLBACK_NOBODY_GID,
                 kind: PrincipalKind::Unknown,
                 source: "direct".to_string(),
+                supplemental_gids: vec![],
             }
         }
     };
@@ -460,29 +513,40 @@ pub(crate) fn resolve_principal(
     let _ = cache.prune_malformed_principals();
     let _ = cache.prune_numeric_user_entries();
     let fp_after = cache.content_fingerprint();
-    if fp_before != fp_after || resolved.uid == 0 {
-        // always write for uid0 (new or repeat visibility) + when fp changed (new principal)
-        // combine with aggressive cache hit (early return) before any I/O on repeats.
-        let write_res = cache.write_to_file(Path::new(CACHE_PATH));
-        dlog!(
-            "  cache_write result={}",
-            if write_res.is_ok() { "ok" } else { "err" }
-        );
-        // User resolves must keep supplemental member-of rows (lldap_sudohost) for Ganesha 9.6 getgrouplist.
-        if resolved.kind == PrincipalKind::User && principal_has_realm(&resolved.principal) {
-            let _ = resolve_groups_for_principal(&resolved.principal, realm, server_variants, cache, paths);
+    // Miss path (cache hit returns early): for any fresh realm user or machine, unconditionally
+    // materialize complete supp/root (both stores) on first encounter. fp/uid0 check also covers cache file write.
+    if principal_has_realm(&resolved.principal) {
+        if resolved.kind == PrincipalKind::User {
+            let gids = compute_gids_for_resolved(&resolved, &resolved.principal);
+            // Persist supps onto the inserted entry so that build_nss_snapshot (used by rebulk and
+            // future mats) will emit the complete supplemental rows without needing ensure.
+            if let Some(e) = cache.entries.get_mut(&normalize_principal(&resolved.principal)) {
+                let mut supps: Vec<u32> = gids.iter().copied().filter(|&g| g != e.gid).collect();
+                for s in &e.supplemental_gids { if !supps.contains(s) { supps.push(*s); } }
+                e.supplemental_gids = supps;
+                // Persist immediately when we discover supps on first encounter.
+                let _ = cache.write_to_file(&effective_cache_path());
+            }
+            ensure_nss_materialized_for(&resolved, &gids, cache, paths);
         } else if resolved.kind == PrincipalKind::Machine {
-            // Fast uid0 path + exercise resolve_groups special case for machine on first seen.
-            // Ensures immediate materialize of uid=0 + root members with base for getgrouplist(0)
-            // when RESOLVE is used (UseGetpwnam). Force on first encounter for quick first-use.
-            let _ = resolve_groups_for_principal(&resolved.principal, realm, server_variants, cache, paths);
-        } else {
+            // uid0 machine: always ensure root membership + files on first (or uid0) visibility for getgrouplist(0).
+            let gids = vec![MACHINE_GID];
+            if let Some(e) = cache.entries.get_mut(&normalize_principal(&resolved.principal)) {
+                e.supplemental_gids = vec![];
+            }
+            ensure_nss_materialized_for(&resolved, &gids, cache, paths);
+        } else if fp_before != fp_after || resolved.uid == 0 {
             let snap_groups = get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups);
             if let Err(e) = materialize_nss_wrappers_at(cache, paths, snap_groups.as_ref()) {
                 dlog!("  nss_wrapper_write err={}", e);
             }
             refresh_supplemental_nss_for_cached_users(cache, realm, server_variants, paths);
         }
+    }
+    if fp_before != fp_after || resolved.uid == 0 {
+        // cache file write on change or uid0 (separate from nss mat).
+        let write_res = cache.write_to_file(&effective_cache_path());
+        dlog!("  cache_write result={}", if write_res.is_ok() { "ok" } else { "err" });
     }
 
     // Warm SSSD/getent after a successful user resolve (non-blocking).
@@ -603,6 +667,7 @@ mod tests {
             gid: 100,
             kind: PrincipalKind::User,
             source: "seed".into(),
+            supplemental_gids: vec![],
         });
         let mut lgs: std::collections::HashMap<String, nfs_klldap_config::PosixGroupEntry> = std::collections::HashMap::new();
         lgs.insert("staff".into(), nfs_klldap_config::PosixGroupEntry { gid: 2002, display: "staff".into(), members: vec!["testuser1".into()] });
@@ -626,7 +691,7 @@ mod tests {
         std::fs::write(paths.nss_passwd, "testuser1@EX.COM:x:3001:100:Test:/nonexistent:/usr/sbin/nologin\n").unwrap();
         let mut cache = IdCache::default();
         let r = resolve_principal("testuser1@EX.COM", "EX.COM", &[], &mut cache, &paths);
-        let gs = resolve_groups_for_principal("testuser1@EX.COM", "EX.COM", &[], &mut cache, &paths);
+        let gs = resolve_groups_for_principal("testuser1@EX.COM", "EX.COM", &[], &mut cache, &paths, false);
         if let Some(v) = old_force { std::env::set_var("TEST_FORCE_LDAP_UID_GID", v); }
         if let Some(v) = old_pop { std::env::set_var("TEST_REBULK_POPULATE", v); }
         assert_eq!(r.uid, 3001, "resolve_principal on @ form via file lookup (no shims)");

@@ -215,7 +215,7 @@ See [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md) for the ful
 
 ## Identity & Kerberos (idhelper)
 
-`nfs-klldap-idhelper` (shared resolver) classifies machine vs user principals for 9.6 hybrid (user TGT + host/ machine->0), materializes nss/extrausers for Ganesha libnfsidmap/getpwnam.
+`nfs-klldap-idhelper` classifies machine/user, materializes authoritative nss+extrausers (complete supps + uid0 root) for UseGetpwnam/getgrouplist via proactive startup + reactive on-demand + cache.
 
 Inside the container:
 
@@ -231,7 +231,7 @@ See [docs/ldap-integration.md](docs/ldap-integration.md) for SSSD/POSIX requirem
 ## Kerberos user principal idmap
 Supported: full `user@REALM` and `host/hostname@REALM` via idhelper GRPS/resolve (POSIX groups for users; machine principals map to uid/gid 0) + nss/extrausers. Numeric reverse rejected for stable getpwuid. Ganesha uses Only_Numeric + Allow_Numeric. Default krb5p: Manage_Gids=true (limited FS forces false), UseGetpwnam=true so `rpcsec_gss_fetch_managed_groups` uses `uid2grp_allocate_by_uid` + `getgrouplist` via nss_wrapper/idhelper (Debian 9.6 `_MSPAC_SUPPORT` stubs `allocate_by_principal` in uid2grp.c). Use ganesha-ctl id-resolve.
 
-Ganesha 9.6 omits `Read_Access_Check_Policy` by default (pre). For limited/noacl filesystems the generator emits `Read_Access_Check_Policy = "post";` (plus the posix-only comment). The idhelper now handles full `user@REALM` and `host/hostname@REALM` forms via GRPS for supplemental groups. It syncs LDAP users into `nss_passwd` at startup and every 10 minutes (pruning deletions, refreshing uid/gid). Set `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS=0` to disable periodic sync; the log observer still resolves new principals between syncs. A post-generate/startup check warns if sample principals cannot be resolved.
+Ganesha 9.6 omits `Read_Access_Check_Policy` by default (pre). For limited/noacl filesystems the generator emits `Read_Access_Check_Policy = "post";` (plus the posix-only comment). The idhelper ensures complete supp membership (incl uid0/root for machines) in nss+extrausers via proactive+reactive (observer/resolve/GRPS) + cache; periodic rebulk is secondary. Set REBULK_INTERVAL=0 to disable timer; observer handles new principals.
 
 The container image uses a split-stage strategy (build on Fedora minimal for the Rust binaries; runtime on Debian 13-slim) — see the Dockerfile for package choices.
 

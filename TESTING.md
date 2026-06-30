@@ -68,6 +68,6 @@ Run: `cargo test --workspace` (idmap, resolve, generate, supervisor probes). Idh
 `scripts/fedora-krb5p-client-validate.sh` — machine kinit + sec=krb5p. User TGT: Kerberos principal, host rpc_pipefs, client idmapd, use-machine-creds=0. Server: Only_Numeric, Manage_Gids=true + UseGetpwnam=true for uid2grp_allocate_by_uid + getgrouplist (machine 0 + user TGT groups via idhelper nss_wrapper). Full gate uses capture-plan-gate. DOCKER_NO_CACHE after changes.
 
 ## NSS snapshot golden tests
-`build_nss_snapshot` in `materialize.rs` drives passwd/group emission; `build_nss_snapshot_golden_ldap_group_and_principal_alias` in `idhelper/main.rs` locks LDAP group-name precedence and principal aliases.
+`build_nss_snapshot` + ensure drive complete supps in both stores; ondemand fast cache + uid0 tests cover reactive authoritative path for getgrouplist.
 
 Documentation and tests should be updated together when behavior changes. (See also fs.rs symlink policy comments and privileged.rs boundary.)

@@ -157,8 +157,7 @@ RUN chmod +x /entrypoint.sh
 
 RUN chown root:root /etc/sssd && chmod 755 /etc/sssd && \
     chmod 775 /etc/ganesha/exports.d && \
-    chmod 755 /container /container/scripts && \
-    chmod +x /container/scripts/test-getgrouplist-shim.sh
+    chmod 755 /container /container/scripts
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=150s --retries=3 \
     CMD /container/healthcheck.sh || exit 1

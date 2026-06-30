@@ -1,6 +1,6 @@
 # Ganesha Architecture & Bind-Mount Contract
 
-**0.9.x / Ganesha 9.6 (Debian trixie-backports):** id mapping uses `DIRECTORY_SERVICES` (`DomainName`, `Pwnam_Implementation=nsswitch`, `Root_Kerberos_Principal=host, nfs, root`, `Idmapped_User/Group_Time_Validity=600`) plus `nfs-klldap-idhelper` for hybrid machine/user Kerberos principals. Machine krb5p mounts map service principals to uid/gid 0 via extrausers + nss_wrapper; user TGT mounts resolve LDAP users through SSSD/extrausers (`getent passwd user@REALM`). Manage_Gids=true (default for capable krb5) + UseGetpwnam=true: `rpcsec_gss_fetch_managed_groups` calls `uid2grp(uid)` → `uid2grp_allocate_by_uid` + `getgrouplist` under nss_wrapper (Debian 9.6 `_MSPAC_SUPPORT` stubs `uid2grp_allocate_by_principal` in uid2grp.c); machines map to 0.
+Ganesha 9.6 (trixie): DIRECTORY_SERVICES + idhelper for hybrid (user@ TGT via LDAP/SSSD; host/* machine ->0). UseGetpwnam + nss_wrapper for uid2grp. Only 9.6 keys emitted.
 
 Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+derives+generates sssd/krb5/ganesha fragments. nfs-klldap-startup supervise (pid1) + watcher (SIGHUP) + ganesha-ctl handle reloads/bounces. nfs-klldap-ui (9630 HTTPS) edits TOML + direct chown/chmod (root, on allowed host_path trees). Ganesha VFS + SSSD (from LLDAP POSIX) serve NFSv4 krb5. No host kernel NFS.
 

@@ -168,18 +168,16 @@ impl IdLdapResolver {
         &self.posix_attributes
     }
 
-    fn build_conn_settings(&self) -> LdapConnSettings {
-        let mut s = LdapConnSettings::new();
-        if self.start_tls {
-            s = s.set_starttls(true);
-        }
-        if self.no_tls_verify {
-            s = s.set_no_tls_verify(true);
-        }
-        s
+    /// Clear all caches (UI + idhelper reuse). 1-2 sentences.
+    pub fn clear_caches(&self) {
+        self.user_cache.lock().unwrap().clear();
+        self.group_cache.lock().unwrap().clear();
+        self.user_by_uid_cache.lock().unwrap().clear();
+        self.group_by_gid_cache.lock().unwrap().clear();
     }
 
-    fn evict_expired(&self) {
+    /// Evict expired (exposed for shared use by UI wrapper). 1 sentence.
+    pub fn evict_expired(&self) {
         let now = Instant::now();
         self.user_cache
             .lock()
@@ -197,6 +195,17 @@ impl IdLdapResolver {
             .lock()
             .unwrap()
             .retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
+    }
+
+    fn build_conn_settings(&self) -> LdapConnSettings {
+        let mut s = LdapConnSettings::new();
+        if self.start_tls {
+            s = s.set_starttls(true);
+        }
+        if self.no_tls_verify {
+            s = s.set_no_tls_verify(true);
+        }
+        s
     }
 
     fn extract_first_attr(se: &SearchEntry, name: &str) -> Option<String> {

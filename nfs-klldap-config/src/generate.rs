@@ -567,13 +567,9 @@ EXPORT_DEFAULTS {{
     Ok(())
 }
 
-/// Per-export posix-only directives emitted before SecType (measurable block; avoids ACL-mask NOTSUPP).
-fn posix_only_export_directives() -> &'static str {
-    "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    # POSIX_ONLY_EXPORT: posix getattr/access only (no ACL mask)\n"
-}
-
-fn conservative_read_access_guard() -> &'static str {
-    posix_only_export_directives()
+/// Posix-only block for limited FS (9.6 valid keys only). 1 sentence.
+fn posix_only_block() -> &'static str {
+    "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    # POSIX_ONLY_EXPORT: posix getattr/access only\n"
 }
 
 /// Build Ganesha 9.6 EXPORT ACL lines.
@@ -584,7 +580,7 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
     let eff = compute_effective_flags(share, caps);
     // Limited/noacl: consolidated posix block (Disable_ACL+Manage_Gids=false+post) before SecType.
     let (disable_acl_line, manage_gids_line, read_access_line) = if !eff.enable_acl {
-        let block = conservative_read_access_guard().to_string();
+        let block = posix_only_block().to_string();
         (block.clone(), String::new(), String::new())
     } else {
         let manage = if eff.manage_gids {

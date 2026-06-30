@@ -215,7 +215,7 @@ See [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md) for the ful
 
 ## Identity & Kerberos (idhelper)
 
-`nfs-klldap-idhelper` classifies machine (host/nfs/root) vs user principals, resolves uid/gid via getent + LDAP, materializes to nss_wrapper/extrausers. Ganesha 9.x principal2uid uses libnfsidmap + nss_wrapper; nfsidmap shim for fallback.
+`nfs-klldap-idhelper` (shared resolver) classifies machine vs user principals for 9.6 hybrid (user TGT + host/ machine->0), materializes nss/extrausers for Ganesha libnfsidmap/getpwnam.
 
 Inside the container:
 

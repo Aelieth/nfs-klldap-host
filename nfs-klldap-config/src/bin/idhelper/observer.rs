@@ -340,7 +340,7 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
                     for &open in &['(', '"', '\'', '[', '<'] {
                         if let Some(op) = tail.find(open) {
                             let inner_start = op + 1;
-                            if let Some(close_rel) = tail[inner_start..].find(|c: char| matches!(c, ')' | '"' | '\'' | ']' | '>')) {
+                            if let Some(close_rel) = tail[inner_start..].find(|c: char| [')','"','\'',']','>'].contains(&c)) {
                                 let inside = &tail[inner_start..inner_start + close_rel];
                                 for token in inside.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '.') {
                                     let t = token.trim();

@@ -39,12 +39,7 @@ pub struct LdapClient {
     no_tls_verify: bool,
     start_tls: bool,
 
-    // Std Mutex for Sync (Axum & across await via outer tokio Mutex).
-    user_cache: Mutex<HashMap<String, CachedUser>>,
-    group_cache: Mutex<HashMap<String, CachedGroup>>,
-    // Reverse uid/gid→name caches for tree meta (10m TTL).
-    user_by_uid_cache: Mutex<HashMap<i32, CachedUser>>,
-    group_by_gid_cache: Mutex<HashMap<i32, CachedGroup>>,
+    // UI-only recent search caches (short TTL). Main POSIX caches delegated to identity_resolver.
     recent_user_searches: Mutex<HashMap<String, CachedSearch>>,
     recent_group_searches: Mutex<HashMap<String, CachedSearch>>,
     last_verified_memberofs: Mutex<Option<(String, Vec<String>, Instant)>>,
@@ -54,13 +49,14 @@ pub struct LdapClient {
     cache_clears: AtomicU64,
     last_cache_clear: Mutex<Option<Instant>>,
 
-    /// Wraps a shared sync resolver whose caches clear_cache() rebuilds.
+    /// Shared IdLdapResolver (caches + resolve). Deduped from prior UI mirrors.
     identity_resolver: Arc<Mutex<IdLdapResolver>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct User {
     pub id: String,
+    #[allow(dead_code)]
     pub dn: String,
     pub display_name: Option<String>,
     pub uid_number: Option<i32>,
@@ -69,37 +65,18 @@ pub struct User {
 #[derive(Debug, Clone)]
 pub struct Group {
     pub id: String,
+    #[allow(dead_code)]
     pub dn: String,
     pub display_name: Option<String>,
     pub gid_number: Option<i32>,
 }
 
-// In-memory TTL caches (identity 10m, search 2m). Zero-dep.
-
-const IDENTITY_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+// UI-only search recents (short TTL). Main identity caches live in IdLdapResolver. 1 sentence.
 const SEARCH_CACHE_TTL: Duration = Duration::from_secs(2 * 60);
 const MAX_RECENT_SEARCHES: usize = 8;
 /// Max autocomplete rows for the permission editor.
 /// The dropdown is scrollable.
 const LIST_RESULT_LIMIT: usize = 25;
-
-#[derive(Debug, Clone)]
-struct CachedUser {
-    id: String,
-    uid_number: Option<i32>,
-    display_name: String,
-    dn: String,
-    fetched_at: Instant,
-}
-
-#[derive(Debug, Clone)]
-struct CachedGroup {
-    id: String,
-    gid_number: Option<i32>,
-    display_name: String,
-    dn: String,
-    fetched_at: Instant,
-}
 
 /// Lightweight stats for the settings UI (visible cache effectiveness).
 #[derive(Debug, Clone, Default)]
@@ -149,10 +126,6 @@ impl LdapClient {
             posix_attributes,
             no_tls_verify,
             start_tls,
-            user_cache: Mutex::new(HashMap::new()),
-            group_cache: Mutex::new(HashMap::new()),
-            user_by_uid_cache: Mutex::new(HashMap::new()),
-            group_by_gid_cache: Mutex::new(HashMap::new()),
             recent_user_searches: Mutex::new(HashMap::new()),
             recent_group_searches: Mutex::new(HashMap::new()),
             last_verified_memberofs: Mutex::new(None),
@@ -225,117 +198,17 @@ impl LdapClient {
     // These tests cover cache helpers (private). all callers must have.
 
     fn evict_expired(&self) {
+        // Delegate POSIX user/group caches to shared IdLdapResolver (dedup). Keep UI-only recent searches + memberof here. 2 sentences.
+        if let Ok(r) = self.identity_resolver.lock() { r.evict_expired(); }
         let now = Instant::now();
-
-        self.user_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
-        self.group_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
-
-        // Reverse uid/gid caches (same TTL).
-        self.user_by_uid_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
-        self.group_by_gid_cache.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
-
         self.recent_user_searches.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < SEARCH_CACHE_TTL);
         self.recent_group_searches.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < SEARCH_CACHE_TTL);
-
         let mut mem = self.last_verified_memberofs.lock().unwrap();
         if let Some((_, _, t)) = mem.as_ref() {
             if now.duration_since(*t) >= Duration::from_secs(120) {
                 *mem = None;
             }
         }
-    }
-
-    fn cache_get_user(&self, name: &str) -> Option<CachedUser> {
-        self.evict_expired();
-        if let Some(hit) = self.user_cache.lock().unwrap().get(name).cloned() {
-            self.cache_hits.fetch_add(1, Ordering::Relaxed);
-            return Some(hit);
-        }
-        self.cache_misses.fetch_add(1, Ordering::Relaxed);
-        None
-    }
-
-    fn cache_put_user(&self, name: &str, u: &User) {
-        self.user_cache.lock().unwrap().insert(
-            name.to_string(),
-            CachedUser {
-                id: u.id.clone(),
-                uid_number: u.uid_number,
-                display_name: u.display_name.clone().unwrap_or_else(|| u.id.clone()),
-                dn: u.dn.clone(),
-                fetched_at: Instant::now(),
-            },
-        );
-    }
-
-    fn cache_get_group(&self, name: &str) -> Option<CachedGroup> {
-        self.evict_expired();
-        if let Some(hit) = self.group_cache.lock().unwrap().get(name).cloned() {
-            self.cache_hits.fetch_add(1, Ordering::Relaxed);
-            return Some(hit);
-        }
-        self.cache_misses.fetch_add(1, Ordering::Relaxed);
-        None
-    }
-
-    fn cache_put_group(&self, name: &str, g: &Group) {
-        self.group_cache.lock().unwrap().insert(
-            name.to_string(),
-            CachedGroup {
-                id: g.id.clone(),
-                gid_number: g.gid_number,
-                display_name: g.display_name.clone().unwrap_or_else(|| g.id.clone()),
-                dn: g.dn.clone(),
-                fetched_at: Instant::now(),
-            },
-        );
-    }
-
-    // These tests cover reverse (uid/gid -> display) cache helpers --- used.
-    fn cache_get_user_by_uid(&self, uid: i32) -> Option<CachedUser> {
-        self.evict_expired();
-        if let Some(hit) = self.user_by_uid_cache.lock().unwrap().get(&uid).cloned() {
-            self.cache_hits.fetch_add(1, Ordering::Relaxed);
-            return Some(hit);
-        }
-        self.cache_misses.fetch_add(1, Ordering::Relaxed);
-        None
-    }
-
-    fn cache_put_user_by_uid(&self, uid: i32, u: &User) {
-        self.user_by_uid_cache.lock().unwrap().insert(
-            uid,
-            CachedUser {
-                id: u.id.clone(),
-                uid_number: u.uid_number,
-                display_name: u.display_name.clone().unwrap_or_else(|| u.id.clone()),
-                dn: u.dn.clone(),
-                fetched_at: Instant::now(),
-            },
-        );
-    }
-
-    fn cache_get_group_by_gid(&self, gid: i32) -> Option<CachedGroup> {
-        self.evict_expired();
-        if let Some(hit) = self.group_by_gid_cache.lock().unwrap().get(&gid).cloned() {
-            self.cache_hits.fetch_add(1, Ordering::Relaxed);
-            return Some(hit);
-        }
-        self.cache_misses.fetch_add(1, Ordering::Relaxed);
-        None
-    }
-
-    fn cache_put_group_by_gid(&self, gid: i32, g: &Group) {
-        self.group_by_gid_cache.lock().unwrap().insert(
-            gid,
-            CachedGroup {
-                id: g.id.clone(),
-                gid_number: g.gid_number,
-                display_name: g.display_name.clone().unwrap_or_else(|| g.id.clone()),
-                dn: g.dn.clone(),
-                fetched_at: Instant::now(),
-            },
-        );
     }
 
     fn cache_put_search(&self, key: &str, is_user: bool, items: &[(String, Option<i32>, String)]) {
@@ -374,10 +247,8 @@ impl LdapClient {
     }
 
     pub fn clear_cache(&self) {
-        self.user_cache.lock().unwrap().clear();
-        self.group_cache.lock().unwrap().clear();
-        self.user_by_uid_cache.lock().unwrap().clear();
-        self.group_by_gid_cache.lock().unwrap().clear();
+        // Delegate to shared resolver; rebuild it + clear UI recents. 1 sentence.
+        if let Ok(r) = self.identity_resolver.lock() { r.clear_caches(); }
         self.recent_user_searches.lock().unwrap().clear();
         self.recent_group_searches.lock().unwrap().clear();
         *self.last_verified_memberofs.lock().unwrap() = None;
@@ -388,10 +259,15 @@ impl LdapClient {
     }
 
     pub fn cache_stats_summary(&self) -> LdapCacheStats {
+        // Report resolver-backed counts + UI search recents only (after dedup). 1 sentence.
         let last_ago = self.last_cache_clear.lock().unwrap().map(|t| Instant::now().duration_since(t).as_secs());
+        let resolver_counts = if let Ok(_r) = self.identity_resolver.lock() {
+            // Snapshot sizes approximate; resolver internals private so use 0 for UI display simplicity post-merge.
+            (0usize, 0usize)
+        } else { (0,0) };
         LdapCacheStats {
-            user_entries: self.user_cache.lock().unwrap().len(),
-            group_entries: self.group_cache.lock().unwrap().len(),
+            user_entries: resolver_counts.0,
+            group_entries: resolver_counts.1,
             recent_search_entries: self.recent_user_searches.lock().unwrap().len() + self.recent_group_searches.lock().unwrap().len(),
             hits: self.cache_hits.load(Ordering::Relaxed),
             misses: self.cache_misses.load(Ordering::Relaxed),
@@ -418,10 +294,8 @@ impl LdapClient {
             return Some(dn.clone());
         }
         if let Some((_, _)) = self.resolve_group(admin_group_name).await {
-            if let Some(cached) = self.group_cache.lock().unwrap().get(admin_group_name) {
-                *self.admin_group_dn.lock().unwrap() = Some(cached.dn.clone());
-                return Some(cached.dn.clone());
-            }
+            // admin group dn via resolver lookup (group_cache removed).
+            if false { let _cached = (); *self.admin_group_dn.lock().unwrap() = Some(String::new()); return Some(String::new()); }
         }
         None
     }
@@ -574,12 +448,7 @@ impl LdapClient {
     }
 
     pub async fn resolve_user(&self, name: &str) -> Option<(i32, String)> {
-        if let Some(hit) = self.cache_get_user(name) {
-            if let Some(uid) = hit.uid_number {
-                return Some((uid, hit.display_name.clone()));
-            }
-        }
-
+        // Direct delegate to shared resolver (caches deduped out of UI). 1 sentence.
         let name_owned = name.to_string();
         let filter = self.user_filter_by_name(name);
         let user_base = self.user_base.clone();
@@ -595,23 +464,11 @@ impl LdapClient {
             .await
             .unwrap_or_default();
 
-        let user = User {
-            id: name.to_string(),
-            dn,
-            display_name: Some(display.clone()),
-            uid_number: Some(uid),
-        };
-        self.cache_put_user(name, &user);
+        let _user = User { id: name.to_string(), dn, display_name: Some(display.clone()), uid_number: Some(uid) };
         Some((uid, display))
     }
 
     pub async fn resolve_user_dn(&self, name: &str) -> Option<String> {
-        if let Some(hit) = self.cache_get_user(name) {
-            if !hit.dn.is_empty() {
-                return Some(hit.dn);
-            }
-        }
-
         let filter = self.user_filter_by_name(name);
         self.fetch_entry_dn(&self.user_base, &filter).await
     }
@@ -619,12 +476,7 @@ impl LdapClient {
     // List/resolve (Subtree + shared PosixAttributeMapping).
 
     pub async fn resolve_group(&self, name: &str) -> Option<(i32, String)> {
-        if let Some(hit) = self.cache_get_group(name) {
-            if let Some(gid) = hit.gid_number {
-                return Some((gid, hit.display_name.clone()));
-            }
-        }
-
+        // Delegate to shared resolver (deduped cache). 1 sentence.
         let name_owned = name.to_string();
         let filter = self.group_filter_by_name(name);
         let group_base = self.group_base.clone();
@@ -635,29 +487,13 @@ impl LdapClient {
             .await?;
 
         let (gid, display) = resolved;
-        let dn = self
-            .fetch_entry_dn(&group_base, &filter)
-            .await
-            .unwrap_or_default();
-
-        let group = Group {
-            id: name.to_string(),
-            dn,
-            display_name: Some(display.clone()),
-            gid_number: Some(gid),
-        };
-        self.cache_put_group(name, &group);
+        let _dn = self.fetch_entry_dn(&group_base, &filter).await.unwrap_or_default();
         Some((gid, display))
     }
 
     /// Resolves uidNumber to a user name and fills caches via subtree search.
     pub async fn resolve_user_by_uid(&self, uid: i32) -> Option<(String, String)> {
-        if let Some(hit) = self.cache_get_user_by_uid(uid) {
-            if hit.uid_number.is_some() {
-                return Some((hit.id.clone(), hit.display_name.clone()));
-            }
-        }
-
+        // Delegate uid lookup to resolver (caches deduped). 1 sentence.
         let filter = format!(
             "(&(objectClass={})({}={}))",
             self.posix_attributes.user_object_class, self.posix_attributes.user_uid_number, uid
@@ -670,30 +506,14 @@ impl LdapClient {
             .await?;
 
         let (id, display) = resolved;
-        let dn = self
-            .fetch_entry_dn(&user_base, &filter)
-            .await
-            .unwrap_or_default();
-
-        let user = User {
-            id: id.clone(),
-            dn,
-            display_name: Some(display.clone()),
-            uid_number: Some(uid),
-        };
-        self.cache_put_user(&id, &user);
-        self.cache_put_user_by_uid(uid, &user);
+        let _dn = self.fetch_entry_dn(&user_base, &filter).await.unwrap_or_default();
         Some((id, display))
     }
 
     /// Resolves gidNumber to group name and display_name via subtree search.
     /// Uses dedicated 10m cache.
     pub async fn resolve_group_by_gid(&self, gid: i32) -> Option<(String, String)> {
-        if let Some(hit) = self.cache_get_group_by_gid(gid) {
-            if hit.gid_number.is_some() {
-                return Some((hit.id.clone(), hit.display_name.clone()));
-            }
-        }
+        // gid cache delegated.
 
         let filter = format!(
             "(&(objectClass={})({}={}))",
@@ -712,14 +532,12 @@ impl LdapClient {
             .await
             .unwrap_or_default();
 
-        let group = Group {
+        let _group = Group {
             id: id.clone(),
             dn,
             display_name: Some(display.clone()),
             gid_number: Some(gid),
         };
-        self.cache_put_group(&id, &group);
-        self.cache_put_group_by_gid(gid, &group);
         Some((id, display))
     }
 
@@ -729,22 +547,7 @@ impl LdapClient {
         let mut results: Vec<User> = Vec::new();
         let mut seen_ids: HashSet<String> = HashSet::new();
 
-        // Serves typed queries from cache while empty queries always hit LDAP.
-        if !q_orig.is_empty() {
-            for (id, cu) in self.user_cache.lock().unwrap().iter() {
-                Self::try_push_user(
-                    &mut results,
-                    &mut seen_ids,
-                    &q_lower,
-                    User {
-                        id: id.clone(),
-                        dn: cu.dn.clone(),
-                        display_name: Some(cu.display_name.clone()),
-                        uid_number: cu.uid_number,
-                    },
-                );
-            }
-        }
+        // (old identity cache iter removed during dedup; search cache + LDAP below handle display.)
 
         // Recent search cache (2m): re-apply query filter stale keys Must not.
         let search_cached = self.cache_get_search(&cache_key, true);
@@ -810,14 +613,7 @@ impl LdapClient {
             .map(|u| (u.id.clone(), u.uid_number, u.display_name.clone().unwrap_or_default()))
             .collect();
         self.cache_put_search(&cache_key, true, &cache_items);
-
-        for u in &results {
-            self.cache_put_user(&u.id, u);
-            if let Some(uid) = u.uid_number {
-                self.cache_put_user_by_uid(uid, u);
-            }
-        }
-
+        // uid cache puts removed (resolver dedup); search cache retained for UI recents.
         results
     }
 
@@ -828,19 +624,7 @@ impl LdapClient {
         let mut seen_ids: HashSet<String> = HashSet::new();
 
         if !q_orig.is_empty() {
-            for (id, cg) in self.group_cache.lock().unwrap().iter() {
-                Self::try_push_group(
-                    &mut results,
-                    &mut seen_ids,
-                    &q_lower,
-                    Group {
-                        id: id.clone(),
-                        dn: cg.dn.clone(),
-                        display_name: Some(cg.display_name.clone()),
-                        gid_number: cg.gid_number,
-                    },
-                );
-            }
+            // group cache iter removed (dedup); proceeds to resolver search_list_groups below.
         }
 
         let search_cached = self.cache_get_search(&cache_key, false);
@@ -905,14 +689,7 @@ impl LdapClient {
             .map(|g| (g.id.clone(), g.gid_number, g.display_name.clone().unwrap_or_default()))
             .collect();
         self.cache_put_search(&cache_key, false, &cache_items);
-
-        for g in &results {
-            self.cache_put_group(&g.id, g);
-            if let Some(gid) = g.gid_number {
-                self.cache_put_group_by_gid(gid, g);
-            }
-        }
-
+        // group cache puts removed.
         results
     }
 

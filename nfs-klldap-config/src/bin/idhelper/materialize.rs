@@ -93,7 +93,7 @@ fn is_numeric_login(login: &str) -> bool {
 /// Passwd login for user@REALM (and host/NAME@REALM) principals.
 /// Keeps '@' and '/' (so getpwnam("host/blue-lt@REALM") under UseGetpwnam=true
 /// finds the literal principal name that Ganesha passes). Only replace truly
-/// unsafe chars for the nss_wrapper file format.
+/// problematic chars for the nss_wrapper file format.
 pub(crate) fn principal_realm_login_for_nss(principal: &str) -> String {
     let mut out = String::with_capacity(principal.len());
     for c in principal.chars() {
@@ -419,10 +419,8 @@ pub(crate) fn build_nss_snapshot(
             }
             // Collect uid/gid 0 (machine) logins into root group members so that
             // root group lists machine principals (host/* logins) for reliable getgrouplist(0).
-            if r.uid == 0 || r.gid == 0 {
-                if !root_group_members.iter().any(|m| m == &login) {
-                    root_group_members.push(login.clone());
-                }
+            if (r.uid == 0 || r.gid == 0) && !root_group_members.iter().any(|m| m == &login) {
+                root_group_members.push(login.clone());
             }
         }
 

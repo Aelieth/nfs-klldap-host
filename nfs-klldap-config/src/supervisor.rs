@@ -1021,6 +1021,9 @@ while :; do :; done
         if self.env.use_nss_wrapper {
             cmd.env("NSS_WRAPPER_PASSWD", &self.env.nss_passwd)
                 .env("NSS_WRAPPER_GROUP", &self.env.nss_group);
+            if ganesha_getgrouplist_shim_so().is_file() {
+                preload.push(ganesha_getgrouplist_shim_so().display().to_string());
+            }
             preload.push(self.env.nss_wrapper_so.display().to_string());
         }
         if !preload.is_empty() {
@@ -1274,6 +1277,10 @@ fn chmod_file(path: &Path, mode: u32) {
     }
     #[cfg(not(unix))]
     let _ = (path, mode);
+}
+
+fn ganesha_getgrouplist_shim_so() -> PathBuf {
+    PathBuf::from(nfs_klldap_config::GANESHA_GETGROUPLIST_SHIM_SO)
 }
 
 fn resolve_nss_wrapper_so() -> PathBuf {

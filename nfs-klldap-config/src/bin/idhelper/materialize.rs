@@ -168,6 +168,66 @@ pub(crate) fn group_line_with_members(gid: u32, gname: &str, members: &[String])
     }
 }
 
+/// Ensure a login appears in the member field for a gid (getgrouplist scans members, not memberOf).
+pub(crate) fn ensure_nss_group_member_login(
+    paths: &NssMaterializePaths<'_>,
+    gid: u32,
+    login: &str,
+) -> io::Result<()> {
+    let login = login.trim();
+    if login.is_empty() {
+        return Ok(());
+    }
+    for path in [paths.nss_group, paths.extrausers_group] {
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        let mut changed = false;
+        let mut out: Vec<String> = Vec::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                out.push(line.to_string());
+                continue;
+            }
+            let mut parts: Vec<&str> = trimmed.split(':').collect();
+            if parts.len() >= 3 {
+                if let Ok(g) = parts[2].parse::<u32>() {
+                    if g == gid {
+                        let members = if parts.len() >= 4 { parts[3] } else { "" };
+                        let already = members.split(',').any(|m| m == login);
+                        if !already {
+                            let new_members = if members.is_empty() {
+                                login.to_string()
+                            } else {
+                                format!("{members},{login}")
+                            };
+                            parts.resize(4, "");
+                            parts[3] = "";
+                            let rebuilt = format!(
+                                "{}:x:{}:{}",
+                                parts[0], parts[2], new_members
+                            );
+                            out.push(rebuilt);
+                            changed = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+            out.push(line.to_string());
+        }
+        if changed {
+            let tmp = path.with_extension("memtmp");
+            fs::write(&tmp, out.join("\n") + "\n")?;
+            fs::rename(&tmp, path)?;
+        }
+    }
+    Ok(())
+}
+
 /// Returns true when cache content changed and nss files should be rewritten.
 pub(crate) fn cache_changed_since(fp_before: u64, cache: &IdCache) -> bool {
     fp_before != cache.content_fingerprint()

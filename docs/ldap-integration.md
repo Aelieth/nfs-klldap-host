@@ -71,7 +71,7 @@ Client `rpc.idmapd` (Method=nsswitch) still helps pretty `ls` output on NFS clie
 
 ## Ganesha 9.6 id mapping (generated config)
 
-The generator emits `DIRECTORY_SERVICES` with `DomainName`, `Pwnam_Implementation=nsswitch`, `Root_Kerberos_Principal=host, nfs, root`, and `Idmapped_User/Group_Time_Validity=600` (Ganesha 9.6 keys), with `Only_Numeric_Owners = true` and `Allow_Numeric_Owners = true` (wire numeric uid/gid; Allow is lookup-fail fallback only). Default krb5p: Manage_Gids=true (probe or explicit); limited FS -> false. UseGetpwnam=false drives uid2grp_allocate_by_principal for user TGTs (Manage_Gids) + idhelper nss/extrausers. Omit Manage_Gids_Expiration, Read_Access_Check_Policy.
+The generator emits `DIRECTORY_SERVICES` with `DomainName`, `Pwnam_Implementation=nsswitch`, `Root_Kerberos_Principal=host, nfs, root`, and `Idmapped_User/Group_Time_Validity=600` (Ganesha 9.6 keys), with `Only_Numeric_Owners = true` and `Allow_Numeric_Owners = true` (wire numeric uid/gid; Allow is lookup-fail fallback only). Default krb5p: Manage_Gids=true (probe or explicit); limited FS -> false. UseGetpwnam=true drives uid2grp_allocate_by_uid + getgrouplist for user TGTs (Manage_Gids) via idhelper nss_wrapper/extrausers. Omit Manage_Gids_Expiration, Read_Access_Check_Policy.
 
 ## Machine vs User Principals (Fedora Immutable + host keytabs)
 

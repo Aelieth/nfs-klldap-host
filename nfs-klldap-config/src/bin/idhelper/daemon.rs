@@ -20,7 +20,10 @@ use crate::materialize::{
     sync_user_cache_from_snapshot, NssMaterializePaths,
 };
 use crate::observer::start_ganesha_observer;
-use crate::resolve::{get_or_init_resolver, resolve_groups_for_principal, resolve_principal};
+use crate::resolve::{
+    get_or_init_resolver, refresh_supplemental_nss_for_cached_users, resolve_groups_for_principal,
+    resolve_principal,
+};
 
 /// Paths rebulk writes: idmap cache, bulk-seed marker, nss_wrapper outputs.
 #[derive(Clone, Copy)]
@@ -72,6 +75,7 @@ pub(crate) fn rebulk_apply_sync(
     let user_changed = cache_changed_since(fp_before, cache);
     // Always materialize nss from this authoritative snap (ensures group prunes + primary LDAP names are applied even if user fp unchanged).
     materialize_nss_wrappers_at(cache, &paths.nss, Some(&snap.groups))?;
+    refresh_supplemental_nss_for_cached_users(cache, realm, &get_server_variants());
     if user_changed {
         cache.write_to_file(paths.cache_path)?;
     }
@@ -136,6 +140,41 @@ pub(crate) mod test_rebulk {
     }
 }
 
+/// Warm primary + supplemental group rows in the resolver cache before nss materialize.
+/// Ganesha 9.6 Manage_Gids/getgrouplist needs member-of groups (e.g. lldap_sudohost) in nss_group
+/// at startup; bulk LDAP group load alone may omit LLDAP-only membership edges.
+fn warm_rebulk_group_cache(
+    resolver: &nfs_klldap_identity::IdLdapResolver,
+    realm: &str,
+    pre: &nfs_klldap_identity::IdMapSnapshot,
+    bind_dn: &str,
+    bind_pw: &str,
+) {
+    for u in pre.users.values() {
+        let _ = resolver.resolve_group_by_gid(u.gid, bind_dn, bind_pw);
+    }
+    let mut warmed = std::collections::HashSet::new();
+    for name in pre.users.keys() {
+        if name.contains('/') {
+            continue;
+        }
+        let short = if let Some((s, _)) = name.split_once('@') {
+            s
+        } else {
+            name.as_str()
+        };
+        if !warmed.insert(short.to_string()) {
+            continue;
+        }
+        let principal = format!("{short}@{realm}");
+        let gids = resolver.resolve_groups_for_principal(&principal, bind_dn, bind_pw);
+        // memberOf-only groups (e.g. lldap_sudohost) must land in snap.groups before rebulk materialize.
+        for &g in &gids {
+            let _ = resolver.resolve_group_by_gid(g, bind_dn, bind_pw);
+        }
+    }
+}
+
 /// Bulk-loads LDAP users and materializes nss before ganesha.nfsd starts.
 pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usize> {
     #[cfg(test)]
@@ -144,9 +183,7 @@ pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usiz
         let (r, dn, pw) = get_or_init_resolver()?;
         let loaded = r.load_full_identities(dn, pw);
         let pre = r.snapshot();
-        for u in pre.users.values() {
-            let _ = r.resolve_group_by_gid(u.gid, dn, pw);
-        }
+        warm_rebulk_group_cache(r, realm, &pre, dn, pw);
         let snap = r.snapshot();
         let fp_before = cache.content_fingerprint();
         return match rebulk_apply_sync(cache, realm, &snap, &ov.paths) {
@@ -173,11 +210,8 @@ pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usiz
 
     let (r, dn, pw) = get_or_init_resolver()?;
     let loaded = r.load_full_identities(dn, pw);
-    // Explicitly resolve each user's primary gid so snap.groups has LDAP display name.
     let pre = r.snapshot();
-    for u in pre.users.values() {
-        let _ = r.resolve_group_by_gid(u.gid, dn, pw);
-    }
+    warm_rebulk_group_cache(r, realm, &pre, dn, pw);
     let snap = r.snapshot();
     let fp_before = cache.content_fingerprint();
     match rebulk_apply_sync(cache, realm, &snap, &RebulkPaths::production()) {
@@ -305,6 +339,10 @@ pub(crate) fn run_daemon() {
         } else {
             let _ = materialize_nss_wrappers(&guard);
         }
+    }
+    {
+        let mut guard = cache.lock().unwrap();
+        refresh_supplemental_nss_for_cached_users(&mut guard, &realm, &server_variants);
     }
 
     if let Ok(list) = std::env::var("NFS_KLLDAP_IDHELPER_PRERESOLVE") {
@@ -534,6 +572,31 @@ mod rebulk_ldap_users_tests {
             let group = fs::read_to_string(paths.nss.nss_group).expect("rebulk path must write nss_group");
             eprintln!("wrote nss_group:\n{}", group);
             assert!(group.contains("devs:x:500:alice,bob"), "LDAP members from snap must appear");
+        });
+    }
+
+    #[test]
+    fn rebulk_warms_supplemental_groups_for_getgrouplist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = rebulk_paths_in(tmp.path());
+        let ov = TestRebulkOverride { paths };
+        with_test_rebulk_override(ov, || {
+            std::env::set_var(
+                "TEST_REBULK_POPULATE",
+                "u:testuser1:3001:3005;g:group-test:3005:testuser1;g:lldap_sudohost:3004:testuser1",
+            );
+            let mut cache = IdCache::default();
+            let _ = rebulk_ldap_users(&mut cache, "TESTLABBY.LOCAL");
+            std::env::remove_var("TEST_REBULK_POPULATE");
+            let group = fs::read_to_string(paths.nss.nss_group).expect("rebulk path must write nss_group");
+            assert!(
+                group.contains("lldap_sudohost:x:3004:testuser1"),
+                "supplemental member-of group must be in nss_group at rebulk: {group}"
+            );
+            assert!(
+                group.contains("group-test:x:3005:"),
+                "primary LDAP group name must be materialized: {group}"
+            );
         });
     }
 

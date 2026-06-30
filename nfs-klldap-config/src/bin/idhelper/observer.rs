@@ -489,10 +489,29 @@ manage_gids = true
 
     #[test]
     fn extract_unsupported_code_path_machine_principal() {
+        // Machine principals still hit allocate_by_principal stub under _MSPAC_SUPPORT; observer warms resolve.
         let line = "uid2grp_allocate_by_principal :ID MAPPER :WARN :Unsupported code path for principal host/blue-lt@SATOMLIN.COM";
         assert_eq!(
             extract_candidate_principal(line, "SATOMLIN.COM"),
             Some("host/blue-lt@SATOMLIN.COM".to_string())
+        );
+    }
+
+    #[test]
+    fn managed_gids_log_level_matches_uid2grp_allocate_by_uid() {
+        let line = "uid2grp_allocate_by_uid uid: 3001";
+        assert_eq!(
+            managed_gids_log_level(line, true),
+            Some(ManagedGidsLogLevel::Verbose)
+        );
+    }
+
+    #[test]
+    fn managed_gids_log_level_ignores_allocate_by_principal_when_manage_gids_on() {
+        let line = "uid2grp_allocate_by_principal :ID MAPPER :WARN :Unsupported code path for principal testuser1@TESTLABBY.LOCAL";
+        assert_eq!(
+            managed_gids_log_level(line, true),
+            Some(ManagedGidsLogLevel::Verbose)
         );
     }
 }

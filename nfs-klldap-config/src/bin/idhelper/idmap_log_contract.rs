@@ -1,4 +1,4 @@
-//! Validate 9.x idmap logs: Manage_Gids + UseGetpwnam=false drives uid2grp_allocate_by_principal for user@ TGT; getgrouplist via idhelper materialization.
+//! Validate 9.x idmap logs: Manage_Gids + UseGetpwnam=true drives uid2grp_allocate_by_uid for user@ TGT; getgrouplist via idhelper materialization.
 //! B1 contract: OP_GETATTR/NOTSUPP on readdir compounds ties to broken identity (B2/B3), not export flags alone.
 
 use std::fs;
@@ -7,6 +7,8 @@ use std::path::Path;
 #[cfg(test)]
 pub fn validate_user_tgt_idmap_log(log_path: &Path, user_at: &str) -> Result<(), Vec<&'static str>> {
     let content = fs::read_to_string(log_path).unwrap_or_default();
+    let lower = content.to_lowercase();
+    let user_lower = user_at.to_lowercase();
     let mut errs = vec![];
     if content.contains("ADDED UID2GRP") || (content.contains("getgrouplist for user:") && !content.contains("my_getgrouplist_alloc")) {
         errs.push("fabricated or non-live getgrouplist line present");
@@ -14,9 +16,12 @@ pub fn validate_user_tgt_idmap_log(log_path: &Path, user_at: &str) -> Result<(),
     if !content.contains("principal2uid") || !content.contains(user_at) {
         errs.push("missing principal2uid for user@REALM");
     }
-    // Require uid2grp_allocate_by_principal was invoked for the user TGT principal (AC3)
-    if !content.contains("uid2grp_allocate_by_principal") || !content.to_lowercase().contains(&user_at.to_lowercase()) {
-        errs.push("missing uid2grp_allocate_by_principal call for user@ TGT principal");
+    // User TGT under UseGetpwnam=true: rpcsec_gss_fetch_managed_groups uses uid2grp(uid).
+    if !content.contains("uid2grp_allocate_by_uid") {
+        errs.push("missing uid2grp_allocate_by_uid for user TGT managed groups");
+    }
+    if lower.contains("unsupported code path for principal") && lower.contains(&user_lower) {
+        errs.push("Unsupported code path for user@ TGT principal (UseGetpwnam=false or _MSPAC stub)");
     }
     if !content.contains("getgrouplist") || !content.contains("returned 2 groups") {
         errs.push("missing getgrouplist result with groups for TGT");
@@ -79,12 +84,25 @@ mod tests {
         let log = r#"
 principal2uid :ID MAPPER :DEBUG :Get uid for testuser1@TESTLABBY.LOCAL using pw func
 name_to_uid :ID MAPPER :INFO :getpwnam_r for uname: testuser1@TESTLABBY.LOCAL, uid: 3001, gid: 3005
-Resolve principal testuser1@TESTLABBY.LOCAL to groups
-uid2grp_allocate_by_principal testuser1@TESTLABBY.LOCAL uid 3001
+getpwuid_r for uid: 3001, gid: 3005, uname: testuser1
+uid2grp_allocate_by_uid uid: 3001
 my_getgrouplist_alloc :ID MAPPER :INFO :getgrouplist for uname: testuser1, returned 2 groups
 "#;
         std::fs::write(&p, log).unwrap();
         assert!(validate_user_tgt_idmap_log(&p, "testuser1@TESTLABBY.LOCAL").is_ok());
+    }
+
+    #[test]
+    fn rejects_unsupported_principal_path_for_user_tgt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("mspam.log");
+        let log = r#"
+principal2uid :ID MAPPER :DEBUG :Get uid for testuser1@TESTLABBY.LOCAL using pw func
+uid2grp_allocate_by_principal :ID MAPPER :WARN :Unsupported code path for principal testuser1@TESTLABBY.LOCAL
+getgrouplist for uname: testuser1, returned 2 groups
+"#;
+        std::fs::write(&p, log).unwrap();
+        assert!(validate_user_tgt_idmap_log(&p, "testuser1@TESTLABBY.LOCAL").is_err());
     }
 
     #[test]
@@ -121,7 +139,7 @@ complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
             if let Err(e) = &res {
                 eprintln!("contract errs: {:?}", e);
             }
-            assert!(res.is_ok(), "live log must pass uid2grp_allocate_by_principal + getgrouplist contract for user TGT");
+            assert!(res.is_ok(), "live log must pass uid2grp_allocate_by_uid + getgrouplist contract for user TGT");
         }
     }
 }

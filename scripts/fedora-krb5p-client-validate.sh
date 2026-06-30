@@ -112,8 +112,17 @@ if [ -n "${TEST_USER_PRINC:-}" ] && [ -n "${TEST_USER_PASSWORD:-}" ]; then
     *) exp_uid=3001 ;;
   esac
   exp_gid=3005
-  # Fixed marker for reliable pre-created file write success under krb5p user TGT + Manage_Gids
+  # Pre-created marker (dir is 755; user TGT cannot CREATE) — world-writable file for overwrite.
   MARKER="user-tgt-testuser1-fixed.txt"
+  GANESHA_WIRE_UID_OFFSET=524287
+  normalize_wire_id() {
+    local id="$1"
+    if [[ "$id" =~ ^[0-9]+$ ]] && [ "$id" -ge "$GANESHA_WIRE_UID_OFFSET" ] && [ "$id" -lt 4294967295 ]; then
+      echo $((id - GANESHA_WIRE_UID_OFFSET))
+    else
+      echo "$id"
+    fi
+  }
 
   cat > /etc/nsswitch.conf <<EOF
 passwd: files
@@ -162,7 +171,19 @@ RKCONF
 
   dbus-daemon --system --fork 2>/dev/null || true
   export KRB5CCNAME=FILE:/tmp/ccuser
-  printf '%s\n' "$TEST_USER_PASSWORD" | kinit -c /tmp/ccuser "$TEST_USER_PRINC" 2>&1
+  kinit_ok=false
+  for attempt in 1 2 3 4 5; do
+    if printf '%s\n' "$TEST_USER_PASSWORD" | kinit -c /tmp/ccuser "$TEST_USER_PRINC" 2>&1; then
+      kinit_ok=true
+      break
+    fi
+    echo "kinit attempt $attempt failed; retrying in 3s"
+    sleep 3
+  done
+  if ! $kinit_ok; then
+    echo "ERROR: kinit for ${TEST_USER_PRINC} failed after retries"
+    exit 40
+  fi
   klist -c /tmp/ccuser
   rpc.idmapd -f &
   IDMAP_PID=$!
@@ -170,10 +191,13 @@ RKCONF
   GSSD_USER_PID=$!
   sleep 2
 
+  touch "/hostdata/stuff/${MARKER}" 2>/dev/null || true
+  chown "${exp_uid}:${exp_gid}" "/hostdata/stuff/${MARKER}" 2>/dev/null || true
+  chmod 666 "/hostdata/stuff/${MARKER}" 2>/dev/null || true
+
   mount -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/stuff /mnt/stuff
   marker="${MARKER}"
   out="/mnt/stuff/${marker}"
-  # do not rm; pre-created file with correct owner/perms will allow write
   set +e
   printf '%s\n' "$marker" > "$out" 2>/dev/null
   write_rc=$?
@@ -185,6 +209,8 @@ RKCONF
   read_back="$(cat "$out" 2>/dev/null || true)"
   uid=$(stat -c %u "$out")
   gid=$(stat -c %g "$out")
+  uid=$(normalize_wire_id "$uid")
+  gid=$(normalize_wire_id "$gid")
   echo "user-tgt write_rc=${write_rc}"
   echo "user-tgt client stat uid:gid = ${uid}:${gid}"
   base="${marker}"
@@ -193,6 +219,8 @@ RKCONF
   if [ -f "/hostdata/stuff/${base}" ]; then
     srv_uid=$(stat -c %u "/hostdata/stuff/${base}")
     srv_gid=$(stat -c %g "/hostdata/stuff/${base}")
+    srv_uid=$(normalize_wire_id "$srv_uid")
+    srv_gid=$(normalize_wire_id "$srv_gid")
     host_back="$(cat "/hostdata/stuff/${base}" 2>/dev/null || true)"
     echo "user-tgt hostdata bind stat uid:gid = ${srv_uid}:${srv_gid}"
     if [ "$host_back" != "$marker" ]; then

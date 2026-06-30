@@ -60,7 +60,8 @@ pub use ganesha_identity_pipeline::{
     identity_principals_for_check, run_identity_pipeline, IdentityPrincipals,
 };
 pub use ganesha_nss_contract::{
-    evaluate_nss_contract, nss_lookup_names, probe_nss_groups, probe_nss_passwd, GaneshaNssEnv,
+    evaluate_nss_contract, nss_lookup_names, probe_nss_groups, probe_nss_passwd,
+    GaneshaNssEnv, GANESHA_GETGROUPLIST_SHIM_SO,
 };
 pub use fs_warnings::{
     any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warning,
@@ -227,7 +228,7 @@ fn probe_socket_grps_tag(principal: &str, expect_machine: bool) -> String {
     }
 }
 
-/// Surface uid2grp_allocate_by_principal hits from ganesha.log (absent log is tagged, not silent).
+/// Surface uid2grp_allocate_by_uid / allocate_by_principal hits from ganesha.log (absent log is tagged, not silent).
 fn probe_ganesha_log_uid2grp(principal: &str) -> Option<String> {
     let log = std::path::Path::new("/var/log/ganesha.log");
     if !log.is_file() {
@@ -235,12 +236,25 @@ fn probe_ganesha_log_uid2grp(principal: &str) -> Option<String> {
     }
     let content = std::fs::read_to_string(log).ok()?;
     let short = nfs_klldap_identity::machine_short_name(principal);
-    let hit = content.lines().any(|ln| {
+    let by_uid = content.lines().any(|ln| {
+        ln.contains("uid2grp_allocate_by_uid")
+            && (ln.contains(principal) || ln.contains(short) || ln.contains("uid:"))
+    });
+    let by_principal = content.lines().any(|ln| {
         ln.contains("uid2grp_allocate_by_principal")
             && (ln.contains(principal) || ln.contains(short))
     });
-    if hit {
-        Some(format!("ganesha-log:uid2grp:{principal}"))
+    let unsupported_user = content.lines().any(|ln| {
+        ln.contains("Unsupported code path for principal")
+            && ln.contains(principal)
+            && !principal.to_ascii_lowercase().starts_with("host/")
+    });
+    if unsupported_user {
+        Some(format!("ganesha-log:unsupported-principal:{principal}"))
+    } else if by_uid {
+        Some(format!("ganesha-log:uid2grp-by-uid:{principal}"))
+    } else if by_principal {
+        Some(format!("ganesha-log:uid2grp-by-principal:{principal}"))
     } else {
         Some(format!("ganesha-log:no-uid2grp:{principal}"))
     }
@@ -742,7 +756,7 @@ mod tests {
         assert!(!main.contains("NLM_Port"));
         assert!(!main.contains("Rquota_Port"));
         assert!(!main.contains("IdmapConf"));
-        assert!(main.contains("UseGetpwnam = false"));
+        assert!(main.contains("UseGetpwnam = true"));
         // Enable_*=false are safe and explicit the dangerous keys Above are.
 
         // Baseline LOG is always emitted for idhelper operator visibility.

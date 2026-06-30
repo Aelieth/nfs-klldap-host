@@ -93,6 +93,18 @@ fi
 if grep -q '^root:' /var/lib/extrausers/passwd /var/lib/nfs-klldap/nss_passwd 2>/dev/null; then
     echo "  OK: root (uid 0) present in materialized files"
 fi
+if [ -f /etc/ganesha/ganesha.conf ]; then
+    if grep -q 'UseGetpwnam = true' /etc/ganesha/ganesha.conf 2>/dev/null; then
+        echo "  OK: UseGetpwnam=true (uid2grp_allocate_by_uid path for Manage_Gids on Ganesha 9.6)"
+    elif grep -q 'UseGetpwnam = false' /etc/ganesha/ganesha.conf 2>/dev/null; then
+        GANESHA_BIN="$(command -v ganesha.nfsd 2>/dev/null || true)"
+        if [ -n "$GANESHA_BIN" ] && strings "$GANESHA_BIN" 2>/dev/null | grep -qi mspac; then
+            echo "  WARN: UseGetpwnam=false with _MSPAC_SUPPORT ganesha.nfsd — user TGT managed groups will hit Unsupported code path"
+        else
+            echo "  NOTE: UseGetpwnam=false (principal2grp path; verify ganesha build)"
+        fi
+    fi
+fi
 
 echo
 echo "[7] Network mode..."

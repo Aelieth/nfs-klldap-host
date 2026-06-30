@@ -74,8 +74,8 @@ fn assert_ganesha_96_compliant(ganesha: &str, idmap: &str) {
         assert!(ganesha.contains(key), "ganesha.conf missing {key}");
     }
     assert!(
-        ganesha.contains("UseGetpwnam = false"),
-        "ganesha.conf must emit UseGetpwnam=false to take principal2grp/allocate_by_principal path for user TGT under Manage_Gids (9.x)"
+        ganesha.contains("UseGetpwnam = true"),
+        "ganesha.conf must emit UseGetpwnam=true for uid2grp_allocate_by_uid path under Manage_Gids on Ganesha 9.6 (_MSPAC_SUPPORT stubs allocate_by_principal)"
     );
     for forbidden in [
         "Read_Access_Check_Policy =",

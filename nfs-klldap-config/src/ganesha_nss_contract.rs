@@ -28,7 +28,12 @@ impl GaneshaNssEnv {
             .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
             .unwrap_or(true);
         let ld_preload = if use_nss {
-            resolve_nss_wrapper_so().filter(|p| p.is_file())
+            let chain = ld_preload_for_ganesha_nss();
+            if chain.as_os_str().is_empty() {
+                None
+            } else {
+                Some(chain)
+            }
         } else {
             None
         };
@@ -51,14 +56,17 @@ impl GaneshaNssEnv {
         Self {
             nss_passwd: nss_passwd.to_path_buf(),
             nss_group: nss_group.to_path_buf(),
-            ld_preload: resolve_nss_wrapper_so().filter(|p| p.is_file()),
+            ld_preload: Some(ld_preload_for_ganesha_nss()),
             extrausers_passwd: None,
             extrausers_group: None,
         }
     }
 
     pub fn wrapper_available(&self) -> bool {
-        self.ld_preload.is_some()
+        self.ld_preload
+            .as_ref()
+            .is_some_and(|p| !p.as_os_str().is_empty())
+            && resolve_nss_wrapper_so().is_some()
             && self.nss_passwd.is_file()
             && self.nss_group.is_file()
     }
@@ -72,7 +80,7 @@ impl GaneshaNssEnv {
         if let Some(ref p) = self.extrausers_group {
             cmd.env("NSS_EXTRAUSERS_GROUP", p);
         }
-        if let Some(ref so) = self.ld_preload {
+        if let Some(so) = self.ld_preload.as_ref() {
             cmd.env("LD_PRELOAD", so);
         }
     }
@@ -207,6 +215,27 @@ pub fn evaluate_nss_contract(
     } else {
         (true, format!("{prefix}:{uid}:{gid}:{}gids", gids.len()))
     }
+}
+
+pub const GANESHA_GETGROUPLIST_SHIM_SO: &str =
+    "/usr/local/lib/libganesha_getgrouplist_shim.so";
+
+fn ld_preload_for_ganesha_nss() -> PathBuf {
+    let mut parts: Vec<PathBuf> = Vec::new();
+    let shim = PathBuf::from(GANESHA_GETGROUPLIST_SHIM_SO);
+    if shim.is_file() {
+        parts.push(shim);
+    }
+    if let Some(so) = resolve_nss_wrapper_so() {
+        parts.push(so);
+    }
+    PathBuf::from(
+        parts
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(":"),
+    )
 }
 
 fn resolve_nss_wrapper_so() -> Option<PathBuf> {

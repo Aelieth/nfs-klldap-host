@@ -216,14 +216,21 @@ case "$CMD" in
             SHORT=$(echo "$P" | sed 's/@.*//; s#.*/##')
             getent passwd "$SHORT" || echo "no NSS entry for $SHORT"
         fi
-        # surface ID MAPPER from ganesha.log (uid2grp_allocate_by_principal, unsupported)
+        # surface ID MAPPER from ganesha.log (uid2grp_allocate_by_uid under UseGetpwnam=true)
         if [ -f /var/log/ganesha.log ]; then
             echo "[ganesha-ctl] ID MAPPER lines for $P:"
-            grep -iE "ID MAPPER|uid2grp_allocate_by_principal|Unsupported code path|Could not map|$P" /var/log/ganesha.log | tail -8 || echo "  (no recent ID MAPPER matches)"
-            if grep -q "uid2grp_allocate_by_principal" /var/log/ganesha.log 2>/dev/null; then
-                echo "[ganesha-ctl] ganesha-log:uid2grp-present"
+            grep -iE "ID MAPPER|uid2grp_allocate|getgrouplist|Unsupported code path|Could not map|$P" /var/log/ganesha.log | tail -8 || echo "  (no recent ID MAPPER matches)"
+            if grep -q "uid2grp_allocate_by_uid" /var/log/ganesha.log 2>/dev/null; then
+                echo "[ganesha-ctl] ganesha-log:uid2grp-by-uid-present"
+            elif grep -q "uid2grp_allocate_by_principal" /var/log/ganesha.log 2>/dev/null; then
+                echo "[ganesha-ctl] ganesha-log:uid2grp-by-principal-present (legacy/MSPAC risk)"
+            elif grep -q 'UseGetpwnam = true' /etc/ganesha/ganesha.conf 2>/dev/null; then
+                echo "[ganesha-ctl] ganesha-log:uid2grp-awaiting-krb5-mount (UseGetpwnam=true; chain runs on client auth)"
             else
                 echo "[ganesha-ctl] ganesha-log:no-uid2grp (ganesha.nfsd not exercised)"
+            fi
+            if grep -qE "Unsupported code path for principal ${P}" /var/log/ganesha.log 2>/dev/null; then
+                echo "[ganesha-ctl] WARN: Unsupported principal path for $P — set UseGetpwnam=true (Debian 9.6 _MSPAC_SUPPORT stubs allocate_by_principal)"
             fi
         fi
         ;;

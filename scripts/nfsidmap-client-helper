@@ -8,6 +8,18 @@ desc="${2:-}"
 [ -n "$key" ] && [ -n "$desc" ] || exit 1
 echo "$(date -u +%FT%TZ) key=$key desc=$desc" >> /tmp/nfsidmap-client-helper.log
 
+# Ganesha 9.6 Only_Numeric_Owners encodes NSS ids as wire_uid = nss_uid + 524287.
+GANESHA_WIRE_UID_OFFSET=524287
+
+decode_wire_id() {
+    local n="$1"
+    if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge "$GANESHA_WIRE_UID_OFFSET" ] && [ "$n" -lt 4294967295 ]; then
+        echo $((n - GANESHA_WIRE_UID_OFFSET))
+        return 0
+    fi
+    echo "$n"
+}
+
 type="${desc%%:*}"
 value="${desc#*:}"
 value="${value%% *}"
@@ -37,6 +49,13 @@ name_candidates() {
 
 case "$type" in
     uid)
+        decoded="$(decode_wire_id "$value")"
+        if [[ "$decoded" =~ ^[0-9]+$ ]]; then
+            name="$(getent passwd "$decoded" 2>/dev/null | awk -F: 'NR==1{print $1; exit}')"
+            if [ -n "$name" ]; then
+                keyctl instantiate "$key" "$name" 2>/dev/null && exit 0
+            fi
+        fi
         while IFS= read -r cand; do
             uid="$(lookup_passwd_name "$cand" || true)"
             if [ -n "$uid" ]; then
@@ -45,6 +64,13 @@ case "$type" in
         done < <(name_candidates "$value")
         ;;
     gid)
+        decoded="$(decode_wire_id "$value")"
+        if [[ "$decoded" =~ ^[0-9]+$ ]]; then
+            name="$(getent group "$decoded" 2>/dev/null | awk -F: 'NR==1{print $1; exit}')"
+            if [ -n "$name" ]; then
+                keyctl instantiate "$key" "$name" 2>/dev/null && exit 0
+            fi
+        fi
         while IFS= read -r cand; do
             gid="$(lookup_group_name "$cand" || true)"
             if [ -n "$gid" ]; then

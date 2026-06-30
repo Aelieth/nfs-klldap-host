@@ -19,7 +19,10 @@ use crate::common::{
     debug_enabled, IdCache, PrincipalKind, Resolved, CACHE_PATH, EXTRAUSERS_PASSWD, NSS_GROUP_PATH,
     NSS_PASSWD_PATH,
 };
-use crate::materialize::{materialize_nss_wrappers_at, NssMaterializePaths};
+use crate::materialize::{
+    ensure_nss_group_member_login, materialize_nss_wrappers_at, sanitize_for_nss,
+    NssMaterializePaths,
+};
 #[cfg(test)]
 use crate::materialize::build_nss_snapshot;
 
@@ -114,7 +117,7 @@ pub(crate) fn merge_group_gids(primary: u32, supplemental: &[u32]) -> Vec<u32> {
 
 /// Resolve groups for principal: RESOLVE (uid) then resolver membership (memberOf/member/gidNumber).
 /// Primary first; includes LDAP display groups for primary gid resolution side-effect.
-/// Materializes supplemental NSS rows so Ganesha's getgrouplist (after uid2grp_allocate_by_principal)
+/// Materializes supplemental NSS rows so Ganesha's getgrouplist (after uid2grp_allocate_by_uid under UseGetpwnam=true)
 /// sees the members in NSS.
 pub(crate) fn resolve_groups_for_principal(
     principal: &str,
@@ -146,7 +149,34 @@ pub(crate) fn resolve_groups_for_principal(
     let (np, ng, ep, eg) = NssMaterializePaths::materialize_paths_owned();
     let paths = NssMaterializePaths::from_owned(&np, &ng, &ep, &eg);
     let _ = materialize_nss_wrappers_at(cache, &paths, snap_groups.as_ref());
+    if r.kind == PrincipalKind::User {
+        let login = sanitize_for_nss(&r.name);
+        let primary = r.gid;
+        for &g in &gids {
+            if g != primary {
+                let _ = ensure_nss_group_member_login(&paths, g, &login);
+            }
+        }
+    }
     gids
+}
+
+/// Re-materialize supplemental member-of NSS rows for every cached user principal.
+/// Call after bulk nss writes that only used LDAP bulk snap (machine resolve, rebulk_apply_sync).
+pub(crate) fn refresh_supplemental_nss_for_cached_users(
+    cache: &mut IdCache,
+    realm: &str,
+    server_variants: &[String],
+) {
+    let principals: Vec<String> = cache
+        .entries
+        .values()
+        .filter(|r| r.kind == PrincipalKind::User && principal_has_realm(&r.principal))
+        .map(|r| r.principal.clone())
+        .collect();
+    for p in principals {
+        let _ = resolve_groups_for_principal(&p, realm, server_variants, cache);
+    }
 }
 
 /// Load resolver + bind creds from NfsKlldapConfig (NFS_CONFIG).
@@ -420,11 +450,17 @@ pub(crate) fn resolve_principal(
             "  cache_write result={}",
             if write_res.is_ok() { "ok" } else { "err" }
         );
-        let snap_groups = get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups);
-        let (np, ng, ep, eg) = NssMaterializePaths::materialize_paths_owned();
-        let paths = NssMaterializePaths::from_owned(&np, &ng, &ep, &eg);
-        if let Err(e) = materialize_nss_wrappers_at(cache, &paths, snap_groups.as_ref()) {
-            dlog!("  nss_wrapper_write err={}", e);
+        // User resolves must keep supplemental member-of rows (lldap_sudohost) for Ganesha 9.6 getgrouplist.
+        if resolved.kind == PrincipalKind::User && principal_has_realm(&resolved.principal) {
+            let _ = resolve_groups_for_principal(&resolved.principal, realm, server_variants, cache);
+        } else {
+            let snap_groups = get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups);
+            let (np, ng, ep, eg) = NssMaterializePaths::materialize_paths_owned();
+            let paths = NssMaterializePaths::from_owned(&np, &ng, &ep, &eg);
+            if let Err(e) = materialize_nss_wrappers_at(cache, &paths, snap_groups.as_ref()) {
+                dlog!("  nss_wrapper_write err={}", e);
+            }
+            refresh_supplemental_nss_for_cached_users(cache, realm, server_variants);
         }
     }
 

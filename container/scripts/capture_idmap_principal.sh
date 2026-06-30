@@ -30,9 +30,9 @@ mkdir -p "$(dirname "$LOG")" "${MNT}" 2>/dev/null || true
     # umount best effort
     umount -l "${MNT}" 2>/dev/null || true
 
-    echo "grep for uid2grp_allocate_by_principal and Unsupported code path:"
+    echo "grep for uid2grp_allocate_by_uid and Unsupported code path:"
     if [ -f /var/log/ganesha.log ]; then
-        grep -E 'uid2grp_allocate_by_principal|"Unsupported code path"' /var/log/ganesha.log | tail -10 | tee -a "$LOG" || true
+        grep -E 'uid2grp_allocate_by_uid|getgrouplist for uname|"Unsupported code path"' /var/log/ganesha.log | tail -10 | tee -a "$LOG" || true
     else
         echo "(no ganesha.log yet)"
     fi

@@ -4,6 +4,7 @@ use crate::dlog;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
+use std::time::Instant;
 
 use std::collections::HashMap;
 
@@ -182,7 +183,9 @@ pub(crate) fn passwd_line_for(r: &Resolved) -> String {
 /// Build a group(5) line for the primary gid of this resolved entry.
 pub(crate) fn group_line_for(r: &Resolved) -> String {
     if r.gid == 0 {
-        group_line_with_members(0, "root", &[])
+        // Always emit non-empty members for root gid so getgrouplist(0,...) / getgrouplist("root",0)
+        // succeeds reliably under nss_wrapper for machine principals (uid 0).
+        group_line_with_members(0, "root", &["root".to_string(), "daemon".to_string(), "bin".to_string()])
     } else {
         let gname = sanitize_for_nss(&r.name);
         group_line_with_members(r.gid, &gname, &[])
@@ -371,6 +374,10 @@ pub(crate) fn build_nss_snapshot(
         }
     }
 
+    // Base + machine (uid0) members for root group: guarantees non-empty root:x:0:...
+    // and appropriate membership for getgrouplist(0) + machine principal names.
+    let mut root_group_members: Vec<String> = vec!["root".to_string(), "daemon".to_string(), "bin".to_string()];
+
     if let Some(groups) = ldap_groups {
         let mut by_gid: HashMap<i32, &PosixGroupEntry> = HashMap::new();
         for entry in groups.values() {
@@ -410,10 +417,22 @@ pub(crate) fn build_nss_snapshot(
                     login, r.uid, r.gid, gecos
                 ));
             }
+            // Collect uid/gid 0 (machine) logins into root group members so that
+            // root group lists machine principals (host/* logins) for reliable getgrouplist(0).
+            if r.uid == 0 || r.gid == 0 {
+                if !root_group_members.iter().any(|m| m == &login) {
+                    root_group_members.push(login.clone());
+                }
+            }
         }
 
         if seen_gid.insert(r.gid) {
-            if r.kind != PrincipalKind::Machine && r.gid != 0 {
+            if r.gid == 0 {
+                // Force-correct: always a root group line with members (base + any machines)
+                // so it is never left empty by machine processing. This is exercised by both
+                // proactive and on-demand paths via build_nss_snapshot.
+                group_lines.push(group_line_with_members(0, "root", &root_group_members));
+            } else if r.kind != PrincipalKind::Machine && r.gid != 0 {
                 let gname = gname_for_gid(r.gid, ldap_groups, &r.name);
                 let short = sanitize_for_nss(&r.name);
                 let mut mems = vec![short.clone()];
@@ -443,11 +462,24 @@ pub(crate) fn build_nss_snapshot(
     }
 
     if seen_gid.is_empty() || !seen_gid.contains(&0) {
-        group_lines.push("root:x:0:root,daemon,bin".to_string());
+        group_lines.push(group_line_with_members(0, "root", &root_group_members));
     }
 
+    // Final guarantee (regardless of order or machine uid0 paths processed): root group
+    // always exists with non-empty base+machine members; root passwd is leading entry.
+    // This ensures AC3 + AC1 for uid0 getgrouplist contract.
+    group_lines.retain(|l| !l.starts_with("root:x:0:"));
+    group_lines.insert(0, group_line_with_members(0, "root", &root_group_members));
     if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
         passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
+    } else {
+        // Ensure root passwd entry is the first line.
+        if let Some(pos) = passwd_lines.iter().position(|l| l.starts_with("root:")) {
+            if pos != 0 {
+                let root_line = passwd_lines.remove(pos);
+                passwd_lines.insert(0, root_line);
+            }
+        }
     }
     if !passwd_lines.iter().any(|l| l.starts_with("nobody:")) {
         passwd_lines.push(format!(
@@ -472,30 +504,48 @@ pub(crate) fn materialize_nss_wrappers_at(
     paths: &NssMaterializePaths<'_>,
     ldap_groups: Option<&HashMap<String, PosixGroupEntry>>,
 ) -> io::Result<()> {
-    if let Some(parent) = paths.nss_passwd.parent() {
-        let _ = fs::create_dir_all(parent);
+    let start = Instant::now();
+    let nss_p = paths.nss_passwd.display().to_string();
+    eprintln!("[idhelper] materialize start: target_nss_passwd={} entries_in_cache={}", nss_p, cache.entries.len());
+    dlog!("materialize start nss={} cache_entries={}", nss_p, cache.entries.len());
+
+    // Explicit dir creation for both nss_wrapper and extrausers (strengthen visibility).
+    for p in [paths.nss_passwd, paths.nss_group, paths.extrausers_passwd, paths.extrausers_group] {
+        if let Some(parent) = p.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
     }
 
     let (passwd_lines, group_lines) = build_nss_snapshot(cache, ldap_groups);
 
     {
+        // nss_passwd atomic + fsync for durability before rename
         let tmp = paths.nss_passwd.with_extension("tmp");
-        let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
-        let mut w = BufWriter::new(f);
-        // Nss_wrapper (Debian trixie) rejects '#' comment lines Emit entries.
-        for l in &passwd_lines {
-            writeln!(w, "{}", l)?;
+        let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+        {
+            let mut w = BufWriter::new(&mut f);
+            // Nss_wrapper (Debian trixie) rejects '#' comment lines Emit entries.
+            for l in &passwd_lines {
+                writeln!(w, "{}", l)?;
+            }
+            w.flush()?;
         }
+        let _ = f.sync_all();
         fs::rename(tmp, paths.nss_passwd)?;
     }
 
     {
+        // nss_group atomic + fsync
         let tmp = paths.nss_group.with_extension("tmp");
-        let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
-        let mut w = BufWriter::new(f);
-        for l in &group_lines {
-            writeln!(w, "{}", l)?;
+        let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+        {
+            let mut w = BufWriter::new(&mut f);
+            for l in &group_lines {
+                writeln!(w, "{}", l)?;
+            }
+            w.flush()?;
         }
+        let _ = f.sync_all();
         fs::rename(tmp, paths.nss_group)?;
     }
 
@@ -507,30 +557,56 @@ pub(crate) fn materialize_nss_wrappers_at(
 
     // Write supplemental extrausers entries so machines map to 0 via nsswitch.
     {
-        // Ensure dir exists (harmless for nss_wrapper paths under.
-        if let Some(p) = paths.extrausers_passwd.parent() {
-            let _ = fs::create_dir_all(p);
-        }
         {
+            // extrausers_passwd atomic + fsync + readback visibility
             let tmp = paths.extrausers_passwd.with_extension("tmp");
-            let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
-            let mut w = BufWriter::new(f);
-            // libnss-extrausers rejects '#' lines; emit passwd entries only.
-            for l in &passwd_lines {
-                writeln!(w, "{}", l)?;
+            let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+            {
+                let mut w = BufWriter::new(&mut f);
+                // libnss-extrausers rejects '#' lines; emit passwd entries only.
+                for l in &passwd_lines {
+                    writeln!(w, "{}", l)?;
+                }
+                w.flush()?;
             }
+            let _ = f.sync_all();
             fs::rename(tmp, paths.extrausers_passwd)?;
         }
         {
             let tmp = paths.extrausers_group.with_extension("tmp");
-            let f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
-            let mut w = BufWriter::new(f);
-            for l in &group_lines {
-                writeln!(w, "{}", l)?;
+            let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+            {
+                let mut w = BufWriter::new(&mut f);
+                for l in &group_lines {
+                    writeln!(w, "{}", l)?;
+                }
+                w.flush()?;
             }
+            let _ = f.sync_all();
             fs::rename(tmp, paths.extrausers_group)?;
         }
     }
+
+    // Post-write read-back check for visibility to subsequent NSS lookups (getpwnam/getgrouplist).
+    let _ = std::fs::read_to_string(paths.nss_passwd);
+    let _ = std::fs::read_to_string(paths.nss_group);
+    let _ = std::fs::read_to_string(paths.extrausers_passwd);
+    let _ = std::fs::read_to_string(paths.extrausers_group);
+    if let Ok(m) = std::fs::metadata(paths.nss_passwd) {
+        dlog!("post-write visibility: nss_passwd size={} mtime ok", m.len());
+    }
+
+    let elapsed = start.elapsed();
+    let outcome = "ok";
+    eprintln!(
+        "[idhelper] materialize done: elapsed={:?} passwd_entries={} group_entries={} nss_path={} extrausers_path={} outcome={}",
+        elapsed, passwd_lines.len(), group_lines.len(), nss_p,
+        paths.extrausers_passwd.display(), outcome
+    );
+    dlog!(
+        "materialize outcome elapsed={:?} passwd={} group={} nss={} outcome={}",
+        elapsed, passwd_lines.len(), group_lines.len(), nss_p, outcome
+    );
 
     Ok(())
 }

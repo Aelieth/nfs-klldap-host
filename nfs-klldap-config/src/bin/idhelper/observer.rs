@@ -74,9 +74,10 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                                     eprintln!("[idhelper] observed from ganesha log: {}", candidate);
                                     {
                                         let mut guard = cache.lock().unwrap();
-                                        let _ = resolve_principal(&candidate, realm, variants, &mut guard);
+                                        let prod = crate::materialize::NssMaterializePaths::production();
+                                        let _ = resolve_principal(&candidate, realm, variants, &mut guard, &prod);
                                         let _ = resolve_groups_for_principal(
-                                            &candidate, realm, variants, &mut guard,
+                                            &candidate, realm, variants, &mut guard, &prod,
                                         );
                                     }
                                 }
@@ -302,9 +303,10 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
     // getpwnam/getgrouplist/idmapper indicators for on-demand under UseGetpwnam=true.
     // Ganesha (and libnfsidmap under nss_wrapper) may log the names it looks up.
     // Catch both user@REALM and host/*@REALM (and bare host segments that we promote).
+    // Explicit uid:0 / uid2grp uid 0 for machine/root to drive reactive materialize for uid0.
     {
         let lower = line.to_ascii_lowercase();
-        let markers = ["getpwnam", "getgrouplist", "getgrnam", "idmapper"];
+        let markers = ["getpwnam", "getgrouplist", "getgrnam", "idmapper", "uid2grp_allocate_by_uid"];
         let has_marker = markers.iter().any(|m| lower.contains(m));
         if has_marker {
             // Robust: scan for any whitespace/paren/quote-delimited token containing @ and our realm.

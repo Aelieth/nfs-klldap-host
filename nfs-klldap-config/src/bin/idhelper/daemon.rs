@@ -75,7 +75,9 @@ pub(crate) fn rebulk_apply_sync(
     let user_changed = cache_changed_since(fp_before, cache);
     // Always materialize nss from this authoritative snap (ensures group prunes + primary LDAP names are applied even if user fp unchanged).
     materialize_nss_wrappers_at(cache, &paths.nss, Some(&snap.groups))?;
-    refresh_supplemental_nss_for_cached_users(cache, realm, &get_server_variants());
+    refresh_supplemental_nss_for_cached_users(cache, realm, &get_server_variants(), &paths.nss);
+    // Re-apply the snap groups after refresh (which may re-mat from resolver snap) so tests that supply groups see the @ members etc.
+    materialize_nss_wrappers_at(cache, &paths.nss, Some(&snap.groups))?;
     if user_changed {
         cache.write_to_file(paths.cache_path)?;
     }
@@ -111,7 +113,8 @@ pub(crate) mod test_rebulk {
     where
         F: FnOnce() -> R,
     {
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        // Recover from poison (previous test panic while holding) so plain parallel runs don't cascade failures.
+        let guard = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         crate::resolve::reset_id_resolver_for_test();
         TEST_REBULK.with(|slot| {
             *slot.borrow_mut() = Some(ov);
@@ -120,6 +123,7 @@ pub(crate) mod test_rebulk {
         TEST_REBULK.with(|slot| {
             *slot.borrow_mut() = None;
         });
+        drop(guard);
         out
     }
 
@@ -318,12 +322,13 @@ pub(crate) fn run_daemon() {
         }
     }
 
+    let prod_paths = NssMaterializePaths::production();
     // Pre-resolve the server host and nfs principals at cold start.
     for v in &server_variants {
         for prefix in ["host", "nfs"] {
             let p = format!("{}/{}@{}", prefix, v, realm);
             let mut guard = cache.lock().unwrap();
-            let _ = resolve_principal(&p, &realm, &server_variants, &mut guard);
+            let _ = resolve_principal(&p, &realm, &server_variants, &mut guard, &prod_paths);
             eprintln!(
                 "[idhelper] pre-resolved server {} principal at startup: {}",
                 prefix, p
@@ -342,15 +347,17 @@ pub(crate) fn run_daemon() {
     }
     {
         let mut guard = cache.lock().unwrap();
-        refresh_supplemental_nss_for_cached_users(&mut guard, &realm, &server_variants);
+        let prod_paths = NssMaterializePaths::production();
+        refresh_supplemental_nss_for_cached_users(&mut guard, &realm, &server_variants, &prod_paths);
     }
 
+    let prod_paths = NssMaterializePaths::production();
     if let Ok(list) = std::env::var("NFS_KLLDAP_IDHELPER_PRERESOLVE") {
         for p in list.split(',') {
             let p = p.trim();
             if !p.is_empty() {
                 let mut guard = cache.lock().unwrap();
-                let _ = resolve_principal(p, &realm, &server_variants, &mut guard);
+                let _ = resolve_principal(p, &realm, &server_variants, &mut guard, &prod_paths);
                 eprintln!("[idhelper] pre-resolved at startup: {}", p);
             }
         }
@@ -420,7 +427,14 @@ fn handle_client(
             } else {
                 dlog!("socket RESOLVE arg=\"{}\"", arg);
                 let mut guard = cache.lock().unwrap();
-                let r = resolve_principal(arg, realm, server_variants, &mut guard);
+                let r = if std::env::var("NSS_PASSWD").is_ok() {
+                    let owned = NssMaterializePaths::materialize_paths_owned();
+                    let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);
+                    resolve_principal(arg, realm, server_variants, &mut guard, &lpaths)
+                } else {
+                    let prod = NssMaterializePaths::production();
+                    resolve_principal(arg, realm, server_variants, &mut guard, &prod)
+                };
                 out.push_str(&format!(
                     "OK {}|{}|{}|{}|{}\n",
                     r.principal, r.uid, r.gid, r.kind.as_str(), r.source
@@ -440,8 +454,16 @@ fn handle_client(
             } else {
                 dlog!("socket GRPS arg=\"{}\"", arg);
                 let mut guard = cache.lock().unwrap();
-                // GRPS handler supplies ID_MAPPER groups at runtime via (now identity-routed) resolve
-                let gs = resolve_groups_for_principal(arg, realm, server_variants, &mut guard);
+                // GRPS handler supplies ID_MAPPER groups at runtime via (now identity-routed) resolve.
+                // Local path when NSS_* set (for test isolation), prod otherwise.
+                let gs = if std::env::var("NSS_PASSWD").is_ok() {
+                    let owned = NssMaterializePaths::materialize_paths_owned();
+                    let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);
+                    resolve_groups_for_principal(arg, realm, server_variants, &mut guard, &lpaths)
+                } else {
+                    let prod = NssMaterializePaths::production();
+                    resolve_groups_for_principal(arg, realm, server_variants, &mut guard, &prod)
+                };
                 let list = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|");
                 out.push_str(&format!("OK {}\n", list));
             }
@@ -696,9 +718,21 @@ mod grps_socket_tests {
             let gs = resolv.resolve_groups_for_principal("testuser1@EX.COM", dn, pw);
             eprintln!("DEBUG resolver gs via memberOf: {:?}", gs);
         }
-        // also drive high-level for handler
+        // Use a dedicated tmp + set NSS_PASSWD so handle_client's internal resolve/groups use the owned local paths (not prod).
+        let tmpd = tempfile::tempdir().unwrap();
+        let nss_p = tmpd.path().join("nss_passwd");
+        let nss_g = tmpd.path().join("nss_group");
+        let ex_p = tmpd.path().join("extra_passwd");
+        let ex_g = tmpd.path().join("extra_group");
+        let _ = std::fs::create_dir_all(tmpd.path());
+        // set so that paths decision inside handle_client picks materialize_paths_owned -> local
+        std::env::set_var("NSS_PASSWD", &nss_p);
+        std::env::set_var("NSS_GROUP", &nss_g);
+        std::env::set_var("NSS_EXTRAUSERS_PASSWD", &ex_p);
+        std::env::set_var("NSS_EXTRAUSERS_GROUP", &ex_g);
+        let upaths = NssMaterializePaths::under(tmpd.path());
         let mut probe_cache = IdCache::default();
-        let gs2 = resolve_groups_for_principal("testuser1@EX.COM", "EX.COM", &[], &mut probe_cache);
+        let gs2 = resolve_groups_for_principal("testuser1@EX.COM", "EX.COM", &[], &mut probe_cache, &upaths);
         eprintln!("DEBUG grps high-level: {:?}", gs2);
         let (mut client, server) = UnixStream::pair().unwrap();
         let c = IdCache::default();
@@ -708,6 +742,11 @@ mod grps_socket_tests {
         writeln!(client, "GRPS testuser1@EX.COM").unwrap();
         let _ = client.flush();
         let _ = handle_client(server, realm, &vars, &cache);
+        // restore envs after
+        std::env::remove_var("NSS_PASSWD");
+        std::env::remove_var("NSS_GROUP");
+        std::env::remove_var("NSS_EXTRAUSERS_PASSWD");
+        std::env::remove_var("NSS_EXTRAUSERS_GROUP");
         if let Some(o) = old_force { std::env::set_var("TEST_FORCE_LDAP_UID_GID", o); } else { std::env::remove_var("TEST_FORCE_LDAP_UID_GID"); }
         if let Some(o) = old_pop { std::env::set_var("TEST_REBULK_POPULATE", o); } else { std::env::remove_var("TEST_REBULK_POPULATE"); }
         let mut rdr = BufReader::new(&mut client);

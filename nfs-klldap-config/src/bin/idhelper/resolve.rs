@@ -16,8 +16,7 @@ use nfs_klldap_identity::{
 };
 
 use crate::common::{
-    debug_enabled, IdCache, PrincipalKind, Resolved, CACHE_PATH, EXTRAUSERS_PASSWD, NSS_GROUP_PATH,
-    NSS_PASSWD_PATH,
+    debug_enabled, IdCache, PrincipalKind, Resolved, CACHE_PATH,
 };
 use crate::materialize::{
     ensure_nss_group_member_login, materialize_nss_wrappers_at, sanitize_for_nss,
@@ -27,14 +26,15 @@ use crate::materialize::{
 use crate::materialize::build_nss_snapshot;
 
 /// Resolve via getent NSS first, then fall back to the LDAP resolver snapshot.
-fn resolve_via_nss(name_or_principal: &str) -> Option<(u32, u32, String)> {
+/// Uses caller-provided paths for file fallbacks when available (so under(tmp) tests don't fall back to globals).
+fn resolve_via_nss(name_or_principal: &str, paths: &NssMaterializePaths<'_>) -> Option<(u32, u32, String)> {
     let trimmed = name_or_principal.trim();
     let short = principal_local_part(trimmed);
-    if let Some(res) = resolve_getent(trimmed) {
+    if let Some(res) = resolve_getent(trimmed, paths) {
         return Some(res);
     }
     if short != trimmed {
-        if let Some(res) = resolve_getent(short) {
+        if let Some(res) = resolve_getent(short, paths) {
             return Some(res);
         }
     }
@@ -124,8 +124,9 @@ pub(crate) fn resolve_groups_for_principal(
     realm: &str,
     server_variants: &[String],
     cache: &mut IdCache,
+    paths: &NssMaterializePaths<'_>,
 ) -> Vec<u32> {
-    let r = resolve_principal(principal, realm, server_variants, cache);
+    let r = resolve_principal(principal, realm, server_variants, cache, paths);
     // Any host/*@REALM machine principal maps to root gid for uid2grp/getgrouplist.
     let gids = if r.kind == PrincipalKind::Machine {
         vec![MACHINE_GID]
@@ -145,37 +146,48 @@ pub(crate) fn resolve_groups_for_principal(
         merge_group_gids(primary, &extra)
     };
     // force nss rows for all gids (incl supp) so getgrouplist on qualified name works
+    // Use the caller-supplied paths (production or test under(tmp)) instead of global owned().
     let snap_groups = get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups);
-    let (np, ng, ep, eg) = NssMaterializePaths::materialize_paths_owned();
-    let paths = NssMaterializePaths::from_owned(&np, &ng, &ep, &eg);
-    let _ = materialize_nss_wrappers_at(cache, &paths, snap_groups.as_ref());
+    let _ = materialize_nss_wrappers_at(cache, paths, snap_groups.as_ref());
     if r.kind == PrincipalKind::User {
         let login = sanitize_for_nss(&r.name);
         let primary = r.gid;
         for &g in &gids {
             if g != primary {
-                let _ = ensure_nss_group_member_login(&paths, g, &login);
+                let _ = ensure_nss_group_member_login(paths, g, &login);
             }
         }
+    } else if r.kind == PrincipalKind::Machine {
+        // Special case for machines (uid 0): ensure the machine login and "root" are members
+        // of root group in BOTH nss_wrapper and extrausers. Complements the root members
+        // forced in build_nss_snapshot; provides "appropriate root group membership".
+        let login = sanitize_for_nss(&r.name);
+        let _ = ensure_nss_group_member_login(paths, MACHINE_GID, &login);
+        let _ = ensure_nss_group_member_login(paths, MACHINE_GID, "root");
     }
     gids
 }
 
 /// Re-materialize supplemental member-of NSS rows for every cached user principal.
+/// Also covers uid0 machine principals so root group membership is refreshed after bulk.
 /// Call after bulk nss writes that only used LDAP bulk snap (machine resolve, rebulk_apply_sync).
 pub(crate) fn refresh_supplemental_nss_for_cached_users(
     cache: &mut IdCache,
     realm: &str,
     server_variants: &[String],
+    paths: &NssMaterializePaths<'_>,
 ) {
     let principals: Vec<String> = cache
         .entries
         .values()
-        .filter(|r| r.kind == PrincipalKind::User && principal_has_realm(&r.principal))
+        .filter(|r| {
+            (r.kind == PrincipalKind::User || r.kind == PrincipalKind::Machine)
+                && principal_has_realm(&r.principal)
+        })
         .map(|r| r.principal.clone())
         .collect();
     for p in principals {
-        let _ = resolve_groups_for_principal(&p, realm, server_variants, cache);
+        let _ = resolve_groups_for_principal(&p, realm, server_variants, cache, paths);
     }
 }
 
@@ -234,7 +246,7 @@ pub(crate) fn lookup_passwd_file(path: &Path, name: &str) -> Option<(u32, u32)> 
     None
 }
 
-fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
+fn resolve_getent(name: &str, paths: &NssMaterializePaths<'_>) -> Option<(u32, u32, String)> {
     dlog!("getent passwd \"{}\" called", name);
     if let Ok(out) = Command::new("getent").args(["passwd", name]).output() {
         if out.status.success() {
@@ -247,12 +259,13 @@ fn resolve_getent(name: &str) -> Option<(u32, u32, String)> {
         }
     }
     // Parity when SSSD misses a user but idhelper already materialized extrausers/nss_passwd.
-    for (path, src) in [
-        (EXTRAUSERS_PASSWD, "extrausers"),
-        (NSS_PASSWD_PATH, "nss"),
+    // Use *only* the caller-provided paths (enables isolation in tests with under(tmp); production callers pass production() paths).
+    for (p, src) in [
+        (paths.extrausers_passwd, "extrausers"),
+        (paths.nss_passwd, "nss"),
     ] {
-        if let Some((uid, gid)) = lookup_passwd_file(Path::new(path), name) {
-            dlog!("passwd file {} \"{}\" -> uid={} gid={}", path, name, uid, gid);
+        if let Some((uid, gid)) = lookup_passwd_file(p, name) {
+            dlog!("passwd file {} \"{}\" -> uid={} gid={}", p.display(), name, uid, gid);
             return Some((uid, gid, src.to_string()));
         }
     }
@@ -275,9 +288,10 @@ fn lookup_group_in_content(content: &str, gid: u32) -> Option<String> {
 }
 
 /// Resolve gid from materialized group file when getent group misses.
-pub(crate) fn lookup_group_file(gid: u32) -> Option<String> {
-    for path in [NSS_GROUP_PATH, "/var/lib/extrausers/group"] {
-        if let Ok(content) = std::fs::read_to_string(path) {
+/// Prefers caller paths (for test isolation) over globals.
+pub(crate) fn lookup_group_file(gid: u32, paths: &NssMaterializePaths<'_>) -> Option<String> {
+    for p in [paths.nss_group, paths.extrausers_group] {
+        if let Ok(content) = std::fs::read_to_string(p) {
             if let Some(name) = lookup_group_in_content(&content, gid) {
                 return Some(name);
             }
@@ -292,6 +306,7 @@ pub(crate) fn resolve_principal(
     realm: &str,
     server_variants: &[String],
     cache: &mut IdCache,
+    paths: &NssMaterializePaths<'_>,
 ) -> Resolved {
     let principal = canonicalize_principal(principal.trim(), realm);
     let start = Instant::now();
@@ -382,7 +397,7 @@ pub(crate) fn resolve_principal(
         }
     } else {
         dlog!("  user_path principal=\"{}\"", principal);
-        let looked = resolve_via_nss(&principal);
+        let looked = resolve_via_nss(&principal, paths);
         dlog!("  nss_getent final_got={:?}", looked.as_ref().map(|(u, g, s)| (*u, *g, s.as_str())));
 
             if let Some((uid, gid, src)) = looked {
@@ -392,7 +407,7 @@ pub(crate) fn resolve_principal(
                 let _ = r.resolve_group_by_gid(gid as i32, dn, pw);
                 dlog!("group fetch on-demand for gid={}", gid);
             }
-            if let Some(gname) = lookup_group_file(gid) {
+            if let Some(gname) = lookup_group_file(gid, paths) {
                 dlog!("materialized group gid={} name={}", gid, gname);
             }
             Resolved {
@@ -444,7 +459,10 @@ pub(crate) fn resolve_principal(
     }
     let _ = cache.prune_malformed_principals();
     let _ = cache.prune_numeric_user_entries();
-    if fp_before != cache.content_fingerprint() {
+    let fp_after = cache.content_fingerprint();
+    if fp_before != fp_after || resolved.uid == 0 {
+        // always write for uid0 (new or repeat visibility) + when fp changed (new principal)
+        // combine with aggressive cache hit (early return) before any I/O on repeats.
         let write_res = cache.write_to_file(Path::new(CACHE_PATH));
         dlog!(
             "  cache_write result={}",
@@ -452,15 +470,18 @@ pub(crate) fn resolve_principal(
         );
         // User resolves must keep supplemental member-of rows (lldap_sudohost) for Ganesha 9.6 getgrouplist.
         if resolved.kind == PrincipalKind::User && principal_has_realm(&resolved.principal) {
-            let _ = resolve_groups_for_principal(&resolved.principal, realm, server_variants, cache);
+            let _ = resolve_groups_for_principal(&resolved.principal, realm, server_variants, cache, paths);
+        } else if resolved.kind == PrincipalKind::Machine {
+            // Fast uid0 path + exercise resolve_groups special case for machine on first seen.
+            // Ensures immediate materialize of uid=0 + root members with base for getgrouplist(0)
+            // when RESOLVE is used (UseGetpwnam). Force on first encounter for quick first-use.
+            let _ = resolve_groups_for_principal(&resolved.principal, realm, server_variants, cache, paths);
         } else {
             let snap_groups = get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups);
-            let (np, ng, ep, eg) = NssMaterializePaths::materialize_paths_owned();
-            let paths = NssMaterializePaths::from_owned(&np, &ng, &ep, &eg);
-            if let Err(e) = materialize_nss_wrappers_at(cache, &paths, snap_groups.as_ref()) {
+            if let Err(e) = materialize_nss_wrappers_at(cache, paths, snap_groups.as_ref()) {
                 dlog!("  nss_wrapper_write err={}", e);
             }
-            refresh_supplemental_nss_for_cached_users(cache, realm, server_variants);
+            refresh_supplemental_nss_for_cached_users(cache, realm, server_variants, paths);
         }
     }
 
@@ -537,8 +558,11 @@ mod tests {
 
     #[test]
     fn resolve_rejects_numeric_principal_without_caching() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = crate::materialize::NssMaterializePaths::under(tmp.path());
+        let _ = std::fs::create_dir_all(tmp.path());
         let mut cache = IdCache::default();
-        let r = resolve_principal("3002", "REALM", &[], &mut cache);
+        let r = resolve_principal("3002", "REALM", &[], &mut cache, &paths);
         assert_eq!(r.uid, FALLBACK_NOBODY_UID);
         assert_eq!(r.source, "rejected-numeric");
         assert!(cache.get("3002@REALM").is_none());
@@ -594,19 +618,20 @@ mod tests {
         std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
         let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
         std::env::remove_var("TEST_REBULK_POPULATE");
-        // write qualified entry to NSS_PASSWD_PATH so lookup_passwd_file (fallback in resolve_getent for @) resolves it
-        let nss_dir = std::path::Path::new("/var/lib/nfs-klldap");
-        let _ = std::fs::create_dir_all(nss_dir);
-        let nss_passwd = nss_dir.join("nss_passwd");
-        std::fs::write(&nss_passwd, "testuser1@EX.COM:x:3001:100:Test:/nonexistent:/usr/sbin/nologin\n").unwrap();
+        // Use isolated under(tmp) + write to the test's nss_passwd (no global /var write or pollution).
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = crate::materialize::NssMaterializePaths::under(tmp.path());
+        let _ = std::fs::create_dir_all(tmp.path());
+        // write qualified entry to the test nss_passwd so lookup_passwd_file (paths-preferring fallback in resolve_getent for @) resolves it
+        std::fs::write(paths.nss_passwd, "testuser1@EX.COM:x:3001:100:Test:/nonexistent:/usr/sbin/nologin\n").unwrap();
         let mut cache = IdCache::default();
-        let r = resolve_principal("testuser1@EX.COM", "EX.COM", &[], &mut cache);
-        let gs = resolve_groups_for_principal("testuser1@EX.COM", "EX.COM", &[], &mut cache);
+        let r = resolve_principal("testuser1@EX.COM", "EX.COM", &[], &mut cache, &paths);
+        let gs = resolve_groups_for_principal("testuser1@EX.COM", "EX.COM", &[], &mut cache, &paths);
         if let Some(v) = old_force { std::env::set_var("TEST_FORCE_LDAP_UID_GID", v); }
         if let Some(v) = old_pop { std::env::set_var("TEST_REBULK_POPULATE", v); }
         assert_eq!(r.uid, 3001, "resolve_principal on @ form via file lookup (no shims)");
         assert!(gs.contains(&100));
-        let pc = std::fs::read_to_string(nss_passwd).unwrap_or_default();
+        let pc = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
         assert!(pc.contains("testuser1@EX.COM") || pc.contains("testuser1:x:3001"));
     }
 }

@@ -57,6 +57,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                                 &mut bridge_warned,
                                 dedup_window,
                             );
+                            detect_my_getgrouplist_failure_and_heal(line, &cache, realm, variants);
                             if let Some(candidate) = extract_candidate_principal(line, realm) {
                                 let now = std::time::Instant::now();
                                 let is_fresh = recently
@@ -223,6 +224,90 @@ fn maybe_warn_bridge_server_addr(
          clients may fail to reconnect. Use --network=host (or network_mode: host).",
         addr
     );
+}
+
+/// Detect my_getgrouplist_alloc failure from ganesha.log line (AC5 E).
+/// On match: log the *exact* result+errno *seen by ganesha process* (not idhelper view),
+/// trigger REBULK + nss re-materialize + cache refresh + socket-grps recheck.
+/// Self-healing + exposes ganesha view.
+fn detect_my_getgrouplist_failure_and_heal(
+    line: &str,
+    cache: &std::sync::Arc<std::sync::Mutex<crate::common::IdCache>>,
+    realm: &str,
+    variants: &[String],
+) {
+    let low = line.to_ascii_lowercase();
+    if !low.contains("my_getgrouplist_alloc") || !(low.contains("failed") || low.contains("warn")) {
+        return;
+    }
+    // Parse user + errno + ngroups for exact ganesha-seen info
+    // e.g. "getgrouplist for user: root failed, ngroups: 1, errno: 1"
+    let user = if let Some(u) = extract_user_from_getgrouplist_line(line) {
+        u
+    } else {
+        "unknown".to_string()
+    };
+    let errno = extract_errno(line).unwrap_or(0u32);
+    let ngroups = extract_ngroups(line).unwrap_or(0u32);
+    eprintln!(
+        "[idhelper] INFO ganesha-seen getgrouplist (from running ganesha.nfsd log, not idhelper view): user={} ngroups={} errno={} ; triggering immediate re-seed + nss invalidate + recheck",
+        user, ngroups, errno
+    );
+    // Immediate re-seed: REBULK via socket + direct re-resolve + re-mat for root + user
+    let _ = std::process::Command::new("timeout")
+        .args(["3", "sh", "-c", &format!("printf 'REBULK\n' | nc -U $(cat /proc/$$/fd/1 2>/dev/null || echo /var/run/nfs-klldap/idhelper.sock) 2>/dev/null || printf 'REBULK\n' > /dev/null") ])
+        .status();
+    // direct heal using lock
+    {
+        let mut guard = cache.lock().unwrap();
+        let prod = crate::materialize::NssMaterializePaths::production();
+        let _ = crate::resolve::resolve_principal("root", realm, variants, &mut guard, &prod);
+        let _ = crate::resolve::resolve_principal(&user, realm, variants, &mut guard, &prod);
+        let _ = crate::resolve::resolve_groups_for_principal("root", realm, variants, &mut guard, &prod, true);
+        let _ = crate::resolve::resolve_groups_for_principal(&user, realm, variants, &mut guard, &prod, true);
+        let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);
+    }
+    // recheck grps via socket (non fatal)
+    let _ = try_socket_grps("root");
+    let _ = try_socket_grps(&user);
+}
+
+/// Parse "user: foo" or "for user: foo" from getgrouplist log line.
+fn extract_user_from_getgrouplist_line(line: &str) -> Option<String> {
+    for pat in ["user:", "user ", "for user "] {
+        if let Some(idx) = line.find(pat) {
+            let rest = &line[idx + pat.len()..];
+            let tok = rest.split(|c: char| !c.is_alphanumeric() && c != '@' && c != '/' && c != '.' && c != '-').next().unwrap_or("");
+            if !tok.is_empty() {
+                return Some(tok.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_errno(line: &str) -> Option<u32> {
+    if let Some(i) = line.find("errno:") {
+        let rest = &line[i+6..];
+        return rest.split(|c:char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).next().and_then(|s| s.parse().ok());
+    }
+    None
+}
+
+fn extract_ngroups(line: &str) -> Option<u32> {
+    if let Some(i) = line.find("ngroups:") {
+        let rest = &line[i+8..];
+        return rest.split(|c:char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).next().and_then(|s| s.parse().ok());
+    }
+    None
+}
+
+fn try_socket_grps(p: &str) -> Option<Vec<u32>> {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    let mut s = UnixStream::connect(crate::common::socket_path()).ok()?;
+    let _ = s.write_all(format!("GRPS {}\n", p).as_bytes());
+    None // fire and forget for heal; response not needed here
 }
 
 /// Extract hostname from "Linux NFSv4.x <host>" log groups.

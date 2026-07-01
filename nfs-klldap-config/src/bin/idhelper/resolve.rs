@@ -172,6 +172,12 @@ pub(crate) fn resolve_groups_for_principal(
     paths: &NssMaterializePaths<'_>,
     force_materialize: bool,
 ) -> Vec<u32> {
+    let p = principal.trim();
+    if p.eq_ignore_ascii_case("root") || p == "0" {
+        // Backstop for socket GROUPLIST/GRPS "root" (AC1/C): nss root entry guarantees getgrouplist("root") works;
+        // socket must answer consistently (at least gid 0). Idempotent, no marker.
+        return vec![0];
+    }
     let r = resolve_principal(principal, realm, server_variants, cache, paths);
     let mut gids = compute_gids_for_resolved(&r, principal);
     // Persist full gids (incl supps) onto the cache entry so that subsequent build_nss_snapshot

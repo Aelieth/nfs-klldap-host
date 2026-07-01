@@ -81,11 +81,10 @@ if ! grep -qi 'idmapconf\|idmapd.conf\|Idmapping' /etc/ganesha/ganesha.conf 2>/d
 else
     echo "  WARN: unexpected idmap keys in ganesha.conf"
 fi
-if [ -f /var/lib/nfs-klldap/.bulk_seed_done ]; then
-    _bulk_n=$(cat /var/lib/nfs-klldap/.bulk_seed_done 2>/dev/null | tr -d '[:space:]')
-    echo "  OK: idhelper bulk-seed marker present (${_bulk_n} users)"
+if grep -q '^root:x:0:0:root:/root:/bin/sh$' /var/lib/nfs-klldap/nss_passwd /var/lib/extrausers/passwd 2>/dev/null; then
+    echo "  OK: idhelper nss root entry present (idempotent full snapshot; marker removed)"
 else
-    echo "  WARN: bulk-seed marker missing"
+    echo "  WARN: nss root entry missing (getgrouplist root may fail)"
 fi
 if getent passwd testuser1 >/dev/null 2>&1 || grep -q '^testuser1:' /var/lib/extrausers/passwd /var/lib/nfs-klldap/nss_passwd 2>/dev/null; then
     echo "  OK: testuser1 visible via getent or materialized files"

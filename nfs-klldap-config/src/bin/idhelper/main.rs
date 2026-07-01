@@ -81,8 +81,17 @@ fn grps_use_local_materialize() -> bool {
 
 /// Try GRPS via socket (pattern from try_resolve_via_socket). Returns gids list or None.
 fn try_grps_via_socket(principal: &str) -> Option<Vec<u32>> {
+    try_socket_groups_cmd("GRPS", principal)
+}
+
+/// Try GROUPLIST/GETGROUPLIST via socket for the explicit getgrouplist endpoint.
+fn try_grouplist_via_socket(principal: &str) -> Option<Vec<u32>> {
+    try_socket_groups_cmd("GROUPLIST", principal)
+}
+
+fn try_socket_groups_cmd(verb: &str, principal: &str) -> Option<Vec<u32>> {
     let mut stream = UnixStream::connect(socket_path()).ok()?;
-    let req = format!("GRPS {}\n", principal);
+    let req = format!("{} {}\n", verb, principal);
     stream.write_all(req.as_bytes()).ok()?;
     let _ = stream.flush();
     let mut reader = BufReader::new(stream);
@@ -187,6 +196,38 @@ fn handle_cli(args: &[String]) {
                 println!("OK {}", gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|"));
             }
         }
+        "grouplist" | "getgrouplist" => {
+            // CLI for new getgrouplist query endpoint (backstop); reuses groups resolve logic + same output.
+            let p = args.get(1).map(|s| s.as_str()).unwrap_or("root");
+            if p.is_empty() {
+                eprintln!("Usage: nfs-klldap-idhelper grouplist <principal|uid> [--json]");
+                std::process::exit(2);
+            }
+            dlog!("cli GROUPLIST p=\"{}\"", p);
+            let json_flag = args.iter().any(|a| a == "--json" || a == "-j");
+            let eff_realm = if let Some((_, r)) = p.rsplit_once('@') {
+                if !r.trim().is_empty() { r.trim().to_string() } else { realm.clone() }
+            } else { realm.clone() };
+            let gs = if grps_use_local_materialize() {
+                let cpath = effective_cache_path();
+                let mut cache = IdCache::load_from_file(&cpath);
+                let owned = NssMaterializePaths::materialize_paths_owned();
+                let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);
+                resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache, &lpaths, false)
+            } else if let Some(gs) = try_grouplist_via_socket(p) {
+                gs
+            } else {
+                let mut cache = IdCache::load_from_file(&effective_cache_path());
+                let prod = NssMaterializePaths::production();
+                resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache, &prod, false)
+            };
+            if json_flag {
+                let j = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
+                println!(r#"{{"principal":"{}","gids":[{}]}}"#, p, j);
+            } else {
+                println!("OK {}", gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|"));
+            }
+        }
         "classify" => {
             let p = args.get(1).map(|s| s.as_str()).unwrap_or("");
             if p.is_empty() {
@@ -202,7 +243,7 @@ fn handle_cli(args: &[String]) {
             println!("server_variants: {:?}", server_variants);
             println!("cache file: {}", CACHE_PATH);
             println!("socket: {}", socket_path());
-            // Self-test with a real LDAP user when present. Avoids.
+            // Self-test with a real LDAP user when present.
             let mut cache = IdCache::load_from_file(&effective_cache_path());
             let test_p = format!("testuser1@{}", realm);
             let prod = NssMaterializePaths::production();
@@ -211,6 +252,35 @@ fn handle_cli(args: &[String]) {
                 "self-test: {} -> uid={} gid={} kind={} source={}",
                 r.principal, r.uid, r.gid, r.kind.as_str(), r.source
             );
+            // Synthetic Kerberos principal access test for post-start (D): exercise uid2grp path via GROUPLIST socket + root/testuser1, confirm no my_getgrouplist_alloc WARN in ganesha.log
+            let root_gl = {
+                let mut s = std::os::unix::net::UnixStream::connect(socket_path()).ok();
+                if let Some(ref mut st) = s {
+                    let _ = st.write_all(b"GROUPLIST root\n"); let _ = st.flush();
+                    let mut rd = std::io::BufReader::new(st); let mut ln=String::new(); let _ = rd.read_line(&mut ln);
+                    ln.trim().starts_with("OK ")
+                } else { false }
+            };
+            let user_gl = {
+                let mut s = std::os::unix::net::UnixStream::connect(socket_path()).ok();
+                if let Some(ref mut st) = s {
+                    let _ = st.write_all(format!("GROUPLIST {}\n", test_p).as_bytes()); let _ = st.flush();
+                    let mut rd = std::io::BufReader::new(st); let mut ln=String::new(); let _ = rd.read_line(&mut ln);
+                    ln.trim().starts_with("OK ")
+                } else { false }
+            };
+            println!("synthetic-getgrouplist: root_ok={} user({}) ok={}", root_gl, test_p, user_gl);
+            if let Ok(lc) = std::fs::read_to_string("/var/log/ganesha.log") {
+                let has_warn = lc.lines().any(|ln| {
+                    let lo = ln.to_ascii_lowercase();
+                    lo.contains("my_getgrouplist_alloc") && (lo.contains("warn") || lo.contains("failed, errno"))
+                });
+                if !has_warn {
+                    println!("synthetic-krb-uid2grp: no my_getgrouplist_alloc WARN (clean for root+user)");
+                } else {
+                    eprintln!("synthetic-krb-uid2grp: WARN present (observer will heal)");
+                }
+            }
         }
         "explain" => {
             println!("nfs-klldap-idhelper — machine vs user Kerberos principal resolver");
@@ -626,7 +696,7 @@ mod tests {
         let mut passwd_lines: Vec<String> = vec![];
         // Simulate the exact injection rule added to materialize_nss_wrappers.
         if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
-            passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
+            passwd_lines.insert(0, "root:x:0:0:root:/root:/bin/sh".to_string());
         }
         assert!(passwd_lines[0].starts_with("root:x:0:0:"));
         // When a machine is also present its name line + the root Group are.
@@ -1550,7 +1620,7 @@ mod tests {
         let eg = base.join("extra_group");
         let cp = base.join("idmap.cache");
         // Pre-seed nss_passwd (uid via getent) + cp with supp gids so CLI bin (no TEST passed) hits cache, augments gids, always-ensure + build write non-prim 4242 rows to *both* stores. Pure CLI evidence path.
-        std::fs::write(&np, "testu@T.REALM:x:2001:100:testu@T.REALM:/nonexistent:/usr/sbin/nologin\nroot:x:0:0:root:/nonexistent:/usr/sbin/nologin\n").unwrap();
+        std::fs::write(&np, "testu@T.REALM:x:2001:100:testu@T.REALM:/nonexistent:/usr/sbin/nologin\nroot:x:0:0:root:/root:/bin/sh\n").unwrap();
         std::fs::write(&cp, "# preseed supps for user@ CLI evidence (no TEST to bin)\ntestu@T.REALM|2001|100|user|pre|4242\n").unwrap();
         std::env::set_var("NSS_PASSWD", &np);
         std::env::set_var("NSS_GROUP", &ng);

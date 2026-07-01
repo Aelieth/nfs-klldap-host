@@ -1,7 +1,8 @@
 #!/bin/sh
 # Probe stub: answers grps/resolve/daemon without hanging (used by supervisor integration tests).
 mkdir -p /var/lib/nfs-klldap /var/run/nfs-klldap
-echo probe > /var/lib/nfs-klldap/.bulk_seed_done
+echo 'root:x:0:0:root:/root:/bin/sh' > /var/lib/nfs-klldap/nss_passwd || true
+echo probe > /var/lib/nfs-klldap/.bulk_seed_done || true
 echo 'root:x:0:0:root:/root:/bin/sh' > /var/lib/nfs-klldap/nss_passwd
 case "$1" in
   daemon) exec sleep 3600 ;;

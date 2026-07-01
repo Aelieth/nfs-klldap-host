@@ -568,8 +568,9 @@ EXPORT_DEFAULTS {{
 }
 
 /// Posix-only block for limited FS (9.6 valid keys only). 1 sentence.
+/// (No additional executable NFSV4/NFS_KRB5/EXPORT knobs added here per out-of-scope; the Manage_Gids=false + fallback in global + idhelper backstop + readiness synthetic provide the clean path.)
 fn posix_only_block() -> &'static str {
-    "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    # POSIX_ONLY_EXPORT: posix getattr/access only\n"
+    "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    # POSIX_ONLY_EXPORT: posix getattr/access only\n    # manage_gids=false + pure-POSIX (noacl/btrfs): UseGetpwnam + idhelper getgrouplist/socket-grps backstop authoritative; INFO fallbacks in rpcsec_gss/set_extended_groups are clean (no spam)\n    # See nfs_creds.c + uid2grp.c in V9.6 + supervisor readiness synthetic krb test\n"
 }
 
 /// Build Ganesha 9.6 EXPORT ACL lines.

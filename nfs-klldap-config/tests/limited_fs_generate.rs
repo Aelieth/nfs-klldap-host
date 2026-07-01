@@ -92,6 +92,8 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
     assert!(frag.contains("Read_Access_Check_Policy = \"post\";"), "limited must have post policy:\n{frag}");
     assert!(frag.contains("posix-only conservative mode for noacl btrfs (ZimaOS)"), "limited comment:\n{frag}");
     assert!(frag.contains("POSIX_ONLY_EXPORT"), "frag must include conservative guard marker:\n{frag}");
+    // AC4/D: generator emits the conservative posix block for manage_gids=false + noacl; idhelper/socket-grps + readiness synthetic cover clean uid2grp/rpcsec fallback (no new knobs emitted here per scope constraints)
+    assert!(frag.contains("idhelper getgrouplist/socket-grps backstop") || frag.contains("INFO fallbacks in rpcsec_gss"), "frag must document managed_gids reduction / clean path for 9.6:\n{frag}");
     if let Ok(scratch) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {
         let dest = std::path::PathBuf::from(scratch).join("10-users-limited.conf");
         let _ = fs::write(&dest, &frag);

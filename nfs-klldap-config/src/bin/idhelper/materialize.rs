@@ -557,19 +557,18 @@ pub(crate) fn build_nss_snapshot(
 
     // Final guarantee (regardless of order or machine uid0 paths processed): root group
     // always exists with non-empty base+machine members; root passwd is leading entry.
-    // This ensures AC3 + AC1 for uid0 getgrouplist contract.
+    // Exact minimal root per goal for getgrouplist("root",0,...) success without error.
     group_lines.retain(|l| !l.starts_with("root:x:0:"));
     group_lines.insert(0, group_line_with_members(0, "root", &root_group_members));
+    let exact_root_passwd = "root:x:0:0:root:/root:/bin/sh".to_string();
     if !passwd_lines.iter().any(|l| l.starts_with("root:")) {
-        passwd_lines.insert(0, "root:x:0:0:root:/nonexistent:/usr/sbin/nologin".to_string());
+        passwd_lines.insert(0, exact_root_passwd.clone());
     } else {
-        // Ensure root passwd entry is the first line.
+        // Force exact root line (replace any prior root entry) and ensure leading.
         if let Some(pos) = passwd_lines.iter().position(|l| l.starts_with("root:")) {
-            if pos != 0 {
-                let root_line = passwd_lines.remove(pos);
-                passwd_lines.insert(0, root_line);
-            }
+            passwd_lines.remove(pos);
         }
+        passwd_lines.insert(0, exact_root_passwd);
     }
     if !passwd_lines.iter().any(|l| l.starts_with("nobody:")) {
         passwd_lines.push(format!(
@@ -699,4 +698,35 @@ pub(crate) fn materialize_nss_wrappers_at(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod root_snapshot_tests {
+    use super::*;
+    use crate::common::{IdCache, PrincipalKind, Resolved};
+
+    #[test]
+    fn build_nss_snapshot_always_emits_exact_minimal_root_for_getgrouplist() {
+        // Drives real shipped build_nss_snapshot (UUT) with empty + populated cache; must emit exact root passwd+group so getgrouplist("root",0) succeeds (AC2).
+        let empty: IdCache = IdCache::default();
+        let (pw0, gr0) = build_nss_snapshot(&empty, None);
+        assert!(pw0.first().map_or(false, |l| l == "root:x:0:0:root:/root:/bin/sh"), "exact root passwd must lead even empty: {pw0:?}");
+        assert!(gr0.iter().any(|l| l.starts_with("root:x:0:") && l.contains("root")), "root group must be present for getgrouplist root");
+
+        // With a dynamic user, still force exact root first + its group.
+        let mut c = IdCache::default();
+        c.insert(Resolved {
+            principal: "testuser1@SATOMLIN.COM".into(),
+            name: "testuser1".into(),
+            uid: 3788,
+            gid: 3002,
+            kind: PrincipalKind::User,
+            source: "kldap".into(),
+            supplemental_gids: vec![3004, 3005],
+        });
+        let (pw, gr) = build_nss_snapshot(&c, None);
+        assert!(pw.first() == Some(&"root:x:0:0:root:/root:/bin/sh".to_string()), "root must be forced first: {pw:?}");
+        assert!(gr.iter().any(|l| l == "root:x:0:root,daemon,bin" || l.starts_with("root:x:0:")), "root group line with members");
+        assert!(pw.iter().any(|l| l.contains("testuser1")), "user seeded");
+    }
 }

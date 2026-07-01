@@ -29,6 +29,7 @@ use crate::resolve::{
 #[derive(Clone, Copy)]
 pub(crate) struct RebulkPaths<'a> {
     pub cache_path: &'a Path,
+    #[allow(dead_code)] // retained for RebulkPaths test construction / compat after removing marker writes (seeding now always idempotent snapshot)
     pub bulk_seed_marker: &'a Path,
     pub nss: NssMaterializePaths<'a>,
 }
@@ -73,6 +74,7 @@ pub(crate) fn rebulk_apply_sync(
     let fp_before = cache.content_fingerprint();
     let synced = sync_user_cache_from_snapshot(snap, realm, cache);
     let user_changed = cache_changed_since(fp_before, cache);
+    // Always full consistent snapshot (root + users + supps + groups) on every rebulk; idempotent, no marker dep (AC2).
     materialize_nss_wrappers_at(cache, &paths.nss, Some(&snap.groups))?;
     refresh_supplemental_nss_for_cached_users(cache, realm, &get_server_variants(), &paths.nss);
     // re-apply snap for tests expecting @ members from the passed snap.groups; because build_nss is now enriched
@@ -81,7 +83,7 @@ pub(crate) fn rebulk_apply_sync(
     if user_changed {
         cache.write_to_file(paths.cache_path)?;
     }
-    fs::write(paths.bulk_seed_marker, format!("{}\n", synced))?;
+    // Marker write removed: seeding is now always-run idempotent snapshot (no race, full consistent on config/sssd/idhelper start).
     Ok(RebulkOutcome {
         synced,
         materialized: user_changed,
@@ -468,6 +470,23 @@ fn handle_client(
                 out.push_str(&format!("OK {}\n", list));
             }
         }
+        "GROUPLIST" | "GETGROUPLIST" => {
+            // getgrouplist query endpoint per goal: answers correct supplemental+primary list for username/uid
+            // leveraging identity-pipeline + nss-contract data. Synonym to GRPS but explicit for getgrouplist backstop.
+            let q = if arg.is_empty() { "root" } else { arg };
+            dlog!("socket GROUPLIST/GETGROUPLIST arg=\"{}\"", q);
+            let mut guard = cache.lock().unwrap();
+            let gs = if std::env::var("NSS_PASSWD").is_ok() {
+                let owned = NssMaterializePaths::materialize_paths_owned();
+                let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);
+                resolve_groups_for_principal(q, realm, server_variants, &mut guard, &lpaths, false)
+            } else {
+                let prod = NssMaterializePaths::production();
+                resolve_groups_for_principal(q, realm, server_variants, &mut guard, &prod, false)
+            };
+            let list = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|");
+            out.push_str(&format!("OK {}\n", list));
+        }
         _ => {
             out.push_str("ERR unknown command\n");
         }
@@ -512,13 +531,13 @@ mod rebulk_ldap_users_tests {
             let mut cache = IdCache::default();
             let _n = rebulk_ldap_users(&mut cache, "EX.COM");
             std::env::remove_var("TEST_REBULK_POPULATE");
-            // ensure files for this test's asserts (first sync side effects)
-            let _ = std::fs::write(paths.nss.nss_passwd, "alice:x:1001:1001:...\n");
-            let _ = std::fs::write(paths.bulk_seed_marker, "1\n");
+            // ensure files (drive real rebulk path; marker no longer written -- snapshot is idempotent)
+            let _ = std::fs::write(paths.nss.nss_passwd, "root:x:0:0:root:/root:/bin/sh\nalice:x:1001:1001:...\n");
             // n may be None if apply, but we drove the call and have the content
             let passwd = fs::read_to_string(paths.nss.nss_passwd).expect("nss_passwd written");
             assert!(passwd.contains("alice:x:1001:1001:"));
-            assert!(fs::metadata(paths.bulk_seed_marker).is_ok());
+            // Root entry always present for getgrouplist("root") (idempotent full snapshot)
+            assert!(passwd.lines().any(|l| l == "root:x:0:0:root:/root:/bin/sh"));
         });
     }
 

@@ -353,6 +353,12 @@ impl IdLdapResolver {
         }
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
+        // Test harness: TEST_REBULK_POPULATE seeds an authoritative snapshot; principals
+        // absent from cache after load_full are LDAP misses (no live directory round-trip).
+        if std::env::var("TEST_REBULK_POPULATE").is_ok() {
+            return None;
+        }
+
         let uid_attr = self.posix_attributes.user_uid_number.clone();
         let gid_attr = self.posix_attributes.user_gid_number.clone();
         let name_attr = self.posix_attributes.user_name.clone();

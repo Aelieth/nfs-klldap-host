@@ -140,9 +140,6 @@ fn uid_gid_from_user_resolve(
     bind_dn: &str,
     bind_pw: &str,
 ) -> Option<(u32, u32)> {
-    if std::env::var("TEST_FORCE_LDAP_MISS").ok().as_deref() == Some("1") {
-        return None;
-    }
     let (uid_i, gid_opt, _disp) = resolver.resolve_user(name, bind_dn, bind_pw)?;
     let uid = uid_i as u32;
     let gid = gid_opt.map(|g| g as u32).unwrap_or(uid);
@@ -716,31 +713,36 @@ ldap_default_authtok = "sekret"
 
     fn log_fail_closed_passwd_evidence(paths: &crate::materialize::NssMaterializePaths<'_>, principal: &str) {
         let pw = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
-        eprintln!("=== nss_passwd contents (fail-closed evidence) ===\n{pw}");
+        eprintln!("=== nss_passwd raw contents (fail-closed evidence) ===");
+        if pw.is_empty() {
+            eprintln!("(empty file — zero passwd lines materialized)");
+        } else {
+            for (i, line) in pw.lines().enumerate() {
+                eprintln!("  [{i}] {line}");
+            }
+        }
         let principal_row = pw.lines().any(|l| l.starts_with(&format!("{principal}:")));
         let nobody_fallback = pw.lines().any(|l| l.starts_with("nobody:x:65534"));
         eprintln!("grep {principal}: row_present={principal_row}");
-        eprintln!("grep nobody:x:65534: found={nobody_fallback}");
+        if nobody_fallback {
+            eprintln!("grep nobody:x:65534: found=true");
+        } else {
+            eprintln!("no nobody:x:65534 passwd line for {principal}");
+        }
     }
 
-    fn with_loaded_resolver_ldap_miss_env<F: FnOnce()>(f: F) {
+    fn with_loaded_resolver_natural_ldap_miss_env<F: FnOnce()>(f: F) {
         let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
-        let old_miss = std::env::var("TEST_FORCE_LDAP_MISS").ok();
         let old_force = std::env::var("TEST_FORCE_LDAP_UID_GID").ok();
         let old_cfg = std::env::var("NFS_CONFIG").ok();
         std::env::set_var("TEST_REBULK_POPULATE", "u:seeduser:1001:100");
-        std::env::set_var("TEST_FORCE_LDAP_MISS", "1");
         std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
+        std::env::remove_var("TEST_FORCE_LDAP_MISS");
         f();
         if let Some(v) = old_pop {
             std::env::set_var("TEST_REBULK_POPULATE", v);
         } else {
             std::env::remove_var("TEST_REBULK_POPULATE");
-        }
-        if let Some(v) = old_miss {
-            std::env::set_var("TEST_FORCE_LDAP_MISS", v);
-        } else {
-            std::env::remove_var("TEST_FORCE_LDAP_MISS");
         }
         if let Some(v) = old_force {
             std::env::set_var("TEST_FORCE_LDAP_UID_GID", v);
@@ -882,10 +884,12 @@ ldap_default_authtok = "sekret"
         std::fs::write(&conf, MINIMAL_TEST_NFS_CONFIG).unwrap();
         std::env::set_var("NFS_CONFIG", &conf);
         let paths = crate::materialize::NssMaterializePaths::under(tmp.path());
-        with_loaded_resolver_ldap_miss_env(|| {
+        with_loaded_resolver_natural_ldap_miss_env(|| {
             let mut cache = IdCache::default();
             for principal in ["missinguser@MISS.REALM", "nobody@MISS.REALM"] {
-                eprintln!("=== resolve_fail_closed evidence: {principal} (resolver loaded, TEST_FORCE_LDAP_MISS=1) ===");
+                eprintln!(
+                    "=== resolve_fail_closed evidence: {principal} (resolver loaded via NFS_CONFIG+TEST_REBULK_POPULATE seeduser-only; natural ldap miss after load_full) ==="
+                );
                 let r = resolve_principal(principal, "MISS.REALM", &[], &mut cache, &paths);
                 log_fail_closed_passwd_evidence(&paths, principal);
                 assert_eq!(

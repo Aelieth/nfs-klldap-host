@@ -1750,7 +1750,7 @@ ldap_default_authtok = "sekret"
                     .env("NSS_EXTRAUSERS_GROUP", &paths.extrausers_group)
                     .env("NFS_CONFIG", &conf)
                     .env("TEST_REBULK_POPULATE", "u:seeduser:1001:100")
-                    .env("TEST_FORCE_LDAP_MISS", "1")
+                    .env_remove("TEST_FORCE_LDAP_MISS")
                     .env_remove("TEST_FORCE_LDAP_UID_GID")
                     .output()
                     .expect("spawn idhelper");

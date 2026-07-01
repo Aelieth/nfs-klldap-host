@@ -810,7 +810,7 @@ ldap_default_authtok = "sekret"
         .unwrap();
         std::env::set_var("NFS_CONFIG", &conf);
         std::env::set_var("TEST_REBULK_POPULATE", "u:seeduser:1001:100");
-        std::env::set_var("TEST_FORCE_LDAP_MISS", "1");
+        std::env::remove_var("TEST_FORCE_LDAP_MISS");
         std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
 
         let cache = Arc::new(Mutex::new(IdCache::default()));
@@ -844,6 +844,5 @@ ldap_default_authtok = "sekret"
         std::env::remove_var("NSS_EXTRAUSERS_GROUP");
         std::env::remove_var("NFS_CONFIG");
         std::env::remove_var("TEST_REBULK_POPULATE");
-        std::env::remove_var("TEST_FORCE_LDAP_MISS");
     }
 }

@@ -26,8 +26,26 @@ use crate::materialize::{
 /// Source tag when a realm principal cannot be resolved (no nobody materialization).
 pub(crate) const RESOLVE_FAIL_CLOSED_SOURCE: &str = "unresolved-fail-closed";
 
+/// Sentinel uid/gid for fail-closed (distinct from root 0 and nobody 65534).
+pub(crate) const RESOLVE_UNRESOLVED_UID: u32 = u32::MAX;
+pub(crate) const RESOLVE_UNRESOLVED_GID: u32 = u32::MAX;
+
+pub(crate) const RESOLVE_ERR_UNRESOLVED: &str = "ERR unresolved principal\n";
+
 pub(crate) fn is_unresolved_fail_closed(r: &Resolved) -> bool {
     r.source == RESOLVE_FAIL_CLOSED_SOURCE
+}
+
+/// Socket/CLI response for RESOLVE verb.
+pub(crate) fn format_resolve_socket_line(r: &Resolved) -> String {
+    if is_unresolved_fail_closed(r) {
+        RESOLVE_ERR_UNRESOLVED.to_string()
+    } else {
+        format!(
+            "OK {}|{}|{}|{}|{}\n",
+            r.principal, r.uid, r.gid, r.kind.as_str(), r.source
+        )
+    }
 }
 
 #[cfg(test)]
@@ -496,8 +514,8 @@ pub(crate) fn resolve_principal(
             Resolved {
                 principal: principal.clone(),
                 name,
-                uid: 0,
-                gid: 0,
+                uid: RESOLVE_UNRESOLVED_UID,
+                gid: RESOLVE_UNRESOLVED_GID,
                 kind: PrincipalKind::Unknown,
                 source: RESOLVE_FAIL_CLOSED_SOURCE.to_string(),
                 supplemental_gids: vec![],
@@ -672,6 +690,7 @@ mod tests {
             &paths,
         );
         assert_eq!(r.source, RESOLVE_FAIL_CLOSED_SOURCE);
+        assert_eq!(r.uid, RESOLVE_UNRESOLVED_UID);
         assert_ne!(r.uid, FALLBACK_NOBODY_UID);
         let pw = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
         assert!(

@@ -437,10 +437,7 @@ fn handle_client(
                     let prod = NssMaterializePaths::production();
                     resolve_principal(arg, realm, server_variants, &mut guard, &prod)
                 };
-                out.push_str(&format!(
-                    "OK {}|{}|{}|{}|{}\n",
-                    r.principal, r.uid, r.gid, r.kind.as_str(), r.source
-                ));
+                out.push_str(&crate::resolve::format_resolve_socket_line(&r));
             }
         }
         "REBULK" => {
@@ -467,7 +464,7 @@ fn handle_client(
                     resolve_groups_for_principal(arg, realm, server_variants, &mut guard, &prod, false)
                 };
                 if gs.is_empty() && arg.contains('@') {
-                    out.push_str("ERR unresolved principal\n");
+                    out.push_str(crate::resolve::RESOLVE_ERR_UNRESOLVED);
                 } else {
                     let list = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|");
                     out.push_str(&format!("OK {}\n", list));
@@ -489,7 +486,7 @@ fn handle_client(
                 resolve_groups_for_principal(q, realm, server_variants, &mut guard, &prod, false)
             };
             if gs.is_empty() && q.contains('@') {
-                out.push_str("ERR unresolved principal\n");
+                out.push_str(crate::resolve::RESOLVE_ERR_UNRESOLVED);
             } else {
                 let list = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|");
                 out.push_str(&format!("OK {}\n", list));
@@ -786,5 +783,44 @@ mod grps_socket_tests {
         assert!(trimmed.contains("2002"), "GRPS response must include distinct supp gid 2002");
         let has = trimmed.split(' ').nth(1).unwrap_or("").split('|').any(|p| p.parse::<u32>().is_ok());
         assert!(has, "must have numeric gids");
+    }
+
+    #[test]
+    fn handle_client_grps_and_resolve_err_on_realm_miss() {
+        let tmpd = tempfile::tempdir().unwrap();
+        let paths = NssMaterializePaths::under(tmpd.path());
+        std::env::set_var("NSS_PASSWD", paths.nss_passwd);
+        std::env::set_var("NSS_GROUP", paths.nss_group);
+        std::env::set_var("NSS_EXTRAUSERS_PASSWD", paths.extrausers_passwd);
+        std::env::set_var("NSS_EXTRAUSERS_GROUP", paths.extrausers_group);
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        crate::resolve::reset_id_resolver_for_test();
+        std::env::remove_var("TEST_REBULK_POPULATE");
+        std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
+
+        let cache = Arc::new(Mutex::new(IdCache::default()));
+        let realm = "MISS.REALM";
+        let vars: Vec<String> = vec![];
+
+        for (verb, arg) in [("GRPS", "missinguser@MISS.REALM"), ("RESOLVE", "missinguser@MISS.REALM")] {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            writeln!(client, "{verb} {arg}").unwrap();
+            let _ = client.flush();
+            let _ = handle_client(server, realm, &vars, &cache);
+            let mut rdr = BufReader::new(&mut client);
+            let mut line = String::new();
+            rdr.read_line(&mut line).unwrap();
+            assert_eq!(
+                line.trim(),
+                "ERR unresolved principal",
+                "{verb} must ERR on realm miss, got {:?}",
+                line
+            );
+        }
+
+        std::env::remove_var("NSS_PASSWD");
+        std::env::remove_var("NSS_GROUP");
+        std::env::remove_var("NSS_EXTRAUSERS_PASSWD");
+        std::env::remove_var("NSS_EXTRAUSERS_GROUP");
     }
 }

@@ -12,12 +12,17 @@ use std::thread;
 
 const COMPLETE_TOML: &str = r#"
 ldap_uri = "ldaps://kllap.test:6360"
+[server]
+hostname = "aurora"
+[kerberos]
+realm = "TEST"
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
 ldap_default_authtok = "sekret"
 [[shares]]
 name = "data"
 host_path = "/media/data"
+security = "krb5p"
 "#;
 
 fn cargo_bin(name: &str) -> PathBuf {
@@ -169,12 +174,26 @@ fn supervise_readiness_probe_emits_ganesha_env_and_readiness_transcript() {
     );
 
     let scratch = std::env::var("GANESHA_READINESS_SCRATCH")
-        .unwrap_or_else(|_| "/tmp/grok-goal-8c80d3faadec/implementer".into());
+        .unwrap_or_else(|_| "/tmp/grok-goal-25c1e2ddb1b5/implementer".into());
     let _ = fs::create_dir_all(&scratch);
     let transcript = PathBuf::from(&scratch).join("supervisor-readiness-transcript.log");
     fs::write(&transcript, &combined).unwrap();
 
     assert!(output.status.success(), "probe failed: {combined}");
+    let warm_pos = combined
+        .find("principal-warm:complete")
+        .expect("must log principal-warm:complete");
+    let spawned_pos = combined
+        .find("Started ganesha.nfsd pid")
+        .expect("must log ganesha spawn");
+    assert!(
+        warm_pos < spawned_pos,
+        "principal warm must complete before ganesha.nfsd spawn: {combined}"
+    );
+    assert!(
+        combined.contains("testuser1@TEST"),
+        "readiness must probe FQDN user login: {combined}"
+    );
     assert!(combined.contains("Starting NFS-Ganesha"));
     assert!(
         combined.contains("Started ganesha.nfsd pid") && combined.contains("foreground + explicit envp"),

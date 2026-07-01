@@ -650,21 +650,34 @@ while :; do :; done
         Ok(())
     }
 
-    /// NSS + shortname seed for readiness-probe (testuser1 + root exact).
+    /// NSS seed for readiness-probe (FQDN user@REALM + host/*@REALM + root).
     fn seed_readiness_probe_runtime_state(&self) {
         if let Some(parent) = self.env.nss_passwd.parent() {
             let _ = fs::create_dir_all(parent);
         }
+        let cfg = NfsKlldapConfig::load(&self.env.nfs_config).ok();
+        let realm = runtime_realm(cfg.as_ref());
+        let host = runtime_hostname(cfg.as_ref());
+        let short = host.split('.').next().unwrap_or(&host);
+        let user = format!("testuser1@{realm}");
+        let server_host = format!("host/{short}@{realm}");
+        let client_host = format!("host/blue-lt@{realm}");
         let _ = fs::write(
             &self.env.nss_passwd,
-            "root:x:0:0:root:/root:/bin/sh\n\
-             testuser1:x:3788:3002:testuser1:/nonexistent:/usr/sbin/nologin\n",
+            format!(
+                "root:x:0:0:root:/root:/bin/sh\n\
+                 {user}:x:3788:3002:user:/nonexistent:/usr/sbin/nologin\n\
+                 {server_host}:x:0:0:host:/non:/nologin\n\
+                 {client_host}:x:0:0:host:/non:/nologin\n"
+            ),
         );
         let _ = fs::write(
             &self.env.nss_group,
-            "root:x:0:root\n\
-             staff:x:3002:testuser1\n\
-             aux:x:3007:testuser1\n",
+            format!(
+                "root:x:0:root\n\
+                 staff:x:3002:{user}\n\
+                 aux:x:3007:{user}\n"
+            ),
         );
     }
 
@@ -1155,7 +1168,6 @@ while :; do :; done
             || self.env.supervise_identity_recycle_probe
             || self.env.supervise_sighup_hook_probe
             || self.env.host_nfs_mode
-            || std::env::var("NFS_KLLDAP_SUPERVISE_READINESS_PROBE").is_ok()
             || std::env::var("NFS_KLLDAP_SUPERVISOR_TICK_MS").is_ok()
             || std::env::var("NFS_KLLDAP_TEST_PERSISTENT").is_ok()
             || std::env::var("NFS_KLLDAP_SKIP_PRINCIPAL_WARM").is_ok()

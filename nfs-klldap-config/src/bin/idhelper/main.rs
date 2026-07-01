@@ -149,6 +149,11 @@ fn handle_cli(args: &[String]) {
                 resolve_principal(p, &eff_realm, &server_variants, &mut cache, &prod_paths)
             };
 
+            if resolve::is_unresolved_fail_closed(&r) {
+                eprintln!("ERR unresolved principal: {p}");
+                std::process::exit(1);
+            }
+
             if json_flag {
                 println!(
                     r#"{{"principal":"{}","name":"{}","uid":{},"gid":{},"kind":"{}","source":"{}"}}"#,
@@ -191,8 +196,10 @@ fn handle_cli(args: &[String]) {
             if json_flag {
                 let j = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
                 println!(r#"{{"principal":"{}","gids":[{}]}}"#, p, j);
+            } else if gs.is_empty() && p.contains('@') {
+                eprintln!("ERR unresolved principal: {p}");
+                std::process::exit(1);
             } else {
-                // emit OK format for GRPS to match socket responses and verif expectations
                 println!("OK {}", gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|"));
             }
         }
@@ -221,6 +228,10 @@ fn handle_cli(args: &[String]) {
                 let prod = NssMaterializePaths::production();
                 resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache, &prod, false)
             };
+            if gs.is_empty() && p.contains('@') {
+                eprintln!("ERR unresolved principal: {p}");
+                std::process::exit(1);
+            }
             if json_flag {
                 let j = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
                 println!(r#"{{"principal":"{}","gids":[{}]}}"#, p, j);
@@ -1695,5 +1706,65 @@ mod tests {
         assert!(egc.contains("root:x:0:") && (egc.contains("root,") || egc.contains("daemon") || egc.contains("blue-lt")), "uid0 root members from bin mach");
         // cleanup envs
         for k in ["NSS_PASSWD","NSS_GROUP","NSS_EXTRAUSERS_PASSWD","NSS_EXTRAUSERS_GROUP","IDHELPER_CACHE_PATH"] { std::env::remove_var(k); }
+    }
+
+    #[test]
+    fn cli_resolve_and_grps_emit_err_on_realm_miss() {
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        resolve::reset_id_resolver_for_test();
+        std::env::remove_var("TEST_REBULK_POPULATE");
+        std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
+        let tmpd = tempfile::tempdir().unwrap();
+        let paths = NssMaterializePaths::under(tmpd.path());
+        std::env::set_var("NSS_PASSWD", paths.nss_passwd);
+        std::env::set_var("NSS_GROUP", paths.nss_group);
+        std::env::set_var("NSS_EXTRAUSERS_PASSWD", paths.extrausers_passwd);
+        std::env::set_var("NSS_EXTRAUSERS_GROUP", paths.extrausers_group);
+
+        let bin = std::option_env!("CARGO_BIN_EXE_nfs_klldap_idhelper")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                format!(
+                    "{}/../target/debug/nfs-klldap-idhelper",
+                    env!("CARGO_MANIFEST_DIR")
+                )
+            });
+        let principal = "missinguser@MISS.REALM";
+        let no_ldap_cfg = tmpd.path().join("no-ldap.conf");
+
+        for sub in ["grps", "resolve"] {
+            let out = std::process::Command::new(&bin)
+                .args([sub, principal])
+                .env("NSS_PASSWD", &paths.nss_passwd)
+                .env("NSS_GROUP", &paths.nss_group)
+                .env("NSS_EXTRAUSERS_PASSWD", &paths.extrausers_passwd)
+                .env("NSS_EXTRAUSERS_GROUP", &paths.extrausers_group)
+                .env("NFS_CONFIG", &no_ldap_cfg)
+                .env_remove("TEST_REBULK_POPULATE")
+                .env_remove("TEST_FORCE_LDAP_UID_GID")
+                .output()
+                .expect("spawn idhelper");
+            assert_eq!(
+                out.status.code(),
+                Some(1),
+                "{sub} must exit 1 on realm miss: stdout={} stderr={}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stderr),
+                String::from_utf8_lossy(&out.stdout)
+            );
+            assert!(
+                combined.contains("ERR unresolved principal"),
+                "{sub} must emit ERR unresolved: {combined}"
+            );
+        }
+
+        std::env::remove_var("NSS_PASSWD");
+        std::env::remove_var("NSS_GROUP");
+        std::env::remove_var("NSS_EXTRAUSERS_PASSWD");
+        std::env::remove_var("NSS_EXTRAUSERS_GROUP");
     }
 }

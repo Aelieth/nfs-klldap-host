@@ -77,6 +77,21 @@ mod tests {
         std::fs::write(&p, "ADDED UID2GRP foo\ngetgrouplist for user: testuser1@X\n").unwrap();
         assert!(validate_user_tgt_idmap_log(&p, "testuser1@X").is_err());
     }
+    /// Ganesha 9.6 RPCSEC_GSS still calls uid2grp when export Manage_Gids=false (nfs_creds.c:581-584).
+    #[test]
+    fn krb5_uid2grp_still_required_when_export_manage_gids_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("manage-false.log");
+        let log = r#"
+principal2uid :ID MAPPER :DEBUG :Get uid for testuser1@TESTLABBY.LOCAL using pw func
+name_to_uid :ID MAPPER :INFO :getpwnam_r for uname: testuser1@TESTLABBY.LOCAL, uid: 3001, gid: 3005
+uid2grp_allocate_by_uid uid: 3001
+my_getgrouplist_alloc :ID MAPPER :INFO :getgrouplist for uname: testuser1, returned 2 groups
+"#;
+        std::fs::write(&p, log).unwrap();
+        assert!(validate_user_tgt_idmap_log(&p, "testuser1@TESTLABBY.LOCAL").is_ok());
+    }
+
     #[test]
     fn accepts_live_9_6_use_getpwnam_chain() {
         let tmp = tempfile::tempdir().unwrap();

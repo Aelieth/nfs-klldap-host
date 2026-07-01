@@ -56,10 +56,12 @@ use crate::materialize::build_nss_snapshot;
 fn resolve_via_nss(name_or_principal: &str, paths: &NssMaterializePaths<'_>) -> Option<(u32, u32, String)> {
     let trimmed = name_or_principal.trim();
     let short = principal_local_part(trimmed);
+    let is_realm = principal_has_realm(trimmed);
     if let Some(res) = resolve_getent(trimmed, paths) {
         return Some(res);
     }
-    if short != trimmed {
+    // Realm principals must not fall back to short posix getent (e.g. nobody@REALM -> system nobody 65534).
+    if !is_realm && short != trimmed {
         if let Some(res) = resolve_getent(short, paths) {
             return Some(res);
         }
@@ -103,8 +105,10 @@ fn uid_gid_from_snapshot(snap: &IdMapSnapshot, full: &str, short: &str) -> Optio
     if let Some(u) = snap.users.get(full) {
         return Some((u.uid as u32, u.gid as u32));
     }
-    if let Some(u) = snap.users.get(short) {
-        return Some((u.uid as u32, u.gid as u32));
+    if !principal_has_realm(full) {
+        if let Some(u) = snap.users.get(short) {
+            return Some((u.uid as u32, u.gid as u32));
+        }
     }
     None
 }
@@ -113,10 +117,17 @@ fn uid_gid_from_snapshot(snap: &IdMapSnapshot, full: &str, short: &str) -> Optio
 fn resolve_via_structured_ldap(name_or_principal: &str) -> Option<(u32, u32)> {
     let (resolver, bind_dn, bind_pw) = get_or_init_resolver()?;
     let short = principal_local_part(name_or_principal);
+    let is_realm = principal_has_realm(name_or_principal);
     let try_resolve = |snap: &IdMapSnapshot| {
         uid_gid_from_snapshot(snap, name_or_principal, short)
             .or_else(|| uid_gid_from_user_resolve(resolver, name_or_principal, bind_dn, bind_pw))
-            .or_else(|| uid_gid_from_user_resolve(resolver, short, bind_dn, bind_pw))
+            .or_else(|| {
+                if is_realm {
+                    None
+                } else {
+                    uid_gid_from_user_resolve(resolver, short, bind_dn, bind_pw)
+                }
+            })
     };
     if let Some(ids) = try_resolve(&resolver.snapshot()) {
         return Some(ids);
@@ -682,21 +693,23 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = crate::materialize::NssMaterializePaths::under(tmp.path());
         let mut cache = IdCache::default();
-        let r = resolve_principal(
-            "missinguser@MISS.REALM",
-            "MISS.REALM",
-            &[],
-            &mut cache,
-            &paths,
-        );
-        assert_eq!(r.source, RESOLVE_FAIL_CLOSED_SOURCE);
-        assert_eq!(r.uid, RESOLVE_UNRESOLVED_UID);
-        assert_ne!(r.uid, FALLBACK_NOBODY_UID);
-        let pw = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
-        assert!(
-            !pw.lines().any(|l| l.starts_with("missinguser@MISS.REALM:")),
-            "fail-closed must not write passwd row: {pw}"
-        );
+        for principal in ["missinguser@MISS.REALM", "nobody@MISS.REALM"] {
+            let r = resolve_principal(principal, "MISS.REALM", &[], &mut cache, &paths);
+            assert_eq!(
+                r.source,
+                RESOLVE_FAIL_CLOSED_SOURCE,
+                "{principal} must fail-closed, got uid={} source={}",
+                r.uid,
+                r.source
+            );
+            assert_eq!(r.uid, RESOLVE_UNRESOLVED_UID);
+            assert_ne!(r.uid, FALLBACK_NOBODY_UID, "{principal} must not be nobody");
+            let pw = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
+            assert!(
+                !pw.lines().any(|l| l.starts_with(&format!("{principal}:"))),
+                "fail-closed must not write passwd row for {principal}: {pw}"
+            );
+        }
         if let Some(v) = old_pop {
             std::env::set_var("TEST_REBULK_POPULATE", v);
         }

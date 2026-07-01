@@ -1729,37 +1729,38 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR")
                 )
             });
-        let principal = "missinguser@MISS.REALM";
         let no_ldap_cfg = tmpd.path().join("no-ldap.conf");
 
-        for sub in ["grps", "resolve"] {
-            let out = std::process::Command::new(&bin)
-                .args([sub, principal])
-                .env("NSS_PASSWD", &paths.nss_passwd)
-                .env("NSS_GROUP", &paths.nss_group)
-                .env("NSS_EXTRAUSERS_PASSWD", &paths.extrausers_passwd)
-                .env("NSS_EXTRAUSERS_GROUP", &paths.extrausers_group)
-                .env("NFS_CONFIG", &no_ldap_cfg)
-                .env_remove("TEST_REBULK_POPULATE")
-                .env_remove("TEST_FORCE_LDAP_UID_GID")
-                .output()
-                .expect("spawn idhelper");
-            assert_eq!(
-                out.status.code(),
-                Some(1),
-                "{sub} must exit 1 on realm miss: stdout={} stderr={}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            let combined = format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stderr),
-                String::from_utf8_lossy(&out.stdout)
-            );
-            assert!(
-                combined.contains("ERR unresolved principal"),
-                "{sub} must emit ERR unresolved: {combined}"
-            );
+        for principal in ["missinguser@MISS.REALM", "nobody@MISS.REALM"] {
+            for sub in ["grps", "resolve"] {
+                let out = std::process::Command::new(&bin)
+                    .args([sub, principal])
+                    .env("NSS_PASSWD", &paths.nss_passwd)
+                    .env("NSS_GROUP", &paths.nss_group)
+                    .env("NSS_EXTRAUSERS_PASSWD", &paths.extrausers_passwd)
+                    .env("NSS_EXTRAUSERS_GROUP", &paths.extrausers_group)
+                    .env("NFS_CONFIG", &no_ldap_cfg)
+                    .env_remove("TEST_REBULK_POPULATE")
+                    .env_remove("TEST_FORCE_LDAP_UID_GID")
+                    .output()
+                    .expect("spawn idhelper");
+                assert_eq!(
+                    out.status.code(),
+                    Some(1),
+                    "{sub} {principal} must exit 1 on realm miss: stdout={} stderr={}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let combined = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stderr),
+                    String::from_utf8_lossy(&out.stdout)
+                );
+                assert!(
+                    combined.contains("ERR unresolved principal"),
+                    "{sub} {principal} must emit ERR unresolved: {combined}"
+                );
+            }
         }
 
         std::env::remove_var("NSS_PASSWD");

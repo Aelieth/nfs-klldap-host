@@ -802,7 +802,12 @@ mod grps_socket_tests {
         let realm = "MISS.REALM";
         let vars: Vec<String> = vec![];
 
-        for (verb, arg) in [("GRPS", "missinguser@MISS.REALM"), ("RESOLVE", "missinguser@MISS.REALM")] {
+        for (verb, arg) in [
+            ("GRPS", "missinguser@MISS.REALM"),
+            ("RESOLVE", "missinguser@MISS.REALM"),
+            ("GRPS", "nobody@MISS.REALM"),
+            ("RESOLVE", "nobody@MISS.REALM"),
+        ] {
             let (mut client, server) = UnixStream::pair().unwrap();
             writeln!(client, "{verb} {arg}").unwrap();
             let _ = client.flush();

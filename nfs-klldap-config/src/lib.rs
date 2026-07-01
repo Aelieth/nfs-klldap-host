@@ -224,7 +224,7 @@ fn probe_socket_grps_tag(principal: &str, expect_machine: bool) -> String {
     }
 }
 
-/// Surface uid2grp_allocate_by_uid / allocate_by_principal hits from ganesha.log (absent log is tagged, not silent).
+/// Surface uid→groups NSS fetch from ganesha.log (getpwuid_r LogInfo from uid2grp.c; absent log is tagged, not silent).
 fn probe_ganesha_log_uid2grp(principal: &str) -> Option<String> {
     let log = std::path::Path::new("/var/log/ganesha.log");
     if !log.is_file() {
@@ -233,8 +233,8 @@ fn probe_ganesha_log_uid2grp(principal: &str) -> Option<String> {
     let content = std::fs::read_to_string(log).ok()?;
     let short = nfs_klldap_identity::machine_short_name(principal);
     let by_uid = content.lines().any(|ln| {
-        ln.contains("uid2grp_allocate_by_uid")
-            && (ln.contains(principal) || ln.contains(short) || ln.contains("uid:"))
+        ln.contains("getpwuid_r for uid:")
+            && (ln.contains(principal) || ln.contains(short) || ln.contains("uname:"))
     });
     let by_principal = content.lines().any(|ln| {
         ln.contains("uid2grp_allocate_by_principal")

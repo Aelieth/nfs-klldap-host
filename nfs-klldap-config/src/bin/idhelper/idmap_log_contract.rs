@@ -1,31 +1,71 @@
-//! Validate 9.x idmap logs: Manage_Gids + UseGetpwnam=true drives uid2grp_allocate_by_uid for user@ TGT; getgrouplist via idhelper materialization.
+//! Validate 9.x idmap logs: UseGetpwnam=true krb5 TGT chain via getpwnam_r → getpwuid_r → getgrouplist.
+//! Markers derived from Ganesha V9.6 uid2grp.c / idmapper.c LogInfo strings (not C symbol names).
 //! B1 contract: OP_GETATTR/NOTSUPP on readdir compounds ties to broken identity (B2/B3), not export flags alone.
 
 use std::fs;
 use std::path::Path;
+
+/// True when log shows uid→groups fetch via NSS (uid2grp_allocate_by_uid path).
+/// Ganesha logs `getpwuid_r for uid: N, gid: M, uname: …` (uid2grp.c) — not the C symbol name.
+#[cfg(test)]
+pub fn log_shows_uid_to_groups_nss_fetch(content: &str) -> bool {
+    content.contains("getpwuid_r for uid:")
+}
+
+/// True when log shows successful supplemental group resolution.
+/// Ganesha logs `getgrouplist for uname: NAME, returned N groups` (uid2grp.c my_getgrouplist_alloc).
+#[cfg(test)]
+pub fn log_shows_getgrouplist_success(content: &str) -> bool {
+    content.contains("getgrouplist for uname:") && content.contains("returned") && content.contains("groups")
+}
 
 #[cfg(test)]
 pub fn validate_user_tgt_idmap_log(log_path: &Path, user_at: &str) -> Result<(), Vec<&'static str>> {
     let content = fs::read_to_string(log_path).unwrap_or_default();
     let lower = content.to_lowercase();
     let user_lower = user_at.to_lowercase();
+    let short = user_at.split('@').next().unwrap_or(user_at);
     let mut errs = vec![];
-    if content.contains("ADDED UID2GRP") || (content.contains("getgrouplist for user:") && !content.contains("my_getgrouplist_alloc")) {
-        errs.push("fabricated or non-live getgrouplist line present");
+
+    // Reject known fabricated / operator-injected markers (not Ganesha LogInfo output).
+    if content.contains("ADDED UID2GRP") {
+        errs.push("fabricated ADDED UID2GRP marker");
     }
-    if !content.contains("principal2uid") || !content.contains(user_at) {
-        errs.push("missing principal2uid for user@REALM");
+    if content.contains("getgrouplist for user:") {
+        errs.push("fabricated getgrouplist for user: (Ganesha uses getgrouplist for uname:)");
     }
-    // User TGT under UseGetpwnam=true: rpcsec_gss_fetch_managed_groups uses uid2grp(uid).
-    if !content.contains("uid2grp_allocate_by_uid") {
-        errs.push("missing uid2grp_allocate_by_uid for user TGT managed groups");
+    if content.contains("uid2grp_allocate_by_uid uid:") {
+        errs.push("fabricated uid2grp_allocate_by_uid uid: line (C symbol not logged)");
     }
+
+    // principal2uid → getpwnam_r (idmapper.c / principal2uid use_getpwnam branch).
+    let principal_mapped = (content.contains("principal2uid") || content.contains("Get uid for"))
+        && content.contains(user_at);
+    if !principal_mapped {
+        errs.push("missing principal2uid / Get uid for user@REALM");
+    }
+    if !content.contains("getpwnam_r for uname:") || !content.contains(user_at) {
+        errs.push("missing getpwnam_r for uname with full principal");
+    }
+
+    // uid2grp via uid path (uid2grp_allocate_by_uid internally; observable as getpwuid_r LogInfo).
+    if !log_shows_uid_to_groups_nss_fetch(&content) {
+        errs.push("missing getpwuid_r for uid (uid2grp NSS fetch via UseGetpwnam=true)");
+    }
+
     if lower.contains("unsupported code path for principal") && lower.contains(&user_lower) {
         errs.push("Unsupported code path for user@ TGT principal (UseGetpwnam=false or _MSPAC stub)");
     }
-    if !content.contains("getgrouplist") || !content.contains("returned 2 groups") {
-        errs.push("missing getgrouplist result with groups for TGT");
+
+    if !log_shows_getgrouplist_success(&content) {
+        errs.push("missing getgrouplist for uname with returned N groups");
     }
+
+    // Sanity: getgrouplist should reference short or @ form of the user.
+    if !content.contains(short) && !content.contains(user_at) {
+        errs.push("getgrouplist chain missing user short or @ principal name");
+    }
+
     if errs.is_empty() { Ok(()) } else { Err(errs) }
 }
 
@@ -70,6 +110,15 @@ pub fn validate_posix_only_export_fragment(frag: &str) -> Result<(), Vec<&'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Authentic Ganesha 9.6 LogInfo strings from uid2grp.c / idmapper.c (V9.6 upstream).
+    const AUTHENTIC_KRB5_USE_GETPWNAM_LOG: &str = r#"
+principal2uid :ID MAPPER :DEBUG :Get uid for testuser1@TESTLABBY.LOCAL using pw func
+name_to_uid :ID MAPPER :INFO :getpwnam_r for uname: testuser1@TESTLABBY.LOCAL, uid: 3001, gid: 3005
+uid2grp :ID MAPPER :INFO :getpwuid_r for uid: 3001, gid: 3005, uname: testuser1
+uid2grp :ID MAPPER :INFO :getgrouplist for uname: testuser1, returned 2 groups
+"#;
+
     #[test]
     fn rejects_tampered() {
         let tmp = tempfile::tempdir().unwrap();
@@ -77,33 +126,37 @@ mod tests {
         std::fs::write(&p, "ADDED UID2GRP foo\ngetgrouplist for user: testuser1@X\n").unwrap();
         assert!(validate_user_tgt_idmap_log(&p, "testuser1@X").is_err());
     }
-    /// Ganesha 9.6 RPCSEC_GSS still calls uid2grp when export Manage_Gids=false (nfs_creds.c:581-584).
+
     #[test]
-    fn krb5_uid2grp_still_required_when_export_manage_gids_false() {
+    fn rejects_fabricated_uid2grp_allocate_by_uid_line() {
         let tmp = tempfile::tempdir().unwrap();
-        let p = tmp.path().join("manage-false.log");
+        let p = tmp.path().join("fabricated.log");
         let log = r#"
 principal2uid :ID MAPPER :DEBUG :Get uid for testuser1@TESTLABBY.LOCAL using pw func
 name_to_uid :ID MAPPER :INFO :getpwnam_r for uname: testuser1@TESTLABBY.LOCAL, uid: 3001, gid: 3005
 uid2grp_allocate_by_uid uid: 3001
-my_getgrouplist_alloc :ID MAPPER :INFO :getgrouplist for uname: testuser1, returned 2 groups
+getgrouplist for uname: testuser1, returned 2 groups
 "#;
         std::fs::write(&p, log).unwrap();
+        assert!(validate_user_tgt_idmap_log(&p, "testuser1@TESTLABBY.LOCAL").is_err());
+    }
+
+    /// Ganesha 9.6 RPCSEC_GSS still calls uid2grp(uid) when export Manage_Gids=false (nfs_creds.c:581-584).
+    /// Observable markers are getpwuid_r + getgrouplist LogInfo, not export Manage_Gids flag.
+    #[test]
+    fn krb5_uid2grp_still_required_when_export_manage_gids_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("manage-false.log");
+        std::fs::write(&p, AUTHENTIC_KRB5_USE_GETPWNAM_LOG).unwrap();
         assert!(validate_user_tgt_idmap_log(&p, "testuser1@TESTLABBY.LOCAL").is_ok());
+        assert!(log_shows_uid_to_groups_nss_fetch(AUTHENTIC_KRB5_USE_GETPWNAM_LOG));
     }
 
     #[test]
     fn accepts_live_9_6_use_getpwnam_chain() {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("live.log");
-        let log = r#"
-principal2uid :ID MAPPER :DEBUG :Get uid for testuser1@TESTLABBY.LOCAL using pw func
-name_to_uid :ID MAPPER :INFO :getpwnam_r for uname: testuser1@TESTLABBY.LOCAL, uid: 3001, gid: 3005
-getpwuid_r for uid: 3001, gid: 3005, uname: testuser1
-uid2grp_allocate_by_uid uid: 3001
-my_getgrouplist_alloc :ID MAPPER :INFO :getgrouplist for uname: testuser1, returned 2 groups
-"#;
-        std::fs::write(&p, log).unwrap();
+        std::fs::write(&p, AUTHENTIC_KRB5_USE_GETPWNAM_LOG).unwrap();
         assert!(validate_user_tgt_idmap_log(&p, "testuser1@TESTLABBY.LOCAL").is_ok());
     }
 
@@ -154,7 +207,7 @@ complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
             if let Err(e) = &res {
                 eprintln!("contract errs: {:?}", e);
             }
-            assert!(res.is_ok(), "live log must pass uid2grp_allocate_by_uid + getgrouplist contract for user TGT");
+            assert!(res.is_ok(), "live log must pass getpwuid_r + getgrouplist contract for user TGT");
         }
     }
 }

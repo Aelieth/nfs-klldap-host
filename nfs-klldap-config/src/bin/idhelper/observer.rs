@@ -173,7 +173,13 @@ pub(crate) enum ManagedGidsLogLevel {
 /// Depends on manage_gids.
 pub(crate) fn managed_gids_log_level(line: &str, manage_gids_on: bool) -> Option<ManagedGidsLogLevel> {
     let lower = line.to_ascii_lowercase();
-    if !lower.contains("managed_gids") && !lower.contains("uid2grp_allocate") {
+    let is_uid2grp_chain = lower.contains("managed_gids")
+        || lower.contains("uid2grp_allocate")
+        || lower.contains("getpwuid_r for uid:")
+        || lower.contains("getgrouplist for uname:")
+        || lower.contains("attempt to fetch managed groups")
+        || lower.contains("attempt to fetch managed_gids");
+    if !is_uid2grp_chain {
         return None;
     }
     if manage_gids_on {
@@ -392,7 +398,16 @@ pub(crate) fn extract_candidate_principal(line: &str, realm: &str) -> Option<Str
     // Explicit uid:0 / uid2grp uid 0 for machine/root to drive reactive materialize for uid0.
     {
         let lower = line.to_ascii_lowercase();
-        let markers = ["getpwnam", "getgrouplist", "getgrnam", "idmapper", "uid2grp_allocate_by_uid"];
+        // Broad markers for principal extraction from varied log formats;
+        // authentic Ganesha LogInfo uses "getgrouplist for uname:" / "getpwuid_r for uid:" (uid2grp.c).
+        let markers = [
+            "getpwnam",
+            "getpwuid_r for uid:",
+            "getgrouplist for uname:",
+            "getgrouplist",
+            "getgrnam",
+            "idmapper",
+        ];
         let has_marker = markers.iter().any(|m| lower.contains(m));
         if has_marker {
             // Robust: scan for any whitespace/paren/quote-delimited token containing @ and our realm.
@@ -659,8 +674,8 @@ manage_gids = true
     }
 
     #[test]
-    fn managed_gids_log_level_matches_uid2grp_allocate_by_uid() {
-        let line = "uid2grp_allocate_by_uid uid: 3001";
+    fn managed_gids_log_level_matches_getpwuid_r_uid2grp_chain() {
+        let line = "uid2grp :ID MAPPER :INFO :getpwuid_r for uid: 3001, gid: 3005, uname: testuser1";
         assert_eq!(
             managed_gids_log_level(line, true),
             Some(ManagedGidsLogLevel::Verbose)

@@ -374,6 +374,8 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
 
     for (short_name, uid, gid) in best_per_uid.into_values() {
         let principal = format!("{}@{}", short_name, realm);
+        let supplemental_gids =
+            supplemental_gids_from_snapshot(&short_name, &principal, gid, snap);
         cache.insert(Resolved {
             principal,
             name: short_name,
@@ -381,7 +383,7 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
             gid,
             kind: PrincipalKind::User,
             source: "bulk".to_string(),
-            supplemental_gids: vec![],
+            supplemental_gids,
         });
         seeded += 1;
     }
@@ -389,18 +391,52 @@ pub(crate) fn seed_cache_and_nss_from_snapshot(
     seeded
 }
 
-/// Return canonical root group members: base set + all machine (uid0) logins from cache.
-/// Single source for root:x:0: non-empty lists so getgrouplist(0) succeeds for machines.
-fn root_group_members(cache: &IdCache) -> Vec<String> {
-    let mut m = vec!["root".to_string(), "daemon".to_string(), "bin".to_string()];
-    for r in cache.entries.values().filter(|r| principal_has_realm(&r.principal)) {
-        for login in nss_passwd_logins_for(r) {
-            if (r.uid == 0 || r.gid == 0) && !m.iter().any(|x| x == &login) {
-                m.push(login);
+/// Supplemental gids from LDAP snap group membership so bulk materialize emits short member rows before post-start resolve_groups.
+fn supplemental_gids_from_snapshot(
+    short: &str,
+    principal: &str,
+    primary_gid: u32,
+    snap: &IdMapSnapshot,
+) -> Vec<u32> {
+    let mut supps = Vec::new();
+    let at = principal_realm_login_for_nss(principal);
+    for entry in snap.groups.values() {
+        let g = entry.gid as u32;
+        if g == 0 || g == primary_gid {
+            continue;
+        }
+        let member_hit = entry.members.iter().any(|m| {
+            let m = m.trim();
+            m == short || m == principal || m == at
+        });
+        if member_hit {
+            supps.push(g);
+        }
+    }
+    supps.sort_unstable();
+    supps.dedup();
+    supps
+}
+
+/// Minimal gid-0 members for nss group(5). Machine logins belong on supplemental groups, not here.
+pub(crate) fn minimal_root_group_members() -> Vec<String> {
+    vec!["root".to_string(), "daemon".to_string(), "bin".to_string()]
+}
+
+/// Supplemental gids uid0/machine principals require (union across cache). Used for GROUPLIST root + nss member rows.
+pub(crate) fn root_supplemental_gids_from_cache(cache: &IdCache) -> Vec<u32> {
+    let mut supps = Vec::new();
+    for r in cache.entries.values() {
+        if (r.uid == 0 || r.gid == 0) && principal_has_realm(&r.principal) {
+            for &g in &r.supplemental_gids {
+                if g != 0 && !supps.contains(&g) {
+                    supps.push(g);
+                }
             }
         }
     }
-    m
+    supps.sort_unstable();
+    supps
 }
 
 /// Build passwd/group line vectors from cache + optional LDAP group snapshot.
@@ -444,20 +480,36 @@ pub(crate) fn build_nss_snapshot(
         let mut gs = vec![r.gid];
         gs.extend_from_slice(&r.supplemental_gids);
         for &g in &gs {
-            if g == 0 { continue; }
-            for login in nss_passwd_logins_for(r) {
-                if !is_numeric_login(&login) {
-                    let v = members_by_gid.entry(g).or_default();
-                    if !v.iter().any(|m| m == &login) {
-                        v.push(login);
+            if g == 0 {
+                continue;
+            }
+            if r.kind == PrincipalKind::Machine {
+                let v = members_by_gid.entry(g).or_default();
+                if !v.iter().any(|m| m == "root") {
+                    v.push("root".to_string());
+                }
+            } else {
+                for login in nss_passwd_logins_for(r) {
+                    if !is_numeric_login(&login) {
+                        let v = members_by_gid.entry(g).or_default();
+                        if !v.iter().any(|m| m == &login) {
+                            v.push(login);
+                        }
                     }
                 }
             }
         }
     }
 
-    // Centralized root members (base + machines) for reliable getgrouplist(0) in both stores.
-    let mut root_group_members: Vec<String> = root_group_members(cache);
+    // Minimal root members only; machine logins are added to supplemental group rows (see below).
+    let root_group_members: Vec<String> = minimal_root_group_members();
+    let root_supps = root_supplemental_gids_from_cache(cache);
+    for &g in &root_supps {
+        let v = members_by_gid.entry(g).or_default();
+        if !v.iter().any(|m| m == "root") {
+            v.push("root".to_string());
+        }
+    }
 
     if let Some(groups) = ldap_groups {
         let mut by_gid: HashMap<i32, &PosixGroupEntry> = HashMap::new();
@@ -506,11 +558,6 @@ pub(crate) fn build_nss_snapshot(
                     login, r.uid, r.gid, gecos
                 ));
             }
-            // Collect uid/gid 0 (machine) logins into root group members so that
-            // root group lists machine principals (host/* logins) for reliable getgrouplist(0).
-            if (r.uid == 0 || r.gid == 0) && !root_group_members.iter().any(|m| m == &login) {
-                root_group_members.push(login.clone());
-            }
         }
 
         // Emit group rows for every gid this entry claims (its primary + any supplemental_gids
@@ -521,7 +568,14 @@ pub(crate) fn build_nss_snapshot(
             if seen_gid.insert(g) {
                 if g == 0 {
                     group_lines.push(group_line_with_members(0, "root", &root_group_members));
-                } else if r.kind != PrincipalKind::Machine && g != 0 {
+                } else if r.kind == PrincipalKind::Machine {
+                    let gname = gname_for_gid(g, ldap_groups, &format!("g{}", g));
+                    let mut mems: Vec<String> = members_by_gid.get(&g).cloned().unwrap_or_default();
+                    if !mems.iter().any(|m| m == "root") {
+                        mems.push("root".to_string());
+                    }
+                    group_lines.push(group_line_with_members(g, &gname, &mems));
+                } else if g != 0 {
                     // Use group name from snap if present, else stable "g{gid}" fallback; never r.name (which would be user name for pure supp gids).
                     let mut gname = gname_for_gid(g, ldap_groups, &format!("g{}", g));
                     if g == FALLBACK_NOBODY_GID { gname = "nobody".to_string(); }
@@ -551,13 +605,23 @@ pub(crate) fn build_nss_snapshot(
         }
     }
 
+    for &g in &root_supps {
+        if seen_gid.insert(g) {
+            let gname = gname_for_gid(g, ldap_groups, &format!("g{}", g));
+            let mut mems: Vec<String> = members_by_gid.get(&g).cloned().unwrap_or_default();
+            if !mems.iter().any(|m| m == "root") {
+                mems.push("root".to_string());
+            }
+            group_lines.push(group_line_with_members(g, &gname, &mems));
+        }
+    }
+
     if seen_gid.is_empty() || !seen_gid.contains(&0) {
         group_lines.push(group_line_with_members(0, "root", &root_group_members));
     }
 
-    // Final guarantee (regardless of order or machine uid0 paths processed): root group
-    // always exists with non-empty base+machine members; root passwd is leading entry.
-    // Exact minimal root per goal for getgrouplist("root",0,...) success without error.
+    // Final guarantee: root group always exists with minimal base members; root passwd leads.
+    // Supplemental membership for uid0 is via members_by_gid rows (root login on supp gids).
     group_lines.retain(|l| !l.starts_with("root:x:0:"));
     group_lines.insert(0, group_line_with_members(0, "root", &root_group_members));
     let exact_root_passwd = "root:x:0:0:root:/root:/bin/sh".to_string();
@@ -704,6 +768,92 @@ pub(crate) fn materialize_nss_wrappers_at(
 mod root_snapshot_tests {
     use super::*;
     use crate::common::{IdCache, PrincipalKind, Resolved};
+
+    #[test]
+    fn supplemental_gids_from_snapshot_collects_member_of_groups() {
+        let mut snap = IdMapSnapshot::default();
+        snap.groups.insert(
+            "writers".into(),
+            PosixGroupEntry {
+                gid: 3005,
+                display: "writers".into(),
+                members: vec!["testuser1".into()],
+            },
+        );
+        snap.groups.insert(
+            "aux".into(),
+            PosixGroupEntry {
+                gid: 3007,
+                display: "aux".into(),
+                members: vec!["testuser1@REALM".into()],
+            },
+        );
+        let supps = supplemental_gids_from_snapshot("testuser1", "testuser1@REALM", 3002, &snap);
+        assert_eq!(supps, vec![3005, 3007]);
+    }
+
+    #[test]
+    fn build_nss_snapshot_root_group_has_minimal_members_not_machine_logins() {
+        // Drive shipped resolve_groups_for_principal (not manual cache insert) so supplemental_gids
+        // are populated from LDAP snapshot membership for machines + GROUPLIST root backstop.
+        crate::resolve::reset_id_resolver_for_test();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
+        std::env::set_var(
+            "TEST_REBULK_POPULATE",
+            "g:admins:3005:root;g:hosts:3007:blue-lt",
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = NssMaterializePaths::under(tmp.path());
+        let mut cache = IdCache::default();
+        let realm = "SATOMLIN.COM";
+        let _ = crate::resolve::resolve_principal(
+            "host/zima-nas@SATOMLIN.COM",
+            realm,
+            &[],
+            &mut cache,
+            &paths,
+        );
+        let _ = crate::resolve::resolve_groups_for_principal(
+            "host/zima-nas@SATOMLIN.COM",
+            realm,
+            &[],
+            &mut cache,
+            &paths,
+            false,
+        );
+        let root_gs = crate::resolve::resolve_groups_for_principal(
+            "root",
+            realm,
+            &[],
+            &mut cache,
+            &paths,
+            false,
+        );
+        if let Some(v) = old_pop {
+            std::env::set_var("TEST_REBULK_POPULATE", v);
+        } else {
+            std::env::remove_var("TEST_REBULK_POPULATE");
+        }
+        assert!(root_gs.contains(&0));
+        assert!(root_gs.contains(&3005), "GROUPLIST root must include root-member group: {root_gs:?}");
+        let (_, gr) = build_nss_snapshot(&cache, None);
+        let root_line = gr
+            .iter()
+            .find(|l| l.starts_with("root:x:0:"))
+            .expect("root group row");
+        assert_eq!(*root_line, "root:x:0:root,daemon,bin", "gid-0 must not list machine logins: {root_line}");
+        assert!(
+            gr.iter().any(|l| l.contains(":3005:") && l.contains("root")),
+            "root login on supplemental gid 3005: {gr:?}"
+        );
+        for bad in ["host/", "zima-nas@", "blue-lt@"] {
+            assert!(
+                !root_line.contains(bad),
+                "machine login must not appear on gid 0: {root_line}"
+            );
+        }
+    }
 
     #[test]
     fn build_nss_snapshot_always_emits_exact_minimal_root_for_getgrouplist() {

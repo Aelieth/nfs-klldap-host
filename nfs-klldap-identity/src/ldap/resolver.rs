@@ -7,7 +7,10 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::constants::IDENTITY_CACHE_TTL_SECS;
-use crate::krb5::{principal_local_part, supplemental_gids_for_machine_principal};
+use crate::constants::MACHINE_GID;
+use crate::krb5::{
+    classify_principal, machine_short_name, principal_local_part,
+};
 use crate::ldap::filter::escape_ldap_filter;
 use crate::ldap::posix::{
     effective_ldap_search_bases, resolve_posix_attribute_mapping, LdapSearchBasesInput,
@@ -677,8 +680,10 @@ impl IdLdapResolver {
 
     /// Resolve gids for principal (primary + supp) via memberOf + member/gidNumber after RESOLVE uid.
     pub fn resolve_groups_for_principal(&self, name_or_principal: &str, bind_dn: &str, bind_pw: &str) -> Vec<i32> {
-        if let Some(gids) = supplemental_gids_for_machine_principal(name_or_principal, "", &[]) {
-            return gids;
+        let (is_machine, _) = classify_principal(name_or_principal, "", &[]);
+        if is_machine {
+            let snap = self.snapshot();
+            return machine_group_gids_for_principal(name_or_principal, &snap);
         }
         let mut gids: Vec<i32> = vec![];
         if let Some((_, Some(g), _)) = self.resolve_user(name_or_principal, bind_dn, bind_pw) {
@@ -1130,6 +1135,46 @@ impl IdLdapResolver {
 
 }
 
+/// Supplemental gids from LDAP snapshot group membership for a machine principal.
+/// Includes groups listing the host short/local/principal forms or login `root` (uid0 getgrouplist path).
+pub fn machine_supplemental_gids_from_snapshot(
+    principal: &str,
+    snap: &IdMapSnapshot,
+) -> Vec<i32> {
+    let short = machine_short_name(principal);
+    let local = principal_local_part(principal);
+    let mut supps = Vec::new();
+    for entry in snap.groups.values() {
+        let g = entry.gid;
+        if g == 0 {
+            continue;
+        }
+        let member_hit = entry.members.iter().any(|m| {
+            let m = m.trim();
+            m.eq_ignore_ascii_case(short)
+                || m.eq_ignore_ascii_case(local)
+                || m.eq_ignore_ascii_case(principal)
+                || m.eq_ignore_ascii_case("root")
+        });
+        if member_hit && !supps.contains(&g) {
+            supps.push(g);
+        }
+    }
+    supps.sort_unstable();
+    supps
+}
+
+/// Primary (0) + supplemental gids for a machine Kerberos principal.
+pub fn machine_group_gids_for_principal(principal: &str, snap: &IdMapSnapshot) -> Vec<i32> {
+    let mut gids = vec![MACHINE_GID as i32];
+    for g in machine_supplemental_gids_from_snapshot(principal, snap) {
+        if g != MACHINE_GID as i32 && !gids.contains(&g) {
+            gids.push(g);
+        }
+    }
+    gids
+}
+
 /// Best-effort first attribute extraction (handles case variants).
 pub fn extract_first_attr_value(se: &SearchEntry, name: &str) -> Option<String> {
     IdLdapResolver::extract_first_attr(se, name)
@@ -1185,6 +1230,32 @@ mod tests {
         let gs = resolve_groups_for_principal(&r, "host/blue-lt@SATOMLIN.COM", "dn", "pw");
         assert_eq!(gs, vec![MACHINE_GID as i32]);
         assert!(!gs.contains(&(FALLBACK_NOBODY_GID as i32)));
+    }
+
+    #[test]
+    fn machine_supplemental_gids_from_snapshot_includes_root_and_host_members() {
+        let mut snap = IdMapSnapshot::default();
+        snap.groups.insert(
+            "admins".into(),
+            PosixGroupEntry {
+                gid: 3005,
+                display: "admins".into(),
+                members: vec!["root".into()],
+            },
+        );
+        snap.groups.insert(
+            "hosts".into(),
+            PosixGroupEntry {
+                gid: 3007,
+                display: "hosts".into(),
+                members: vec!["blue-lt".into()],
+            },
+        );
+        let supps =
+            machine_supplemental_gids_from_snapshot("host/blue-lt@SATOMLIN.COM", &snap);
+        assert_eq!(supps, vec![3005, 3007]);
+        let gids = machine_group_gids_for_principal("host/blue-lt@SATOMLIN.COM", &snap);
+        assert_eq!(gids, vec![0, 3005, 3007]);
     }
 
     #[test]

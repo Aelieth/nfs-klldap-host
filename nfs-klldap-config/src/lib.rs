@@ -12,6 +12,7 @@ mod recycle_plan;
 
 mod fs_probe;
 mod fs_warnings;
+mod ganesha_getgrouplist;
 mod ganesha_identity_pipeline;
 mod ganesha_nss_contract;
 mod generate;
@@ -56,6 +57,11 @@ pub use constants::PROC_COMM_NAME_MAX;
 pub use fs_probe::{
     compute_effective_flags, probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags,
     FsCapabilities,
+};
+pub use ganesha_getgrouplist::{
+    getgrouplist_intercept_shortnames, ld_preload_chain_for_ganesha,
+    normalize_linux_getgrouplist_ret, principal_query_for_shortname, query_idhelper_socket_gids,
+    resolve_getgrouplist_shim_so, should_intercept_getgrouplist,
 };
 pub use ganesha_identity_pipeline::{
     identity_principals_for_check, run_identity_pipeline, warm_principals_for_startup,
@@ -204,12 +210,36 @@ fn probe_ganesha_id_resolve(principal: &str) -> Option<(bool, String)> {
 
 /// Trigger idhelper grps into production/runtime nss paths (Ganesha env after supervisor start).
 fn materialize_via_idhelper_grps(idh: &str, principal: &str) {
-    let mut cmd = std::process::Command::new(idh);
-    cmd.args(["grps", principal]);
-    if std::path::Path::new("/usr/bin/timeout").exists() {
-        cmd = std::process::Command::new("timeout");
-        cmd.args(["8", idh, "grps", principal]);
+    let mut base = std::process::Command::new(idh);
+    base.args(["grps", principal]);
+    for key in [
+        "NSS_PASSWD",
+        "NSS_GROUP",
+        "NSS_EXTRAUSERS_PASSWD",
+        "NSS_EXTRAUSERS_GROUP",
+    ] {
+        if let Ok(v) = std::env::var(key) {
+            base.env(key, v);
+        }
     }
+    let mut cmd = if std::path::Path::new("/usr/bin/timeout").exists() {
+        let mut t = std::process::Command::new("timeout");
+        t.args(["8"]);
+        t.arg(idh).arg("grps").arg(principal);
+        for key in [
+            "NSS_PASSWD",
+            "NSS_GROUP",
+            "NSS_EXTRAUSERS_PASSWD",
+            "NSS_EXTRAUSERS_GROUP",
+        ] {
+            if let Ok(v) = std::env::var(key) {
+                t.env(key, v);
+            }
+        }
+        t
+    } else {
+        base
+    };
     let _ = cmd.output();
 }
 
@@ -1383,6 +1413,10 @@ mod tests {
             "NSS_GROUP",
             nss_dir.join("nss_group").to_string_lossy().to_string(),
         );
+        let epw = nss_dir.join("nss_passwd");
+        let egr = nss_dir.join("nss_group");
+        std::env::set_var("NSS_EXTRAUSERS_PASSWD", epw.to_string_lossy().to_string());
+        std::env::set_var("NSS_EXTRAUSERS_GROUP", egr.to_string_lossy().to_string());
         let env = GaneshaNssEnv::from_runtime_defaults();
         if !env.wrapper_available() {
             std::env::remove_var("IDHELPER_BIN");
@@ -1397,6 +1431,12 @@ mod tests {
         std::env::remove_var("NFS_KLLDAP_IDHELPER_SOCKET");
         std::env::remove_var("NSS_PASSWD");
         std::env::remove_var("NSS_GROUP");
+        std::env::remove_var("NSS_EXTRAUSERS_PASSWD");
+        std::env::remove_var("NSS_EXTRAUSERS_GROUP");
+        let short_gids = probe_nss_groups_exact("testuser1", &env);
+        eprintln!(
+            "evidence: probe_nss_groups_exact(testuser1)={short_gids:?} short_contract_msg embedded in: {msg}"
+        );
         assert!(ok, "expected ok with nss contract, got: {msg}");
         assert!(
             msg.contains("nss-contract:ok:") && msg.contains(":user"),

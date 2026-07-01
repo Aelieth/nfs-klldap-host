@@ -84,12 +84,16 @@ fn run_idhelper_grps(idh: &str, principal: &str, nss_passwd: &Path, nss_group: &
     let mut cmd = Command::new(idh);
     cmd.args(["grps", principal])
         .env("NSS_PASSWD", nss_passwd)
-        .env("NSS_GROUP", nss_group);
+        .env("NSS_GROUP", nss_group)
+        .env("NSS_EXTRAUSERS_PASSWD", nss_passwd)
+        .env("NSS_EXTRAUSERS_GROUP", nss_group);
     if std::path::Path::new("/usr/bin/timeout").exists() {
         cmd = Command::new("timeout");
         cmd.args(["8", idh, "grps", principal])
             .env("NSS_PASSWD", nss_passwd)
-            .env("NSS_GROUP", nss_group);
+            .env("NSS_GROUP", nss_group)
+            .env("NSS_EXTRAUSERS_PASSWD", nss_passwd)
+            .env("NSS_EXTRAUSERS_GROUP", nss_group);
     }
     let _ = cmd.output();
 }

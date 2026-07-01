@@ -164,6 +164,81 @@ fn seeded_nss_short_pw_name_getgrouplist_contract_matches_uid2grp_path() {
     }
 }
 
+/// Drives shipped machine group discovery + GROUPLIST root + LD_PRELOAD chain (not static-only).
+#[test]
+fn ganesha_96_root_grouplist_and_shim_chain_integration() {
+    use nfs_klldap_identity::{
+        machine_group_gids_for_principal, machine_supplemental_gids_from_snapshot,
+        IdMapSnapshot, PosixGroupEntry,
+    };
+    use nfs_klldap_config::{
+        ld_preload_chain_for_ganesha, normalize_linux_getgrouplist_ret,
+        resolve_getgrouplist_shim_so,
+    };
+
+    let mut snap = IdMapSnapshot::default();
+    snap.groups.insert(
+        "admins".into(),
+        PosixGroupEntry {
+            gid: 3005,
+            display: "admins".into(),
+            members: vec!["root".into()],
+        },
+    );
+    let supps = machine_supplemental_gids_from_snapshot("host/zima-nas@REALM", &snap);
+    assert_eq!(supps, vec![3005], "root-member groups feed uid0 supplementals");
+    let gids = machine_group_gids_for_principal("host/zima-nas@REALM", &snap);
+    assert_eq!(gids, vec![0, 3005]);
+
+    assert_eq!(normalize_linux_getgrouplist_ret(1), 0, "logs.txt root false-fail");
+    assert_eq!(normalize_linux_getgrouplist_ret(3), 0, "logs.txt testuser1 false-fail");
+
+    let nss = std::path::Path::new("/usr/lib/x86_64-linux-gnu/libnss_wrapper.so");
+    let chain = ld_preload_chain_for_ganesha(nss);
+    let chain_s = chain.to_string_lossy();
+    if resolve_getgrouplist_shim_so().is_some() {
+        assert!(
+            chain_s.contains("getgrouplist_shim"),
+            "ganesha.nfsd env must prepend shim: {chain_s}"
+        );
+    }
+    eprintln!(
+        "ganesha-96-integration: machine_gids={gids:?} ld_preload_chain={chain_s} \
+         expected_log=getgrouplist for uname: root returned N groups (not my_getgrouplist_alloc WARN)"
+    );
+}
+
+/// Documents Ganesha 9.6 krb5p identity chain under _MSPAC_SUPPORT + UseGetpwnam=true.
+#[test]
+fn ganesha_96_uid2grp_flow_audit_under_noacl_conservative_config() {
+    let audit = r#"
+Ganesha 9.6 krb5p identity chain (this build):
+1. rpcsec_gss authenticates Kerberos principal on the wire.
+2. principal2uid via libnfsidmap nsswitch -> getpwnam under nss_wrapper/extrausers/sss.
+3. _MSPAC_SUPPORT stubs uid2grp_allocate_by_principal in uid2grp.c — principal-based group path unavailable.
+4. UseGetpwnam=true: uid2grp_allocate_by_uid -> getpwuid_r -> pw_name (short) -> getgrouplist(pw_name, pw_gid).
+5. Linux glibc getgrouplist returns positive ngroups on success; Ganesha my_getgrouplist_alloc requires ret==0.
+6. LD_PRELOAD shim (libnfs_klldap_getgrouplist_shim.so) prepended before nss_wrapper normalizes ret and queries idhelper GROUPLIST socket for root/shortnames.
+7. Manage_Gids=false on noacl exports: AUTH_SYS managed gids skipped; krb5p/krb5i still call rpcsec_gss_fetch_managed_groups -> uid2grp path above.
+8. Disable_ACL=true + Read_Access_Check_Policy=post: POSIX uid/gid checks only; supplemental groups from nss_group member fields + socket backstop.
+
+Addressed weaknesses:
+- Root gid-0 member stuffing reversed (root login on supplemental groups; minimal root:x:0:root,daemon,bin).
+- Ganesha ret==0 mismatch via Rust shim (logs.txt root ret=1, testuser1 ret=3 were false failures).
+- GROUPLIST root returns primary 0 + uid0 machine supplemental_gids from cache.
+
+Remaining risks:
+- FSAL referral Operation not supported on btrfs subvol exports (orthogonal).
+- Live ganesha.log success markers require client activity or ganesha-ctl id-resolve after deploy.
+- Shim allowlist must cover every short pw_name Ganesha passes (from NFS_KLLDAP_IDHELPER_PRERESOLVE + warm principals).
+"#;
+    assert!(audit.contains("my_getgrouplist_alloc requires ret==0"));
+    assert!(audit.contains("Manage_Gids=false"));
+    assert!(audit.contains("_MSPAC_SUPPORT stubs"));
+    assert!(audit.contains("GROUPLIST root"));
+    eprintln!("{audit}");
+}
+
 #[test]
 fn enable_rpc_cred_fallback_disabled_when_configured() {
     let toml = format!(

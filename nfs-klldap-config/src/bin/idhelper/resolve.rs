@@ -215,14 +215,45 @@ pub(crate) fn merge_group_gids(primary: u32, supplemental: &[u32]) -> Vec<u32> {
     out
 }
 
+/// Load LDAP snapshot when empty so machine/user group discovery has group rows.
+fn ensure_resolver_snapshot(resolver: &nfs_klldap_identity::IdLdapResolver, dn: &str, pw: &str) {
+    if resolver.snapshot().groups.is_empty() {
+        let _ = resolver.load_full_identities(dn, pw);
+    }
+}
+
+/// Ensure login `root` appears on supplemental group rows (uid0 getgrouplist path).
+fn ensure_root_on_supplemental_groups(paths: &NssMaterializePaths<'_>, gids: &[u32]) {
+    for &g in gids {
+        if g != 0 {
+            let _ = ensure_nss_group_member_login(paths, g, "root");
+        }
+    }
+}
+
 /// Compute gids (primary + supp) for a resolved principal (shared by resolve + groups paths).
 fn compute_gids_for_resolved(r: &Resolved, principal: &str) -> Vec<u32> {
     if r.kind == PrincipalKind::Machine {
-        vec![MACHINE_GID]
+        let primary = MACHINE_GID;
+        let mut extra: Vec<u32> = r.supplemental_gids.clone();
+        if let Some((resolver, dn, pw)) = get_or_init_resolver() {
+            ensure_resolver_snapshot(resolver, dn, pw);
+            let more = nfs_klldap_identity::resolve_groups_for_principal(resolver, principal, dn, pw);
+            for g in more.into_iter().map(|g| g as u32).filter(|&g| g != primary) {
+                if !extra.contains(&g) {
+                    extra.push(g);
+                }
+            }
+            for &g in &extra {
+                let _ = resolver.resolve_group_by_gid(g as i32, dn, pw);
+            }
+        }
+        merge_group_gids(primary, &extra)
     } else {
         let primary = r.gid;
         let mut extra: Vec<u32> = vec![];
         if let Some((resolver, dn, pw)) = get_or_init_resolver() {
+            ensure_resolver_snapshot(resolver, dn, pw);
             let more = nfs_klldap_identity::resolve_groups_for_principal(resolver, principal, dn, pw);
             extra = more.into_iter().map(|g| g as u32).collect();
             let _ = resolver.resolve_group_by_gid(primary as i32, dn, pw);
@@ -258,10 +289,7 @@ fn ensure_nss_materialized_for(
             let _ = ensure_nss_group_member_login(paths, primary, at);
         }
     } else if r.kind == PrincipalKind::Machine {
-        for login in &logins {
-            let _ = ensure_nss_group_member_login(paths, MACHINE_GID, login);
-        }
-        let _ = ensure_nss_group_member_login(paths, MACHINE_GID, "root");
+        ensure_root_on_supplemental_groups(paths, gids);
     }
 }
 
@@ -276,9 +304,15 @@ pub(crate) fn resolve_groups_for_principal(
 ) -> Vec<u32> {
     let p = principal.trim();
     if p.eq_ignore_ascii_case("root") || p == "0" {
-        // Backstop for socket GROUPLIST/GRPS "root" (AC1/C): nss root entry guarantees getgrouplist("root") works;
-        // socket must answer consistently (at least gid 0). Idempotent, no marker.
-        return vec![0];
+        // Authoritative GROUPLIST for synthetic root: primary 0 + uid0 machine supplementals from cache.
+        let supps = crate::materialize::root_supplemental_gids_from_cache(cache);
+        let gids = merge_group_gids(MACHINE_GID, &supps);
+        if force_materialize {
+            for &g in &supps {
+                let _ = ensure_nss_group_member_login(paths, g, "root");
+            }
+        }
+        return gids;
     }
     let r = resolve_principal(principal, realm, server_variants, cache, paths);
     if is_unresolved_fail_closed(&r) {
@@ -323,10 +357,7 @@ pub(crate) fn resolve_groups_for_principal(
             let _ = ensure_nss_group_member_login(paths, primary, &at);
         }
     } else if r.kind == PrincipalKind::Machine {
-        for login in &logins {
-            let _ = ensure_nss_group_member_login(paths, MACHINE_GID, login);
-        }
-        let _ = ensure_nss_group_member_login(paths, MACHINE_GID, "root");
+        ensure_root_on_supplemental_groups(paths, &gids);
     }
     gids
 }
@@ -660,10 +691,11 @@ pub(crate) fn resolve_principal(
             }
             ensure_nss_materialized_for(&resolved, &gids, cache, paths);
         } else if resolved.kind == PrincipalKind::Machine {
-            // uid0 machine: always ensure root membership + files on first (or uid0) visibility for getgrouplist(0).
-            let gids = vec![MACHINE_GID];
+            let gids = compute_gids_for_resolved(&resolved, &resolved.principal);
             if let Some(e) = cache.entries.get_mut(&normalize_principal(&resolved.principal)) {
-                e.supplemental_gids = vec![];
+                let supps: Vec<u32> = gids.iter().copied().filter(|&g| g != e.gid).collect();
+                e.supplemental_gids = supps;
+                let _ = cache.write_to_file(&effective_cache_path());
             }
             ensure_nss_materialized_for(&resolved, &gids, cache, paths);
         } else if fp_before != fp_after || resolved.uid == 0 {
@@ -992,6 +1024,10 @@ ldap_default_authtok = "sekret"
         assert!(pw.lines().any(|l| l.starts_with("testuser1:x:3788:")), "short passwd: {pw}");
         let gr = std::fs::read_to_string(paths.nss_group).unwrap();
         assert!(gr.contains("testuser1"), "short group members: {gr}");
+        let short_gids = nfs_klldap_config::probe_nss_groups_exact("testuser1", &env);
+        eprintln!(
+            "evidence build_nss_snapshot: probe_nss_groups_exact(testuser1)={short_gids:?}"
+        );
         let (ok, msg) =
             evaluate_short_name_getgrouplist_contract("testuser1@SATOMLIN.COM", &env, 3);
         if env.wrapper_available() {

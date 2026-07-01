@@ -1,0 +1,17 @@
+[package]
+name = "nfs-klldap-getgrouplist-shim"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LD_PRELOAD getgrouplist shim for Ganesha 9.6 ret==0 semantics + idhelper GROUPLIST backstop"
+
+[lib]
+name = "nfs_klldap_getgrouplist_shim"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+libc = "0.2"
+nfs-klldap-config = { path = "../nfs-klldap-config" }

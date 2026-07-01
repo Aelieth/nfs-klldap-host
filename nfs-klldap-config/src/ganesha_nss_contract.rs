@@ -225,10 +225,11 @@ pub fn short_pw_name_for_principal(principal: &str) -> String {
 }
 
 /// uid2grp short-name chain: exact short passwd row + exact short getgrouplist (no principal alias expansion).
+/// `min_total_gids` is the minimum number of gids `id -G <short>` must return (primary + supplementals).
 pub fn evaluate_short_name_getgrouplist_contract(
     principal: &str,
     env: &GaneshaNssEnv,
-    min_supplemental_groups: usize,
+    min_total_gids: usize,
 ) -> (bool, String) {
     let short = short_pw_name_for_principal(principal);
     let Some((uid, gid)) = probe_nss_passwd_exact(&short, env)
@@ -262,19 +263,19 @@ pub fn evaluate_short_name_getgrouplist_contract(
             format!("short-getgrouplist:missing-primary:{short}:gid={gid}:gids={gids:?}"),
         );
     }
-    if gids.len() < min_supplemental_groups.max(1) && env.wrapper_available() {
+    let min_want = min_total_gids.max(1);
+    if gids.len() < min_want && env.wrapper_available() {
         return (
             false,
             format!(
-                "short-getgrouplist:insufficient:{short}:{}gids want>={}",
-                gids.len(),
-                min_supplemental_groups.max(1)
+                "short-getgrouplist:insufficient:{short}:{}gids want>={min_want} have={gids:?}",
+                gids.len()
             ),
         );
     }
     (
         true,
-        format!("short-getgrouplist:ok:{short}:{uid}:{gid}:{}gids", gids.len()),
+        format!("short-getgrouplist:ok:{short}:{uid}:{gid}:{}gids:{gids:?}", gids.len()),
     )
 }
 
@@ -329,12 +330,8 @@ pub fn evaluate_nss_contract(
 }
 
 fn ld_preload_for_ganesha_nss() -> PathBuf {
-    // Only nss_wrapper is preloaded. Materialization into nss_wrapper (and extrausers)
-    // is the sole source of truth for getpwnam/getgrouplist under UseGetpwnam=true.
-    if let Some(so) = resolve_nss_wrapper_so() {
-        return so;
-    }
-    PathBuf::new()
+    let nss = resolve_nss_wrapper_so().unwrap_or_else(PathBuf::new);
+    crate::ganesha_getgrouplist::ld_preload_chain_for_ganesha(&nss)
 }
 
 fn resolve_nss_wrapper_so() -> Option<PathBuf> {
@@ -461,6 +458,11 @@ mod tests {
         let (fqdn_ok, _) = evaluate_nss_contract("testuser1@EX.COM", &env, false);
         if env.wrapper_available() {
             assert!(fqdn_ok, "FQDN-expanded contract should pass (masks gap at readiness)");
+            let fqdn_gids = probe_nss_groups("testuser1@EX.COM", &env);
+            let short_gids = probe_nss_groups_exact("testuser1", &env);
+            eprintln!(
+                "evidence logs.txt-gap: probe_nss_groups(FQDN)={fqdn_gids:?} probe_nss_groups_exact(short)={short_gids:?}"
+            );
             let (short_ok, msg) =
                 evaluate_short_name_getgrouplist_contract("testuser1@EX.COM", &env, 3);
             assert!(
@@ -498,12 +500,16 @@ mod tests {
         if env.wrapper_available() {
             assert!(root_ok, "root short getgrouplist: {root_msg}");
             assert_eq!(probe_nss_groups_exact("root", &env), Some(vec![0]));
+            let gids = probe_nss_groups_exact("testuser1", &env).expect("short groups");
+            eprintln!(
+                "evidence uid2grp-chain: probe_nss_groups_exact(testuser1)={gids:?} (want primary 3002 + supplementals 3005,3007)"
+            );
             let (user_ok, user_msg) =
                 evaluate_short_name_getgrouplist_contract("testuser1@EX.COM", &env, 3);
             assert!(user_ok, "user short getgrouplist: {user_msg}");
-            let gids = probe_nss_groups_exact("testuser1", &env).expect("short groups");
             assert!(gids.contains(&3002), "primary gid: {gids:?}");
             assert!(gids.contains(&3007), "supplemental gid: {gids:?}");
+            assert!(gids.contains(&3005), "supplemental gid 3005: {gids:?}");
         } else {
             let (file_ok, _) = evaluate_short_name_getgrouplist_contract("testuser1@EX.COM", &env, 1);
             assert!(file_ok, "file-level short passwd must exist");
@@ -511,14 +517,27 @@ mod tests {
     }
 
     #[test]
-    fn ganesha_ld_preload_is_nss_wrapper_only() {
+    fn ganesha_ld_preload_prepends_shim_before_nss_wrapper() {
         let preload = ld_preload_for_ganesha_nss();
         let s = preload.to_string_lossy();
-        // Must contain nss_wrapper (when present on the system).
-        if !s.is_empty() {
-            assert!(s.contains("nss_wrapper") || s.contains("libnss_wrapper"), "preload must be nss_wrapper only: {}", s);
+        if s.is_empty() {
+            return;
         }
-        // Must not reference the old getgrouplist shim.
-        assert!(!s.contains("getgrouplist_shim"), "preload must not contain legacy shim: {}", s);
+        let parts: Vec<&str> = s.split(':').filter(|p| !p.is_empty()).collect();
+        if parts.len() >= 2 {
+            assert!(
+                parts[0].contains("getgrouplist_shim"),
+                "shim must be first in LD_PRELOAD chain: {s}"
+            );
+            assert!(
+                parts.iter().any(|p| p.contains("nss_wrapper")),
+                "nss_wrapper must follow shim: {s}"
+            );
+        } else if parts.len() == 1 {
+            assert!(
+                parts[0].contains("nss_wrapper") || parts[0].contains("getgrouplist_shim"),
+                "single preload entry must be shim or nss_wrapper: {s}"
+            );
+        }
     }
 }

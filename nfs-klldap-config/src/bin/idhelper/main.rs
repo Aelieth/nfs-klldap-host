@@ -1299,7 +1299,10 @@ mod tests {
         let old_force = std::env::var("TEST_FORCE_LDAP_UID_GID").ok();
         let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
         std::env::set_var("TEST_FORCE_LDAP_UID_GID", "3788:100");
-        std::env::set_var("TEST_REBULK_POPULATE", "u:testuser1:3788:100;g:staff:2002");
+        std::env::set_var(
+            "TEST_REBULK_POPULATE",
+            "u:testuser1:3788:100;g:staff:2002;g:admins:3005:root",
+        );
         let tmpf = tempfile::tempdir().unwrap();
         let paths = NssMaterializePaths::under(tmpf.path());
         let _ = std::fs::create_dir_all(tmpf.path());
@@ -1321,7 +1324,10 @@ mod tests {
         // also exercise ensure path
         let _ = ensure_nss_group_member_login(&paths, 2002, "testuser1");
         let _ = ensure_nss_group_member_login(&paths, 2002, "testuser1@SATOMLIN.COM");
-        assert_eq!(gs_host, vec![0], "host/client@REALM must map to root gid");
+        assert!(gs_host.contains(&0), "host must include primary gid 0");
+        assert!(gs_host.contains(&3005), "host must inherit root-member supplemental gid: {gs_host:?}");
+        let root_gs = resolve_groups_for_principal("root", &realm, &variants, &mut cache, &paths, false);
+        assert!(root_gs.contains(&3005), "GROUPLIST root must union machine supplementals: {root_gs:?}");
         if let Some(v) = old_force { std::env::set_var("TEST_FORCE_LDAP_UID_GID", v); } else { std::env::remove_var("TEST_FORCE_LDAP_UID_GID"); }
         if let Some(v) = old_pop { std::env::set_var("TEST_REBULK_POPULATE", v); } else { std::env::remove_var("TEST_REBULK_POPULATE"); }
     }
@@ -1495,8 +1501,13 @@ mod tests {
         assert!(gr.contains("root:x:0:root") || gr.contains("root:x:0:daemon") || gr.contains("root:x:0:bin"), "root group must have base members: {}", gr);
         assert!(egr.contains("root:x:0:root") || egr.contains("root:x:0:daemon"), "extrausers root members");
 
-        // machine login present in root group members list (appropriate membership)
-        assert!(gr.contains("testbox") || gr.contains("root:x:0:") /* at least base */, "root members should reference machine or base");
+        // root group must be minimal; machine logins must not be stuffed into gid 0
+        let root_line = gr.lines().find(|l| l.starts_with("root:x:0:")).unwrap_or("");
+        assert!(
+            root_line == "root:x:0:root,daemon,bin" || root_line.starts_with("root:x:0:root,daemon,bin"),
+            "root group must be minimal, not machine-stuffed: {root_line}"
+        );
+        assert!(!root_line.contains("testbox"), "machine login must not be on gid 0: {root_line}");
 
         // Contract via shipped evaluate (file path, non-wrapper env here)
         let env = GaneshaNssEnv::from_paths(paths.nss_passwd, paths.nss_group);

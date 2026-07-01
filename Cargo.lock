@@ -1025,6 +1025,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nfs-klldap-getgrouplist-shim"
+version = "0.9.1"
+dependencies = [
+ "libc",
+ "nfs-klldap-config",
+]
+
+[[package]]
 name = "nfs-klldap-identity"
 version = "0.9.1"
 dependencies = [

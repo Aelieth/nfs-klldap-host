@@ -342,6 +342,17 @@ fn detect_my_getgrouplist_failure_and_heal(
         );
         let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);
     }
+    // Clear ganesha idmapper negative cache after nss heal (same as principal map failure path).
+    if let Ok(pid_s) = std::env::var("NFS_KLLDAP_GANESHA_PID") {
+        if let Ok(pid) = pid_s.parse::<u32>() {
+            if nfs_klldap_config::signal_ganesha_reload_idmap(pid) {
+                eprintln!(
+                    "[idhelper] idmap-heal:sighup-sent short_pw_name={} principal={}",
+                    user, principal
+                );
+            }
+        }
+    }
     // recheck grps via socket (non fatal)
     let _ = try_socket_grps("root");
     let _ = try_socket_grps(&principal);
@@ -756,6 +767,21 @@ manage_gids = true
             managed_gids_log_level(line, true),
             Some(ManagedGidsLogLevel::Verbose)
         );
+    }
+
+    #[test]
+    fn detect_getgrouplist_failure_heal_sends_sighup_when_ganesha_pid_set() {
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let old = std::env::var("NFS_KLLDAP_GANESHA_PID").ok();
+        std::env::set_var("NFS_KLLDAP_GANESHA_PID", "0");
+        let line = "my_getgrouplist_alloc :ID MAPPER :WARN :getgrouplist for user:testuser1 failed, ngroups: 3, errno: 3";
+        let cache = std::sync::Arc::new(std::sync::Mutex::new(crate::common::IdCache::default()));
+        detect_my_getgrouplist_failure_and_heal(line, &cache, "TEST.COM", &[]);
+        if let Some(v) = old {
+            std::env::set_var("NFS_KLLDAP_GANESHA_PID", v);
+        } else {
+            std::env::remove_var("NFS_KLLDAP_GANESHA_PID");
+        }
     }
 
     #[test]

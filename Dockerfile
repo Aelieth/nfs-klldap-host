@@ -25,16 +25,19 @@ WORKDIR /build
 COPY --chown=nfs:nfs Cargo.toml Cargo.lock ./
 COPY --chown=nfs:nfs nfs-klldap-identity/Cargo.toml ./nfs-klldap-identity/
 COPY --chown=nfs:nfs nfs-klldap-config/Cargo.toml ./nfs-klldap-config/
+COPY --chown=nfs:nfs nfs-klldap-getgrouplist-shim/Cargo.toml ./nfs-klldap-getgrouplist-shim/
 COPY --chown=nfs:nfs nfs-klldap-ui/Cargo.toml ./nfs-klldap-ui/
 # cargo metadata (used by cargo-chef) requires every manifest target path to exist.
 RUN mkdir -p nfs-klldap-identity/src \
         nfs-klldap-config/src/bin/idhelper \
+        nfs-klldap-getgrouplist-shim/src \
         nfs-klldap-ui/src && \
     printf '%s\n' 'pub fn _chef_dummy() {}' > nfs-klldap-identity/src/lib.rs && \
     printf '%s\n' 'pub fn _chef_dummy() {}' > nfs-klldap-config/src/lib.rs && \
     printf '%s\n' 'fn main() {}' > nfs-klldap-config/src/main.rs && \
     printf '%s\n' 'fn main() {}' > nfs-klldap-config/src/bin/nfs_klldap_startup.rs && \
     printf '%s\n' 'fn main() {}' > nfs-klldap-config/src/bin/idhelper/main.rs && \
+    printf '%s\n' 'pub fn _chef_dummy() {}' > nfs-klldap-getgrouplist-shim/src/lib.rs && \
     printf '%s\n' 'fn main() {}' > nfs-klldap-ui/src/main.rs
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -44,20 +47,24 @@ WORKDIR /build
 COPY --chown=nfs:nfs Cargo.toml Cargo.lock ./
 COPY --chown=nfs:nfs nfs-klldap-identity/Cargo.toml ./nfs-klldap-identity/
 COPY --chown=nfs:nfs nfs-klldap-config/Cargo.toml ./nfs-klldap-config/
+COPY --chown=nfs:nfs nfs-klldap-getgrouplist-shim/Cargo.toml ./nfs-klldap-getgrouplist-shim/
 COPY --chown=nfs:nfs nfs-klldap-ui/Cargo.toml ./nfs-klldap-ui/
 RUN mkdir -p nfs-klldap-identity/src \
         nfs-klldap-config/src/bin/idhelper \
+        nfs-klldap-getgrouplist-shim/src \
         nfs-klldap-ui/src && \
     printf '%s\n' 'pub fn _chef_dummy() {}' > nfs-klldap-identity/src/lib.rs && \
     printf '%s\n' 'pub fn _chef_dummy() {}' > nfs-klldap-config/src/lib.rs && \
     printf '%s\n' 'fn main() {}' > nfs-klldap-config/src/main.rs && \
     printf '%s\n' 'fn main() {}' > nfs-klldap-config/src/bin/nfs_klldap_startup.rs && \
     printf '%s\n' 'fn main() {}' > nfs-klldap-config/src/bin/idhelper/main.rs && \
+    printf '%s\n' 'pub fn _chef_dummy() {}' > nfs-klldap-getgrouplist-shim/src/lib.rs && \
     printf '%s\n' 'fn main() {}' > nfs-klldap-ui/src/main.rs
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY --chown=nfs:nfs nfs-klldap-identity /build/nfs-klldap-identity
 COPY --chown=nfs:nfs nfs-klldap-config /build/nfs-klldap-config
+COPY --chown=nfs:nfs nfs-klldap-getgrouplist-shim /build/nfs-klldap-getgrouplist-shim
 COPY --chown=nfs:nfs nfs-klldap-ui /build/nfs-klldap-ui
 
 RUN set -euxo pipefail && \
@@ -68,9 +75,11 @@ RUN set -euxo pipefail && \
     esac && \
     rm -rf target && \
     cargo build --release --target "$TARGET" -p nfs-klldap-config --bin nfs-klldap-config --bin nfs-klldap-startup --bin nfs-klldap-idhelper && \
+    cargo build --release --target "$TARGET" -p nfs-klldap-getgrouplist-shim && \
     cargo build --release --target "$TARGET" -p nfs-klldap-ui --bin nfs-klldap-ui && \
     cp "target/$TARGET/release/nfs-klldap-config" "target/$TARGET/release/nfs-klldap-startup" "target/$TARGET/release/nfs-klldap-idhelper" "target/$TARGET/release/nfs-klldap-ui" /output/ && \
-    (strip /output/nfs-klldap-config /output/nfs-klldap-startup /output/nfs-klldap-idhelper /output/nfs-klldap-ui || true)
+    cp "target/$TARGET/release/libnfs_klldap_getgrouplist_shim.so" /output/ && \
+    (strip /output/nfs-klldap-config /output/nfs-klldap-startup /output/nfs-klldap-idhelper /output/nfs-klldap-ui /output/libnfs_klldap_getgrouplist_shim.so || true)
 
 # Runtime stage: Debian 13-slim (trixie) + Ganesha 9.6 from trixie-backports.
 # ONLY config directives known to be valid for ganesha 9.6 on Debian trixie are emitted.
@@ -131,10 +140,11 @@ RUN cp /output/nfs-klldap-config /usr/local/bin/ && \
     cp /output/nfs-klldap-idhelper /usr/local/bin/ && \
     cp /output/nfs-klldap-ui /usr/local/bin/ && \
     chmod +x /usr/local/bin/nfs-klldap-config /usr/local/bin/nfs-klldap-startup /usr/local/bin/nfs-klldap-idhelper /usr/local/bin/nfs-klldap-ui && \
+    ARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo x86_64-linux-gnu)" && \
+    if [ -f /output/libnfs_klldap_getgrouplist_shim.so ]; then \
+        install -D -m 0644 /output/libnfs_klldap_getgrouplist_shim.so "/usr/lib/${ARCH}/libnfs_klldap_getgrouplist_shim.so"; \
+    fi && \
     rm -rf /output
-
-# No getgrouplist shim is built or used. The idhelper materialization + nss_wrapper is the sole path.
-# (Legacy C sources in container/ are not copied or compiled in this image.)
 COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl
 COPY container/scripts/nfs-klldap-conf-watcher /usr/local/bin/nfs-klldap-conf-watcher
 COPY container/scripts/nfsidmap-idhelper /usr/local/bin/nfsidmap-idhelper

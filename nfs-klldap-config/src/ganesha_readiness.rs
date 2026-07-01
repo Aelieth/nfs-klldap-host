@@ -23,6 +23,7 @@ pub struct GaneshaSpawnEnv {
     pub idhelper_bin: PathBuf,
     pub idhelper_socket: String,
     pub nss_wrapper_so: PathBuf,
+    pub getgrouplist_shim_so: Option<PathBuf>,
     pub use_nss_wrapper: bool,
 }
 
@@ -147,22 +148,10 @@ pub fn build_ganesha_envp(cfg: &GaneshaSpawnEnv) -> Vec<(OsString, OsString)> {
                 OsString::from("_nss_sss_"),
             );
         }
-        let mut preload_list = vec![cfg.nss_wrapper_so.display().to_string()];
-        if let Some(cur) = map.get(&OsString::from("LD_PRELOAD")) {
-            let cur_s = cur.to_string_lossy();
-            for p in cur_s.split(':') {
-                let p = p.trim();
-                if !p.is_empty()
-                    && !preload_list.iter().any(|x| x == p)
-                    && Path::new(p).exists()
-                {
-                    preload_list.push(p.to_string());
-                }
-            }
-        }
+        let chain = crate::ganesha_getgrouplist::ld_preload_chain_for_ganesha(&cfg.nss_wrapper_so);
         map.insert(
             OsString::from("LD_PRELOAD"),
-            OsString::from(preload_list.join(":")),
+            OsString::from(chain.to_string_lossy().into_owned()),
         );
     }
 
@@ -474,6 +463,7 @@ mod tests {
             idhelper_bin: PathBuf::from("/usr/local/bin/nfs-klldap-idhelper"),
             idhelper_socket: "/var/run/nfs-klldap/idhelper.sock".into(),
             nss_wrapper_so: PathBuf::from("/usr/lib/x86_64-linux-gnu/libnss_wrapper.so"),
+            getgrouplist_shim_so: crate::resolve_getgrouplist_shim_so(),
             use_nss_wrapper: true,
         };
         let envp = build_ganesha_envp(&cfg);

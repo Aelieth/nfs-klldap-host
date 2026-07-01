@@ -36,6 +36,60 @@ pub(crate) fn is_unresolved_fail_closed(r: &Resolved) -> bool {
     r.source == RESOLVE_FAIL_CLOSED_SOURCE
 }
 
+/// Pure identity resolution policy: NSS full, optional NSS short (non-realm only),
+/// test-forced LDAP, then LDAP snapshot/live full/short with realm short-name guards.
+pub(crate) fn resolve_identity_candidates(
+    full: &str,
+    nss_full: Option<(u32, u32, String)>,
+    nss_short: Option<(u32, u32, String)>,
+    test_force_ldap: Option<(u32, u32)>,
+    ldap_snap_full: Option<(u32, u32)>,
+    ldap_snap_short: Option<(u32, u32)>,
+    ldap_live_full: Option<(u32, u32)>,
+    ldap_live_short: Option<(u32, u32)>,
+) -> Option<(u32, u32, String)> {
+    let is_realm = principal_has_realm(full);
+    if let Some((u, g, src)) = nss_full {
+        return Some((u, g, src));
+    }
+    if !is_realm {
+        if let Some((u, g, src)) = nss_short {
+            return Some((u, g, src));
+        }
+    }
+    if full.contains('@') {
+        if let Some((u, g)) = test_force_ldap {
+            return Some((u, g, "ldap".to_string()));
+        }
+    }
+    if let Some((u, g)) = ldap_snap_full {
+        return Some((u, g, "ldap".to_string()));
+    }
+    if let Some((u, g)) = ldap_live_full {
+        return Some((u, g, "ldap".to_string()));
+    }
+    if !is_realm {
+        if let Some((u, g)) = ldap_snap_short {
+            return Some((u, g, "ldap".to_string()));
+        }
+        if let Some((u, g)) = ldap_live_short {
+            return Some((u, g, "ldap".to_string()));
+        }
+    }
+    None
+}
+
+fn test_force_ldap_uid_gid(full: &str) -> Option<(u32, u32)> {
+    if !full.contains('@') {
+        return None;
+    }
+    let uv = std::env::var("TEST_FORCE_LDAP_UID_GID").ok()?;
+    let (us, gs) = uv.split_once(':')?;
+    let u = us.trim().parse::<u32>().ok()?;
+    let g = gs.trim().parse::<u32>().ok()?;
+    Some((u, g))
+}
+
 /// Socket/CLI response for RESOLVE verb.
 pub(crate) fn format_resolve_socket_line(r: &Resolved) -> String {
     if is_unresolved_fail_closed(r) {
@@ -57,32 +111,23 @@ fn resolve_via_nss(name_or_principal: &str, paths: &NssMaterializePaths<'_>) -> 
     let trimmed = name_or_principal.trim();
     let short = principal_local_part(trimmed);
     let is_realm = principal_has_realm(trimmed);
-    if let Some(res) = resolve_getent(trimmed, paths) {
-        return Some(res);
-    }
-    // Realm principals must not fall back to short posix getent (e.g. nobody@REALM -> system nobody 65534).
-    if !is_realm && short != trimmed {
-        if let Some(res) = resolve_getent(short, paths) {
-            return Some(res);
+    let nss_full = resolve_getent(trimmed, paths);
+    let nss_short = if !is_realm && short != trimmed {
+        resolve_getent(short, paths)
+    } else {
+        None
+    };
+    let test_force = test_force_ldap_uid_gid(trimmed);
+    if let Some((uid, gid, src)) = resolve_identity_candidates(
+        trimmed, nss_full, nss_short, test_force, None, None, None, None,
+    ) {
+        if src == "ldap" {
+            dlog!("test-forced ldap for {} -> {}/{}", trimmed, uid, gid);
         }
+        return Some((uid, gid, src));
     }
-
-    // test shim (TEST_FORCE_LDAP_UID_GID=uid:gid) to exercise ldap source branch of on-demand user@ without live service
-    if trimmed.contains('@') {
-        if let Ok(uv) = std::env::var("TEST_FORCE_LDAP_UID_GID") {
-            if let Some((us, gs)) = uv.split_once(':') {
-                if let (Ok(u), Ok(g)) = (us.trim().parse::<u32>(), gs.trim().parse::<u32>()) {
-                    dlog!("test-forced ldap for {} -> {}/{}", trimmed, u, g);
-                    return Some((u, g, "ldap".to_string()));
-                }
-            }
-        }
-    }
-
-    // LDAP fallback tries full principal and short posix name inside resolver.
     if let Some((uid, gid)) = resolve_via_structured_ldap(trimmed) {
         dlog!("ldap fallback principal=\"{}\" uid={} gid={}", trimmed, uid, gid);
-        // log group fetch path for uid2grp allocator visibility
         dlog!("group fetch (primary) uid={} gid={}", uid, gid);
         return Some((uid, gid, "ldap".to_string()));
     }
@@ -95,6 +140,9 @@ fn uid_gid_from_user_resolve(
     bind_dn: &str,
     bind_pw: &str,
 ) -> Option<(u32, u32)> {
+    if std::env::var("TEST_FORCE_LDAP_MISS").ok().as_deref() == Some("1") {
+        return None;
+    }
     let (uid_i, gid_opt, _disp) = resolver.resolve_user(name, bind_dn, bind_pw)?;
     let uid = uid_i as u32;
     let gid = gid_opt.map(|g| g as u32).unwrap_or(uid);
@@ -113,28 +161,46 @@ fn uid_gid_from_snapshot(snap: &IdMapSnapshot, full: &str, short: &str) -> Optio
     None
 }
 
+fn ldap_snapshot_pair(snap: &IdMapSnapshot, full: &str, short: &str) -> (Option<(u32, u32)>, Option<(u32, u32)>) {
+    let full_hit = uid_gid_from_snapshot(snap, full, short);
+    let short_hit = if principal_has_realm(full) {
+        None
+    } else {
+        snap.users.get(short).map(|u| (u.uid as u32, u.gid as u32))
+    };
+    (full_hit, short_hit)
+}
+
 /// Try the LDAP snapshot first and reload the directory on miss.
 fn resolve_via_structured_ldap(name_or_principal: &str) -> Option<(u32, u32)> {
     let (resolver, bind_dn, bind_pw) = get_or_init_resolver()?;
     let short = principal_local_part(name_or_principal);
-    let is_realm = principal_has_realm(name_or_principal);
     let try_resolve = |snap: &IdMapSnapshot| {
-        uid_gid_from_snapshot(snap, name_or_principal, short)
-            .or_else(|| uid_gid_from_user_resolve(resolver, name_or_principal, bind_dn, bind_pw))
-            .or_else(|| {
-                if is_realm {
-                    None
-                } else {
-                    uid_gid_from_user_resolve(resolver, short, bind_dn, bind_pw)
-                }
-            })
+        let (ldap_snap_full, ldap_snap_short) = ldap_snapshot_pair(snap, name_or_principal, short);
+        let ldap_live_full =
+            uid_gid_from_user_resolve(resolver, name_or_principal, bind_dn, bind_pw);
+        let ldap_live_short = if principal_has_realm(name_or_principal) {
+            None
+        } else {
+            uid_gid_from_user_resolve(resolver, short, bind_dn, bind_pw)
+        };
+        resolve_identity_candidates(
+            name_or_principal,
+            None,
+            None,
+            None,
+            ldap_snap_full,
+            ldap_snap_short,
+            ldap_live_full,
+            ldap_live_short,
+        )
+        .map(|(u, g, _)| (u, g))
     };
     if let Some(ids) = try_resolve(&resolver.snapshot()) {
         return Some(ids);
     }
     let _ = resolver.load_full_identities(bind_dn, bind_pw);
     let ids = try_resolve(&resolver.snapshot());
-    // On-demand user@REALM: also resolve primary group by gid so group info materializes for uid2grp.
     if let Some((_u, g)) = ids {
         let _ = resolver.resolve_group_by_gid(g as i32, bind_dn, bind_pw);
     }
@@ -639,6 +705,129 @@ mod tests {
     use super::*;
     use nfs_klldap_config::PosixUserEntry;
 
+    const MINIMAL_TEST_NFS_CONFIG: &str = r#"
+ldap_uri = "ldaps://kllap.test:6360"
+[kerberos]
+realm = "MISS.REALM"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+"#;
+
+    fn log_fail_closed_passwd_evidence(paths: &crate::materialize::NssMaterializePaths<'_>, principal: &str) {
+        let pw = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
+        eprintln!("=== nss_passwd contents (fail-closed evidence) ===\n{pw}");
+        let principal_row = pw.lines().any(|l| l.starts_with(&format!("{principal}:")));
+        let nobody_fallback = pw.lines().any(|l| l.starts_with("nobody:x:65534"));
+        eprintln!("grep {principal}: row_present={principal_row}");
+        eprintln!("grep nobody:x:65534: found={nobody_fallback}");
+    }
+
+    fn with_loaded_resolver_ldap_miss_env<F: FnOnce()>(f: F) {
+        let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
+        let old_miss = std::env::var("TEST_FORCE_LDAP_MISS").ok();
+        let old_force = std::env::var("TEST_FORCE_LDAP_UID_GID").ok();
+        let old_cfg = std::env::var("NFS_CONFIG").ok();
+        std::env::set_var("TEST_REBULK_POPULATE", "u:seeduser:1001:100");
+        std::env::set_var("TEST_FORCE_LDAP_MISS", "1");
+        std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
+        f();
+        if let Some(v) = old_pop {
+            std::env::set_var("TEST_REBULK_POPULATE", v);
+        } else {
+            std::env::remove_var("TEST_REBULK_POPULATE");
+        }
+        if let Some(v) = old_miss {
+            std::env::set_var("TEST_FORCE_LDAP_MISS", v);
+        } else {
+            std::env::remove_var("TEST_FORCE_LDAP_MISS");
+        }
+        if let Some(v) = old_force {
+            std::env::set_var("TEST_FORCE_LDAP_UID_GID", v);
+        } else {
+            std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
+        }
+        if let Some(v) = old_cfg {
+            std::env::set_var("NFS_CONFIG", v);
+        } else {
+            std::env::remove_var("NFS_CONFIG");
+        }
+    }
+
+    #[test]
+    fn resolve_identity_candidates_table_realm_guards() {
+        assert_eq!(
+            resolve_identity_candidates(
+                "nobody@MISS.REALM",
+                None,
+                Some((65534, 65534, "sss".into())),
+                None,
+                None,
+                Some((65534, 65534)),
+                None,
+                Some((65534, 65534)),
+            ),
+            None,
+            "realm principal must ignore nss/ldap short collisions"
+        );
+        assert_eq!(
+            resolve_identity_candidates(
+                "missinguser@MISS.REALM",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            None,
+            "realm ldap miss"
+        );
+        assert_eq!(
+            resolve_identity_candidates(
+                "alice@REALM",
+                None,
+                None,
+                None,
+                Some((1001, 1001)),
+                None,
+                None,
+                None,
+            ),
+            Some((1001, 1001, "ldap".into())),
+            "realm ldap full hit"
+        );
+        assert_eq!(
+            resolve_identity_candidates(
+                "alice",
+                None,
+                None,
+                None,
+                None,
+                Some((1001, 1001)),
+                None,
+                None,
+            ),
+            Some((1001, 1001, "ldap".into())),
+            "non-realm ldap short hit"
+        );
+        assert_eq!(
+            resolve_identity_candidates(
+                "alice@REALM",
+                None,
+                None,
+                Some((2001, 2002)),
+                None,
+                None,
+                None,
+                None,
+            ),
+            Some((2001, 2002, "ldap".into())),
+            "test force ldap"
+        );
+    }
+
     #[test]
     fn snapshot_lookup_needs_full_principal_key() {
         let mut snap = IdMapSnapshot::default();
@@ -685,34 +874,40 @@ mod tests {
     }
 
     #[test]
-    fn resolve_fails_closed_for_realm_principal_on_ldap_miss() {
+    fn resolve_fail_closed_realm_miss_evidence() {
         let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         reset_id_resolver_for_test();
-        let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
-        std::env::remove_var("TEST_REBULK_POPULATE");
         let tmp = tempfile::tempdir().unwrap();
+        let conf = tmp.path().join("nfs-klldap.conf");
+        std::fs::write(&conf, MINIMAL_TEST_NFS_CONFIG).unwrap();
+        std::env::set_var("NFS_CONFIG", &conf);
         let paths = crate::materialize::NssMaterializePaths::under(tmp.path());
-        let mut cache = IdCache::default();
-        for principal in ["missinguser@MISS.REALM", "nobody@MISS.REALM"] {
-            let r = resolve_principal(principal, "MISS.REALM", &[], &mut cache, &paths);
-            assert_eq!(
-                r.source,
-                RESOLVE_FAIL_CLOSED_SOURCE,
-                "{principal} must fail-closed, got uid={} source={}",
-                r.uid,
-                r.source
-            );
-            assert_eq!(r.uid, RESOLVE_UNRESOLVED_UID);
-            assert_ne!(r.uid, FALLBACK_NOBODY_UID, "{principal} must not be nobody");
-            let pw = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
-            assert!(
-                !pw.lines().any(|l| l.starts_with(&format!("{principal}:"))),
-                "fail-closed must not write passwd row for {principal}: {pw}"
-            );
-        }
-        if let Some(v) = old_pop {
-            std::env::set_var("TEST_REBULK_POPULATE", v);
-        }
+        with_loaded_resolver_ldap_miss_env(|| {
+            let mut cache = IdCache::default();
+            for principal in ["missinguser@MISS.REALM", "nobody@MISS.REALM"] {
+                eprintln!("=== resolve_fail_closed evidence: {principal} (resolver loaded, TEST_FORCE_LDAP_MISS=1) ===");
+                let r = resolve_principal(principal, "MISS.REALM", &[], &mut cache, &paths);
+                log_fail_closed_passwd_evidence(&paths, principal);
+                assert_eq!(
+                    r.source,
+                    RESOLVE_FAIL_CLOSED_SOURCE,
+                    "{principal} must fail-closed, got uid={} source={}",
+                    r.uid,
+                    r.source
+                );
+                assert_eq!(r.uid, RESOLVE_UNRESOLVED_UID);
+                assert_ne!(r.uid, FALLBACK_NOBODY_UID, "{principal} must not be nobody");
+                let pw = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
+                assert!(
+                    !pw.lines().any(|l| l.starts_with(&format!("{principal}:"))),
+                    "fail-closed must not write passwd row for {principal}: {pw}"
+                );
+                assert!(
+                    !pw.lines().any(|l| l.starts_with("nobody:x:65534")),
+                    "fail-closed must not materialize nobody:x:65534 for {principal}: {pw}"
+                );
+            }
+        });
     }
 
     #[test]

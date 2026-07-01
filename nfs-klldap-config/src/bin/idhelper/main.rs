@@ -1712,9 +1712,20 @@ mod tests {
     fn cli_resolve_and_grps_emit_err_on_realm_miss() {
         let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         resolve::reset_id_resolver_for_test();
-        std::env::remove_var("TEST_REBULK_POPULATE");
-        std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
         let tmpd = tempfile::tempdir().unwrap();
+        let conf = tmpd.path().join("nfs-klldap.conf");
+        std::fs::write(
+            &conf,
+            r#"
+ldap_uri = "ldaps://kllap.test:6360"
+[kerberos]
+realm = "MISS.REALM"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+"#,
+        )
+        .unwrap();
         let paths = NssMaterializePaths::under(tmpd.path());
         std::env::set_var("NSS_PASSWD", paths.nss_passwd);
         std::env::set_var("NSS_GROUP", paths.nss_group);
@@ -1729,8 +1740,6 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR")
                 )
             });
-        let no_ldap_cfg = tmpd.path().join("no-ldap.conf");
-
         for principal in ["missinguser@MISS.REALM", "nobody@MISS.REALM"] {
             for sub in ["grps", "resolve"] {
                 let out = std::process::Command::new(&bin)
@@ -1739,8 +1748,9 @@ mod tests {
                     .env("NSS_GROUP", &paths.nss_group)
                     .env("NSS_EXTRAUSERS_PASSWD", &paths.extrausers_passwd)
                     .env("NSS_EXTRAUSERS_GROUP", &paths.extrausers_group)
-                    .env("NFS_CONFIG", &no_ldap_cfg)
-                    .env_remove("TEST_REBULK_POPULATE")
+                    .env("NFS_CONFIG", &conf)
+                    .env("TEST_REBULK_POPULATE", "u:seeduser:1001:100")
+                    .env("TEST_FORCE_LDAP_MISS", "1")
                     .env_remove("TEST_FORCE_LDAP_UID_GID")
                     .output()
                     .expect("spawn idhelper");

@@ -795,7 +795,22 @@ mod grps_socket_tests {
         std::env::set_var("NSS_EXTRAUSERS_GROUP", paths.extrausers_group);
         let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         crate::resolve::reset_id_resolver_for_test();
-        std::env::remove_var("TEST_REBULK_POPULATE");
+        let conf = tmpd.path().join("nfs-klldap.conf");
+        std::fs::write(
+            &conf,
+            r#"
+ldap_uri = "ldaps://kllap.test:6360"
+[kerberos]
+realm = "MISS.REALM"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+"#,
+        )
+        .unwrap();
+        std::env::set_var("NFS_CONFIG", &conf);
+        std::env::set_var("TEST_REBULK_POPULATE", "u:seeduser:1001:100");
+        std::env::set_var("TEST_FORCE_LDAP_MISS", "1");
         std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
 
         let cache = Arc::new(Mutex::new(IdCache::default()));
@@ -827,5 +842,8 @@ mod grps_socket_tests {
         std::env::remove_var("NSS_GROUP");
         std::env::remove_var("NSS_EXTRAUSERS_PASSWD");
         std::env::remove_var("NSS_EXTRAUSERS_GROUP");
+        std::env::remove_var("NFS_CONFIG");
+        std::env::remove_var("TEST_REBULK_POPULATE");
+        std::env::remove_var("TEST_FORCE_LDAP_MISS");
     }
 }

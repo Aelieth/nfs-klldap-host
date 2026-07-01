@@ -7,6 +7,7 @@ mod constants;
 mod error;
 mod exports_fingerprint;
 mod ganesha_liveness;
+pub mod ganesha_readiness;
 mod recycle_plan;
 
 mod fs_probe;
@@ -64,6 +65,12 @@ pub use ganesha_nss_contract::{
     probe_nss_passwd_exact, probe_nss_passwd_from_file_exact,
     GaneshaNssEnv,
 };
+pub use ganesha_readiness::{
+    build_ganesha_envp, check_ganesha_readiness, check_synthetic_krb_log_clean,
+    exercise_ganesha_uid2grp, filter_proc_environ_keys, ganesha_log_has_getgrouplist_warn,
+    proc_pid_environ, probe_ganesha_process_groups, probe_id_g_under_env, probe_socket_grps,
+    probe_socket_grouplist, resolve_nss_sss_so, GaneshaReadinessReport, GaneshaSpawnEnv,
+};
 pub use fs_warnings::{
     any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warning,
     limited_fs_warning_settings_ui, limited_fs_warnings_only, share_fs_acl_limited,
@@ -106,23 +113,11 @@ fn parse_grps_output(stdout: &str) -> Vec<u32> {
 }
 
 fn probe_grps_via_socket(principal: &str) -> Option<Vec<u32>> {
-    let sock = idhelper_socket_path();
-    if !std::path::Path::new(&sock).exists() {
-        return None;
-    }
-    let mut st = std::os::unix::net::UnixStream::connect(&sock).ok()?;
-    let req = format!("GRPS {principal}\n");
-    use std::io::Write;
-    st.write_all(req.as_bytes()).ok()?;
-    st.flush().ok()?;
-    let mut rd = std::io::BufReader::new(&mut st);
-    let mut ln = String::new();
-    std::io::BufRead::read_line(&mut rd, &mut ln).ok()?;
-    if ln.starts_with("OK ") {
-        Some(parse_grps_output(&ln))
-    } else {
-        None
-    }
+    probe_socket_grps(principal, &idhelper_socket_path())
+}
+
+fn probe_grouplist_via_socket(principal: &str) -> Option<Vec<u32>> {
+    probe_socket_grouplist(principal, &idhelper_socket_path())
 }
 
 fn probe_grps_via_cli(idh: &str, principal: &str) -> Result<Vec<u32>, String> {
@@ -307,7 +302,16 @@ fn probe_ganesha_runtime_wiring() -> String {
 /// Preflight: CLI grps + pipeline + runtime nss contract + socket + ganesha-ctl id-resolve.
 pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool, String) {
     if std::env::var("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK").is_ok() {
-        return (true, "skipped".into());
+        return (true, "idhelper-check:skip:NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK".into());
+    }
+    let sock = idhelper_socket_path();
+    if !std::path::Path::new(&sock).exists()
+        && std::env::var("NFS_KLLDAP_IDHELPER_SOCKET").is_err()
+    {
+        return (
+            true,
+            "idhelper-check:skip:no-live-stack (idhelper socket absent; ganesha-runtime/synthetic-getgrouplist require live container)".into(),
+        );
     }
     let idh = resolve_idhelper_bin();
     let principals = identity_principals_for_check(realm, host_short);
@@ -366,6 +370,21 @@ pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool
         }
         msgs.push(tag);
     }
+    let sock = idhelper_socket_path();
+    let sock_available = std::path::Path::new(&sock).exists();
+    let user_short = nfs_klldap_identity::principal_local_part(&principals.user);
+    let root_gl_ok = probe_grouplist_via_socket("root")
+        .as_ref()
+        .is_some_and(|g| g.contains(&0));
+    let user_gl_ok = probe_grouplist_via_socket(&user_short).is_some();
+    msgs.push(format!(
+        "synthetic-getgrouplist: root_ok={root_gl_ok} user({user_short})_ok={user_gl_ok}"
+    ));
+    if sock_available {
+        if !root_gl_ok || !user_gl_ok {
+            ok = false;
+        }
+    }
     for (lab, p, expect_machine) in [
         ("user", principals.user.as_str(), false),
         ("host-server", principals.server_host.as_str(), true),
@@ -378,6 +397,27 @@ pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool
         msgs.push(format!("{contract_msg}:{lab}"));
     }
     msgs.push(probe_ganesha_runtime_wiring());
+    if let Some(pid) = discover_ganesha_daemon_pid() {
+        if let Ok(raw) = std::fs::read(format!("/proc/{pid}/environ")) {
+            let proc_env: std::collections::HashMap<String, String> = raw
+                .split(|&b| b == 0)
+                .filter_map(|chunk| {
+                    let s = std::str::from_utf8(chunk).ok()?;
+                    let (k, v) = s.split_once('=')?;
+                    Some((k.to_string(), v.to_string()))
+                })
+                .collect();
+            let envp: Vec<(std::ffi::OsString, std::ffi::OsString)> = proc_env
+                .iter()
+                .map(|(k, v)| (std::ffi::OsString::from(k), std::ffi::OsString::from(v)))
+                .collect();
+            let root_seen = probe_id_g_under_env("root", &envp);
+            let user_seen = probe_id_g_under_env(&user_short, &envp);
+            msgs.push(format!(
+                "ganesha-seen-getgrouplist: root={root_seen:?} user({user_short})={user_seen:?}"
+            ));
+        }
+    }
     for p in [
         &principals.user,
         &principals.server_host,

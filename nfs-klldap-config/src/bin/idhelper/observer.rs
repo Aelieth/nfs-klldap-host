@@ -253,10 +253,15 @@ fn detect_my_getgrouplist_failure_and_heal(
         "[idhelper] INFO ganesha-seen getgrouplist (from running ganesha.nfsd log, not idhelper view): user={} ngroups={} errno={} ; triggering immediate re-seed + nss invalidate + recheck",
         user, ngroups, errno
     );
-    // Immediate re-seed: REBULK via socket + direct re-resolve + re-mat for root + user
-    let _ = std::process::Command::new("timeout")
-        .args(["3", "sh", "-c", &format!("printf 'REBULK\n' | nc -U $(cat /proc/$$/fd/1 2>/dev/null || echo /var/run/nfs-klldap/idhelper.sock) 2>/dev/null || printf 'REBULK\n' > /dev/null") ])
-        .status();
+    // Immediate re-seed: REBULK via Unix socket (same protocol as supervisor/daemon)
+    {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        if let Ok(mut st) = UnixStream::connect(crate::common::socket_path()) {
+            let _ = st.write_all(b"REBULK\n");
+            let _ = st.flush();
+        }
+    }
     // direct heal using lock
     {
         let mut guard = cache.lock().unwrap();
@@ -303,11 +308,7 @@ fn extract_ngroups(line: &str) -> Option<u32> {
 }
 
 fn try_socket_grps(p: &str) -> Option<Vec<u32>> {
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut s = UnixStream::connect(crate::common::socket_path()).ok()?;
-    let _ = s.write_all(format!("GRPS {}\n", p).as_bytes());
-    None // fire and forget for heal; response not needed here
+    nfs_klldap_config::probe_socket_grps(p, &crate::common::socket_path())
 }
 
 /// Extract hostname from "Linux NFSv4.x <host>" log groups.

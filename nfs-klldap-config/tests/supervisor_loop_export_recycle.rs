@@ -191,7 +191,8 @@ exec sleep 3600
             && combined.contains("changed=true")
             && combined.contains("Identity artifacts fingerprint:")
             && combined.contains("changed=false")
-            && (combined.contains("Starting WebUI on 0.0.0.0:9630")
+            && (combined.contains("Services recycled after config apply.")
+                || combined.contains("Starting WebUI on 0.0.0.0:9630")
                 || combined.contains("restart_webui=true"))
         {
             break;

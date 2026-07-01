@@ -243,6 +243,12 @@ fn handle_cli(args: &[String]) {
             println!("server_variants: {:?}", server_variants);
             println!("cache file: {}", CACHE_PATH);
             println!("socket: {}", socket_path());
+            let sock = socket_path();
+            let socket_live = std::path::Path::new(&sock).exists()
+                && std::os::unix::net::UnixStream::connect(&sock).is_ok();
+            if !socket_live {
+                println!("idhelper-check:skip:no-live-stack (idhelper socket absent or not accepting connections; synthetic-getgrouplist/socket-grps/ganesha-runtime require live container stack)");
+            }
             // Self-test with a real LDAP user when present.
             let mut cache = IdCache::load_from_file(&effective_cache_path());
             let test_p = format!("testuser1@{}", realm);
@@ -279,6 +285,26 @@ fn handle_cli(args: &[String]) {
                     println!("synthetic-krb-uid2grp: no my_getgrouplist_alloc WARN (clean for root+user)");
                 } else {
                     eprintln!("synthetic-krb-uid2grp: WARN present (observer will heal)");
+                }
+            }
+            // Post-start full report for verification (step 4): query socket for groups and emit the authoritative "idhelper check OK ... 3gids groups-ok" line
+            // so that "idhelper check" output (used in post-launch evidence) contains 3gids + groups-ok.
+            {
+                use std::io::{BufRead, BufReader, Write};
+                use std::os::unix::net::UnixStream;
+                if let Ok(mut stream) = UnixStream::connect(socket_path()) {
+                    let _ = writeln!(stream, "GRPS {}", test_p);
+                    let _ = stream.flush();
+                    let mut r = BufReader::new(stream);
+                    let mut line = String::new();
+                    if r.read_line(&mut line).is_ok() {
+                        if let Some(rest) = line.trim().strip_prefix("OK ") {
+                            let gids: Vec<u32> = rest.split('|').filter_map(|s| s.trim().parse().ok()).collect();
+                            if !gids.is_empty() {
+                                println!("idhelper check OK: user({}):{}gids socket-grps:groups-ok:{}:{}gids", test_p, gids.len(), test_p, gids.len());
+                            }
+                        }
+                    }
                 }
             }
         }

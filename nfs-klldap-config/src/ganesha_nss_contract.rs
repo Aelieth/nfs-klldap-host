@@ -83,6 +83,10 @@ impl GaneshaNssEnv {
         if let Some(so) = self.ld_preload.as_ref() {
             cmd.env("LD_PRELOAD", so);
         }
+        if let Some(sss) = crate::ganesha_readiness::resolve_nss_sss_so() {
+            cmd.env("NSS_WRAPPER_MODULE_SO_PATH", &sss)
+                .env("NSS_WRAPPER_MODULE_FN_PREFIX", "_nss_sss_");
+        }
     }
 }
 

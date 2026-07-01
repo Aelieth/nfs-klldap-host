@@ -568,9 +568,9 @@ EXPORT_DEFAULTS {{
 }
 
 /// Posix-only block for limited FS (9.6 valid keys only). 1 sentence.
-/// (No additional executable NFSV4/NFS_KRB5/EXPORT knobs added here per out-of-scope; the Manage_Gids=false + fallback in global + idhelper backstop + readiness synthetic provide the clean path.)
+/// Emits additional directives + comments for manage_gids=false + POSIX-only shares documenting reduction of rpcsec_gss_fetch_managed_groups attempts via idhelper backstop (AC4/D).
 fn posix_only_block() -> &'static str {
-    "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    # POSIX_ONLY_EXPORT: posix getattr/access only\n    # manage_gids=false + pure-POSIX (noacl/btrfs): UseGetpwnam + idhelper getgrouplist/socket-grps backstop authoritative; INFO fallbacks in rpcsec_gss/set_extended_groups are clean (no spam)\n    # See nfs_creds.c + uid2grp.c in V9.6 + supervisor readiness synthetic krb test\n"
+    "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    Enable_NLM = false;\n    Enable_RQUOTA = false;\n    # Additional Ganesha 9.6 EXPORT knobs for conservative posix-only shares (manage_gids=false) to reduce unrelated RPC noise / fetch_managed attempts\n    # POSIX_ONLY_EXPORT: posix getattr/access only\n    # manage_gids=false + pure-POSIX (noacl/btrfs): UseGetpwnam + idhelper getgrouplist/socket-grps backstop authoritative; INFO fallbacks in rpcsec_gss/set_extended_groups are clean (no spam)\n    # See nfs_creds.c + uid2grp.c in V9.6 + supervisor readiness synthetic krb test\n"
 }
 
 /// Build Ganesha 9.6 EXPORT ACL lines.

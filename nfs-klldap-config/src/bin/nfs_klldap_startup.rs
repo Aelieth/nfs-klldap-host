@@ -77,6 +77,13 @@ fn main() {
                 exit(2);
             }
         }
+        "supervise-readiness-probe" => {
+            std::env::set_var("NFS_KLLDAP_SUPERVISE_READINESS_PROBE", "1");
+            if let Err(e) = supervisor::run_supervisor(&config_path) {
+                eprintln!("FATAL: {e}");
+                exit(2);
+            }
+        }
         "check" => {
             if let Err(e) = run_one_shot_diagnostics(&config_path) {
                 eprintln!("ERROR: {e}");

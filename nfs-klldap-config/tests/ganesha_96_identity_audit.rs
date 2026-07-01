@@ -4,7 +4,8 @@ use std::fs;
 use std::sync::Mutex;
 
 use nfs_klldap_config::{
-    evaluate_nss_contract, generate_all, GaneshaNssEnv, GenerationPaths, NfsKlldapConfig,
+    evaluate_nss_contract, evaluate_short_name_getgrouplist_contract, generate_all,
+    GaneshaNssEnv, GenerationPaths, NfsKlldapConfig,
 };
 
 static MOUNTINFO_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -128,6 +129,38 @@ fn mount_race_structural_empty_nss_fails_contract_seeded_passes() {
         let (file_ok, file_msg) =
             evaluate_nss_contract("testuser1@TESTLAB.LOCAL", &env_seeded, false);
         assert!(file_ok || file_msg.contains("file-ok"), "file-level contract: {file_msg}");
+    }
+}
+
+#[test]
+fn seeded_nss_short_pw_name_getgrouplist_contract_matches_uid2grp_path() {
+    let td = tempfile::tempdir().unwrap();
+    let pw = td.path().join("nss_passwd");
+    let gr = td.path().join("nss_group");
+    std::fs::write(
+        &pw,
+        "root:x:0:0:root:/root:/bin/sh\n\
+         testuser1:x:3788:3002:user:/non:/nologin\n\
+         testuser1@TESTLAB.LOCAL:x:3788:3002:user:/non:/nologin\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &gr,
+        "root:x:0:root,daemon,bin\n\
+         staff:x:3002:testuser1,testuser1@TESTLAB.LOCAL\n\
+         writers:x:3005:testuser1,testuser1@TESTLAB.LOCAL\n\
+         aux:x:3007:testuser1,testuser1@TESTLAB.LOCAL\n",
+    )
+    .unwrap();
+    let env = GaneshaNssEnv::from_paths(&pw, &gr);
+    let (ok, msg) =
+        evaluate_short_name_getgrouplist_contract("testuser1@TESTLAB.LOCAL", &env, 3);
+    if env.wrapper_available() {
+        assert!(ok, "short-name uid2grp contract: {msg}");
+    } else {
+        let (file_ok, file_msg) =
+            evaluate_short_name_getgrouplist_contract("testuser1@TESTLAB.LOCAL", &env, 1);
+        assert!(file_ok, "file-level short passwd row required: {file_msg}");
     }
 }
 

@@ -11,6 +11,8 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use nfs_klldap_identity::principal_local_part;
+
 /// Inputs for building the explicit ganesha.nfsd envp (mirrors supervisor injection).
 #[derive(Debug, Clone)]
 pub struct GaneshaSpawnEnv {
@@ -29,6 +31,10 @@ pub struct GaneshaSpawnEnv {
 pub struct GaneshaReadinessReport {
     pub root_ok: bool,
     pub sample_ok: bool,
+    /// Exact short `pw_name` getgrouplist for root (Ganesha uid2grp path).
+    pub short_root_ok: bool,
+    /// Exact short `pw_name` getgrouplist for sample user after getpwuid_r.
+    pub short_sample_ok: bool,
     pub socket_ok: bool,
     /// `id -G` for root+sample using the live ganesha pid's `/proc/<pid>/environ`.
     pub ganesha_process_ok: bool,
@@ -41,6 +47,8 @@ impl GaneshaReadinessReport {
     pub fn is_ready(&self) -> bool {
         self.root_ok
             && self.sample_ok
+            && self.short_root_ok
+            && self.short_sample_ok
             && self.socket_ok
             && self.ganesha_process_ok
             && self.ganesha_uid2grp_clean
@@ -292,6 +300,12 @@ pub fn exercise_ganesha_uid2grp(
         for who in ["root", "testuser1"] {
             let _ = probe_id_g_under_env(who, envp);
         }
+        for p in principals {
+            let short = principal_local_part(p);
+            if short != *p {
+                let _ = probe_id_g_under_env(short, envp);
+            }
+        }
     }
     let has_warn = ganesha_log_has_getgrouplist_warn(ganesha_log_path, log_offset);
     let msg = if has_warn {
@@ -359,11 +373,18 @@ pub fn check_ganesha_readiness(
     ganesha_log_path: &str,
     socket_path: &str,
 ) -> GaneshaReadinessReport {
+    let short_sample = principal_local_part(sample);
     let root_gids = probe_id_g_under_env("root", envp);
     let sample_gids = probe_id_g_under_env(sample, envp);
+    let short_root_gids = probe_id_g_under_env("root", envp);
+    let short_sample_gids = probe_id_g_under_env(short_sample, envp);
     let sample_socket_gl = probe_socket_grouplist(sample, socket_path);
+    let short_sample_socket_gl = probe_socket_grouplist(short_sample, socket_path);
 
     let root_ok = root_gids
+        .as_ref()
+        .is_some_and(|g| g.contains(&0));
+    let short_root_ok = short_root_gids
         .as_ref()
         .is_some_and(|g| g.contains(&0));
     // Socket GRPS/GROUPLIST is authoritative; id -G may miss FQDN logins without nss_wrapper on the probe cmd.
@@ -372,22 +393,35 @@ pub fn check_ganesha_readiness(
         .is_some_and(|g| g.len() >= 2)
         || (sample_gids.as_ref().is_some_and(|g| !g.is_empty())
             && probe_socket_grps(sample, socket_path).is_some());
+    let short_sample_ok = short_sample_socket_gl
+        .as_ref()
+        .is_some_and(|g| g.len() >= 2)
+        || short_sample_gids.as_ref().is_some_and(|g| g.len() >= 2);
 
     let sock_root_grps = probe_socket_grps("root", socket_path).is_some();
     let sock_sample_grps = probe_socket_grps(sample, socket_path).is_some();
+    let sock_short_sample_grps = probe_socket_grps(short_sample, socket_path).is_some();
     let sock_root_gl = probe_socket_grouplist("root", socket_path)
         .as_ref()
         .is_some_and(|g| g.contains(&0));
     let sock_sample_gl = sample_socket_gl.is_some();
-    let socket_ok =
-        sock_root_grps && sock_sample_grps && sock_root_gl && sock_sample_gl;
+    let sock_short_sample_gl = short_sample_socket_gl.is_some();
+    let socket_ok = sock_root_grps
+        && sock_sample_grps
+        && sock_short_sample_grps
+        && sock_root_gl
+        && sock_sample_gl
+        && sock_short_sample_gl;
 
     let ganesha_process_ok = if let Some(pid) = pid {
         let root_seen = probe_ganesha_process_groups(pid, "root");
         let sample_seen = probe_ganesha_process_groups(pid, sample);
+        let short_seen = probe_ganesha_process_groups(pid, short_sample);
         root_seen.as_ref().is_some_and(|g| g.contains(&0))
             && (sample_seen.as_ref().is_some_and(|g| !g.is_empty())
-                || sample_socket_gl.is_some())
+                || short_seen.as_ref().is_some_and(|g| !g.is_empty())
+                || sample_socket_gl.is_some()
+                || short_sample_socket_gl.is_some())
     } else {
         false
     };
@@ -395,14 +429,19 @@ pub fn check_ganesha_readiness(
     let proc_envp = pid
         .and_then(proc_pid_environ)
         .unwrap_or_else(|| envp.to_vec());
-    let (ganesha_uid2grp_clean, _) =
-        exercise_ganesha_uid2grp(&proc_envp, &["root", sample], ganesha_log_path);
+    let (ganesha_uid2grp_clean, _) = exercise_ganesha_uid2grp(
+        &proc_envp,
+        &["root", short_sample],
+        ganesha_log_path,
+    );
 
     let synthetic_clean = check_synthetic_krb_log_clean(ganesha_log_path);
 
     GaneshaReadinessReport {
         root_ok,
         sample_ok,
+        short_root_ok,
+        short_sample_ok,
         socket_ok,
         ganesha_process_ok,
         ganesha_uid2grp_clean,

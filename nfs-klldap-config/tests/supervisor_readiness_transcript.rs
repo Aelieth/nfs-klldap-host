@@ -129,12 +129,12 @@ fn supervise_readiness_probe_emits_ganesha_env_and_readiness_transcript() {
     let nss_group = run.join("nss_group");
     fs::write(
         &nss_passwd,
-        "root:x:0:0:root:/root:/bin/sh\ntestuser1@TEST:x:3001:3005:user:/non:/nologin\nhost/aurora@TEST:x:0:0:host:/non:/nologin\nhost/blue-lt@TEST:x:0:0:host:/non:/nologin\n",
+        "root:x:0:0:root:/root:/bin/sh\ntestuser1:x:3001:3005:user:/non:/nologin\ntestuser1@TEST:x:3001:3005:user:/non:/nologin\nhost/aurora@TEST:x:0:0:host:/non:/nologin\nhost/blue-lt@TEST:x:0:0:host:/non:/nologin\n",
     )
     .unwrap();
     fs::write(
         &nss_group,
-        "root:x:0:\ntestuser1@TEST:x:3005:\nstaff:x:3007:testuser1@TEST\n",
+        "root:x:0:root,daemon,bin\nstaff:x:3005:testuser1,testuser1@TEST\naux:x:3007:testuser1,testuser1@TEST\n",
     )
     .unwrap();
 
@@ -193,6 +193,10 @@ fn supervise_readiness_probe_emits_ganesha_env_and_readiness_transcript() {
     assert!(
         combined.contains("testuser1@TEST"),
         "readiness must probe FQDN user login: {combined}"
+    );
+    assert!(
+        combined.contains("short pw_name testuser1 id -G"),
+        "readiness must exercise uid→short-name→getgrouplist chain: {combined}"
     );
     assert!(combined.contains("Starting NFS-Ganesha"));
     assert!(

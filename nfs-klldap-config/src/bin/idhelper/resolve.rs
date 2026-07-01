@@ -20,7 +20,7 @@ use crate::common::{
 };
 use crate::materialize::{
     ensure_nss_group_member_login, materialize_nss_wrappers_at, nss_passwd_logins_for,
-    NssMaterializePaths,
+    sanitize_for_nss, NssMaterializePaths,
 };
 
 /// Source tag when a realm principal cannot be resolved (no nobody materialization).
@@ -249,11 +249,13 @@ fn ensure_nss_materialized_for(
     if r.kind == PrincipalKind::User && principal_has_realm(&r.principal) {
         let primary = r.gid;
         for &g in gids {
-            if g != primary {
-                for login in &logins {
-                    let _ = ensure_nss_group_member_login(paths, g, login);
-                }
+            for login in &logins {
+                let _ = ensure_nss_group_member_login(paths, g, login);
             }
+        }
+        let _ = ensure_nss_group_member_login(paths, primary, &sanitize_for_nss(&r.name));
+        if let Some(at) = logins.iter().find(|l| l.contains('@')) {
+            let _ = ensure_nss_group_member_login(paths, primary, at);
         }
     } else if r.kind == PrincipalKind::Machine {
         for login in &logins {
@@ -312,11 +314,13 @@ pub(crate) fn resolve_groups_for_principal(
     if r.kind == PrincipalKind::User && principal_has_realm(&r.principal) {
         let primary = r.gid;
         for &g in &gids {
-            if g != primary {
-                for login in &logins {
-                    let _ = ensure_nss_group_member_login(paths, g, login);
-                }
+            for login in &logins {
+                let _ = ensure_nss_group_member_login(paths, g, login);
             }
+        }
+        let _ = ensure_nss_group_member_login(paths, primary, &sanitize_for_nss(&r.name));
+        if let Some(at) = nss_passwd_logins_for(&r).into_iter().find(|l| l.contains('@')) {
+            let _ = ensure_nss_group_member_login(paths, primary, &at);
         }
     } else if r.kind == PrincipalKind::Machine {
         for login in &logins {
@@ -946,6 +950,56 @@ ldap_default_authtok = "sekret"
             std::env::set_var("NSS_EXTRAUSERS_GROUP", v);
         } else {
             std::env::remove_var("NSS_EXTRAUSERS_GROUP");
+        }
+    }
+
+    #[test]
+    fn build_nss_snapshot_passes_short_name_getgrouplist_contract() {
+        use nfs_klldap_config::evaluate_short_name_getgrouplist_contract;
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = crate::materialize::NssMaterializePaths::under(tmp.path());
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "testuser1@SATOMLIN.COM".into(),
+            name: "testuser1".into(),
+            uid: 3788,
+            gid: 3002,
+            kind: PrincipalKind::User,
+            source: "seed".into(),
+            supplemental_gids: vec![3005, 3007],
+        });
+        let mut lgs: std::collections::HashMap<String, nfs_klldap_config::PosixGroupEntry> =
+            std::collections::HashMap::new();
+        lgs.insert(
+            "staff".into(),
+            nfs_klldap_config::PosixGroupEntry {
+                gid: 3002,
+                display: "staff".into(),
+                members: vec!["testuser1".into()],
+            },
+        );
+        lgs.insert(
+            "aux".into(),
+            nfs_klldap_config::PosixGroupEntry {
+                gid: 3007,
+                display: "aux".into(),
+                members: vec!["testuser1".into()],
+            },
+        );
+        materialize_nss_wrappers_at(&cache, &paths, Some(&lgs)).expect("mat");
+        let env = nfs_klldap_config::GaneshaNssEnv::from_paths(paths.nss_passwd, paths.nss_group);
+        let pw = std::fs::read_to_string(paths.nss_passwd).unwrap();
+        assert!(pw.lines().any(|l| l.starts_with("testuser1:x:3788:")), "short passwd: {pw}");
+        let gr = std::fs::read_to_string(paths.nss_group).unwrap();
+        assert!(gr.contains("testuser1"), "short group members: {gr}");
+        let (ok, msg) =
+            evaluate_short_name_getgrouplist_contract("testuser1@SATOMLIN.COM", &env, 3);
+        if env.wrapper_available() {
+            assert!(ok, "shipped build_nss_snapshot short contract: {msg}");
+        } else {
+            let (file_ok, file_msg) =
+                evaluate_short_name_getgrouplist_contract("testuser1@SATOMLIN.COM", &env, 1);
+            assert!(file_ok, "file-level contract: {file_msg}");
         }
     }
 

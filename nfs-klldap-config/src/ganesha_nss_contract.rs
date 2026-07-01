@@ -186,22 +186,96 @@ pub fn probe_nss_groups(name: &str, env: &GaneshaNssEnv) -> Vec<u32> {
         return vec![];
     }
     for candidate in nss_lookup_names(name) {
-        let mut cmd = Command::new("id");
-        cmd.args(["-G", &candidate]);
-        env.apply_to_cmd(&mut cmd);
-        if let Ok(o) = cmd.output() {
-            if o.status.success() {
-                let gids: Vec<u32> = String::from_utf8_lossy(&o.stdout)
-                    .split_whitespace()
-                    .filter_map(|s| s.parse().ok())
-                    .collect();
-                if !gids.is_empty() {
-                    return gids;
-                }
+        if let Some(gids) = probe_nss_groups_exact(&candidate, env) {
+            if !gids.is_empty() {
+                return gids;
             }
         }
     }
     vec![]
+}
+
+/// Strict exact probe: query *only* the literal login (no nss_lookup_names expansion).
+/// Mirrors Ganesha uid2grp.c: getpwuid_r → pw_name → getgrouplist(short_name, …).
+pub fn probe_nss_groups_exact(name: &str, env: &GaneshaNssEnv) -> Option<Vec<u32>> {
+    if !env.wrapper_available() {
+        return None;
+    }
+    let mut cmd = Command::new("id");
+    cmd.args(["-G", name]);
+    env.apply_to_cmd(&mut cmd);
+    let o = cmd.output().ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    let gids: Vec<u32> = String::from_utf8_lossy(&o.stdout)
+        .split_whitespace()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    if gids.is_empty() {
+        None
+    } else {
+        Some(gids)
+    }
+}
+
+/// Short passwd login Ganesha passes to getgrouplist after getpwuid_r (not the krb principal).
+pub fn short_pw_name_for_principal(principal: &str) -> String {
+    principal_local_part(principal).to_string()
+}
+
+/// uid2grp short-name chain: exact short passwd row + exact short getgrouplist (no principal alias expansion).
+pub fn evaluate_short_name_getgrouplist_contract(
+    principal: &str,
+    env: &GaneshaNssEnv,
+    min_supplemental_groups: usize,
+) -> (bool, String) {
+    let short = short_pw_name_for_principal(principal);
+    let Some((uid, gid)) = probe_nss_passwd_exact(&short, env)
+        .or_else(|| probe_nss_passwd_from_file_exact(&short, env))
+    else {
+        return (
+            false,
+            format!("short-getgrouplist:passwd-miss:{short}"),
+        );
+    };
+    let gids = if env.wrapper_available() {
+        probe_nss_groups_exact(&short, env).unwrap_or_default()
+    } else {
+        vec![gid]
+    };
+    if gids.is_empty() && env.wrapper_available() {
+        return (
+            false,
+            format!("short-getgrouplist:no-groups:{short}:uid={uid}"),
+        );
+    }
+    if uid == FALLBACK_NOBODY_UID || gid == FALLBACK_NOBODY_GID {
+        return (
+            false,
+            format!("short-getgrouplist:fallback uid={uid} gid={gid}"),
+        );
+    }
+    if !gids.contains(&gid) && env.wrapper_available() {
+        return (
+            false,
+            format!("short-getgrouplist:missing-primary:{short}:gid={gid}:gids={gids:?}"),
+        );
+    }
+    if gids.len() < min_supplemental_groups.max(1) && env.wrapper_available() {
+        return (
+            false,
+            format!(
+                "short-getgrouplist:insufficient:{short}:{}gids want>={}",
+                gids.len(),
+                min_supplemental_groups.max(1)
+            ),
+        );
+    }
+    (
+        true,
+        format!("short-getgrouplist:ok:{short}:{uid}:{gid}:{}gids", gids.len()),
+    )
 }
 
 /// B2/B3 gate: principal visible in nss_wrapper after idhelper materialize.
@@ -363,6 +437,77 @@ mod tests {
         let gids = probe_nss_groups("testuser1@EX.COM", &env);
         assert!(gids.contains(&3005), "primary gid: {gids:?}");
         assert!(gids.contains(&3007), "supplemental gid from @ member field: {gids:?}");
+    }
+
+    #[test]
+    fn fqdn_only_group_fixture_fails_short_name_exact_getgrouplist() {
+        // Reproduces logs.txt split-brain: principal-expanded probes pass, Ganesha short pw_name fails.
+        let td = tempfile::tempdir().unwrap();
+        fs::write(
+            td.path().join("nss_passwd"),
+            "root:x:0:0:root:/root:/bin/sh\n\
+             testuser1@EX.COM:x:3788:3002:user:/non:/nologin\n",
+        )
+        .unwrap();
+        fs::write(
+            td.path().join("nss_group"),
+            "root:x:0:root\nstaff:x:3002:testuser1@EX.COM\naux:x:3007:testuser1@EX.COM\n",
+        )
+        .unwrap();
+        let env = GaneshaNssEnv::from_paths(
+            &td.path().join("nss_passwd"),
+            &td.path().join("nss_group"),
+        );
+        let (fqdn_ok, _) = evaluate_nss_contract("testuser1@EX.COM", &env, false);
+        if env.wrapper_available() {
+            assert!(fqdn_ok, "FQDN-expanded contract should pass (masks gap at readiness)");
+            let (short_ok, msg) =
+                evaluate_short_name_getgrouplist_contract("testuser1@EX.COM", &env, 3);
+            assert!(
+                !short_ok,
+                "FQDN-only member fields must fail exact short getgrouplist: {msg}"
+            );
+            assert_eq!(probe_nss_groups_exact("testuser1", &env), None);
+        }
+    }
+
+    #[test]
+    fn dual_login_fixture_passes_short_name_exact_getgrouplist() {
+        // Materialize-shaped fixture: short passwd login + short group member fields (uid2grp path).
+        let td = tempfile::tempdir().unwrap();
+        fs::write(
+            td.path().join("nss_passwd"),
+            "root:x:0:0:root:/root:/bin/sh\n\
+             testuser1:x:3788:3002:testuser1:/non:/nologin\n\
+             testuser1@EX.COM:x:3788:3002:testuser1:/non:/nologin\n",
+        )
+        .unwrap();
+        fs::write(
+            td.path().join("nss_group"),
+            "root:x:0:root,daemon,bin\n\
+             staff:x:3002:testuser1,testuser1@EX.COM\n\
+             writers:x:3005:testuser1,testuser1@EX.COM\n\
+             aux:x:3007:testuser1,testuser1@EX.COM\n",
+        )
+        .unwrap();
+        let env = GaneshaNssEnv::from_paths(
+            &td.path().join("nss_passwd"),
+            &td.path().join("nss_group"),
+        );
+        let (root_ok, root_msg) = evaluate_short_name_getgrouplist_contract("root@EX.COM", &env, 1);
+        if env.wrapper_available() {
+            assert!(root_ok, "root short getgrouplist: {root_msg}");
+            assert_eq!(probe_nss_groups_exact("root", &env), Some(vec![0]));
+            let (user_ok, user_msg) =
+                evaluate_short_name_getgrouplist_contract("testuser1@EX.COM", &env, 3);
+            assert!(user_ok, "user short getgrouplist: {user_msg}");
+            let gids = probe_nss_groups_exact("testuser1", &env).expect("short groups");
+            assert!(gids.contains(&3002), "primary gid: {gids:?}");
+            assert!(gids.contains(&3007), "supplemental gid: {gids:?}");
+        } else {
+            let (file_ok, _) = evaluate_short_name_getgrouplist_contract("testuser1@EX.COM", &env, 1);
+            assert!(file_ok, "file-level short passwd must exist");
+        }
     }
 
     #[test]

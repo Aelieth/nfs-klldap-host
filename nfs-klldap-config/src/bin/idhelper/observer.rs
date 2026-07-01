@@ -325,19 +325,29 @@ fn detect_my_getgrouplist_failure_and_heal(
             let _ = st.flush();
         }
     }
-    // direct heal using lock
+    let principal = if user.contains('@') {
+        user.clone()
+    } else {
+        format!("{user}@{realm}")
+    };
+    // direct heal using lock — re-seed short pw_name parsed from ganesha log line
     {
         let mut guard = cache.lock().unwrap();
         let prod = crate::materialize::NssMaterializePaths::production();
         let _ = crate::resolve::resolve_principal("root", realm, variants, &mut guard, &prod);
-        let _ = crate::resolve::resolve_principal(&user, realm, variants, &mut guard, &prod);
+        let _ = crate::resolve::resolve_principal(&principal, realm, variants, &mut guard, &prod);
         let _ = crate::resolve::resolve_groups_for_principal("root", realm, variants, &mut guard, &prod, true);
-        let _ = crate::resolve::resolve_groups_for_principal(&user, realm, variants, &mut guard, &prod, true);
+        let _ = crate::resolve::resolve_groups_for_principal(
+            &principal, realm, variants, &mut guard, &prod, true,
+        );
         let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);
     }
     // recheck grps via socket (non fatal)
     let _ = try_socket_grps("root");
-    let _ = try_socket_grps(&user);
+    let _ = try_socket_grps(&principal);
+    if user != principal {
+        let _ = try_socket_grps(&user);
+    }
 }
 
 /// Parse "user: foo" or "for user: foo" from getgrouplist log line.
@@ -745,6 +755,15 @@ manage_gids = true
         assert_eq!(
             managed_gids_log_level(line, true),
             Some(ManagedGidsLogLevel::Verbose)
+        );
+    }
+
+    #[test]
+    fn extract_user_from_getgrouplist_line_parses_short_pw_name() {
+        let line = "my_getgrouplist_alloc :ID MAPPER :WARN :getgrouplist for user:testuser1 failed, ngroups: 3, errno: 3";
+        assert_eq!(
+            extract_user_from_getgrouplist_line(line),
+            Some("testuser1".to_string())
         );
     }
 

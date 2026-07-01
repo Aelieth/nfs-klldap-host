@@ -666,6 +666,7 @@ while :; do :; done
             &self.env.nss_passwd,
             format!(
                 "root:x:0:0:root:/root:/bin/sh\n\
+                 testuser1:x:3788:3002:user:/nonexistent:/usr/sbin/nologin\n\
                  {user}:x:3788:3002:user:/nonexistent:/usr/sbin/nologin\n\
                  {server_host}:x:0:0:host:/non:/nologin\n\
                  {client_host}:x:0:0:host:/non:/nologin\n"
@@ -674,9 +675,9 @@ while :; do :; done
         let _ = fs::write(
             &self.env.nss_group,
             format!(
-                "root:x:0:root\n\
-                 staff:x:3002:{user}\n\
-                 aux:x:3007:{user}\n"
+                "root:x:0:root,daemon,bin\n\
+                 staff:x:3002:testuser1,{user}\n\
+                 aux:x:3007:testuser1,{user}\n"
             ),
         );
     }
@@ -1254,6 +1255,7 @@ while :; do :; done
             .into_iter()
             .find(|p| p.contains('@') && !p.starts_with("host/"))
             .unwrap_or_else(|| format!("testuser1@{realm}"));
+        let sample_short = nfs_klldap_identity::principal_local_part(&sample);
         let sock = idhelper_socket_path();
         let glog = std::env::var("GANESHA_LOG_PATH").unwrap_or_else(|_| "/var/log/ganesha.log".to_string());
         self.log_info("Post-ganesha-start readiness: exercising getgrouplist-equivalent (id -G under env) + socket-grps/gl for root + sample...");
@@ -1307,6 +1309,17 @@ while :; do :; done
                         .join(" ")
                 ));
             }
+            if let Some(short_g) = probe_id_g_under_env(sample_short, &envp) {
+                self.log_info(&format!(
+                    "readiness short pw_name {} id -G (under daemon env): {}",
+                    sample_short,
+                    short_g
+                        .iter()
+                        .map(|g| g.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ));
+            }
             if let Some(pid) = self.pids.ganesha {
                 if let Some(root_seen) = probe_ganesha_process_groups(pid, "root") {
                     self.log_info(&format!(
@@ -1322,11 +1335,17 @@ while :; do :; done
                         sample_seen.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(" ")
                     ));
                 }
+                if let Some(short_seen) = probe_ganesha_process_groups(pid, sample_short) {
+                    self.log_info(&format!(
+                        "readiness ganesha-seen short pw_name {} id -G (proc/{pid}/environ): {}",
+                        sample_short,
+                        short_seen.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(" ")
+                    ));
+                }
             }
             if report.is_ready() {
                 self.log_info(&format!(
-                    "Ganesha readiness confirmed: root getgrouplist+grps+gl ok, sample({}) getgrouplist+grps+gl ok",
-                    sample
+                    "Ganesha readiness confirmed: root+short({sample_short}) getgrouplist+grps+gl ok, sample({sample}) getgrouplist+grps+gl ok",
                 ));
                 self.log_info("synthetic krb principal getpwuid_r/getgrouplist test: no my_getgrouplist_alloc WARN (clean)");
                 return true;
@@ -1346,9 +1365,11 @@ while :; do :; done
             return true;
         }
         self.log_warn(&format!(
-            "Ganesha post-start readiness incomplete after timeout (root_ok={}, sample_ok={}, socket_ok={}, ganesha_process_ok={}, uid2grp_clean={}, synthetic_clean={}); observer/heal will correct",
+            "Ganesha post-start readiness incomplete after timeout (root_ok={}, short_root_ok={}, sample_ok={}, short_sample_ok={}, socket_ok={}, ganesha_process_ok={}, uid2grp_clean={}, synthetic_clean={}); observer/heal will correct",
             final_report.root_ok,
+            final_report.short_root_ok,
             final_report.sample_ok,
+            final_report.short_sample_ok,
             final_report.socket_ok,
             final_report.ganesha_process_ok,
             final_report.ganesha_uid2grp_clean,

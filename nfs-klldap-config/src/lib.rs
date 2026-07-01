@@ -62,9 +62,9 @@ pub use ganesha_identity_pipeline::{
     warm_principals_nss_ready, IdentityPrincipals,
 };
 pub use ganesha_nss_contract::{
-    evaluate_nss_contract, nss_lookup_names, probe_nss_groups, probe_nss_passwd,
-    probe_nss_passwd_exact, probe_nss_passwd_from_file_exact,
-    GaneshaNssEnv,
+    evaluate_nss_contract, evaluate_short_name_getgrouplist_contract, nss_lookup_names,
+    probe_nss_groups, probe_nss_groups_exact, probe_nss_passwd, probe_nss_passwd_exact,
+    probe_nss_passwd_from_file_exact, short_pw_name_for_principal, GaneshaNssEnv,
 };
 pub use ganesha_readiness::{
     build_ganesha_envp, check_ganesha_readiness, check_synthetic_krb_log_clean,
@@ -385,13 +385,18 @@ pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool
         .as_ref()
         .is_some_and(|g| g.contains(&0));
     let user_gl_ok = probe_grouplist_via_socket(&user_short).is_some();
+    let (short_contract_ok, short_contract_msg) =
+        evaluate_short_name_getgrouplist_contract(&principals.user, &nss_env, 3);
     msgs.push(format!(
-        "synthetic-getgrouplist: root_ok={root_gl_ok} user({user_short})_ok={user_gl_ok}"
+        "synthetic-getgrouplist: root_ok={root_gl_ok} user({user_short})_ok={user_gl_ok} {short_contract_msg}"
     ));
     if sock_available {
         if !root_gl_ok || !user_gl_ok {
             ok = false;
         }
+    }
+    if !short_contract_ok {
+        ok = false;
     }
     for (lab, p, expect_machine) in [
         ("user", principals.user.as_str(), false),
@@ -1348,7 +1353,9 @@ mod tests {
         }
         fs::write(
             nss_dir.join("nss_passwd"),
-            "testuser1@TEST.COM:x:3788:3002:u:/nonexistent:/usr/sbin/nologin\n\
+            "root:x:0:0:root:/root:/bin/sh\n\
+             testuser1:x:3788:3002:u:/nonexistent:/usr/sbin/nologin\n\
+             testuser1@TEST.COM:x:3788:3002:u:/nonexistent:/usr/sbin/nologin\n\
              server:x:0:0:host:/nonexistent:/usr/sbin/nologin\n\
              blue-lt:x:0:0:host:/nonexistent:/usr/sbin/nologin\n\
              host/blue-lt@TEST.COM:x:0:0:host:/nonexistent:/usr/sbin/nologin\n",
@@ -1356,7 +1363,10 @@ mod tests {
         .unwrap();
         fs::write(
             nss_dir.join("nss_group"),
-            "root:x:0:\nstaff:x:3002:testuser1@TEST.COM\naux:x:3007:testuser1@TEST.COM\n",
+            "root:x:0:root,daemon,bin\n\
+             staff:x:3002:testuser1,testuser1@TEST.COM\n\
+             writers:x:3005:testuser1,testuser1@TEST.COM\n\
+             aux:x:3007:testuser1,testuser1@TEST.COM\n",
         )
         .unwrap();
         std::env::set_var("IDHELPER_BIN", idh.to_string_lossy().to_string());
@@ -1402,6 +1412,10 @@ mod tests {
             "msg must report socket-grps status when daemon absent: {msg}"
         );
         assert!(msg.contains("host-client(host/blue-lt@TEST.COM):root-gid"));
+        assert!(
+            msg.contains("short-getgrouplist:ok:testuser1"),
+            "msg must gate on short pw_name getgrouplist: {msg}"
+        );
     }
 
     #[test]

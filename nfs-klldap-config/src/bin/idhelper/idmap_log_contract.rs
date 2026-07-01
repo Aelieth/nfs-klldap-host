@@ -201,6 +201,13 @@ complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
     }
 
     #[test]
+    fn signal_ganesha_reload_idmap_respects_disable_env() {
+        std::env::set_var("NFS_KLLDAP_SIGHUP_ON_IDMAP_HEAL", "0");
+        assert!(!nfs_klldap_config::signal_ganesha_reload_idmap(99999));
+        std::env::remove_var("NFS_KLLDAP_SIGHUP_ON_IDMAP_HEAL");
+    }
+
+    #[test]
     fn validate_from_env_idmap_log_if_set() {
         if let Ok(p) = std::env::var("IDMAP_LOG") {
             let res = validate_user_tgt_idmap_log(Path::new(&p), "testuser1@TESTLABBY.LOCAL");

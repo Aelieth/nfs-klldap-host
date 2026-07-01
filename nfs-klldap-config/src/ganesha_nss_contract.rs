@@ -340,6 +340,32 @@ mod tests {
     }
 
     #[test]
+    fn probe_nss_groups_returns_supplemental_for_fqdn_login() {
+        let td = tempfile::tempdir().unwrap();
+        fs::write(
+            td.path().join("nss_passwd"),
+            "testuser1@EX.COM:x:3001:3005:user:/non:/nologin\n",
+        )
+        .unwrap();
+        fs::write(
+            td.path().join("nss_group"),
+            "root:x:0:\ntestuser1@EX.COM:x:3005:\nstaff:x:3007:testuser1@EX.COM\n",
+        )
+        .unwrap();
+        let env = GaneshaNssEnv::from_paths(
+            &td.path().join("nss_passwd"),
+            &td.path().join("nss_group"),
+        );
+        if !env.wrapper_available() {
+            eprintln!("skip: libnss_wrapper.so not on host");
+            return;
+        }
+        let gids = probe_nss_groups("testuser1@EX.COM", &env);
+        assert!(gids.contains(&3005), "primary gid: {gids:?}");
+        assert!(gids.contains(&3007), "supplemental gid from @ member field: {gids:?}");
+    }
+
+    #[test]
     fn ganesha_ld_preload_is_nss_wrapper_only() {
         let preload = ld_preload_for_ganesha_nss();
         let s = preload.to_string_lossy();

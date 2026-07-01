@@ -428,7 +428,7 @@ Nobody-Group = {nobody_g}
 [Translation]
 Method = {method}
 GSS-Methods = {gss}
-# krb5/krb5p/krb5i: nsswitch + UseGetpwnam=true (uid2grp_allocate_by_uid); see ganesha-ctl id-resolve
+# krb5/krb5p/krb5i: nsswitch + UseGetpwnam=true (getpwuid_r + getgrouplist LogInfo); see ganesha-ctl id-resolve
 "#,
         realm = realm,
         nobody_u = constants::IDMAPD_NOBODY_USER,
@@ -477,6 +477,20 @@ fn write_ganesha_main(
         })
         .collect();
 
+    let rpc_cred_fallback = cfg
+        .ganesha
+        .enable_rpc_cred_fallback
+        .unwrap_or(true);
+    let rpc_cred_line = if rpc_cred_fallback {
+        "    enable_rpc_cred_fallback = true;  # RPC token gids when uid2grp fails; may mask incomplete nss_wrapper membership.\n"
+    } else {
+        "    enable_rpc_cred_fallback = false;  # fail closed on uid2grp miss (idhelper authoritative).\n"
+    };
+    let idmap_validity = cfg
+        .ganesha
+        .idmapped_validity_secs
+        .unwrap_or(constants::GANESHA_IDMAPPED_VALIDITY_SECS);
+
     let mut content = format!(
         r#"NFS_CORE_PARAM {{
     Protocols = {proto};
@@ -486,15 +500,14 @@ fn write_ganesha_main(
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
-    enable_rpc_cred_fallback = true;  # fallback groups if uid2grp fails under krb5.
-}}
+{rpc_cred_line}}}
 
 DIRECTORY_SERVICES {{
     DomainName = {realm};
     Pwnam_Implementation = {pwnam};
-    Pwutils_Use_Fully_Qualified_Names = true;  # principal2uid uses user@ form; UseGetpwnam=true uses short name for getgrouplist.
+    Pwutils_Use_Fully_Qualified_Names = true;  # principal2uid uses user@ form; getgrouplist uses passwd login from getpwuid_r.
     Root_Kerberos_Principal = {root_krb};
-    # Idmapped_* (not Manage_Gids_Expiration).
+    # Idmapped_* negative cache TTL (seconds); lower reduces miss stickiness, increases NSS load.
     Idmapped_User_Time_Validity = {idmap_validity};
     Idmapped_Group_Time_Validity = {idmap_validity};
 }}
@@ -508,7 +521,7 @@ NFS_KRB5 {{
 NFSV4 {{
     Only_Numeric_Owners = true;
     Allow_Numeric_Owners = true;
-    UseGetpwnam = true;  # uid path (uid2grp_allocate_by_uid + getgrouplist) via nss_wrapper/idhelper; Debian 9.6 _MSPAC_SUPPORT stubs allocate_by_principal.
+    UseGetpwnam = true;  # krb5 uid2grp via getpwuid_r + getgrouplist LogInfo under nss_wrapper/idhelper (_MSPAC_SUPPORT stubs allocate_by_principal).
     RecoveryBackend = fs;
     Lease_Lifetime = 60;
     Grace_Period = 45;
@@ -525,7 +538,8 @@ EXPORT_DEFAULTS {{
         proto = constants::GANESHA_PROTOCOLS,
         pwnam = constants::GANESHA_PWNAM_IMPL,
         root_krb = constants::GANESHA_ROOT_KRB_PRINCIPALS,
-        idmap_validity = constants::GANESHA_IDMAPPED_VALIDITY_SECS,
+        idmap_validity = idmap_validity,
+        rpc_cred_line = rpc_cred_line,
     );
 
     // Baseline LOG helps operators while GANESHA_DEBUG enables FULL_DEBUG.
@@ -570,7 +584,7 @@ EXPORT_DEFAULTS {{
 /// Posix-only block for limited FS (9.6 valid keys only). 1 sentence.
 /// Emits additional directives + comments for manage_gids=false + POSIX-only shares documenting reduction of rpcsec_gss_fetch_managed_groups attempts via idhelper backstop (AC4/D).
 fn posix_only_block() -> &'static str {
-    "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    Enable_NLM = false;\n    Enable_RQUOTA = false;\n    # Additional Ganesha 9.6 EXPORT knobs for conservative posix-only shares (manage_gids=false) to reduce unrelated RPC noise / fetch_managed attempts\n    # POSIX_ONLY_EXPORT: posix getattr/access only\n    # manage_gids=false + pure-POSIX (noacl/btrfs): UseGetpwnam + idhelper getgrouplist/socket-grps backstop authoritative; INFO fallbacks in rpcsec_gss/set_extended_groups are clean (no spam)\n    # See nfs_creds.c + uid2grp.c in V9.6 + supervisor readiness synthetic krb test\n"
+    "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    Enable_NLM = false;\n    Enable_RQUOTA = false;\n    # POSIX_ONLY_EXPORT: conservative posix-only export (AUTH_SYS managed gids off only).\n    # krb5p/krb5i still call rpcsec_gss_fetch_managed_groups -> getpwuid_r + getgrouplist via nss_wrapper/idhelper.\n    # See nfs_creds.c:581-584 + uid2grp.c LogInfo markers in V9.6.\n"
 }
 
 /// Build Ganesha 9.6 EXPORT ACL lines.
@@ -694,7 +708,15 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             proto = constants::GANESHA_PROTOCOLS,
         );
 
-        let krb_note = if sec.starts_with("krb5") && manage_gids_line.contains("true") { "# krb5* Manage_Gids=true: uid2grp_allocate_by_uid + getgrouplist via nss_wrapper/idhelper.\n" } else { "" };
+        let krb_note = if sec.starts_with("krb5") {
+            if manage_gids_line.contains("true") {
+                "# krb5* Manage_Gids=true: AUTH_SYS managed gids; krb5 still uses getpwuid_r + getgrouplist via nss_wrapper/idhelper.\n"
+            } else {
+                "# krb5* Manage_Gids=false: AUTH_SYS only; krb5p/krb5i still requires full supplemental groups in nss_wrapper.\n"
+            }
+        } else {
+            ""
+        };
         let block = format!(
             r#"# Generated from nfs-klldap.conf share "{}"
 {auto_comment}{krb_note}EXPORT {{
@@ -1121,7 +1143,7 @@ mod tests {
         crate::generate_all(&cfg, &paths).expect("regenerate");
         let idmap2 = std::fs::read_to_string(&idmap_path).expect("idmap2");
         assert_eq!(idmap, idmap2, "idmapd.conf must be stable on re-generate");
-        let known = "# GENERATED by nfs-klldap-config — do not edit (source: nfs-klldap.conf).\n# Routes user@REALM via nsswitch + getpwnam (nss_wrapper/sssd) for krb5*.\n\n[General]\nVerbosity = 0\nDomain = TEST\nLocal-Realms = TEST\n\n[Mapping]\nNobody-User = nobody\nNobody-Group = nogroup\n\n[Translation]\nMethod = nsswitch\nGSS-Methods = nsswitch\n# krb5/krb5p/krb5i: nsswitch + UseGetpwnam=true (uid2grp_allocate_by_uid); see ganesha-ctl id-resolve\n";
+        let known = "# GENERATED by nfs-klldap-config — do not edit (source: nfs-klldap.conf).\n# Routes user@REALM via nsswitch + getpwnam (nss_wrapper/sssd) for krb5*.\n\n[General]\nVerbosity = 0\nDomain = TEST\nLocal-Realms = TEST\n\n[Mapping]\nNobody-User = nobody\nNobody-Group = nogroup\n\n[Translation]\nMethod = nsswitch\nGSS-Methods = nsswitch\n# krb5/krb5p/krb5i: nsswitch + UseGetpwnam=true (getpwuid_r + getgrouplist LogInfo); see ganesha-ctl id-resolve\n";
         // Line-wise structural diff via contains (exact ws match on regen).
         for line in known.lines() {
             if !line.trim().is_empty() {

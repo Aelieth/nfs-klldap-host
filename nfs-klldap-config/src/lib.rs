@@ -58,7 +58,8 @@ pub use fs_probe::{
     FsCapabilities,
 };
 pub use ganesha_identity_pipeline::{
-    identity_principals_for_check, run_identity_pipeline, IdentityPrincipals,
+    identity_principals_for_check, run_identity_pipeline, warm_principals_for_startup,
+    warm_principals_nss_ready, IdentityPrincipals,
 };
 pub use ganesha_nss_contract::{
     evaluate_nss_contract, nss_lookup_names, probe_nss_groups, probe_nss_passwd,
@@ -69,8 +70,15 @@ pub use ganesha_readiness::{
     build_ganesha_envp, check_ganesha_readiness, check_synthetic_krb_log_clean,
     exercise_ganesha_uid2grp, filter_proc_environ_keys, ganesha_log_has_getgrouplist_warn,
     proc_pid_environ, probe_ganesha_process_groups, probe_id_g_under_env, probe_socket_grps,
-    probe_socket_grouplist, resolve_nss_sss_so, GaneshaReadinessReport, GaneshaSpawnEnv,
+    probe_socket_grouplist, resolve_nss_sss_so, signal_ganesha_reload_idmap,
+    GaneshaReadinessReport, GaneshaSpawnEnv,
 };
+
+/// True when LDAP bind DN and password are configured in nfs-klldap.conf.
+pub fn ldap_bind_configured(cfg: &NfsKlldapConfig) -> bool {
+    !cfg.sssd.ldap_default_bind_dn.trim().is_empty()
+        && !cfg.sssd.ldap_default_authtok.trim().is_empty()
+}
 pub use fs_warnings::{
     any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warning,
     limited_fs_warning_settings_ui, limited_fs_warnings_only, share_fs_acl_limited,

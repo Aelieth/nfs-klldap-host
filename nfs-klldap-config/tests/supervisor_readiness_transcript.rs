@@ -50,7 +50,7 @@ fn mock_idhelper_socket(sock: PathBuf, stop: Arc<AtomicBool>) {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() {
-                    let resp = if line.contains("root") {
+                    let resp = if line.contains("root") || line.contains("host/") {
                         "OK 0\n"
                     } else if line.contains("testuser1") {
                         "OK 3002|3007|3005\n"
@@ -122,6 +122,16 @@ fn supervise_readiness_probe_emits_ganesha_env_and_readiness_transcript() {
     let config_bin = cargo_bin("nfs-klldap-config");
     let nss_passwd = run.join("nss_passwd");
     let nss_group = run.join("nss_group");
+    fs::write(
+        &nss_passwd,
+        "root:x:0:0:root:/root:/bin/sh\ntestuser1@TEST:x:3001:3005:user:/non:/nologin\nhost/aurora@TEST:x:0:0:host:/non:/nologin\nhost/blue-lt@TEST:x:0:0:host:/non:/nologin\n",
+    )
+    .unwrap();
+    fs::write(
+        &nss_group,
+        "root:x:0:\ntestuser1@TEST:x:3005:\nstaff:x:3007:testuser1@TEST\n",
+    )
+    .unwrap();
 
     let output = Command::new(&startup_bin)
         .arg("supervise-readiness-probe")
@@ -183,7 +193,7 @@ fn supervise_readiness_probe_emits_ganesha_env_and_readiness_transcript() {
         "must confirm readiness: {combined}"
     );
     assert!(
-        combined.contains("synthetic krb principal uid2grp test: no my_getgrouplist_alloc WARN (clean)"),
+        combined.contains("synthetic krb principal getpwuid_r/getgrouplist test: no my_getgrouplist_alloc WARN (clean)"),
         "must pass synthetic krb scan: {combined}"
     );
     assert!(

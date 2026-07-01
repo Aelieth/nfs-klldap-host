@@ -95,7 +95,11 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
     // AC4/D: actual additional EXPORT knobs emitted for conservative posix-only
     assert!(frag.contains("Enable_NLM = false;"), "frag must emit additional V9.6 knob Enable_NLM:\n{frag}");
     assert!(frag.contains("Enable_RQUOTA = false;"), "frag must emit additional V9.6 knob Enable_RQUOTA:\n{frag}");
-    assert!(frag.contains("manage_gids=false + pure-POSIX"), "frag documents the path:\n{frag}");
+    assert!(
+        frag.contains("krb5p/krb5i still requires full supplemental groups in nss_wrapper")
+            || frag.contains("rpcsec_gss_fetch_managed_groups"),
+        "frag documents krb5 Manage_Gids=false truth:\n{frag}"
+    );
     if let Ok(scratch) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {
         let dest = std::path::PathBuf::from(scratch).join("10-users-limited.conf");
         let _ = fs::write(&dest, &frag);

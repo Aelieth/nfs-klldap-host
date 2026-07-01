@@ -147,7 +147,7 @@ pub(crate) mod test_rebulk {
 }
 
 /// Warm primary + supplemental group rows in the resolver cache before nss materialize.
-/// Ganesha 9.6 Manage_Gids/getgrouplist needs member-of groups (e.g. lldap_sudohost) in nss_group
+/// Ganesha 9.6 krb5 uid2grp needs supplemental member-of groups (e.g. lldap_sudohost) in nss_group
 /// at startup; bulk LDAP group load alone may omit LLDAP-only membership edges.
 fn warm_rebulk_group_cache(
     resolver: &nfs_klldap_identity::IdLdapResolver,
@@ -466,8 +466,12 @@ fn handle_client(
                     let prod = NssMaterializePaths::production();
                     resolve_groups_for_principal(arg, realm, server_variants, &mut guard, &prod, false)
                 };
-                let list = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|");
-                out.push_str(&format!("OK {}\n", list));
+                if gs.is_empty() && arg.contains('@') {
+                    out.push_str("ERR unresolved principal\n");
+                } else {
+                    let list = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|");
+                    out.push_str(&format!("OK {}\n", list));
+                }
             }
         }
         "GROUPLIST" | "GETGROUPLIST" => {
@@ -484,8 +488,12 @@ fn handle_client(
                 let prod = NssMaterializePaths::production();
                 resolve_groups_for_principal(q, realm, server_variants, &mut guard, &prod, false)
             };
-            let list = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|");
-            out.push_str(&format!("OK {}\n", list));
+            if gs.is_empty() && q.contains('@') {
+                out.push_str("ERR unresolved principal\n");
+            } else {
+                let list = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("|");
+                out.push_str(&format!("OK {}\n", list));
+            }
         }
         _ => {
             out.push_str("ERR unknown command\n");

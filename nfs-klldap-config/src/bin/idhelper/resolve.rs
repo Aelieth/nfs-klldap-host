@@ -22,6 +22,14 @@ use crate::materialize::{
     ensure_nss_group_member_login, materialize_nss_wrappers_at, nss_passwd_logins_for,
     NssMaterializePaths,
 };
+
+/// Source tag when a realm principal cannot be resolved (no nobody materialization).
+pub(crate) const RESOLVE_FAIL_CLOSED_SOURCE: &str = "unresolved-fail-closed";
+
+pub(crate) fn is_unresolved_fail_closed(r: &Resolved) -> bool {
+    r.source == RESOLVE_FAIL_CLOSED_SOURCE
+}
+
 #[cfg(test)]
 use crate::materialize::build_nss_snapshot;
 
@@ -179,6 +187,9 @@ pub(crate) fn resolve_groups_for_principal(
         return vec![0];
     }
     let r = resolve_principal(principal, realm, server_variants, cache, paths);
+    if is_unresolved_fail_closed(&r) {
+        return vec![];
+    }
     let mut gids = compute_gids_for_resolved(&r, principal);
     // Persist full gids (incl supps) onto the cache entry so that subsequent build_nss_snapshot
     // (including after rebulk) will emit complete membership rows for all of them.
@@ -476,8 +487,22 @@ pub(crate) fn resolve_principal(
                 source: src,
                 supplemental_gids: vec![],
             }
+        } else if principal_has_realm(&principal) {
+            eprintln!(
+                "[idhelper] FAIL-CLOSED unresolved principal=\"{}\" (no uid/gid from getent or LDAP; no nobody materialization)",
+                principal
+            );
+            let name = principal_local_part(&principal).to_string();
+            Resolved {
+                principal: principal.clone(),
+                name,
+                uid: 0,
+                gid: 0,
+                kind: PrincipalKind::Unknown,
+                source: RESOLVE_FAIL_CLOSED_SOURCE.to_string(),
+                supplemental_gids: vec![],
+            }
         } else {
-            // Nobody fallback materializes nss so getpwnam succeeds.
             eprintln!(
                 "[idhelper] FALLBACK {} for principal=\"{}\" (no uid/gid from getent or structured resolver)",
                 FALLBACK_NOBODY_UID, principal
@@ -510,6 +535,10 @@ pub(crate) fn resolve_principal(
             resolved.kind.as_str(),
             resolved.source
         );
+    }
+
+    if is_unresolved_fail_closed(&resolved) {
+        return resolved;
     }
 
     let fp_before = cache.content_fingerprint();
@@ -624,6 +653,34 @@ mod tests {
         let content = "# groups\n\ndevs:x:3005:alice,bob\n";
         assert_eq!(lookup_group_in_content(content, 3005), Some("devs".into()));
         assert_eq!(lookup_group_in_content(content, 9999), None);
+    }
+
+    #[test]
+    fn resolve_fails_closed_for_realm_principal_on_ldap_miss() {
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_id_resolver_for_test();
+        let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
+        std::env::remove_var("TEST_REBULK_POPULATE");
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = crate::materialize::NssMaterializePaths::under(tmp.path());
+        let mut cache = IdCache::default();
+        let r = resolve_principal(
+            "missinguser@MISS.REALM",
+            "MISS.REALM",
+            &[],
+            &mut cache,
+            &paths,
+        );
+        assert_eq!(r.source, RESOLVE_FAIL_CLOSED_SOURCE);
+        assert_ne!(r.uid, FALLBACK_NOBODY_UID);
+        let pw = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
+        assert!(
+            !pw.lines().any(|l| l.starts_with("missinguser@MISS.REALM:")),
+            "fail-closed must not write passwd row: {pw}"
+        );
+        if let Some(v) = old_pop {
+            std::env::set_var("TEST_REBULK_POPULATE", v);
+        }
     }
 
     #[test]

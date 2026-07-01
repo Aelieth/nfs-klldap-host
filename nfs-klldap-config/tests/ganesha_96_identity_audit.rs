@@ -3,7 +3,9 @@
 use std::fs;
 use std::sync::Mutex;
 
-use nfs_klldap_config::{generate_all, GenerationPaths, NfsKlldapConfig};
+use nfs_klldap_config::{
+    evaluate_nss_contract, generate_all, GaneshaNssEnv, GenerationPaths, NfsKlldapConfig,
+};
 
 static MOUNTINFO_ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -92,4 +94,51 @@ fn conservative_limited_export_and_main_conf_emit_identity_prerequisites() {
     let disable = frag.find("Disable_ACL = true;").unwrap();
     let sec = frag.find("SecType =").unwrap();
     assert!(disable < sec, "posix directives must precede SecType");
+}
+
+#[test]
+fn mount_race_structural_empty_nss_fails_contract_seeded_passes() {
+    let td = tempfile::tempdir().unwrap();
+    let env_empty = GaneshaNssEnv::from_paths(
+        &td.path().join("missing_passwd"),
+        &td.path().join("missing_group"),
+    );
+    let (ok_empty, _) =
+        evaluate_nss_contract("testuser1@TESTLAB.LOCAL", &env_empty, false);
+    assert!(!ok_empty, "empty NSS must fail identity contract (mount-time race)");
+
+    let pw = td.path().join("nss_passwd");
+    let gr = td.path().join("nss_group");
+    std::fs::write(
+        &pw,
+        "testuser1@TESTLAB.LOCAL:x:3001:3005:user:/non:/nologin\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &gr,
+        "root:x:0:\ntestuser1@TESTLAB.LOCAL:x:3005:\nstaff:x:3007:testuser1@TESTLAB.LOCAL\n",
+    )
+    .unwrap();
+    let env_seeded = GaneshaNssEnv::from_paths(&pw, &gr);
+    let (ok_seeded, msg) =
+        evaluate_nss_contract("testuser1@TESTLAB.LOCAL", &env_seeded, false);
+    if env_seeded.wrapper_available() {
+        assert!(ok_seeded, "pre-seeded NSS must pass contract: {msg}");
+    } else {
+        let (file_ok, file_msg) =
+            evaluate_nss_contract("testuser1@TESTLAB.LOCAL", &env_seeded, false);
+        assert!(file_ok || file_msg.contains("file-ok"), "file-level contract: {file_msg}");
+    }
+}
+
+#[test]
+fn enable_rpc_cred_fallback_disabled_when_configured() {
+    let toml = format!(
+        "{LIMITED_TOML}\n[ganesha]\nenable_rpc_cred_fallback = false\n"
+    );
+    let (_tmp, _frag, ganesha) = generate_limited(MOUNTINFO_BTRFS_NOACL, &toml);
+    assert!(
+        ganesha.contains("enable_rpc_cred_fallback = false;"),
+        "ganesha.conf:\n{ganesha}"
+    );
 }

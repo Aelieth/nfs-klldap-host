@@ -116,7 +116,29 @@ else
     pass "audited comments within 1-2 sentence heuristic"
 fi
 
-# 7. cargo test --workspace
+# 7. No prose claiming Manage_Gids=false skips krb5 uid2grp
+MISLEADING=0
+for f in README.md TESTING.md nfs-klldap-config/src/generate.rs; do
+    if grep -qiE 'Manage_Gids=false.*skip.*uid2grp|Manage_Gids=false.*skip.*krb5' "$ROOT/$f" 2>/dev/null; then
+        echo "  misleading krb5/Manage_Gids prose in $f"
+        MISLEADING=1
+    fi
+done
+if grep -q 'missing POST-CLIENT uid2grp_allocate_by_uid' "$ROOT/scripts/capture-plan-gate.sh" 2>/dev/null; then
+    echo "  capture-plan-gate still requires fabricated uid2grp_allocate_by_uid"
+    MISLEADING=1
+fi
+if ! grep -q 'getpwuid_r for uid: 3001' "$ROOT/scripts/capture-plan-gate.sh" 2>/dev/null; then
+    echo "  capture-plan-gate missing authentic getpwuid_r marker"
+    MISLEADING=1
+fi
+if [[ "$MISLEADING" -eq 1 ]]; then
+    fail "misleading Manage_Gids/krb5 or fabricated log grep in docs/scripts"
+else
+    pass "Manage_Gids=false krb5 truth + authentic log markers in gates"
+fi
+
+# 8. cargo test --workspace
 echo "--- cargo test --workspace ---"
 if (cd "$ROOT" && cargo test --workspace --quiet 2>&1); then
     pass "cargo test --workspace"

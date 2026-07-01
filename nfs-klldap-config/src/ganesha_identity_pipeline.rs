@@ -4,6 +4,8 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::ganesha_nss_contract::{evaluate_nss_contract, GaneshaNssEnv};
+use crate::ganesha_readiness::{probe_socket_grps, probe_socket_grouplist};
+use crate::NfsKlldapConfig;
 
 /// Principals exercised by preflight (user TGT + server host + client machine).
 #[derive(Clone, Debug)]
@@ -11,6 +13,50 @@ pub struct IdentityPrincipals {
     pub user: String,
     pub server_host: String,
     pub client_host: String,
+}
+
+/// Principals that must be visible in nss_wrapper before Ganesha starts (FQDN user + host variants).
+pub fn warm_principals_for_startup(
+    cfg: Option<&NfsKlldapConfig>,
+    realm: &str,
+    host_short: &str,
+) -> Vec<String> {
+    let base = identity_principals_for_check(realm, host_short);
+    let mut out = vec![base.user, base.server_host, base.client_host];
+    if let Some(cfg) = cfg {
+        for p in &cfg.ganesha.warm_principals {
+            let t = p.trim();
+            if !t.is_empty() && !out.iter().any(|x| x == t) {
+                out.push(t.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Returns (all_ok, failure tags) after socket warm + nss contract probes.
+pub fn warm_principals_nss_ready(
+    principals: &[String],
+    env: &GaneshaNssEnv,
+    socket_path: &str,
+) -> (bool, Vec<String>) {
+    let mut fails = Vec::new();
+    for p in principals {
+        let expect_machine = p.starts_with("host/");
+        let (ok, detail) = evaluate_nss_contract(p, env, expect_machine);
+        if !ok {
+            fails.push(detail);
+            continue;
+        }
+        if probe_socket_grps(p, socket_path).is_none() {
+            fails.push(format!("socket-grps-miss:{p}"));
+            continue;
+        }
+        if probe_socket_grouplist(p, socket_path).is_none() {
+            fails.push(format!("socket-grouplist-miss:{p}"));
+        }
+    }
+    (fails.is_empty(), fails)
 }
 
 pub fn identity_principals_for_check(realm: &str, host_short: &str) -> IdentityPrincipals {
@@ -86,6 +132,7 @@ pub fn run_identity_pipeline(realm: &str, host_short: &str, idh: &str) -> (bool,
 
 #[cfg(test)]
 mod tests {
+    use super::warm_principals_for_startup;
     use crate::GaneshaNssEnv;
     use std::path::PathBuf;
 
@@ -95,6 +142,16 @@ mod tests {
         ("NSS_EXTRAUSERS_PASSWD", "/var/lib/extrausers/passwd"),
         ("NSS_EXTRAUSERS_GROUP", "/var/lib/extrausers/group"),
     ];
+
+    #[test]
+    fn warm_principals_include_fqdn_user() {
+        let principals = warm_principals_for_startup(None, "TESTLAB.LOCAL", "nfs-server");
+        assert!(
+            principals.iter().any(|p| p == "testuser1@TESTLAB.LOCAL"),
+            "warm set must include FQDN user: {principals:?}"
+        );
+        assert!(principals.iter().any(|p| p.starts_with("host/")));
+    }
 
     #[test]
     fn supervisor_ganesha_nss_env_parity() {

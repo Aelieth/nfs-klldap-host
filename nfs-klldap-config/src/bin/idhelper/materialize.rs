@@ -609,7 +609,7 @@ pub(crate) fn materialize_nss_wrappers_at(
 
     {
         // nss_passwd atomic + fsync for durability before rename
-        let tmp = paths.nss_passwd.with_extension("tmp");
+        let tmp = paths.nss_passwd.with_extension("new");
         let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
         {
             let mut w = BufWriter::new(&mut f);
@@ -625,7 +625,7 @@ pub(crate) fn materialize_nss_wrappers_at(
 
     {
         // nss_group atomic + fsync
-        let tmp = paths.nss_group.with_extension("tmp");
+        let tmp = paths.nss_group.with_extension("new");
         let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
         {
             let mut w = BufWriter::new(&mut f);
@@ -648,7 +648,7 @@ pub(crate) fn materialize_nss_wrappers_at(
     {
         {
             // extrausers_passwd atomic + fsync + readback visibility
-            let tmp = paths.extrausers_passwd.with_extension("tmp");
+            let tmp = paths.extrausers_passwd.with_extension("new");
             let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
             {
                 let mut w = BufWriter::new(&mut f);
@@ -662,7 +662,7 @@ pub(crate) fn materialize_nss_wrappers_at(
             fs::rename(tmp, paths.extrausers_passwd)?;
         }
         {
-            let tmp = paths.extrausers_group.with_extension("tmp");
+            let tmp = paths.extrausers_group.with_extension("new");
             let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
             {
                 let mut w = BufWriter::new(&mut f);

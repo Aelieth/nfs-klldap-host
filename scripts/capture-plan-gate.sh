@@ -125,10 +125,10 @@ set -e
   echo "exit_code=$FEDORA_RC"
   echo "=== SERVER BIND STAT (container view after client) ==="
   docker exec nfs-klldap bash -c 'f=$(cat /export/stuff/.user-tgt-verify 2>/dev/null | sed -n "s/^SERVER_VERIFY=//p"); [ -n "$f" ] && stat -c "%u:%g %n" "/export/stuff/$f" || echo no-verify-file'
-  echo "=== POST-CLIENT ganesha-ctl id-resolve (uid2grp chain in ganesha.log) ==="
+  echo "=== POST-CLIENT ganesha-ctl id-resolve (getpwuid_r/getgrouplist chain in ganesha.log) ==="
   docker exec nfs-klldap ganesha-ctl id-resolve testuser1@TESTLABBY.LOCAL || true
   echo "=== POST-CLIENT ID MAPPER (recent) ==="
-  docker exec nfs-klldap bash -c 'grep -E "ID MAPPER|uid2grp_allocate|principal2uid|getgrouplist|Unsupported code path" /var/log/ganesha.log | tail -30' || true
+  docker exec nfs-klldap bash -c 'grep -E "ID MAPPER|getpwuid_r for uid:|getgrouplist for uname:|principal2uid|Unsupported code path" /var/log/ganesha.log | tail -30' || true
 } | tee -a "$NFS_FULL_LOG"
 
 docker exec nfs-klldap cat /var/log/ganesha.log > "$SCRATCH/live-ganesha.log" 2>/dev/null || true
@@ -182,18 +182,24 @@ if ! grep -q 'user-tgt write_rc=0' "$FEDORA_LOG"; then
   exit 42
 fi
 
-# POST-CLIENT uid2grp chain (Ganesha 9.6 UseGetpwnam=true path)
+# POST-CLIENT identity chain (Ganesha 9.6 UseGetpwnam=true: getpwuid_r + getgrouplist LogInfo)
 if ! grep -E 'principal2uid.*testuser1@TESTLABBY' "$NFS_FULL_LOG" >/dev/null 2>&1; then
   echo "ERROR: missing POST-CLIENT principal2uid for testuser1@"
   exit 43
 fi
-if ! grep -E 'uid2grp_allocate_by_uid.*uid: 3001' "$NFS_FULL_LOG" >/dev/null 2>&1; then
-  echo "ERROR: missing POST-CLIENT uid2grp_allocate_by_uid for uid 3001"
+if ! grep -E 'getpwuid_r for uid: 3001' "$NFS_FULL_LOG" >/dev/null 2>&1; then
+  echo "ERROR: missing POST-CLIENT getpwuid_r for uid 3001"
   exit 44
 fi
-if ! grep -E 'getgrouplist for uname: testuser1, returned 2 groups' "$NFS_FULL_LOG" >/dev/null 2>&1; then
-  echo "ERROR: missing POST-CLIENT getgrouplist success for testuser1 (2 groups)"
-  exit 45
+if ! grep -E 'getgrouplist for uname: testuser1@TESTLABBY\.LOCAL, returned 2 groups' "$NFS_FULL_LOG" >/dev/null 2>&1; then
+  if ! grep -E 'getgrouplist for uname: testuser1, returned 2 groups' "$NFS_FULL_LOG" >/dev/null 2>&1; then
+    echo "ERROR: missing POST-CLIENT getgrouplist success for testuser1 (2 groups)"
+    exit 45
+  fi
+fi
+if grep -E 'uid2grp_allocate_by_' "$NFS_FULL_LOG" >/dev/null 2>&1; then
+  echo "ERROR: fabricated uid2grp log marker must not appear (use getpwuid_r LogInfo)"
+  exit 47
 fi
 if grep -E 'Unsupported code path for principal testuser1@' "$NFS_FULL_LOG" >/dev/null 2>&1; then
   echo "ERROR: Unsupported code path for user TGT principal"

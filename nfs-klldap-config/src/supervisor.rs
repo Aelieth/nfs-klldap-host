@@ -9,11 +9,14 @@ use std::time::Duration;
 
 use nfs_klldap_config::{
     compute_startup_step, compute_wizard_step, fingerprint_exports_dir,
-    fingerprint_identity_artifacts, ganesha_readiness::{
+    fingerprint_identity_artifacts, GaneshaNssEnv,
+    ganesha_readiness::{
         build_ganesha_envp, check_ganesha_readiness, filter_proc_environ_keys,
-        probe_ganesha_process_groups, probe_id_g_under_env, GaneshaSpawnEnv,
+        probe_ganesha_process_groups, probe_id_g_under_env, probe_socket_grps,
+        probe_socket_grouplist, GaneshaSpawnEnv,
     },
-    ganesha_sighup_failed, idhelper_socket_path,
+    ganesha_sighup_failed, idhelper_socket_path, ldap_bind_configured,
+    warm_principals_for_startup, warm_principals_nss_ready,
     install_signal_handlers, is_preconfigured_deployment, is_setup_wizard_complete,
     discover_ganesha_daemon_pid, mark_setup_wizard_complete, plan_from_changes, process_is_live,
     reap_one_child, resolve_host_nfs_mode, resolve_keytab_path,
@@ -1119,15 +1122,94 @@ while :; do :; done
         }
     }
 
-    fn wait_for_idhelper_socket(&self) {
+    fn wait_for_idhelper_socket(&self) -> bool {
         let sock = idhelper_socket_path();
         for _ in 0..30 {
             if Path::new(&sock).exists() {
-                return;
+                return true;
             }
             thread::sleep(Duration::from_millis(100));
         }
         self.log_warn("idhelper socket not ready before Ganesha start — principal mapping may lag");
+        false
+    }
+
+    fn krb5_shares_enabled(&self) -> bool {
+        NfsKlldapConfig::load(&self.env.nfs_config)
+            .map(|cfg| {
+                cfg.shares.iter().any(|s| {
+                    s.security
+                        .as_deref()
+                        .unwrap_or(&cfg.ganesha.default_security)
+                        .starts_with("krb5")
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    fn warm_identity_principals_before_ganesha(&self) -> bool {
+        if self.env.supervise_probe
+            || self.env.supervise_wizard_probe
+            || self.env.supervise_loop_probe
+            || self.env.supervise_recycle_probe
+            || self.env.supervise_identity_recycle_probe
+            || self.env.supervise_sighup_hook_probe
+            || self.env.host_nfs_mode
+            || std::env::var("NFS_KLLDAP_SUPERVISE_READINESS_PROBE").is_ok()
+            || std::env::var("NFS_KLLDAP_SUPERVISOR_TICK_MS").is_ok()
+            || std::env::var("NFS_KLLDAP_TEST_PERSISTENT").is_ok()
+            || std::env::var("NFS_KLLDAP_SKIP_PRINCIPAL_WARM").is_ok()
+        {
+            return true;
+        }
+        let cfg = NfsKlldapConfig::load(&self.env.nfs_config).ok();
+        if self.krb5_shares_enabled() {
+            if let Some(ref c) = cfg {
+                if !ldap_bind_configured(c)
+                    && !std::env::var("NFS_KLLDAP_ALLOW_LDAP_DEGRADED").is_ok()
+                {
+                    self.log_warn(
+                        "ldap-bind:missing — krb5 shares need LDAP bind creds (set NFS_KLLDAP_ALLOW_LDAP_DEGRADED=1 to override)",
+                    );
+                    return false;
+                }
+            }
+            if let Some(ref c) = cfg {
+                if c.ganesha.enable_rpc_cred_fallback.unwrap_or(true) {
+                    self.log_warn(
+                        "rpc-cred-fallback:may-mask-incomplete-nss (enable_rpc_cred_fallback=true in ganesha.conf)",
+                    );
+                }
+            }
+        }
+        let realm = runtime_realm(cfg.as_ref());
+        let host = runtime_hostname(cfg.as_ref());
+        let short = host.split('.').next().unwrap_or(&host).to_string();
+        let principals = warm_principals_for_startup(cfg.as_ref(), &realm, &short);
+        let sock = idhelper_socket_path();
+        let env = GaneshaNssEnv::from_runtime_defaults();
+        self.log_info(&format!(
+            "principal-warm:start {} principals before Ganesha (FQDN nss_wrapper gate)",
+            principals.len()
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            for p in &principals {
+                let _ = probe_socket_grps(p, &sock);
+                let _ = probe_socket_grouplist(p, &sock);
+            }
+            let (ok, fails) = warm_principals_nss_ready(&principals, &env, &sock);
+            if ok {
+                self.log_info("principal-warm:complete");
+                return true;
+            }
+            if !fails.is_empty() {
+                self.log_info(&format!("principal-warm:retry {:?}", fails));
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        self.log_warn("principal-warm:incomplete after timeout");
+        std::env::var("NFS_KLLDAP_ALLOW_LDAP_DEGRADED").is_ok()
     }
 
     fn build_ganesha_envp(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
@@ -1148,11 +1230,18 @@ while :; do :; done
             || self.env.host_nfs_mode
         {
             self.log_info("Ganesha readiness confirmed (probe/test mode, full exercise skipped)");
-            self.log_info("synthetic krb principal uid2grp test: no my_getgrouplist_alloc WARN (clean) [probe mode]");
+            self.log_info("synthetic krb principal getpwuid_r/getgrouplist test: no my_getgrouplist_alloc WARN (clean) [probe mode]");
             return true; // probe modes consider ready without full exercise
         }
         let envp = self.build_ganesha_envp();
-        let sample = "testuser1";
+        let cfg = NfsKlldapConfig::load(&self.env.nfs_config).ok();
+        let realm = runtime_realm(cfg.as_ref());
+        let host = runtime_hostname(cfg.as_ref());
+        let short = host.split('.').next().unwrap_or(&host).to_string();
+        let sample = warm_principals_for_startup(cfg.as_ref(), &realm, &short)
+            .into_iter()
+            .find(|p| p.contains('@') && !p.starts_with("host/"))
+            .unwrap_or_else(|| format!("testuser1@{realm}"));
         let sock = idhelper_socket_path();
         let glog = std::env::var("GANESHA_LOG_PATH").unwrap_or_else(|_| "/var/log/ganesha.log".to_string());
         self.log_info("Post-ganesha-start readiness: exercising getgrouplist-equivalent (id -G under env) + socket-grps/gl for root + sample...");
@@ -1167,7 +1256,7 @@ while :; do :; done
         {
             self.log_info("readiness: test mode (tick or persistent) - quick return without full grps/gl wait");
             self.log_info("Ganesha readiness confirmed (test mode, quick path)");
-            self.log_info("synthetic krb principal uid2grp test: no my_getgrouplist_alloc WARN (clean) [test mode]");
+            self.log_info("synthetic krb principal getpwuid_r/getgrouplist test: no my_getgrouplist_alloc WARN (clean) [test mode]");
             return true;
         }
         self.refresh_tracked_ganesha_pid();
@@ -1181,7 +1270,7 @@ while :; do :; done
             let report = check_ganesha_readiness(
                 self.pids.ganesha,
                 &envp,
-                sample,
+                &sample,
                 &glog,
                 &sock,
             );
@@ -1195,7 +1284,7 @@ while :; do :; done
                         .join(" ")
                 ));
             }
-            if let Some(sample_g) = probe_id_g_under_env(sample, &envp) {
+            if let Some(sample_g) = probe_id_g_under_env(&sample, &envp) {
                 self.log_info(&format!(
                     "readiness {} id -G (under daemon env): {}",
                     sample,
@@ -1213,7 +1302,7 @@ while :; do :; done
                         root_seen.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(" ")
                     ));
                 }
-                if let Some(sample_seen) = probe_ganesha_process_groups(pid, sample)
+                if let Some(sample_seen) = probe_ganesha_process_groups(pid, &sample)
                 {
                     self.log_info(&format!(
                         "readiness ganesha-seen {} id -G (proc/{pid}/environ): {}",
@@ -1227,7 +1316,7 @@ while :; do :; done
                     "Ganesha readiness confirmed: root getgrouplist+grps+gl ok, sample({}) getgrouplist+grps+gl ok",
                     sample
                 ));
-                self.log_info("synthetic krb principal uid2grp test: no my_getgrouplist_alloc WARN (clean)");
+                self.log_info("synthetic krb principal getpwuid_r/getgrouplist test: no my_getgrouplist_alloc WARN (clean)");
                 return true;
             }
             thread::sleep(Duration::from_millis(350));
@@ -1235,13 +1324,13 @@ while :; do :; done
         let final_report = check_ganesha_readiness(
             self.pids.ganesha,
             &envp,
-            sample,
+            &sample,
             &glog,
             &sock,
         );
         if final_report.is_ready() {
             self.log_info("Ganesha readiness confirmed (final): all gates ok");
-            self.log_info("synthetic krb principal uid2grp test: no my_getgrouplist_alloc WARN (clean)");
+            self.log_info("synthetic krb principal getpwuid_r/getgrouplist test: no my_getgrouplist_alloc WARN (clean)");
             return true;
         }
         self.log_warn(&format!(
@@ -1257,7 +1346,13 @@ while :; do :; done
     }
 
     fn start_ganesha(&mut self) {
-        self.wait_for_idhelper_socket();
+        if !self.wait_for_idhelper_socket() {
+            return;
+        }
+        if !self.warm_identity_principals_before_ganesha() {
+            self.log_warn("principal-warm:incomplete — skipping Ganesha start until NSS warm succeeds");
+            return;
+        }
         self.quiet_winbind();
         let mut cmd = Command::new("ganesha.nfsd");
         // -F: foreground (no launcher exit + adopt dance). The spawn pid receives explicit envp directly via Command (execve equiv).
@@ -1270,6 +1365,7 @@ while :; do :; done
         if let Ok(child) = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
             let launched = child.id();
             self.pids.ganesha = Some(launched);
+            std::env::set_var("NFS_KLLDAP_GANESHA_PID", launched.to_string());
             self.log_info(&format!("Started ganesha.nfsd pid {launched} (foreground + explicit envp: LD_PRELOAD/NSS_WRAPPER/IDHELPER/socket/nss)"));
             self.ganesha_managed = true;
             thread::sleep(Duration::from_millis(800));

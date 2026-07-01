@@ -1078,11 +1078,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = NssMaterializePaths::under(tmp.path());
         let _ = std::fs::create_dir_all(tmp.path());
+        std::fs::write(
+            paths.nss_passwd,
+            "testuser1@EXAMPLE.COM:x:3001:3005:user:/non:/nologin\n",
+        )
+        .unwrap();
         let mut cache = IdCache::default();
         let realm = "EXAMPLE.COM".to_string();
         let variants: Vec<String> = vec![];
         let gs = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
         assert!(!gs.is_empty());
+        assert!(gs.contains(&3005));
     }
 
     #[test]
@@ -1196,10 +1202,16 @@ mod tests {
         let gs0 = resolve_groups_for_principal("host/blue-lt@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
         assert_eq!(gs0, vec![0]);
 
+        std::fs::write(
+            paths.nss_passwd,
+            "testuser1@EXAMPLE.COM:x:3001:3005:user:/non:/nologin\n",
+        )
+        .unwrap();
         let r2 = resolve_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths);
         let gs_user = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
         assert!(!gs_user.is_empty());
-        assert!(r2.kind != PrincipalKind::Machine);
+        assert_eq!(r2.kind, PrincipalKind::User);
+        assert_ne!(r2.source, crate::resolve::RESOLVE_FAIL_CLOSED_SOURCE);
     }
 
     #[test]

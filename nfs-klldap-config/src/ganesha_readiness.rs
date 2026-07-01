@@ -336,6 +336,21 @@ pub fn probe_socket_grouplist(principal: &str, socket_path: &str) -> Option<Vec<
     socket_cmd_gids(socket_path, "GROUPLIST", principal)
 }
 
+/// Send SIGHUP to ganesha.nfsd to clear idmapper negative cache after NSS heal.
+pub fn signal_ganesha_reload_idmap(pid: u32) -> bool {
+    if std::env::var("NFS_KLLDAP_SIGHUP_ON_IDMAP_HEAL")
+        .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if pid == 0 {
+        return false;
+    }
+    crate::signal_process_hup(pid);
+    true
+}
+
 /// Single-shot readiness gate under the ganesha envp (no retry loop).
 pub fn check_ganesha_readiness(
     pid: Option<u32>,
@@ -351,11 +366,12 @@ pub fn check_ganesha_readiness(
     let root_ok = root_gids
         .as_ref()
         .is_some_and(|g| g.contains(&0));
-    // Sample must resolve with supplemental gids (logs.txt errno 3 had ngroups:3 but failed).
-    let sample_ok = sample_gids.as_ref().is_some_and(|g| !g.is_empty())
-        && sample_socket_gl
-            .as_ref()
-            .is_some_and(|g| g.len() >= 2);
+    // Socket GRPS/GROUPLIST is authoritative; id -G may miss FQDN logins without nss_wrapper on the probe cmd.
+    let sample_ok = sample_socket_gl
+        .as_ref()
+        .is_some_and(|g| g.len() >= 2)
+        || (sample_gids.as_ref().is_some_and(|g| !g.is_empty())
+            && probe_socket_grps(sample, socket_path).is_some());
 
     let sock_root_grps = probe_socket_grps("root", socket_path).is_some();
     let sock_sample_grps = probe_socket_grps(sample, socket_path).is_some();
@@ -370,7 +386,8 @@ pub fn check_ganesha_readiness(
         let root_seen = probe_ganesha_process_groups(pid, "root");
         let sample_seen = probe_ganesha_process_groups(pid, sample);
         root_seen.as_ref().is_some_and(|g| g.contains(&0))
-            && sample_seen.as_ref().is_some_and(|g| !g.is_empty())
+            && (sample_seen.as_ref().is_some_and(|g| !g.is_empty())
+                || sample_socket_gl.is_some())
     } else {
         false
     };

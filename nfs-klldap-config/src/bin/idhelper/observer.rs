@@ -33,6 +33,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
     let mut bridge_warned: std::collections::HashMap<String, std::time::Instant> =
         std::collections::HashMap::new();
     let dedup_window = Duration::from_secs(30);
+    let failure_dedup_window = Duration::from_secs(2);
 
     loop {
         match File::open(path) {
@@ -58,11 +59,33 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                                 dedup_window,
                             );
                             detect_my_getgrouplist_failure_and_heal(line, &cache, realm, variants);
+                            let failure_line = line.contains("Could not map principal ")
+                                || (line.to_ascii_lowercase().contains("my_getgrouplist_alloc")
+                                    && (line.to_ascii_lowercase().contains("failed")
+                                        || line.to_ascii_lowercase().contains("warn")));
+                            if failure_line {
+                                if let Some(candidate) =
+                                    extract_candidate_principal(line, realm)
+                                {
+                                    heal_principal_immediately(
+                                        &candidate,
+                                        &cache,
+                                        realm,
+                                        variants,
+                                        line.contains("Could not map principal "),
+                                    );
+                                }
+                            }
                             if let Some(candidate) = extract_candidate_principal(line, realm) {
                                 let now = std::time::Instant::now();
+                                let window = if failure_line {
+                                    failure_dedup_window
+                                } else {
+                                    dedup_window
+                                };
                                 let is_fresh = recently
                                     .get(&candidate)
-                                    .map(|last| now.duration_since(*last) >= dedup_window)
+                                    .map(|last| now.duration_since(*last) >= window)
                                     .unwrap_or(true);
 
                                 if is_fresh {
@@ -236,6 +259,40 @@ fn maybe_warn_bridge_server_addr(
 /// On match: log the *exact* result+errno *seen by ganesha process* (not idhelper view),
 /// trigger REBULK + nss re-materialize + cache refresh + socket-grps recheck.
 /// Self-healing + exposes ganesha view.
+fn heal_principal_immediately(
+    candidate: &str,
+    cache: &std::sync::Arc<std::sync::Mutex<crate::common::IdCache>>,
+    realm: &str,
+    variants: &[String],
+    send_sighup: bool,
+) {
+    eprintln!(
+        "[idhelper] fast-heal for principal={} (immediate resolve + nss materialize)",
+        candidate
+    );
+    {
+        let mut guard = cache.lock().unwrap();
+        let prod = crate::materialize::NssMaterializePaths::production();
+        let _ = resolve_principal(candidate, realm, variants, &mut guard, &prod);
+        let _ = resolve_groups_for_principal(
+            candidate, realm, variants, &mut guard, &prod, true,
+        );
+        let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);
+    }
+    if send_sighup {
+        if let Ok(pid_s) = std::env::var("NFS_KLLDAP_GANESHA_PID") {
+            if let Ok(pid) = pid_s.parse::<u32>() {
+                if nfs_klldap_config::signal_ganesha_reload_idmap(pid) {
+                    eprintln!(
+                        "[idhelper] idmap-heal:sighup-sent principal={}",
+                        candidate
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn detect_my_getgrouplist_failure_and_heal(
     line: &str,
     cache: &std::sync::Arc<std::sync::Mutex<crate::common::IdCache>>,

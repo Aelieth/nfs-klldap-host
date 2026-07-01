@@ -180,6 +180,13 @@ pub struct GaneshaSection {
     pub default_security: String,
     /// Runs an optional executable after each successful generate pass.
     pub post_generate_hook: Option<String>,
+    /// Extra krb5 principals to materialize in nss_wrapper before Ganesha accepts clients.
+    #[serde(default)]
+    pub warm_principals: Vec<String>,
+    /// When false, omit enable_rpc_cred_fallback in ganesha.conf (fail closed on uid2grp miss).
+    pub enable_rpc_cred_fallback: Option<bool>,
+    /// Override Idmapped_*_Time_Validity seconds (default 600).
+    pub idmapped_validity_secs: Option<u32>,
 }
 
 fn default_security() -> String {

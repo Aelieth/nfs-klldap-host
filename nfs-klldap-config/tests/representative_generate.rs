@@ -75,7 +75,7 @@ fn assert_ganesha_96_compliant(ganesha: &str, idmap: &str) {
     }
     assert!(
         ganesha.contains("UseGetpwnam = true"),
-        "ganesha.conf must emit UseGetpwnam=true for uid2grp_allocate_by_uid path under Manage_Gids on Ganesha 9.6 (_MSPAC_SUPPORT stubs allocate_by_principal)"
+        "ganesha.conf must emit UseGetpwnam=true for getpwuid_r/getgrouplist path on Ganesha 9.6 (_MSPAC_SUPPORT stubs allocate_by_principal)"
     );
     for forbidden in [
         "Read_Access_Check_Policy =",

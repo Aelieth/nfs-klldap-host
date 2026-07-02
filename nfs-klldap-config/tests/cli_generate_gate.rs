@@ -1,0 +1,98 @@
+//! Shipped CLI gate: `nfs-klldap-config generate --config` twice with GenerationPaths env vars.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use nfs_klldap_config::{ganesha_96_has_mode_only_access_knob, GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB};
+
+const LIMITED_TOML: &str = r#"
+ldap_uri = "ldaps://kllap.test:6360"
+[storage]
+container_root = "/export"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "users"
+host_path = "/media/users"
+security = "krb5p"
+"#;
+
+const MOUNTINFO_BTRFS_NOACL: &str = r#"
+36 35 0:59 / /export rw,relatime - btrfs /dev/sda1 rw,noacl
+"#;
+
+fn cargo_bin(name: &str) -> PathBuf {
+    let env_key = format!("CARGO_BIN_EXE_{}", name.replace('-', "_"));
+    if let Ok(path) = std::env::var(&env_key) {
+        return PathBuf::from(path);
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/debug")
+        .join(name)
+}
+
+fn write_fixture(dir: &Path) -> (PathBuf, PathBuf) {
+    let mountinfo = dir.join("mountinfo");
+    fs::write(&mountinfo, MOUNTINFO_BTRFS_NOACL).unwrap();
+    let conf = dir.join("nfs-klldap.conf");
+    fs::write(&conf, LIMITED_TOML).unwrap();
+    (conf, mountinfo)
+}
+
+fn run_cli_generate(conf: &Path, mountinfo: &Path, out: &Path) {
+    let exports = out.join("exports.d");
+    fs::create_dir_all(&exports).unwrap();
+    let status = Command::new(cargo_bin("nfs-klldap-config"))
+        .args(["generate", "--config"])
+        .arg(conf)
+        .env("NFS_KLLDAP_MOUNTINFO_PATH", mountinfo)
+        .env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK", "1")
+        .env("EXPORTS_DIR", &exports)
+        .env("GANESHA_CONF", out.join("ganesha.conf"))
+        .env("SSSD_CONF", out.join("sssd.conf"))
+        .env("KRB5_CONF", out.join("krb5.conf"))
+        .env("IDMAP_CONF", out.join("idmapd.conf"))
+        .env("NFS_CONF", out.join("nfs.conf"))
+        .status()
+        .expect("cli generate spawn");
+    assert!(status.success(), "generate failed for {}", out.display());
+}
+
+fn read_single_fragment(exports_dir: &Path) -> String {
+    let path = fs::read_dir(exports_dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "conf"))
+        .expect("export fragment");
+    fs::read_to_string(path).unwrap()
+}
+
+#[test]
+fn cli_generate_limited_btrfs_twice_is_identical() {
+    let fixture = tempfile::tempdir().unwrap();
+    let (conf, mountinfo) = write_fixture(fixture.path());
+    let out1 = tempfile::tempdir().unwrap();
+    let out2 = tempfile::tempdir().unwrap();
+    run_cli_generate(&conf, &mountinfo, out1.path());
+    run_cli_generate(&conf, &mountinfo, out2.path());
+    let frag1 = read_single_fragment(&out1.path().join("exports.d"));
+    let frag2 = read_single_fragment(&out2.path().join("exports.d"));
+    assert_eq!(frag1, frag2, "CLI runs must emit identical fragments");
+    assert!(frag1.contains("Disable_ACL = true;"));
+    assert!(frag1.contains("Read_Access_Check_Policy = \"post\";"));
+    assert!(frag1.contains("POSIX_ONLY_EXPORT"));
+    assert!(frag1.contains(GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB));
+    assert!(!ganesha_96_has_mode_only_access_knob());
+    if let Ok(scratch) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {
+        let scratch = PathBuf::from(scratch);
+        let _ = fs::create_dir_all(&scratch);
+        let _ = fs::write(scratch.join("cli-gen-out1.conf"), &frag1);
+        let _ = fs::write(scratch.join("cli-gen-out2.conf"), &frag2);
+    }
+    eprintln!(
+        "cli generate gate: identical fragments ({} bytes)",
+        frag1.len()
+    );
+}

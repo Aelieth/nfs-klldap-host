@@ -1,8 +1,6 @@
-//! Drives generate_all and shipped CLI generate with btrfs+noacl mountinfo fixtures.
+//! Drives generate_all with btrfs+noacl mountinfo fixtures (determinism, not CLI gate).
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 
 use nfs_klldap_config::{
@@ -33,54 +31,6 @@ const MOUNTINFO_BTRFS_NOACL: &str = r#"
 const MOUNTINFO_EXT4: &str = r#"
 37 36 0:60 / /export/movies rw,relatime - ext4 /dev/sdb1 rw
 "#;
-
-fn cargo_bin(name: &str) -> PathBuf {
-    let env_key = format!("CARGO_BIN_EXE_{}", name.replace('-', "_"));
-    if let Ok(path) = std::env::var(&env_key) {
-        return PathBuf::from(path);
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/debug")
-        .join(name)
-}
-
-fn scratch_root() -> PathBuf {
-    std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp/grok-goal-2e7c0da84506/implementer"))
-}
-
-fn write_limited_fixture(dir: &Path) -> (PathBuf, PathBuf) {
-    let mountinfo_path = dir.join("mountinfo");
-    fs::write(&mountinfo_path, MOUNTINFO_BTRFS_NOACL).unwrap();
-    let conf_path = dir.join("nfs-klldap.conf");
-    fs::write(&conf_path, LIMITED_TOML).unwrap();
-    (conf_path, mountinfo_path)
-}
-
-/// Shipped CLI path: `nfs-klldap-config generate --config` + GenerationPaths::from_env keys.
-fn run_cli_generate(conf: &Path, mountinfo: &Path, out: &Path) {
-    let exports = out.join("exports.d");
-    fs::create_dir_all(&exports).unwrap();
-    let status = Command::new(cargo_bin("nfs-klldap-config"))
-        .args(["generate", "--config"])
-        .arg(conf)
-        .env("NFS_KLLDAP_MOUNTINFO_PATH", mountinfo)
-        .env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK", "1")
-        .env("EXPORTS_DIR", &exports)
-        .env("GANESHA_CONF", out.join("ganesha.conf"))
-        .env("SSSD_CONF", out.join("sssd.conf"))
-        .env("KRB5_CONF", out.join("krb5.conf"))
-        .env("IDMAP_CONF", out.join("idmapd.conf"))
-        .env("NFS_CONF", out.join("nfs.conf"))
-        .status()
-        .expect("cli generate spawn");
-    assert!(
-        status.success(),
-        "nfs-klldap-config generate failed for {}",
-        out.display()
-    );
-}
 
 fn generation_paths(out: &std::path::Path) -> GenerationPaths {
     GenerationPaths {
@@ -213,36 +163,4 @@ fn generate_all_limited_btrfs_twice_is_deterministic() {
         let sec = frag.find("SecType =").unwrap();
         assert!(disable < sec);
     }
-}
-
-/// Verification plan step 4: CLI generate twice via GenerationPaths::from_env + compare exports.d/*.conf.
-#[test]
-fn cli_generate_limited_btrfs_gen_out_scratch_gate() {
-    let _lock = MOUNTINFO_ENV_LOCK.lock().unwrap();
-    let scratch = scratch_root();
-    fs::create_dir_all(&scratch).unwrap();
-    let fixture = tempfile::tempdir().unwrap();
-    let (conf, mountinfo) = write_limited_fixture(fixture.path());
-    let out1 = scratch.join("gen-out1");
-    let out2 = scratch.join("gen-out2");
-    run_cli_generate(&conf, &mountinfo, &out1);
-    run_cli_generate(&conf, &mountinfo, &out2);
-    let frag1 = read_single_fragment(&out1.join("exports.d"));
-    let frag2 = read_single_fragment(&out2.join("exports.d"));
-    assert_eq!(frag1, frag2, "CLI gen-out1 vs gen-out2 must match");
-    for frag in [&frag1, &frag2] {
-        assert!(frag.contains("Disable_ACL = true;"));
-        assert!(frag.contains("Read_Access_Check_Policy = \"post\";"));
-        assert!(frag.contains("POSIX_ONLY_EXPORT"));
-        assert!(frag.contains(GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB));
-        assert!(!ganesha_96_has_mode_only_access_knob());
-    }
-    let diff_path = scratch.join("gen-compare.diff");
-    let _ = fs::write(&diff_path, "identical\n");
-    eprintln!(
-        "cli gen-out gate: {} and {} exports.d/*.conf identical ({} bytes)",
-        out1.display(),
-        out2.display(),
-        frag1.len()
-    );
 }

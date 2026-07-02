@@ -2,7 +2,7 @@
 
 **0.9.x branch.** `cargo test --workspace` (or `make test` + `make clippy`). Workspace crates: `nfs-klldap-identity`, `nfs-klldap-config`, `nfs-klldap-ui`.
 
-Representative full-config generation: `nfs-klldap-config/tests/representative_generate.rs`. Filesystem probe fixtures: `nfs-klldap-config/tests/fs_probe_fixtures.rs`. Limited-FS `generate_all` path: `nfs-klldap-config/tests/limited_fs_generate.rs`. `ganesha_path` staging probe: `tests/ganesha_path_generate.rs`. `fs-warnings` CLI: `tests/fs_warnings_cli.rs`. Post-generate hook: `tests/post_generate_hook.rs`.
+Representative full-config generation: `nfs-klldap-config/tests/representative_generate.rs`. Filesystem probe fixtures: `nfs-klldap-config/tests/fs_probe_fixtures.rs`. Limited-FS `generate_all` path: `nfs-klldap-config/tests/limited_fs_generate.rs`. Shipped CLI generate gate: `nfs-klldap-config/tests/cli_generate_gate.rs`. `ganesha_path` staging probe: `tests/ganesha_path_generate.rs`. `fs-warnings` CLI: `tests/fs_warnings_cli.rs`. Post-generate hook: `tests/post_generate_hook.rs`.
 
 ## Strategy
 
@@ -53,7 +53,7 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | `all_managed_roots` / `is_allowed` + host<->container path mapping | `nfs-klldap-ui/src/config.rs`, `fs.rs` |
 | Generated sssd.conf shape + no dups + tls options | `nfs-klldap-config/src/lib.rs` |
 | Filesystem probe (mountinfo fixtures, acl_capable, effective flags) | `nfs-klldap-config/src/fs_probe.rs`, `tests/fs_probe_fixtures.rs` |
-| EXPORT Disable_ACL / Manage_Gids / Read_Access_Check_Policy + posix-only comment (limited FS) | `nfs-klldap-config/src/generate.rs`, `tests/limited_fs_generate.rs` |
+| EXPORT Disable_ACL / Manage_Gids / Read_Access_Check_Policy + posix-only comment (limited FS) | `nfs-klldap-config/src/posix_only_policy.rs`, `tests/limited_fs_generate.rs`, `tests/cli_generate_gate.rs` |
 | Ganesha 9.6 NOTSUPP log classification (ACL-path vs identity-path, logs.txt fixtures) | `nfs-klldap-config/src/ganesha_log_contract.rs`, `src/bin/idhelper/idmap_log_contract.rs` |
 | idhelper full principal forms (user@REALM + host/..@REALM) + GRPS groups + resolution check | `nfs-klldap-config/src/bin/idhelper/{resolve,main}.rs` + lib check, limited_fs_generate + new fallback tests |
 | Hostname consistency + keytab variants + docker-id detection | `nfs-klldap-config/src/hostname.rs`, `lib.rs` |

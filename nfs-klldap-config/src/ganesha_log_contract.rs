@@ -32,13 +32,16 @@ pub fn load_logs_txt_fixture() -> std::io::Result<String> {
     std::fs::read_to_string(logs_txt_fixture_path())
 }
 
+fn line_is_identity_failure(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    lower.contains("unsupported code path for principal")
+        || line.contains("Could not map")
+        || (line.contains("uid2grp_allocate_by_principal") && lower.contains("unsupported"))
+}
+
 /// True when log shows uid2grp/principal identity chain failure (not ACL-path).
 pub fn log_shows_identity_failure(content: &str) -> bool {
-    let lower = content.to_lowercase();
-    lower.contains("unsupported code path for principal")
-        || content.contains("Could not map")
-        || (content.contains("uid2grp_allocate_by_principal")
-            && lower.contains("unsupported"))
+    content.lines().any(line_is_identity_failure)
 }
 
 fn window_has_op_access_notsupp(window: &[&str]) -> bool {
@@ -96,16 +99,28 @@ pub fn log_shows_posix_ok_getattr(content: &str) -> bool {
     content.contains("No permission check for ACL") && content.contains("OP_GETATTR")
 }
 
+/// True when identity/principal failure and NOTSUPP occur in the same line window.
+pub fn log_shows_identity_path_notsupp(content: &str) -> bool {
+    let lines: Vec<&str> = content.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if line_is_identity_failure(line) {
+            let end = (i + 10).min(lines.len());
+            let window = &lines[i..end];
+            if window_has_op_access_notsupp(window) || window_has_getattr_notsupp(window) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Classify NOTSUPP root cause from a ganesha.log excerpt or full file.
 pub fn classify_notsupp_failure_path(content: &str) -> NotsuppFailurePath {
-    if log_shows_identity_failure(content)
-        && content.contains("NFS4ERR_NOTSUPP")
-        && (content.contains("OP_GETATTR") || content.contains("OP_ACCESS"))
-    {
-        return NotsuppFailurePath::IdentityPath;
-    }
     if log_shows_acl_path_op_access_notsupp(content) || log_shows_acl_path_getattr_notsupp(content) {
         return NotsuppFailurePath::AclPath;
+    }
+    if log_shows_identity_path_notsupp(content) {
+        return NotsuppFailurePath::IdentityPath;
     }
     NotsuppFailurePath::Unknown
 }
@@ -188,6 +203,22 @@ file_To_Fattr :NFS4 ACL :DEBUG :Permission check for ACL for obj 0x562dbefc2da8 
 complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
 "#;
         assert!(log_shows_acl_path_getattr_notsupp(real));
+    }
+
+    #[test]
+    fn identity_path_requires_principal_window_not_loose_opcode_contains() {
+        let decoy = r#"
+process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
+complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
+uid2grp_allocate_by_principal :ID MAPPER :WARN :Could not map user elsewhere
+"#;
+        assert_eq!(classify_notsupp_failure_path(decoy), NotsuppFailurePath::Unknown);
+        let real = r#"
+uid2grp_allocate_by_principal :ID MAPPER :WARN :Unsupported code path for principal host/blue-lt@SATOMLIN.COM
+process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
+complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
+"#;
+        assert_eq!(classify_notsupp_failure_path(real), NotsuppFailurePath::IdentityPath);
     }
 
     #[test]

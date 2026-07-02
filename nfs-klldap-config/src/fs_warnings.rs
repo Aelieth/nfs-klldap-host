@@ -4,9 +4,8 @@
 use std::path::Path;
 
 use crate::{
-    compute_effective_flags, ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
-    probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags, FsCapabilities,
-    NfsKlldapConfig, Share,
+    compute_effective_flags, probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags,
+    FsCapabilities, NfsKlldapConfig, PosixOnlyPolicy, Share,
 };
 
 /// One line of fs-warnings output for a share.
@@ -66,16 +65,25 @@ fn limited_fs_opts_suffix(caps: &FsCapabilities) -> String {
 }
 
 /// One-line WARN for limited-FS shares (validate/dry-run/startup).
-/// Hardened text (Step4) lives in fs_warnings.rs per acceptance criteria.
 pub fn limited_fs_warning(share_name: &str, caps: &FsCapabilities) -> String {
-    let opts = limited_fs_opts_suffix(caps);
-    format!(
-        "share \"{share_name}\": {fstype}{opts} limited filesystem — conservative mode (enable_acl=false, manage_gids=false, Read_Access_Check_Policy=post); {knob}",
-        knob = GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
-        share_name = share_name,
-        fstype = caps.fstype,
-        opts = opts
-    )
+    let eff = compute_effective_flags(
+        &Share {
+            name: share_name.into(),
+            ..Share::default()
+        },
+        caps,
+    );
+    PosixOnlyPolicy::for_share(share_name, caps, &eff)
+        .map(|p| p.fs_warning)
+        .unwrap_or_else(|| {
+            let opts = limited_fs_opts_suffix(caps);
+            format!(
+                "share \"{share_name}\": {fstype}{opts} limited filesystem",
+                share_name = share_name,
+                fstype = caps.fstype,
+                opts = opts
+            )
+        })
 }
 
 /// Shorter limited-FS line for the WebUI System Settings share badge.
@@ -84,16 +92,17 @@ pub fn limited_fs_warning_settings_ui(
     caps: &FsCapabilities,
     eff: &EffectiveShareFlags,
 ) -> String {
-    let opts = limited_fs_opts_suffix(caps);
-    format!(
-        "share \"{share_name}\": {fstype}{opts} limited filesystem — posix-only conservative (enable_acl={enable_acl}, manage_gids={manage_gids}, Read_Access_Check_Policy=post); {knob}",
-        knob = GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
-        share_name = share_name,
-        fstype = caps.fstype,
-        opts = opts,
-        enable_acl = eff.enable_acl,
-        manage_gids = eff.manage_gids,
-    )
+    PosixOnlyPolicy::for_share(share_name, caps, eff)
+        .map(|p| p.settings_ui_warning)
+        .unwrap_or_else(|| {
+            let opts = limited_fs_opts_suffix(caps);
+            format!(
+                "share \"{share_name}\": {fstype}{opts} limited filesystem",
+                share_name = share_name,
+                fstype = caps.fstype,
+                opts = opts
+            )
+        })
 }
 
 fn caps_for_share(cfg: &NfsKlldapConfig, share: &Share) -> FsCapabilities {

@@ -581,21 +581,12 @@ EXPORT_DEFAULTS {{
     Ok(())
 }
 
-/// Best-effort posix-only EXPORT keys when V9.6 has no mode-only access knob.
-fn posix_only_block() -> String {
-    debug_assert!(!crate::ganesha_log_contract::ganesha_96_has_mode_only_access_knob());
-    format!(
-        "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    Enable_NLM = false;\n    Enable_RQUOTA = false;\n    # POSIX_ONLY_EXPORT: {knob}\n",
-        knob = crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB
-    )
-}
-
-/// Build Ganesha 9.6 EXPORT directives; limited/noacl emits best-effort posix flags only.
+/// Build Ganesha 9.6 EXPORT directives; limited/noacl emits PosixOnlyPolicy output.
 pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String, String) {
     let eff = compute_effective_flags(share, caps);
-    let (disable_acl_line, manage_gids_line, read_access_line) = if !eff.enable_acl {
-        let block = posix_only_block();
-        (block.clone(), String::new(), String::new())
+    let policy = crate::PosixOnlyPolicy::for_share(&share.name, caps, &eff);
+    let (disable_acl_line, manage_gids_line, read_access_line) = if let Some(ref p) = policy {
+        (p.directive_lines.clone(), String::new(), String::new())
     } else {
         let manage = if eff.manage_gids {
             "    Manage_Gids = true;\n".to_string()
@@ -604,31 +595,20 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
         };
         (String::new(), manage, String::new())
     };
-    let auto_comment = if eff.auto_applied {
+    let auto_comment = if eff.auto_applied && !eff.enable_acl {
+        policy.map(|p| p.export_comment).unwrap_or_default()
+    } else if eff.auto_applied {
         let opts = if caps.mount_options.is_empty() {
             String::new()
         } else {
             format!(" ({})", caps.mount_options.join(","))
         };
-        // distinct comment block for hardened posix-only on noacl (ZimaOS) as specified
-        if !eff.enable_acl {
-            format!(
-                "# posix-only conservative mode for noacl btrfs (ZimaOS)\n\
-                 # Auto-detected: {}{opts}\n\
-                 # {knob}\n\
-                 # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
-                caps.fstype,
-                opts = opts,
-                knob = crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
-            )
-        } else {
-            format!(
-                "# Auto-detected: {}{opts}\n\
-                 # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
-                caps.fstype,
-                opts = opts
-            )
-        }
+        format!(
+            "# Auto-detected: {}{opts}\n\
+             # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
+            caps.fstype,
+            opts = opts
+        )
     } else {
         String::new()
     };

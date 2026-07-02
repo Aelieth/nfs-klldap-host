@@ -3,7 +3,10 @@
 use std::fs;
 use std::sync::Mutex;
 
-use nfs_klldap_config::{classify_principal, generate_all, GenerationPaths, NfsKlldapConfig};
+use nfs_klldap_config::{
+    classify_principal, generate_all, GenerationPaths, GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
+    NfsKlldapConfig,
+};
 use nfs_klldap_identity::nfs_keytab_host_variants;
 
 static MOUNTINFO_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -29,6 +32,8 @@ const MOUNTINFO_EXT4: &str = r#"
 37 36 0:60 / /export/movies rw,relatime - ext4 /dev/sdb1 rw
 "#;
 
+const GEN_OUT_SCRATCH: &str = "/tmp/grok-goal-2e7c0da84506/implementer";
+
 fn generation_paths(out: &std::path::Path) -> GenerationPaths {
     GenerationPaths {
         sssd_conf: out.join("sssd.conf"),
@@ -49,21 +54,20 @@ fn read_single_fragment(exports_dir: &std::path::Path) -> String {
     fs::read_to_string(path).unwrap()
 }
 
-fn generate_with_mountinfo(mountinfo: &str, toml: &str) -> (tempfile::TempDir, String, String) {
+fn generate_to_out(mountinfo: &str, toml: &str, out: &std::path::Path) -> String {
     let _lock = MOUNTINFO_ENV_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let mountinfo_path = tmp.path().join("mountinfo");
     fs::write(&mountinfo_path, mountinfo).unwrap();
     let conf_path = tmp.path().join("nfs-klldap.conf");
     fs::write(&conf_path, toml).unwrap();
-    let out = tmp.path().join("out");
     fs::create_dir_all(out.join("exports.d")).unwrap();
 
     let prev = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok();
     std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mountinfo_path);
 
     let cfg = NfsKlldapConfig::load(&conf_path).expect("load");
-    let paths = generation_paths(&out);
+    let paths = generation_paths(out);
     generate_all(&cfg, &paths).expect("generate_all");
 
     if let Some(p) = prev {
@@ -72,7 +76,13 @@ fn generate_with_mountinfo(mountinfo: &str, toml: &str) -> (tempfile::TempDir, S
         std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");
     }
 
-    let frag = read_single_fragment(&out.join("exports.d"));
+    read_single_fragment(&out.join("exports.d"))
+}
+
+fn generate_with_mountinfo(mountinfo: &str, toml: &str) -> (tempfile::TempDir, String, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out");
+    let frag = generate_to_out(mountinfo, toml, &out);
     let ganesha = fs::read_to_string(out.join("ganesha.conf")).unwrap();
     (tmp, frag, ganesha)
 }
@@ -92,19 +102,18 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
     assert!(frag.contains("Read_Access_Check_Policy = \"post\";"), "limited must have post policy:\n{frag}");
     assert!(frag.contains("posix-only conservative mode for noacl btrfs (ZimaOS)"), "limited comment:\n{frag}");
     assert!(frag.contains("POSIX_ONLY_EXPORT"), "frag must include conservative guard marker:\n{frag}");
-    // AC4/D: actual additional EXPORT knobs emitted for conservative posix-only
-    assert!(frag.contains("Enable_NLM = false;"), "frag must emit additional V9.6 knob Enable_NLM:\n{frag}");
-    assert!(frag.contains("Enable_RQUOTA = false;"), "frag must emit additional V9.6 knob Enable_RQUOTA:\n{frag}");
     assert!(
-        frag.contains("krb5p/krb5i still requires full supplemental groups in nss_wrapper")
-            || frag.contains("rpcsec_gss_fetch_managed_groups"),
-        "frag documents krb5 Manage_Gids=false truth:\n{frag}"
+        frag.contains(GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB),
+        "frag must embed V9.6 knob diagnosis:\n{frag}"
     );
+    assert!(!frag.contains("posix getattr/access only"), "fragment:\n{frag}");
+    assert!(!frag.contains("ACL-dependent NFSv4 ops disabled"), "fragment:\n{frag}");
+    assert!(frag.contains("Enable_NLM = false;"), "frag must emit Enable_NLM:\n{frag}");
+    assert!(frag.contains("Enable_RQUOTA = false;"), "frag must emit Enable_RQUOTA:\n{frag}");
     if let Ok(scratch) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {
         let dest = std::path::PathBuf::from(scratch).join("10-users-limited.conf");
         let _ = fs::write(&dest, &frag);
     }
-    // Posix-only export flags emitted; Ganesha 9.6 may still ACL-check OP_ACCESS on direct noacl (see ganesha_log_contract).
     for forbidden in [
         "Manage_Gids_Expiration =",
         "IdmapConf =",
@@ -155,4 +164,45 @@ fn generate_all_limited_btrfs_twice_is_deterministic() {
         let sec = frag.find("SecType =").unwrap();
         assert!(disable < sec);
     }
+}
+
+/// Verification plan step 4: generate twice to scratch gen-out1/gen-out2 and compare exports.d/*.conf.
+#[test]
+fn generate_all_limited_btrfs_gen_out_scratch_gate() {
+    let scratch = std::path::Path::new(GEN_OUT_SCRATCH);
+    fs::create_dir_all(scratch).unwrap();
+    let out1 = scratch.join("gen-out1");
+    let out2 = scratch.join("gen-out2");
+    let frag1 = generate_to_out(MOUNTINFO_BTRFS_NOACL, LIMITED_TOML, &out1);
+    let frag2 = generate_to_out(MOUNTINFO_BTRFS_NOACL, LIMITED_TOML, &out2);
+    assert_eq!(frag1, frag2, "gen-out1 vs gen-out2 must match");
+    let exports1: Vec<_> = fs::read_dir(out1.join("exports.d"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "conf"))
+        .collect();
+    let exports2: Vec<_> = fs::read_dir(out2.join("exports.d"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "conf"))
+        .collect();
+    assert_eq!(exports1.len(), 1, "gen-out1 must have one .conf");
+    assert_eq!(exports2.len(), 1, "gen-out2 must have one .conf");
+    for frag in [&frag1, &frag2] {
+        assert!(frag.contains("Disable_ACL = true;"));
+        assert!(frag.contains("Read_Access_Check_Policy = \"post\";"));
+        assert!(frag.contains(GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB));
+    }
+    let diff_path = scratch.join("gen-compare.diff");
+    if frag1 != frag2 {
+        let _ = fs::write(&diff_path, "fragments differ");
+        panic!("gen-out fragments differ; see {diff_path:?}");
+    }
+    let _ = fs::write(scratch.join("gen-compare.diff"), "identical\n");
+    eprintln!(
+        "gen-out gate: {} and {} exports.d/*.conf identical ({} bytes)",
+        out1.display(),
+        out2.display(),
+        frag1.len()
+    );
 }

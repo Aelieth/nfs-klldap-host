@@ -4,8 +4,9 @@
 use std::path::Path;
 
 use crate::{
-    compute_effective_flags, probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags,
-    FsCapabilities, NfsKlldapConfig, Share,
+    compute_effective_flags, ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
+    probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags, FsCapabilities,
+    NfsKlldapConfig, Share,
 };
 
 /// One line of fs-warnings output for a share.
@@ -69,7 +70,8 @@ fn limited_fs_opts_suffix(caps: &FsCapabilities) -> String {
 pub fn limited_fs_warning(share_name: &str, caps: &FsCapabilities) -> String {
     let opts = limited_fs_opts_suffix(caps);
     format!(
-        "share \"{share_name}\": {fstype}{opts} limited filesystem — conservative mode (enable_acl=false, manage_gids=false, Read_Access_Check_Policy=post); posix-only (no NFSv4 ACL features); Ganesha 9.6 may still ACL-check OP_ACCESS/GETATTR on direct noacl paths (client ls NOTSUPP) — set ganesha_path to ACL-capable staging or patch upstream",
+        "share \"{share_name}\": {fstype}{opts} limited filesystem — conservative mode (enable_acl=false, manage_gids=false, Read_Access_Check_Policy=post); {knob}",
+        knob = GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
         share_name = share_name,
         fstype = caps.fstype,
         opts = opts
@@ -84,7 +86,8 @@ pub fn limited_fs_warning_settings_ui(
 ) -> String {
     let opts = limited_fs_opts_suffix(caps);
     format!(
-        "share \"{share_name}\": {fstype}{opts} limited filesystem — posix-only conservative (enable_acl={enable_acl}, manage_gids={manage_gids}, Read_Access_Check_Policy=post); no NFSv4 ACLs; Ganesha 9.6 ACL-path NOTSUPP possible on direct noacl — use ganesha_path staging",
+        "share \"{share_name}\": {fstype}{opts} limited filesystem — posix-only conservative (enable_acl={enable_acl}, manage_gids={manage_gids}, Read_Access_Check_Policy=post); {knob}",
+        knob = GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
         share_name = share_name,
         fstype = caps.fstype,
         opts = opts,

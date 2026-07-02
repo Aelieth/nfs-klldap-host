@@ -169,7 +169,7 @@ getgrouplist for uname: testuser1, returned 2 groups
     Disable_ACL = true;
     Manage_Gids = false;
     Read_Access_Check_Policy = "post";
-    # POSIX_ONLY_EXPORT: posix getattr/access only (no ACL mask)
+    # POSIX_ONLY_EXPORT: Ganesha 9.6 no export knob skips nfs_access_op ACL on noacl
     SecType = krb5p;
 }"#;
         assert!(validate_posix_only_export_fragment(frag).is_ok());
@@ -191,53 +191,20 @@ complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
         );
     }
 
-    /// logs.txt /users export: Disable_ACL + post policy yet OP_ACCESS ACL mask → NOTSUPP (Ganesha 9.6 defect).
     #[test]
-    fn idmap_log_contract_logs_txt_op_access_acl_path_notsupp() {
-        let excerpt = r#"
-get_gsh_export :EXPORT :DEBUG :Found Export pseudo (/users) perms (options=07310000/4001f007 no_root_squash,     ,    ,               , No Manage_Gids,         ,                ,                ,                , krb5p) Read_Access_Check_Policy (post)
-process_one_op :NFS4 :DEBUG :Request 2: opcode 3 is OP_ACCESS
-nfs_access_op :NFS3 :DEBUG :access_mask = mode(rwx) ACL(list_dir,add_file,execute,add_subdirectory,delete_child)
-complete_op :NFS4 :DEBUG :Status of OP_ACCESS in position 2 = NFS4ERR_NOTSUPP, op response size is 4 total response size is 92
-"#;
-        eprintln!("logs-diagnosis OP_ACCESS: {}", excerpt.lines().nth(2).unwrap_or(""));
+    fn idmap_log_contract_logs_txt_fixture_acl_path_notsupp() {
+        let path = nfs_klldap_config::logs_txt_fixture_path();
+        let content = nfs_klldap_config::load_logs_txt_fixture().expect("repo logs.txt");
+        nfs_klldap_config::validate_logs_txt_fixture(&path).expect("logs.txt signatures");
         assert_eq!(
-            nfs_klldap_config::classify_notsupp_failure_path(excerpt),
+            nfs_klldap_config::classify_notsupp_failure_path(&content),
             nfs_klldap_config::NotsuppFailurePath::AclPath
         );
-        assert!(!nfs_klldap_config::log_shows_identity_failure(excerpt));
-    }
-
-    #[test]
-    fn idmap_log_contract_logs_txt_getattr_acl_path_notsupp() {
-        let excerpt = r#"
-process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
-file_To_Fattr :NFS4 ACL :DEBUG :Permission check for ACL for obj 0x562dbefc2da8
-file_To_Fattr :NFS4 ACL :DEBUG :Permission check for ACL for obj 0x562dbefc2da8 failed with Operation not supported
-complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP, op response size is 4 total response size is 92
-"#;
-        eprintln!(
-            "logs-diagnosis GETATTR ACL: {}",
-            excerpt.lines().nth(2).unwrap_or("")
-        );
-        assert_eq!(
-            nfs_klldap_config::classify_notsupp_failure_path(excerpt),
-            nfs_klldap_config::NotsuppFailurePath::AclPath
-        );
-    }
-
-    #[test]
-    fn idmap_log_contract_logs_txt_getattr_posix_ok_signature() {
-        let excerpt = r#"
-process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
-file_To_Fattr :NFS4 ACL :DEBUG :No permission check for ACL for obj 0x562dbefc2da8
-complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4_OK, op response size is 56 total response size is 144
-"#;
-        eprintln!(
-            "logs-diagnosis GETATTR OK: {}",
-            excerpt.lines().nth(1).unwrap_or("")
-        );
-        assert!(nfs_klldap_config::log_shows_posix_ok_getattr(excerpt));
+        assert!(!nfs_klldap_config::log_shows_identity_failure(&content));
+        let (op, ga_acl, ga_ok) = nfs_klldap_config::logs_txt_diagnosis_signatures(&content);
+        eprintln!("logs-diagnosis OP_ACCESS: {}", op.expect("op_access line"));
+        eprintln!("logs-diagnosis GETATTR ACL: {}", ga_acl.expect("getattr acl line"));
+        eprintln!("logs-diagnosis GETATTR OK: {}", ga_ok.expect("getattr ok line"));
     }
 
     #[test]

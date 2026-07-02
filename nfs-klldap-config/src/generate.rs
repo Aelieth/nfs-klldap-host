@@ -581,10 +581,12 @@ EXPORT_DEFAULTS {{
     Ok(())
 }
 
-/// Posix-only block for limited FS (9.6 valid export keys only).
-/// Disable_ACL does not stop nfs_access_op ACL mask on V9.6; direct noacl btrfs may need ganesha_path staging.
-fn posix_only_block() -> &'static str {
-    "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    Enable_NLM = false;\n    Enable_RQUOTA = false;\n    # POSIX_ONLY_EXPORT: conservative posix-only export (AUTH_SYS managed gids off only).\n    # krb5p/krb5i still call rpcsec_gss_fetch_managed_groups -> getpwuid_r + getgrouplist via nss_wrapper/idhelper.\n    # V9.6: Disable_ACL does not skip nfs_access_op ACL(list_dir,...) on noacl; use ganesha_path staging if ls fails with NOTSUPP.\n"
+/// Best-effort posix-only EXPORT keys; V9.6 may still ACL-check OP_ACCESS on direct noacl.
+fn posix_only_block() -> String {
+    format!(
+        "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    Enable_NLM = false;\n    Enable_RQUOTA = false;\n    # POSIX_ONLY_EXPORT: {knob}\n",
+        knob = crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB
+    )
 }
 
 /// Build Ganesha 9.6 EXPORT ACL lines.
@@ -594,7 +596,7 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
     let eff = compute_effective_flags(share, caps);
     // Limited/noacl: consolidated posix block (Disable_ACL+Manage_Gids=false+post) before SecType.
     let (disable_acl_line, manage_gids_line, read_access_line) = if !eff.enable_acl {
-        let block = posix_only_block().to_string();
+        let block = posix_only_block();
         (block.clone(), String::new(), String::new())
     } else {
         let manage = if eff.manage_gids {
@@ -614,16 +616,16 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
         if !eff.enable_acl {
             format!(
                 "# posix-only conservative mode for noacl btrfs (ZimaOS)\n\
-                 # Disable_ACL + Manage_Gids=false + Read_Access_Check_Policy=post\n\
-                 # POSIX_ONLY_EXPORT: Disable_ACL+Manage_Gids=false+post — posix getattr/access only\n\
-                 # Auto-detected: {}{opts} — ACL-dependent NFSv4 ops disabled for compatibility.\n\
+                 # Auto-detected: {}{opts}\n\
+                 # {knob}\n\
                  # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
                 caps.fstype,
-                opts = opts
+                opts = opts,
+                knob = crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
             )
         } else {
             format!(
-                "# Auto-detected: {}{opts} — ACL-dependent NFSv4 ops disabled for compatibility.\n\
+                "# Auto-detected: {}{opts}\n\
                  # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
                 caps.fstype,
                 opts = opts
@@ -979,7 +981,16 @@ mod tests {
         assert!(comment.contains("Auto-detected: btrfs"));
         assert!(comment.contains("posix-only conservative mode for noacl btrfs (ZimaOS)"));
         assert!(posix_block.contains("POSIX_ONLY_EXPORT"), "conservative guard must emit measurable marker");
-        assert!(comment.contains("POSIX_ONLY_EXPORT"), "direct export_fs test must cover guard effect");
+        assert!(
+            posix_block.contains(crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB),
+            "posix block must embed V9.6 knob diagnosis"
+        );
+        assert!(
+            comment.contains(crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB),
+            "auto_comment must embed V9.6 knob diagnosis"
+        );
+        assert!(!comment.contains("posix getattr/access only"));
+        assert!(!comment.contains("ACL-dependent NFSv4 ops disabled"));
         assert!(!comment.contains("Manage_Gids_Expiration"));
     }
 

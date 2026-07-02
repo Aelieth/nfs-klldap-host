@@ -220,7 +220,7 @@ Ganesha 9.6 krb5p identity chain (this build):
 5. Linux glibc getgrouplist returns positive ngroups on success; Ganesha my_getgrouplist_alloc requires ret==0.
 6. LD_PRELOAD shim (libnfs_klldap_getgrouplist_shim.so) prepended before nss_wrapper normalizes ret and queries idhelper GROUPLIST socket for root/shortnames.
 7. Manage_Gids=false on noacl exports: AUTH_SYS managed gids skipped; krb5p/krb5i still call rpcsec_gss_fetch_managed_groups -> uid2grp path above.
-8. Disable_ACL=true + Read_Access_Check_Policy=post: POSIX uid/gid checks only; supplemental groups from nss_group member fields + socket backstop.
+8. Disable_ACL=true + Read_Access_Check_Policy=post: best-effort posix-only export flags; Ganesha 9.6 still ACL-checks OP_ACCESS/GETATTR on noacl (ganesha_path staging workaround).
 
 Addressed weaknesses:
 - Root gid-0 member stuffing reversed (root login on supplemental groups; minimal root:x:0:root,daemon,bin).

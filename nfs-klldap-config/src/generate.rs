@@ -581,16 +581,15 @@ EXPORT_DEFAULTS {{
     Ok(())
 }
 
-/// Posix-only block for limited FS (9.6 valid keys only). 1 sentence.
-/// Emits additional directives + comments for manage_gids=false + POSIX-only shares documenting reduction of rpcsec_gss_fetch_managed_groups attempts via idhelper backstop (AC4/D).
+/// Posix-only block for limited FS (9.6 valid export keys only).
+/// Disable_ACL does not stop nfs_access_op ACL mask on V9.6; direct noacl btrfs may need ganesha_path staging.
 fn posix_only_block() -> &'static str {
-    "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    Enable_NLM = false;\n    Enable_RQUOTA = false;\n    # POSIX_ONLY_EXPORT: conservative posix-only export (AUTH_SYS managed gids off only).\n    # krb5p/krb5i still call rpcsec_gss_fetch_managed_groups -> getpwuid_r + getgrouplist via nss_wrapper/idhelper.\n    # See nfs_creds.c:581-584 + uid2grp.c LogInfo markers in V9.6.\n"
+    "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    Enable_NLM = false;\n    Enable_RQUOTA = false;\n    # POSIX_ONLY_EXPORT: conservative posix-only export (AUTH_SYS managed gids off only).\n    # krb5p/krb5i still call rpcsec_gss_fetch_managed_groups -> getpwuid_r + getgrouplist via nss_wrapper/idhelper.\n    # V9.6: Disable_ACL does not skip nfs_access_op ACL(list_dir,...) on noacl; use ganesha_path staging if ls fails with NOTSUPP.\n"
 }
 
 /// Build Ganesha 9.6 EXPORT ACL lines.
 /// Auto-detect comment from probe results. enable_acl semantics: !enable => Disable_ACL.
-/// In limited-FS (noacl) case also emit Read_Access_Check_Policy=post + behavioral guard
-/// so nfs_access_op does not reject on ACL-style mask (OP_ACCESS NOTSUPP fix).
+/// Limited/noacl emits Read_Access_Check_Policy=post; does not fix Ganesha 9.6 OP_ACCESS ACL-path NOTSUPP.
 pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String, String) {
     let eff = compute_effective_flags(share, caps);
     // Limited/noacl: consolidated posix block (Disable_ACL+Manage_Gids=false+post) before SecType.

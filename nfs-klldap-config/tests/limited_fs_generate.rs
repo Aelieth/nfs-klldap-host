@@ -104,8 +104,7 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
         let dest = std::path::PathBuf::from(scratch).join("10-users-limited.conf");
         let _ = fs::write(&dest, &frag);
     }
-    // runtime group supply (checklist 1-2) + these opts enable ls without NOTSUPP; idhelper test covered separately
-    // (note: main ganesha omits post to avoid side-effect on capable; per-fragment has it for the limited share)
+    // Posix-only export flags emitted; Ganesha 9.6 may still ACL-check OP_ACCESS on direct noacl (see ganesha_log_contract).
     for forbidden in [
         "Manage_Gids_Expiration =",
         "IdmapConf =",
@@ -140,4 +139,20 @@ host_path = "/media/movies"
     assert!(!frag.contains("Disable_ACL = true;"), "capable ext4 omits Disable_ACL");
     assert!(frag.contains("Manage_Gids = true;"));
     assert!(!frag.contains("Auto-detected:"));
+}
+
+#[test]
+fn generate_all_limited_btrfs_twice_is_deterministic() {
+    let (_a, frag1, _) = generate_with_mountinfo(MOUNTINFO_BTRFS_NOACL, LIMITED_TOML);
+    let (_b, frag2, _) = generate_with_mountinfo(MOUNTINFO_BTRFS_NOACL, LIMITED_TOML);
+    assert_eq!(frag1, frag2, "posix-only export block must be identical across runs");
+    for frag in [&frag1, &frag2] {
+        assert!(frag.contains("Disable_ACL = true;"));
+        assert!(frag.contains("Manage_Gids = false;"));
+        assert!(frag.contains("Read_Access_Check_Policy = \"post\";"));
+        assert!(frag.contains("POSIX_ONLY_EXPORT"));
+        let disable = frag.find("Disable_ACL = true;").unwrap();
+        let sec = frag.find("SecType =").unwrap();
+        assert!(disable < sec);
+    }
 }

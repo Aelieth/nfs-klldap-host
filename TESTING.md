@@ -54,6 +54,7 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | Generated sssd.conf shape + no dups + tls options | `nfs-klldap-config/src/lib.rs` |
 | Filesystem probe (mountinfo fixtures, acl_capable, effective flags) | `nfs-klldap-config/src/fs_probe.rs`, `tests/fs_probe_fixtures.rs` |
 | EXPORT Disable_ACL / Manage_Gids / Read_Access_Check_Policy + posix-only comment (limited FS) | `nfs-klldap-config/src/generate.rs`, `tests/limited_fs_generate.rs` |
+| Ganesha 9.6 NOTSUPP log classification (ACL-path vs identity-path, logs.txt fixtures) | `nfs-klldap-config/src/ganesha_log_contract.rs`, `src/bin/idhelper/idmap_log_contract.rs` |
 | idhelper full principal forms (user@REALM + host/..@REALM) + GRPS groups + resolution check | `nfs-klldap-config/src/bin/idhelper/{resolve,main}.rs` + lib check, limited_fs_generate + new fallback tests |
 | Hostname consistency + keytab variants + docker-id detection | `nfs-klldap-config/src/hostname.rs`, `lib.rs` |
 | Keytab status message / alert | `nfs-klldap-ui/src/web/keytab.rs` |
@@ -62,7 +63,7 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | Ldap list filters, normalize query, cache behavior (unit) | `nfs-klldap-ui/src/ldap.rs` (list_search_tests) |
 
 ## Kerberos user principal idmap verification
-Run: `cargo test --workspace` (idmap, resolve, generate, supervisor probes). Idhelper env-mutating tests serialize on `common::ENV_TEST_LOCK` and reset `ID_RESOLVER` via `reset_id_resolver_for_test()` so parallel `cargo test` does not poison `TEST_REBULK_POPULATE` / `NFS_CONFIG`. Invoke `idhelper grps 'user@REALM'` and `host/..@REALM` (full forms + groups). Use `capture_idmap_principal.sh` + `scripts/build_diagnosis.sh` for uid2grp noise. Check emitted limited-FS fragments for `Read_Access_Check_Policy = "post";` + comment block. `ganesha-ctl id-resolve` / `id-check` + `nfs-klldap-config generate/validate` surface the post-generate id resolution check (warns on incomplete user/host resolution).
+Run: `cargo test --workspace` (idmap, resolve, generate, supervisor probes). Idhelper env-mutating tests serialize on `common::ENV_TEST_LOCK` and reset `ID_RESOLVER` via `reset_id_resolver_for_test()` so parallel `cargo test` does not poison `TEST_REBULK_POPULATE` / `NFS_CONFIG`. Invoke `idhelper grps 'user@REALM'` and `host/..@REALM` (full forms + groups). Use `capture_idmap_principal.sh` + `scripts/build_diagnosis.sh` for uid2grp noise. Check emitted limited-FS fragments for `Read_Access_Check_Policy = "post";` + comment block. `cargo test -p nfs-klldap-config idmap_log_contract` classifies logs.txt OP_ACCESS/GETATTR ACL-path NOTSUPP vs identity-path failures. `ganesha-ctl id-resolve` / `id-check` + `nfs-klldap-config generate/validate` surface the post-generate id resolution check (warns on incomplete user/host resolution).
 
 ## Fedora 44 krb5p client (container)
 `scripts/fedora-krb5p-client-validate.sh` — machine kinit + sec=krb5p. User TGT: Kerberos principal, host rpc_pipefs, client idmapd, use-machine-creds=0. Server: limited FS emits `Manage_Gids=false` (AUTH_SYS only); krb5p/krb5i still require `UseGetpwnam=true` + idhelper nss_wrapper supplemental groups (`getpwuid_r for uid:` + `getgrouplist for uname:` LogInfo). Full gate uses capture-plan-gate. DOCKER_NO_CACHE after changes.

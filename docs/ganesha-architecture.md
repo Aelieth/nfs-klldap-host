@@ -28,7 +28,9 @@ See container/healthcheck.sh for service checks. See TESTING.md for test coverag
 
 ## ACL and filesystem compatibility
 
-At validate/generate time nfs-klldap-config probes `/proc/self/mountinfo` for each share's **serve path** (`ganesha_path` when set, otherwise the derived container path from `host_path`). Normal filesystems (ext4, xfs, btrfs with ACL) need no extra configuration. Limited filesystems (btrfs+noacl, vfat/fat, ntfs) automatically get `Disable_ACL = true; Manage_Gids = false; Read_Access_Check_Policy = "post";` (emitted before `SecType`) plus a `POSIX_ONLY_EXPORT` marker — reliable POSIX access + readdir/stat under krb5p when idhelper maps user TGTs and client machine principals (`host/<client>@REALM` → uid/gid 0). No NFSv4 ACL features are supported or enabled; the contract is basic POSIX modes + krb5p.
+At validate/generate time nfs-klldap-config probes `/proc/self/mountinfo` for each share's **serve path** (`ganesha_path` when set, otherwise the derived container path from `host_path`). Normal filesystems (ext4, xfs, btrfs with ACL) need no extra configuration. Limited filesystems (btrfs+noacl, vfat/fat, ntfs) automatically get `Disable_ACL = true; Manage_Gids = false; Read_Access_Check_Policy = "post";` (emitted before `SecType`) plus a `POSIX_ONLY_EXPORT` marker. No NFSv4 ACL features are enabled; identity is krb5p + idhelper uid/gid/supplemental groups.
+
+**Ganesha 9.6 ACL-path defect:** With `Disable_ACL = true` on direct noacl btrfs, Ganesha still runs `nfs_access_op` with `access_mask = mode(...) ACL(list_dir,...)` and some `OP_GETATTR` paths log `Permission check for ACL` → `Operation not supported` → `NFS4ERR_NOTSUPP` (client `ls` fails with 524). `Read_Access_Check_Policy = "post"` only affects read timing; it does not force mode-only access. No additional V9.6 export knob fixes this — upstream C changes or **`ganesha_path` staging** to an ACL-capable tree (see below) is required for clean `ls` on noacl volumes.
 
 Preflight identity uses `ganesha_identity_pipeline` (tempdir materialize + nss contract) plus runtime nss materialize, socket GRPS, `ganesha-ctl id-resolve`, and ganesha.log uid2grp tags — the same nss_wrapper getent path Ganesha uses at request time per `idmap_log_contract`.
 
@@ -38,7 +40,7 @@ Preflight identity uses `ganesha_identity_pipeline` (tempdir materialize + nss c
 |------------|------------------|
 | ext4, xfs | Full NFSv4.2 ACL features (default) |
 | btrfs + `acl` | Full features |
-| btrfs + `noacl` | Auto limited/posix-only conservative mode (no NFSv4 ACLs; Disable_ACL+Read_Access_Check_Policy=post; basic POSIX+krb5p readdir/stat) |
+| btrfs + `noacl` | Auto limited/posix-only conservative mode; direct export may hit Ganesha 9.6 OP_ACCESS/GETATTR ACL-path NOTSUPP — use `ganesha_path` staging on ext4/xfs |
 | vfat/fat, ntfs | Auto limited mode |
 
-Explicit `enable_acl` / `manage_gids` in nfs-klldap.conf override probe defaults. On limited filesystems (detected via mountinfo), the conservative flags + policy are applied automatically; capable filesystems default to full native behavior. Both modes are first-class and automatic. Current limitations: no NFSv4 ACL features; ACL-dependent ops return NOTSUPP by design.
+Explicit `enable_acl` / `manage_gids` in nfs-klldap.conf override probe defaults. On limited filesystems (detected via mountinfo), the conservative flags + policy are applied automatically; capable filesystems default to full native behavior. Diagnose client failures with `ganesha_log_contract` helpers: ACL-path NOTSUPP (`OP_ACCESS` + ACL mask, or `Permission check for ACL` + NOTSUPP without identity errors) vs identity-path NOTSUPP (`Unsupported code path for principal` / broken getpwuid_r/getgrouplist).

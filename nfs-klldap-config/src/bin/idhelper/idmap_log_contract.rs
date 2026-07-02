@@ -1,6 +1,6 @@
 //! Validate 9.x idmap logs: UseGetpwnam=true krb5 TGT chain via getpwnam_r → getpwuid_r → getgrouplist.
 //! Markers derived from Ganesha V9.6 uid2grp.c / idmapper.c LogInfo strings (not C symbol names).
-//! B1 contract: OP_GETATTR/NOTSUPP on readdir compounds ties to broken identity (B2/B3), not export flags alone.
+//! NOTSUPP classification: ACL-path (OP_ACCESS ACL mask / GETATTR Permission check for ACL) vs identity-path.
 
 use std::fs;
 use std::path::Path;
@@ -69,21 +69,11 @@ pub fn validate_user_tgt_idmap_log(log_path: &Path, user_at: &str) -> Result<(),
     if errs.is_empty() { Ok(()) } else { Err(errs) }
 }
 
-/// B1 diagnostic contract: NOTSUPP on OP_GETATTR follows identity failure (uid2grp unsupported).
+/// Classify NOTSUPP in a log file: ACL-path vs identity-path (see ganesha_log_contract).
 #[cfg(test)]
-pub fn validate_readdir_getattr_not_notsupp_when_identity_ok(log_path: &Path) -> Result<(), Vec<&'static str>> {
+pub fn classify_log_notsupp_path(log_path: &Path) -> nfs_klldap_config::NotsuppFailurePath {
     let content = fs::read_to_string(log_path).unwrap_or_default();
-    let mut errs = vec![];
-    let identity_broken = content.contains("Unsupported code path for principal")
-        || content.contains("Could not map");
-    let getattr_notsupp = content.contains("OP_GETATTR") && content.contains("NFS4ERR_NOTSUPP");
-    if getattr_notsupp && identity_broken {
-        errs.push("OP_GETATTR NOTSUPP co-occurs with identity mapping failure (fix B2/B3 first)");
-    }
-    if getattr_notsupp && !identity_broken {
-        errs.push("OP_GETATTR NOTSUPP without identity failure — export posix guard insufficient");
-    }
-    if errs.is_empty() { Ok(()) } else { Err(errs) }
+    nfs_klldap_config::classify_notsupp_failure_path(&content)
 }
 
 /// Export fragment must emit posix guard before SecType (measurable B1 change vs diagnostic 0.9.57).
@@ -186,7 +176,7 @@ getgrouplist for uname: testuser1, returned 2 groups
     }
 
     #[test]
-    fn diagnostic_b1_notsupp_tied_to_identity_failure() {
+    fn idmap_log_contract_identity_getattr_notsupp_is_identity_path() {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("diag.log");
         let log = r#"
@@ -195,9 +185,59 @@ process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
 complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
 "#;
         std::fs::write(&p, log).unwrap();
-        let res = validate_readdir_getattr_not_notsupp_when_identity_ok(&p);
-        assert!(res.is_err(), "diagnostic log must flag identity+NOTSUPP coupling");
-        assert!(res.unwrap_err()[0].contains("B2/B3"));
+        assert_eq!(
+            classify_log_notsupp_path(&p),
+            nfs_klldap_config::NotsuppFailurePath::IdentityPath
+        );
+    }
+
+    /// logs.txt /users export: Disable_ACL + post policy yet OP_ACCESS ACL mask → NOTSUPP (Ganesha 9.6 defect).
+    #[test]
+    fn idmap_log_contract_logs_txt_op_access_acl_path_notsupp() {
+        let excerpt = r#"
+get_gsh_export :EXPORT :DEBUG :Found Export pseudo (/users) perms (options=07310000/4001f007 no_root_squash,     ,    ,               , No Manage_Gids,         ,                ,                ,                , krb5p) Read_Access_Check_Policy (post)
+process_one_op :NFS4 :DEBUG :Request 2: opcode 3 is OP_ACCESS
+nfs_access_op :NFS3 :DEBUG :access_mask = mode(rwx) ACL(list_dir,add_file,execute,add_subdirectory,delete_child)
+complete_op :NFS4 :DEBUG :Status of OP_ACCESS in position 2 = NFS4ERR_NOTSUPP, op response size is 4 total response size is 92
+"#;
+        eprintln!("logs-diagnosis OP_ACCESS: {}", excerpt.lines().nth(2).unwrap_or(""));
+        assert_eq!(
+            nfs_klldap_config::classify_notsupp_failure_path(excerpt),
+            nfs_klldap_config::NotsuppFailurePath::AclPath
+        );
+        assert!(!nfs_klldap_config::log_shows_identity_failure(excerpt));
+    }
+
+    #[test]
+    fn idmap_log_contract_logs_txt_getattr_acl_path_notsupp() {
+        let excerpt = r#"
+process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
+file_To_Fattr :NFS4 ACL :DEBUG :Permission check for ACL for obj 0x562dbefc2da8
+file_To_Fattr :NFS4 ACL :DEBUG :Permission check for ACL for obj 0x562dbefc2da8 failed with Operation not supported
+complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP, op response size is 4 total response size is 92
+"#;
+        eprintln!(
+            "logs-diagnosis GETATTR ACL: {}",
+            excerpt.lines().nth(2).unwrap_or("")
+        );
+        assert_eq!(
+            nfs_klldap_config::classify_notsupp_failure_path(excerpt),
+            nfs_klldap_config::NotsuppFailurePath::AclPath
+        );
+    }
+
+    #[test]
+    fn idmap_log_contract_logs_txt_getattr_posix_ok_signature() {
+        let excerpt = r#"
+process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
+file_To_Fattr :NFS4 ACL :DEBUG :No permission check for ACL for obj 0x562dbefc2da8
+complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4_OK, op response size is 56 total response size is 144
+"#;
+        eprintln!(
+            "logs-diagnosis GETATTR OK: {}",
+            excerpt.lines().nth(1).unwrap_or("")
+        );
+        assert!(nfs_klldap_config::log_shows_posix_ok_getattr(excerpt));
     }
 
     #[test]

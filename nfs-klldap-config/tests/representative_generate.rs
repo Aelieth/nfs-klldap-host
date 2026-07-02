@@ -79,7 +79,7 @@ fn assert_ganesha_96_compliant(ganesha: &str, idmap: &str) {
     );
     for forbidden in [
         "Read_Access_Check_Policy =",
-        // note: limited path now relies on idhelper runtime groups supply for OP_ACCESS
+        // note: limited path posix flags do not fix Ganesha 9.6 OP_ACCESS ACL-path NOTSUPP on direct noacl
         "Manage_Gids_Expiration =",
         "IdmapConf =",
         "Transports =",

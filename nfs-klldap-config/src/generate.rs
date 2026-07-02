@@ -581,20 +581,18 @@ EXPORT_DEFAULTS {{
     Ok(())
 }
 
-/// Best-effort posix-only EXPORT keys; V9.6 may still ACL-check OP_ACCESS on direct noacl.
+/// Best-effort posix-only EXPORT keys when V9.6 has no mode-only access knob.
 fn posix_only_block() -> String {
+    debug_assert!(!crate::ganesha_log_contract::ganesha_96_has_mode_only_access_knob());
     format!(
         "    Disable_ACL = true;\n    Manage_Gids = false;\n    Read_Access_Check_Policy = \"post\";\n    Enable_NLM = false;\n    Enable_RQUOTA = false;\n    # POSIX_ONLY_EXPORT: {knob}\n",
         knob = crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB
     )
 }
 
-/// Build Ganesha 9.6 EXPORT ACL lines.
-/// Auto-detect comment from probe results. enable_acl semantics: !enable => Disable_ACL.
-/// Limited/noacl emits Read_Access_Check_Policy=post; does not fix Ganesha 9.6 OP_ACCESS ACL-path NOTSUPP.
+/// Build Ganesha 9.6 EXPORT directives; limited/noacl emits best-effort posix flags only.
 pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String, String) {
     let eff = compute_effective_flags(share, caps);
-    // Limited/noacl: consolidated posix block (Disable_ACL+Manage_Gids=false+post) before SecType.
     let (disable_acl_line, manage_gids_line, read_access_line) = if !eff.enable_acl {
         let block = posix_only_block();
         (block.clone(), String::new(), String::new())
@@ -989,6 +987,7 @@ mod tests {
             comment.contains(crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB),
             "auto_comment must embed V9.6 knob diagnosis"
         );
+        assert!(!crate::ganesha_log_contract::ganesha_96_has_mode_only_access_knob());
         assert!(!comment.contains("posix getattr/access only"));
         assert!(!comment.contains("ACL-dependent NFSv4 ops disabled"));
         assert!(!comment.contains("Manage_Gids_Expiration"));

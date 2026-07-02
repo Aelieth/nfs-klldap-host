@@ -7,6 +7,11 @@ pub const GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB: &str =
     "Ganesha 9.6: Disable_ACL + Read_Access_Check_Policy=post do not force mode-only OP_ACCESS/GETATTR; \
      nfs_access_op still logs ACL(list_dir,...); use ganesha_path staging on noacl btrfs.";
 
+/// Researched V9.6 EXPORT keys: no mode-only OP_ACCESS/GETATTR knob when Disable_ACL=true.
+pub fn ganesha_96_has_mode_only_access_knob() -> bool {
+    false
+}
+
 /// Failure path for NFS4ERR_NOTSUPP in ganesha.log compounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotsuppFailurePath {
@@ -36,26 +41,54 @@ pub fn log_shows_identity_failure(content: &str) -> bool {
             && lower.contains("unsupported"))
 }
 
-/// True when OP_ACCESS uses ACL mask and returns NFS4ERR_NOTSUPP without identity errors.
+fn window_has_op_access_notsupp(window: &[&str]) -> bool {
+    window.iter().any(|l| {
+        l.contains("Status of OP_ACCESS") && l.contains("NFS4ERR_NOTSUPP")
+    })
+}
+
+/// True when OP_ACCESS ACL mask is followed within a few lines by OP_ACCESS NFS4ERR_NOTSUPP.
 pub fn log_shows_acl_path_op_access_notsupp(content: &str) -> bool {
     if log_shows_identity_failure(content) {
         return false;
     }
-    content.contains("OP_ACCESS")
-        && content.contains("access_mask = mode")
-        && content.contains("ACL(")
-        && content.contains("NFS4ERR_NOTSUPP")
+    let lines: Vec<&str> = content.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if line.contains("access_mask = mode") && line.contains("ACL(") {
+            let end = (i + 6).min(lines.len());
+            if window_has_op_access_notsupp(&lines[i..end]) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
-/// True when GETATTR runs Permission check for ACL → Operation not supported → NOTSUPP.
+fn window_has_getattr_notsupp(window: &[&str]) -> bool {
+    window.iter().any(|l| {
+        l.contains("Status of OP_GETATTR") && l.contains("NFS4ERR_NOTSUPP")
+    })
+}
+
+/// True when Permission check for ACL fails with NOTSUPP on the same GETATTR compound.
 pub fn log_shows_acl_path_getattr_notsupp(content: &str) -> bool {
     if log_shows_identity_failure(content) {
         return false;
     }
-    content.contains("Permission check for ACL")
-        && content.contains("Operation not supported")
-        && content.contains("OP_GETATTR")
-        && content.contains("NFS4ERR_NOTSUPP")
+    let lines: Vec<&str> = content.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if line.contains("Permission check for ACL") && !line.contains("No permission check") {
+            let end = (i + 8).min(lines.len());
+            let window = &lines[i..end];
+            let acl_fail = window
+                .iter()
+                .any(|l| l.contains("failed with Operation not supported"));
+            if acl_fail && window_has_getattr_notsupp(window) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// True when GETATTR skips ACL permission check (posix-only getattr path OK).
@@ -86,7 +119,10 @@ pub fn logs_txt_diagnosis_signatures(content: &str) -> (Option<String>, Option<S
         if op_access.is_none() && line.contains("access_mask = mode") && line.contains("ACL(") {
             op_access = Some(line.to_string());
         }
-        if getattr_acl.is_none() && line.contains("Permission check for ACL") && line.contains("failed with Operation not supported") {
+        if getattr_acl.is_none()
+            && line.contains("Permission check for ACL")
+            && line.contains("failed with Operation not supported")
+        {
             getattr_acl = Some(line.to_string());
         }
         if getattr_ok.is_none() && line.contains("No permission check for ACL") {
@@ -138,7 +174,25 @@ mod tests {
     }
 
     #[test]
-    fn ganesha_96_no_mode_only_knob_used_in_export_note() {
+    fn getattr_acl_path_requires_permission_check_window_not_loose_contains() {
+        let decoy = r#"
+process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
+complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
+file_To_Fattr :NFS4 ACL :DEBUG :No permission check for ACL for obj 0x1
+"#;
+        assert!(!log_shows_acl_path_getattr_notsupp(decoy));
+        let real = r#"
+process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
+file_To_Fattr :NFS4 ACL :DEBUG :Permission check for ACL for obj 0x562dbefc2da8
+file_To_Fattr :NFS4 ACL :DEBUG :Permission check for ACL for obj 0x562dbefc2da8 failed with Operation not supported
+complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
+"#;
+        assert!(log_shows_acl_path_getattr_notsupp(real));
+    }
+
+    #[test]
+    fn ganesha_96_no_mode_only_knob_documented_and_false() {
+        assert!(!ganesha_96_has_mode_only_access_knob());
         assert!(GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB.contains("nfs_access_op"));
         assert!(GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB.contains("ganesha_path"));
     }

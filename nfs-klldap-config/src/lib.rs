@@ -60,10 +60,11 @@ pub use fs_probe::{
     FsCapabilities,
 };
 pub use ganesha_log_contract::{
-    classify_notsupp_failure_path, load_logs_txt_fixture, log_shows_acl_path_getattr_notsupp,
-    log_shows_acl_path_op_access_notsupp, log_shows_identity_failure, log_shows_posix_ok_getattr,
-    logs_txt_diagnosis_signatures, logs_txt_fixture_path, validate_logs_txt_fixture,
-    NotsuppFailurePath, GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
+    classify_notsupp_failure_path, ganesha_96_has_mode_only_access_knob, load_logs_txt_fixture,
+    log_shows_acl_path_getattr_notsupp, log_shows_acl_path_op_access_notsupp,
+    log_shows_identity_failure, log_shows_posix_ok_getattr, logs_txt_diagnosis_signatures,
+    logs_txt_fixture_path, validate_logs_txt_fixture, NotsuppFailurePath,
+    GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
 };
 pub use ganesha_getgrouplist::{
     getgrouplist_intercept_shortnames, ld_preload_chain_for_ganesha,

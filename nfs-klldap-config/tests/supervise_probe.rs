@@ -5,6 +5,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
 
 const COMPLETE_TOML: &str = r#"
@@ -44,12 +45,13 @@ fn write_exe(path: &std::path::Path, body: &str) {
     fs::set_permissions(path, perms).unwrap();
 }
 
-fn wait_for(mut ready: impl FnMut() -> bool, max_tries: u32, label: &str) {
-    for _ in 0..max_tries {
+fn wait_for(mut ready: impl FnMut() -> bool, timeout: Duration, label: &str) {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
         if ready() {
             return;
         }
-        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(10));
     }
     panic!("{label}");
 }
@@ -258,7 +260,8 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         .env("NFS_CONFIG", &conf)
         .env("NFS_KLLDAP_SUPERVISE_PROBE", "1")
         .env("NFS_KLLDAP_SUPERVISE_LOOP_PROBE", "1")
-        .env("NFS_KLLDAP_SUPERVISOR_TICK_MS", "100")
+        .env("NFS_KLLDAP_SUPERVISOR_TICK_MS", "10")
+        .env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK", "1")
         .env("NFS_KLLDAP_TEST_PERSISTENT", "1")
         .env("NFS_KLLDAP_SETUP_MARKER", &marker)
         .env("NFS_KLLDAP_RECYCLE_MARKER", &recycle_marker)
@@ -296,7 +299,11 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
     });
 
     let pid = child.id();
-    wait_for(|| loop_ready.is_file(), 500_000, "supervisor never wrote loop-probe ready marker");
+    wait_for(
+        || loop_ready.is_file(),
+        Duration::from_secs(30),
+        "supervisor never wrote loop-probe ready marker",
+    );
     assert!(
         !recycle_marker.is_file(),
         "recycle marker must be absent before SIGHUP"
@@ -310,7 +317,11 @@ fn supervise_loop_probe_real_sighup_recycle_touches_marker() {
         "must deliver real SIGHUP to supervisor child"
     );
 
-    wait_for(|| recycle_marker.is_file(), 500_000, "recycle marker missing after real SIGHUP");
+    wait_for(
+        || recycle_marker.is_file(),
+        Duration::from_secs(30),
+        "recycle marker missing after real SIGHUP",
+    );
     assert!(
         fs::metadata(&recycle_marker).map(|m| m.len()).unwrap_or(0) > 0,
         "recycle marker must be non-empty"

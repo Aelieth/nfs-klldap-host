@@ -530,7 +530,7 @@ NFSV4 {{
 EXPORT_DEFAULTS {{
     SecType = {sec};
     Protocols = {proto};
-    # Read_Access_Check_Policy omitted (9.6 default `pre`). Limited/noacl shares emit `post` + comment in per-export fragments.
+    # Read_Access_Check_Policy omitted (9.6 default `pre` applies for both ACL and NOACL paths).
 }}
 "#,
         realm = realm,
@@ -581,38 +581,61 @@ EXPORT_DEFAULTS {{
     Ok(())
 }
 
-/// Build Ganesha 9.6 EXPORT directives; limited/noacl emits PosixOnlyPolicy output.
+/// Build Ganesha 9.6 EXPORT directives for the two supported mainline paths:
+/// - NOACL/limited (enable_acl=false, e.g. btrfs+noacl/NTFS/FAT): 0.9.40-style simple
+///   disk/share settings: only Disable_ACL + Manage_Gids=false (no Read_Access_Check_Policy,
+///   no Enable_NLM/Enable_RQUOTA per-export, no POSIX marker). This restores basic disk
+///   reads for noacl clients.
+/// - ACL-capable (enable_acl=true or auto on ext4/xfs/btrfs+acl): full native behavior
+///   (no Disable_ACL; Manage_Gids per eff).
+/// UID/GID resolution (0.9.65 identity blocks: UseGetpwnam, nss, idhelper) unchanged.
+/// Auto-detect + explicit enable_acl/manage_gids overrides preserved.
 pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String, String) {
     let eff = compute_effective_flags(share, caps);
-    let policy = crate::PosixOnlyPolicy::for_share(&share.name, caps, &eff);
-    let (disable_acl_line, manage_gids_line, read_access_line) = if let Some(ref p) = policy {
-        (p.directive_lines.clone(), String::new(), String::new())
-    } else {
-        let manage = if eff.manage_gids {
-            "    Manage_Gids = true;\n".to_string()
-        } else {
-            "    Manage_Gids = false;\n".to_string()
-        };
-        (String::new(), manage, String::new())
-    };
-    let auto_comment = if eff.auto_applied && !eff.enable_acl {
-        policy.map(|p| p.export_comment).unwrap_or_default()
-    } else if eff.auto_applied {
+    if !eff.enable_acl {
+        // NOACL / limited path — 0.9.40 template for share settings (disk access).
+        let disable_acl_line = "    Disable_ACL = true;\n".to_string();
+        let manage_gids_line = "    Manage_Gids = false;\n".to_string();
         let opts = if caps.mount_options.is_empty() {
             String::new()
         } else {
             format!(" ({})", caps.mount_options.join(","))
         };
-        format!(
-            "# Auto-detected: {}{opts}\n\
-             # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
-            caps.fstype,
-            opts = opts
-        )
+        let auto_comment = if eff.auto_applied {
+            format!(
+                "# Auto-detected: {}{opts} — ACL-dependent NFSv4 ops disabled for compatibility.\n\
+                 # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
+                caps.fstype,
+                opts = opts
+            )
+        } else {
+            String::new()
+        };
+        (disable_acl_line, manage_gids_line, auto_comment, String::new())
     } else {
-        String::new()
-    };
-    (disable_acl_line, manage_gids_line, auto_comment, read_access_line)
+        // ACL-capable path — retain full/native (0.9.65 ACL behavior).
+        let manage = if eff.manage_gids {
+            "    Manage_Gids = true;\n".to_string()
+        } else {
+            "    Manage_Gids = false;\n".to_string()
+        };
+        let auto_comment = if eff.auto_applied {
+            let opts = if caps.mount_options.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", caps.mount_options.join(","))
+            };
+            format!(
+                "# Auto-detected: {}{opts}\n\
+                 # See docs/ganesha-architecture.md#acl-and-filesystem-compatibility\n",
+                caps.fstype,
+                opts = opts
+            )
+        } else {
+            String::new()
+        };
+        (String::new(), manage, auto_comment, String::new())
+    }
 }
 
 fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(), ConfigError> {
@@ -950,26 +973,19 @@ mod tests {
             mount_options: vec!["noacl".into()],
             acl_capable: false,
         };
-        let (posix_block, manage_line, comment, read_line) = export_fs_directives(&share, &caps);
-        assert!(posix_block.contains("Disable_ACL = true;"));
-        assert!(!posix_block.contains("Enable_ACL"));
-        assert!(posix_block.contains("Manage_Gids = false;"));
-        assert!(posix_block.contains("Read_Access_Check_Policy = \"post\";"));
-        assert!(manage_line.is_empty() && read_line.is_empty(), "limited uses consolidated block");
+        let (disable_block, manage_line, comment, read_line) = export_fs_directives(&share, &caps);
+        // NOACL path: 0.9.40 simple settings, no post-0.9.40 extras
+        assert!(disable_block.contains("Disable_ACL = true;"));
+        assert!(!disable_block.contains("Enable_ACL"));
+        assert!(manage_line.contains("Manage_Gids = false;"));
+        assert!(read_line.is_empty());
         assert!(comment.contains("Auto-detected: btrfs"));
-        assert!(comment.contains("posix-only conservative mode for noacl btrfs (ZimaOS)"));
-        assert!(posix_block.contains("POSIX_ONLY_EXPORT"), "conservative guard must emit measurable marker");
-        assert!(
-            posix_block.contains(crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB),
-            "posix block must embed V9.6 knob diagnosis"
-        );
-        assert!(
-            comment.contains(crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB),
-            "auto_comment must embed V9.6 knob diagnosis"
-        );
+        assert!(comment.contains("ACL-dependent NFSv4 ops disabled for compatibility"));
+        assert!(!disable_block.contains("Read_Access_Check_Policy"));
+        assert!(!disable_block.contains("POSIX_ONLY_EXPORT"));
+        assert!(!disable_block.contains(crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB));
+        assert!(!comment.contains(crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB));
         assert!(!crate::ganesha_log_contract::ganesha_96_has_mode_only_access_knob());
-        assert!(!comment.contains("posix getattr/access only"));
-        assert!(!comment.contains("ACL-dependent NFSv4 ops disabled"));
         assert!(!comment.contains("Manage_Gids_Expiration"));
     }
 
@@ -1149,7 +1165,7 @@ mod tests {
         let ganesha = std::fs::read_to_string(&paths.ganesha_conf).unwrap_or_default();
         assert!(!ganesha.contains("IdmapConf"));
         assert!(!ganesha.contains("idmapd.conf"));
-        // Read_Access_Check_Policy omitted (9.6 default `pre`). Limited FS uses `post`.
+        // Read_Access_Check_Policy omitted (9.6 default `pre` for both paths).
         assert!(
             !ganesha.contains("Read_Access_Check_Policy ="),
             "Read_Access_Check_Policy = must not appear in main ganesha.conf"

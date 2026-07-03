@@ -2,10 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
-/// V9.6 export config has no knob for mode-only OP_ACCESS when Disable_ACL=true.
+/// Diagnosis string for Ganesha 9.6 ACL-path defect (still relevant for staging analysis or
+/// misconfig where enable_acl=true on noacl or pre-0.9.70 fragments). NOACL path now uses
+/// 0.9.40 simple Disable_ACL + Manage_Gids=false without Read_Access_Check_Policy.
 pub const GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB: &str =
-    "Ganesha 9.6: Disable_ACL + Read_Access_Check_Policy=post do not force mode-only OP_ACCESS/GETATTR; \
-     nfs_access_op still logs ACL(list_dir,...); use ganesha_path staging on noacl btrfs.";
+    "Ganesha 9.6: Disable_ACL on noacl still lets nfs_access_op see ACL mask in some paths; \
+     use ganesha_path staging on acl-capable tree for full compatibility.";
 
 /// Researched V9.6 EXPORT keys: no mode-only OP_ACCESS/GETATTR knob when Disable_ACL=true.
 pub fn ganesha_96_has_mode_only_access_knob() -> bool {

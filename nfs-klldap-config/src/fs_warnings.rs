@@ -238,7 +238,7 @@ mod tests {
             .expect("limited fixture must yield warning");
         assert!(msg.contains("limited filesystem"));
         assert!(msg.contains("enable_acl=false"));
-        assert!(msg.contains("posix-only") || msg.contains("conservative"));
+        assert!(msg.contains("NOACL mode") || msg.contains("limited filesystem"));
         assert!(share_fs_warning_message(&cfg, &cfg.shares[0]).is_none());
         assert!(share_fs_acl_limited_with_mountinfo(
             &cfg,

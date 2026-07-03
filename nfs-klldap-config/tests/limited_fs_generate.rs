@@ -4,8 +4,7 @@ use std::fs;
 use std::sync::Mutex;
 
 use nfs_klldap_config::{
-    classify_principal, ganesha_96_has_mode_only_access_knob, generate_all, GenerationPaths,
-    GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB, NfsKlldapConfig,
+    classify_principal, generate_all, GenerationPaths, NfsKlldapConfig,
 };
 use nfs_klldap_identity::nfs_keytab_host_variants;
 
@@ -95,20 +94,15 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
     let sec_pos = frag.find("SecType =").expect("SecType");
     assert!(
         disable_pos < sec_pos,
-        "posix directives must precede SecType for limited FS:\n{frag}"
+        "NOACL directives must precede SecType:\n{frag}"
     );
-    assert!(frag.contains("Read_Access_Check_Policy = \"post\";"), "limited must have post policy:\n{frag}");
-    assert!(frag.contains("posix-only conservative mode for noacl btrfs (ZimaOS)"), "limited comment:\n{frag}");
-    assert!(frag.contains("POSIX_ONLY_EXPORT"), "frag must include conservative guard marker:\n{frag}");
-    assert!(
-        frag.contains(GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB),
-        "frag must embed V9.6 knob diagnosis:\n{frag}"
-    );
-    assert!(!ganesha_96_has_mode_only_access_knob());
-    assert!(!frag.contains("posix getattr/access only"), "fragment:\n{frag}");
-    assert!(!frag.contains("ACL-dependent NFSv4 ops disabled"), "fragment:\n{frag}");
-    assert!(frag.contains("Enable_NLM = false;"), "frag must emit Enable_NLM:\n{frag}");
-    assert!(frag.contains("Enable_RQUOTA = false;"), "frag must emit Enable_RQUOTA:\n{frag}");
+    // NOACL path uses 0.9.40 simple settings; no extras that caused NFS4ERR_NOTSUPP
+    assert!(!frag.contains("Read_Access_Check_Policy"), "NOACL must not emit post policy:\n{frag}");
+    assert!(!frag.contains("POSIX_ONLY_EXPORT"), "no legacy posix marker in 0.9.40-style:\n{frag}");
+    assert!(!frag.contains("Enable_NLM"), "NOACL omits per-export Enable_NLM:\n{frag}");
+    assert!(!frag.contains("Enable_RQUOTA"), "NOACL omits per-export Enable_RQUOTA:\n{frag}");
+    assert!(frag.contains("ACL-dependent NFSv4 ops disabled for compatibility"), "0.9.40-style comment:\n{frag}");
+    assert!(!frag.contains("Read_Access_Check_Policy = \"post\";"));
     if let Ok(scratch) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {
         let dest = std::path::PathBuf::from(scratch).join("10-users-limited.conf");
         let _ = fs::write(&dest, &frag);
@@ -153,12 +147,12 @@ host_path = "/media/movies"
 fn generate_all_limited_btrfs_twice_is_deterministic() {
     let (_a, frag1, _) = generate_with_mountinfo(MOUNTINFO_BTRFS_NOACL, LIMITED_TOML);
     let (_b, frag2, _) = generate_with_mountinfo(MOUNTINFO_BTRFS_NOACL, LIMITED_TOML);
-    assert_eq!(frag1, frag2, "posix-only export block must be identical across runs");
+    assert_eq!(frag1, frag2, "NOACL export block must be identical across runs");
     for frag in [&frag1, &frag2] {
         assert!(frag.contains("Disable_ACL = true;"));
         assert!(frag.contains("Manage_Gids = false;"));
-        assert!(frag.contains("Read_Access_Check_Policy = \"post\";"));
-        assert!(frag.contains("POSIX_ONLY_EXPORT"));
+        assert!(!frag.contains("Read_Access_Check_Policy"));
+        assert!(!frag.contains("POSIX_ONLY_EXPORT"));
         let disable = frag.find("Disable_ACL = true;").unwrap();
         let sec = frag.find("SecType =").unwrap();
         assert!(disable < sec);

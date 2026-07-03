@@ -66,9 +66,9 @@ echo "[6] Principal mapping + Ganesha 9.6 policy..."
 ganesha-ctl id-map-test testuser1 2>/dev/null || echo "  id-map-test not available or failed (non-fatal)"
 if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
     if grep -q 'Read_Access_Check_Policy' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
-        echo "  NOTE: Read_Access_Check_Policy present (expected for limited/noacl FS with post policy)"
+        echo "  NOTE: Read_Access_Check_Policy present in some fragment (unexpected post-0.9.70; two-path NOACL uses default pre)"
     else
-        echo "  OK: Read_Access_Check_Policy omitted in fragments (9.6 default pre)"
+        echo "  OK: Read_Access_Check_Policy omitted in fragments (9.6 default pre; both ACL/NOACL paths)"
     fi
 fi
 if [ -e /usr/local/bin/nfsidmap ] || [ -e /usr/sbin/nfsidmap ] || [ -L /usr/sbin/nfsidmap ]; then

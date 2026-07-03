@@ -76,18 +76,22 @@ pub fn classify_log_notsupp_path(log_path: &Path) -> nfs_klldap_config::NotsuppF
     nfs_klldap_config::classify_notsupp_failure_path(&content)
 }
 
-/// Export fragment must emit posix guard before SecType (measurable B1 change vs diagnostic 0.9.57).
+/// Export fragment must emit NOACL (0.9.40-style) before SecType for limited shares.
+/// (distinct path; no post-policy markers)
 #[cfg(test)]
 pub fn validate_posix_only_export_fragment(frag: &str) -> Result<(), Vec<&'static str>> {
     let mut errs = vec![];
     if !frag.contains("Disable_ACL = true;") {
         errs.push("missing Disable_ACL");
     }
-    if !frag.contains("Read_Access_Check_Policy = \"post\";") {
-        errs.push("missing Read_Access_Check_Policy=post");
+    if !frag.contains("Manage_Gids = false;") {
+        errs.push("missing Manage_Gids=false for NOACL");
     }
-    if !frag.contains("POSIX_ONLY_EXPORT") {
-        errs.push("missing POSIX_ONLY_EXPORT marker");
+    if frag.contains("Read_Access_Check_Policy") {
+        errs.push("NOACL must not contain Read_Access_Check_Policy");
+    }
+    if frag.contains("POSIX_ONLY_EXPORT") {
+        errs.push("NOACL must not contain POSIX_ONLY_EXPORT marker");
     }
     let disable = frag.find("Disable_ACL = true;");
     let sec = frag.find("SecType =");
@@ -164,12 +168,10 @@ getgrouplist for uname: testuser1, returned 2 groups
     }
 
     #[test]
-    fn posix_only_export_fragment_contract_matches_b1_guard() {
+    fn noacl_0_9_40_export_fragment_contract_matches_simple_guard() {
         let frag = r#"EXPORT {
     Disable_ACL = true;
     Manage_Gids = false;
-    Read_Access_Check_Policy = "post";
-    # POSIX_ONLY_EXPORT: Ganesha 9.6 no export knob skips nfs_access_op ACL on noacl
     SecType = krb5p;
 }"#;
         assert!(validate_posix_only_export_fragment(frag).is_ok());

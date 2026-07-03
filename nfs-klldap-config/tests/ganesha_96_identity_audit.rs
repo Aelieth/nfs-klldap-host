@@ -1,4 +1,4 @@
-//! Structural audit contract: conservative limited-FS export + main ganesha.conf identity prerequisites.
+//! Structural audit: NOACL limited-FS export (0.9.40-style) + main ganesha.conf 0.9.65 identity prerequisites (distinct paths).
 
 use std::fs;
 use std::sync::Mutex;
@@ -69,18 +69,19 @@ fn generate_limited(
 }
 
 #[test]
-fn conservative_limited_export_and_main_conf_emit_identity_prerequisites() {
+fn noacl_limited_export_and_main_conf_emit_identity_prerequisites() {
     let (_tmp, frag, ganesha) = generate_limited(MOUNTINFO_BTRFS_NOACL, LIMITED_TOML);
 
     for needle in [
         "Disable_ACL = true;",
         "Manage_Gids = false;",
-        r#"Read_Access_Check_Policy = "post";"#,
         "SecType = krb5p;",
-        "POSIX_ONLY_EXPORT",
     ] {
         assert!(frag.contains(needle), "fragment missing {needle}:\n{frag}");
     }
+    // NOACL 0.9.40 path: no Read_Access post policy or POSIX marker (those caused NOTSUPP)
+    assert!(!frag.contains("Read_Access_Check_Policy"), "NOACL path omits Read_Access:\n{frag}");
+    assert!(!frag.contains("POSIX_ONLY_EXPORT"));
 
     for needle in [
         "UseGetpwnam = true;",
@@ -94,7 +95,7 @@ fn conservative_limited_export_and_main_conf_emit_identity_prerequisites() {
 
     let disable = frag.find("Disable_ACL = true;").unwrap();
     let sec = frag.find("SecType =").unwrap();
-    assert!(disable < sec, "posix directives must precede SecType");
+    assert!(disable < sec, "NOACL directives must precede SecType");
 }
 
 #[test]
@@ -220,7 +221,7 @@ Ganesha 9.6 krb5p identity chain (this build):
 5. Linux glibc getgrouplist returns positive ngroups on success; Ganesha my_getgrouplist_alloc requires ret==0.
 6. LD_PRELOAD shim (libnfs_klldap_getgrouplist_shim.so) prepended before nss_wrapper normalizes ret and queries idhelper GROUPLIST socket for root/shortnames.
 7. Manage_Gids=false on noacl exports: AUTH_SYS managed gids skipped; krb5p/krb5i still call rpcsec_gss_fetch_managed_groups -> uid2grp path above.
-8. Disable_ACL=true + Read_Access_Check_Policy=post: best-effort posix-only export flags; Ganesha 9.6 still ACL-checks OP_ACCESS/GETATTR on noacl (ganesha_path staging workaround).
+8. NOACL path (0.9.40-style): Disable_ACL=true + Manage_Gids=false (simple, no Read_Access post); ACL path uses native. Ganesha 9.6 may still ACL-check OP_ACCESS on direct noacl — use ganesha_path staging when full ls needed.
 
 Addressed weaknesses:
 - Root gid-0 member stuffing reversed (root login on supplemental groups; minimal root:x:0:root,daemon,bin).

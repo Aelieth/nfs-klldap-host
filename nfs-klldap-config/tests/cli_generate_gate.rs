@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use nfs_klldap_config::{ganesha_96_has_mode_only_access_knob, GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB};
+use nfs_klldap_config::ganesha_96_has_mode_only_access_knob;
 
 const LIMITED_TOML: &str = r#"
 ldap_uri = "ldaps://kllap.test:6360"
@@ -81,9 +81,12 @@ fn cli_generate_limited_btrfs_twice_is_identical() {
     let frag2 = read_single_fragment(&out2.path().join("exports.d"));
     assert_eq!(frag1, frag2, "CLI runs must emit identical fragments");
     assert!(frag1.contains("Disable_ACL = true;"));
-    assert!(frag1.contains("Read_Access_Check_Policy = \"post\";"));
-    assert!(frag1.contains("POSIX_ONLY_EXPORT"));
-    assert!(frag1.contains(GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB));
+    assert!(frag1.contains("Manage_Gids = false;"));
+    // NOACL path: 0.9.40 simple, no post-policy markers (prevents NOTSUPP on noacl)
+    assert!(!frag1.contains("Read_Access_Check_Policy"));
+    assert!(!frag1.contains("POSIX_ONLY_EXPORT"));
+    assert!(!frag1.contains("Enable_NLM"));
+    assert!(frag1.contains("ACL-dependent NFSv4 ops disabled for compatibility"));
     assert!(!ganesha_96_has_mode_only_access_knob());
     if let Ok(scratch) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {
         let scratch = PathBuf::from(scratch);

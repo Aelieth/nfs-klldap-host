@@ -31,7 +31,7 @@ See container/healthcheck.sh for service checks. See TESTING.md for test coverag
 At validate/generate time nfs-klldap-config probes `/proc/self/mountinfo` for each share's **serve path** (`ganesha_path` when set, otherwise the derived container path from `host_path`). The generator maintains two distinct supported mainline paths:
 
 - ACL-capable (ext4, xfs, btrfs+acl, or explicit `enable_acl=true`): full native NFSv4 ACL behavior.
-- NOACL/limited (btrfs+noacl, vfat/fat, ntfs, or explicit `enable_acl=false`): 0.9.40-style simple disk/share settings (`Disable_ACL = true; Manage_Gids = false; Read_Access_Check_Policy = pre;` emitted before SecType; no per-export Enable_NLM/Enable_RQUOTA/POSIX marker). Explicit pre (no quotes) access check policy for noacl mounts. Auto-detect via fstype+noacl mountopt (overrides allowed).
+- NOACL/limited (btrfs+noacl, vfat/fat, ntfs, or explicit `enable_acl=false`): 0.9.40-style simple disk/share settings (`Pseudo = /<name>;` from `export_path` or share name, plus `Disable_ACL = true; Manage_Gids = true; Read_Access_Check_Policy = pre;` (auto default; explicit `manage_gids=false` overrides) emitted before SecType; no per-export Enable_NLM/Enable_RQUOTA/POSIX marker). Explicit pre (no quotes) access check policy for noacl mounts. Auto-detect via fstype+noacl mountopt (overrides allowed). WebUI disables the Pseudo field on NOACL shares and shows the derived value as muted info.
 
 Limited filesystems automatically use the NOACL path — basic file reads and connectivity work for noacl clients (per 0.9.40). Identity resolution (UID/GID/groups via 0.9.65 nss/idhelper/UseGetpwnam) is shared by both paths.
 
@@ -45,7 +45,7 @@ Preflight identity uses `ganesha_identity_pipeline` (tempdir materialize + nss c
 |------------|------------------|
 | ext4, xfs | Full NFSv4.2 ACL features (default; ACL path) |
 | btrfs + `acl` | Full features (ACL path) |
-| btrfs + `noacl` | NOACL path (0.9.40-style: Disable_ACL + Manage_Gids=false); basics work; may need staging for some clients |
+| btrfs + `noacl` | NOACL path (0.9.40-style: Disable_ACL + Manage_Gids=true auto); basics work; may need staging for some clients |
 | vfat/fat, ntfs | NOACL path (auto) |
 
 Explicit `enable_acl` / `manage_gids` in nfs-klldap.conf override probe defaults. On limited filesystems (detected via mountinfo or ganesha_path), NOACL settings applied automatically; capable default to full native. The two paths coexist. Diagnose with `ganesha_log_contract`: ACL-path NOTSUPP vs identity-path NOTSUPP.

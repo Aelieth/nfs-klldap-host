@@ -81,9 +81,9 @@ fn cli_generate_limited_btrfs_twice_is_identical() {
     let frag2 = read_single_fragment(&out2.path().join("exports.d"));
     assert_eq!(frag1, frag2, "CLI runs must emit identical fragments");
     assert!(frag1.contains("Disable_ACL = true;"));
-    assert!(frag1.contains("Manage_Gids = false;"));
+    assert!(frag1.contains("Manage_Gids = true;"));
     assert!(frag1.contains("Path = /export/users;"), "cli noacl frag must contain Path:\n{frag1}");
-    assert!(!frag1.contains("Pseudo = "), "cli noacl generate must omit Pseudo line (twice-identical run):\n{frag1}");
+    assert!(frag1.contains("    Pseudo = /users;"), "cli noacl generate must emit Pseudo line (twice-identical run):\n{frag1}");
     // NOACL path: 0.9.40 simple + Read_Access_Check_Policy = pre for noacl mount
     assert!(frag1.contains("Read_Access_Check_Policy = pre;"));
     assert!(!frag1.contains("Read_Access_Check_Policy = post;"));
@@ -105,9 +105,9 @@ fn cli_generate_limited_btrfs_twice_is_identical() {
 
 /// Gating verification: real binary (not lib) generate twice on noacl fixture.
 /// Writes to {SCRATCH}/noacl-exports.d , captures to {SCRATCH}/noacl-frag.conf
-/// Asserts Path+Disable present, "Pseudo = " entirely absent, and two runs identical.
+/// Asserts Path+Pseudo+Disable present and two runs identical.
 #[test]
-fn cli_generate_gate_noacl_binary_twice_no_pseudo_in_scratch() {
+fn cli_generate_gate_noacl_binary_twice_pseudo_in_scratch() {
     let scratch = PathBuf::from("/tmp/grok-goal-e2cc476cb983/implementer");
     let _ = fs::create_dir_all(&scratch);
     let exports_d = scratch.join("noacl-exports.d");
@@ -152,10 +152,9 @@ fn cli_generate_gate_noacl_binary_twice_no_pseudo_in_scratch() {
 
     assert!(content.contains("Path = /export/users;"), "must contain Path:\n{content}");
     assert!(content.contains("Disable_ACL = true;"), "must contain Disable:\n{content}");
-    assert!(!content.contains("Pseudo = "), "must NOT contain Pseudo = (nor Pseudo=) on noacl binary gate:\n{content}");
-    assert!(!content.contains("Pseudo="), "no Pseudo= substring allowed");
+    assert!(content.contains("    Pseudo = /users;"), "must contain Pseudo on noacl binary gate:\n{content}");
     // Also sanity: Read pre etc still there for syntax
     assert!(content.contains("Read_Access_Check_Policy = pre;"));
     assert!(content.contains("SecType = krb5p;"));
-    eprintln!("GATE: real binary twice -> captured noacl-frag.conf ({} bytes) has no Pseudo, has Path+Disable", content.len());
+    eprintln!("GATE: real binary twice -> captured noacl-frag.conf ({} bytes) has Pseudo, Path+Disable", content.len());
 }

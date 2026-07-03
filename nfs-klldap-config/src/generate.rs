@@ -654,18 +654,9 @@ pub(crate) fn export_read_access_line(share: &crate::Share, caps: &FsCapabilitie
     }
 }
 
-/// Return the indented "    Pseudo = <value>;\n" line IFF effective enable_acl is true.
-/// For noacl (effective false, whether auto or explicit), returns empty string so the
-/// Pseudo line is omitted entirely from the EXPORT block (Ganesha must not see it on noacl
-/// volumes, or it will treat as ACL-capable). Value is still derived from export_path or
-/// default independently. Pure, unit-testable helper.
-pub(crate) fn export_pseudo_line(share: &crate::Share, caps: &FsCapabilities, pseudo: &str) -> String {
-    let eff = compute_effective_flags(share, caps);
-    if eff.enable_acl {
-        format!("    Pseudo = {};\n", pseudo)
-    } else {
-        String::new()
-    }
+/// Return the indented `Pseudo =` line for every EXPORT (0.9.40-style; NOACL and ACL paths).
+pub(crate) fn export_pseudo_line(pseudo: &str) -> String {
+    format!("    Pseudo = {};\n", pseudo)
 }
 
 fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(), ConfigError> {
@@ -684,15 +675,8 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
     for (i, share) in cfg.shares.iter().enumerate() {
         let export_id = derive_export_id(&share.name, 1000 + (i as u16 * 10));
         let path = cfg.serve_path_for(share);
-        let default_pseudo = format!("/{}", share.name);
         // Client pseudo path may differ from the internal serve path.
-        let pseudo_raw = share.export_path.as_deref().unwrap_or(&default_pseudo);
-        // Defensive absolutize validate_and_derive normally Guarantees.
-        let pseudo = if pseudo_raw.starts_with('/') {
-            pseudo_raw.to_string()
-        } else {
-            format!("/{}", pseudo_raw)
-        };
+        let pseudo = crate::derive_share_pseudo(share);
         let default_sec = &cfg.ganesha.default_security;
         let sec = share.security.as_deref().unwrap_or(default_sec);
         let access = if share.rw.unwrap_or(true) { "RW" } else { "RO" };
@@ -727,7 +711,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
         let (disable_acl_line, manage_gids_line, auto_comment) =
             export_fs_directives(share, &caps);
         let read_access_line = export_read_access_line(share, &caps);
-        let pseudo_line = export_pseudo_line(share, &caps, &pseudo);
+        let pseudo_line = export_pseudo_line(&pseudo);
         // CLIENT block keeps Protocols=4 and skips access check policy.
         let client_block = format!(
             r#"
@@ -1029,7 +1013,7 @@ mod tests {
         // NOACL path: 0.9.40 simple settings + explicit Read_Access_Check_Policy = pre for noacl mount
         assert!(disable_block.contains("Disable_ACL = true;"));
         assert!(!disable_block.contains("Enable_ACL"));
-        assert!(manage_line.contains("Manage_Gids = false;"));
+        assert!(manage_line.contains("Manage_Gids = true;"));
         assert!(read_line.contains("Read_Access_Check_Policy = pre;"), "noacl must set pre: {}", read_line);
         assert!(comment.contains("Auto-detected: btrfs"));
         assert!(comment.contains("ACL-dependent NFSv4 ops disabled for compatibility"));
@@ -1042,40 +1026,21 @@ mod tests {
     }
 
     #[test]
-    fn export_pseudo_line_omitted_for_noacl_eff_but_present_for_acl() {
-        // Pure helper test: covers AC for gating Pseudo on eff enable_acl (auto or override)
-        let mut share_no = crate::Share::default();
-        share_no.name = "users".into();
-        let caps_no = crate::FsCapabilities {
-            fstype: "btrfs".into(),
-            mount_options: vec!["noacl".into()],
-            acl_capable: false,
-        };
-        let line_no = export_pseudo_line(&share_no, &caps_no, "/users");
-        assert!(line_no.is_empty(), "auto noacl must omit pseudo line entirely: {line_no:?}");
+    fn export_pseudo_line_emitted_for_all_paths() {
+        assert_eq!(export_pseudo_line("/users"), "    Pseudo = /users;\n");
+        assert_eq!(export_pseudo_line("/data"), "    Pseudo = /data;\n");
+        assert_eq!(export_pseudo_line("/myvol"), "    Pseudo = /myvol;\n");
+    }
 
-        // explicit false still omits
-        share_no.enable_acl = Some(false);
-        let line_explicit_false = export_pseudo_line(&share_no, &caps_no, "/users");
-        assert!(line_explicit_false.is_empty());
-
-        // override enable_acl=true on noacl caps MUST emit Pseudo (admin forces ACL path)
-        let mut share_force = share_no.clone();
-        share_force.enable_acl = Some(true);
-        let line_force = export_pseudo_line(&share_force, &caps_no, "/users");
-        assert_eq!(line_force, "    Pseudo = /users;\n");
-
-        // default capable (no limited) emits
-        let caps_yes = crate::FsCapabilities { fstype: "ext4".into(), mount_options: vec![], acl_capable: true };
-        let mut share_yes = crate::Share::default();
-        share_yes.name = "data".into();
-        let line_yes = export_pseudo_line(&share_yes, &caps_yes, "/data");
-        assert_eq!(line_yes, "    Pseudo = /data;\n");
-
-        // custom export_path value used when emitting
-        share_yes.export_path = Some("/myvol".into());
-        let line_custom = export_pseudo_line(&share_yes, &caps_yes, "/myvol");
-        assert_eq!(line_custom, "    Pseudo = /myvol;\n");
+    #[test]
+    fn derive_share_pseudo_matches_export_fragment() {
+        let mut share = crate::Share::default();
+        share.name = "movies".into();
+        assert_eq!(crate::derive_share_pseudo(&share), "/movies");
+        share.export_path = Some("short".into());
+        assert_eq!(crate::derive_share_pseudo(&share), "/short");
+        share.export_path = Some("/custom".into());
+        assert_eq!(crate::derive_share_pseudo(&share), "/custom");
     }
 
     #[test]

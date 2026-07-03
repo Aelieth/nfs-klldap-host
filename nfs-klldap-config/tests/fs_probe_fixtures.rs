@@ -19,7 +19,7 @@ fn fixture_btrfs_noacl_limited() {
     assert!(!caps.acl_capable);
     let eff = compute_effective_flags(&Share::default(), &caps);
     assert!(!eff.enable_acl);
-    assert!(!eff.manage_gids);
+    assert!(eff.manage_gids);
 }
 
 #[test]

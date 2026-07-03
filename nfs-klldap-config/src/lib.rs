@@ -27,10 +27,10 @@ mod template;
 mod validate;
 
 pub use config::{
-    resolve_cache_profile,
-    ShareFieldWarning, CACHE_PROFILES, GaneshaSection, GenerationPaths, HostSection,
-    KerberosSection, ManagementSection, NfsKlldapConfig, PosixAttributeMapping, ServerSection,
-    Share, SssdSection, StorageSection, WebuiSection, SHARE_KNOWN_KEYS,
+    derive_share_pseudo, resolve_cache_profile, ShareFieldWarning, CACHE_PROFILES,
+    GaneshaSection, GenerationPaths, HostSection, KerberosSection, ManagementSection,
+    NfsKlldapConfig, PosixAttributeMapping, ServerSection, Share, SssdSection, StorageSection,
+    WebuiSection, SHARE_KNOWN_KEYS,
 };
 pub use network::{
     container_primary_ipv4, extract_server_addr_from_ganesha_line, is_docker_bridge_ipv4,

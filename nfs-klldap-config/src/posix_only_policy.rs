@@ -1,5 +1,5 @@
 //! Limited/NOACL filesystem support (warnings side) for the distinct NOACL path.
-//! 0.9.40-style simple directives (Disable_ACL + Manage_Gids=false) are emitted for
+//! 0.9.40-style simple directives (Disable_ACL + Manage_Gids per eff) are emitted for
 //! noacl (btrfs+noacl, vfat, ntfs, ...) via explicit branch in generate; this
 //! module supplies the fs_warnings / UI badge text for the NOACL mainline path
 //! (ACL path uses native full settings). UID/GID resolution logic is untouched.
@@ -26,7 +26,7 @@ fn mount_opts_suffix(caps: &FsCapabilities) -> String {
 impl PosixOnlyPolicy {
     /// Builds warning info for a share with `enable_acl=false` (probe or explicit).
     /// Directives themselves are handled by the two-path branch in export_fs_directives
-    /// (NOACL uses 0.9.40 simple Disable_ACL + Manage_Gids=false).
+    /// (NOACL uses 0.9.40 simple Disable_ACL + Manage_Gids per effective flags).
     pub fn for_share(share_name: &str, caps: &FsCapabilities, eff: &EffectiveShareFlags) -> Option<Self> {
         if eff.enable_acl {
             return None;
@@ -74,7 +74,7 @@ mod tests {
         assert!(!ganesha_96_has_mode_only_access_knob());
         assert!(policy.fs_warning.contains("NOACL mode"));
         assert!(policy.fs_warning.contains("enable_acl=false"));
-        assert!(policy.fs_warning.contains("manage_gids=false"));
+        assert!(policy.fs_warning.contains("manage_gids=true"));
         assert!(!policy.fs_warning.contains("Read_Access_Check_Policy"));
         assert!(!policy.fs_warning.contains("POSIX_ONLY"));
         assert!(policy.settings_ui_warning.contains("NOACL"));

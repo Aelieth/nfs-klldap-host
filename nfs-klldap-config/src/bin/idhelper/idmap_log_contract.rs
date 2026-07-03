@@ -84,8 +84,8 @@ pub fn validate_posix_only_export_fragment(frag: &str) -> Result<(), Vec<&'stati
     if !frag.contains("Disable_ACL = true;") {
         errs.push("missing Disable_ACL");
     }
-    if !frag.contains("Manage_Gids = false;") {
-        errs.push("missing Manage_Gids=false for NOACL");
+    if !frag.contains("Manage_Gids = true;") && !frag.contains("Manage_Gids = false;") {
+        errs.push("missing Manage_Gids line for NOACL");
     }
     if frag.contains("Read_Access_Check_Policy = post;") {
         errs.push("NOACL must not contain Read_Access_Check_Policy = post;");
@@ -175,7 +175,7 @@ getgrouplist for uname: testuser1, returned 2 groups
     fn noacl_0_9_40_export_fragment_contract_matches_simple_guard() {
         let frag = r#"EXPORT {
     Disable_ACL = true;
-    Manage_Gids = false;
+    Manage_Gids = true;
     SecType = krb5p;
 }"#;
         assert!(validate_posix_only_export_fragment(frag).is_ok());

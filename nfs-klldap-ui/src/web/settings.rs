@@ -209,6 +209,10 @@ struct ShareTemplateRow {
     name: String,
     host_path: String,
     export_path: String,
+    /// False on NOACL path: Pseudo input disabled; effective_pseudo shown as muted info.
+    pseudo_editable: bool,
+    /// Ganesha Pseudo emitted in the export fragment (export_path or /{name}).
+    effective_pseudo: String,
     security: String,
     rw: bool,
     root_squash: bool,
@@ -257,6 +261,35 @@ fn share_override_ganesha_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize
         return false;
     };
     tbl.get("ganesha_path").is_some()
+}
+
+/// True when `export_path` is explicit in raw TOML for a share row.
+fn share_export_path_explicit_in_raw(doc: &toml_edit::DocumentMut, idx: usize) -> bool {
+    let Some(arr) = doc.get("shares").and_then(|s| s.as_array_of_tables()) else {
+        return false;
+    };
+    arr.get(idx)
+        .is_some_and(|tbl| tbl.get("export_path").is_some())
+}
+
+fn share_caps_for_settings(
+    cfg: &nfs_klldap_config::NfsKlldapConfig,
+    share: &nfs_klldap_config::Share,
+    mountinfo_path: Option<&std::path::Path>,
+) -> nfs_klldap_config::FsCapabilities {
+    use nfs_klldap_config::{probe_from_mountinfo, probe_fs_capabilities, FsCapabilities};
+    let serve = cfg.serve_path_for(share);
+    let path = std::path::Path::new(&serve);
+    if let Some(mp) = mountinfo_path {
+        if let Ok(content) = std::fs::read_to_string(mp) {
+            return probe_from_mountinfo(&content, path);
+        }
+    }
+    probe_fs_capabilities(path).unwrap_or(FsCapabilities {
+        fstype: "unknown".into(),
+        mount_options: vec![],
+        acl_capable: true,
+    })
 }
 
 /// Share export_path for the editor when explicit in raw TOML.
@@ -329,11 +362,15 @@ fn build_settings_template(
             } else {
                 default_ganesha_path.clone()
             };
+            let caps = share_caps_for_settings(&cfg, s, fs_probe_mountinfo_path);
+            let eff = nfs_klldap_config::compute_effective_flags(s, &caps);
             ShareTemplateRow {
             idx,
             name: s.name.clone(),
             host_path: s.host_path.display().to_string(),
             export_path: share_export_path_from_raw(&doc, idx),
+            pseudo_editable: eff.enable_acl,
+            effective_pseudo: nfs_klldap_config::derive_share_pseudo(s),
             security: s.security.clone().unwrap_or_default(),
             rw: s.rw.unwrap_or(true),
             root_squash: s.squash.as_deref() == Some("root_squash"),
@@ -1175,10 +1212,26 @@ pub(crate) async fn settings_save_shares(
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
 
-    // Collect only share_* indexed fields from flatten extra. Other form.
-    let new_shares = collect_shares_from_structured_form(&form.extra);
+    let original_text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+    let doc: toml_edit::DocumentMut = original_text.parse().unwrap_or_default();
 
-    let mut cfg = nfs_klldap_config::NfsKlldapConfig::load(&state.config_path).unwrap_or_default();
+    let old_cfg = nfs_klldap_config::NfsKlldapConfig::load(&state.config_path).unwrap_or_default();
+    let mut new_shares = collect_shares_from_structured_form(&form.extra);
+
+    // Disabled Pseudo inputs are not posted; retain explicit export_path from prior TOML.
+    for (idx, new_share) in new_shares.iter_mut().enumerate() {
+        if new_share.export_path.is_none() && share_export_path_explicit_in_raw(&doc, idx) {
+            let old = old_cfg
+                .shares
+                .get(idx)
+                .or_else(|| old_cfg.shares.iter().find(|s| s.name == new_share.name));
+            if let Some(old) = old {
+                new_share.export_path = old.export_path.clone();
+            }
+        }
+    }
+
+    let mut cfg = old_cfg;
     cfg.shares = new_shares.clone();
 
     if let Err(e) = cfg.validate_and_derive() {
@@ -1194,10 +1247,7 @@ pub(crate) async fn settings_save_shares(
         return Ok(Html(tpl.render().unwrap()));
     }
 
-    let original_text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
-    let mut doc = original_text
-        .parse::<toml_edit::DocumentMut>()
-        .unwrap_or_default();
+    let mut doc = doc;
 
     apply_shares_to_toml_doc(&mut doc, &new_shares);
 

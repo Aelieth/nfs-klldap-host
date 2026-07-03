@@ -249,6 +249,17 @@ pub struct Share {
     pub ganesha_path: Option<String>,
 }
 
+/// Derive the Ganesha NFSv4 Pseudo path from `export_path` or `/{name}` (0.9.40-style).
+pub fn derive_share_pseudo(share: &Share) -> String {
+    let default = format!("/{}", share.name);
+    let raw = share.export_path.as_deref().unwrap_or(&default);
+    if raw.starts_with('/') {
+        raw.to_string()
+    } else {
+        format!("/{}", raw)
+    }
+}
+
 impl Default for Share {
     fn default() -> Self {
         Self {

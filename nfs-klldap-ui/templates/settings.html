@@ -162,7 +162,14 @@
         <div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
             <input name="share_name_{{ row.idx }}" value="{{ row.name }}" style="width:115px" placeholder="name">
             <input name="share_host_{{ row.idx }}" value="{{ row.host_path }}" style="flex:1" placeholder="host_path">
-            <input name="share_export_{{ row.idx }}" value="{{ row.export_path }}" style="width:140px" placeholder="/movies" title="Ganesha Pseudo (export_path) — client mount server:/this. Internal Path derived from Host Path.">
+            <div style="width:140px;display:flex;flex-direction:column;">
+            <input name="share_export_{{ row.idx }}" value="{{ row.export_path }}" style="width:140px" placeholder="/movies" title="Ganesha Pseudo (export_path) — client mount server:/this. Internal Path derived from Host Path." {% if !row.pseudo_editable %}disabled{% endif %}>
+            {% if !row.pseudo_editable %}
+            <small style="color:var(--text-muted);font-size:0.62em;margin-top:2px;line-height:1.2;" title="Emitted in Ganesha EXPORT on NOACL shares (0.9.40-style derivation).">
+                Pseudo: <code>{{ row.effective_pseudo }}</code> (auto, NOACL export)
+            </small>
+            {% endif %}
+            </div>
             <select name="share_security_{{ row.idx }}" style="width:90px">
                 <option value="">default</option>
                 <option value="krb5p" {% if row.security == "krb5p" %}selected{% endif %}>krb5p</option>

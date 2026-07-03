@@ -31,7 +31,7 @@ const MOUNTINFO_EXT4: &str = r#"
 37 36 0:60 / /export/movies rw,relatime - ext4 /dev/sdb1 rw
 "#;
 
-const NOACL_MANAGE_TRUE_TOML: &str = r#"
+const NOACL_MANAGE_FALSE_TOML: &str = r#"
 ldap_uri = "ldaps://kllap.test:6360"
 [storage]
 container_root = "/export"
@@ -43,7 +43,7 @@ name = "users"
 host_path = "/media/users"
 security = "krb5p"
 enable_acl = false
-manage_gids = true
+manage_gids = false
 "#;
 
 fn generation_paths(out: &std::path::Path) -> GenerationPaths {
@@ -104,9 +104,9 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
     let (_tmp, frag, ganesha) = generate_with_mountinfo(MOUNTINFO_BTRFS_NOACL, LIMITED_TOML);
 
     assert!(frag.contains("Disable_ACL = true;"), "fragment:\n{frag}");
-    assert!(frag.contains("Manage_Gids = false;"), "fragment:\n{frag}");
+    assert!(frag.contains("Manage_Gids = true;"), "fragment:\n{frag}");
     assert!(frag.contains("Path = /export/users;"), "noacl must still contain Path for location by ganesha-ctl etc:\n{frag}");
-    assert!(!frag.contains("Pseudo = "), "noacl must NEVER contain Pseudo = line (strict separation; Ganesha would misdetect as ACL):\n{frag}");
+    assert!(frag.contains("    Pseudo = /users;"), "noacl must emit 0.9.40-style Pseudo line:\n{frag}");
     let disable_pos = frag.find("Disable_ACL = true;").expect("Disable_ACL");
     let sec_pos = frag.find("SecType =").expect("SecType");
     assert!(
@@ -164,22 +164,21 @@ host_path = "/media/movies"
 }
 
 #[test]
-fn generate_all_noacl_with_explicit_manage_gids_true_override() {
-    // Full end-to-end on shipped generate_all + warnings for NOACL + explicit manage=true override.
-    // This drives the fix for dummy-Share in limited_fs_warning and mismatch in collect.
-    // Also serves as FRESH CONSUMER for verification: explicit load/probe/compute/export/generate_all + frag + warning asserts for override case.
-    let (_tmp, frag, _ganesha) = generate_with_mountinfo(MOUNTINFO_BTRFS_NOACL, NOACL_MANAGE_TRUE_TOML);
+fn generate_all_noacl_with_explicit_manage_gids_false_override() {
+    // Full end-to-end on shipped generate_all + warnings for NOACL + explicit manage=false override.
+    // Auto NOACL now defaults manage_gids=true; explicit false must still win.
+    let (_tmp, frag, _ganesha) = generate_with_mountinfo(MOUNTINFO_BTRFS_NOACL, NOACL_MANAGE_FALSE_TOML);
 
-    // Frag must have Disable (NOACL path) but Manage_Gids = true (from override, not forced false)
+    // Frag must have Disable (NOACL path) but Manage_Gids = false (from explicit override)
     assert!(frag.contains("Disable_ACL = true;"), "NOACL path still emits Disable:\n{frag}");
-    assert!(frag.contains("Manage_Gids = true;"), "explicit manage_gids=true must win on NOACL:\n{frag}");
-    assert!(!frag.contains("Manage_Gids = false;"), "should not force false when overridden true:\n{frag}");
+    assert!(frag.contains("Manage_Gids = false;"), "explicit manage_gids=false must win on NOACL:\n{frag}");
+    assert!(!frag.contains("Manage_Gids = true;"), "should not force true when overridden false:\n{frag}");
     assert!(frag.contains("Path = /export/users;"), "Path present on overridden noacl:\n{frag}");
-    assert!(!frag.contains("Pseudo = "), "explicit enable_acl=false (or auto noacl) must omit Pseudo even with other overrides:\n{frag}");
+    assert!(frag.contains("    Pseudo = /users;"), "noacl with overrides must still emit Pseudo:\n{frag}");
     assert!(frag.contains("Read_Access_Check_Policy = pre;"), "NOACL override must emit pre policy:\n{frag}");
     assert!(!frag.contains("Read_Access_Check_Policy = post;"), "no post on NOACL");
 
-    eprintln!("FRESH_CONSUMER_FULL_CHAIN: override toml load+generate frag has Manage=true on noacl: {}", frag.contains("Manage_Gids = true;"));
+    eprintln!("FRESH_CONSUMER_FULL_CHAIN: override toml load+generate frag has Manage=false on noacl: {}", frag.contains("Manage_Gids = false;"));
 
     // Now drive warnings path with real share (not dummy)
     // Re-load under same mountinfo to get real cfg + eff
@@ -188,7 +187,7 @@ fn generate_all_noacl_with_explicit_manage_gids_true_override() {
     let mountinfo_path = tmp2.path().join("mountinfo");
     fs::write(&mountinfo_path, MOUNTINFO_BTRFS_NOACL).unwrap();
     let conf_path = tmp2.path().join("nfs-klldap.conf");
-    fs::write(&conf_path, NOACL_MANAGE_TRUE_TOML).unwrap();
+    fs::write(&conf_path, NOACL_MANAGE_FALSE_TOML).unwrap();
     let prev = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok();
     std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mountinfo_path);
 
@@ -203,7 +202,7 @@ fn generate_all_noacl_with_explicit_manage_gids_true_override() {
     let eff = compute_effective_flags(&cfg.shares[0], &caps);
     eprintln!("FRESH_CONSUMER: compute_effective_flags enable_acl={} manage_gids={}", eff.enable_acl, eff.manage_gids);
     assert!(!eff.enable_acl);
-    assert!(eff.manage_gids, "override must be visible in eff");
+    assert!(!eff.manage_gids, "override must be visible in eff");
 
     // full generate_all (exercises export_fs_directives + write internally for the override)
     let out = tmp2.path().join("genout");
@@ -218,8 +217,8 @@ fn generate_all_noacl_with_explicit_manage_gids_true_override() {
     std::fs::create_dir_all(&paths.exports_dir).unwrap();
     generate_all(&cfg, &paths).expect("generate_all for override fresh");
     let gen_frag = std::fs::read_dir(&paths.exports_dir).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().map_or(false, |x| x=="conf")).map(|e| std::fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
-    assert!(gen_frag.contains("Manage_Gids = true;"), "generate_all frag must contain true for override");
-    eprintln!("FRESH_CONSUMER: generate_all frag for override has Manage=true: {}", gen_frag.contains("Manage_Gids = true;"));
+    assert!(gen_frag.contains("Manage_Gids = false;"), "generate_all frag must contain false for override");
+    eprintln!("FRESH_CONSUMER: generate_all frag for override has Manage=false: {}", gen_frag.contains("Manage_Gids = false;"));
 
     let ws = collect_fs_warnings(&cfg);
     let limited_ws: Vec<_> = ws.into_iter().filter(|w| !w.acl_capable).collect();
@@ -227,13 +226,12 @@ fn generate_all_noacl_with_explicit_manage_gids_true_override() {
     let w = limited_ws.iter().find(|w| w.share_name == "users").expect("found users warning");
     assert!(!w.acl_capable);
     assert!(!w.effective_enable_acl);
-    assert!(w.effective_manage_gids, "eff must reflect explicit true override");
-    // message must come from real eff now, not dummy false
-    assert!(w.message.contains("manage_gids=true") || w.message.contains("manage_gids = true") || w.message.contains("NOACL mode"), "warning message must reflect override true: {}", w.message);
+    assert!(!w.effective_manage_gids, "eff must reflect explicit false override");
+    assert!(w.message.contains("manage_gids=false") || w.message.contains("manage_gids = false") || w.message.contains("NOACL mode"), "warning message must reflect override false: {}", w.message);
     eprintln!("FRESH_CONSUMER: warning message for override: {}", w.message);
 
     let only = limited_fs_warnings_only(&cfg);
-    assert!(only.iter().any(|ww| ww.share_name=="users" && ww.effective_manage_gids));
+    assert!(only.iter().any(|ww| ww.share_name=="users" && !ww.effective_manage_gids));
     if let Some(p) = prev { std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", p); } else { std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH"); }
 }
 
@@ -244,9 +242,9 @@ fn generate_all_limited_btrfs_twice_is_deterministic() {
     assert_eq!(frag1, frag2, "NOACL export block must be identical across runs");
     for frag in [&frag1, &frag2] {
         assert!(frag.contains("Disable_ACL = true;"));
-        assert!(frag.contains("Manage_Gids = false;"));
+        assert!(frag.contains("Manage_Gids = true;"));
         assert!(frag.contains("Path = /export/users;"), "Path must be present even on noacl");
-        assert!(!frag.contains("Pseudo = "), "noacl must omit Pseudo line in both runs");
+        assert!(frag.contains("    Pseudo = /users;"), "noacl must emit Pseudo line in both runs");
         assert!(frag.contains("Read_Access_Check_Policy = pre;"), "NOACL must set pre");
         assert!(!frag.contains("Read_Access_Check_Policy = post;"));
         assert!(!frag.contains("POSIX_ONLY_EXPORT"));

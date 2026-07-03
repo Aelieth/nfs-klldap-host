@@ -544,6 +544,18 @@ host_path = "/media/data"
             "settings must render fs_warning badge"
         );
         assert!(
+            settings_html.contains("share_export_0") && settings_html.contains("disabled"),
+            "settings must disable Pseudo input on NOACL share"
+        );
+        assert!(
+            settings_html.contains("Pseudo: <code>/data</code>"),
+            "settings must show muted effective Pseudo on NOACL share"
+        );
+        assert!(
+            settings_html.contains("(auto, NOACL export)"),
+            "settings must label muted Pseudo as NOACL export"
+        );
+        assert!(
             settings_html.contains(settings_warn_snippet),
             "settings badge must include limited-fs guidance"
         );

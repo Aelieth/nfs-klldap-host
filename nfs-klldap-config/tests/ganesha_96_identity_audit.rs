@@ -74,13 +74,13 @@ fn noacl_limited_export_and_main_conf_emit_identity_prerequisites() {
 
     for needle in [
         "Disable_ACL = true;",
-        "Manage_Gids = false;",
+        "Manage_Gids = true;",
         "SecType = krb5p;",
     ] {
         assert!(frag.contains(needle), "fragment missing {needle}:\n{frag}");
     }
     assert!(frag.contains("Path = /export/users;"), "noacl must retain Path:\n{frag}");
-    assert!(!frag.contains("Pseudo = "), "noacl limited export must omit Pseudo = entirely:\n{frag}");
+    assert!(frag.contains("    Pseudo = /users;"), "noacl limited export must emit Pseudo (0.9.40-style):\n{frag}");
     // NOACL path: now explicitly sets Read_Access_Check_Policy = pre (for noacl mount); no post/POSIX
     assert!(frag.contains("Read_Access_Check_Policy = pre;"), "NOACL path must set pre:\n{frag}");
     assert!(!frag.contains("Read_Access_Check_Policy = post;"));
@@ -223,8 +223,8 @@ Ganesha 9.6 krb5p identity chain (this build):
 4. UseGetpwnam=true: uid2grp_allocate_by_uid -> getpwuid_r -> pw_name (short) -> getgrouplist(pw_name, pw_gid).
 5. Linux glibc getgrouplist returns positive ngroups on success; Ganesha my_getgrouplist_alloc requires ret==0.
 6. LD_PRELOAD shim (libnfs_klldap_getgrouplist_shim.so) prepended before nss_wrapper normalizes ret and queries idhelper GROUPLIST socket for root/shortnames.
-7. Manage_Gids=false on noacl exports: AUTH_SYS managed gids skipped; krb5p/krb5i still call rpcsec_gss_fetch_managed_groups -> uid2grp path above.
-8. NOACL path (0.9.40-style): Disable_ACL=true + Manage_Gids=false (simple, no Read_Access post); ACL path uses native. Ganesha 9.6 may still ACL-check OP_ACCESS on direct noacl — use ganesha_path staging when full ls needed.
+7. Auto NOACL exports emit Manage_Gids=true; explicit manage_gids=false skips AUTH_SYS managed gids only — krb5p/krb5i still call rpcsec_gss_fetch_managed_groups -> uid2grp path above.
+8. NOACL path (0.9.40-style): Disable_ACL=true + Manage_Gids=true auto (simple, no Read_Access post); ACL path uses native. Ganesha 9.6 may still ACL-check OP_ACCESS on direct noacl — use ganesha_path staging when full ls needed.
 
 Addressed weaknesses:
 - Root gid-0 member stuffing reversed (root login on supplemental groups; minimal root:x:0:root,daemon,bin).
@@ -237,7 +237,7 @@ Remaining risks:
 - Shim allowlist must cover every short pw_name Ganesha passes (from NFS_KLLDAP_IDHELPER_PRERESOLVE + warm principals).
 "#;
     assert!(audit.contains("my_getgrouplist_alloc requires ret==0"));
-    assert!(audit.contains("Manage_Gids=false"));
+    assert!(audit.contains("Manage_Gids=true"));
     assert!(audit.contains("_MSPAC_SUPPORT stubs"));
     assert!(audit.contains("GROUPLIST root"));
     eprintln!("{audit}");
@@ -249,7 +249,7 @@ fn enable_rpc_cred_fallback_disabled_when_configured() {
         "{LIMITED_TOML}\n[ganesha]\nenable_rpc_cred_fallback = false\n"
     );
     let (_tmp, frag, ganesha) = generate_limited(MOUNTINFO_BTRFS_NOACL, &toml);
-    assert!(!frag.contains("Pseudo = "), "noacl frag under enable_rpc fallback test must omit Pseudo:\n{frag}");
+    assert!(frag.contains("    Pseudo = /users;"), "noacl frag under enable_rpc fallback test must emit Pseudo:\n{frag}");
     assert!(
         ganesha.contains("enable_rpc_cred_fallback = false;"),
         "ganesha.conf:\n{ganesha}"

@@ -65,9 +65,9 @@ pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
 /// This is the core of the two distinct mainline paths:
 /// - enable_acl=false (probe auto on NTFS/FAT/btrfs+noacl or explicit) → NOACL path (0.9.40 simple disk settings).
 /// - enable_acl=true (or auto on capable) → ACL path (full native).
-/// manage_gids follows independently (override or !probe_limited).
-/// Limited FS defaults to conservative settings (enable_acl=false, manage_gids=false).
-/// Capable FS defaults to full (enable_acl=true, manage_gids=true). First-class modes + overrides preserved.
+/// manage_gids follows independently (override or default true on all paths).
+/// Limited FS defaults: enable_acl=false, manage_gids=true (auto NOACL still fetches managed gids).
+/// Capable FS defaults: enable_acl=true, manage_gids=true. First-class modes + overrides preserved.
 /// Whether to emit Read_Access_Check_Policy in the EXPORT block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadAccessPolicyEmit {
@@ -101,7 +101,7 @@ pub fn compute_read_access_policy_emit(
 pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> EffectiveShareFlags {
     let probe_limited = !caps.acl_capable;
     let enable_acl = share.enable_acl.unwrap_or(!probe_limited);
-    let manage_gids = share.manage_gids.unwrap_or(!probe_limited);
+    let manage_gids = share.manage_gids.unwrap_or(true);
     let auto_applied =
         probe_limited && share.enable_acl.is_none() && share.manage_gids.is_none();
     EffectiveShareFlags {
@@ -306,7 +306,7 @@ mod tests {
         };
         let eff = compute_effective_flags(&share, &caps);
         assert!(!eff.enable_acl);
-        assert!(!eff.manage_gids);
+        assert!(eff.manage_gids);
         assert!(eff.auto_applied);
     }
 

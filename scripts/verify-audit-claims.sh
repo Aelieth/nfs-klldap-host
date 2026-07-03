@@ -68,7 +68,8 @@ else
 fi
 
 # 4. No deprecated Ganesha keys emitted in generate.rs (only comments/tests may mention them)
-if grep -E '^\s*(Manage_Gids_Expiration|IdmapConf|Read_Access_Check_Policy|Transports)\s*=' \
+# Note: Read_Access_Check_Policy = "pre" is intentionally emitted for NOACL path (not deprecated)
+if grep -E '^\s*(Manage_Gids_Expiration|IdmapConf|Read_Access_Check_Policy = "post"|Transports)\s*=' \
     "$ROOT/nfs-klldap-config/src/generate.rs" >/dev/null 2>&1; then
     fail "deprecated Ganesha keys emitted in generate.rs"
 else

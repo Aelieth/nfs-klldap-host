@@ -236,7 +236,8 @@ pub struct Share {
     pub pref_write: Option<u64>,
     /// enable_acl=false (explicit or auto on limited FS) emits Disable_ACL=true for the EXPORT.
     /// enable_acl=true (or auto on capable FS) uses full native ACLs (Ganesha default for capable).
-    /// Limited FS (noacl btrfs, vfat, ntfs) default to false automatically.
+    /// This selects the NOACL vs ACL mainline path (see compute_effective_flags + export_fs_directives).
+    /// Limited FS (noacl btrfs, vfat, ntfs) default to false automatically. Overrides always win.
     pub enable_acl: Option<bool>,
     /// Emits Manage_Gids=false in the Ganesha EXPORT block when set.
     pub manage_gids: Option<bool>,

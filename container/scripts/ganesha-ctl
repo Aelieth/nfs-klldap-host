@@ -282,7 +282,11 @@ case "$CMD" in
         fi
         echo "[ganesha-ctl] fragment CLIENT block check (if exports exist):"
         if grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep -q 'Read_Access_Check_Policy' 2>/dev/null; then
-            echo "  NOTE: Read_Access_Check_Policy present (unexpected post-0.9.70 NOACL path; defaults to pre)"
+            if grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep -q 'Read_Access_Check_Policy = "pre"' 2>/dev/null; then
+                echo "  OK: Read_Access_Check_Policy = \"pre\" for NOACL fragment(s)"
+            else
+                echo "  NOTE: Read_Access_Check_Policy present (not \"pre\"; check config)"
+            fi
         else
             grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep 'CLIENT' || echo "  (no fragments yet)"
         fi

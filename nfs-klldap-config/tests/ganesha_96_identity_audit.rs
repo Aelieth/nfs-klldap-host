@@ -79,8 +79,9 @@ fn noacl_limited_export_and_main_conf_emit_identity_prerequisites() {
     ] {
         assert!(frag.contains(needle), "fragment missing {needle}:\n{frag}");
     }
-    // NOACL 0.9.40 path: no Read_Access post policy or POSIX marker (those caused NOTSUPP)
-    assert!(!frag.contains("Read_Access_Check_Policy"), "NOACL path omits Read_Access:\n{frag}");
+    // NOACL path: now explicitly sets Read_Access_Check_Policy = "pre" (for noacl mount); no post/POSIX
+    assert!(frag.contains("Read_Access_Check_Policy = \"pre\";"), "NOACL path must set pre:\n{frag}");
+    assert!(!frag.contains("Read_Access_Check_Policy = \"post\";"));
     assert!(!frag.contains("POSIX_ONLY_EXPORT"));
 
     for needle in [

@@ -65,14 +65,11 @@ fn limited_fs_opts_suffix(caps: &FsCapabilities) -> String {
 }
 
 /// One-line WARN for limited-FS shares (validate/dry-run/startup).
-pub fn limited_fs_warning(share_name: &str, caps: &FsCapabilities) -> String {
-    let eff = compute_effective_flags(
-        &Share {
-            name: share_name.into(),
-            ..Share::default()
-        },
-        caps,
-    );
+/// Now takes the real Share so that explicit manage_gids (and enable_acl) overrides
+/// are respected in the emitted warning message (fixes dummy Share always forcing false).
+pub fn limited_fs_warning(share: &Share, caps: &FsCapabilities) -> String {
+    let eff = compute_effective_flags(share, caps);
+    let share_name = &share.name;
     PosixOnlyPolicy::for_share(share_name, caps, &eff)
         .map(|p| p.fs_warning)
         .unwrap_or_else(|| {
@@ -134,7 +131,7 @@ pub fn collect_fs_warnings(cfg: &NfsKlldapConfig) -> Vec<FsShareWarning> {
             let message = if caps.acl_capable {
                 String::new()
             } else {
-                limited_fs_warning(&share.name, &caps)
+                limited_fs_warning(share, &caps)
             };
             FsShareWarning {
                 share_name: share.name.clone(),

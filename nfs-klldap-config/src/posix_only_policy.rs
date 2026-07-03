@@ -34,10 +34,11 @@ impl PosixOnlyPolicy {
         let staging_recommended = !ganesha_96_has_mode_only_access_knob();
         let opts = mount_opts_suffix(caps);
         let fs_warning = format!(
-            "share \"{share_name}\": {fstype}{opts} limited filesystem — NOACL mode (enable_acl=false, manage_gids=false); ACL-dependent NFSv4 ops disabled for compatibility",
+            "share \"{share_name}\": {fstype}{opts} limited filesystem — NOACL mode (enable_acl=false, manage_gids={mg}); ACL-dependent NFSv4 ops disabled for compatibility",
             share_name = share_name,
             fstype = caps.fstype,
             opts = opts,
+            mg = eff.manage_gids,
         );
         let settings_ui_warning = format!(
             "share \"{share_name}\": {fstype}{opts} limited filesystem — NOACL (enable_acl={enable_acl}, manage_gids={manage_gids})",

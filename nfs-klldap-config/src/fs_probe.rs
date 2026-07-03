@@ -62,8 +62,12 @@ pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
 }
 
 /// Merges explicit share flags with probe results.
+/// This is the core of the two distinct mainline paths:
+/// - enable_acl=false (probe auto on NTFS/FAT/btrfs+noacl or explicit) → NOACL path (0.9.40 simple disk settings).
+/// - enable_acl=true (or auto on capable) → ACL path (full native).
+/// manage_gids follows independently (override or !probe_limited).
 /// Limited FS defaults to conservative settings (enable_acl=false, manage_gids=false).
-/// Capable FS defaults to full (enable_acl=true, manage_gids=true). First-class modes.
+/// Capable FS defaults to full (enable_acl=true, manage_gids=true). First-class modes + overrides preserved.
 pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> EffectiveShareFlags {
     let probe_limited = !caps.acl_capable;
     let enable_acl = share.enable_acl.unwrap_or(!probe_limited);
@@ -156,7 +160,7 @@ fn acl_capable_from_mount(fstype: &str, options: &[String], mount_source: &str) 
 }
 
 // Strings for limited_fs_warning* live in fs_warnings.rs (per Step4/acceptance).
-// Internal callers go through crate:: or the fs_warnings names.
+// limited_fs_warning now takes real &Share (not dummy) so explicit manage_gids overrides on NOACL shares are reflected in messages/WARNs from CLI/generate/validate.
 
 #[cfg(test)]
 mod tests {

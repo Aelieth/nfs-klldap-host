@@ -82,8 +82,9 @@ fn cli_generate_limited_btrfs_twice_is_identical() {
     assert_eq!(frag1, frag2, "CLI runs must emit identical fragments");
     assert!(frag1.contains("Disable_ACL = true;"));
     assert!(frag1.contains("Manage_Gids = false;"));
-    // NOACL path: 0.9.40 simple, no post-policy markers (prevents NOTSUPP on noacl)
-    assert!(!frag1.contains("Read_Access_Check_Policy"));
+    // NOACL path: 0.9.40 simple + Read_Access_Check_Policy="pre" for noacl mount
+    assert!(frag1.contains("Read_Access_Check_Policy = \"pre\";"));
+    assert!(!frag1.contains("Read_Access_Check_Policy = \"post\";"));
     assert!(!frag1.contains("POSIX_ONLY_EXPORT"));
     assert!(!frag1.contains("Enable_NLM"));
     assert!(frag1.contains("ACL-dependent NFSv4 ops disabled for compatibility"));

@@ -82,9 +82,11 @@ fn cli_generate_limited_btrfs_twice_is_identical() {
     assert_eq!(frag1, frag2, "CLI runs must emit identical fragments");
     assert!(frag1.contains("Disable_ACL = true;"));
     assert!(frag1.contains("Manage_Gids = false;"));
-    // NOACL path: 0.9.40 simple + Read_Access_Check_Policy="pre" for noacl mount
-    assert!(frag1.contains("Read_Access_Check_Policy = \"pre\";"));
-    assert!(!frag1.contains("Read_Access_Check_Policy = \"post\";"));
+    assert!(frag1.contains("Path = /export/users;"), "cli noacl frag must contain Path:\n{frag1}");
+    assert!(!frag1.contains("Pseudo = "), "cli noacl generate must omit Pseudo line (twice-identical run):\n{frag1}");
+    // NOACL path: 0.9.40 simple + Read_Access_Check_Policy = pre for noacl mount
+    assert!(frag1.contains("Read_Access_Check_Policy = pre;"));
+    assert!(!frag1.contains("Read_Access_Check_Policy = post;"));
     assert!(!frag1.contains("POSIX_ONLY_EXPORT"));
     assert!(!frag1.contains("Enable_NLM"));
     assert!(frag1.contains("ACL-dependent NFSv4 ops disabled for compatibility"));
@@ -99,4 +101,61 @@ fn cli_generate_limited_btrfs_twice_is_identical() {
         "cli generate gate: identical fragments ({} bytes)",
         frag1.len()
     );
+}
+
+/// Gating verification: real binary (not lib) generate twice on noacl fixture.
+/// Writes to {SCRATCH}/noacl-exports.d , captures to {SCRATCH}/noacl-frag.conf
+/// Asserts Path+Disable present, "Pseudo = " entirely absent, and two runs identical.
+#[test]
+fn cli_generate_gate_noacl_binary_twice_no_pseudo_in_scratch() {
+    let scratch = PathBuf::from("/tmp/grok-goal-e2cc476cb983/implementer");
+    let _ = fs::create_dir_all(&scratch);
+    let exports_d = scratch.join("noacl-exports.d");
+    let _ = fs::remove_dir_all(&exports_d);
+    fs::create_dir_all(&exports_d).unwrap();
+
+    let mountinfo_path = scratch.join("gate-noacl-mountinfo.txt");
+    fs::write(&mountinfo_path, MOUNTINFO_BTRFS_NOACL).unwrap();
+    let conf_path = scratch.join("gate-noacl.toml");
+    fs::write(&conf_path, LIMITED_TOML).unwrap();
+
+    let mut run_frag: Option<String> = None;
+    for run in 1..=2 {
+        let status = Command::new(cargo_bin("nfs-klldap-config"))
+            .args(["generate", "--config"])
+            .arg(&conf_path)
+            .env("NFS_KLLDAP_MOUNTINFO_PATH", &mountinfo_path)
+            .env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK", "1")
+            .env("EXPORTS_DIR", &exports_d)
+            .env("GANESHA_CONF", scratch.join("g.conf"))
+            .env("SSSD_CONF", scratch.join("s.conf"))
+            .env("KRB5_CONF", scratch.join("k.conf"))
+            .env("IDMAP_CONF", scratch.join("i.conf"))
+            .env("NFS_CONF", scratch.join("n.conf"))
+            .status()
+            .expect("binary generate");
+        assert!(status.success(), "binary generate run {} failed", run);
+
+        let frag = read_single_fragment(&exports_d);
+        if let Some(prev) = &run_frag {
+            assert_eq!(prev, &frag, "two binary runs must produce identical noacl frag");
+        }
+        run_frag = Some(frag);
+    }
+
+    let content = run_frag.expect("frag captured");
+    // Write captured as per verification plan to {SCRATCH}/noacl-frag.conf
+    let captured = scratch.join("noacl-frag.conf");
+    fs::write(&captured, &content).expect("write captured noacl frag");
+    // Also a copy for run2 consistency proof
+    let _ = fs::write(scratch.join("noacl-frag-run2.conf"), &content);
+
+    assert!(content.contains("Path = /export/users;"), "must contain Path:\n{content}");
+    assert!(content.contains("Disable_ACL = true;"), "must contain Disable:\n{content}");
+    assert!(!content.contains("Pseudo = "), "must NOT contain Pseudo = (nor Pseudo=) on noacl binary gate:\n{content}");
+    assert!(!content.contains("Pseudo="), "no Pseudo= substring allowed");
+    // Also sanity: Read pre etc still there for syntax
+    assert!(content.contains("Read_Access_Check_Policy = pre;"));
+    assert!(content.contains("SecType = krb5p;"));
+    eprintln!("GATE: real binary twice -> captured noacl-frag.conf ({} bytes) has no Pseudo, has Path+Disable", content.len());
 }

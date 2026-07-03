@@ -68,6 +68,36 @@ pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
 /// manage_gids follows independently (override or !probe_limited).
 /// Limited FS defaults to conservative settings (enable_acl=false, manage_gids=false).
 /// Capable FS defaults to full (enable_acl=true, manage_gids=true). First-class modes + overrides preserved.
+/// Whether to emit Read_Access_Check_Policy in the EXPORT block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadAccessPolicyEmit {
+    /// Omit line; Ganesha 9.6 default is pre.
+    Omit,
+    Pre,
+    Post,
+}
+
+/// Resolves per-share Read_Access_Check_Policy for fragment emission.
+/// Auto: NOACL path emits pre; ACL-capable path omits (native default).
+pub fn compute_read_access_policy_emit(
+    share: &Share,
+    caps: &FsCapabilities,
+) -> ReadAccessPolicyEmit {
+    if let Some(ref raw) = share.read_access_policy {
+        let policy = raw.trim().to_ascii_lowercase();
+        if policy == "post" {
+            return ReadAccessPolicyEmit::Post;
+        }
+        return ReadAccessPolicyEmit::Pre;
+    }
+    let eff = compute_effective_flags(share, caps);
+    if eff.enable_acl {
+        ReadAccessPolicyEmit::Omit
+    } else {
+        ReadAccessPolicyEmit::Pre
+    }
+}
+
 pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> EffectiveShareFlags {
     let probe_limited = !caps.acl_capable;
     let enable_acl = share.enable_acl.unwrap_or(!probe_limited);
@@ -221,6 +251,49 @@ mod tests {
         let fixture = "37 36 0:60 / /export/movies rw - ext4 /dev/sdb1 rw,noacl\n";
         let caps = probe_from_mountinfo(fixture, Path::new("/export/movies"));
         assert!(!caps.acl_capable);
+    }
+
+    #[test]
+    fn read_access_policy_auto_noacl_emits_pre() {
+        let share = Share::default();
+        let caps = FsCapabilities {
+            fstype: "btrfs".into(),
+            mount_options: vec!["noacl".into()],
+            acl_capable: false,
+        };
+        assert_eq!(
+            compute_read_access_policy_emit(&share, &caps),
+            ReadAccessPolicyEmit::Pre
+        );
+    }
+
+    #[test]
+    fn read_access_policy_auto_acl_omits() {
+        let share = Share::default();
+        let caps = FsCapabilities {
+            fstype: "ext4".into(),
+            mount_options: vec![],
+            acl_capable: true,
+        };
+        assert_eq!(
+            compute_read_access_policy_emit(&share, &caps),
+            ReadAccessPolicyEmit::Omit
+        );
+    }
+
+    #[test]
+    fn read_access_policy_explicit_post_on_acl() {
+        let mut share = Share::default();
+        share.read_access_policy = Some("post".into());
+        let caps = FsCapabilities {
+            fstype: "ext4".into(),
+            mount_options: vec![],
+            acl_capable: true,
+        };
+        assert_eq!(
+            compute_read_access_policy_emit(&share, &caps),
+            ReadAccessPolicyEmit::Post
+        );
     }
 
     #[test]

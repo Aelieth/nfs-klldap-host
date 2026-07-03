@@ -54,7 +54,7 @@ struct ShareInfo {
     pub host_path: String,
     /// Access label is either RW or RO.
     pub access: String,
-    /// Squash label is either no-squash or root-squash.
+    /// Squash label uses official Ganesha Squash values.
     pub squash_label: String,
     pub cache_profile: String,
     pub warning: Option<String>,
@@ -212,16 +212,16 @@ pub(crate) async fn index(
             let nfs_path = format!("{}:{}", server, pseudo);
 
             let access = if s.rw.unwrap_or(true) {
-                "rw".to_string()
+                "RW".to_string()
             } else {
-                "ro".to_string()
+                "RO".to_string()
             };
 
             let root_squash = s.squash.as_deref() == Some("root_squash");
             let squash_label = if root_squash {
-                "root-squash".to_string()
+                "root_squash".to_string()
             } else {
-                "no-squash".to_string()
+                "no_root_squash".to_string()
             };
 
             let cache_profile = s

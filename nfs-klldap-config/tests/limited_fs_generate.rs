@@ -105,15 +105,17 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
 
     assert!(frag.contains("Disable_ACL = true;"), "fragment:\n{frag}");
     assert!(frag.contains("Manage_Gids = false;"), "fragment:\n{frag}");
+    assert!(frag.contains("Path = /export/users;"), "noacl must still contain Path for location by ganesha-ctl etc:\n{frag}");
+    assert!(!frag.contains("Pseudo = "), "noacl must NEVER contain Pseudo = line (strict separation; Ganesha would misdetect as ACL):\n{frag}");
     let disable_pos = frag.find("Disable_ACL = true;").expect("Disable_ACL");
     let sec_pos = frag.find("SecType =").expect("SecType");
     assert!(
         disable_pos < sec_pos,
         "NOACL directives must precede SecType:\n{frag}"
     );
-    // NOACL path uses 0.9.40 simple settings + Read_Access_Check_Policy="pre" (explicit for noacl mounts)
-    assert!(frag.contains("Read_Access_Check_Policy = \"pre\";"), "NOACL must emit pre policy:\n{frag}");
-    assert!(!frag.contains("Read_Access_Check_Policy = \"post\";"), "NOACL must not emit post:\n{frag}");
+    // NOACL path uses 0.9.40 simple settings + Read_Access_Check_Policy = pre (explicit for noacl mounts)
+    assert!(frag.contains("Read_Access_Check_Policy = pre;"), "NOACL must emit pre policy:\n{frag}");
+    assert!(!frag.contains("Read_Access_Check_Policy = post;"), "NOACL must not emit post:\n{frag}");
     assert!(!frag.contains("POSIX_ONLY_EXPORT"), "no legacy posix marker in 0.9.40-style:\n{frag}");
     assert!(!frag.contains("Enable_NLM"), "NOACL omits per-export Enable_NLM:\n{frag}");
     assert!(!frag.contains("Enable_RQUOTA"), "NOACL omits per-export Enable_RQUOTA:\n{frag}");
@@ -155,6 +157,9 @@ host_path = "/media/movies"
     let (_tmp, frag, _) = generate_with_mountinfo(MOUNTINFO_EXT4, ext4_toml);
     assert!(!frag.contains("Disable_ACL = true;"), "capable ext4 omits Disable_ACL");
     assert!(frag.contains("Manage_Gids = true;"));
+    assert!(frag.contains("Path = /export/movies;"), "acl capable must contain Path:\n{frag}");
+    assert!(frag.contains("    Pseudo = /movies;"), "acl capable (auto) must include the Pseudo line:\n{frag}");
+    assert!(!frag.contains("Pseudo = /users;"), "wrong share name in pseudo");
     assert!(!frag.contains("Auto-detected:"));
 }
 
@@ -169,8 +174,10 @@ fn generate_all_noacl_with_explicit_manage_gids_true_override() {
     assert!(frag.contains("Disable_ACL = true;"), "NOACL path still emits Disable:\n{frag}");
     assert!(frag.contains("Manage_Gids = true;"), "explicit manage_gids=true must win on NOACL:\n{frag}");
     assert!(!frag.contains("Manage_Gids = false;"), "should not force false when overridden true:\n{frag}");
-    assert!(frag.contains("Read_Access_Check_Policy = \"pre\";"), "NOACL override must emit pre policy:\n{frag}");
-    assert!(!frag.contains("Read_Access_Check_Policy = \"post\";"), "no post on NOACL");
+    assert!(frag.contains("Path = /export/users;"), "Path present on overridden noacl:\n{frag}");
+    assert!(!frag.contains("Pseudo = "), "explicit enable_acl=false (or auto noacl) must omit Pseudo even with other overrides:\n{frag}");
+    assert!(frag.contains("Read_Access_Check_Policy = pre;"), "NOACL override must emit pre policy:\n{frag}");
+    assert!(!frag.contains("Read_Access_Check_Policy = post;"), "no post on NOACL");
 
     eprintln!("FRESH_CONSUMER_FULL_CHAIN: override toml load+generate frag has Manage=true on noacl: {}", frag.contains("Manage_Gids = true;"));
 
@@ -238,8 +245,10 @@ fn generate_all_limited_btrfs_twice_is_deterministic() {
     for frag in [&frag1, &frag2] {
         assert!(frag.contains("Disable_ACL = true;"));
         assert!(frag.contains("Manage_Gids = false;"));
-        assert!(frag.contains("Read_Access_Check_Policy = \"pre\";"), "NOACL must set pre");
-        assert!(!frag.contains("Read_Access_Check_Policy = \"post\";"));
+        assert!(frag.contains("Path = /export/users;"), "Path must be present even on noacl");
+        assert!(!frag.contains("Pseudo = "), "noacl must omit Pseudo line in both runs");
+        assert!(frag.contains("Read_Access_Check_Policy = pre;"), "NOACL must set pre");
+        assert!(!frag.contains("Read_Access_Check_Policy = post;"));
         assert!(!frag.contains("POSIX_ONLY_EXPORT"));
         let disable = frag.find("Disable_ACL = true;").unwrap();
         let sec = frag.find("SecType =").unwrap();

@@ -55,6 +55,7 @@ pub const SHARE_KNOWN_KEYS: &[&str] = &[
     "pref_write",
     "enable_acl",
     "manage_gids",
+    "read_access_policy",
     "ganesha_path",
 ];
 
@@ -241,6 +242,9 @@ pub struct Share {
     pub enable_acl: Option<bool>,
     /// Emits Manage_Gids=false in the Ganesha EXPORT block when set.
     pub manage_gids: Option<bool>,
+    /// Per-share Read_Access_Check_Policy override (`pre` or `post`).
+    /// Omitted/auto: NOACL exports emit `pre`; ACL-capable exports omit (Ganesha default pre).
+    pub read_access_policy: Option<String>,
     /// Uses this path verbatim as Ganesha EXPORT Path and for fs probes.
     pub ganesha_path: Option<String>,
 }
@@ -259,6 +263,7 @@ impl Default for Share {
             pref_write: None,
             enable_acl: None,
             manage_gids: None,
+            read_access_policy: None,
             ganesha_path: None,
         }
     }

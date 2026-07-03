@@ -50,7 +50,7 @@ capture_audit_scratch() {
 run() { local n="$1"; shift; { echo "=== $n ==="; (cd "$ROOT" && "$@") 2>&1 || true; echo; } >"$OUT/${n}.txt"; }
 mkdir -p "$OUT"
 run file-inventory wc -l nfs-klldap-config/src/{generate.rs,idmap.rs,lib.rs} nfs-klldap-identity/src/krb5/principal.rs nfs-klldap-identity/src/ldap/resolver.rs nfs-klldap-ui/src/ldap.rs
-run grep-deprecated-ganesha-keys grep -nE 'Manage_Gids_Expiration|IdmapConf|Read_Access_Check_Policy = "post"' nfs-klldap-config/src/generate.rs || true
+run grep-deprecated-ganesha-keys grep -nE 'Manage_Gids_Expiration|IdmapConf|Read_Access_Check_Policy = post' nfs-klldap-config/src/generate.rs || true
 run grep-root-krb-principal grep -rn 'Root_Kerberos_Principal|GANESHA_ROOT_KRB' nfs-klldap-config/src nfs-klldap-config/tests || true
 run grep-docs-head head -15 docs/ganesha-architecture.md docs/ldap-integration.md docs/run/README.md
 

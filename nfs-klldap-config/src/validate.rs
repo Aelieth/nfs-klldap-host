@@ -303,6 +303,36 @@ impl NfsKlldapConfig {
             }
         }
 
+        for share in &self.shares {
+            if let Some(ref rap) = share.read_access_policy {
+                let policy = rap.trim().to_ascii_lowercase();
+                if !crate::constants::GANESHA_READ_ACCESS_POLICIES.contains(&policy.as_str()) {
+                    return Err(ConfigError::Validation(format!(
+                        "share '{}' read_access_policy must be one of {} (got '{}')",
+                        share.name,
+                        crate::constants::GANESHA_READ_ACCESS_POLICIES.join(", "),
+                        rap
+                    )));
+                }
+                if policy == "post" {
+                    let serve = self.serve_path_for(share);
+                    let caps = crate::probe_fs_capabilities(std::path::Path::new(&serve))
+                        .unwrap_or(crate::FsCapabilities {
+                            fstype: "unknown".into(),
+                            mount_options: vec![],
+                            acl_capable: true,
+                        });
+                    let eff = crate::compute_effective_flags(share, &caps);
+                    if !eff.enable_acl {
+                        return Err(ConfigError::Validation(format!(
+                            "share '{}': read_access_policy = post is not allowed on NOACL exports (limited FS or enable_acl=false); use pre or auto",
+                            share.name
+                        )));
+                    }
+                }
+            }
+        }
+
         // Require bind credentials for sssd.
         if self.sssd.ldap_default_bind_dn.trim().is_empty() {
             return Err(ConfigError::Validation(

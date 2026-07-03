@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 /// Diagnosis string for Ganesha 9.6 ACL-path defect (still relevant for staging analysis or
 /// misconfig where enable_acl=true on noacl or pre-0.9.70 fragments). NOACL path now uses
-/// 0.9.40 simple + Read_Access_Check_Policy="pre" (explicit).
+/// 0.9.40 simple + Read_Access_Check_Policy = pre (explicit, unquoted).
 pub const GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB: &str =
     "Ganesha 9.6: Disable_ACL on noacl still lets nfs_access_op see ACL mask in some paths; \
      use ganesha_path staging on acl-capable tree for full compatibility.";

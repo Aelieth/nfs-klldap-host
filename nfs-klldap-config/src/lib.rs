@@ -57,7 +57,8 @@ pub use signals::{
 pub use constants::PROC_COMM_NAME_MAX;
 
 pub use fs_probe::{
-    compute_effective_flags, probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags,
+    compute_effective_flags, compute_read_access_policy_emit, probe_from_mountinfo,
+    probe_fs_capabilities, EffectiveShareFlags, ReadAccessPolicyEmit,
     FsCapabilities,
 };
 pub use ganesha_log_contract::{
@@ -982,6 +983,24 @@ mod tests {
         let mut c2 = minimal_cfg();
         c2.shares[0].squash = Some("root_squash".into());
         assert!(c2.validate_and_derive().is_ok());
+    }
+
+    #[test]
+    fn read_access_policy_validation() {
+        let _env = env_lock();
+        let _guards = clean_core_env();
+        let mut c = minimal_cfg();
+        c.shares[0].read_access_policy = Some("bogus".into());
+        assert!(c.validate_and_derive().is_err());
+
+        let mut c2 = minimal_cfg();
+        c2.shares[0].read_access_policy = Some("pre".into());
+        assert!(c2.validate_and_derive().is_ok());
+
+        let mut c3 = minimal_cfg();
+        c3.shares[0].enable_acl = Some(false);
+        c3.shares[0].read_access_policy = Some("post".into());
+        assert!(c3.validate_and_derive().is_err());
     }
 
     #[test]

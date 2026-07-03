@@ -6,7 +6,8 @@ use std::path::Path;
 use crate::ignored_attributes;
 
 use crate::{
-    compute_effective_flags, constants, probe_fs_capabilities, sssd_resolver_inputs, ConfigError,
+    compute_effective_flags, compute_read_access_policy_emit, constants, probe_fs_capabilities,
+    ReadAccessPolicyEmit, sssd_resolver_inputs, ConfigError,
     FsCapabilities, GenerationPaths, NfsKlldapConfig,
 };
 use nfs_klldap_identity::{
@@ -530,7 +531,7 @@ NFSV4 {{
 EXPORT_DEFAULTS {{
     SecType = {sec};
     Protocols = {proto};
-    # Read_Access_Check_Policy omitted here (default pre). NOACL per-EXPORTs explicitly use value "pre".
+    # Read_Access_Check_Policy omitted here (default pre). NOACL per-EXPORTs explicitly use value pre (no quotes).
     # ACL path leaves omitted.
 }}
 "#,
@@ -584,27 +585,24 @@ EXPORT_DEFAULTS {{
 
 /// Build Ganesha 9.6 EXPORT directives for the two supported mainline paths:
 /// - NOACL/limited (enable_acl=false, e.g. btrfs+noacl/NTFS/FAT): 0.9.40-style simple
-///   disk/share settings: Disable_ACL + Manage_Gids + Read_Access_Check_Policy="pre"
-///   (no Enable_NLM/Enable_RQUOTA per-export, no POSIX marker). This restores basic disk
-///   reads for noacl clients. Read_Access_Check_Policy is explicitly "pre" for noacl mounts.
+///   disk/share settings: Disable_ACL + Manage_Gids (Read_Access_Check_Policy via
+///   [`export_read_access_line`] — auto/pre on NOACL).
 /// - ACL-capable (enable_acl=true or auto on ext4/xfs/btrfs+acl): full native behavior
-///   (no Disable_ACL; Manage_Gids per eff; no Read_Access_Check_Policy -- Ganesha default pre).
+///   (no Disable_ACL; Manage_Gids per eff; Read_Access_Check_Policy only when explicit).
 /// UID/GID resolution (0.9.65 identity blocks: UseGetpwnam, nss, idhelper) unchanged.
 /// Auto-detect + explicit enable_acl/manage_gids overrides preserved.
 /// ACL options are never adjusted for NOACL path.
-pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String, String) {
+pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String) {
     let eff = compute_effective_flags(share, caps);
     if !eff.enable_acl {
         // NOACL / limited path — 0.9.40 template for share settings (disk access: Disable_ACL always for the path).
         // But respect explicit manage_gids override (eff already merged share override + probe).
-        // Explicitly set Read_Access_Check_Policy="pre" for noacl mounts (per requirement).
         let disable_acl_line = "    Disable_ACL = true;\n".to_string();
         let manage_gids_line = if eff.manage_gids {
             "    Manage_Gids = true;\n".to_string()
         } else {
             "    Manage_Gids = false;\n".to_string()
         };
-        let read_access_line = "    Read_Access_Check_Policy = \"pre\";\n".to_string();
         let opts = if caps.mount_options.is_empty() {
             String::new()
         } else {
@@ -620,10 +618,9 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
         } else {
             String::new()
         };
-        (disable_acl_line, manage_gids_line, auto_comment, read_access_line)
+        (disable_acl_line, manage_gids_line, auto_comment)
     } else {
         // ACL-capable path — retain full/native (0.9.65 ACL behavior).
-        // Do not emit Read_Access_Check_Policy here (do not adjust ACL options).
         let manage = if eff.manage_gids {
             "    Manage_Gids = true;\n".to_string()
         } else {
@@ -644,7 +641,30 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
         } else {
             String::new()
         };
-        (String::new(), manage, auto_comment, String::new())
+        (String::new(), manage, auto_comment)
+    }
+}
+
+/// Indented EXPORT-level Read_Access_Check_Policy line (or empty when omitted).
+pub(crate) fn export_read_access_line(share: &crate::Share, caps: &FsCapabilities) -> String {
+    match compute_read_access_policy_emit(share, caps) {
+        ReadAccessPolicyEmit::Omit => String::new(),
+        ReadAccessPolicyEmit::Pre => "    Read_Access_Check_Policy = pre;\n".to_string(),
+        ReadAccessPolicyEmit::Post => "    Read_Access_Check_Policy = post;\n".to_string(),
+    }
+}
+
+/// Return the indented "    Pseudo = <value>;\n" line IFF effective enable_acl is true.
+/// For noacl (effective false, whether auto or explicit), returns empty string so the
+/// Pseudo line is omitted entirely from the EXPORT block (Ganesha must not see it on noacl
+/// volumes, or it will treat as ACL-capable). Value is still derived from export_path or
+/// default independently. Pure, unit-testable helper.
+pub(crate) fn export_pseudo_line(share: &crate::Share, caps: &FsCapabilities, pseudo: &str) -> String {
+    let eff = compute_effective_flags(share, caps);
+    if eff.enable_acl {
+        format!("    Pseudo = {};\n", pseudo)
+    } else {
+        String::new()
     }
 }
 
@@ -704,8 +724,10 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             mount_options: vec![],
             acl_capable: true,
         });
-        let (disable_acl_line, manage_gids_line, auto_comment, read_access_line) =
+        let (disable_acl_line, manage_gids_line, auto_comment) =
             export_fs_directives(share, &caps);
+        let read_access_line = export_read_access_line(share, &caps);
+        let pseudo_line = export_pseudo_line(share, &caps, &pseudo);
         // CLIENT block keeps Protocols=4 and skips access check policy.
         let client_block = format!(
             r#"
@@ -734,8 +756,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
 {auto_comment}{krb_note}EXPORT {{
     Export_Id = {};
     Path = {};
-    Pseudo = {};
-{disable_acl_line}    SecType = {};
+{pseudo_line}{disable_acl_line}    SecType = {};
     Squash = {};
 {manage_gids_line}{read_access_line}{pref_read_line}{pref_write_line}{client_block}    FSAL {{
         Name = VFS;
@@ -745,11 +766,11 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             share.name,
             export_id,
             path,
-            pseudo,
             sec,
             squash,
             auto_comment = auto_comment,
             krb_note = krb_note,
+            pseudo_line = pseudo_line,
             disable_acl_line = disable_acl_line,
             manage_gids_line = manage_gids_line,
             read_access_line = read_access_line,
@@ -971,7 +992,7 @@ mod tests {
             mount_options: vec![],
             acl_capable: true,
         };
-        let (_, manage_line, _, _) = export_fs_directives(&share, &caps);
+        let (_, manage_line, _) = export_fs_directives(&share, &caps);
         assert!(manage_line.contains("Manage_Gids = false;"));
     }
 
@@ -989,7 +1010,7 @@ mod tests {
         };
         let eff = crate::compute_effective_flags(&share, &caps);
         eprintln!("FRESH_CONSUMER_OUTSIDE_HARNESS: eff.enable_acl={} eff.manage_gids={} (from explicit override on noacl caps)", eff.enable_acl, eff.manage_gids);
-        let (dis, man, _c, _r) = export_fs_directives(&share, &caps);
+        let (dis, man, _c) = export_fs_directives(&share, &caps);
         eprintln!("FRESH_CONSUMER_DIRECTIVES: dis='{}' man='{}'", dis.trim(), man.trim());
         assert!(dis.contains("Disable_ACL = true;"));
         assert!(man.contains("Manage_Gids = true;"), "explicit override must win on NOACL path: {}", man);
@@ -1003,20 +1024,58 @@ mod tests {
             mount_options: vec!["noacl".into()],
             acl_capable: false,
         };
-        let (disable_block, manage_line, comment, read_line) = export_fs_directives(&share, &caps);
-        // NOACL path: 0.9.40 simple settings + explicit Read_Access_Check_Policy="pre" for noacl mount
+        let (disable_block, manage_line, comment) = export_fs_directives(&share, &caps);
+        let read_line = export_read_access_line(&share, &caps);
+        // NOACL path: 0.9.40 simple settings + explicit Read_Access_Check_Policy = pre for noacl mount
         assert!(disable_block.contains("Disable_ACL = true;"));
         assert!(!disable_block.contains("Enable_ACL"));
         assert!(manage_line.contains("Manage_Gids = false;"));
-        assert!(read_line.contains("Read_Access_Check_Policy = \"pre\";"), "noacl must set pre: {}", read_line);
+        assert!(read_line.contains("Read_Access_Check_Policy = pre;"), "noacl must set pre: {}", read_line);
         assert!(comment.contains("Auto-detected: btrfs"));
         assert!(comment.contains("ACL-dependent NFSv4 ops disabled for compatibility"));
-        assert!(!disable_block.contains("Read_Access_Check_Policy = \"post\""));
+        assert!(!read_line.contains("Read_Access_Check_Policy = post;"));
         assert!(!disable_block.contains("POSIX_ONLY_EXPORT"));
         assert!(!disable_block.contains(crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB));
         assert!(!comment.contains(crate::ganesha_log_contract::GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB));
         assert!(!crate::ganesha_log_contract::ganesha_96_has_mode_only_access_knob());
         assert!(!comment.contains("Manage_Gids_Expiration"));
+    }
+
+    #[test]
+    fn export_pseudo_line_omitted_for_noacl_eff_but_present_for_acl() {
+        // Pure helper test: covers AC for gating Pseudo on eff enable_acl (auto or override)
+        let mut share_no = crate::Share::default();
+        share_no.name = "users".into();
+        let caps_no = crate::FsCapabilities {
+            fstype: "btrfs".into(),
+            mount_options: vec!["noacl".into()],
+            acl_capable: false,
+        };
+        let line_no = export_pseudo_line(&share_no, &caps_no, "/users");
+        assert!(line_no.is_empty(), "auto noacl must omit pseudo line entirely: {line_no:?}");
+
+        // explicit false still omits
+        share_no.enable_acl = Some(false);
+        let line_explicit_false = export_pseudo_line(&share_no, &caps_no, "/users");
+        assert!(line_explicit_false.is_empty());
+
+        // override enable_acl=true on noacl caps MUST emit Pseudo (admin forces ACL path)
+        let mut share_force = share_no.clone();
+        share_force.enable_acl = Some(true);
+        let line_force = export_pseudo_line(&share_force, &caps_no, "/users");
+        assert_eq!(line_force, "    Pseudo = /users;\n");
+
+        // default capable (no limited) emits
+        let caps_yes = crate::FsCapabilities { fstype: "ext4".into(), mount_options: vec![], acl_capable: true };
+        let mut share_yes = crate::Share::default();
+        share_yes.name = "data".into();
+        let line_yes = export_pseudo_line(&share_yes, &caps_yes, "/data");
+        assert_eq!(line_yes, "    Pseudo = /data;\n");
+
+        // custom export_path value used when emitting
+        share_yes.export_path = Some("/myvol".into());
+        let line_custom = export_pseudo_line(&share_yes, &caps_yes, "/myvol");
+        assert_eq!(line_custom, "    Pseudo = /myvol;\n");
     }
 
     #[test]
@@ -1064,12 +1123,14 @@ mod tests {
             !off.contains("Disable_ACL = true;"),
             "explicit enable_acl=true must omit Disable_ACL on krb5p"
         );
+        assert!(off.contains("    Pseudo = /acl-off;"), "explicit enable_acl=true must include Pseudo:\n{off}");
         let default = std::fs::read_to_string(exports_dir.join("11-acl-default.conf")).unwrap();
         assert!(
             !default.contains("Disable_ACL = true;"),
             "capable ext4 krb5p must not force Disable_ACL"
         );
         assert!(default.contains("Manage_Gids = true;"));
+        assert!(default.contains("    Pseudo = /acl-default;"), "default capable path must include Pseudo line:\n{default}");
     }
 
     #[test]
@@ -1195,7 +1256,7 @@ mod tests {
         let ganesha = std::fs::read_to_string(&paths.ganesha_conf).unwrap_or_default();
         assert!(!ganesha.contains("IdmapConf"));
         assert!(!ganesha.contains("idmapd.conf"));
-        // Read_Access_Check_Policy is never in main ganesha.conf (only possibly in per-NOACL EXPORT fragments as "pre").
+        // Read_Access_Check_Policy is never in main ganesha.conf (only possibly in per-NOACL EXPORT fragments as pre).
         let has_policy_setting = ganesha.lines().any(|line| {
             let t = line.trim_start();
             t.starts_with("Read_Access_Check_Policy =") && !t.starts_with('#')

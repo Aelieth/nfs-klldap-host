@@ -457,7 +457,7 @@ host_path = "/media/data"
         let warn_snippet = "enable_acl=false";
         let body = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_export_0=&share_rw_0=true\
 &share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=false\
-&share_override_ganesha_path_0=true&share_ganesha_path_0=%2Fexport%2Fstaging%2Fdata";
+&share_read_access_policy_0=pre&share_override_ganesha_path_0=true&share_ganesha_path_0=%2Fexport%2Fstaging%2Fdata";
         let req = Request::builder()
             .method("POST")
             .uri("/settings/save-shares")
@@ -472,6 +472,7 @@ host_path = "/media/data"
         let written = std::fs::read_to_string(&config_path).unwrap();
         assert!(written.contains("enable_acl = false"));
         assert!(written.contains("manage_gids = false"));
+        assert!(written.contains("read_access_policy = \"pre\""));
         assert!(written.contains("ganesha_path = \"/export/staging/data\""));
 
         let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -480,6 +481,7 @@ host_path = "/media/data"
         let html = String::from_utf8(body_bytes.to_vec()).unwrap();
         assert!(html.contains("share_enable_acl_0"));
         assert!(html.contains("share_manage_gids_0"));
+        assert!(html.contains("share_read_access_policy_0"));
         assert!(html.contains("share_ganesha_path_0"));
         assert!(html.contains("share_override_ganesha_path_0"));
         assert!(html.contains("/export/staging/data"));
@@ -1106,8 +1108,8 @@ default_security = "krb5p"
             "share card must include Host: label"
         );
         assert!(
-            body_str.contains("rw · no-squash · default"),
-            "share card must render the compact rw/squash/cache labels (using defaults from test config)"
+            body_str.contains("RW · no_root_squash · default"),
+            "share card must render the compact Access_Type/Squash/cache labels (using defaults from test config)"
         );
 
         // Dir-meta should succeed and return a fragment with the path.

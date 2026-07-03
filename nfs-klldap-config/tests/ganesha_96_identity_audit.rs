@@ -79,9 +79,11 @@ fn noacl_limited_export_and_main_conf_emit_identity_prerequisites() {
     ] {
         assert!(frag.contains(needle), "fragment missing {needle}:\n{frag}");
     }
-    // NOACL path: now explicitly sets Read_Access_Check_Policy = "pre" (for noacl mount); no post/POSIX
-    assert!(frag.contains("Read_Access_Check_Policy = \"pre\";"), "NOACL path must set pre:\n{frag}");
-    assert!(!frag.contains("Read_Access_Check_Policy = \"post\";"));
+    assert!(frag.contains("Path = /export/users;"), "noacl must retain Path:\n{frag}");
+    assert!(!frag.contains("Pseudo = "), "noacl limited export must omit Pseudo = entirely:\n{frag}");
+    // NOACL path: now explicitly sets Read_Access_Check_Policy = pre (for noacl mount); no post/POSIX
+    assert!(frag.contains("Read_Access_Check_Policy = pre;"), "NOACL path must set pre:\n{frag}");
+    assert!(!frag.contains("Read_Access_Check_Policy = post;"));
     assert!(!frag.contains("POSIX_ONLY_EXPORT"));
 
     for needle in [
@@ -246,7 +248,8 @@ fn enable_rpc_cred_fallback_disabled_when_configured() {
     let toml = format!(
         "{LIMITED_TOML}\n[ganesha]\nenable_rpc_cred_fallback = false\n"
     );
-    let (_tmp, _frag, ganesha) = generate_limited(MOUNTINFO_BTRFS_NOACL, &toml);
+    let (_tmp, frag, ganesha) = generate_limited(MOUNTINFO_BTRFS_NOACL, &toml);
+    assert!(!frag.contains("Pseudo = "), "noacl frag under enable_rpc fallback test must omit Pseudo:\n{frag}");
     assert!(
         ganesha.contains("enable_rpc_cred_fallback = false;"),
         "ganesha.conf:\n{ganesha}"

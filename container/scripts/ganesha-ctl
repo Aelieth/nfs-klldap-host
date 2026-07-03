@@ -280,15 +280,20 @@ case "$CMD" in
             echo "[ganesha-ctl] also testing a host principal form (common for clients):"
             /usr/local/bin/nfs-klldap-idhelper resolve "host/localhost@${REALM}" 2>/dev/null || true
         fi
-        echo "[ganesha-ctl] fragment CLIENT block check (if exports exist):"
-        if grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep -q 'Read_Access_Check_Policy' 2>/dev/null; then
-            if grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep -q 'Read_Access_Check_Policy = "pre"' 2>/dev/null; then
-                echo "  OK: Read_Access_Check_Policy = \"pre\" for NOACL fragment(s)"
+        echo "[ganesha-ctl] fragment EXPORT Read_Access_Check_Policy check (if exports exist):"
+        if grep -q 'Read_Access_Check_Policy' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
+            if grep -q 'Disable_ACL = true;' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
+                if grep -q 'Read_Access_Check_Policy = pre;' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
+                    echo "  OK: NOACL fragment(s) emit Read_Access_Check_Policy = pre;"
+                else
+                    echo "  NOTE: NOACL fragment Read_Access_Check_Policy present but not = pre (check config)"
+                fi
             else
-                echo "  NOTE: Read_Access_Check_Policy present (not \"pre\"; check config)"
+                grep 'Read_Access_Check_Policy' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -3 || true
+                echo "  OK: Read_Access_Check_Policy set on EXPORT (ACL-capable or explicit override)"
             fi
         else
-            grep -l 'CLIENT' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -1 | xargs -r grep 'CLIENT' || echo "  (no fragments yet)"
+            echo "  OK: Read_Access_Check_Policy omitted (9.6 default pre for ACL-capable auto)"
         fi
         ;;
     *)

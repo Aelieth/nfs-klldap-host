@@ -77,7 +77,7 @@ pub fn classify_log_notsupp_path(log_path: &Path) -> nfs_klldap_config::NotsuppF
 }
 
 /// Export fragment must emit NOACL (0.9.40-style) before SecType for limited shares.
-/// Read_Access_Check_Policy must be "pre" (if present) for noacl; never "post".
+/// Read_Access_Check_Policy must be pre (if present) for noacl; never post. (No quotes around the value.)
 #[cfg(test)]
 pub fn validate_posix_only_export_fragment(frag: &str) -> Result<(), Vec<&'static str>> {
     let mut errs = vec![];
@@ -87,12 +87,12 @@ pub fn validate_posix_only_export_fragment(frag: &str) -> Result<(), Vec<&'stati
     if !frag.contains("Manage_Gids = false;") {
         errs.push("missing Manage_Gids=false for NOACL");
     }
-    if frag.contains("Read_Access_Check_Policy = \"post\"") {
-        errs.push("NOACL must not contain Read_Access_Check_Policy = \"post\"");
+    if frag.contains("Read_Access_Check_Policy = post;") {
+        errs.push("NOACL must not contain Read_Access_Check_Policy = post;");
     }
     // If Read is present for noacl, it must be pre (new requirement)
-    if frag.contains("Read_Access_Check_Policy") && !frag.contains("Read_Access_Check_Policy = \"pre\"") {
-        errs.push("NOACL Read_Access_Check_Policy (if present) must be \"pre\"");
+    if frag.contains("Read_Access_Check_Policy") && !frag.contains("Read_Access_Check_Policy = pre;") {
+        errs.push("NOACL Read_Access_Check_Policy (if present) must be pre (no quotes)");
     }
     if frag.contains("POSIX_ONLY_EXPORT") {
         errs.push("NOACL must not contain POSIX_ONLY_EXPORT marker");

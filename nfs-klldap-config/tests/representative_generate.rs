@@ -112,6 +112,11 @@ fn representative_config_generate_twice_is_consistent() {
     let g2 = fs::read_to_string(&paths.ganesha_conf).unwrap();
     let i1 = fs::read_to_string(&paths.idmap_conf).unwrap();
 
+    // Capable/ACL path must include Pseudo (default auto on no mountinfo limited)
+    let frag = std::fs::read_dir(&paths.exports_dir).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().map_or(false, |x| x=="conf")).map(|e| std::fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
+    assert!(frag.contains("    Pseudo = /movies;"), "representative ACL path must emit Pseudo line:\n{frag}");
+    assert!(frag.contains("Path = /export/NVME-RAID/movies;"), "representative must have Path");
+
     assert_eq!(g1, g2, "two generate runs to the same dir must be identical");
     assert_ganesha_96_compliant(&g1, &i1);
 
@@ -153,5 +158,8 @@ fn representative_config_cli_generate_exit_zero() {
 
     let ganesha = fs::read_to_string(out.join("ganesha.conf")).unwrap();
     let idmap = fs::read_to_string(out.join("idmapd.conf")).unwrap();
+    let frag = std::fs::read_dir(out.join("exports.d")).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().map_or(false, |x| x=="conf")).map(|e| std::fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
+    assert!(frag.contains("    Pseudo = /movies;"), "cli representative ACL must emit Pseudo:\n{frag}");
+    assert!(frag.contains("Path = /export/NVME-RAID/movies;"), "cli rep must have Path");
     assert_ganesha_96_compliant(&ganesha, &idmap);
 }

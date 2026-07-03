@@ -197,6 +197,7 @@ struct ShareFormRow {
     pref_write: Option<String>,
     enable_acl: Option<bool>,
     manage_gids: Option<bool>,
+    read_access_policy: Option<String>,
     ganesha_path: Option<String>,
 }
 
@@ -214,8 +215,9 @@ struct ShareTemplateRow {
     cache_profile: String,
     enable_acl: String,
     manage_gids: String,
+    read_access_policy: String,
     override_ganesha_path: bool,
-    /// Effective value shown in the Ganesha Path input (explicit override or derived default).
+    /// Effective value shown in the Path input (explicit ganesha_path override or derived default).
     ganesha_path: String,
     /// Derived container path from host_path; used for data-default-path and when override is off.
     default_ganesha_path: String,
@@ -350,6 +352,11 @@ fn build_settings_template(
                 Some(false) => "false".to_string(),
                 None => "auto".to_string(),
             },
+            read_access_policy: match s.read_access_policy.as_deref() {
+                Some("pre") => "pre".to_string(),
+                Some("post") => "post".to_string(),
+                _ => "auto".to_string(),
+            },
             override_ganesha_path,
             ganesha_path,
             default_ganesha_path,
@@ -470,6 +477,13 @@ fn collect_shares_from_structured_form(
                     parse_tri_bool(&format!("share_enable_acl_{}", idx));
                 let manage_gids =
                     parse_tri_bool(&format!("share_manage_gids_{}", idx));
+                let read_access_policy = extra
+                    .get(&format!("share_read_access_policy_{}", idx))
+                    .and_then(|v| match v.trim() {
+                        "pre" => Some("pre".to_string()),
+                        "post" => Some("post".to_string()),
+                        _ => None,
+                    });
                 let override_ganesha_path =
                     extra.contains_key(&format!("share_override_ganesha_path_{}", idx));
                 let ganesha_path = if override_ganesha_path {
@@ -493,6 +507,7 @@ fn collect_shares_from_structured_form(
                     pref_write,
                     enable_acl,
                     manage_gids,
+                    read_access_policy,
                     ganesha_path,
                 });
             }
@@ -519,6 +534,7 @@ fn collect_shares_from_structured_form(
             pref_write: r.pref_write.and_then(|s| s.trim().parse::<u64>().ok()),
             enable_acl: r.enable_acl,
             manage_gids: r.manage_gids,
+            read_access_policy: r.read_access_policy,
             ganesha_path: r.ganesha_path,
         })
         .collect()
@@ -875,7 +891,7 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
                 t["squash"] = toml_edit::value(sq.clone());
             }
         }
-        // Write cache_profile (the new primary field from the Cache Profile.
+        // Write cache_profile (Pref Cache UI → Ganesha PrefRead/PrefWrite).
         if let Some(cp) = &s.cache_profile {
             if !cp.trim().is_empty() {
                 t["cache_profile"] = toml_edit::value(cp.clone());
@@ -893,6 +909,11 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
         }
         if let Some(v) = s.manage_gids {
             t["manage_gids"] = toml_edit::value(v);
+        }
+        if let Some(ref rap) = s.read_access_policy {
+            if !rap.trim().is_empty() {
+                t["read_access_policy"] = toml_edit::value(rap.clone());
+            }
         }
         if let Some(gp) = &s.ganesha_path {
             if !gp.trim().is_empty() {

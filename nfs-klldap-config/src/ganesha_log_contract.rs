@@ -1,15 +1,13 @@
-//! Classify Ganesha 9.6 ganesha.log NFS4ERR_NOTSUPP: ACL-path vs identity-path.
+//! Classify Ganesha log NOTSUPP.
 
 use std::path::{Path, PathBuf};
 
-/// Diagnosis string for Ganesha 9.6 ACL-path defect (still relevant for staging analysis or
-/// misconfig where enable_acl=true on noacl or pre-0.9.70 fragments). NOACL path now uses
-/// 0.9.40 simple + Read_Access_Check_Policy = pre (explicit, unquoted).
+/// Diagnosis for Ganesha 9.6 ACL-path defect on staging.
 pub const GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB: &str =
     "Ganesha 9.6: Disable_ACL on noacl still lets nfs_access_op see ACL mask in some paths; \
      use ganesha_path staging on acl-capable tree for full compatibility.";
 
-/// Researched V9.6 EXPORT keys: no mode-only OP_ACCESS/GETATTR knob when Disable_ACL=true.
+/// Researched V9.6 EXPORT keys: no mode-only OP_ACCESS/GETATTR knob when Disa.
 pub fn ganesha_96_has_mode_only_access_knob() -> bool {
     false
 }
@@ -17,14 +15,14 @@ pub fn ganesha_96_has_mode_only_access_knob() -> bool {
 /// Failure path for NFS4ERR_NOTSUPP in ganesha.log compounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotsuppFailurePath {
-    /// OP_ACCESS ACL mask or GETATTR Permission check for ACL on noacl FS (export flags insufficient).
+    // OP_ACCESS ACL mask or GETATTR Permission check for ACL on noacl FS (e.
     AclPath,
-    /// uid2grp/principal mapping broken (_MSPAC stub, missing getpwuid_r/getgrouplist).
+    // Uid2grp/principal mapping broken (_MSPAC stub, missing getpwuid_r/get.
     IdentityPath,
     Unknown,
 }
 
-/// Path to repo-root logs.txt (runtime fixture for classification tests).
+/// Path to repo-root logs.txt (runtime fixture for classification tests)
 pub fn logs_txt_fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../logs.txt")
 }
@@ -41,7 +39,7 @@ fn line_is_identity_failure(line: &str) -> bool {
         || (line.contains("uid2grp_allocate_by_principal") && lower.contains("unsupported"))
 }
 
-/// True when log shows uid2grp/principal identity chain failure (not ACL-path).
+/// True when log shows uid2grp/principal identity chain failure (not ACL-path.
 pub fn log_shows_identity_failure(content: &str) -> bool {
     content.lines().any(line_is_identity_failure)
 }
@@ -52,7 +50,7 @@ fn window_has_op_access_notsupp(window: &[&str]) -> bool {
     })
 }
 
-/// True when OP_ACCESS ACL mask is followed within a few lines by OP_ACCESS NFS4ERR_NOTSUPP.
+/// True when OP_ACCESS ACL mask is followed within a few lines by OP_ACCESS N.
 pub fn log_shows_acl_path_op_access_notsupp(content: &str) -> bool {
     if log_shows_identity_failure(content) {
         return false;
@@ -75,7 +73,7 @@ fn window_has_getattr_notsupp(window: &[&str]) -> bool {
     })
 }
 
-/// True when Permission check for ACL fails with NOTSUPP on the same GETATTR compound.
+/// True when Permission check for ACL fails with NOTSUPP on the same GETATTR.
 pub fn log_shows_acl_path_getattr_notsupp(content: &str) -> bool {
     if log_shows_identity_failure(content) {
         return false;
@@ -96,12 +94,12 @@ pub fn log_shows_acl_path_getattr_notsupp(content: &str) -> bool {
     false
 }
 
-/// True when GETATTR skips ACL permission check (posix-only getattr path OK).
+/// True when GETATTR skips ACL permission check (posix-only getattr path OK)
 pub fn log_shows_posix_ok_getattr(content: &str) -> bool {
     content.contains("No permission check for ACL") && content.contains("OP_GETATTR")
 }
 
-/// True when identity/principal failure and NOTSUPP occur in the same line window.
+/// True when identity/principal failure and NOTSUPP occur in the same line wi.
 pub fn log_shows_identity_path_notsupp(content: &str) -> bool {
     let lines: Vec<&str> = content.lines().collect();
     for (i, line) in lines.iter().enumerate() {
@@ -127,7 +125,7 @@ pub fn classify_notsupp_failure_path(content: &str) -> NotsuppFailurePath {
     NotsuppFailurePath::Unknown
 }
 
-/// Three signature lines from logs.txt for diagnosis evidence (OP_ACCESS ACL, GETATTR ACL fail, GETATTR OK).
+/// Three signature lines from logs.txt for diagnosis evidence (OP_ACCESS ACL,
 pub fn logs_txt_diagnosis_signatures(content: &str) -> (Option<String>, Option<String>, Option<String>) {
     let mut op_access = None;
     let mut getattr_acl = None;
@@ -149,7 +147,7 @@ pub fn logs_txt_diagnosis_signatures(content: &str) -> (Option<String>, Option<S
     (op_access, getattr_acl, getattr_ok)
 }
 
-/// Validate logs.txt fixture exists and carries the three known failure/OK signatures.
+/// Validate logs.txt fixture exists and carries the three known failure/OK si.
 pub fn validate_logs_txt_fixture(path: &Path) -> Result<(), String> {
     let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let (op, ga_acl, ga_ok) = logs_txt_diagnosis_signatures(&content);

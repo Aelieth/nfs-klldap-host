@@ -1,5 +1,5 @@
-//! Validates hostname(1) against /proc/sys/kernel/hostname in two tiers.
-//! Mismatch yields a diagnostic for keytab and cert SAN alignment.
+//! Validates hostname against proc.
+//! Mismatch yields diagnostic for alignment.
 
 pub use nfs_klldap_identity::{
     format_nfs_principal_list, looks_like_docker_default_hostname, nfs_keytab_host_matches,
@@ -125,12 +125,12 @@ pub(crate) fn confirm_consistent_hostname(
         let remediation = "\
 Use one of the two supported ways to give the container a stable hostname:
 
-1. Recommended: Add --uts=host (or uts: host in compose).
+1. Recommended: Add --uts=host (or uts: host in compose)
    The container will then see the real hostname of the Docker host.
 
 2. Explicit override: Add --hostname your-chosen-name when starting the
    container AND set [server] hostname = \"your-chosen-name\" in
-   nfs-klldap.conf (the override takes precedence for keytab reminders).
+   nfs-klldap.conf (the override takes precedence for keytab reminders)
 
 After fixing the container invocation, restart and verify that both sources
 now report the identical name in the setup wizard and WebUI logs.";
@@ -144,7 +144,6 @@ now report the identical name in the setup wizard and WebUI logs.";
         });
     }
 
-    // Both sources agree after normalization.
     Ok(primary)
 }
 
@@ -154,7 +153,6 @@ pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsist
     let primary = match Command::new("hostname").output() {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         Ok(out) => {
-            // Command ran but exited non-zero — still capture stdout if any.
             let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if s.is_empty() {
                 return Err(HostnameInconsistency {
@@ -240,7 +238,7 @@ pub fn get_consistent_hostname_from_values(
 }
 
 pub(crate) mod internal {
-    /// Best-effort hostname fallback (not two-tier validated).
+    /// Best-effort hostname fallback (not two-tier validated)
     pub fn get() -> Result<std::ffi::OsString, std::io::Error> {
         if let Ok(h) = std::env::var("HOSTNAME") {
             return Ok(h.into());
@@ -281,7 +279,6 @@ mod tests {
 
     #[test]
     fn consistent_after_normalization_dots() {
-        // Both sides have trailing dots — should still agree.
         let c = get_consistent_hostname_from_values("myserver.", "myserver.").unwrap();
         assert_eq!(c.hostname, "myserver");
     }
@@ -307,7 +304,6 @@ mod tests {
 
     #[test]
     fn inconsistency_case_difference_is_flagged() {
-        // Case must match exactly for keytab principals.
         let err = get_consistent_hostname_from_values("Aurora", "aurora").unwrap_err();
         assert!(err.primary.is_some());
     }

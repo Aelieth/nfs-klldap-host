@@ -1,4 +1,4 @@
-//! Request-time Ganesha identity == libnfsidmap getpwnam under NSS_WRAPPER (idmap_log_contract).
+//! Request-time Ganesha identity uses getpwnam.
 
 use std::path::Path;
 use std::process::Command;
@@ -7,7 +7,7 @@ use crate::ganesha_nss_contract::{evaluate_nss_contract, GaneshaNssEnv};
 use crate::ganesha_readiness::{probe_socket_grps, probe_socket_grouplist};
 use crate::NfsKlldapConfig;
 
-/// Principals exercised by preflight (user TGT + server host + client machine).
+/// Principals exercised by preflight (user TGT + server host + client machine.
 #[derive(Clone, Debug)]
 pub struct IdentityPrincipals {
     pub user: String,
@@ -15,7 +15,7 @@ pub struct IdentityPrincipals {
     pub client_host: String,
 }
 
-/// Principals that must be visible in nss_wrapper before Ganesha starts (FQDN user + host variants).
+/// Principals that must be visible in nss_wrapper before Ganesha starts (FQDN.
 pub fn warm_principals_for_startup(
     cfg: Option<&NfsKlldapConfig>,
     realm: &str,
@@ -98,7 +98,7 @@ fn run_idhelper_grps(idh: &str, principal: &str, nss_passwd: &Path, nss_group: &
     let _ = cmd.output();
 }
 
-/// Tempdir-isolated pipeline: idhelper grps → temp nss files → nss_wrapper contract (Ganesha path).
+/// Tempdir-isolated pipeline: idhelper grps → temp nss files → nss_wrapper co.
 pub fn run_identity_pipeline(realm: &str, host_short: &str, idh: &str) -> (bool, String) {
     let principals = identity_principals_for_check(realm, host_short);
     let td = match tempfile::tempdir() {

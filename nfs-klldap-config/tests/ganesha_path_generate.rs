@@ -14,41 +14,14 @@ const MOUNTINFO_MIXED: &str = r#"
 
 fn generate_with_mountinfo(mountinfo: &str, toml: &str) -> String {
     let _lock = MOUNTINFO_ENV_LOCK.lock().unwrap();
-    let tmp = tempfile::tempdir().unwrap();
-    let mountinfo_path = tmp.path().join("mountinfo");
-    fs::write(&mountinfo_path, mountinfo).unwrap();
-    let conf_path = tmp.path().join("nfs-klldap.conf");
-    fs::write(&conf_path, toml).unwrap();
-    let out = tmp.path().join("out");
-    fs::create_dir_all(out.join("exports.d")).unwrap();
-
-    let prev = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok();
-    std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mountinfo_path);
-
-    let cfg = NfsKlldapConfig::load(&conf_path).expect("load");
-    assert_eq!(cfg.serve_path_for(&cfg.shares[0]), "/export/staging/movies");
-    let paths = GenerationPaths {
-        sssd_conf: out.join("sssd.conf"),
-        krb5_conf: out.join("krb5.conf"),
-        ganesha_conf: out.join("ganesha.conf"),
-        exports_dir: out.join("exports.d"),
-        idmap_conf: out.join("idmapd.conf"),
-        nfs_conf: out.join("nfs.conf"),
-    };
-    generate_all(&cfg, &paths).expect("generate");
-
-    if let Some(p) = prev {
-        std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", p);
-    } else {
-        std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");
-    }
-
-    fs::read_dir(out.join("exports.d"))
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .find(|p| p.extension().is_some_and(|e| e == "conf"))
-        .map(|p| fs::read_to_string(p).unwrap())
-        .expect("fragment")
+    let tmp = tempfile::tempdir().unwrap(); let mp=tmp.path().join("m"); fs::write(&mp,mountinfo).unwrap();
+    let cp=tmp.path().join("c"); fs::write(&cp,toml).unwrap(); let out=tmp.path().join("o"); fs::create_dir_all(out.join("e.d")).unwrap();
+    let pv = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok(); std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH",&mp);
+    let cfg = NfsKlldapConfig::load(&cp).expect("l"); assert_eq!(cfg.serve_path_for(&cfg.shares[0]), "/export/staging/movies");
+    let ps=GenerationPaths{sssd_conf:out.join("s"),krb5_conf:out.join("k"),ganesha_conf:out.join("g"),exports_dir:out.join("e.d"),idmap_conf:out.join("i"),nfs_conf:out.join("n")};
+    generate_all(&cfg,&ps).expect("g");
+    if let Some(p)=pv{std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH",p);}else{std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");}
+    fs::read_dir(out.join("e.d")).unwrap().map(|e|e.unwrap().path()).find(|p|p.extension().map_or(false,|x|x=="conf")).map(|p|fs::read_to_string(p).unwrap()).unwrap()
 }
 
 #[test]

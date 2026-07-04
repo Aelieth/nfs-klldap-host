@@ -1,8 +1,8 @@
-//! Extracted readiness checks (per strategy for pure testable gate).
-//!
-//! Core gate logic: probe_nss_groups + socket GROUPLIST/GRPS under the same envp
-//! the supervisor injects into ganesha.nfsd, plus ganesha-process probes via
-//! `/proc/<pid>/environ` and post-exercise ganesha.log uid2grp scan.
+//! Readiness checks.
+
+//! Probe nss + socket under env.
+
+
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -13,7 +13,7 @@ use std::process::Command;
 
 use nfs_klldap_identity::principal_local_part;
 
-/// Inputs for building the explicit ganesha.nfsd envp (mirrors supervisor injection).
+/// Inputs for building the explicit ganesha.nfsd envp (mirrors supervisor inj.
 #[derive(Debug, Clone)]
 pub struct GaneshaSpawnEnv {
     pub nss_passwd: PathBuf,
@@ -32,14 +32,14 @@ pub struct GaneshaSpawnEnv {
 pub struct GaneshaReadinessReport {
     pub root_ok: bool,
     pub sample_ok: bool,
-    /// Exact short `pw_name` getgrouplist for root (Ganesha uid2grp path).
+    /// Exact short pw_name getgrouplist for root (uid2grp).
     pub short_root_ok: bool,
     /// Exact short `pw_name` getgrouplist for sample user after getpwuid_r.
     pub short_sample_ok: bool,
     pub socket_ok: bool,
-    /// `id -G` for root+sample using the live ganesha pid's `/proc/<pid>/environ`.
+    // Id -G for root+sample using live pid.
     pub ganesha_process_ok: bool,
-    /// No new `my_getgrouplist_alloc` WARN in ganesha.log after uid2grp exercise.
+    // No new `my_getgrouplist_alloc` WARN in ganesha.log after uid2grp exer.
     pub ganesha_uid2grp_clean: bool,
     pub synthetic_clean: bool,
 }
@@ -57,7 +57,7 @@ impl GaneshaReadinessReport {
     }
 }
 
-/// Filter `/proc/<pid>/environ` bytes for LD_PRELOAD, NSS_WRAPPER, IDHELPER keys.
+/// Filter `/proc/<pid>/environ` bytes for LD_PRELOAD, NSS_WRAPPER, IDHELPER k.
 pub fn filter_proc_environ_keys(raw: &[u8]) -> Vec<String> {
     raw.split(|&b| b == 0)
         .filter_map(|chunk| std::str::from_utf8(chunk).ok())
@@ -90,8 +90,8 @@ pub fn proc_pid_environ(pid: u32) -> Option<Vec<(OsString, OsString)>> {
     }
 }
 
-/// Build explicit envp for ganesha.nfsd: LD_PRELOAD (nss first), NSS_WRAPPER_*,
-/// IDHELPER_*, NFS_KLLDAP_IDHELPER_*, nss_passwd-env, and SSSD module chain when resolvable.
+/// Build explicit envp for ganesha.nfsd: LD_PRELOAD (nss first), NSS_WRAPPER_.
+/// IDHELPER_*, NFS_KLLDAP_IDHELPER_*, nss_passwd-env, and SSSD module chain w.
 pub fn build_ganesha_envp(cfg: &GaneshaSpawnEnv) -> Vec<(OsString, OsString)> {
     let mut map: HashMap<OsString, OsString> = std::env::vars_os()
         .filter(|(k, _)| {
@@ -200,7 +200,7 @@ pub fn resolve_nss_sss_so() -> Option<PathBuf> {
     None
 }
 
-/// Scan ganesha.log for `my_getgrouplist_alloc` WARN/failed lines (full file or tail from offset).
+/// Scan ganesha.log for `my_getgrouplist_alloc` WARN/failed lines (full file.
 pub fn ganesha_log_has_getgrouplist_warn(ganesha_log_path: &str, from_offset: u64) -> bool {
     let Ok(content) = std::fs::read_to_string(ganesha_log_path) else {
         return false;
@@ -217,7 +217,7 @@ pub fn ganesha_log_has_getgrouplist_warn(ganesha_log_path: &str, from_offset: u6
     })
 }
 
-/// Perform the synthetic krb log scan (extracted).
+/// Synthetic krb log scan.
 pub fn check_synthetic_krb_log_clean(ganesha_log_path: &str) -> bool {
     !ganesha_log_has_getgrouplist_warn(ganesha_log_path, 0)
 }
@@ -227,7 +227,7 @@ fn apply_envp(cmd: &mut Command, envp: &[(OsString, OsString)]) {
     cmd.envs(envp.iter().map(|(k, v)| (k.clone(), v.clone())));
 }
 
-/// `id -G` under the supplied envp (getgrouplist-equivalent for readiness).
+/// Id -G under envp for readiness.
 pub fn probe_id_g_under_env(who: &str, envp: &[(OsString, OsString)]) -> Option<Vec<u32>> {
     let mut cmd = Command::new("id");
     cmd.args(["-G", who]);
@@ -247,7 +247,7 @@ pub fn probe_id_g_under_env(who: &str, envp: &[(OsString, OsString)]) -> Option<
     }
 }
 
-/// `id -G` using the live ganesha process environment from `/proc/<pid>/environ`.
+/// Id -G using live ganesha pid proc.oc/<pid>/envir.
 pub fn probe_ganesha_process_groups(pid: u32, who: &str) -> Option<Vec<u32>> {
     let envp = proc_pid_environ(pid)?;
     probe_id_g_under_env(who, &envp)
@@ -268,7 +268,7 @@ fn resolve_ganesha_ctl_bin() -> Option<String> {
     None
 }
 
-/// Exercise uid2grp/getgrouplist path via ganesha-ctl id-resolve under ganesha env; return clean if no new WARN.
+/// Exercise uid2grp/getgrouplist path via ganesha-ctl id-resolve under ganesh.
 pub fn exercise_ganesha_uid2grp(
     envp: &[(OsString, OsString)],
     principals: &[&str],
@@ -285,7 +285,6 @@ pub fn exercise_ganesha_uid2grp(
             let _ = cmd.output();
         }
     } else {
-        // Fallback: warm NSS under ganesha env (same libc path ganesha worker threads use).
         for who in ["root", "testuser1"] {
             let _ = probe_id_g_under_env(who, envp);
         }
@@ -339,7 +338,7 @@ pub fn probe_socket_grouplist(principal: &str, socket_path: &str) -> Option<Vec<
     socket_cmd_gids(socket_path, "GROUPLIST", principal)
 }
 
-/// Send SIGHUP to ganesha.nfsd to clear idmapper negative cache after NSS heal.
+/// Send SIGHUP to ganesha.nfsd to clear idmapper negative cache after NSS hea.
 pub fn signal_ganesha_reload_idmap(pid: u32) -> bool {
     if std::env::var("NFS_KLLDAP_SIGHUP_ON_IDMAP_HEAL")
         .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
@@ -354,7 +353,7 @@ pub fn signal_ganesha_reload_idmap(pid: u32) -> bool {
     true
 }
 
-/// Single-shot readiness gate under the ganesha envp (no retry loop).
+/// Single-shot readiness gate under the ganesha envp (no retry loop)
 pub fn check_ganesha_readiness(
     pid: Option<u32>,
     envp: &[(OsString, OsString)],
@@ -376,7 +375,6 @@ pub fn check_ganesha_readiness(
     let short_root_ok = short_root_gids
         .as_ref()
         .is_some_and(|g| g.contains(&0));
-    // Socket GRPS/GROUPLIST is authoritative; id -G may miss FQDN logins without nss_wrapper on the probe cmd.
     let sample_ok = sample_socket_gl
         .as_ref()
         .is_some_and(|g| g.len() >= 2)

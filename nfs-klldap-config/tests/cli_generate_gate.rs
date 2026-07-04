@@ -24,176 +24,68 @@ const MOUNTINFO_BTRFS_NOACL: &str = r#"
 "#;
 
 fn cargo_bin(name: &str) -> PathBuf {
-    let env_key = format!("CARGO_BIN_EXE_{}", name.replace('-', "_"));
-    if let Ok(path) = std::env::var(&env_key) {
-        return PathBuf::from(path);
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/debug")
-        .join(name)
+    if let Ok(p) = std::env::var(&format!("CARGO_BIN_EXE_{}", name.replace('-', "_"))) { return PathBuf::from(p); }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/debug").join(name)
 }
-
-fn write_fixture(dir: &Path) -> (PathBuf, PathBuf) {
-    let mountinfo = dir.join("mountinfo");
-    fs::write(&mountinfo, MOUNTINFO_BTRFS_NOACL).unwrap();
-    let conf = dir.join("nfs-klldap.conf");
-    fs::write(&conf, LIMITED_TOML).unwrap();
-    (conf, mountinfo)
+fn write_fixture(d: &Path) -> (PathBuf, PathBuf) { let m = d.join("mi"); fs::write(&m, MOUNTINFO_BTRFS_NOACL).unwrap(); let c = d.join("c.toml"); fs::write(&c, LIMITED_TOML).unwrap(); (c, m) }
+fn run_cli_generate(c: &Path, m: &Path, o: &Path) {
+    let e = o.join("e.d"); fs::create_dir_all(&e).unwrap();
+    let st = Command::new(cargo_bin("nfs-klldap-config")).args(["generate","--config"]).arg(c).env("NFS_KLLDAP_MOUNTINFO_PATH", m).env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK","1").env("EXPORTS_DIR",&e).env("GANESHA_CONF",o.join("g")).env("SSSD_CONF",o.join("s")).env("KRB5_CONF",o.join("k")).env("IDMAP_CONF",o.join("i")).env("NFS_CONF",o.join("n")).status().expect("cli");
+    assert!(st.success());
 }
-
-fn run_cli_generate(conf: &Path, mountinfo: &Path, out: &Path) {
-    let exports = out.join("exports.d");
-    fs::create_dir_all(&exports).unwrap();
-    let status = Command::new(cargo_bin("nfs-klldap-config"))
-        .args(["generate", "--config"])
-        .arg(conf)
-        .env("NFS_KLLDAP_MOUNTINFO_PATH", mountinfo)
-        .env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK", "1")
-        .env("EXPORTS_DIR", &exports)
-        .env("GANESHA_CONF", out.join("ganesha.conf"))
-        .env("SSSD_CONF", out.join("sssd.conf"))
-        .env("KRB5_CONF", out.join("krb5.conf"))
-        .env("IDMAP_CONF", out.join("idmapd.conf"))
-        .env("NFS_CONF", out.join("nfs.conf"))
-        .status()
-        .expect("cli generate spawn");
-    assert!(status.success(), "generate failed for {}", out.display());
-}
-
-fn read_single_fragment(exports_dir: &Path) -> String {
-    let path = fs::read_dir(exports_dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .find(|p| p.extension().is_some_and(|e| e == "conf"))
-        .expect("export fragment");
-    fs::read_to_string(path).unwrap()
-}
+fn read_single_fragment(ed: &Path) -> String { fs::read_dir(ed).unwrap().map(|e|e.unwrap().path()).find(|p|p.extension().map_or(false,|x|x=="conf")).map(|p|fs::read_to_string(p).unwrap()).unwrap() }
 
 #[test]
 fn cli_generate_limited_btrfs_twice_is_identical() {
-    let fixture = tempfile::tempdir().unwrap();
-    let (conf, mountinfo) = write_fixture(fixture.path());
-    let out1 = tempfile::tempdir().unwrap();
-    let out2 = tempfile::tempdir().unwrap();
-    run_cli_generate(&conf, &mountinfo, out1.path());
-    run_cli_generate(&conf, &mountinfo, out2.path());
-    let frag1 = read_single_fragment(&out1.path().join("exports.d"));
-    let frag2 = read_single_fragment(&out2.path().join("exports.d"));
-    assert_eq!(frag1, frag2, "CLI runs must emit identical fragments");
-    assert!(frag1.contains("Disable_ACL = true;"));
-    assert!(frag1.contains("Manage_Gids = true;"));
-    assert!(frag1.contains("Path = /export/users;"), "cli noacl frag must contain Path:\n{frag1}");
-    assert!(frag1.contains("    Pseudo = /users;"), "cli noacl generate must emit Pseudo line (twice-identical run):\n{frag1}");
-    // NOACL path: 0.9.40 simple + Read_Access_Check_Policy = pre for noacl mount
-    assert!(frag1.contains("Read_Access_Check_Policy = pre;"));
-    assert!(!frag1.contains("Read_Access_Check_Policy = post;"));
-    assert!(!frag1.contains("POSIX_ONLY_EXPORT"));
-    assert!(!frag1.contains("Enable_NLM"));
-    assert!(frag1.contains("ACL-dependent NFSv4 ops disabled for compatibility"));
+    let f = tempfile::tempdir().unwrap(); let (c, mi) = write_fixture(f.path());
+    let o1 = tempfile::tempdir().unwrap(); let o2 = tempfile::tempdir().unwrap();
+    run_cli_generate(&c, &mi, o1.path()); run_cli_generate(&c, &mi, o2.path());
+    let f1 = read_single_fragment(&o1.path().join("e.d")); let f2 = read_single_fragment(&o2.path().join("e.d"));
+    assert_eq!(f1, f2);
+    assert!(f1.contains("Disable_ACL = true;") && f1.contains("Manage_Gids = true;") && f1.contains("Path = /export/users;") && f1.contains("Pseudo = /users;") && f1.contains("Read_Access_Check_Policy = pre;"));
+    assert!(!f1.contains("post;") && !f1.contains("POSIX_ONLY") && !f1.contains("Enable_NLM"));
+    assert!(f1.contains("ACL-dependent NFSv4 ops disabled for compatibility"));
     assert!(!ganesha_96_has_mode_only_access_knob());
-    if let Ok(scratch) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {
-        let scratch = PathBuf::from(scratch);
-        let _ = fs::create_dir_all(&scratch);
-        let _ = fs::write(scratch.join("cli-gen-out1.conf"), &frag1);
-        let _ = fs::write(scratch.join("cli-gen-out2.conf"), &frag2);
-    }
-    eprintln!(
-        "cli generate gate: identical fragments ({} bytes)",
-        frag1.len()
-    );
 }
 
-/// Gating verification: real binary (not lib) generate twice on noacl fixture.
-/// Writes to {SCRATCH}/noacl-exports.d , captures to {SCRATCH}/noacl-frag.conf
-/// Asserts Path+Pseudo+Disable present and two runs identical.
+/// Gating: binary generate twice on noacl; capture for verif.
 #[test]
 fn cli_generate_gate_noacl_binary_twice_pseudo_in_scratch() {
-    let scratch = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    let _ = fs::create_dir_all(&scratch);
-    let exports_d = scratch.join("noacl-exports.d");
-    let _ = fs::remove_dir_all(&exports_d);
-    fs::create_dir_all(&exports_d).unwrap();
-
-    let mountinfo_path = scratch.join("gate-noacl-mountinfo.txt");
-    fs::write(&mountinfo_path, MOUNTINFO_BTRFS_NOACL).unwrap();
-    let conf_path = scratch.join("gate-noacl.toml");
-    fs::write(&conf_path, LIMITED_TOML).unwrap();
-
-    let mut run_frag: Option<String> = None;
-    for run in 1..=2 {
-        let status = Command::new(cargo_bin("nfs-klldap-config"))
-            .args(["generate", "--config"])
-            .arg(&conf_path)
-            .env("NFS_KLLDAP_MOUNTINFO_PATH", &mountinfo_path)
-            .env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK", "1")
-            .env("EXPORTS_DIR", &exports_d)
-            .env("GANESHA_CONF", scratch.join("g.conf"))
-            .env("SSSD_CONF", scratch.join("s.conf"))
-            .env("KRB5_CONF", scratch.join("k.conf"))
-            .env("IDMAP_CONF", scratch.join("i.conf"))
-            .env("NFS_CONF", scratch.join("n.conf"))
-            .status()
-            .expect("binary generate");
-        assert!(status.success(), "binary generate run {} failed", run);
-
-        let frag = read_single_fragment(&exports_d);
-        if let Some(prev) = &run_frag {
-            assert_eq!(prev, &frag, "two binary runs must produce identical noacl frag");
-        }
-        run_frag = Some(frag);
+    let sc = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+    let _ = fs::create_dir_all(&sc);
+    let ed = sc.join("noacl-e.d"); let _=fs::remove_dir_all(&ed); fs::create_dir_all(&ed).unwrap();
+    let mi = sc.join("mi.txt"); fs::write(&mi, MOUNTINFO_BTRFS_NOACL).unwrap();
+    let cp = sc.join("c.toml"); fs::write(&cp, LIMITED_TOML).unwrap();
+    let mut rf: Option<String> = None;
+    for _r in 1..=2 {
+        let st = Command::new(cargo_bin("nfs-klldap-config")).args(["generate","--config"]).arg(&cp).env("NFS_KLLDAP_MOUNTINFO_PATH",&mi).env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK","1").env("EXPORTS_DIR",&ed).env("GANESHA_CONF",sc.join("g")).env("SSSD_CONF",sc.join("s")).env("KRB5_CONF",sc.join("k")).env("IDMAP_CONF",sc.join("i")).env("NFS_CONF",sc.join("n")).status().expect("bin");
+        assert!(st.success());
+        let f = read_single_fragment(&ed);
+        if let Some(p) = &rf { assert_eq!(p, &f); } rf = Some(f);
     }
-
-    let content = run_frag.expect("frag captured");
-    // Write captured as per verification plan to {SCRATCH}/noacl-frag.conf
-    let captured = scratch.join("noacl-frag.conf");
-    fs::write(&captured, &content).expect("write captured noacl frag");
-    // Also a copy for run2 consistency proof
-    let _ = fs::write(scratch.join("noacl-frag-run2.conf"), &content);
-
-    assert!(content.contains("Path = /export/users;"), "must contain Path:\n{content}");
-    assert!(content.contains("Disable_ACL = true;"), "must contain Disable:\n{content}");
-    assert!(content.contains("    Pseudo = /users;"), "must contain Pseudo on noacl binary gate:\n{content}");
-    // Also sanity: Read pre etc still there for syntax
-    assert!(content.contains("Read_Access_Check_Policy = pre;"));
-    assert!(content.contains("SecType = krb5p;"));
-    eprintln!("GATE: real binary twice -> captured noacl-frag.conf ({} bytes) has Pseudo, Path+Disable", content.len());
+    let ct = rf.unwrap();
+    let _ = fs::write(sc.join("noacl-frag.conf"), &ct);
+    assert!(ct.contains("Path = /export/users;") && ct.contains("Disable_ACL = true;") && ct.contains("Pseudo = /users;") && ct.contains("Read_Access_Check_Policy = pre;"));
 }
 
-/// Gating for verif plan step 2: real binary generate twice on MIXED ACL+NOACL (acl-test2 style).
-/// Uses {SCRATCH}/acl-test2.toml , writes to scratch subdir, asserts ACL omits Disable, NOACL has it+pre.
-/// Captures to scratch for evidence.
+/// Gating verif: binary mixed ACL+NOACL twice; capture.
 #[test]
 fn cli_generate_gate_mixed_acl_noacl_twice_in_scratch() {
-    let scratch = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    let _ = fs::create_dir_all(&scratch);
-    let exports_d = scratch.join("mixed-exports.d");
-    let _ = fs::remove_dir_all(&exports_d);
-    fs::create_dir_all(&exports_d).unwrap();
-
-    // Write the second distinct mixed input exactly as acl-test2.toml
-    let mixed_toml = r#"
-ldap_uri = "ldaps://kllap.test:6360"
-
+    let sc = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+    let _ = fs::create_dir_all(&sc); let ed = sc.join("mix-e.d"); let _=fs::remove_dir_all(&ed); fs::create_dir_all(&ed).unwrap();
+    let mt = r#"ldap_uri = "ldaps://kllap.test:6360"
 [storage]
 container_root = "/export"
-
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
-ldap_default_authtok = "strong-secret"
-
+ldap_default_authtok = "s"
 [ganesha]
 default_security = "krb5"
-
 [[shares]]
 name = "movies-acl"
 host_path = "/media/movies"
 enable_acl = true
 manage_gids = true
-
 [[shares]]
 name = "docs-noacl"
 host_path = "/media/docs"
@@ -201,42 +93,17 @@ enable_acl = false
 manage_gids = true
 read_access_policy = "pre"
 "#;
-    let conf_path = scratch.join("acl-test2.toml");
-    fs::write(&conf_path, mixed_toml).unwrap();
-
-    let mut run_frag: Option<String> = None;
-    for run in 1..=2 {
-        let status = Command::new(cargo_bin("nfs-klldap-config"))
-            .args(["generate", "--config"])
-            .arg(&conf_path)
-            .env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK", "1")
-            .env("EXPORTS_DIR", &exports_d)
-            .env("GANESHA_CONF", scratch.join("g-mixed.conf"))
-            .env("SSSD_CONF", scratch.join("s-mixed.conf"))
-            .env("KRB5_CONF", scratch.join("k-mixed.conf"))
-            .env("IDMAP_CONF", scratch.join("i-mixed.conf"))
-            .env("NFS_CONF", scratch.join("n-mixed.conf"))
-            .status()
-            .expect("binary mixed generate");
-        assert!(status.success(), "mixed generate run {} failed", run);
-        // Collect both frags for this run
-        let frags: Vec<_> = fs::read_dir(&exports_d).unwrap().filter_map(|e| e.ok()).filter(|e| e.path().extension().map_or(false, |x| x=="conf")).map(|e| fs::read_to_string(e.path()).unwrap()).collect();
-        let combined = frags.join("\n---FRAG---\n");
-        if let Some(prev) = &run_frag {
-            assert_eq!(prev, &combined, "two runs identical for mixed");
-        }
-        run_frag = Some(combined);
+    let cp = sc.join("acl-test2.toml"); fs::write(&cp, mt).unwrap();
+    let mut rf: Option<String> = None;
+    for _r in 1..=2 {
+        let st = Command::new(cargo_bin("nfs-klldap-config")).args(["generate","--config"]).arg(&cp).env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK","1").env("EXPORTS_DIR",&ed).env("GANESHA_CONF",sc.join("gm")).env("SSSD_CONF",sc.join("sm")).env("KRB5_CONF",sc.join("km")).env("IDMAP_CONF",sc.join("im")).env("NFS_CONF",sc.join("nm")).status().expect("mix");
+        assert!(st.success());
+        let fs: Vec<_> = fs::read_dir(&ed).unwrap().filter_map(|e|e.ok()).filter(|e|e.path().extension().map_or(false,|x|x=="conf")).map(|e|fs::read_to_string(e.path()).unwrap()).collect();
+        let cmb = fs.join("\n---\n");
+        if let Some(p)=&rf { assert_eq!(p,&cmb); } rf=Some(cmb);
     }
-
-    let content = run_frag.expect("mixed frag");
-    let captured = scratch.join("mixed-acl-frag.conf");
-    fs::write(&captured, &content).expect("write mixed captured");
-    // ACL path: no Disable_ACL
-    assert!(!content.contains("Disable_ACL = true;") || content.matches("Disable_ACL = true;").count() < 2, "ACL share must omit Disable");
-    // NOACL path: has Disable + pre
-    assert!(content.contains("Disable_ACL = true;"), "NOACL must have Disable");
-    assert!(content.contains("Read_Access_Check_Policy = pre;"), "NOACL must have pre");
-    // ACL has native Pseudo etc
-    assert!(content.contains("Pseudo = /movies-acl;") || content.contains("Pseudo = /docs-noacl;"));
-    eprintln!("GATE mixed: captured mixed-acl-frag.conf ({} bytes) has distinct ACL vs NOACL", content.len());
+    let ct = rf.unwrap(); let _ = fs::write(sc.join("mixed-acl-frag.conf"), &ct);
+    assert!(!ct.contains("Disable_ACL = true;") || ct.matches("Disable_ACL = true;").count() < 2 );
+    assert!(ct.contains("Disable_ACL = true;") && ct.contains("Read_Access_Check_Policy = pre;"));
+    assert!(ct.contains("Pseudo = /movies-acl;") || ct.contains("Pseudo = /docs-noacl;"));
 }

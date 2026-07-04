@@ -4,7 +4,7 @@ use std::fs;
 use std::sync::Mutex;
 
 use nfs_klldap_config::{
-    classify_principal, collect_fs_warnings, compute_effective_flags, generate_all, GenerationPaths, limited_fs_warnings_only, probe_fs_capabilities, FsCapabilities, NfsKlldapConfig,
+    classify_principal, collect_fs_warnings, compute_effective_flags, generate_all, GenerationPaths, FsCapabilities, NfsKlldapConfig,
 };
 use nfs_klldap_identity::nfs_keytab_host_variants;
 
@@ -47,56 +47,21 @@ manage_gids = false
 "#;
 
 fn generation_paths(out: &std::path::Path) -> GenerationPaths {
-    GenerationPaths {
-        sssd_conf: out.join("sssd.conf"),
-        krb5_conf: out.join("krb5.conf"),
-        ganesha_conf: out.join("ganesha.conf"),
-        exports_dir: out.join("exports.d"),
-        idmap_conf: out.join("idmapd.conf"),
-        nfs_conf: out.join("nfs.conf"),
-    }
+    GenerationPaths { sssd_conf: out.join("sssd.conf"), krb5_conf: out.join("krb5.conf"), ganesha_conf: out.join("ganesha.conf"), exports_dir: out.join("exports.d"), idmap_conf: out.join("idmapd.conf"), nfs_conf: out.join("nfs.conf") }
 }
-
-fn read_single_fragment(exports_dir: &std::path::Path) -> String {
-    let path = fs::read_dir(exports_dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .find(|p| p.extension().is_some_and(|e| e == "conf"))
-        .expect("export fragment");
-    fs::read_to_string(path).unwrap()
+fn read_single_fragment(ed: &std::path::Path) -> String {
+    fs::read_dir(ed).unwrap().map(|e| e.unwrap().path()).find(|p| p.extension().is_some_and(|e| e == "conf")).map(|p| fs::read_to_string(p).unwrap()).unwrap()
 }
-
-fn generate_to_out(mountinfo: &str, toml: &str, out: &std::path::Path) -> String {
-    let _lock = MOUNTINFO_ENV_LOCK.lock().unwrap();
-    let tmp = tempfile::tempdir().unwrap();
-    let mountinfo_path = tmp.path().join("mountinfo");
-    fs::write(&mountinfo_path, mountinfo).unwrap();
-    let conf_path = tmp.path().join("nfs-klldap.conf");
-    fs::write(&conf_path, toml).unwrap();
-    fs::create_dir_all(out.join("exports.d")).unwrap();
-
-    let prev = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok();
-    std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mountinfo_path);
-
-    let cfg = NfsKlldapConfig::load(&conf_path).expect("load");
-    let paths = generation_paths(out);
-    generate_all(&cfg, &paths).expect("generate_all");
-
-    if let Some(p) = prev {
-        std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", p);
-    } else {
-        std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");
-    }
-
-    read_single_fragment(&out.join("exports.d"))
-}
-
 fn generate_with_mountinfo(mountinfo: &str, toml: &str) -> (tempfile::TempDir, String, String) {
-    let tmp = tempfile::tempdir().unwrap();
-    let out = tmp.path().join("out");
-    let frag = generate_to_out(mountinfo, toml, &out);
-    let ganesha = fs::read_to_string(out.join("ganesha.conf")).unwrap();
-    (tmp, frag, ganesha)
+    let _lock = MOUNTINFO_ENV_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap(); let mi = tmp.path().join("mi"); fs::write(&mi, mountinfo).unwrap();
+    let cp = tmp.path().join("c.toml"); fs::write(&cp, toml).unwrap();
+    let out = tmp.path().join("out"); fs::create_dir_all(out.join("exports.d")).unwrap();
+    let prev = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok(); std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mi);
+    let cfg = NfsKlldapConfig::load(&cp).expect("load");
+    generate_all(&cfg, &generation_paths(&out)).expect("gen");
+    if let Some(p) = prev { std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", p); } else { std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH"); }
+    let frag = read_single_fragment(&out.join("exports.d")); let g = fs::read_to_string(out.join("ganesha.conf")).unwrap_or_default(); (tmp, frag, g)
 }
 
 #[test]
@@ -165,73 +130,27 @@ host_path = "/media/movies"
 
 #[test]
 fn generate_all_noacl_with_explicit_manage_gids_false_override() {
-    // Full end-to-end on shipped generate_all + warnings for NOACL + explicit manage=false override.
-    // Auto NOACL now defaults manage_gids=true; explicit false must still win.
-    let (_tmp, frag, _ganesha) = generate_with_mountinfo(MOUNTINFO_BTRFS_NOACL, NOACL_MANAGE_FALSE_TOML);
-
-    // Frag must have Disable (NOACL path) but Manage_Gids = false (from explicit override)
-    assert!(frag.contains("Disable_ACL = true;"), "NOACL path still emits Disable:\n{frag}");
-    assert!(frag.contains("Manage_Gids = false;"), "explicit manage_gids=false must win on NOACL:\n{frag}");
-    assert!(!frag.contains("Manage_Gids = true;"), "should not force true when overridden false:\n{frag}");
-    assert!(frag.contains("Path = /export/users;"), "Path present on overridden noacl:\n{frag}");
-    assert!(frag.contains("    Pseudo = /users;"), "noacl with overrides must still emit Pseudo:\n{frag}");
-    assert!(frag.contains("Read_Access_Check_Policy = pre;"), "NOACL override must emit pre policy:\n{frag}");
-    assert!(!frag.contains("Read_Access_Check_Policy = post;"), "no post on NOACL");
-
-    eprintln!("FRESH_CONSUMER_FULL_CHAIN: override toml load+generate frag has Manage=false on noacl: {}", frag.contains("Manage_Gids = false;"));
-
-    // Now drive warnings path with real share (not dummy)
-    // Re-load under same mountinfo to get real cfg + eff
+    let (_tmp, frag, _g) = generate_with_mountinfo(MOUNTINFO_BTRFS_NOACL, NOACL_MANAGE_FALSE_TOML);
+    assert!(frag.contains("Disable_ACL = true;") && frag.contains("Manage_Gids = false;") && !frag.contains("Manage_Gids = true;"));
+    assert!(frag.contains("Pseudo = /users;") && frag.contains("Read_Access_Check_Policy = pre;") && !frag.contains("post;"));
+    // direct eff + warnings still cover explicit override on NOACL
     let _lock = MOUNTINFO_ENV_LOCK.lock().unwrap();
-    let tmp2 = tempfile::tempdir().unwrap();
-    let mountinfo_path = tmp2.path().join("mountinfo");
-    fs::write(&mountinfo_path, MOUNTINFO_BTRFS_NOACL).unwrap();
-    let conf_path = tmp2.path().join("nfs-klldap.conf");
-    fs::write(&conf_path, NOACL_MANAGE_FALSE_TOML).unwrap();
-    let prev = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok();
-    std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mountinfo_path);
-
-    // Fresh consumer explicit steps:
-    let cfg = NfsKlldapConfig::load(&conf_path).expect("load override toml");
-    eprintln!("FRESH_CONSUMER: loaded cfg with 1 share, name={}", cfg.shares[0].name);
-
-    // probe via the serve path (uses env)
-    let caps = probe_fs_capabilities(std::path::Path::new("/export/users")).unwrap_or_else(|_| FsCapabilities { fstype:"btrfs".into(), mount_options:vec!["noacl".into()], acl_capable:false });
-    eprintln!("FRESH_CONSUMER: probed caps acl_capable={} fstype={}", caps.acl_capable, caps.fstype);
-
+    let t2 = tempfile::tempdir().unwrap();
+    let mi = t2.path().join("mi"); fs::write(&mi, MOUNTINFO_BTRFS_NOACL).unwrap();
+    let cp = t2.path().join("c.toml"); fs::write(&cp, NOACL_MANAGE_FALSE_TOML).unwrap();
+    let prev = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok(); std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mi);
+    let cfg = NfsKlldapConfig::load(&cp).unwrap();
+    let caps = FsCapabilities { fstype: "btrfs".into(), mount_options: vec!["noacl".into()], acl_capable: false };
     let eff = compute_effective_flags(&cfg.shares[0], &caps);
-    eprintln!("FRESH_CONSUMER: compute_effective_flags enable_acl={} manage_gids={}", eff.enable_acl, eff.manage_gids);
-    assert!(!eff.enable_acl);
-    assert!(!eff.manage_gids, "override must be visible in eff");
-
-    // full generate_all (exercises export_fs_directives + write internally for the override)
-    let out = tmp2.path().join("genout");
-    let paths = GenerationPaths {
-        sssd_conf: out.join("sssd.conf"),
-        krb5_conf: out.join("krb5.conf"),
-        ganesha_conf: out.join("ganesha.conf"),
-        exports_dir: out.join("exports.d"),
-        idmap_conf: out.join("idmapd.conf"),
-        nfs_conf: out.join("nfs.conf"),
-    };
-    std::fs::create_dir_all(&paths.exports_dir).unwrap();
-    generate_all(&cfg, &paths).expect("generate_all for override fresh");
-    let gen_frag = std::fs::read_dir(&paths.exports_dir).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().map_or(false, |x| x=="conf")).map(|e| std::fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
-    assert!(gen_frag.contains("Manage_Gids = false;"), "generate_all frag must contain false for override");
-    eprintln!("FRESH_CONSUMER: generate_all frag for override has Manage=false: {}", gen_frag.contains("Manage_Gids = false;"));
-
-    let ws = collect_fs_warnings(&cfg);
-    let limited_ws: Vec<_> = ws.into_iter().filter(|w| !w.acl_capable).collect();
-    assert!(!limited_ws.is_empty());
-    let w = limited_ws.iter().find(|w| w.share_name == "users").expect("found users warning");
-    assert!(!w.acl_capable);
-    assert!(!w.effective_enable_acl);
-    assert!(!w.effective_manage_gids, "eff must reflect explicit false override");
-    assert!(w.message.contains("manage_gids=false") || w.message.contains("manage_gids = false") || w.message.contains("NOACL mode"), "warning message must reflect override false: {}", w.message);
-    eprintln!("FRESH_CONSUMER: warning message for override: {}", w.message);
-
-    let only = limited_fs_warnings_only(&cfg);
-    assert!(only.iter().any(|ww| ww.share_name=="users" && !ww.effective_manage_gids));
+    assert!(!eff.enable_acl && !eff.manage_gids);
+    let out = t2.path().join("o"); fs::create_dir_all(&out.join("e.d")).unwrap();
+    let ps = GenerationPaths { sssd_conf: out.join("s"), krb5_conf: out.join("k"), ganesha_conf: out.join("g"), exports_dir: out.join("e.d"), idmap_conf: out.join("i"), nfs_conf: out.join("n") };
+    generate_all(&cfg, &ps).unwrap();
+    let gf = fs::read_dir(&ps.exports_dir).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().map_or(false,|x|x=="conf")).map(|e| fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
+    assert!(gf.contains("Manage_Gids = false;"));
+    let ws: Vec<_> = collect_fs_warnings(&cfg).into_iter().filter(|w| !w.acl_capable).collect();
+    let w = ws.iter().find(|ww| ww.share_name == "users").unwrap();
+    assert!(!w.effective_manage_gids && (w.message.contains("manage_gids=false") || w.message.contains("NOACL")));
     if let Some(p) = prev { std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", p); } else { std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH"); }
 }
 

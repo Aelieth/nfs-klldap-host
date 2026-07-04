@@ -1,8 +1,14 @@
 //! Runs pid-1 supervision with preflight, ordering, and SIGHUP recycle.
 
+mod env;
+mod pids;
+mod services;
+
 use std::fs::{self, OpenOptions};
 
 use std::path::{Path, PathBuf};
+
+const NSS_PIPE: &str = "/var/lib/sss/pipes/nss";
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -22,159 +28,15 @@ use nfs_klldap_config::{
     discover_ganesha_daemon_pid, mark_setup_wizard_complete, plan_from_changes, process_is_live,
     reap_one_child, resolve_host_nfs_mode, resolve_keytab_path,
     request_sighup, run_post_generate_hooks, runtime_hostname, runtime_realm, shutdown_requested,
-    signal_process_hup, signal_process_kill, signal_process_term, supervisor_loop_tick,
+    signal_process_hup, signal_process_term, supervisor_loop_tick,
     take_sighup_requested, webui_setup_url, ConfigError,
     GaneshaAction, NfsKlldapConfig,
     ServiceRecyclePlan, SupervisorLoopAction, PROC_COMM_NAME_MAX,
 };
 
-const RECYCLE_MARKER_DEFAULT: &str = "/tmp/.nfs-klldap-services-recycled";
-const NSS_PIPE: &str = "/var/lib/sss/pipes/nss";
-const EXTRAUSERS_PASSWD_DEFAULT: &str = "/var/lib/extrausers/passwd";
-const EXTRAUSERS_GROUP_DEFAULT: &str = "/var/lib/extrausers/group";
-
-/// libnss-extrausers reads these paths from the process environment.
-fn ensure_nss_extrausers_env(passwd: &Path, group: &Path) {
-    std::env::set_var("NSS_EXTRAUSERS_PASSWD", passwd);
-    std::env::set_var("NSS_EXTRAUSERS_GROUP", group);
-}
-
-fn recycle_marker_path() -> PathBuf {
-    std::env::var("NFS_KLLDAP_RECYCLE_MARKER")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(RECYCLE_MARKER_DEFAULT))
-}
-
-fn loop_probe_ready_path() -> Option<PathBuf> {
-    std::env::var("NFS_KLLDAP_LOOP_PROBE_READY")
-        .ok()
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-}
-
-fn touch_loop_probe_ready() {
-    if let Some(path) = loop_probe_ready_path() {
-        let _ = fs::write(&path, b"ready\n");
-    }
-}
-
-/// Runtime paths and binaries (override via env for CI).
-struct SupervisorEnv {
-    nfs_config: PathBuf,
-    sssd_conf: PathBuf,
-    krb5_conf: PathBuf,
-    ganesha_conf: PathBuf,
-    exports_dir: PathBuf,
-    idmap_conf: PathBuf,
-    nfs_conf: PathBuf,
-    config_bin: PathBuf,
-    ui_bin: PathBuf,
-    watcher_bin: PathBuf,
-    idhelper_bin: PathBuf,
-    healthcheck: PathBuf,
-    nss_passwd: PathBuf,
-    nss_group: PathBuf,
-    extrausers_passwd: PathBuf,
-    extrausers_group: PathBuf,
-    nss_wrapper_so: PathBuf,
-    use_nss_wrapper: bool,
-    log_format_json: bool,
-    /// Runs a CI one-shot that generates configs, logs bring-up, then exits.
-    supervise_probe: bool,
-    /// Runs a bounded CI loop after post-wizard SIGHUP with complete config.
-    supervise_wizard_probe: bool,
-    /// Exercises supervisor_loop with probe stubs until a real SIGHUP arrives.
-    supervise_loop_probe: bool,
-    /// Tests ganesha SIGHUP reload and stop_ganesha against a stub nfsd.
-    supervise_recycle_probe: bool,
-    /// Waits for OS SIGHUP then runs handle_sighup on the hook path.
-    supervise_sighup_hook_probe: bool,
-    /// Verifies identity-only changes recycle SSSD without ganesha SIGHUP.
-    supervise_identity_recycle_probe: bool,
-    /// One-shot CI path exercising real wait_for_ganesha_readiness then exit.
-    supervise_readiness_probe: bool,
-    /// Enables HOST_NFS sidecar mode that generates fragments and skips nfsd.
-    host_nfs_mode: bool,
-    /// Overrides loop sleep ms; zero enables wizard-probe bounded ticks.
-    supervisor_tick_ms: u64,
-    /// Max loop iterations before exit when supervise_wizard_probe is set.
-    supervisor_max_ticks: u32,
-}
-
-impl SupervisorEnv {
-    fn from_env(config_path: &Path) -> Self {
-        let env_path = |key: &str, default: &str| -> PathBuf {
-            std::env::var(key)
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from(default))
-        };
-        let use_nss = std::env::var("USE_NSS_WRAPPER")
-            .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-            .unwrap_or(true);
-        Self {
-            nfs_config: config_path.to_path_buf(),
-            sssd_conf: env_path("SSSD_CONF", "/etc/sssd/sssd.conf"),
-            krb5_conf: env_path("KRB5_CONF", "/etc/krb5.conf"),
-            ganesha_conf: env_path("GANESHA_CONF", "/etc/ganesha/ganesha.conf"),
-            exports_dir: env_path("EXPORTS_DIR", "/etc/ganesha/exports.d"),
-            idmap_conf: env_path("IDMAP_CONF", "/etc/idmapd.conf"),
-            nfs_conf: env_path("NFS_CONF", "/etc/nfs.conf"),
-            config_bin: env_path("CONFIG_BIN", "/usr/local/bin/nfs-klldap-config"),
-            ui_bin: env_path("UI_BIN", "/usr/local/bin/nfs-klldap-ui"),
-            watcher_bin: env_path("WATCHER_BIN", "/usr/local/bin/nfs-klldap-conf-watcher"),
-            idhelper_bin: env_path("IDHELPER_BIN", "/usr/local/bin/nfs-klldap-idhelper"),
-            healthcheck: env_path("HEALTHCHECK", "/container/healthcheck.sh"),
-            nss_passwd: env_path("NSS_PASSWD", "/var/lib/nfs-klldap/nss_passwd"),
-            nss_group: env_path("NSS_GROUP", "/var/lib/nfs-klldap/nss_group"),
-            extrausers_passwd: env_path("NSS_EXTRAUSERS_PASSWD", EXTRAUSERS_PASSWD_DEFAULT),
-            extrausers_group: env_path("NSS_EXTRAUSERS_GROUP", EXTRAUSERS_GROUP_DEFAULT),
-            nss_wrapper_so: resolve_nss_wrapper_so(),
-            use_nss_wrapper: use_nss,
-            log_format_json: std::env::var("LOG_FORMAT")
-                .map(|v| v == "json")
-                .unwrap_or(false),
-            supervise_probe: std::env::var("NFS_KLLDAP_SUPERVISE_PROBE")
-                .is_ok_and(|v| v == "1"),
-            supervise_wizard_probe: std::env::var("NFS_KLLDAP_SUPERVISE_WIZARD_PROBE")
-                .is_ok_and(|v| v == "1"),
-            supervise_loop_probe: std::env::var("NFS_KLLDAP_SUPERVISE_LOOP_PROBE")
-                .is_ok_and(|v| v == "1"),
-            supervise_recycle_probe: std::env::var("NFS_KLLDAP_SUPERVISE_RECYCLE_PROBE")
-                .is_ok_and(|v| v == "1"),
-            supervise_sighup_hook_probe: std::env::var("NFS_KLLDAP_SUPERVISE_SIGHUP_HOOK_PROBE")
-                .is_ok_and(|v| v == "1"),
-            supervise_identity_recycle_probe: std::env::var(
-                "NFS_KLLDAP_SUPERVISE_IDENTITY_RECYCLE_PROBE",
-            )
-            .is_ok_and(|v| v == "1"),
-            supervise_readiness_probe: std::env::var("NFS_KLLDAP_SUPERVISE_READINESS_PROBE")
-                .is_ok_and(|v| v == "1"),
-            host_nfs_mode: resolve_host_nfs_mode(config_path),
-            supervisor_tick_ms: std::env::var("NFS_KLLDAP_SUPERVISOR_TICK_MS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(2000),
-            supervisor_max_ticks: std::env::var("NFS_KLLDAP_SUPERVISOR_MAX_TICKS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(12),
-        }
-    }
-}
-
-#[derive(Default)]
-struct ChildPids {
-    watcher: Option<u32>,
-    sssd: Option<u32>,
-    ganesha: Option<u32>,
-    webui: Option<u32>,
-    dbus: Option<u32>,
-    idhelper: Option<u32>,
-}
-
 struct Supervisor {
-    env: SupervisorEnv,
-    pids: ChildPids,
+    env: env::SupervisorEnv,
+    pids: pids::ChildPids,
     services_started: bool,
     /// True after start_ganesha until stop_ganesha completes.
     /// Enables daemon pid adoption.
@@ -184,16 +46,16 @@ struct Supervisor {
 /// Entry point for pid-1 supervision (replaces entrypoint.sh main loop).
 pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
     install_signal_handlers()?;
-    let env = SupervisorEnv::from_env(config_path);
+    let env = env::SupervisorEnv::from_env(config_path);
     let mut sup = Supervisor {
         env,
-        pids: ChildPids::default(),
+        pids: pids::ChildPids::default(),
         services_started: false,
         ganesha_managed: false,
     };
 
     sup.log_info("=== Starting nfs-klldap-host (Rust supervisor) ===");
-    ensure_nss_extrausers_env(&sup.env.extrausers_passwd, &sup.env.extrausers_group);
+    env::ensure_nss_extrausers_env(&sup.env.extrausers_passwd, &sup.env.extrausers_group);
     if sup.env.host_nfs_mode {
         sup.log_info("HOST_NFS mode active — container is management sidecar only.");
         sup.log_info("  Ganesha fragments will be written for the *host* NFS server (e.g. at /etc/ganesha).");
@@ -223,7 +85,7 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
         sup.log_info("Pre-configured deployment detected — starting full service stack");
         sup.bring_up_services()?;
         sup.services_started = true;
-        let _ = fs::remove_file(recycle_marker_path());
+        let _ = fs::remove_file(env::recycle_marker_path());
         // Gate on post-start readiness (AC1): only declare "Container is ready" after the readiness call returns success (confirmed logged inside).
         let readiness_ok = if !sup.env.host_nfs_mode {
             sup.wait_for_ganesha_readiness()
@@ -231,7 +93,7 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
             true
         };
         // Start watcher + WebUI AFTER readiness gate (watcher log + webui log after confirmed + synthetic krb; fixes pre-readiness start order gap).
-        if let Err(e) = sup.start_watcher() {
+        if let Err(e) = services::start_watcher(&mut sup) {
             sup.log_warn(&format!("watcher start skipped/failed ({}); proceeding to ready", e));
         }
         if !sup.env.host_nfs_mode {
@@ -252,7 +114,7 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
             "First-run setup required — WebUI wizard at {}",
             webui_setup_url()
         ));
-        let _ = fs::remove_file(recycle_marker_path());
+        let _ = fs::remove_file(env::recycle_marker_path());
         if sup.env.supervise_wizard_probe && is_setup_wizard_complete() {
             sup.log_info("Supervise-wizard-probe: posting SIGHUP for bounded loop recycle");
             request_sighup();
@@ -370,7 +232,7 @@ impl Supervisor {
         self.fix_derived_permissions();
 
         self.log_info("Supervise-recycle-probe: starting stub ganesha.nfsd");
-        self.start_ganesha();
+        services::start_ganesha(self);
         thread::sleep(Duration::from_millis(400));
         if !self.ganesha_running() {
             return Err("recycle probe: stub ganesha.nfsd did not start".into());
@@ -418,7 +280,7 @@ impl Supervisor {
         }
 
         self.log_info("Supervise-recycle-probe: exercising stop_ganesha (SIGTERM path)");
-        self.stop_ganesha();
+        services::stop_ganesha(self);
         let log_term = fs::read_to_string(&stub_log).unwrap_or_default();
         if !log_term.contains("TERM") {
             return Err(format!(
@@ -455,11 +317,11 @@ while :; do :; done
                 fs::set_permissions(&ganesha_bin, perms)
                     .map_err(|e| format!("recycle probe: kill stub chmod: {e}"))?;
             }
-            self.start_ganesha();
+            services::start_ganesha(self);
             thread::sleep(Duration::from_millis(300));
             std::env::set_var("NFS_KLLDAP_STOP_GANESHA_TERM_SECS", "1");
             self.log_info("Supervise-recycle-probe: exercising stop_ganesha (SIGKILL escalation)");
-            self.stop_ganesha();
+            services::stop_ganesha(self);
             let log_kill = fs::read_to_string(&stub_log).unwrap_or_default();
             if !log_kill.contains("TERM") {
                 return Err(format!(
@@ -498,7 +360,7 @@ while :; do :; done
         }
         self.run_post_generate_hooks()?;
         self.fix_derived_permissions();
-        self.start_ganesha();
+        services::start_ganesha(self);
         thread::sleep(Duration::from_millis(400));
         if !self.ganesha_running() {
             return Err("sighup-hook probe: stub ganesha.nfsd did not start".into());
@@ -562,7 +424,7 @@ while :; do :; done
         }
         self.fix_derived_permissions();
 
-        self.start_ganesha();
+        services::start_ganesha(self);
         thread::sleep(Duration::from_millis(400));
         if !self.ganesha_running() {
             return Err("identity recycle probe: stub ganesha.nfsd did not start".into());
@@ -634,7 +496,7 @@ while :; do :; done
             self.log_info("Supervise-readiness-probe: lightweight bring-up (mock socket expected)");
             self.ensure_ganesha_prereqs();
             self.log_info("Starting NFS-Ganesha...");
-            self.start_ganesha();
+            services::start_ganesha(self);
             return Ok(());
         }
         self.restart_sssd_and_wait();
@@ -649,7 +511,7 @@ while :; do :; done
         } else {
             self.ensure_ganesha_prereqs();
             self.log_info("Starting NFS-Ganesha...");
-            self.start_ganesha();
+            services::start_ganesha(self);
         }
         // WebUI start moved after readiness gate in preconf path to ensure readiness logs (confirmed + synthetic krb) appear before WebUI log in transcripts.
         // For host mode and wizard BringUp, callers will start it.
@@ -708,21 +570,7 @@ while :; do :; done
         );
     }
 
-    fn start_watcher(&mut self) -> Result<(), String> {
-        if self.env.supervise_probe {
-            self.log_info("Supervise-probe: config watcher start skipped");
-            return Ok(());
-        }
-        self.log_info("Starting config watcher...");
-        let child = Command::new(&self.env.watcher_bin)
-            .arg(&self.env.nfs_config)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("watcher spawn failed: {e}"))?;
-        self.pids.watcher = Some(child.id());
-        Ok(())
-    }
+
 
     fn supervisor_loop(&mut self) -> Result<(), String> {
         if self.env.supervise_probe
@@ -732,7 +580,7 @@ while :; do :; done
             self.log_info("Supervise probe complete — exiting");
             return Ok(());
         }
-        touch_loop_probe_ready();
+        env::touch_loop_probe_ready();
         let bounded = self.env.supervise_wizard_probe;
         let max_ticks = if bounded {
             self.env.supervisor_max_ticks
@@ -764,7 +612,7 @@ while :; do :; done
                     self.handle_sighup()?;
                     self.services_started = true;
                     if need_watcher {
-                        let _ = self.start_watcher();
+                        let _ = services::start_watcher(self);
                     }
                 }
                 SupervisorLoopAction::BringUpServices => {
@@ -772,7 +620,7 @@ while :; do :; done
                     self.log_info("Setup wizard complete — bringing up services");
                     if self.bring_up_services().is_ok() {
                         self.services_started = true;
-                        let _ = self.start_watcher();
+                        let _ = services::start_watcher(self);
                         self.touch_recycle_marker();
                         // Gate on readiness for ganesha case (AC1) before final ready declaration.
                         let readiness_ok = if !self.env.host_nfs_mode && self.pids.ganesha.is_some() {
@@ -794,7 +642,7 @@ while :; do :; done
             reap_one_child();
             ticks = ticks.saturating_add(1);
             if bounded && ticks >= max_ticks {
-                if !recycle_marker_path().is_file() {
+                if !env::recycle_marker_path().is_file() {
                     return Err("wizard probe: recycle marker missing after bounded loop".into());
                 }
                 self.log_info("Supervise wizard probe complete — exiting");
@@ -850,7 +698,7 @@ while :; do :; done
         self.log_info("Services recycled after config apply.");
         if !self.services_started {
             self.services_started = true;
-            let _ = self.start_watcher();
+            let _ = services::start_watcher(self);
         }
         self.touch_recycle_marker();
         Ok(())
@@ -862,7 +710,7 @@ while :; do :; done
             .write(true)
             .create(true)
             .truncate(true)
-            .open(recycle_marker_path())
+            .open(env::recycle_marker_path())
         {
             use std::io::Write;
             let _ = writeln!(f, "ok");
@@ -884,7 +732,7 @@ while :; do :; done
         {
             signal_process_term(pid);
         }
-        self.stop_ganesha();
+        services::stop_ganesha(self);
         self.ganesha_managed = false;
         pkill_process("-TERM", "sssd");
         pkill_binary("-TERM", &self.env.watcher_bin);
@@ -1012,61 +860,7 @@ while :; do :; done
         true
     }
 
-    fn stop_ganesha(&mut self) {
-        self.log_info("stop_ganesha: sending SIGTERM and waiting for exit");
-        self.refresh_tracked_ganesha_pid();
-        let Some(pid) = self.pids.ganesha else {
-            self.log_info("stop_ganesha: no tracked ganesha.nfsd to stop");
-            self.ganesha_managed = false;
-            return;
-        };
-        if !process_is_live(pid) {
-            self.log_info("stop_ganesha: tracked ganesha.nfsd already exited");
-            self.pids.ganesha = None;
-            self.ganesha_managed = false;
-            return;
-        }
-        signal_process_term(pid);
-        let term_wait_secs = std::env::var("NFS_KLLDAP_STOP_GANESHA_TERM_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(5);
-        let deadline =
-            std::time::Instant::now() + Duration::from_secs(term_wait_secs);
-        loop {
-            if !process_is_live(pid) {
-                self.log_info("stop_ganesha: process exited after SIGTERM");
-                self.pids.ganesha = None;
-                self.ganesha_managed = false;
-                return;
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            thread::sleep(Duration::from_millis(100));
-            reap_one_child();
-        }
-        self.log_warn("stop_ganesha: timeout — escalating to SIGKILL");
-        if process_is_live(pid) {
-            signal_process_kill(pid);
-        }
-        let kill_deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            if !process_is_live(pid) {
-                self.log_info("stop_ganesha: process exited after SIGKILL");
-                self.pids.ganesha = None;
-                self.ganesha_managed = false;
-                return;
-            }
-            if std::time::Instant::now() >= kill_deadline {
-                break;
-            }
-            thread::sleep(Duration::from_millis(100));
-            reap_one_child();
-        }
-        self.pids.ganesha = None;
-        self.ganesha_managed = false;
-    }
+
 
     fn ensure_runtime_dirs(&self) { let _ = fs::create_dir_all("/var/lib/nfs-klldap"); let _ = fs::create_dir_all("/var/run/nfs-klldap"); let _ = fs::create_dir_all("/var/lib/extrausers"); }
     fn execute_recycle_plan(&mut self, mut plan: ServiceRecyclePlan) {
@@ -1103,13 +897,13 @@ while :; do :; done
                     } else {
                         plan = ganesha_sighup_failed(plan);
                         if self.ganesha_running() {
-                            self.stop_ganesha();
+                            services::stop_ganesha(self);
                         }
                     }
                 }
                 GaneshaAction::StopStart => {
                     // Waits out stale pids before idempotent stop-start.
-                    self.stop_ganesha();
+                    services::stop_ganesha(self);
                 }
             }
         }
@@ -1127,7 +921,7 @@ while :; do :; done
         {
             self.ensure_ganesha_prereqs();
             self.log_info("Starting NFS-Ganesha after recycle...");
-            self.start_ganesha();
+            services::start_ganesha(self);
         }
         if plan.restart_webui {
             let _ = self.start_webui();
@@ -1388,35 +1182,7 @@ while :; do :; done
         false
     }
 
-    fn start_ganesha(&mut self) {
-        if !self.wait_for_idhelper_socket() {
-            return;
-        }
-        if !self.warm_identity_principals_before_ganesha() {
-            self.log_warn("principal-warm:incomplete — skipping Ganesha start until NSS warm succeeds");
-            return;
-        }
-        self.quiet_winbind();
-        let mut cmd = Command::new("ganesha.nfsd");
-        // -F: foreground (no launcher exit + adopt dance). The spawn pid receives explicit envp directly via Command (execve equiv).
-        cmd.args(["-F", "-f"])
-            .arg(&self.env.ganesha_conf)
-            .args(["-L", "/var/log/ganesha.log"]);
-        // Build explicit envp array: LD_PRELOAD (nss first), all NSS_WRAPPER_*, IDHELPER_*, NFS_KLLDAP_IDHELPER_*, NSS_*, socket and nss_passwd-env.
-        let envp = self.build_ganesha_envp();
-        cmd.env_clear().envs(envp);
-        if let Ok(child) = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
-            let launched = child.id();
-            self.pids.ganesha = Some(launched);
-            std::env::set_var("NFS_KLLDAP_GANESHA_PID", launched.to_string());
-            self.log_info(&format!("Started ganesha.nfsd pid {launched} (foreground + explicit envp: LD_PRELOAD/NSS_WRAPPER/IDHELPER/socket/nss)"));
-            self.ganesha_managed = true;
-            thread::sleep(Duration::from_millis(800));
-            self.confirm_ganesha_daemon_pid_env();
-            // Readiness gate moved out of spawn site per restructure. start_ganesha now only does spawn + pid + /proc log.
-            // The single gate call site (preconf BringUp + equivalent) will call the check and only then log "Container is ready".
-        }
-    }
+
 
     fn start_webui(&mut self) -> Result<(), String> {
         if self.env.supervise_recycle_probe
@@ -1661,7 +1427,7 @@ fn chmod_file(path: &Path, mode: u32) {
 
 // getgrouplist shim is prepended before nss_wrapper in LD_PRELOAD (see ganesha_getgrouplist.rs).
 
-fn resolve_nss_wrapper_so() -> PathBuf {
+pub(crate) fn resolve_nss_wrapper_so() -> PathBuf {
     if let Ok(p) = std::env::var("NSS_WRAPPER_SO") {
         if !p.is_empty() {
             return PathBuf::from(p);
@@ -1721,15 +1487,4 @@ fn pgrep_running(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(test)]
-mod pkill_tests {
-    use super::*;
 
-    #[test]
-    fn proc_comm_name_max_matches_linux_task_comm_len() {
-        assert_eq!(PROC_COMM_NAME_MAX, 15);
-        assert!("nfs-klldap-idhelper".len() > PROC_COMM_NAME_MAX);
-        assert!("nfs-klldap-conf-watcher".len() > PROC_COMM_NAME_MAX);
-        assert!("ganesha.nfsd".len() <= PROC_COMM_NAME_MAX);
-    }
-}

@@ -1,4 +1,4 @@
-//! Persistent config detection and tolerant host_path-only loading.
+//! Persistent config detection is tolerant.
 
 use std::path::{Path, PathBuf};
 
@@ -22,13 +22,11 @@ pub fn is_persistent_config(path: &Path) -> bool {
         Err(_) => return false,
     };
 
-    // Dev != root => host volume (not container rootfs).
     config_meta.dev() != root_meta.dev()
 }
 
 #[cfg(not(unix))]
 pub fn is_persistent_config(_path: &Path) -> bool {
-    // Conservative (assume persistent) on non-Unix.
     true
 }
 

@@ -1,13 +1,9 @@
-//! Limited/NOACL filesystem support (warnings side) for the distinct NOACL path.
-//! 0.9.40-style simple directives (Disable_ACL + Manage_Gids per eff) are emitted for
-//! noacl (btrfs+noacl, vfat, ntfs, ...) via explicit branch in generate; this
-//! module supplies the fs_warnings / UI badge text for the NOACL mainline path
-//! (ACL path uses native full settings). UID/GID resolution logic is untouched.
+//! Limited/NOACL support for warnings (0.9.40 style)
 
 use crate::fs_probe::{EffectiveShareFlags, FsCapabilities};
 use crate::ganesha_log_contract::ganesha_96_has_mode_only_access_knob;
 
-/// Warning provider for the NOACL/limited path (distinct from ACL-capable).
+/// Warning provider for the NOACL/limited path (distinct from ACL-capable)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PosixOnlyPolicy {
     pub fs_warning: String,
@@ -24,9 +20,7 @@ fn mount_opts_suffix(caps: &FsCapabilities) -> String {
 }
 
 impl PosixOnlyPolicy {
-    /// Builds warning info for a share with `enable_acl=false` (probe or explicit).
-    /// Directives themselves are handled by the two-path branch in export_fs_directives
-    /// (NOACL uses 0.9.40 simple Disable_ACL + Manage_Gids per effective flags).
+    // Builds warning info for share with enable_acl=false.
     pub fn for_share(share_name: &str, caps: &FsCapabilities, eff: &EffectiveShareFlags) -> Option<Self> {
         if eff.enable_acl {
             return None;

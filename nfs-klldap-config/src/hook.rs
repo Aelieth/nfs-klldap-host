@@ -1,5 +1,4 @@
-//! Post-generate hook: optional operator script after config generation.
-//! Runs before Ganesha recycle.
+//! Post-generate hook runs after successful generate.
 
 use std::io::Read;
 use std::path::Path;
@@ -39,7 +38,7 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-/// Invoke the configured hook once per share (SHARE_* env vars).
+/// Invoke the configured hook once per share (SHARE_* env vars)
 /// Non-zero exit aborts.
 pub fn run_post_generate_hooks(cfg: &NfsKlldapConfig) -> Result<(), ConfigError> {
     let Some(hook) = effective_post_generate_hook(cfg) else {

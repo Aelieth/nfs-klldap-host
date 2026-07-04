@@ -1,4 +1,4 @@
-//! Zombie-aware Ganesha process liveness for recycle planning and reload.
+//! Zombie-aware Ganesha liveness.
 
 use std::fs;
 use std::path::Path;
@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 
 use crate::constants::PROC_COMM_NAME_MAX;
 
-/// True when `pid` exists and is not a zombie (per `/proc/pid/status` State).
+/// True when `pid` exists and is not a zombie (per `/proc/pid/status` State)
 pub fn process_is_live(pid: u32) -> bool {
     if !Path::new(&format!("/proc/{pid}")).exists() {
         return false;
@@ -22,7 +22,7 @@ pub fn process_is_live(pid: u32) -> bool {
     true
 }
 
-/// Pgrep PIDs for `name` (may include zombies).
+/// Pgrep PIDs for `name` (may include zombies)
 pub fn pgrep_pids(name: &str) -> Vec<u32> {
     let mut cmd = Command::new("pgrep");
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
@@ -51,7 +51,7 @@ pub fn pgrep_live_pids(name: &str) -> Vec<u32> {
         .collect()
 }
 
-/// Return tracked pid only when it is still live (never pgrep).
+/// Return tracked pid only when it is still live (never pgrep)
 pub fn reconcile_ganesha_pid(tracked: Option<u32>) -> Option<u32> {
     tracked.filter(|pid| process_is_live(*pid))
 }

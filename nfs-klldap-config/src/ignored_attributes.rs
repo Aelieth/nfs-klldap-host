@@ -1,4 +1,4 @@
-//! KLLDAP/SSSD ignore lists emitted into sssd.conf when enabled (default on).
+//! Ignore lists emitted to sssd when enabled.
 
 /// User attributes SSSD/dirsync request that KLLDAP does not provide.
 pub const RECOMMENDED_IGNORED_USER_ATTRIBUTES: &[&str] = &[
@@ -63,10 +63,10 @@ pub fn get_kllldap_ignored_attributes_comment_block() -> String {
 # KLLDAP does not store them.
 # Without server-side ignores
 # logs fill with "unknown attribute" noise and some
-# clients retry aggressively (TLS disconnects, high CPU).
+# clients retry aggressively (TLS disconnects, high CPU)
 # Keep [sssd] kllldap_ignored_attributes = true (default) in nfs-klldap.conf.
 #
-# ldap_group_member = "{member}" when ignores are enabled (not legacy memberUid).
+# ldap_group_member = "{member}" when ignores are enabled (not legacy memberUid)
 #
 # To disable: add "kllldap_ignored_attributes = false" in nfs-klldap.conf
 # -----------------------------------------------------------------------------

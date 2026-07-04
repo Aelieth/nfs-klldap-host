@@ -1,10 +1,9 @@
-//! Container bring-up: supervise (pid-1), check, and wait-ready entry points.
-//! The WebUI setup wizard replaces the former blocking terminal TUI.
+//! Container bring-up runs supervise.
 
 #![deny(unsafe_code, dead_code)]
 
 #[cfg(unix)]
-#[path = "../supervisor.rs"]
+#[path = "../supervisor/mod.rs"]
 mod supervisor;
 
 #[cfg(not(unix))]
@@ -119,7 +118,7 @@ Usage:
   nfs-klldap-startup check           One-shot diagnostics and exit
   nfs-klldap-startup wait-ready      Poll until setup steps pass (no UI)
 
-First-run setup is handled by the WebUI wizard at https://<host>:9630/setup
+First-run setup is handled by the WebUI wizard at https:// <host>:9630/setup.
 ",
         env!("CARGO_PKG_VERSION")
     );

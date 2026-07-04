@@ -1,4 +1,4 @@
-//! Mountinfo probe for POSIX ACL capability on share paths.
+//! Mountinfo probe for POSIX ACL on share paths.
 
 use std::io;
 use std::path::Path;
@@ -14,15 +14,14 @@ pub struct FsCapabilities {
 }
 
 /// Effective EXPORT flags after TOML overrides and probe results.
-/// enable_acl=false means emit Disable_ACL=true (conservative on limited FS).
+/// Enable_acl=false means emit Disable_ACL=true (conservative on limited FS)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveShareFlags {
     pub enable_acl: bool,
     pub manage_gids: bool,
     /// True when probe (not explicit TOML) drove the safe defaults.
     pub auto_applied: bool,
-    /// Resolved umask string (e.g. "0022") for ACL-path FSAL emission only.
-    /// Carried here for symmetry with enable_acl; resolved from share or default.
+    /// Resolved umask (e.g. "0022") for ACL-path FSAL only.
     pub umask: Option<String>,
 }
 
@@ -43,7 +42,7 @@ pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
     Ok(probe_from_mountinfo(&content, path))
 }
 
-/// Probes path against fixture or live mountinfo (tests).
+/// Probes path against fixture or live mountinfo (tests)
 pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
     let entries = parse_mountinfo(content);
     let path_str = path.to_string_lossy();
@@ -73,7 +72,7 @@ pub enum ReadAccessPolicyEmit {
     Post,
 }
 
-/// Read policy emit (pre on NOACL, omit on ACL auto).
+/// Read policy emit (pre on NOACL, omit on ACL auto)
 pub fn compute_read_access_policy_emit(
     share: &Share,
     caps: &FsCapabilities,
@@ -93,18 +92,17 @@ pub fn compute_read_access_policy_emit(
     }
 }
 
+pub(crate) fn is_valid_umask(s: &str) -> bool {
+    let t = s.trim();
+    t.len() == 4 && t.starts_with('0') && t[1..].chars().all(|c| matches!(c, '0'..='7'))
+}
+
 pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> EffectiveShareFlags {
     let probe_limited = !caps.acl_capable;
     let enable_acl = share.enable_acl.unwrap_or(!probe_limited);
     let manage_gids = share.manage_gids.unwrap_or(true);
     let auto_applied =
         probe_limited && share.enable_acl.is_none() && share.manage_gids.is_none();
-    // Resolve umask: explicit wins (if valid octal); on ACL path default to "0022".
-    // on NOACL leave None (never emitted). Sanitize to prevent bad emission.
-    fn is_valid_umask(s: &str) -> bool {
-        let t = s.trim();
-        t.len() == 4 && t.starts_with('0') && t[1..].chars().all(|c| matches!(c, '0'..='7'))
-    }
     let umask = share.umask.as_deref().filter(|u| is_valid_umask(u)).map(|u| u.to_string()).or_else(|| {
         if enable_acl { Some("0022".to_string()) } else { None }
     });
@@ -128,7 +126,6 @@ fn parse_mountinfo(content: &str) -> Vec<MountEntry> {
 
 fn parse_mountinfo_line(line: &str) -> Option<MountEntry> {
     let parts: Vec<&str> = line.split_whitespace().collect();
-    // Parses mountinfo id, parent, root, mount point, fstype, and opts.
     if parts.len() < 10 {
         return None;
     }
@@ -194,8 +191,6 @@ fn acl_capable_from_mount(fstype: &str, options: &[String], mount_source: &str) 
     }
 }
 
-// Strings for limited_fs_warning* live in fs_warnings.rs (per Step4/acceptance).
-// limited_fs_warning now takes real &Share (not dummy) so explicit manage_gids overrides on NOACL shares are reflected in messages/WARNs from CLI/generate/validate.
 
 #[cfg(test)]
 mod tests {

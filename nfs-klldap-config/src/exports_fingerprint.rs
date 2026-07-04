@@ -1,9 +1,9 @@
-//! Stable fingerprints of generated artifacts (exports.d, identity configs).
+//! Stable fingerprints of generated artifacts.
 
 use std::fs;
 use std::path::Path;
 
-/// FNV-1a over raw bytes (shared by export-dir and identity-artifact helpers).
+/// FNV-1a over raw bytes (shared by export-dir and identity-artifact helpers)
 pub fn fingerprint_bytes(bytes: &[u8], mut h: u64) -> u64 {
     for &b in bytes {
         h ^= u64::from(b);
@@ -12,7 +12,7 @@ pub fn fingerprint_bytes(bytes: &[u8], mut h: u64) -> u64 {
     h
 }
 
-/// FNV-1a over a single file (missing file → 0 contribution).
+/// FNV-1a over a single file (missing file → 0 contribution)
 pub fn fingerprint_file(path: &Path) -> u64 {
     let Ok(bytes) = fs::read(path) else {
         return 0;
@@ -35,7 +35,7 @@ pub fn fingerprint_identity_artifacts(
     h
 }
 
-/// FNV-1a over sorted export fragment contents (empty dir → 0).
+/// FNV-1a over sorted export fragment contents (empty dir → 0)
 pub fn fingerprint_exports_dir(exports_dir: &Path) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     let Ok(entries) = fs::read_dir(exports_dir) else {
@@ -85,7 +85,7 @@ mod tests {
         fs::write(&krb5, b"[libdefaults]\n").unwrap();
         fs::write(&idmap, b"[General]\n").unwrap();
         let fp1 = fingerprint_identity_artifacts(&sssd, &krb5, &idmap);
-        fs::write(&sssd, b"[sssd]\nldap_uri = ldaps://x\n").unwrap();
+        fs::write(&sssd, b"[sssd]\nldap_uri = ldaps:// X\n").unwrap();
         let fp2 = fingerprint_identity_artifacts(&sssd, &krb5, &idmap);
         assert_ne!(fp1, fp2);
     }

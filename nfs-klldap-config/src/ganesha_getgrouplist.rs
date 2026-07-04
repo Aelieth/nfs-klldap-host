@@ -1,4 +1,4 @@
-//! Ganesha 9.6 getgrouplist compatibility: Linux positive-return semantics + idhelper socket backstop.
+//! Ganesha 9.6 getgrouplist compatibility.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -6,7 +6,7 @@ use std::path::Path;
 
 use nfs_klldap_identity::{machine_short_name, principal_local_part};
 
-/// Ganesha 9.6 `my_getgrouplist_alloc` treats success as `ret == 0`; Linux glibc returns positive ngroups.
+/// Ganesha 9.6 `my_getgrouplist_alloc` treats success as `ret == 0`; Linux gl.
 pub fn normalize_linux_getgrouplist_ret(ret: i32) -> i32 {
     if ret > 0 {
         0
@@ -57,7 +57,7 @@ fn shortnames_from_principal(principal: &str) -> Vec<String> {
     out
 }
 
-/// Short passwd logins the shim intercepts (root + configured principals' local parts).
+/// Short passwd logins the shim intercepts (root + configured principals' loc.
 pub fn getgrouplist_intercept_shortnames() -> Vec<String> {
     let mut names = vec!["root".to_string()];
     if let Ok(extra) = std::env::var("NFS_KLLDAP_GETGROUPLIST_ALLOWLIST") {
@@ -94,7 +94,7 @@ pub fn getgrouplist_intercept_shortnames() -> Vec<String> {
     names
 }
 
-/// Map a short login to a principal query for the idhelper socket (best-effort).
+/// Map a short login to a principal query for the idhelper socket (best-effor.
 pub fn principal_query_for_shortname(short: &str) -> String {
     if short.eq_ignore_ascii_case("root") {
         return "root".to_string();
@@ -147,7 +147,7 @@ pub fn resolve_getgrouplist_shim_so() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Build LD_PRELOAD chain: shim first, then nss_wrapper, then any existing entries.
+/// Build LD_PRELOAD chain: shim first, then nss_wrapper, then any existing en.
 pub fn ld_preload_chain_for_ganesha(nss_wrapper_so: &Path) -> std::path::PathBuf {
     let mut parts = Vec::new();
     if let Some(shim) = resolve_getgrouplist_shim_so() {

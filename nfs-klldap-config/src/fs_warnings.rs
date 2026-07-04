@@ -1,5 +1,4 @@
-//! Filesystem compatibility warnings for shares (reuses fs_probe).
-//! Warning text strings for limited-FS (Step 4 / acceptance) live here.
+//! FS compatibility warnings for shares.
 
 use std::path::Path;
 
@@ -64,9 +63,7 @@ fn limited_fs_opts_suffix(caps: &FsCapabilities) -> String {
     }
 }
 
-/// One-line WARN for limited-FS shares (validate/dry-run/startup).
-/// Now takes the real Share so that explicit manage_gids (and enable_acl) overrides
-/// are respected in the emitted warning message (fixes dummy Share always forcing false).
+/// One-line WARN for limited-FS shares. Takes real Share for overrides.
 pub fn limited_fs_warning(share: &Share, caps: &FsCapabilities) -> String {
     let eff = compute_effective_flags(share, caps);
     let share_name = &share.name;
@@ -121,7 +118,7 @@ fn caps_for_share_with_mountinfo(
     probe_fs_capabilities(path).unwrap_or_else(|_| default_capable_unknown())
 }
 
-/// Collect per-share filesystem warnings (probe runs against serve_path).
+/// Collect per-share filesystem warnings (probe runs against serve_path)
 pub fn collect_fs_warnings(cfg: &NfsKlldapConfig) -> Vec<FsShareWarning> {
     cfg.shares
         .iter()
@@ -148,7 +145,7 @@ pub fn collect_fs_warnings(cfg: &NfsKlldapConfig) -> Vec<FsShareWarning> {
         .collect()
 }
 
-/// Limited-FS warnings only (healthcheck / operator dashboards).
+/// Limited-FS warnings only (healthcheck / operator dashboards)
 pub fn limited_fs_warnings_only(cfg: &NfsKlldapConfig) -> Vec<FsShareWarning> {
     collect_fs_warnings(cfg)
         .into_iter()
@@ -161,7 +158,7 @@ pub fn share_fs_warning_message(cfg: &NfsKlldapConfig, share: &Share) -> Option<
     share_fs_warning_message_with_mountinfo(cfg, share, None)
 }
 
-/// System Settings badge text using an explicit mountinfo fixture (tests).
+/// System Settings badge text using an explicit mountinfo fixture (tests)
 pub fn share_fs_warning_message_with_mountinfo(
     cfg: &NfsKlldapConfig,
     share: &Share,
@@ -176,12 +173,12 @@ pub fn share_fs_warning_message_with_mountinfo(
     }
 }
 
-/// True when the share serve path is on a limited (non-ACL-capable) filesystem.
+/// True when the share serve path is on a limited (non-ACL-capable) filesyste.
 pub fn share_fs_acl_limited(cfg: &NfsKlldapConfig, share: &Share) -> bool {
     share_fs_acl_limited_with_mountinfo(cfg, share, None)
 }
 
-/// Same as [`share_fs_acl_limited`] with an explicit mountinfo fixture (tests).
+/// Same as [`share_fs_acl_limited`] with an explicit mountinfo fixture (tests.
 pub fn share_fs_acl_limited_with_mountinfo(
     cfg: &NfsKlldapConfig,
     share: &Share,
@@ -191,7 +188,7 @@ pub fn share_fs_acl_limited_with_mountinfo(
     !caps.acl_capable
 }
 
-/// True when any share will emit Manage_Gids (explicit or probe default).
+/// True when any share will emit Manage_Gids (explicit or probe default)
 pub fn any_share_manage_gids_enabled(cfg: &NfsKlldapConfig) -> bool {
     cfg.shares.iter().any(|share| {
         let caps = caps_for_share(cfg, share);
@@ -217,7 +214,7 @@ mod tests {
         )
         .unwrap();
         let mut cfg = NfsKlldapConfig {
-            ldap_uri: "ldaps://kllap.test:6360".into(),
+            ldap_uri: "ldaps:// Kllap.test:6360".into(),
             sssd: SssdSection {
                 ldap_default_bind_dn: "uid=a,ou=people,dc=x,dc=com".into(),
                 ldap_default_authtok: "s".into(),
@@ -251,7 +248,7 @@ mod tests {
         let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
         std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");
         let mut cfg = NfsKlldapConfig {
-            ldap_uri: "ldaps://kllap.test:6360".into(),
+            ldap_uri: "ldaps:// Kllap.test:6360".into(),
             sssd: SssdSection {
                 ldap_default_bind_dn: "uid=a,ou=people,dc=x,dc=com".into(),
                 ldap_default_authtok: "s".into(),
@@ -265,7 +262,6 @@ mod tests {
             ..Default::default()
         };
         cfg.validate_and_derive().expect("valid");
-        // Unknown path assumes capable when mountinfo is not overridden.
         assert!(any_share_manage_gids_enabled(&cfg));
         cfg.shares[0].manage_gids = Some(false);
         assert!(!any_share_manage_gids_enabled(&cfg));

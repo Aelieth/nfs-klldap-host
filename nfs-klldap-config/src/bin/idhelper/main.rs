@@ -1644,8 +1644,8 @@ mod tests {
         let mut poor_snap = IdMapSnapshot::default();
         poor_snap.users.insert("testu".to_string(), nfs_klldap_config::PosixUserEntry { uid: 2001, gid: 100, display: "testu".into() });
         let cpath: &std::path::Path = Box::leak(tmp.path().join("idmap.cache").into_boxed_path());
-        let mpath: &std::path::Path = Box::leak(tmp.path().join(".bulk_seed").into_boxed_path());
-        let rpaths = daemon::RebulkPaths { cache_path: cpath, bulk_seed_marker: mpath, nss: paths };
+        let _mpath: &std::path::Path = Box::leak(tmp.path().join(".bulk_seed").into_boxed_path());
+        let rpaths = daemon::RebulkPaths { cache_path: cpath, nss: paths };
         let _ = daemon::rebulk_apply_sync(&mut c3, "T.REALM", &poor_snap, &rpaths);
         let ng3 = std::fs::read_to_string(paths.nss_group).unwrap_or_default();
         let eg3 = std::fs::read_to_string(paths.extrausers_group).unwrap_or_default();

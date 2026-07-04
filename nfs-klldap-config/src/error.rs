@@ -1,4 +1,4 @@
-//! Error type for nfs-klldap-config (manual Display, no thiserror).
+//! Error type for nfs-klldap-config.
 
 #[derive(Debug)]
 pub enum ConfigError {

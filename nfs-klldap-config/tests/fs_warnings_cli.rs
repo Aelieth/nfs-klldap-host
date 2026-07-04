@@ -7,13 +7,7 @@ use std::sync::Mutex;
 static MOUNTINFO_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn cargo_bin(name: &str) -> std::path::PathBuf {
-    let env_key = format!("CARGO_BIN_EXE_{}", name.replace('-', "_"));
-    if let Ok(path) = std::env::var(&env_key) {
-        return std::path::PathBuf::from(path);
-    }
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/debug")
-        .join(name)
+    if let Ok(p)=std::env::var(&format!("CARGO_BIN_EXE_{}",name.replace('-',"_"))) {return std::path::PathBuf::from(p);} std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/debug").join(name)
 }
 
 #[test]

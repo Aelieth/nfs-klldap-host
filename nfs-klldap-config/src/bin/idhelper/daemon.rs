@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::common::{
-    get_realm, get_server_variants, IdCache, BULK_SEED_MARKER, CACHE_PATH,
+    get_realm, get_server_variants, IdCache, CACHE_PATH,
     socket_path, DEFAULT_REBULK_INTERVAL_SECS, effective_cache_path,
 };
 use nfs_klldap_config::{classify_principal, IdMapSnapshot};
@@ -29,8 +29,6 @@ use crate::resolve::{
 #[derive(Clone, Copy)]
 pub(crate) struct RebulkPaths<'a> {
     pub cache_path: &'a Path,
-    #[allow(dead_code)] // retained for RebulkPaths test construction / compat after removing marker writes (seeding now always idempotent snapshot)
-    pub bulk_seed_marker: &'a Path,
     pub nss: NssMaterializePaths<'a>,
 }
 
@@ -40,7 +38,7 @@ impl RebulkPaths<'_> {
     pub(crate) fn production() -> RebulkPaths<'static> {
         RebulkPaths {
             cache_path: Path::new(CACHE_PATH),
-            bulk_seed_marker: Path::new(BULK_SEED_MARKER),
+
             nss: NssMaterializePaths::production(),
         }
     }
@@ -51,7 +49,7 @@ impl RebulkPaths<'_> {
         let leak = |p: std::path::PathBuf| -> &'static Path { Box::leak(p.into_boxed_path()) };
         RebulkPaths {
             cache_path: leak(base.join("idmap.cache")),
-            bulk_seed_marker: leak(base.join(".bulk_seed_done")),
+
             nss: NssMaterializePaths::under(base),
         }
     }
@@ -135,7 +133,7 @@ pub(crate) mod test_rebulk {
         };
         RebulkPaths {
             cache_path: leak(base.join("idmap.cache")),
-            bulk_seed_marker: leak(base.join(".bulk_seed_done")),
+
             nss: NssMaterializePaths {
                 nss_passwd: leak(base.join("nss_passwd")),
                 nss_group: leak(base.join("nss_group")),

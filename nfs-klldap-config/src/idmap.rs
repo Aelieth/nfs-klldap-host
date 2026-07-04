@@ -1,4 +1,4 @@
-//! Bridges nfs-klldap.conf [sssd] fields to shared IdLdapResolver.
+//! Bridges config to IdLdapResolver.
 
 use crate::SssdSection;
 
@@ -68,7 +68,7 @@ mod tests {
             ldap_user_search_base: Some("ou=people,dc=ex,dc=com".into()),
             ..Default::default()
         };
-        let r = from_sssd_section("ldaps://ldap.example:636", &s, "ex.com");
+        let r = from_sssd_section("ldaps:// Ldap.example:636", &s, "ex.com");
         assert!(r.user_base().contains("people"));
     }
 

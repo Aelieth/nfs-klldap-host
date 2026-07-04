@@ -1,7 +1,7 @@
 #![deny(unsafe_code, dead_code)]
 
-//! The nfs-klldap-config CLI provides init, generate, and validate.
-//! The generate subcommand drives the config watcher on WebUI save.
+//! The nfs-klldap-config CLI provides init, generate, and val.
+//! The nfs-klldap-config CLI provides init, generate, and val.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -32,9 +32,7 @@ The binaries are intended to be called by the container entrypoint and the host 
     );
 }
 
-/// Emit share-unknown and limited-FS warnings exactly once for a loaded config.
-/// Called only from the generate/validate CLI paths (generate subprocess + direct CLI)
-/// so that supervisor idle ticks and internal loads stay silent.
+/// Emit share warnings exactly once for loaded config.
 fn log_config_warnings(cfg: &NfsKlldapConfig) {
     for w in &cfg.share_warnings {
         eprintln!("WARN [nfs-klldap-config] {}", w.display_message());
@@ -131,7 +129,6 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
             cfg.effective_hostname()
         );
 
-        // Two-tier runtime hostname (setup wizard/UI use this for keytab.
         match get_consistent_hostname() {
             Ok(c) => {
                 println!(
@@ -170,9 +167,6 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
     }
     generate_all(&cfg, &paths)?;
 
-    // Step 3: lightweight post-generate idhelper resolution check (non-fatal WARN only).
-    // Drives the real CLI "grps" path so Ganesha idmapper will receive groups for
-    // user@REALM and host/hostname@REALM forms on the exports.
     let realm = cfg.effective_realm();
     let host_short = get_consistent_hostname()
         .map(|h| h.hostname.split('.').next().unwrap_or(&h.hostname).to_string())
@@ -196,7 +190,6 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
 fn handle_validate(path: &Path) -> Result<(), ConfigError> {
     let cfg = NfsKlldapConfig::load(path)?;
     log_config_warnings(&cfg);
-    // Also run the lightweight idhelper check on validate/startup paths (per objective)
     let realm = cfg.effective_realm();
     let host_short = get_consistent_hostname()
         .map(|h| h.hostname.split('.').next().unwrap_or(&h.hostname).to_string())

@@ -37,10 +37,6 @@ pub(crate) const NSS_GROUP_PATH: &str = "/var/lib/nfs-klldap/nss_group";
 pub(crate) const EXTRAUSERS_PASSWD: &str = "/var/lib/extrausers/passwd";
 pub(crate) const EXTRAUSERS_GROUP: &str = "/var/lib/extrausers/group";
 
-/// Deprecated (marker writes removed): seeding is fully idempotent snapshot-based on every rebulk/start (no race).
-/// Retained only for test path compat in RebulkPaths; production code no longer writes or waits on it.
-pub(crate) const BULK_SEED_MARKER: &str = "/var/lib/nfs-klldap/.bulk_seed_done";
-
 /// The default LDAP sync interval matches the IdLdapResolver ten-minute TTL.
 pub(crate) const DEFAULT_REBULK_INTERVAL_SECS: u64 = 10 * 60;
 

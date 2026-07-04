@@ -1,4 +1,4 @@
-//! Validates nfs-klldap.conf and builds realm, LDAP bases, and defaults.
+//! Validates config and builds realm, bases.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -8,8 +8,8 @@ use crate::{
     ConfigError, NfsKlldapConfig, Share,
 };
 
-/// True for empty realm or uppercase placeholder sentinels (EXAMPLE.COM / EXAMPLE).
-/// Lowercase FQDN-style realms (e.g. example.com) are real values, not placeholders.
+/// True for empty realm or uppercase placeholder sentinels (EXAMPLE.COM / EXA.
+/// Lowercase FQDN-style realms (e.g. example.com) are real values, not placeh.
 pub(crate) fn is_kerberos_placeholder_realm(r: &str) -> bool {
     let t = r.trim();
     if t.is_empty() {
@@ -89,14 +89,12 @@ impl NfsKlldapConfig {
     }
 
     pub fn validate_and_derive(&mut self) -> Result<(), ConfigError> {
-        // Applies NFS_KLLDAP_* env overrides before other normalization steps.
         self.apply_core_env_overrides();
 
         if self.ldap_uri.trim().is_empty() {
             return Err(ConfigError::Validation("ldap_uri is required".into()));
         }
 
-        // Normalize blank [sssd] overrides (explicit wins over derive).
         {
             let s = &mut self.sssd;
             normalize_blank(&mut s.ldap_search_base);
@@ -116,21 +114,17 @@ impl NfsKlldapConfig {
             normalize_blank(&mut s.ldap_group_gid_number);
             normalize_blank(&mut s.ldap_group_member);
 
-            // Defaults kllldap_ignored_attributes when Option<bool> is unset.
             normalize_blank(&mut s.domain);
             normalize_blank(&mut s.auth_provider);
             normalize_blank(&mut s.chpass_provider);
             normalize_blank(&mut s.ldap_schema);
             normalize_blank(&mut s.krb5_server);
             normalize_blank(&mut s.krb5_kpasswd);
-            // (bools like krb5_* need no norm).
         }
 
-        // Normalize webui string paths (tls bool needs no string norm).
         normalize_blank(&mut self.webui.tls_cert);
         normalize_blank(&mut self.webui.tls_key);
 
-        // Ldap_uri must be DNS (not IP) for Kerberos.
         let host = crate::extract_host_from_uri(&self.ldap_uri);
         if nfs_klldap_identity::host_is_ip(&host) {
             return Err(ConfigError::Validation(
@@ -139,7 +133,6 @@ impl NfsKlldapConfig {
             ));
         }
 
-        // Derive realm from ldap_uri if absent (or NFS_KLLDAP_KERBEROS_REALM.
         if self.kerberos.realm.is_none() {
             if let Some(realm) = crate::derive_realm_from_uri(&self.ldap_uri) {
                 self.kerberos.realm = Some(realm);
@@ -152,7 +145,6 @@ impl NfsKlldapConfig {
             }
         }
 
-        // Require real realm (no EXAMPLE.COM placeholder or empty).
         {
             let r = self.kerberos.realm.as_deref().unwrap_or("").trim();
             if is_kerberos_placeholder_realm(r) {
@@ -164,16 +156,14 @@ impl NfsKlldapConfig {
             }
         }
 
-        // Derive informational port from ldap_uri scheme.
         if self.sssd.port.is_none() {
-            self.sssd.port = Some(if self.ldap_uri.starts_with("ldaps://") {
+            self.sssd.port = Some(if self.ldap_uri.starts_with("ldaps:// ") {
                 636
             } else {
                 389
             });
         }
 
-        // Derive search bases from effective realm. Use the main search_base.
         let base_dn = format!(
             "dc={}",
             self.effective_realm().to_lowercase().replace('.', ",dc=")
@@ -192,7 +182,6 @@ impl NfsKlldapConfig {
             self.sssd.ldap_group_search_base = Some(main_search_base);
         }
 
-        // Default security + enum validation (Ganesha 9.6 trixie krb5* only).
         if self.ganesha.default_security.trim().is_empty() {
             self.ganesha.default_security = crate::constants::GANESHA_DEFAULT_SECTYPE.to_string();
         }
@@ -206,12 +195,10 @@ impl NfsKlldapConfig {
             )));
         }
 
-        // Sets the default storage container root when it is empty.
         if self.storage.container_root.trim().is_empty() {
             self.storage.container_root = "/export".to_string();
         }
 
-        // Validate + derive per-share + uniqueness.
         let mut seen = HashSet::new();
         for share in &mut self.shares {
             if share.name.trim().is_empty() {
@@ -230,7 +217,6 @@ impl NfsKlldapConfig {
                 )));
             }
             normalize_blank(&mut share.ganesha_path);
-            // Normalize export_path to an absolute NFSv4 Pseudo. Ganesha.
             {
                 let ep = share.export_path.take();
                 let normalized = match ep {
@@ -268,7 +254,6 @@ impl NfsKlldapConfig {
                     )));
                 }
             }
-            // Validates optional pref_read read-ahead within allowed bounds.
             if let Some(v) = share.pref_read {
                 const MIN: u64 = 512;
                 const MAX: u64 = 64 * 1024 * 1024;
@@ -279,7 +264,6 @@ impl NfsKlldapConfig {
                     )));
                 }
             }
-            // Validate optional pref_write (symmetric to pref_read).
             if let Some(v) = share.pref_write {
                 const MIN: u64 = 512;
                 const MAX: u64 = 64 * 1024 * 1024;
@@ -290,7 +274,6 @@ impl NfsKlldapConfig {
                     )));
                 }
             }
-            // Validate cache_profile (the primary UI-driven field for the 5.
             if let Some(p) = &share.cache_profile {
                 if crate::resolve_cache_profile(p).is_none() {
                     return Err(ConfigError::Validation(format!(
@@ -333,7 +316,6 @@ impl NfsKlldapConfig {
             }
         }
 
-        // Require bind credentials for sssd.
         if self.sssd.ldap_default_bind_dn.trim().is_empty() {
             return Err(ConfigError::Validation(
                 "sssd.ldap_default_bind_dn is required".into(),
@@ -386,9 +368,8 @@ impl NfsKlldapConfig {
             .unwrap_or_else(|| "YOUR.REALM".to_string())
     }
 
-    /// Apply NFS_KLLDAP_* env overrides for core options (env wins).
+    /// Apply NFS_KLLDAP_* env overrides for core options (env wins)
     fn apply_core_env_overrides(&mut self) {
-        // Ldap_uri (top-level core).
         if let Ok(v) = std::env::var("NFS_KLLDAP_LDAP_URI") {
             let t = v.trim();
             if !t.is_empty() {
@@ -396,7 +377,6 @@ impl NfsKlldapConfig {
             }
         }
 
-        // Apply NFS_KLLDAP_KERBEROS_REALM to the kerberos realm field.
         if let Ok(v) = std::env::var("NFS_KLLDAP_KERBEROS_REALM") {
             let t = v.trim();
             if !t.is_empty() {
@@ -404,7 +384,6 @@ impl NfsKlldapConfig {
             }
         }
 
-        // Apply bind creds from NFS_KLLDAP_SSSD_* and NFS_KLLDAP_LLDAP_*.
         if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN") {
             let t = v.trim();
             if !t.is_empty() {
@@ -430,18 +409,15 @@ impl NfsKlldapConfig {
             }
         }
 
-        // Apply NFS_KLLDAP_SERVER_HOSTNAME to the server hostname field.
         if let Ok(v) = std::env::var("NFS_KLLDAP_SERVER_HOSTNAME") {
             let t = v.trim();
             self.server.hostname = if t.is_empty() { None } else { Some(t.to_string()) };
         }
 
-        // Apply HOST_NFS env override for sidecar mode.
         if let Some(val) = crate::host_nfs_from_env() {
             self.host.host_nfs = Some(val);
         }
 
-        // Apply NFS_KLLDAP_STORAGE_CONTAINER_ROOT to storage.container_root.
         if let Ok(v) = std::env::var("NFS_KLLDAP_STORAGE_CONTAINER_ROOT") {
             let t = v.trim();
             if !t.is_empty() {
@@ -449,7 +425,6 @@ impl NfsKlldapConfig {
             }
         }
 
-        // Apply NFS_KLLDAP_GANESHA_* overrides to the ganesha section.
         if let Ok(v) = std::env::var("NFS_KLLDAP_GANESHA_DEFAULT_SECURITY") {
             let t = v.trim();
             if !t.is_empty() {
@@ -465,19 +440,16 @@ impl NfsKlldapConfig {
             };
         }
 
-        // Apply NFS_KLLDAP_MANAGEMENT_WEBUI_ADMIN_GROUP to management.
         if let Ok(v) = std::env::var("NFS_KLLDAP_MANAGEMENT_WEBUI_ADMIN_GROUP") {
             let t = v.trim();
             self.management.webui_admin_group = if t.is_empty() { None } else { Some(t.to_string()) };
         }
 
-        // Apply the kllldap_ignored_attributes toggle from env.
         if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_KLLLDAP_IGNORED_ATTRIBUTES") {
             let t = v.trim().to_ascii_lowercase();
             self.sssd.kllldap_ignored_attributes = Some(t == "true" || t == "1" || t == "yes" || t == "on");
         }
 
-        // Apply SSSD LDAP TLS options from NFS_KLLDAP_SSSD_LDAP_TLS_* env.
         if let Ok(v) = std::env::var("NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT") {
             let t = v.trim();
             if !t.is_empty() {
@@ -495,7 +467,6 @@ impl NfsKlldapConfig {
             self.sssd.ldap_id_use_start_tls = Some(t == "true" || t == "1" || t == "yes" || t == "on");
         }
 
-        // Apply WebUI TLS settings from NFS_KLLDAP_WEBUI_TLS_* env vars.
         if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
             let t = v.trim().to_ascii_lowercase();
             let disabled = t == "off" || t == "false" || t == "0" || t == "no";
@@ -522,14 +493,12 @@ impl NfsKlldapConfig {
         let hp = share.host_path.to_string_lossy();
         let hp_trim = hp.trim_end_matches('/');
 
-        // Split into non-empty segments.
         let segments: Vec<&str> = hp_trim
             .split('/')
             .filter(|s| !s.is_empty())
             .collect();
 
         if !segments.is_empty() {
-            // Implicit per-share host root is the first dir component. Tail.
             let tail = if segments.len() > 1 {
                 segments[1..].join("/")
             } else {
@@ -543,7 +512,6 @@ impl NfsKlldapConfig {
             return format!("{}{}", root, sub);
         }
 
-        // Degenerate host_path fall back to legacy export_path / name.
         let ep_owned: String = share
             .export_path
             .as_deref()

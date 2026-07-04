@@ -172,7 +172,7 @@ pub(crate) fn gecos_for(r: &Resolved) -> String {
 }
 
 /// Builds a passwd(5) line and assigns uid and gid zero to machines.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn passwd_line_for(r: &Resolved) -> String {
     let login = sanitize_for_nss(&r.name);
     let gecos = gecos_for(r);

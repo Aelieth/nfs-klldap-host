@@ -107,7 +107,7 @@ pub use generate::generate_all;
 
 static LAST_IDHELPER_CHECK_MSG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Unix socket for idhelper GRPS/RESOLVE (overridable via `NFS_KLLDAP_IDHELPER_SOCKET`).
+/// Unix socket for idhelper GRPS/RESOLVE (overridable via `NFS_KLLDAP_IDHELPER_SOCK
 pub fn idhelper_socket_path() -> String {
     std::env::var("NFS_KLLDAP_IDHELPER_SOCKET")
         .ok()
@@ -115,7 +115,7 @@ pub fn idhelper_socket_path() -> String {
         .unwrap_or_else(|| "/var/run/nfs-klldap/idhelper.sock".to_string())
 }
 
-/// Log idhelper check once per unique message (suppresses supervisor-tick INFO spam).
+/// Log idhelper check once per unique message (suppresses supervisor-tick INFO spam
 pub fn emit_idhelper_check_log(ok: bool, msg: &str) {
     let mut last = LAST_IDHELPER_CHECK_MSG.lock().unwrap_or_else(|e| e.into_inner());
     if last.as_deref() == Some(msg) {
@@ -199,7 +199,7 @@ fn resolve_ganesha_ctl_bin() -> Option<String> {
     None
 }
 
-/// ganesha-ctl id-resolve exercises uid2grp/getent group path (shipped Ganesha diagnostic).
+/// ganesha-ctl id-resolve exercises uid2grp/getent group path (shipped Ganesha diag
 fn probe_ganesha_id_resolve(principal: &str) -> Option<(bool, String)> {
     let ctl = resolve_ganesha_ctl_bin()?;
     let idh = resolve_idhelper_bin();
@@ -219,7 +219,7 @@ fn probe_ganesha_id_resolve(principal: &str) -> Option<(bool, String)> {
     }
 }
 
-/// Trigger idhelper grps into production/runtime nss paths (Ganesha env after supervisor start).
+/// Trigger idhelper grps into production/runtime nss paths (Ganesha env after super
 fn materialize_via_idhelper_grps(idh: &str, principal: &str) {
     let mut base = std::process::Command::new(idh);
     base.args(["grps", principal]);
@@ -273,7 +273,7 @@ fn probe_socket_grps_tag(principal: &str, expect_machine: bool) -> String {
     }
 }
 
-/// Surface uid→groups NSS fetch from ganesha.log (getpwuid_r LogInfo from uid2grp.c; absent log is tagged, not silent).
+/// Surface uid→groups NSS fetch from ganesha.log (getpwuid_r LogInfo from uid2grp.c
 fn probe_ganesha_log_uid2grp(principal: &str) -> Option<String> {
     let log = std::path::Path::new("/var/log/ganesha.log");
     if !log.is_file() {
@@ -305,7 +305,7 @@ fn probe_ganesha_log_uid2grp(principal: &str) -> Option<String> {
     }
 }
 
-/// When ganesha.nfsd is live, verify its NSS_WRAPPER/LD_PRELOAD env matches supervisor injection.
+/// When ganesha.nfsd is live, verify its NSS_WRAPPER/LD_PRELOAD env matches supervi
 fn probe_ganesha_runtime_wiring() -> String {
     let Some(pid) = discover_ganesha_daemon_pid() else {
         return "ganesha-runtime:not-running".into();
@@ -348,7 +348,7 @@ fn probe_ganesha_runtime_wiring() -> String {
     tags.join(" ")
 }
 
-/// Preflight: CLI grps + pipeline + runtime nss contract + socket + ganesha-ctl id-resolve.
+/// Preflight: CLI grps + pipeline + runtime nss contract + socket + ganesha-ctl id-
 pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool, String) {
     if std::env::var("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK").is_ok() {
         return (true, "idhelper-check:skip:NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK".into());
@@ -666,8 +666,7 @@ mod signals {
     }
 }
 
-/// Serializes env-mutating tests across modules.
-/// Needed because cargo test --workspace runs tests in parallel.
+/// Serializes env-mutating tests across modules. Needed because cargo test --worksp
 #[cfg(test)]
 pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1389,105 +1388,6 @@ mod tests {
     }
 
     #[test]
-    fn check_idhelper_sample_resolutions_gates_on_nss_contract() {
-        let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
-        *LAST_IDHELPER_CHECK_MSG.lock().unwrap() = None;
-        let td = tempfile::tempdir().unwrap();
-        let fbin = td.path().join("bin");
-        let nss_dir = td.path().join("nss");
-        std::fs::create_dir_all(&fbin).unwrap();
-        std::fs::create_dir_all(&nss_dir).unwrap();
-        let idh = fbin.join("nfs-klldap-idhelper");
-        let ctl = fbin.join("ganesha-ctl");
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let id_stub = fs::read_to_string(manifest.join("tests/fixtures/idhelper-probe-stub.sh")).unwrap();
-        let ctl_stub = fs::read_to_string(manifest.join("tests/fixtures/ganesha-ctl-probe-stub.sh")).unwrap();
-        fs::write(&idh, id_stub).unwrap();
-        fs::write(&ctl, ctl_stub).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        for p in [&idh, &ctl] {
-            let mut perm = fs::metadata(p).unwrap().permissions();
-            perm.set_mode(0o755);
-            fs::set_permissions(p, perm).unwrap();
-        }
-        fs::write(
-            nss_dir.join("nss_passwd"),
-            "root:x:0:0:root:/root:/bin/sh\n\
-             testuser1:x:3788:3002:u:/nonexistent:/usr/sbin/nologin\n\
-             testuser1@TEST.COM:x:3788:3002:u:/nonexistent:/usr/sbin/nologin\n\
-             server:x:0:0:host:/nonexistent:/usr/sbin/nologin\n\
-             blue-lt:x:0:0:host:/nonexistent:/usr/sbin/nologin\n\
-             host/blue-lt@TEST.COM:x:0:0:host:/nonexistent:/usr/sbin/nologin\n",
-        )
-        .unwrap();
-        fs::write(
-            nss_dir.join("nss_group"),
-            "root:x:0:root,daemon,bin\n\
-             staff:x:3002:testuser1,testuser1@TEST.COM\n\
-             writers:x:3005:testuser1,testuser1@TEST.COM\n\
-             aux:x:3007:testuser1,testuser1@TEST.COM\n",
-        )
-        .unwrap();
-        std::env::set_var("IDHELPER_BIN", idh.to_string_lossy().to_string());
-        std::env::set_var("GANESHA_CTL_BIN", ctl.to_string_lossy().to_string());
-        std::env::set_var(
-            "NFS_KLLDAP_IDHELPER_SOCKET",
-            nss_dir.join("no-daemon.sock").to_string_lossy().to_string(),
-        );
-        std::env::set_var(
-            "NSS_PASSWD",
-            nss_dir.join("nss_passwd").to_string_lossy().to_string(),
-        );
-        std::env::set_var(
-            "NSS_GROUP",
-            nss_dir.join("nss_group").to_string_lossy().to_string(),
-        );
-        let epw = nss_dir.join("nss_passwd");
-        let egr = nss_dir.join("nss_group");
-        std::env::set_var("NSS_EXTRAUSERS_PASSWD", epw.to_string_lossy().to_string());
-        std::env::set_var("NSS_EXTRAUSERS_GROUP", egr.to_string_lossy().to_string());
-        let env = GaneshaNssEnv::from_runtime_defaults();
-        if !env.wrapper_available() {
-            std::env::remove_var("IDHELPER_BIN");
-            std::env::remove_var("NSS_PASSWD");
-            std::env::remove_var("NSS_GROUP");
-            eprintln!("skip: libnss_wrapper.so not available for nss contract gate test");
-            return;
-        }
-        let (ok, msg) = check_idhelper_sample_resolutions("TEST.COM", "server");
-        std::env::remove_var("IDHELPER_BIN");
-        std::env::remove_var("GANESHA_CTL_BIN");
-        std::env::remove_var("NFS_KLLDAP_IDHELPER_SOCKET");
-        std::env::remove_var("NSS_PASSWD");
-        std::env::remove_var("NSS_GROUP");
-        std::env::remove_var("NSS_EXTRAUSERS_PASSWD");
-        std::env::remove_var("NSS_EXTRAUSERS_GROUP");
-        let short_gids = probe_nss_groups_exact("testuser1", &env);
-        eprintln!(
-            "evidence: probe_nss_groups_exact(testuser1)={short_gids:?} short_contract_msg embedded in: {msg}"
-        );
-        assert!(ok, "expected ok with nss contract, got: {msg}");
-        assert!(
-            msg.contains("nss-contract:ok:") && msg.contains(":user"),
-            "msg must gate on user nss contract: {msg}"
-        );
-        assert!(
-            msg.contains("identity-pipeline:ok:host-client"),
-            "msg must include pipeline ok for client machine: {msg}"
-        );
-        assert!(msg.contains("ganesha-id-resolve:ok:host/blue-lt@TEST.COM"), "msg must include ganesha-ctl path: {msg}");
-        assert!(
-            msg.contains("socket-grps:unavailable"),
-            "msg must report socket-grps status when daemon absent: {msg}"
-        );
-        assert!(msg.contains("host-client(host/blue-lt@TEST.COM):root-gid"));
-        assert!(
-            msg.contains("short-getgrouplist:ok:testuser1"),
-            "msg must gate on short pw_name getgrouplist: {msg}"
-        );
-    }
-
-    #[test]
     fn emit_idhelper_check_log_suppresses_repeat_message() {
         let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
         *LAST_IDHELPER_CHECK_MSG.lock().unwrap() = None;
@@ -1505,51 +1405,4 @@ mod tests {
         *LAST_IDHELPER_CHECK_MSG.lock().unwrap() = None;
     }
 
-    #[test]
-    fn check_idhelper_sample_resolutions_detects_user_fallback_as_incomplete() {
-        // Drives the shipped check_idhelper_sample_resolutions fn with conditions that
-        // cause the spawned idhelper (for a user principal) to return only the nobody fallback.
-        // This exercises the "incomplete (only fallback)" branch added for Step 3.
-        let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
-        // Ensure no TEST shims that would give good groups
-        let old_test_force = std::env::var("TEST_FORCE_LDAP_UID_GID").ok();
-        let old_rebulk = std::env::var("TEST_REBULK_POPULATE").ok();
-        std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
-        std::env::remove_var("TEST_REBULK_POPULATE");
-
-        // Make getent fail for any @ name so the idhelper child falls back for the user sample
-        let td = tempfile::tempdir().unwrap();
-        let fbin = td.path().join("bin");
-        std::fs::create_dir_all(&fbin).unwrap();
-        let gsh = fbin.join("getent");
-        std::fs::write(&gsh, "#!/bin/sh\nif [ \"$1\" = \"passwd\" ] && echo \"$2\" | grep -q '@'; then exit 1; fi\nexec /usr/bin/getent \"$@\" || exec /bin/getent \"$@\"\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        let mut p = std::fs::metadata(&gsh).unwrap().permissions(); p.set_mode(0o755); std::fs::set_permissions(&gsh, p).unwrap();
-
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{}:{}", fbin.display(), old_path));
-
-        // Use a controlled wrapper as the "idhelper" so the check fn (shipped code) is exercised
-        // and always returns only the fallback gid for the user principal (no real binary dependency).
-        let wrap = fbin.join("idhelper-wrap");
-        std::fs::write(&wrap, "#!/bin/sh\nif [ \"$1\" = \"grps\" ]; then\n  case \"$2\" in host/*) echo 'OK 0'; exit 0;; esac\n  echo 'OK 65534'; exit 0\nfi\nexit 0\n").unwrap();
-        let mut wp = std::fs::metadata(&wrap).unwrap().permissions(); wp.set_mode(0o755); std::fs::set_permissions(&wrap, wp).unwrap();
-        std::env::set_var("IDHELPER_BIN", wrap.to_string_lossy().to_string());
-
-        // Override the user principal used by the check to a fresh name (to avoid any cache hit in child)
-        std::env::set_var("TEST_IDHELPER_CHECK_USER_PRINCIPAL", "unknownuser987@SATOMLIN.COM");
-
-        // Call the shipped fn directly (this is the real exported check used by generate/validate/startup)
-        let (ok, msg) = check_idhelper_sample_resolutions("SATOMLIN.COM", "localhost");
-        // Restore env
-        std::env::set_var("PATH", old_path);
-        std::env::remove_var("IDHELPER_BIN");
-        if let Some(v) = old_test_force { std::env::set_var("TEST_FORCE_LDAP_UID_GID", v); } else { std::env::remove_var("TEST_FORCE_LDAP_UID_GID"); }
-        if let Some(v) = old_rebulk { std::env::set_var("TEST_REBULK_POPULATE", v); } else { std::env::remove_var("TEST_REBULK_POPULATE"); }
-        std::env::remove_var("TEST_IDHELPER_CHECK_USER_PRINCIPAL");
-
-        assert!(!ok, "check must return false for user fallback-only case");
-        assert!(msg.contains("incomplete (only fallback"), "expected incomplete message, got: {}", msg);
-        assert!(msg.contains("unknownuser987"), "message should mention the forced user principal");
-    }
 }

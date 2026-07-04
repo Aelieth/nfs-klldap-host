@@ -1,4 +1,4 @@
-//! Constants for nfs-klldap-config (Ganesha 9.6 trixie + identity re-exports).
+//! Constants for nfs-klldap-config (Ganesha 9.6 trixie + identi.
 
 pub use nfs_klldap_identity::{
     DEFAULT_GROUP_GID_ATTR, DEFAULT_GROUP_MEMBER_ATTR_KLLDAP, DEFAULT_GROUP_MEMBER_ATTR_LEGACY,
@@ -16,7 +16,7 @@ pub const PROC_COMM_NAME_MAX: usize = 15;
 pub const GANESHA_PROTOCOLS: &str = "4";
 pub const GANESHA_PWNAM_IMPL: &str = "nsswitch";
 pub const GANESHA_ROOT_KRB_PRINCIPALS: &str = "host, nfs, root";
-/// Ganesha 9.6 DIRECTORY_SERVICES idmapped cache TTL (seconds).
+/// Ganesha 9.6 DIRECTORY_SERVICES idmapped cache TTL (seconds)
 pub const GANESHA_IDMAPPED_VALIDITY_SECS: u32 = 600;
 pub const GANESHA_DEFAULT_SECTYPE: &str = "krb5p";
 pub const GANESHA_DEFAULT_SQUASH: &str = "no_root_squash";
@@ -28,17 +28,17 @@ pub const GANESHA_ALLOWED_SQUASH: &[&str] = &[
     "all_squash",
 ];
 
-/// Ganesha 9.6 EXPORT Read_Access_Check_Policy values (ganesha-export-config.rst).
+// Ganesha 9.6 EXPORT Read_Access_Check_Policy values (ganesha-export-co.
 pub const GANESHA_READ_ACCESS_POLICIES: &[&str] = &["pre", "post"];
 
 /// Default idmapd.conf values for Ganesha 9.6 and the libnfsidmap shim.
 pub const IDMAPD_TRANSLATION_METHOD: &str = "nsswitch";
 pub const IDMAPD_GSS_METHODS: &str = "nsswitch";
 pub const IDMAPD_NOBODY_USER: &str = "nobody";
-/// The default idmapd Nobody-Group matches nss FALLBACK_NOBODY_GID (65534).
+/// The default idmapd Nobody-Group matches nss FALLBACK_NOBODY_GID (65534)
 pub const IDMAPD_NOBODY_GROUP: &str = "nogroup";
 
-/// Ganesha log observer noise tokens (exact match, lowercased).
+/// Ganesha log observer noise tokens (exact match, lowercased)
 pub const LOG_NOISE_TOKENS: &[&str] = &[
     "nil", "null", "clientid", "unique", "counter", "created", "client", "id", "name", "addr",
     "refcount", "cr", "conf", "unconf", "debug", "info", "warning", "error", "ffff", "linux",

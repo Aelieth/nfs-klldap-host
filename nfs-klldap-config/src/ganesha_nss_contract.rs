@@ -1,4 +1,4 @@
-//! Ganesha request-time identity contract: libnfsidmap getpwnam/getgrouplist under nss_wrapper.
+//! Ganesha identity contract uses getpwnam.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -6,7 +6,7 @@ use std::process::Command;
 use crate::{parse_getent_passwd, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID, MACHINE_GID, MACHINE_UID};
 use nfs_klldap_identity::{machine_short_name, principal_local_part};
 
-/// NSS env Ganesha receives from supervisor `start_ganesha` (nss_wrapper LD_PRELOAD path).
+/// NSS env Ganesha receives from supervisor `start_ganesha` (nss_wrapper LD_P.
 #[derive(Clone, Debug)]
 pub struct GaneshaNssEnv {
     pub nss_passwd: PathBuf,
@@ -90,7 +90,7 @@ impl GaneshaNssEnv {
     }
 }
 
-/// Lookup names Ganesha/libnfsidmap may pass to getpwnam (full principal, short, host segment).
+/// Lookup names Ganesha/libnfsidmap may pass to getpwnam (full principal, sho.
 pub fn nss_lookup_names(principal: &str) -> Vec<String> {
     let mut names = vec![principal.to_string()];
     let short = principal_local_part(principal);
@@ -118,7 +118,7 @@ fn getent_passwd(name: &str, env: &GaneshaNssEnv) -> Option<(u32, u32)> {
     line.lines().find_map(parse_getent_passwd)
 }
 
-/// Direct nss_passwd file lookup (fallback when LD_PRELOAD unavailable).
+/// Direct nss_passwd file lookup (fallback when LD_PRELOAD unavailable)
 pub fn probe_nss_passwd_from_file(name: &str, env: &GaneshaNssEnv) -> Option<(u32, u32)> {
     let content = std::fs::read_to_string(&env.nss_passwd).ok()?;
     for candidate in nss_lookup_names(name) {
@@ -135,7 +135,7 @@ pub fn probe_nss_passwd_from_file(name: &str, env: &GaneshaNssEnv) -> Option<(u3
     None
 }
 
-/// getpwnam contract under Ganesha nss_wrapper env (live getent when wrapper present).
+/// Getpwnam contract under Ganesha nss_wrapper env (live getent when wrapper.
 pub fn probe_nss_passwd(name: &str, env: &GaneshaNssEnv) -> Option<(u32, u32)> {
     if env.wrapper_available() {
         for candidate in nss_lookup_names(name) {
@@ -147,8 +147,8 @@ pub fn probe_nss_passwd(name: &str, env: &GaneshaNssEnv) -> Option<(u32, u32)> {
     probe_nss_passwd_from_file(name, env)
 }
 
-/// Strict exact probe: query *only* the literal name (no nss_lookup_names expansion).
-/// Used by gate tests to prove the precise principal string Ganesha passes is present.
+/// Strict exact probe: query *only* the literal name (no nss_lookup_names exp.
+/// Used by gate tests to prove the precise principal string Ganesha passes is.
 pub fn probe_nss_passwd_exact(name: &str, env: &GaneshaNssEnv) -> Option<(u32, u32)> {
     if env.wrapper_available() {
         let mut cmd = Command::new("getent");
@@ -180,7 +180,7 @@ pub fn probe_nss_passwd_from_file_exact(name: &str, env: &GaneshaNssEnv) -> Opti
     None
 }
 
-/// getgrouplist contract (via `id -G` numeric gids under same env).
+/// Getgrouplist contract (via `id -G` numeric gids under same env)
 pub fn probe_nss_groups(name: &str, env: &GaneshaNssEnv) -> Vec<u32> {
     if !env.wrapper_available() {
         return vec![];
@@ -195,8 +195,8 @@ pub fn probe_nss_groups(name: &str, env: &GaneshaNssEnv) -> Vec<u32> {
     vec![]
 }
 
-/// Strict exact probe: query *only* the literal login (no nss_lookup_names expansion).
-/// Mirrors Ganesha uid2grp.c: getpwuid_r → pw_name → getgrouplist(short_name, …).
+/// Strict exact probe: query *only* the literal login (no nss_lookup_names ex.
+/// Mirrors Ganesha uid2grp.c: getpwuid_r → pw_name → getgrouplist(short_name,
 pub fn probe_nss_groups_exact(name: &str, env: &GaneshaNssEnv) -> Option<Vec<u32>> {
     if !env.wrapper_available() {
         return None;
@@ -219,13 +219,12 @@ pub fn probe_nss_groups_exact(name: &str, env: &GaneshaNssEnv) -> Option<Vec<u32
     }
 }
 
-/// Short passwd login Ganesha passes to getgrouplist after getpwuid_r (not the krb principal).
+/// Short passwd login Ganesha passes to getgrouplist after getpwuid_r (not th.
 pub fn short_pw_name_for_principal(principal: &str) -> String {
     principal_local_part(principal).to_string()
 }
 
-/// uid2grp short-name chain: exact short passwd row + exact short getgrouplist (no principal alias expansion).
-/// `min_total_gids` is the minimum number of gids `id -G <short>` must return (primary + supplementals).
+/// Uid2grp short-name chain.
 pub fn evaluate_short_name_getgrouplist_contract(
     principal: &str,
     env: &GaneshaNssEnv,
@@ -438,7 +437,6 @@ mod tests {
 
     #[test]
     fn fqdn_only_group_fixture_fails_short_name_exact_getgrouplist() {
-        // Reproduces logs.txt split-brain: principal-expanded probes pass, Ganesha short pw_name fails.
         let td = tempfile::tempdir().unwrap();
         fs::write(
             td.path().join("nss_passwd"),
@@ -475,7 +473,6 @@ mod tests {
 
     #[test]
     fn dual_login_fixture_passes_short_name_exact_getgrouplist() {
-        // Materialize-shaped fixture: short passwd login + short group member fields (uid2grp path).
         let td = tempfile::tempdir().unwrap();
         fs::write(
             td.path().join("nss_passwd"),

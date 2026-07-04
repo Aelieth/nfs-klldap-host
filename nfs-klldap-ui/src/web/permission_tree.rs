@@ -710,14 +710,23 @@ pub(crate) async fn apply_permissions(
     let prog = progress.clone();
     tokio::spawn(async move {
         // Count-as-you-go phase gives immediate visible feedback ("scanned N").
-        // Heavy walks (WalkDir + syscalls) wrapped in spawn_blocking; atomics visible live to /apply-progress.
+        // Heavy walks wrapped in spawn_blocking; result is inspected (no silent discard).
+        // Atom ics updated from blocking task for live /apply-progress + oob render.
         *prog.phase.lock().unwrap() = "scanning".to_string();
         let pth1 = pth.clone();
         let fs1 = fs.clone();
         let prog1 = prog.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let count_res = tokio::task::spawn_blocking(move || {
             fs1.count_applicable_with_live(std::path::Path::new(&pth1), rec, &prog1)
         }).await;
+        match count_res {
+            Ok(Ok(_)) | Ok(Err(_)) => { /* count fn itself pushes errors to progress on problems */ }
+            Err(_) => {
+                // join fail
+                prog.finished.store(true, Ordering::Relaxed);
+                return;
+            }
+        }
         let total = prog.processed.load(Ordering::Relaxed);
         prog.total.store(total, Ordering::Relaxed);
         prog.processed.store(0, Ordering::Relaxed);
@@ -737,10 +746,10 @@ pub(crate) async fn apply_permissions(
                 if let Ok(mut errs) = prog.recent_errors.lock() {
                     errs.push((PathBuf::from(&pth), e.clone()));
                 }
-                let err_text = format!("Apply failed before walking tree: {}", e);
+                // Distinguish: error surfaced from inside walk/apply (not "before").
+                let err_text = format!("Apply error during walk: {}", e);
                 *prog.final_result_text.lock().expect("progress mutex poisoned") = Some(err_text);
                 prog.finished.store(true, Ordering::Relaxed);
-                // Still attempt cache invalidate (no-op) and exit task early.
                 {
                     let fs3 = fs.clone();
                     let p3 = pth.clone();
@@ -751,7 +760,6 @@ pub(crate) async fn apply_permissions(
                 return;
             }
             Err(_e) => {
-                // spawn_blocking join failure
                 prog.finished.store(true, Ordering::Relaxed);
                 return;
             }

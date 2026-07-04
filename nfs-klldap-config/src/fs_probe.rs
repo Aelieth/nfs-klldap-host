@@ -99,9 +99,13 @@ pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> Effectiv
     let manage_gids = share.manage_gids.unwrap_or(true);
     let auto_applied =
         probe_limited && share.enable_acl.is_none() && share.manage_gids.is_none();
-    // Resolve umask: explicit wins; on ACL path default to "0022" (sensible conservative);
-    // on NOACL leave None (never emitted, separation preserved). ACL vs NOACL maintained here + in generate.
-    let umask = share.umask.clone().or_else(|| {
+    // Resolve umask: explicit wins (if valid octal); on ACL path default to "0022".
+    // on NOACL leave None (never emitted). Sanitize to prevent bad emission.
+    fn is_valid_umask(s: &str) -> bool {
+        let t = s.trim();
+        t.len() == 4 && t.starts_with('0') && t[1..].chars().all(|c| matches!(c, '0'..='7'))
+    }
+    let umask = share.umask.as_deref().filter(|u| is_valid_umask(u)).map(|u| u.to_string()).or_else(|| {
         if enable_acl { Some("0022".to_string()) } else { None }
     });
     EffectiveShareFlags {

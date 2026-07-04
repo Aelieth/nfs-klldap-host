@@ -635,12 +635,14 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
 
     // Umask emitted inside FSAL only on ACL path (even if default). Omitted on NOACL.
     // Short comment: umask controls mode &~ for creates; default ACLs on dirs provide inheritance.
+    // Hardened: only emit if looks like valid 0nnn octal; else safe default 0022. Bad explicit never emits garbage like 'Umask = ;'.
+    fn is_valid_umask(s: &str) -> bool {
+        let t = s.trim();
+        t.len() == 4 && t.starts_with('0') && t[1..].chars().all(|c| matches!(c, '0'..='7'))
+    }
     let umask_line = if eff.enable_acl {
-        if let Some(u) = &eff.umask {
-            format!("        Umask = {};\n", u)
-        } else {
-            "        Umask = 0022;\n".to_string()
-        }
+        let val = eff.umask.as_deref().filter(|u| is_valid_umask(u)).unwrap_or("0022");
+        format!("        Umask = {};\n", val)
     } else {
         String::new()
     };

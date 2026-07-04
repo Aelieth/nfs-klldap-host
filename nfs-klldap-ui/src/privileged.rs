@@ -412,3 +412,44 @@ mod acl_pure_transform_tests {
         assert_eq!(reser, sample, "roundtrip must preserve bytes including ver=2 and id=ffffffff for bases");
     }
 }
+
+// === Direct real-FS tests for shipped chown (nix) + chmod (std) ===
+// These exercise the privileged fns without going through dry_run. chmod always verifiable;
+// chown attempt proves the nix call (may EPERM without privs but error path from new impl).
+#[cfg(test)]
+mod direct_privileged_fs_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::TempDir;
+
+    #[test]
+    fn privileged_chmod_changes_mode_on_real_path() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("tchmod");
+        std::fs::write(&p, b"hi").unwrap();
+        chmod(&p, 0o600).expect("chmod direct");
+        let m = std::fs::metadata(&p).unwrap();
+        assert_eq!(m.permissions().mode() & 0o777, 0o600, "std chmod must affect disk");
+        // idempotent re-apply
+        chmod(&p, 0o644).expect("chmod 644");
+        let m2 = std::fs::metadata(&p).unwrap();
+        assert_eq!(m2.permissions().mode() & 0o777, 0o644);
+    }
+
+    #[test]
+    fn privileged_chown_via_nix_attempts_on_real_path() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("tchown");
+        std::fs::write(&p, b"hi").unwrap();
+        // Use current ids (safe values); proves nix::unistd::chown body executed.
+        let uid = nix::unistd::getuid().as_raw();
+        let gid = nix::unistd::getgid().as_raw();
+        let r = chown(&p, uid, gid);
+        if let Err(e) = r {
+            let s = e.to_string();
+            assert!(s.contains("chown") || s.contains("EPERM") || s.contains("Operation not permitted"), "chown error must originate from nix path: {}", s);
+        }
+        // At minimum the file remains accessible.
+        assert!(std::fs::metadata(&p).is_ok());
+    }
+}

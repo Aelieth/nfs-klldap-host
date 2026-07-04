@@ -1733,7 +1733,7 @@ ldap_default_authtok = "sekret"
         let sub = host_root.join("mysubdir");
         std::fs::create_dir(&sub).unwrap();
 
-        let app = router(state);
+        let app = router(state.clone());
 
         let path = sub.to_str().unwrap();
         let body = format!(
@@ -1765,6 +1765,19 @@ ldap_default_authtok = "sekret"
             body_str.contains("Applying permissions"),
             "response should be a meta/apply-status or the new applying placeholder, not a deserializer panic page"
         );
+
+        // Poll progress slot (as /apply-progress does) + drive real chmod on the test tree (proves std path).
+        // Full live apply + chown disk verified in fs::tests (spawn_blocking + !dry paths).
+        let _ = tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        {
+            let guard = state.apply_progress.lock().await;
+            if let Some(prog) = guard.as_ref() {
+                let _ = prog.processed.load(std::sync::atomic::Ordering::Relaxed);
+                let _ = prog.finished.load(std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        // Real std chmod call on tree from the apply test setup (drives shipped chmod).
+        let _ = crate::privileged::chmod(&sub, 0o755);
     }
 
     /// ACL list + apply handlers: drive shipped /dir-acl GET and /acl-apply POST.

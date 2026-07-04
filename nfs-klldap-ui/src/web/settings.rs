@@ -200,6 +200,7 @@ struct ShareFormRow {
     read_access_policy: Option<String>,
     manage_gids_expiration: Option<u64>,
     ganesha_path: Option<String>,
+    umask: Option<String>,
 }
 
 /// Template row for server-rendered shares in structured editor.
@@ -537,6 +538,10 @@ fn collect_shares_from_structured_form(
                 } else {
                     None
                 };
+                let umask = extra
+                    .get(&format!("share_umask_{}", idx))
+                    .cloned()
+                    .filter(|s| !s.trim().is_empty());
                 share_rows.push(ShareFormRow {
                     idx,
                     name,
@@ -553,6 +558,7 @@ fn collect_shares_from_structured_form(
                     read_access_policy,
                     manage_gids_expiration,
                     ganesha_path,
+                    umask,
                 });
             }
         }
@@ -581,7 +587,7 @@ fn collect_shares_from_structured_form(
             read_access_policy: r.read_access_policy,
             manage_gids_expiration: r.manage_gids_expiration,
             ganesha_path: r.ganesha_path,
-            umask: None,  // structured form does not yet surface umask (minimal; explicit in raw TOML ok)
+            umask: r.umask,
         })
         .collect()
 }
@@ -1231,6 +1237,7 @@ pub(crate) async fn settings_save_shares(
     let mut new_shares = collect_shares_from_structured_form(&form.extra);
 
     // Disabled Pseudo inputs are not posted; retain explicit export_path from prior TOML.
+    // Also carry umask (if present in raw TOML) so structured save does not clobber it.
     for (idx, new_share) in new_shares.iter_mut().enumerate() {
         if new_share.export_path.is_none() && share_export_path_explicit_in_raw(&doc, idx) {
             let old = old_cfg
@@ -1239,6 +1246,15 @@ pub(crate) async fn settings_save_shares(
                 .or_else(|| old_cfg.shares.iter().find(|s| s.name == new_share.name));
             if let Some(old) = old {
                 new_share.export_path = old.export_path.clone();
+            }
+        }
+        if new_share.umask.is_none() {
+            let old = old_cfg
+                .shares
+                .get(idx)
+                .or_else(|| old_cfg.shares.iter().find(|s| s.name == new_share.name));
+            if let Some(old) = old {
+                new_share.umask = old.umask.clone();
             }
         }
     }

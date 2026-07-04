@@ -425,16 +425,15 @@ pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool
     let root_gl_ok = probe_grouplist_via_socket("root")
         .as_ref()
         .is_some_and(|g| g.contains(&0));
+    #[allow(clippy::needless_borrow)]
     let user_gl_ok = probe_grouplist_via_socket(&user_short).is_some();
     let (short_contract_ok, short_contract_msg) =
         evaluate_short_name_getgrouplist_contract(&principals.user, &nss_env, 3);
     msgs.push(format!(
         "synthetic-getgrouplist: root_ok={root_gl_ok} user({user_short})_ok={user_gl_ok} {short_contract_msg}"
     ));
-    if sock_available {
-        if !root_gl_ok || !user_gl_ok {
-            ok = false;
-        }
+    if sock_available && (!root_gl_ok || !user_gl_ok) {
+        ok = false;
     }
     if !short_contract_ok {
         ok = false;
@@ -466,6 +465,7 @@ pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool
                 .map(|(k, v)| (std::ffi::OsString::from(k), std::ffi::OsString::from(v)))
                 .collect();
             let root_seen = probe_id_g_under_env("root", &envp);
+            #[allow(clippy::needless_borrow)]
             let user_seen = probe_id_g_under_env(&user_short, &envp);
             msgs.push(format!(
                 "ganesha-seen-getgrouplist: root={root_seen:?} user({user_short})={user_seen:?}"

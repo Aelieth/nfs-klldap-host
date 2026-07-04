@@ -330,7 +330,7 @@ pub fn evaluate_nss_contract(
 }
 
 fn ld_preload_for_ganesha_nss() -> PathBuf {
-    let nss = resolve_nss_wrapper_so().unwrap_or_else(PathBuf::new);
+    let nss = resolve_nss_wrapper_so().unwrap_or_default();
     crate::ganesha_getgrouplist::ld_preload_chain_for_ganesha(&nss)
 }
 

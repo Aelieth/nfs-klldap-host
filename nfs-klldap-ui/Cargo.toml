@@ -57,7 +57,7 @@ urlencoding = { workspace = true }
 walkdir = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true, features = ["fs"] }
+nix = { workspace = true, features = ["fs", "user"] }
 libc = "0.2"
 
 [dev-dependencies]

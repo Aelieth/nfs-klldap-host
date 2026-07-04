@@ -201,7 +201,7 @@ Do not set compose `user:` unless you have a specific reason — pid 1 must mana
 
 ## Running Ganesha in Docker against the host filesystem (capabilities, dbus, rpcbind, pitfalls)
 
-This project exports real directories from the Docker *host* via Ganesha VFS inside the container. The WebUI also performs direct recursive `chown`/`chmod` on those trees (as root, under an allow-list from `[[shares]].host_path`). The following is the distilled guidance after review of Ganesha container patterns, Fedora packaging, Ganesha core config man pages, and practical bind-mount/UID realities.
+This project exports real directories from the Docker *host* via Ganesha VFS inside the container. The WebUI also performs direct recursive `chown`/`chmod` (nix::unistd + std fs; walks via spawn_blocking) on those trees (as root, under an allow-list from `[[shares]].host_path`). Umask for creates is emitted on ACL path only (see ganesha-architecture.md). The following is the distilled guidance after review of Ganesha container patterns, Fedora packaging, Ganesha core config man pages, and practical bind-mount/UID realities.
 
 ### Core contract (unchanged but worth repeating)
 - `host_path` values in `nfs-klldap.conf` (and the UI) are **absolute paths on the Docker host** (unchanged by this layout).

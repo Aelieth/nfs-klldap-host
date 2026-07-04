@@ -581,6 +581,7 @@ fn collect_shares_from_structured_form(
             read_access_policy: r.read_access_policy,
             manage_gids_expiration: r.manage_gids_expiration,
             ganesha_path: r.ganesha_path,
+            umask: None,  // structured form does not yet surface umask (minimal; explicit in raw TOML ok)
         })
         .collect()
 }

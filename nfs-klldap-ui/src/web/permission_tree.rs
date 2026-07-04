@@ -595,7 +595,7 @@ pub(crate) async fn search_groups(
     Html(html)
 }
 
-// Core handler that applies permission changes.
+// Core handler that applies permission changes (spawns blocking walks for live progress in apply log).
 
 pub(crate) async fn apply_permissions(
     State(state): State<AppState>,
@@ -709,19 +709,30 @@ pub(crate) async fn apply_permissions(
     let rec = form.recursive;
     let prog = progress.clone();
     tokio::spawn(async move {
-        // Count-as-you-go phase gives immediate visible feedback ("scanned N.
+        // Count-as-you-go phase gives immediate visible feedback ("scanned N").
+        // Heavy walks (WalkDir + syscalls) wrapped in spawn_blocking; atomics visible live to /apply-progress.
         *prog.phase.lock().unwrap() = "scanning".to_string();
-        let _ = fs.count_applicable_with_live(std::path::Path::new(&pth), rec, &prog);
+        let pth1 = pth.clone();
+        let fs1 = fs.clone();
+        let prog1 = prog.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            fs1.count_applicable_with_live(std::path::Path::new(&pth1), rec, &prog1)
+        }).await;
         let total = prog.processed.load(Ordering::Relaxed);
         prog.total.store(total, Ordering::Relaxed);
         prog.processed.store(0, Ordering::Relaxed);
         *prog.phase.lock().unwrap() = "applying".to_string();
 
-        let apply_res = match fs.apply_permissions_with_progress(
-            std::path::Path::new(&pth), uid, gid, md, rec, &prog,
-        ) {
-            Ok(r) => r,
-            Err(e) => {
+        let pth2 = pth.clone();
+        let fs2 = fs.clone();
+        let prog2 = prog.clone();
+        let apply_res = match tokio::task::spawn_blocking(move || {
+            fs2.apply_permissions_with_progress(
+                std::path::Path::new(&pth2), uid, gid, md, rec, &prog2,
+            )
+        }).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
                 prog.error_count.fetch_add(1, Ordering::Relaxed);
                 if let Ok(mut errs) = prog.recent_errors.lock() {
                     errs.push((PathBuf::from(&pth), e.clone()));
@@ -731,22 +742,27 @@ pub(crate) async fn apply_permissions(
                 prog.finished.store(true, Ordering::Relaxed);
                 // Still attempt cache invalidate (no-op) and exit task early.
                 {
-                    let fs2 = fs.clone();
-                    let p2 = pth.clone();
+                    let fs3 = fs.clone();
+                    let p3 = pth.clone();
                     tokio::spawn(async move {
-                        fs2.invalidate_path(std::path::Path::new(&p2));
+                        fs3.invalidate_path(std::path::Path::new(&p3));
                     });
                 }
+                return;
+            }
+            Err(_e) => {
+                // spawn_blocking join failure
+                prog.finished.store(true, Ordering::Relaxed);
                 return;
             }
         };
 
         // Existing background cache invalidation (moved inside the task).
         {
-            let fs2 = fs.clone();
-            let p2 = pth.clone();
+            let fs_i = fs.clone();
+            let p_i = pth.clone();
             tokio::spawn(async move {
-                fs2.invalidate_path(std::path::Path::new(&p2));
+                fs_i.invalidate_path(std::path::Path::new(&p_i));
             });
         }
 
@@ -903,7 +919,7 @@ pub(crate) async fn acl_apply(
     let id: u32 = form.id.trim().parse().or_else(|_| {
         // fallback from selected if single
         if let Some(first) = form.selected.split(',').next() {
-            if let Some(num) = first.split(':').last() {
+            if let Some(num) = first.split(':').next_back() {
                 return num.trim().parse();
             }
         }
@@ -911,7 +927,7 @@ pub(crate) async fn acl_apply(
     }).unwrap_or(0);
 
     if id == 0 && op != "delete" {
-        let fb = format!(r#"<div style="color:var(--danger-text);font-size:0.7em;">Invalid principal id</div>"#);
+        let fb = r#"<div style="color:var(--danger-text);font-size:0.7em;">Invalid principal id</div>"#.to_string();
         return Ok(Html(format!("{}\n{}", fb, render_apply_status_oob("acl: invalid id", "error", false))));
     }
 
@@ -934,7 +950,7 @@ pub(crate) async fn acl_apply(
             for tok in form.selected.split(',') {
                 let t = tok.trim();
                 if t.is_empty() { continue; }
-                let num: u32 = t.split(':').last().unwrap_or("0").trim().parse().unwrap_or(0);
+                let num: u32 = t.split(':').next_back().unwrap_or("0").trim().parse().unwrap_or(0);
                 if num > 0 {
                     if t.starts_with('g') || t.starts_with("group") {
                         ks.push(crate::privileged::AclEntryKind::Group(num));

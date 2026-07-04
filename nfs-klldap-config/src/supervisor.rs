@@ -1188,7 +1188,7 @@ while :; do :; done
         if self.krb5_shares_enabled() {
             if let Some(ref c) = cfg {
                 if !ldap_bind_configured(c)
-                    && !std::env::var("NFS_KLLDAP_ALLOW_LDAP_DEGRADED").is_ok()
+                    && std::env::var("NFS_KLLDAP_ALLOW_LDAP_DEGRADED").is_err()
                 {
                     self.log_warn(
                         "ldap-bind:missing — krb5 shares need LDAP bind creds (set NFS_KLLDAP_ALLOW_LDAP_DEGRADED=1 to override)",
@@ -1239,9 +1239,10 @@ while :; do :; done
     }
 
     /// Post-start readiness: exercise (under the injected ganesha env) id -G equiv (getgrouplist test)
-    /// + idhelper socket GRPS + GROUPLIST for root and sample principal. Gates "confirmed" log.
+    ///   + idhelper socket GRPS + GROUPLIST for root and sample principal. Gates "confirmed" log.
+    ///
     /// After adopt, always re-dumps /proc daemon env diagnostic. Success required for clean ready (AC1/A/C/D).
-    /// Returns true if a confirmed (or final) success state was reached (or probe mode where we consider it ready).
+    ///   Returns true if a confirmed (or final) success state was reached (or probe mode where we consider it ready).
     fn wait_for_ganesha_readiness(&mut self) -> bool {
         if self.env.supervise_probe
             || self.env.supervise_wizard_probe

@@ -241,6 +241,11 @@ pub struct Share {
     pub read_access_policy: Option<String>,
     pub manage_gids_expiration: Option<u64>, // further ACL
     pub ganesha_path: Option<String>,
+    /// Umask (octal e.g. "0022") emitted *inside* FSAL block on ACL path only.
+    /// Default "0022" sensible for creation; pairs with directory default ACLs.
+    /// Omitted on NOACL path to preserve separation (host umask governs).
+    /// Addresses common ACL+umask gotcha for new NFS file inheritance.
+    pub umask: Option<String>,
 }
 
 /// Derive the Ganesha NFSv4 Pseudo path from `export_path` or `/{name}` (0.9.40-style).
@@ -271,6 +276,7 @@ impl Default for Share {
             read_access_policy: None,
             manage_gids_expiration: None,
             ganesha_path: None,
+            umask: None,
         }
     }
 }

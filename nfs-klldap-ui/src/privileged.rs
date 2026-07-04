@@ -1,5 +1,5 @@
 //! Privileged chown/chmod on bind-mounted share trees after allow-list checks.
-//! Only called from fs::FsManager::apply_*. WalkDir skips symlinks (see.
+//! Only called from fs::FsManager::apply_*. WalkDir skips symlinks.
 //! Also implements ACL read + mutation using pure-Rust libc xattr on
 //! system.posix_acl_access (for Ganesha 9.6 ACL export path). No external setfacl/getfacl.
 
@@ -8,11 +8,19 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 // libc for direct getxattr/setxattr syscalls (pure Rust FFI, no shell, no additional high-level crate).
+#[allow(clippy::single_component_path_imports)]
 #[cfg(unix)]
 use libc;
 
+// chown uses nix::unistd (requires "user" feature) for direct syscall; keeps error shape
+// compatible with prior std::os::unix::fs::chown. chmod stays on std for mode bits.
 pub fn chown(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
-    std::os::unix::fs::chown(path, Some(uid), Some(gid))
+    nix::unistd::chown(
+        path,
+        Some(nix::unistd::Uid::from_raw(uid)),
+        Some(nix::unistd::Gid::from_raw(gid)),
+    )
+    .map_err(|e| std::io::Error::other(format!("chown: {}", e)))
 }
 
 pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
@@ -121,6 +129,7 @@ const ACL_ID_NONE: u32 = 0xffffffff; // used for *_OBJ and MASK and OTHER in the
 
 /// Build the three base entries (user:: / group:: / other::) from the dir's current stat mode bits.
 /// Id for obj entries must be ACL_ID_NONE (0xffffffff).
+#[allow(clippy::unnecessary_cast)]
 fn base_entries_from_stat(path: &Path) -> io::Result<Vec<(u16, u16, u32)>> {
     let meta = std::fs::metadata(path)?;
     let mode = meta.permissions().mode() as u16;

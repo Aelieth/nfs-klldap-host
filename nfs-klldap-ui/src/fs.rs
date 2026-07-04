@@ -1,5 +1,5 @@
-//! FsManager applies chown/chmod on allow-listed share paths.
-//! It translates host paths to container paths via the bind-root model.
+//! FsManager applies direct chown/chmod (via privileged) on allow-listed share paths.
+//! Host-to-container path translation via bind-root model. ACL path vs NOACL kept in config.
 
 #![deny(clippy::unwrap_used)]
 
@@ -285,7 +285,7 @@ impl FsManager {
             .map_err(|e| format!("apply failed: {}", e))
     }
 
-    /// Returns whether this walk entry gets chown/chmod under the options.
+    /// Returns whether this walk entry gets chown/chmod under the options. (short circuit for symlinks)
     fn should_apply_entry(entry: &DirEntry, opts: &ApplyOptions) -> bool {
         let ft = entry.file_type();
         if ft.is_symlink() {
@@ -302,13 +302,14 @@ impl FsManager {
             || (is_file && opts.apply_to_files && depth == 1)
     }
 
-    /// Count-only walk that updates progress.processed and honors cancel.
+    /// Count-only walk that updates progress.processed and honors cancel. Used for scanning phase before apply.
     fn count_tree(
         &self,
         root: &Path,
         opts: &ApplyOptions,
         progress: &ApplyProgress,
     ) -> std::io::Result<usize> {
+        // Walk body is sync; always invoked from spawn_blocking in web handler for async safety.
         let max_d = if opts.recursive { usize::MAX } else { 1 };
 
         let walker = WalkDir::new(root)
@@ -338,7 +339,7 @@ impl FsManager {
         Ok(count)
     }
 
-    /// Applies WalkDir with progress atomics, cancel, and finished flag.
+    /// Applies WalkDir (sync body; caller wraps in spawn_blocking for async). Progress atomics updated live for UI apply log.
     fn apply_tree_with_progress(
         &self,
         root: &Path,
@@ -348,6 +349,7 @@ impl FsManager {
         opts: &ApplyOptions,
         progress: &ApplyProgress,
     ) -> std::io::Result<ApplyResult> {
+        // Sync walk + direct privileged calls. Progress atomics (processed/changed/phase) mutated here for live UI feedback.
         let mut result = ApplyResult::default();
 
         let max_d = if opts.recursive { usize::MAX } else { 1 };
@@ -901,5 +903,36 @@ mod tests {
         let res = fs.apply_acl_mod(Path::new("/evil"), crate::privileged::AclModification::Remove { kinds: vec![] });
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("outside allowed"));
+    }
+
+    // Live progress test: depth>=2 tree; count_applicable_with_live mutates atomics visibly
+    // (exercises the path used by spawn_blocking + apply log). Direct call on shipped entry.
+    #[test]
+    fn count_applicable_live_progress_on_depth_ge2_tree() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("deeptree");
+        // depth 0: root, depth1: d1, depth2: d1/d2, + files
+        std::fs::create_dir_all(root.join("d1/d2")).unwrap();
+        std::fs::write(root.join("f0.txt"), b"x").unwrap();
+        std::fs::write(root.join("d1/f1.txt"), b"y").unwrap();
+        std::fs::write(root.join("d1/d2/f2.txt"), b"z").unwrap();
+
+        let logical = Path::new("/rootbind");
+        let cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
+        let mut cfg = cfg;
+        cfg.storage.container_root = root.to_string_lossy().into_owned();
+        cfg.shares[0].name.clear();
+
+        let fs = FsManager::new(cfg);
+        let prog = ApplyProgress::default();
+        let total = fs.count_applicable_with_live(&logical, true /*recursive*/, &prog).expect("count live");
+        // root dir + d1 + d2 + 3 files = 6
+        assert!(total >= 5, "deep tree must count >=5 entries");
+        assert!(prog.processed.load(Ordering::Relaxed) >= 5, "processed must be updated live by count");
+        assert!(prog.total.load(Ordering::Relaxed) == 0, "count does not set total (caller does)");
+        // Also exercise non-recursive path updates processed
+        let prog2 = ApplyProgress::default();
+        let _ = fs.count_applicable_with_live(&logical, false, &prog2).expect("nonrec");
+        assert!(prog2.processed.load(Ordering::Relaxed) >= 1, "non-recursive must process at least root");
     }
 }

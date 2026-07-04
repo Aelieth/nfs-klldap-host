@@ -49,3 +49,14 @@ Preflight identity uses `ganesha_identity_pipeline` (tempdir materialize + nss c
 | vfat/fat, ntfs | NOACL path (auto) |
 
 Explicit `enable_acl` / `manage_gids` in nfs-klldap.conf override probe defaults. On limited filesystems (detected via mountinfo or ganesha_path), NOACL settings applied automatically; capable default to full native. The two paths coexist. Diagnose with `ganesha_log_contract`: ACL-path NOTSUPP vs identity-path NOTSUPP.
+
+## NFS create inheritance, umask, and ACL default entries
+
+New files/dirs created by NFS clients inherit mode bits from (mode & ~umask) + any applicable default ACLs on the parent dir. Ganesha VFS honors `Umask` inside the per-EXPORT `FSAL { ... }` block.
+
+- On ACL path (enable_acl or auto-capable): generator emits `Umask = 0022;` (or explicit share.umask) inside FSAL. This is the default; set e.g. `umask = "0002"` under [[shares]] for group-writable new files.
+- On NOACL path: Umask line is omitted (host-side umask + FS semantics govern).
+- Common gotcha: setting named ACLs (via UI or setfacl) on a dir does *not* automatically grant inheritance to new children unless default ACL entries are also present (`setfacl -d -m u:1234:rwX,g:5678:rwX ... dir`). Umask still masks the base mode. The UI chown/chmod and ACL tools operate on existing entries; use them + client tools or post-create hooks for defaults.
+- Direct Rust chown (nix::unistd) / chmod (std fs) used in UI apply; recursive walks run via spawn_blocking for responsiveness while live progress (scanning/applying) feeds the Apply Log via atomics + /apply-progress polling.
+
+See also nfs-klldap-ui for permission apply and config generation separation of ACL/NOACL. Short comments in code mark the branches.

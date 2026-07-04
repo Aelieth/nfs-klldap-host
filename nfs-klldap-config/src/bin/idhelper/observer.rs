@@ -378,7 +378,7 @@ fn extract_user_from_getgrouplist_line(line: &str) -> Option<String> {
 fn extract_errno(line: &str) -> Option<u32> {
     if let Some(i) = line.find("errno:") {
         let rest = &line[i+6..];
-        return rest.split(|c:char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).next().and_then(|s| s.parse().ok());
+        return rest.split(|c:char| !c.is_ascii_digit()).find(|s| !s.is_empty()).and_then(|s| s.parse().ok());
     }
     None
 }
@@ -386,7 +386,7 @@ fn extract_errno(line: &str) -> Option<u32> {
 fn extract_ngroups(line: &str) -> Option<u32> {
     if let Some(i) = line.find("ngroups:") {
         let rest = &line[i+8..];
-        return rest.split(|c:char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).next().and_then(|s| s.parse().ok());
+        return rest.split(|c:char| !c.is_ascii_digit()).find(|s| !s.is_empty()).and_then(|s| s.parse().ok());
     }
     None
 }

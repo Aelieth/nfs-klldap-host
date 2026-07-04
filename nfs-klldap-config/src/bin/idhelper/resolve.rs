@@ -1,5 +1,7 @@
 //! Resolves principals via NSS, LDAP, and the idhelper cache.
 
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+
 use crate::dlog;
 use std::path::Path;
 use std::process::Command;

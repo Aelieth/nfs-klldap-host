@@ -21,6 +21,9 @@ pub struct EffectiveShareFlags {
     pub manage_gids: bool,
     /// True when probe (not explicit TOML) drove the safe defaults.
     pub auto_applied: bool,
+    /// Resolved umask string (e.g. "0022") for ACL-path FSAL emission only.
+    /// Carried here for symmetry with enable_acl; resolved from share or default.
+    pub umask: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,10 +99,16 @@ pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> Effectiv
     let manage_gids = share.manage_gids.unwrap_or(true);
     let auto_applied =
         probe_limited && share.enable_acl.is_none() && share.manage_gids.is_none();
+    // Resolve umask: explicit wins; on ACL path default to "0022" (sensible conservative);
+    // on NOACL leave None (never emitted, separation preserved). ACL vs NOACL maintained here + in generate.
+    let umask = share.umask.clone().or_else(|| {
+        if enable_acl { Some("0022".to_string()) } else { None }
+    });
     EffectiveShareFlags {
         enable_acl,
         manage_gids,
         auto_applied,
+        umask,
     }
 }
 

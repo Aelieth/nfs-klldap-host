@@ -582,7 +582,8 @@ EXPORT_DEFAULTS {{
 }
 
 /// ACL-primary vs NOACL (core, testable w/ Share+FsCaps). Manage_Gids + new MGE independent.
-pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String) {
+/// Umask line returned for FSAL emission on ACL only (separation preserved).
+pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (String, String, String, String) {
     let eff = compute_effective_flags(share, caps);
     // Manage_Gids line is common to both paths (explicit or default true).
     let manage_gids_line = if eff.manage_gids {
@@ -592,6 +593,7 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
     };
 
     // ACL path is primary: empty disable. NOACL compat folded to explicit only.
+    // Separation: umask/ MGE / full features only on enable_acl branch.
     let (disable_acl_line, auto_comment) = if !eff.enable_acl {
         // NOACL / limited path (0.9.40-style for disk access compat only).
         let disable = "    Disable_ACL = true;\n".to_string();
@@ -630,7 +632,19 @@ pub(crate) fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) 
         };
         (String::new(), comment)
     };
-    (disable_acl_line, manage_gids_line, auto_comment)
+
+    // Umask emitted inside FSAL only on ACL path (even if default). Omitted on NOACL.
+    // Short comment: umask controls mode &~ for creates; default ACLs on dirs provide inheritance.
+    let umask_line = if eff.enable_acl {
+        if let Some(u) = &eff.umask {
+            format!("        Umask = {};\n", u)
+        } else {
+            "        Umask = 0022;\n".to_string()
+        }
+    } else {
+        String::new()
+    };
+    (disable_acl_line, manage_gids_line, umask_line, auto_comment)
 }
 
 /// Indented EXPORT-level Read_Access_Check_Policy line (or empty when omitted).
@@ -699,7 +713,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
 
         let caps = if let Some(ref c) = mountinfo_once { probe_from_mountinfo(c, Path::new(&path)) } else { probe_fs_capabilities(Path::new(&path)).unwrap_or_else(|_| FsCapabilities{fstype:"unknown".into(),mount_options:vec![],acl_capable:true}) };
         let eff = compute_effective_flags(share, &caps);
-        let (disable_acl_line, manage_gids_line, auto_comment) =
+        let (disable_acl_line, manage_gids_line, umask_line, auto_comment) =
             export_fs_directives(share, &caps);
         let read_access_line = export_read_access_line(share, &caps);
         // Further ACL option only on ACL path (per spec)
@@ -730,7 +744,7 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
     Squash = {};
 {manage_gids_line}{mge_line}{read_access_line}{pref_read_line}{pref_write_line}{client_block}    FSAL {{
         Name = VFS;
-    }}
+{umask_line}    }}
 }}
 "#,
             share.name,
@@ -745,7 +759,8 @@ fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(
             read_access_line = read_access_line,
             pref_read_line = pref_read_line,
             pref_write_line = pref_write_line,
-            client_block = client_block
+            client_block = client_block,
+            umask_line = umask_line
         );
 
         let filename = fragment_basename(i, &share.name);
@@ -986,7 +1001,7 @@ mod tests {
             mount_options: vec![],
             acl_capable: true,
         };
-        let (_, manage_line, _) = export_fs_directives(&share, &caps);
+        let (_, manage_line, _, _) = export_fs_directives(&share, &caps);
         assert!(manage_line.contains("Manage_Gids = false;"));
     }
 
@@ -1004,7 +1019,7 @@ mod tests {
         };
         let eff = crate::compute_effective_flags(&share, &caps);
         eprintln!("FRESH_CONSUMER_OUTSIDE_HARNESS: eff.enable_acl={} eff.manage_gids={} (from explicit override on noacl caps)", eff.enable_acl, eff.manage_gids);
-        let (dis, man, _c) = export_fs_directives(&share, &caps);
+        let (dis, man, _u, _c) = export_fs_directives(&share, &caps);
         eprintln!("FRESH_CONSUMER_DIRECTIVES: dis='{}' man='{}'", dis.trim(), man.trim());
         assert!(dis.contains("Disable_ACL = true;"));
         assert!(man.contains("Manage_Gids = true;"), "explicit override must win on NOACL path: {}", man);
@@ -1018,13 +1033,14 @@ mod tests {
             mount_options: vec!["noacl".into()],
             acl_capable: false,
         };
-        let (disable_block, manage_line, comment) = export_fs_directives(&share, &caps);
+        let (disable_block, manage_line, umask_line, comment) = export_fs_directives(&share, &caps);
         let read_line = export_read_access_line(&share, &caps);
         // NOACL path: 0.9.40 simple settings + explicit Read_Access_Check_Policy = pre for noacl mount
         assert!(disable_block.contains("Disable_ACL = true;"));
         assert!(!disable_block.contains("Enable_ACL"));
         assert!(manage_line.contains("Manage_Gids = true;"));
         assert!(read_line.contains("Read_Access_Check_Policy = pre;"), "noacl must set pre: {}", read_line);
+        assert!(umask_line.is_empty(), "umask omitted on NOACL path");
         assert!(comment.contains("Auto-detected: btrfs"));
         assert!(comment.contains("ACL-dependent NFSv4 ops disabled for compatibility"));
         assert!(!read_line.contains("Read_Access_Check_Policy = post;"));
@@ -1113,10 +1129,10 @@ mod tests {
         // Direct on Share+Fs + real generate_all + frag asserts (shipped path)
         let mut sa = crate::Share::default(); sa.name="acl".into(); sa.enable_acl=Some(true); sa.host_path="/export/a".into(); sa.manage_gids_expiration = Some(1800);
         let ca = crate::FsCapabilities { fstype:"ext4".into(), mount_options:vec![], acl_capable:true };
-        let (d,_ ,_) = export_fs_directives(&sa, &ca); assert!(d.is_empty());
+        let (d,_,_,_) = export_fs_directives(&sa, &ca); assert!(d.is_empty());
         let mut sn = crate::Share::default(); sn.name="no".into(); sn.enable_acl=Some(false); sn.host_path="/export/n".into();
         let cn = crate::FsCapabilities { fstype:"btrfs".into(), mount_options:vec!["noacl".into()], acl_capable:false };
-        let (dn,_,_) = export_fs_directives(&sn, &cn); assert!(dn.contains("Disable_ACL = true;"));
+        let (dn,_,_,_) = export_fs_directives(&sn, &cn); assert!(dn.contains("Disable_ACL = true;"));
         let mut cfg = crate::NfsKlldapConfig {
             ldap_uri: "ldaps://k.test:6360".into(),
             sssd: crate::SssdSection { ldap_default_bind_dn: "uid=admin,ou=people,dc=test,dc=com".into(), ldap_default_authtok: "sekret".into(), ..Default::default() },
@@ -1139,10 +1155,12 @@ mod tests {
         assert!(!fa.contains("Disable_ACL"), "ACL frag");
         assert!(fa.contains("Pseudo = /acl;"));
         assert!(fa.contains("Manage_Gids_Expiration = 1800;"), "MGE only on ACL");
+        assert!(fa.contains("Umask = 0022;"), "default umask emitted inside FSAL on ACL");
         let fn_ = std::fs::read_to_string(p.exports_dir.join("11-no.conf")).unwrap_or_default();
         assert!(fn_.contains("Disable_ACL = true;"), "NOACL frag");
         assert!(fn_.contains("Pseudo = /no;"));
         assert!(!fn_.contains("Manage_Gids_Expiration"), "no MGE on NOACL");
+        assert!(!fn_.contains("Umask"), "umask omitted on NOACL");
     }
 
     #[test]

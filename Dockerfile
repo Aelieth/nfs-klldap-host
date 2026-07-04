@@ -115,7 +115,8 @@ RUN set -eux; \
         inotify-tools procps iproute2 netcat-openbsd \
         ldap-utils \
         libnss-wrapper libnss-extrausers \
-        openssl hostname; \
+        openssl hostname \
+        acl; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 RUN set -eux; \

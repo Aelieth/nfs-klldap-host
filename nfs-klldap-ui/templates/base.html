@@ -368,6 +368,37 @@
             color: var(--text);
         }
 
+        /* Larger ACL Permissions button (distinct, primary action for ACL focus). Compact. */
+        .dir-meta-inner .acl-btn {
+            font-size: 0.78em;
+            padding: 2px 9px;
+            margin-left: 4px;
+            cursor: pointer;
+            border: 1px solid var(--accent);
+            background: var(--selected-bg);
+            border-radius: 3px;
+            white-space: nowrap;
+            color: var(--text);
+            font-weight: 600;
+        }
+        .dir-meta-inner .acl-btn:hover {
+            background: var(--accent-light);
+        }
+
+        /* ACL boxes inside expanded panel (compact lists) */
+        .acl-box { font-size: 0.75em; }
+        .acl-list .acl-item {
+            padding: 1px 2px;
+            cursor: default;
+            white-space: nowrap;
+        }
+        .acl-list .acl-item.selected {
+            background: var(--accent-light);
+            outline: 1px solid var(--accent);
+        }
+        .acl-modebar { min-height: 1.1em; }
+        .acl-ops button { min-width: 52px; text-align:left; }
+
         /* Apply Log: permanently attached to bottom-right, out of the way of share lists and directory tree.
            Fixed positioning keeps it docked; scrolls internally if long. */
         .apply-status {
@@ -642,6 +673,10 @@
             // Prefer data-path (safe, HTML-escaped, no JS string interpolation needed)
             const path = btn.dataset.path || meta.dataset.path || btn.getAttribute('data-path');
             if (!path) return;
+            // Guard: collapse any open ACL panel to avoid collision with POSIX edit mode
+            const aclc = meta.querySelector('.acl-container');
+            if (aclc) { aclc.style.display='none'; aclc.innerHTML=''; }
+            clearAclEditState(); currentAclPath = null;
             setEditMode(true, path);
             htmx.ajax('GET', '/dir-editor?path=' + encodeURIComponent(path), {
                 target: meta,
@@ -699,6 +734,358 @@
                 });
             }
         };
+
+        // === ACL Permissions UI: compact per-dir expand with Users/Groups boxes + 5-button edit mode ===
+        // Follows existing styling (compact, card-bg, small fonts, tooltips). Separate from POSIX edit.
+        // State: per-dir but only one active ACL edit at a time. Apply feeds the shared Apply Log.
+        let currentAclPath = null;
+        let aclBoxMode = null; // 'user' or 'group' when in box edit, else null
+        let aclSubMode = null; // 'add'|'edit'|'delete' when a primary action selected
+        let aclStaged = null;  // for add: {type, id, label, perms}
+        let aclEditSel = null; // for edit: {type, id, origPerms, newPerms}
+        let aclDeleteSels = []; // array of {type, id} for multi (shift/ctrl)
+
+        function clearAclEditState() {
+            aclBoxMode = null;
+            aclSubMode = null;
+            aclStaged = null;
+            aclEditSel = null;
+            aclDeleteSels = [];
+            // remove any temp add/edit controls
+            document.querySelectorAll('.acl-add-ctl, .acl-edit-ctl, .acl-ops').forEach(el => el.remove());
+            document.querySelectorAll('.acl-item.selected').forEach(el => el.classList.remove('selected'));
+        }
+
+        function setAclModebar(container, text) {
+            let bar = container.querySelector('.acl-modebar');
+            if (bar) {
+                bar.style.display = text ? 'block' : 'none';
+                bar.textContent = text || '';
+            }
+        }
+
+        window.toggleAclPanel = function(btn) {
+            const meta = btn.closest('.dir-meta');
+            if (!meta) return;
+            const path = btn.dataset.path || meta.dataset.path;
+            if (!path) return;
+            const cont = meta.querySelector('.acl-container');
+            if (!cont) return;
+
+            if (cont.style.display !== 'none' && cont.innerHTML.trim()) {
+                cont.style.display = 'none';
+                cont.innerHTML = '';
+                if (currentAclPath === path) { clearAclEditState(); currentAclPath = null; }
+                return;
+            }
+
+            // load fresh list (always view mode start)
+            clearAclEditState();
+            currentAclPath = path;
+            cont.style.display = '';
+            htmx.ajax('GET', '/dir-acl?path=' + encodeURIComponent(path), {
+                target: cont,
+                swap: 'innerHTML'
+            }).then(() => {
+                attachAclListHandlers(cont, path);
+            });
+        };
+
+        function attachAclListHandlers(panel, path) {
+            // clicking items in view does nothing (selection only in modes)
+            panel.querySelectorAll('.acl-item').forEach(item => {
+                item.addEventListener('click', (e) => {
+                    if (!aclBoxMode) return;
+                    // selection logic handled in mode buttons below
+                });
+            });
+        }
+
+        // Render the 5 right-side buttons for a box; placed via flex or append to box.
+        // Now takes explicit path (from panel data) to avoid undefined closure.
+        function renderAclOps(boxEl, type, pathForApply) {
+            // remove prior
+            const prior = boxEl.parentNode.querySelector('.acl-ops');
+            if (prior) prior.remove();
+
+            const ops = document.createElement('div');
+            ops.className = 'acl-ops';
+            ops.style.cssText = 'display:flex; flex-direction:column; gap:2px; margin-left:4px; font-size:0.68em;';
+
+            const mkBtn = (label, onClick, disabled=false, primary=false) => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.textContent = label;
+                b.style.cssText = `font-size:0.68em; padding:1px 5px; ${primary ? 'font-weight:700; border:1px solid var(--accent);' : ''}`;
+                if (disabled) b.disabled = true;
+                b.onclick = onClick;
+                return b;
+            };
+
+            const addDisabled = aclSubMode && aclSubMode !== 'add';
+            const editDisabled = aclSubMode && aclSubMode !== 'edit';
+            const delDisabled = aclSubMode && aclSubMode !== 'delete';
+            const bAdd = mkBtn('Add (User or Group)', () => enterAclSubMode(boxEl, type, 'add', pathForApply), !!addDisabled, aclSubMode==='add');
+            const bEdit = mkBtn('Edit (User or Group)', () => enterAclSubMode(boxEl, type, 'edit', pathForApply), !!editDisabled, aclSubMode==='edit');
+            const bDel = mkBtn('Delete (User or Group)', () => enterAclSubMode(boxEl, type, 'delete', pathForApply), !!delDisabled, aclSubMode==='delete');
+            const bApply = mkBtn('Apply', () => doAclApply(boxEl, type, pathForApply), !isAclApplyReady(type));
+            const bCancel = mkBtn('Cancel', () => exitAclBoxEdit(boxEl, type, panelFromBox(boxEl)), false);
+
+            ops.appendChild(bAdd);
+            ops.appendChild(bEdit);
+            ops.appendChild(bDel);
+            ops.appendChild(bApply);
+            ops.appendChild(bCancel);
+
+            // place on right of box (insert after list)
+            const list = boxEl.querySelector('.acl-list');
+            if (list && list.parentNode) {
+                list.parentNode.insertBefore(ops, list.nextSibling);
+            } else {
+                boxEl.appendChild(ops);
+            }
+            // hide the original box Edit while ops visible
+            const ed = boxEl.querySelector('.acl-box-edit');
+            if (ed) ed.style.display = 'none';
+            return ops;
+        }
+
+        function panelFromBox(boxEl) {
+            return boxEl.closest('.acl-panel') || boxEl.closest('.acl-container');
+        }
+
+        function isAclApplyReady(typ) {
+            if (aclSubMode === 'add') return !!(aclStaged && aclStaged.type === typ && aclStaged.id);
+            if (aclSubMode === 'edit') return !!(aclEditSel && aclEditSel.type === typ && aclEditSel.newPerms && aclEditSel.newPerms !== aclEditSel.origPerms);
+            if (aclSubMode === 'delete') return aclDeleteSels.length > 0;
+            return false;
+        }
+
+        function updateApplyButtons() {
+            document.querySelectorAll('.acl-ops button').forEach(b => {
+                if (b.textContent.startsWith('Apply')) {
+                    const typ = b.closest('.acl-box') ? (b.closest('.acl-box').dataset.aclType || aclBoxMode) : aclBoxMode;
+                    b.disabled = !isAclApplyReady(typ);
+                }
+            });
+        }
+
+        function enterAclSubMode(boxEl, type, sub, pathForApply) {
+            aclBoxMode = type;
+            aclSubMode = sub;
+            aclStaged = null;
+            aclEditSel = null;
+            aclDeleteSels = [];
+
+            // deactivate other primary buttons visually (by re-render)
+            const ops = renderAclOps(boxEl, type, pathForApply || currentAclPath); // re-renders with primary highlight
+
+            const list = boxEl.querySelector('.acl-list');
+            if (!list) return;
+            const panel = panelFromBox(boxEl);
+            setAclModebar(panel, sub === 'add' ? 'Add: pick '+(type==='user'?'user':'group')+' + perms then Apply' : (sub==='edit' ? 'Edit: select entry, change perms, Apply' : 'Delete: ctrl/shift multi-select, Apply'));
+
+            // prepare list for interaction
+            list.querySelectorAll('.acl-item').forEach(it => it.classList.remove('selected'));
+
+            if (sub === 'add') {
+                // inject compact add controls below list (dropdown via fetch reuse of search)
+                const addCtl = document.createElement('div');
+                addCtl.className = 'acl-add-ctl';
+                addCtl.style.cssText = 'margin-top:2px;';
+                const cap = type === 'user' ? 'user' : 'group';
+                addCtl.innerHTML = `
+                    <input type="text" placeholder="search ${cap} or uid" style="width:78%;font-size:0.9em;" class="acl-add-inp">
+                    <input type="text" placeholder="rwx" value="r-x" size="3" style="font-size:0.9em;width:18%;" class="acl-add-perms">
+                    <div class="suggestions acl-sugg" style="min-width:140px;max-height:90px;"></div>
+                `;
+                list.parentNode.appendChild(addCtl);
+                const inp = addCtl.querySelector('.acl-add-inp');
+                const perminp = addCtl.querySelector('.acl-add-perms');
+                const sugg = addCtl.querySelector('.acl-sugg');
+                let tmr = null;
+                inp.addEventListener('input', () => {
+                    clearTimeout(tmr);
+                    const q = inp.value.trim();
+                    if (!q) { sugg.innerHTML=''; return; }
+                    tmr = setTimeout(() => {
+                        const url = type==='user' ? '/users/search?owner_user=' + encodeURIComponent(q) : '/groups/search?owner_group=' + encodeURIComponent(q);
+                        fetch(url, {credentials:'include'}).then(r=>r.text()).then(html => {
+                            sugg.innerHTML = html;
+                            // wire picks
+                            sugg.querySelectorAll('.suggestion').forEach(s => {
+                                s.onclick = () => {
+                                    const id = s.dataset.uid || s.dataset.gid || '0';
+                                    const lab = (s.textContent||'').trim();
+                                    aclStaged = { type, id: parseInt(id,10)||0, label: lab, perms: perminp.value.trim() || 'r--' };
+                                    inp.value = lab;
+                                    sugg.innerHTML = '';
+                                    updateApplyButtons();
+                                };
+                            });
+                        }).catch(()=>{});
+                    }, 160);
+                });
+                perminp.addEventListener('input', () => {
+                    if (aclStaged) aclStaged.perms = perminp.value.trim();
+                    updateApplyButtons();
+                });
+                // initial apply disabled until pick
+            } else if (sub === 'edit') {
+                // make items single selectable; on pick show inline perms editor
+                list.querySelectorAll('.acl-item').forEach(item => {
+                    item.style.cursor = 'pointer';
+                    item.onclick = (ev) => {
+                        list.querySelectorAll('.acl-item').forEach(i=>i.classList.remove('selected'));
+                        item.classList.add('selected');
+                        const id = parseInt(item.dataset.id || '0',10);
+                        const orig = item.dataset.perms || '---';
+                        aclEditSel = { type, id, origPerms: orig, newPerms: orig };
+                        // inline ctl
+                        let ctl = boxEl.querySelector('.acl-edit-ctl');
+                        if (ctl) ctl.remove();
+                        ctl = document.createElement('div');
+                        ctl.className = 'acl-edit-ctl';
+                        ctl.style.cssText = 'font-size:0.68em;margin-top:1px;';
+                        ctl.innerHTML = `perms: <input size="3" value="${orig}" class="acl-e-perms"> <span style="color:var(--text-light)">change to enable Apply</span>`;
+                        list.parentNode.appendChild(ctl);
+                        const pi = ctl.querySelector('.acl-e-perms');
+                        pi.oninput = () => {
+                            aclEditSel.newPerms = pi.value.trim();
+                            updateApplyButtons();
+                        };
+                        updateApplyButtons();
+                    };
+                });
+            } else if (sub === 'delete') {
+                // multi select with shift/ctrl simulation (simple: click toggles; shift last range)
+                let lastIdx = -1;
+                const items = Array.from(list.querySelectorAll('.acl-item'));
+                items.forEach((item, idx) => {
+                    item.style.cursor = 'pointer';
+                    item.onclick = (ev) => {
+                        const id = parseInt(item.dataset.id||'0',10);
+                        const isSel = item.classList.contains('selected');
+                        if (ev.shiftKey && lastIdx >=0) {
+                            const [a,b] = [Math.min(lastIdx,idx), Math.max(lastIdx,idx)];
+                            for (let i=a; i<=b; i++) {
+                                const it = items[i];
+                                it.classList.add('selected');
+                                const iid = parseInt(it.dataset.id||'0',10);
+                                if (iid && !aclDeleteSels.find(x=>x.id===iid)) aclDeleteSels.push({type, id:iid});
+                            }
+                        } else if (ev.ctrlKey || ev.metaKey) {
+                            if (isSel) {
+                                item.classList.remove('selected');
+                                aclDeleteSels = aclDeleteSels.filter(x=>x.id !== id);
+                            } else {
+                                item.classList.add('selected');
+                                if (id && !aclDeleteSels.find(x=>x.id===id)) aclDeleteSels.push({type,id});
+                            }
+                        } else {
+                            // plain click: toggle single (or start new)
+                            items.forEach(i=>i.classList.remove('selected'));
+                            aclDeleteSels = [];
+                            if (!isSel && id) {
+                                item.classList.add('selected');
+                                aclDeleteSels.push({type, id});
+                            }
+                        }
+                        lastIdx = idx;
+                        updateApplyButtons();
+                    };
+                });
+            }
+            updateApplyButtons();
+        }
+
+        function exitAclBoxEdit(boxEl, type, panel) {
+            clearAclEditState();
+            // restore the list Edit btn, hide ops
+            const ed = boxEl.querySelector('.acl-box-edit');
+            if (ed) ed.style.display = '';
+            const ops = boxEl.parentNode.querySelector('.acl-ops');
+            if (ops) ops.remove();
+            // re-fetch clean list into panel to reset handlers
+            if (panel && currentAclPath) {
+                htmx.ajax('GET', '/dir-acl?path=' + encodeURIComponent(currentAclPath), { target: panel, swap: 'innerHTML' })
+                  .then(() => attachAclListHandlers(panel, currentAclPath));
+            }
+            setAclModebar(panel, '');
+        }
+
+        function doAclApply(boxEl, type, path) {
+            if (!isAclApplyReady(type)) return;
+            let op = aclSubMode;
+            let id = 0, perms = '', sel = '';
+            if (op === 'add' && aclStaged) {
+                id = aclStaged.id; perms = aclStaged.perms || 'r--';
+            } else if (op === 'edit' && aclEditSel) {
+                id = aclEditSel.id; perms = aclEditSel.newPerms;
+            } else if (op === 'delete') {
+                sel = aclDeleteSels.map(s => (s.type==='group'?'g:':'u:') + s.id ).join(',');
+            }
+
+            const formData = new URLSearchParams();
+            formData.set('path', path);
+            formData.set('op', op);
+            formData.set('typ', type);
+            formData.set('id', String(id||''));
+            formData.set('perms', perms);
+            formData.set('selected', sel);
+
+            const panel = panelFromBox(boxEl);
+            // POST, target feedback near, but also oob will hit apply-status
+            fetch('/acl-apply', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: formData.toString(),
+                credentials: 'include'
+            }).then(r => r.text()).then(html => {
+                // show brief feedback inline
+                let fb = document.createElement('div');
+                fb.style.cssText = 'font-size:0.68em;color:var(--success-text);margin:2px 0;';
+                fb.innerHTML = (html.split('\n')[0] || 'Applied');
+                const bar = panel ? panel.querySelector('.acl-modebar') : null;
+                if (bar) { bar.innerHTML = ''; bar.appendChild(fb); }
+                // refresh the acl list view
+                if (panel && currentAclPath) {
+                    setTimeout(() => {
+                        htmx.ajax('GET', '/dir-acl?path=' + encodeURIComponent(currentAclPath), {target: panel, swap:'innerHTML'})
+                          .then(() => {
+                              attachAclListHandlers(panel, currentAclPath);
+                              clearAclEditState();
+                              // restore box edits visible
+                              panel.querySelectorAll('.acl-box-edit').forEach(e=>e.style.display='');
+                          });
+                    }, 120);
+                }
+                // Apply log already updated via oob in response
+            }).catch(e => {
+                if (panel) setAclModebar(panel, 'Apply error: ' + e);
+            });
+        }
+
+        // Public entry from the per-box "Edit" button in the ACL fragment (template onclick).
+        // Surfaces exactly the 5 buttons on the right of the box.
+        window.startAclBoxEdit = function(btn, typ) {
+            if (!currentAclPath) return;
+            const box = btn.closest('.acl-box');
+            if (!box) return;
+            const path = currentAclPath;
+            // Render the 5 buttons (Add/Edit/Delete/Apply/Cancel) to the right of this box.
+            renderAclOps(box, typ, path);
+            aclBoxMode = typ;
+            aclSubMode = null;
+            const panel = panelFromBox(box);
+            setAclModebar(panel, 'Choose action: Add, Edit or Delete then use Apply (or Cancel)');
+            // Clear any prior selections
+            const list = box.querySelector('.acl-list');
+            if (list) list.querySelectorAll('.acl-item').forEach(i => i.classList.remove('selected'));
+        };
+
+        // Also allow clicking ACL button to work even if other meta clicks; extend tree lock guard if needed
+        // (existing currentEditPath / applyInProgress already prevent most during POSIX).
 
         // Clear stale hidden numeric when user edits the visible name/uid field (after a selection)
         function attachEditorInputListeners(metaEl) {
@@ -870,6 +1257,9 @@
             document.body.addEventListener('htmx:afterSwap', function(evt) {
                 const target = evt.detail && evt.detail.target;
                 if (target && target.classList && target.classList.contains('dir-meta')) {
+                    // POSIX swap landed: ensure ACL edit state cleaned (panel was replaced)
+                    clearAclEditState();
+                    currentAclPath = null;
                     if (!target.querySelector('form')) {
                         // If this swap is the *start* of an apply (we just got the placeholder back from /apply),
                         // keep the tree locked and let the progress poller drive the final unlock + refresh later.

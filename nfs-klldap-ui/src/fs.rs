@@ -123,6 +123,35 @@ impl FsManager {
         Some((meta.uid(), meta.gid(), mode))
     }
 
+    /// Returns *named* (non-base) ACL user/group entries for an allowed directory using the
+    /// shipped get_acl (pure libc xattr). Used by ACL UI and direct unit tests.
+    /// Empty list is valid (no named ACL entries). None if outside allowed roots.
+    pub fn get_dir_acl(&self, path: &Path) -> Option<Vec<crate::privileged::AclEntry>> {
+        let normalized = self.normalize_for_matching(path);
+        if !self.is_allowed(&normalized) {
+            return None;
+        }
+        let real = match self.host_path_to_container_path(&normalized) {
+            Ok(p) => p,
+            Err(_) => return None,
+        };
+        crate::privileged::get_acl(&real).ok()
+    }
+
+    /// Applies a single ACL modification (Set one entry or Remove one-or-more) to a real FS path
+    /// under an allowed share root. Returns short success text or error string. Distinct from POSIX apply.
+    /// Directly exercisable from tests and web ACL apply handler.
+    pub fn apply_acl_mod(&self, path: &Path, modification: crate::privileged::AclModification) -> Result<String, String> {
+        let normalized = self.normalize_for_matching(path);
+        if !self.is_allowed(&normalized) {
+            return Err("Path is outside allowed managed roots".into());
+        }
+        let real = self.host_path_to_container_path(&normalized).map_err(|e| e.to_string())?;
+        crate::privileged::apply_acl(&real, modification)
+            .map(|_| "ACL entry updated on disk".to_string())
+            .map_err(|e| format!("ACL apply failed: {}", e))
+    }
+
     /// Immediate child directories only (/fs/children HTMX lazy expand).
     pub fn list_children(&self, path: &Path) -> Option<Vec<DirectoryNode>> {
         let normalized = self.normalize_for_matching(path);
@@ -737,5 +766,140 @@ mod tests {
         // Target/ (dir) + top.txt — not subdir/ nor nested.txt.
         assert_eq!(res.changed, 2, "expected root dir and one immediate file");
         assert!(res.errors.is_empty());
+    }
+
+    // === ACL read/mutation unit tests (shipped entry points, real FS, temp trees) ===
+
+    fn make_test_acl_config_for(tmp_root: &std::path::Path, logical: &str) -> crate::config::Config {
+        let mut cfg = make_test_config_with_shares(&[logical]);
+        cfg.storage.container_root = tmp_root.to_string_lossy().into_owned();
+        if let Some(s0) = cfg.shares.first_mut() {
+            s0.name.clear();
+        }
+        cfg
+    }
+
+    #[test]
+    fn acl_get_returns_empty_for_new_dir_no_named_entries() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("aclroot");
+        std::fs::create_dir_all(&root).unwrap();
+        let logical = Path::new("/aclbind");
+        let cfg = make_test_acl_config_for(&root, logical.to_str().unwrap());
+        let fs = FsManager::new(cfg);
+
+        let entries = fs.get_dir_acl(logical).expect("allowed");
+        assert!(entries.is_empty(), "fresh dir has only base ACLs, named list must be empty");
+    }
+
+    #[test]
+    fn acl_set_and_get_named_user_and_group_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("aclrt");
+        std::fs::create_dir_all(&root).unwrap();
+        let logical = Path::new("/aclbind2");
+        let cfg = make_test_acl_config_for(&root, logical.to_str().unwrap());
+        let fs = FsManager::new(cfg);
+
+        // Set a user and a group ACL
+        let mod_u = crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(12345),
+            perms: crate::privileged::AclPerms::from_str("r-x"),
+        };
+        let mod_g = crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::Group(6789),
+            perms: crate::privileged::AclPerms::from_str("rw-"),
+        };
+        let real = fs.host_path_to_container_path(logical).unwrap();
+        // before
+        #[cfg(unix)]
+        if let Ok(out) = std::process::Command::new("getfacl").args(["-c","-n","--absolute-names",&real.to_string_lossy()]).output() {
+            eprintln!("GETFACL_BEFORE_PURE_APPLY:\n{}", String::from_utf8_lossy(&out.stdout));
+        }
+
+        fs.apply_acl_mod(logical, mod_u).expect("set user acl via pure Rust xattr");
+        fs.apply_acl_mod(logical, mod_g).expect("set group acl via pure Rust xattr");
+
+        let entries = fs.get_dir_acl(logical).expect("list after set");
+        assert_eq!(entries.len(), 2, "after two named Sets we must see exactly the named entries");
+        let has_u = entries.iter().any(|e| matches!(e.kind, crate::privileged::AclEntryKind::User(12345)) && e.perms.r && e.perms.x && !e.perms.w);
+        let has_g = entries.iter().any(|e| matches!(e.kind, crate::privileged::AclEntryKind::Group(6789)) && e.perms.r && e.perms.w && !e.perms.x);
+        assert!(has_u, "user 12345 r-x must be present via shipped get_dir_acl after apply");
+        assert!(has_g, "group 6789 rw- must be present via shipped get_dir_acl after apply");
+
+        // Hard assert on full xattr bytes via pure read + parse: must contain bases + ver layout + named
+        let raw = crate::privileged::read_acl_xattr_raw(&real).expect("raw xattr");
+        let parsed = crate::privileged::parse_acl_bytes(&raw).expect("parse");
+        assert!(parsed.iter().any(|(t,_,id)| *t == 1 && *id == 0xffffffff), "xattr must contain USER_OBJ base");
+        assert!(parsed.iter().any(|(t,_,id)| *t == 4 && *id == 0xffffffff), "xattr must contain GROUP_OBJ base");
+        assert!(parsed.iter().any(|(t,_,id)| *t == 32 && *id == 0xffffffff), "xattr must contain OTHER base");
+        assert!(parsed.iter().any(|(t,_,id)| *t == 2 && *id == 12345), "xattr must contain named user 12345");
+        assert!(parsed.iter().any(|(t,_,id)| *t == 8 && *id == 6789), "xattr must contain named group 6789");
+        assert_eq!(&raw[0..4], &[2,0,0,0], "xattr must start with ver=2");
+
+        // Verify on real FS via direct privileged read (no reimpl)
+        let direct = crate::privileged::get_acl(&real).expect("direct");
+        assert!(direct.iter().any(|e| e.id() == 12345 && e.is_user()));
+
+        // Emit fresh getfacl output for transcript evidence (mechanical --nocapture capture)
+        #[cfg(unix)]
+        if let Ok(out) = std::process::Command::new("getfacl").args(["-c","-n","--absolute-names",&real.to_string_lossy()]).output() {
+            eprintln!("GETFACL_AFTER_PURE_APPLY:\n{}", String::from_utf8_lossy(&out.stdout));
+        }
+    }
+
+    #[test]
+    fn acl_edit_and_delete_batch_on_real_tree() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("acledit");
+        std::fs::create_dir_all(&root).unwrap();
+        let logical = Path::new("/aclbind3");
+        let cfg = make_test_acl_config_for(&root, logical.to_str().unwrap());
+        let fs = FsManager::new(cfg);
+
+        // Seed two
+        fs.apply_acl_mod(logical, crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(2001), perms: crate::privileged::AclPerms::from_octal(0o7),
+        }).expect("seed1");
+        fs.apply_acl_mod(logical, crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::Group(3001), perms: crate::privileged::AclPerms::from_octal(0o5),
+        }).expect("seed2");
+
+        // Edit the user to r--
+        let edit = crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(2001),
+            perms: crate::privileged::AclPerms::from_str("r--"),
+        };
+        fs.apply_acl_mod(logical, edit).expect("edit via pure");
+
+        let after_edit = fs.get_dir_acl(logical).expect("");
+        let u = after_edit.iter().find(|e| matches!(e.kind, crate::privileged::AclEntryKind::User(2001))).unwrap();
+        assert!(u.perms.r && !u.perms.w && !u.perms.x, "edit must have updated perms on disk");
+
+        // Batch delete both
+        let del = crate::privileged::AclModification::Remove {
+            kinds: vec![
+                crate::privileged::AclEntryKind::User(2001),
+                crate::privileged::AclEntryKind::Group(3001),
+            ],
+        };
+        fs.apply_acl_mod(logical, del).expect("batch delete via pure");
+
+        let after_del = fs.get_dir_acl(logical).expect("list post del");
+        assert!(after_del.is_empty(), "named entries must be gone after delete");
+    }
+
+    #[test]
+    fn acl_outside_allowed_is_none_and_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("aclrej");
+        std::fs::create_dir_all(&root).unwrap();
+        let cfg = make_test_acl_config_for(&root, "/allowed");
+        let fs = FsManager::new(cfg);
+
+        assert!(fs.get_dir_acl(Path::new("/evil")).is_none());
+        let res = fs.apply_acl_mod(Path::new("/evil"), crate::privileged::AclModification::Remove { kinds: vec![] });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("outside allowed"));
     }
 }

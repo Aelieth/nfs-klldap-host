@@ -1,0 +1,39 @@
+{# ACL Permissions expanded panel for a directory.
+   Compact Users + Groups boxes with named ACL entries (relative rwx to right).
+   Reuses /users/search /groups/search for add. View lists; Edit per-box injects 5-button mode via JS.
+   Tooltips for detail; no verbose text. ACLs are FS metadata only (not in config).
+#}
+<div class="acl-panel" data-path="{{ path }}" style="font-size:0.76em; margin: 2px 0 6px 1.5em; max-width: 620px; border:1px solid var(--border); border-radius:4px; background:var(--card-bg); padding:3px 6px;">
+  {% if acl_limited %}
+  <div style="font-size:0.65em;color:var(--danger-text);margin-bottom:2px;" title="This share is limited or has enable_acl=false; ACL modifications have no effect on the NFS export.">
+    ACL Permissions disabled for this share (limited/noacl)
+  </div>
+  {% else %}
+  <div style="font-size:0.65em;color:var(--text-light);margin-bottom:2px;" title="ACL entries are live FS metadata. On shares with 'ACL support disabled' banner they are not translated by Ganesha.">
+    ACLs effective only on capable shares (see card warning)
+  </div>
+  {% endif %}
+  <div style="display:flex; gap:10px; flex-wrap:wrap;">
+    <div class="acl-box" data-acl-type="user" style="flex:1; min-width:220px;">
+      <div style="font-weight:600; margin-bottom:1px;">Users</div>
+      <div class="acl-list" data-type="user"
+           style="border:1px solid var(--border-light); border-radius:2px; padding:2px; min-height:18px; max-height:58px; overflow:auto; background:var(--bg-alt); font-size:0.72em; line-height:1.1;">
+        {{ users_list }}
+      </div>
+      <button type="button" class="acl-box-edit" data-type="user"
+              {% if acl_limited %}disabled{% else %}onclick="if(window.startAclBoxEdit) window.startAclBoxEdit(this, 'user');"{% endif %}
+              style="font-size:0.68em; padding:0 4px; margin-top:1px; cursor:pointer;" title="{% if acl_limited %}Disabled on limited share{% else %}Edit named user ACL entries{% endif %}">Edit</button>
+    </div>
+    <div class="acl-box" data-acl-type="group" style="flex:1; min-width:220px;">
+      <div style="font-weight:600; margin-bottom:1px;">Groups</div>
+      <div class="acl-list" data-type="group"
+           style="border:1px solid var(--border-light); border-radius:2px; padding:2px; min-height:18px; max-height:58px; overflow:auto; background:var(--bg-alt); font-size:0.72em; line-height:1.1;">
+        {{ groups_list }}
+      </div>
+      <button type="button" class="acl-box-edit" data-type="group"
+              {% if acl_limited %}disabled{% else %}onclick="if(window.startAclBoxEdit) window.startAclBoxEdit(this, 'group');"{% endif %}
+              style="font-size:0.68em; padding:0 4px; margin-top:1px; cursor:pointer;" title="{% if acl_limited %}Disabled on limited share{% else %}Edit named group ACL entries{% endif %}">Edit</button>
+    </div>
+  </div>
+  <div class="acl-modebar" style="margin-top:2px; font-size:0.68em; color:var(--text-light); display:none;"></div>
+</div>

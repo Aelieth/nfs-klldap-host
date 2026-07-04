@@ -63,11 +63,13 @@ struct ShareInfo {
 
 #[derive(Template)]
 #[template(path = "dir_meta.html")]
-struct DirMetaTemplate {
-    path: String,
-    owner_display: String,
-    group_display: String,
-    mode_octal: String,
+pub(crate) struct DirMetaTemplate {
+    pub(crate) path: String,
+    pub(crate) owner_display: String,
+    pub(crate) group_display: String,
+    pub(crate) mode_octal: String,
+    /// If true, the ACL Permissions button and panel edit controls should be disabled/hidden (noacl or limited FS).
+    pub(crate) acl_limited: bool,
 }
 
 #[derive(Template)]
@@ -80,6 +82,15 @@ struct DirEditorTemplate {
     owner_gid_hidden: String,
     mode_value: String,
     recursive_checked: String,
+}
+
+#[derive(Template)]
+#[template(path = "acl_fragment.html")]
+pub(crate) struct AclFragmentTemplate {
+    path: String,
+    users_list: String,
+    groups_list: String,
+    acl_limited: bool,
 }
 
 /// Friendly label for permission editor / meta row.
@@ -112,6 +123,18 @@ async fn friendly_group_label(lldap: &crate::ldap::LdapClient, gid: u32) -> Stri
         return format!("{} ({})", label, gid);
     }
     gid.to_string()
+}
+
+/// Compute whether ACLs are limited for a host_path (logical) by finding owning share and using the probe.
+fn acl_limited_for_path(state: &AppState, host_path: &std::path::Path) -> bool {
+    let mountinfo = state.fs_probe_mountinfo_path.as_deref();
+    for s in &state.config.shares {
+        // Use simple prefix match on the configured host_path (same space as tree paths)
+        if host_path.starts_with(&s.host_path) || host_path == s.host_path.as_path() {
+            return nfs_klldap_config::share_fs_acl_limited_with_mountinfo(&state.config, s, mountinfo);
+        }
+    }
+    false
 }
 
 // Query and form parameter types for the permission tree.
@@ -180,6 +203,31 @@ pub(crate) struct ApplyForm {
     owner_user_uid: String,
     #[serde(default)]
     owner_group_gid: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AclListParams {
+    path: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AclApplyForm {
+    path: String,
+    // "add" | "edit" | "delete"
+    #[serde(default)]
+    op: String,
+    // "user" | "group"
+    #[serde(default)]
+    typ: String,
+    // numeric id for the principal
+    #[serde(default)]
+    id: String,
+    // perms string like "r-x" or "rwx" or "7"
+    #[serde(default)]
+    perms: String,
+    // for delete: comma sep "u:1234,g:5678" or similar; id used for single too
+    #[serde(default)]
+    selected: String,
 }
 
 // HTTP handlers for the permission tree routes.
@@ -368,13 +416,76 @@ pub(crate) async fn dir_meta(
         ("(unavailable)".into(), "(unavailable)".into(), format!("<span style=\"color:var(--danger-text)\">{}</span>", safe))
     };
 
+    let acl_limited = acl_limited_for_path(&state, std::path::Path::new(&path));
     let tpl = DirMetaTemplate {
         path: path.clone(),
         owner_display,
         group_display,
         mode_octal,
+        acl_limited,
     };
 
+    Ok(Html(tpl.render().unwrap()))
+}
+
+// ACL list fragment: returns compact Users + Groups boxes (named ACL entries only).
+// Lists populated by resolving via LLDAP (reuse of friendly label + list code paths).
+pub(crate) async fn acl_list(
+    State(state): State<AppState>,
+    Query(params): Query<AclListParams>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Redirect> {
+    let _user = require_auth(&state, &headers).await?;
+
+    let path = params.path;
+    let entries = state
+        .fs
+        .get_dir_acl(std::path::Path::new(&path))
+        .unwrap_or_default();
+
+    let l = state.lldap.lock().await;
+
+    let mut users = String::new();
+    let mut groups = String::new();
+    for e in entries {
+        let (label, id_str, is_u) = match e.kind {
+            crate::privileged::AclEntryKind::User(uid) => {
+                let lab = friendly_user_label(&l, uid).await;
+                (lab, uid.to_string(), true)
+            }
+            crate::privileged::AclEntryKind::Group(gid) => {
+                let lab = friendly_group_label(&l, gid).await;
+                (lab, gid.to_string(), false)
+            }
+        };
+        let p = e.perms.to_str();
+        let safe_label = label.replace('&', "&amp;").replace('<', "&lt;");
+        let row = format!(
+            r#"<div class="acl-item" data-id="{}" data-perms="{}" title="{} {} (click in edit modes to select)">{} <code style="font-size:0.95em">{}</code></div>"#,
+            id_str, p,
+            if is_u { "user" } else { "group" }, id_str,
+            safe_label, p
+        );
+        if is_u {
+            users.push_str(&row);
+        } else {
+            groups.push_str(&row);
+        }
+    }
+    if users.is_empty() {
+        users = r#"<em style="color:var(--text-light);font-size:0.9em;">(none)</em>"#.to_string();
+    }
+    if groups.is_empty() {
+        groups = r#"<em style="color:var(--text-light);font-size:0.9em;">(none)</em>"#.to_string();
+    }
+
+    let acl_limited = acl_limited_for_path(&state, std::path::Path::new(&path));
+    let tpl = AclFragmentTemplate {
+        path,
+        users_list: users,
+        groups_list: groups,
+        acl_limited,
+    };
     Ok(Html(tpl.render().unwrap()))
 }
 
@@ -771,6 +882,141 @@ pub(crate) async fn cancel_apply(
         prog.cancelled.store(true, Ordering::Relaxed);
     }
     Ok(Html(r#"<span style="font-size:0.7em; color:var(--danger-text);">Cancel requested.</span>"#.to_string()))
+}
+
+// ACL apply handler. Performs real on-disk named ACL change via FsManager (distinct path from POSIX).
+// Builds synthetic "setfacl ..." cmd for the Apply Log (lower right). Fast op, uses progress slot for oob updates.
+// Feedback returned to caller; JS refreshes the ACL list and clears mode. Reuses search machinery indirectly via prior add UI.
+pub(crate) async fn acl_apply(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<AclApplyForm>,
+) -> Result<impl IntoResponse, Redirect> {
+    let _user = require_auth(&state, &headers).await?;
+
+    let _p = std::path::Path::new(&form.path);
+    let op = form.op.trim().to_lowercase();
+    let typ = form.typ.trim().to_lowercase();
+    let is_user = typ == "user" || typ == "u";
+
+    // Parse id
+    let id: u32 = form.id.trim().parse().or_else(|_| {
+        // fallback from selected if single
+        if let Some(first) = form.selected.split(',').next() {
+            if let Some(num) = first.split(':').last() {
+                return num.trim().parse();
+            }
+        }
+        Ok(0u32)
+    }).unwrap_or(0);
+
+    if id == 0 && op != "delete" {
+        let fb = format!(r#"<div style="color:var(--danger-text);font-size:0.7em;">Invalid principal id</div>"#);
+        return Ok(Html(format!("{}\n{}", fb, render_apply_status_oob("acl: invalid id", "error", false))));
+    }
+
+    let kind = if is_user {
+        crate::privileged::AclEntryKind::User(id)
+    } else {
+        crate::privileged::AclEntryKind::Group(id)
+    };
+
+    // Build modification + cmd string for log
+    let (modification, cmd) = if op == "add" || op == "edit" || op == "set" {
+        let pstr = if form.perms.trim().is_empty() { "r--".to_string() } else { form.perms.trim().to_string() };
+        let perms = crate::privileged::AclPerms::from_str(&pstr);
+        let c = format!("setfacl -m {}:{}:{} {}", if is_user {"u"} else {"g"}, id, perms.to_str(), form.path);
+        (crate::privileged::AclModification::Set { kind, perms }, c)
+    } else if op == "delete" || op == "del" {
+        // support multi via selected or single id
+        let mut ks: Vec<crate::privileged::AclEntryKind> = vec![];
+        if !form.selected.trim().is_empty() {
+            for tok in form.selected.split(',') {
+                let t = tok.trim();
+                if t.is_empty() { continue; }
+                let num: u32 = t.split(':').last().unwrap_or("0").trim().parse().unwrap_or(0);
+                if num > 0 {
+                    if t.starts_with('g') || t.starts_with("group") {
+                        ks.push(crate::privileged::AclEntryKind::Group(num));
+                    } else {
+                        ks.push(crate::privileged::AclEntryKind::User(num));
+                    }
+                }
+            }
+        }
+        if ks.is_empty() && id > 0 {
+            ks.push(kind);
+        }
+        let c = if ks.is_empty() {
+            format!("setfacl -x (no-op) {}", form.path)
+        } else {
+            let specs: Vec<String> = ks.iter().map(|k| match k {
+                crate::privileged::AclEntryKind::User(u) => format!("u:{}", u),
+                crate::privileged::AclEntryKind::Group(g) => format!("g:{}", g),
+            }).collect();
+            format!("setfacl -x {} {}", specs.join(","), form.path)
+        };
+        (crate::privileged::AclModification::Remove { kinds: ks }, c)
+    } else {
+        let fb = r#"<div style="color:var(--danger-text);font-size:0.7em;">Unknown ACL op</div>"#.to_string();
+        return Ok(Html(format!("{}\n{}", fb, render_apply_status_oob("acl: bad op", "error", false))));
+    };
+
+    // Drive Apply Log like POSIX path (reuse slot + oob render)
+    let progress = Arc::new(ApplyProgress::default());
+    {
+        let mut slot = state.apply_progress.lock().await;
+        *slot = Some(progress.clone());
+    }
+    {
+        let mut c = progress.cmd.lock().unwrap();
+        *c = Some(cmd.clone());
+    }
+    *progress.phase.lock().unwrap() = "applying".to_string();
+    progress.total.store(1, Ordering::Relaxed);
+    progress.processed.store(0, Ordering::Relaxed);
+
+    let fs = state.fs.clone();
+    let pth = form.path.clone();
+    let prog = progress.clone();
+    let modf = modification;
+    let op_for_log = op.clone();
+
+    tokio::spawn(async move {
+        prog.processed.store(1, Ordering::Relaxed);
+        let res = fs.apply_acl_mod(std::path::Path::new(&pth), modf);
+        let (ok, msg) = match res {
+            Ok(m) => (true, m),
+            Err(e) => (false, e),
+        };
+
+        let rtext = if ok {
+            format!("ACL {} OK: {}", op_for_log, msg)
+        } else {
+            format!("ACL {} failed: {}", op_for_log, msg)
+        };
+        if !ok {
+            prog.error_count.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut errs) = prog.recent_errors.lock() {
+                errs.push((PathBuf::from(&pth), msg.clone()));
+            }
+        }
+        prog.changed.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut ft = prog.final_result_text.lock().expect("progress mutex poisoned");
+            *ft = Some(rtext);
+        }
+        prog.finished.store(true, Ordering::Relaxed);
+    });
+
+    // Immediate feedback + oob for Apply Log (no long wait for ACL)
+    let fb = format!(
+        r#"<div style="font-size:0.72em; color:var(--success-text);">ACL {} submitted — see Apply Log.</div>"#,
+        op
+    );
+    let oob = render_apply_status_oob(&cmd, "Stand-by (ACL op)...", true);
+
+    Ok(Html(format!("{}\n{}", fb, oob)))
 }
 
 #[cfg(test)]

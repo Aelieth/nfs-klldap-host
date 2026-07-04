@@ -108,7 +108,9 @@ fn cli_generate_limited_btrfs_twice_is_identical() {
 /// Asserts Path+Pseudo+Disable present and two runs identical.
 #[test]
 fn cli_generate_gate_noacl_binary_twice_pseudo_in_scratch() {
-    let scratch = PathBuf::from("/tmp/grok-goal-e2cc476cb983/implementer");
+    let scratch = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
     let _ = fs::create_dir_all(&scratch);
     let exports_d = scratch.join("noacl-exports.d");
     let _ = fs::remove_dir_all(&exports_d);
@@ -157,4 +159,84 @@ fn cli_generate_gate_noacl_binary_twice_pseudo_in_scratch() {
     assert!(content.contains("Read_Access_Check_Policy = pre;"));
     assert!(content.contains("SecType = krb5p;"));
     eprintln!("GATE: real binary twice -> captured noacl-frag.conf ({} bytes) has Pseudo, Path+Disable", content.len());
+}
+
+/// Gating for verif plan step 2: real binary generate twice on MIXED ACL+NOACL (acl-test2 style).
+/// Uses {SCRATCH}/acl-test2.toml , writes to scratch subdir, asserts ACL omits Disable, NOACL has it+pre.
+/// Captures to scratch for evidence.
+#[test]
+fn cli_generate_gate_mixed_acl_noacl_twice_in_scratch() {
+    let scratch = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let _ = fs::create_dir_all(&scratch);
+    let exports_d = scratch.join("mixed-exports.d");
+    let _ = fs::remove_dir_all(&exports_d);
+    fs::create_dir_all(&exports_d).unwrap();
+
+    // Write the second distinct mixed input exactly as acl-test2.toml
+    let mixed_toml = r#"
+ldap_uri = "ldaps://kllap.test:6360"
+
+[storage]
+container_root = "/export"
+
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "strong-secret"
+
+[ganesha]
+default_security = "krb5"
+
+[[shares]]
+name = "movies-acl"
+host_path = "/media/movies"
+enable_acl = true
+manage_gids = true
+
+[[shares]]
+name = "docs-noacl"
+host_path = "/media/docs"
+enable_acl = false
+manage_gids = true
+read_access_policy = "pre"
+"#;
+    let conf_path = scratch.join("acl-test2.toml");
+    fs::write(&conf_path, mixed_toml).unwrap();
+
+    let mut run_frag: Option<String> = None;
+    for run in 1..=2 {
+        let status = Command::new(cargo_bin("nfs-klldap-config"))
+            .args(["generate", "--config"])
+            .arg(&conf_path)
+            .env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK", "1")
+            .env("EXPORTS_DIR", &exports_d)
+            .env("GANESHA_CONF", scratch.join("g-mixed.conf"))
+            .env("SSSD_CONF", scratch.join("s-mixed.conf"))
+            .env("KRB5_CONF", scratch.join("k-mixed.conf"))
+            .env("IDMAP_CONF", scratch.join("i-mixed.conf"))
+            .env("NFS_CONF", scratch.join("n-mixed.conf"))
+            .status()
+            .expect("binary mixed generate");
+        assert!(status.success(), "mixed generate run {} failed", run);
+        // Collect both frags for this run
+        let frags: Vec<_> = fs::read_dir(&exports_d).unwrap().filter_map(|e| e.ok()).filter(|e| e.path().extension().map_or(false, |x| x=="conf")).map(|e| fs::read_to_string(e.path()).unwrap()).collect();
+        let combined = frags.join("\n---FRAG---\n");
+        if let Some(prev) = &run_frag {
+            assert_eq!(prev, &combined, "two runs identical for mixed");
+        }
+        run_frag = Some(combined);
+    }
+
+    let content = run_frag.expect("mixed frag");
+    let captured = scratch.join("mixed-acl-frag.conf");
+    fs::write(&captured, &content).expect("write mixed captured");
+    // ACL path: no Disable_ACL
+    assert!(!content.contains("Disable_ACL = true;") || content.matches("Disable_ACL = true;").count() < 2, "ACL share must omit Disable");
+    // NOACL path: has Disable + pre
+    assert!(content.contains("Disable_ACL = true;"), "NOACL must have Disable");
+    assert!(content.contains("Read_Access_Check_Policy = pre;"), "NOACL must have pre");
+    // ACL has native Pseudo etc
+    assert!(content.contains("Pseudo = /movies-acl;") || content.contains("Pseudo = /docs-noacl;"));
+    eprintln!("GATE mixed: captured mixed-acl-frag.conf ({} bytes) has distinct ACL vs NOACL", content.len());
 }

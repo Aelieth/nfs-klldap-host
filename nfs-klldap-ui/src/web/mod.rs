@@ -466,7 +466,7 @@ host_path = "/media/data"
             .unwrap();
         let req = add_session_cookie(req, &token);
 
-        let response = app.oneshot(req).await.unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
         let written = std::fs::read_to_string(&config_path).unwrap();
@@ -493,6 +493,57 @@ host_path = "/media/data"
             html.contains(warn_snippet),
             "save-shares response must include limited-fs settings guidance text"
         );
+
+        // ACL primary integration: save explicit enable_acl=true + auto policy (should roundtrip without forcing read_access on ACL).
+        let body_acl = "share_name_0=acldata&share_host_0=%2Fmedia%2Facldata&share_export_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=true&share_manage_gids_0=true&share_read_access_policy_0=auto";
+        let req_acl = Request::builder()
+            .method("POST")
+            .uri("/settings/save-shares")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body_acl))
+            .unwrap();
+        let req_acl = add_session_cookie(req_acl, &token);
+        let resp_acl = app.clone().oneshot(req_acl).await.unwrap();
+        assert_eq!(resp_acl.status(), StatusCode::OK);
+        let written_acl = std::fs::read_to_string(&config_path).unwrap();
+        assert!(written_acl.contains("enable_acl = true"), "ACL primary must persist enable_acl=true");
+        assert!(written_acl.contains("manage_gids = true"));
+        assert!(!written_acl.contains("read_access_policy ="), "ACL auto should not emit read_access_policy key");
+        assert!(written_acl.contains("name = \"acldata\""));
+
+        // Further ACL option roundtrip (new manage_gids_expiration)
+        let body_further = "share_name_0=aclfurther&share_host_0=%2Fmedia%2Faclf&share_export_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=true&share_manage_gids_0=true&share_read_access_policy_0=auto&share_manage_gids_expiration_0=900";
+        let req_f = Request::builder().method("POST").uri("/settings/save-shares").header("content-type", "application/x-www-form-urlencoded").body(Body::from(body_further)).unwrap();
+        let req_f = add_session_cookie(req_f, &token);
+        let _ = app.clone().oneshot(req_f).await.unwrap();
+        let written_f = std::fs::read_to_string(&config_path).unwrap();
+        assert!(written_f.contains("manage_gids_expiration = 900"), "further ACL option must persist via save logic");
+
+        // Verif plan step 3: real generate after UI save; drive shipped generate_all on the persisted toml, capture fragments under SCRATCH proving ACL fields (enable_acl=true, mge) drive emission (no Disable, MGE present).
+        let ui_scratch = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+        let ui_gen = ui_scratch.join("ui-after-save-gen");
+        let _ = std::fs::remove_dir_all(&ui_gen);
+        std::fs::create_dir_all(&ui_gen).unwrap();
+        let exports = ui_gen.join("exports.d");
+        std::fs::create_dir_all(&exports).unwrap();
+        let cfg_for_gen = nfs_klldap_config::NfsKlldapConfig::load(&config_path).expect("load saved toml");
+        let paths = nfs_klldap_config::GenerationPaths {
+            sssd_conf: ui_gen.join("s.conf"),
+            krb5_conf: ui_gen.join("k.conf"),
+            ganesha_conf: ui_gen.join("g.conf"),
+            exports_dir: exports.clone(),
+            idmap_conf: ui_gen.join("i.conf"),
+            nfs_conf: ui_gen.join("n.conf"),
+        };
+        nfs_klldap_config::generate_all(&cfg_for_gen, &paths).expect("generate after UI save");
+        let frag = std::fs::read_dir(&exports).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().map_or(false, |x| x == "conf")).map(|e| std::fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
+        assert!(!frag.contains("Disable_ACL = true;"), "UI-saved enable_acl=true must omit Disable_ACL in generated frag");
+        assert!(frag.contains("Manage_Gids_Expiration = 900;"), "UI-saved mge must appear in emission");
+        let captured_ui = ui_scratch.join("ui-save-after-generate.frag.conf");
+        std::fs::write(&captured_ui, &frag).expect("capture ui save then generate");
+        eprintln!("STEP3: UI save + real generate captured {} bytes to {}", frag.len(), captured_ui.display());
     }
 
     #[tokio::test]

@@ -683,6 +683,8 @@ ldap_default_authtok = "sekret"
 [[shares]]
 name = "data"
 host_path = "/media/data"
+enable_acl = false
+manage_gids = false
 "#,
         )
         .unwrap();
@@ -692,7 +694,7 @@ host_path = "/media/data"
 
     #[test]
     fn maybe_log_managed_gids_noise_downgrades_via_manage_gids_expected() {
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         write_limited_fs_config(tmp.path());
         assert!(
@@ -708,7 +710,7 @@ host_path = "/media/data"
 
     #[test]
     fn maybe_log_managed_gids_noise_verbose_when_manage_gids_on() {
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let conf = tmp.path().join("nfs-klldap.conf");
         fs::write(
@@ -735,7 +737,7 @@ manage_gids = true
 
     #[test]
     fn maybe_log_managed_gids_noise_ignores_unrelated_lines() {
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         write_limited_fs_config(tmp.path());
         assert_eq!(maybe_log_managed_gids_noise("nfs4_op succeeded"), None);
@@ -771,7 +773,7 @@ manage_gids = true
 
     #[test]
     fn detect_getgrouplist_failure_heal_sends_sighup_when_ganesha_pid_set() {
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let old = std::env::var("NFS_KLLDAP_GANESHA_PID").ok();
         std::env::set_var("NFS_KLLDAP_GANESHA_PID", "0");
         let line = "my_getgrouplist_alloc :ID MAPPER :WARN :getgrouplist for user:testuser1 failed, ngroups: 3, errno: 3";

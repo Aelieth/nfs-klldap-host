@@ -154,4 +154,13 @@ while :; do :; done
     assert!(!stub_log_text.contains("HUP") || stub_log_text.matches("HUP").count() == 1);
 
     let _ = sighup_pos;
+
+    if let Ok(scratch) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {
+        let scratch = PathBuf::from(scratch);
+        let _ = fs::create_dir_all(&scratch);
+        let _ = fs::write(scratch.join("supervisor-recycle-probe.log"), &combined);
+        // Also capture stub logs for full transcript (tee full when scratch requested).
+        let _ = fs::write(scratch.join("recycle-stub.log"), &stub_log_text);
+        let _ = fs::write(scratch.join("recycle-hook.log"), &hook_log_text);
+    }
 }

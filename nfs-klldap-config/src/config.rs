@@ -56,6 +56,7 @@ pub const SHARE_KNOWN_KEYS: &[&str] = &[
     "enable_acl",
     "manage_gids",
     "read_access_policy",
+    "manage_gids_expiration",
     "ganesha_path",
 ];
 
@@ -235,17 +236,10 @@ pub struct Share {
     pub pref_read: Option<u64>,
     /// Sets raw PrefWrite bytes but cache_profile usually supplies the value.
     pub pref_write: Option<u64>,
-    /// enable_acl=false (explicit or auto on limited FS) emits Disable_ACL=true for the EXPORT.
-    /// enable_acl=true (or auto on capable FS) uses full native ACLs (Ganesha default for capable).
-    /// This selects the NOACL vs ACL mainline path (see compute_effective_flags + export_fs_directives).
-    /// Limited FS (noacl btrfs, vfat, ntfs) default to false automatically. Overrides always win.
-    pub enable_acl: Option<bool>,
-    /// Emits Manage_Gids=false in the Ganesha EXPORT block when set.
+    pub enable_acl: Option<bool>, // ACL primary vs NOACL
     pub manage_gids: Option<bool>,
-    /// Per-share Read_Access_Check_Policy override (`pre` or `post`).
-    /// Omitted/auto: NOACL exports emit `pre`; ACL-capable exports omit (Ganesha default pre).
     pub read_access_policy: Option<String>,
-    /// Uses this path verbatim as Ganesha EXPORT Path and for fs probes.
+    pub manage_gids_expiration: Option<u64>, // further ACL
     pub ganesha_path: Option<String>,
 }
 
@@ -275,6 +269,7 @@ impl Default for Share {
             enable_acl: None,
             manage_gids: None,
             read_access_policy: None,
+            manage_gids_expiration: None,
             ganesha_path: None,
         }
     }
@@ -320,8 +315,6 @@ impl GenerationPaths {
 
 // Cache profile names in [[shares]] resolve to Ganesha PrefRead and PrefWrite.
 
-/// The 5 supported share.cache_profile values.
-/// Order matches the WebUI dropdown.
 pub const CACHE_PROFILES: &[&str] = &[
     "Default",
     "Read - Basic",

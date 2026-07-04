@@ -132,4 +132,12 @@ exec sleep 3600
         !stub_log_text.contains("HUP"),
         "ganesha stub must not see SIGHUP on identity-only recycle; log={stub_log_text:?}"
     );
+
+    if let Ok(scratch) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {
+        let scratch = PathBuf::from(scratch);
+        let _ = fs::create_dir_all(&scratch);
+        let _ = fs::write(scratch.join("supervisor-identity-recycle-probe.log"), &combined);
+        // Capture stub log too for fuller evidence when NFS_KLLDAP_CAPTURE_SCRATCH set.
+        let _ = fs::write(scratch.join("identity-stub.log"), &stub_log_text);
+    }
 }

@@ -1696,8 +1696,11 @@ mod tests {
         let egc = std::fs::read_to_string(&eg).unwrap_or_default();
         let npc = std::fs::read_to_string(&np).unwrap_or_default();
         let epc = std::fs::read_to_string(&ep).unwrap_or_default();
-        // capture evidence to scratch (verif plan requires) - truncate for clean sole CLI user@ evidence
-        let scr = std::path::Path::new("/tmp/grok-goal-77ebb92267f4/implementer/idhelper-verify.out");
+        // capture evidence to OUR scratch only (verif plan + isolation)
+        let scr = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH")
+            .map(|s| std::path::Path::new(&s).join("idhelper-verify.out"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/idhelper-verify.out"));
+        let scr = scr.as_path();
         let _ = std::fs::create_dir_all(scr.parent().unwrap());
         let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(scr).unwrap();
         use std::io::Write;
@@ -1708,8 +1711,8 @@ mod tests {
         writeln!(f, "=== nss_group (post user grps) ===\n{}", ngc).unwrap();
         writeln!(f, "=== extra_passwd (post) ===\n{}", epc).unwrap();
         writeln!(f, "=== extra_group (post user grps) ===\n{}", egc).unwrap();
-        // assertions for AC1/AC2: real uid, supp non-prim in both stores, uid0 root members
-        assert!(npc.contains("testu@T.REALM:x:2001") || npc.contains("testu:x:2001"), "real uid not nobody from bin");
+        // assertions for AC1/AC2: real uid from pre-seed (proves bin path didn't fallback to nobody), supp in both, root members. Drive real shipped bin.
+        assert!(npc.contains("testu@T.REALM:x:2001") || npc.contains("testu:x:2001"), "real uid not nobody from bin (pre-seed + bin grps path)");
         assert!(!npc.contains("nobody:x:65534") || npc.lines().any(|l| l.starts_with("testu@T.REALM:x:2001")), "no fallback");
         assert!(!ngc.contains("testu:x:65534") && !egc.contains("testu:x:65534"), "no bogus user-named 65534 gid row");
         assert!(ngc.contains(":4242:") && (ngc.contains("testu") || ngc.contains("testu@")), "supp row 4242 in nss_group from bin");

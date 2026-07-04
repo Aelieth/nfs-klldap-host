@@ -1062,7 +1062,7 @@ ldap_default_authtok = "sekret"
 
     #[test]
     fn resolve_principal_and_groups_on_qualified_form_drives_file_lookup_and_publish_no_shims() {
-        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap();
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let old_force = std::env::var("TEST_FORCE_LDAP_UID_GID").ok();
         std::env::remove_var("TEST_FORCE_LDAP_UID_GID");
         let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();

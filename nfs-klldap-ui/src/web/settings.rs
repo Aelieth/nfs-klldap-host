@@ -198,6 +198,7 @@ struct ShareFormRow {
     enable_acl: Option<bool>,
     manage_gids: Option<bool>,
     read_access_policy: Option<String>,
+    manage_gids_expiration: Option<u64>,
     ganesha_path: Option<String>,
 }
 
@@ -220,6 +221,7 @@ struct ShareTemplateRow {
     enable_acl: String,
     manage_gids: String,
     read_access_policy: String,
+    manage_gids_expiration: Option<u64>,
     override_ganesha_path: bool,
     /// Effective value shown in the Path input (explicit ganesha_path override or derived default).
     ganesha_path: String,
@@ -394,6 +396,7 @@ fn build_settings_template(
                 Some("post") => "post".to_string(),
                 _ => "auto".to_string(),
             },
+            manage_gids_expiration: s.manage_gids_expiration,
             override_ganesha_path,
             ganesha_path,
             default_ganesha_path,
@@ -521,6 +524,9 @@ fn collect_shares_from_structured_form(
                         "post" => Some("post".to_string()),
                         _ => None,
                     });
+                let manage_gids_expiration = extra
+                    .get(&format!("share_manage_gids_expiration_{}", idx))
+                    .and_then(|v| v.trim().parse::<u64>().ok());
                 let override_ganesha_path =
                     extra.contains_key(&format!("share_override_ganesha_path_{}", idx));
                 let ganesha_path = if override_ganesha_path {
@@ -545,6 +551,7 @@ fn collect_shares_from_structured_form(
                     enable_acl,
                     manage_gids,
                     read_access_policy,
+                    manage_gids_expiration,
                     ganesha_path,
                 });
             }
@@ -572,6 +579,7 @@ fn collect_shares_from_structured_form(
             enable_acl: r.enable_acl,
             manage_gids: r.manage_gids,
             read_access_policy: r.read_access_policy,
+            manage_gids_expiration: r.manage_gids_expiration,
             ganesha_path: r.ganesha_path,
         })
         .collect()
@@ -951,6 +959,9 @@ fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_
             if !rap.trim().is_empty() {
                 t["read_access_policy"] = toml_edit::value(rap.clone());
             }
+        }
+        if let Some(exp) = s.manage_gids_expiration {
+            t["manage_gids_expiration"] = toml_edit::value(exp as i64);
         }
         if let Some(gp) = &s.ganesha_path {
             if !gp.trim().is_empty() {

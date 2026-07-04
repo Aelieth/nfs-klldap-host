@@ -61,14 +61,7 @@ pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
     }
 }
 
-/// Merges explicit share flags with probe results.
-/// This is the core of the two distinct mainline paths:
-/// - enable_acl=false (probe auto on NTFS/FAT/btrfs+noacl or explicit) → NOACL path (0.9.40 simple disk settings).
-/// - enable_acl=true (or auto on capable) → ACL path (full native).
-/// manage_gids follows independently (override or default true on all paths).
-/// Limited FS defaults: enable_acl=false, manage_gids=true (auto NOACL still fetches managed gids).
-/// Capable FS defaults: enable_acl=true, manage_gids=true. First-class modes + overrides preserved.
-/// Whether to emit Read_Access_Check_Policy in the EXPORT block.
+/// Core ACL vs NOACL flags (probe + override). manage_gids defaults true.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadAccessPolicyEmit {
     /// Omit line; Ganesha 9.6 default is pre.
@@ -77,8 +70,7 @@ pub enum ReadAccessPolicyEmit {
     Post,
 }
 
-/// Resolves per-share Read_Access_Check_Policy for fragment emission.
-/// Auto: NOACL path emits pre; ACL-capable path omits (native default).
+/// Read policy emit (pre on NOACL, omit on ACL auto).
 pub fn compute_read_access_policy_emit(
     share: &Share,
     caps: &FsCapabilities,

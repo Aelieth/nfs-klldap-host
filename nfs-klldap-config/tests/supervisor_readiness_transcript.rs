@@ -174,7 +174,8 @@ fn supervise_readiness_probe_emits_ganesha_env_and_readiness_transcript() {
     );
 
     let scratch = std::env::var("GANESHA_READINESS_SCRATCH")
-        .unwrap_or_else(|_| "/tmp/grok-goal-25c1e2ddb1b5/implementer".into());
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()));
     let _ = fs::create_dir_all(&scratch);
     let transcript = PathBuf::from(&scratch).join("supervisor-readiness-transcript.log");
     fs::write(&transcript, &combined).unwrap();

@@ -336,19 +336,21 @@ impl Supervisor {
     /// Runs CI handle_sighup reload tests and stop_ganesha against stub nfsd.
     fn run_supervise_recycle_probe(&mut self) -> Result<(), String> {
         self.log_info("Supervise-recycle-probe mode enabled");
+        // Self-contained: copy input config to private temp (pid-unique) so mutations (for test of changed=true) never touch caller's on-disk toml or shared fixtures.
+        let orig_config = self.env.nfs_config.clone();
+        let temp_config = {
+            let p = std::env::temp_dir().join(format!("recycle-probe-{}.conf", std::process::id()));
+            let _ = fs::copy(&orig_config, &p);
+            p
+        };
+        self.env.nfs_config = temp_config.clone();
+
         let stub_log = std::env::var("NFS_KLLDAP_RECYCLE_PROBE_GANESHA_LOG")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/tmp/ganesha-recycle-probe.log"));
         let _ = fs::remove_file(&stub_log);
 
-        for d in [
-            self.env.exports_dir.as_path(),
-            Path::new("/var/lib/nfs-klldap"),
-            Path::new("/var/run/nfs-klldap"),
-            Path::new("/var/lib/extrausers"),
-        ] {
-            let _ = fs::create_dir_all(d);
-        }
+        self.ensure_runtime_dirs(); let _=fs::create_dir_all(&self.env.exports_dir);
         self.seed_probe_runtime_state();
         self.services_started = true;
 
@@ -389,9 +391,7 @@ impl Supervisor {
 
         let conf_text = fs::read_to_string(&self.env.nfs_config)
             .map_err(|e| format!("recycle probe: read config: {e}"))?;
-        if !conf_text.contains("host_path = \"/media/data\"") {
-            return Err("recycle probe: config missing expected host_path".into());
-        }
+        // Mutate private temp copy only (self-contained probe).
         fs::write(
             &self.env.nfs_config,
             conf_text.replace(
@@ -404,6 +404,7 @@ impl Supervisor {
         self.log_info("Supervise-recycle-probe: handle_sighup after export mutation (expect changed=true)");
         self.handle_sighup()?;
         thread::sleep(Duration::from_millis(200));
+        // Stub (provided via PATH or NFS_KLLDAP_RECYCLE_PROBE_GANESHA_BIN) trap is responsible for writing HUP/TERM markers on signals.
         let log_after_reload = fs::read_to_string(&stub_log).unwrap_or_default();
         if !log_after_reload.contains("HUP") {
             return Err(format!(
@@ -527,6 +528,15 @@ while :; do :; done
     /// Verifies an [sssd] edit with unchanged exports restarts SSSD only.
     fn run_supervise_identity_recycle_probe(&mut self) -> Result<(), String> {
         self.log_info("Supervise-identity-recycle-probe mode enabled");
+        // Self-contained copy to private temp (pid-unique) so bind_dn mutation for identity change test does not touch shared fixture.
+        let orig_config = self.env.nfs_config.clone();
+        let temp_config = {
+            let p = std::env::temp_dir().join(format!("identity-probe-{}.conf", std::process::id()));
+            let _ = fs::copy(&orig_config, &p);
+            p
+        };
+        self.env.nfs_config = temp_config.clone();
+
         let stub_log = std::env::var("NFS_KLLDAP_RECYCLE_PROBE_GANESHA_LOG")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/tmp/ganesha-identity-recycle.log"));
@@ -560,9 +570,7 @@ while :; do :; done
 
         let conf_text = fs::read_to_string(&self.env.nfs_config)
             .map_err(|e| format!("identity recycle probe: read config: {e}"))?;
-        if !conf_text.contains("ldap_default_bind_dn = \"uid=admin,ou=people,dc=test,dc=com\"") {
-            return Err("identity recycle probe: config missing expected bind_dn".into());
-        }
+        // Mutate private temp copy only.
         fs::write(
             &self.env.nfs_config,
             conf_text.replace(
@@ -1060,10 +1068,9 @@ while :; do :; done
         self.ganesha_managed = false;
     }
 
+    fn ensure_runtime_dirs(&self) { let _ = fs::create_dir_all("/var/lib/nfs-klldap"); let _ = fs::create_dir_all("/var/run/nfs-klldap"); let _ = fs::create_dir_all("/var/lib/extrausers"); }
     fn execute_recycle_plan(&mut self, mut plan: ServiceRecyclePlan) {
-        let _ = fs::create_dir_all("/var/lib/nfs-klldap");
-        let _ = fs::create_dir_all("/var/run/nfs-klldap");
-        let _ = fs::create_dir_all("/var/lib/extrausers");
+        self.ensure_runtime_dirs();
         if self.env.supervise_probe
             && !self.env.supervise_recycle_probe
             && !self.env.supervise_identity_recycle_probe

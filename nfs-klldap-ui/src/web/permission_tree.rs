@@ -119,10 +119,11 @@ async fn friendly_group_label(lldap: &Ldap, gid: u32) -> String {
 /// Compute whether ACLs are limited for a host_path (logical) by finding owning share and using the probe.
 /// Prefers the most specific (longest host_path) matching share so nested shares can have independent ACL settings.
 fn acl_limited_for_path(state: &AppState, host_path: &std::path::Path) -> bool {
+    let cfg = state.config.read().expect("config lock poisoned");
     let mountinfo = state.fs_probe_mountinfo_path.as_deref();
     let mut best: Option<(&nfs_klldap_config::Share, usize)> = None;
 
-    for s in &state.config.shares {
+    for s in &cfg.shares {
         let hp = &s.host_path;
         if host_path.starts_with(hp) || host_path == hp.as_path() {
             let spec = hp.as_os_str().len();
@@ -133,7 +134,7 @@ fn acl_limited_for_path(state: &AppState, host_path: &std::path::Path) -> bool {
     }
 
     if let Some((s, _)) = best {
-        return nfs_klldap_config::share_fs_acl_limited_with_mountinfo(&state.config, s, mountinfo);
+        return nfs_klldap_config::share_fs_acl_limited_with_mountinfo(&cfg, s, mountinfo);
     }
     false
 }
@@ -224,8 +225,8 @@ pub(crate) async fn index(
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
     let server = &state.keytab_hostname;
-    let display_shares: Vec<ShareInfo> = state
-        .config
+    let cfg = state.config.read().expect("config lock poisoned");
+    let display_shares: Vec<ShareInfo> = cfg
         .shares
         .iter()
         .enumerate()
@@ -261,13 +262,13 @@ pub(crate) async fn index(
                 .to_lowercase();
 
             let warning = nfs_klldap_config::ShareFieldWarning::for_share(
-                &state.config.share_warnings,
+                &cfg.share_warnings,
                 idx,
                 &s.name,
             )
             .map(|w| w.display_message());
             let acl_limited = nfs_klldap_config::share_fs_acl_limited_with_mountinfo(
-                &state.config,
+                &cfg,
                 s,
                 state.fs_probe_mountinfo_path.as_deref(),
             );
@@ -300,7 +301,8 @@ pub(crate) async fn tree_fragment(
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
     let path = std::path::Path::new(&params.path);
-    if let Some(node) = state.fs.build_tree(path) {
+    let fs = state.fs.read().expect("fs lock poisoned");
+    if let Some(node) = fs.build_tree(path) {
         let children: Vec<DirNode> = node
             .children
             .into_iter()
@@ -323,19 +325,42 @@ pub(crate) async fn tree_fragment(
         }
     }
 
+    let diag = fs.diagnose_path(path);
+    drop(fs);
     let safe_path = params
         .path
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;");
+    let mapped = diag
+        .container_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "(mapping failed)".into());
+    let safe_mapped = mapped
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    let hint: String = if !diag.allowed {
+        "Path is outside configured share <code>host_path</code> roots.".to_string()
+    } else if diag.container_path.is_none() {
+        "Could not map this <code>host_path</code> to a container serve path.".to_string()
+    } else if !diag.container_exists {
+        format!(
+            "Mapped container path <code>{safe_mapped}</code> does not exist (heuristic was <code>{}</code>, effective serve <code>{}</code>). \
+             Set <code>ganesha_path</code> to the real bind target under <code>storage.container_root</code> and ensure the volume is mounted.",
+            diag.heuristic_path.replace('<', "&lt;"),
+            diag.serve_path.replace('<', "&lt;"),
+        )
+    } else {
+        "Directory exists but could not be read (permissions?).".to_string()
+    };
     let msg = format!(
         r#"<div class="alert alert-danger" style="padding:0.5em;">
             <strong>Cannot display directory tree.</strong><br>
-            <code>{}</code> is allowed by your config but is not visible inside the container
-            (check bind mounts / <code>storage.container_root</code> + share <code>host_path</code> (first dir component is the implicit bind root; `ganesha_path` overrides the effective container path used for WebUI tree/meta/ACLs/applies too) + <code>pseudo_path</code> (for Pseudo) and the startup diagnostics
-            for the suggested <code>-v HOST:CONTAINER</code> line; single (or multiple) root parent bind(s) recommended for independent export names).
-        </div>"#,
-        safe_path
+            Logical path: <code>{safe_path}</code><br>
+            {hint}
+        </div>"#
     );
     Ok(Html(msg))
 }
@@ -347,8 +372,8 @@ pub(crate) async fn fs_children(
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
     let path = std::path::Path::new(&params.path);
-    let children: Vec<DirNode> = state
-        .fs
+    let fs = state.fs.read().expect("fs lock poisoned");
+    let children: Vec<DirNode> = fs
         .list_children(path)
         .unwrap_or_default()
         .into_iter()
@@ -369,7 +394,11 @@ pub(crate) async fn dir_meta(
     let _user = require_auth(&state, &headers).await?;
 
     let path = params.path;
-    let (owner_display, group_display, mode_octal) = if let Some((owner, group, mode)) = state.fs.get_dir_meta(std::path::Path::new(&path)) {
+    let meta = {
+        let fs = state.fs.read().expect("fs lock poisoned");
+        fs.get_dir_meta(std::path::Path::new(&path))
+    };
+    let (owner_display, group_display, mode_octal) = if let Some((owner, group, mode)) = meta {
         let l = state.lldap.lock().await;
         (
             friendly_user_label(&l, owner).await,
@@ -399,10 +428,11 @@ pub(crate) async fn acl_list(
     let _user = require_auth(&state, &headers).await?;
 
     let path = params.path;
-    let entries = state
-        .fs
-        .get_dir_acl(std::path::Path::new(&path))
-        .unwrap_or_default();
+    let entries = {
+        let fs = state.fs.read().expect("fs lock poisoned");
+        fs.get_dir_acl(std::path::Path::new(&path))
+            .unwrap_or_default()
+    };
     let l = state.lldap.lock().await;
     let mut users = String::new();
     let mut groups = String::new();
@@ -455,8 +485,12 @@ pub(crate) async fn dir_editor(
 
     let path = params.path;
 
+    let meta = {
+        let fs = state.fs.read().expect("fs lock poisoned");
+        fs.get_dir_meta(std::path::Path::new(&path))
+    };
     let (owner_value, group_value, owner_uid_hidden, owner_gid_hidden, mode_value) =
-        if let Some((owner, group, mode)) = state.fs.get_dir_meta(std::path::Path::new(&path)) {
+        if let Some((owner, group, mode)) = meta {
             let l = state.lldap.lock().await;
             let owner_label = friendly_user_label(&l, owner).await;
             let group_label = friendly_group_label(&l, group).await;
@@ -633,7 +667,7 @@ pub(crate) async fn apply_permissions(
         let mut c = progress.cmd.lock().unwrap();
         *c = Some(cmd.clone());
     }
-    let fs = state.fs.clone();
+    let fs = state.fs.read().expect("fs lock poisoned").clone();
     let pth = form.path.clone();
     let uid = owner_uid;
     let gid = group_gid;
@@ -900,7 +934,7 @@ pub(crate) async fn acl_apply(
     progress.total.store(1, Ordering::Relaxed);
     progress.processed.store(0, Ordering::Relaxed);
 
-    let fs = state.fs.clone();
+    let fs = state.fs.read().expect("fs lock poisoned").clone();
     let pth = form.path.clone();
     let prog = progress.clone();
     let modf = modification;

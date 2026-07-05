@@ -49,34 +49,40 @@ async fn main() {
     }
     let config_path = config_path.unwrap_or_else(|| PathBuf::from("nfs-klldap.conf"));
 
-    let config = match crate::config::load_config_from(&config_path) {
+    let loaded_config = match crate::config::load_config_from(&config_path) {
         Ok(c) => {
             println!("Loaded central config from {}", config_path.display());
-            Arc::new(c)
+            c
         }
         Err(e) => {
             eprintln!(
                 "Warning: {} — using minimal defaults. Point --config at your nfs-klldap.conf",
                 e
             );
-            Arc::new(crate::config::Config::default())
+            crate::config::Config::default()
         }
     };
 
-    println!("Configured shares: {}", config.shares.len());
-    for (idx, s) in config.shares.iter().enumerate() {
+    println!("Configured shares: {}", loaded_config.shares.len());
+    for (idx, s) in loaded_config.shares.iter().enumerate() {
         let default_ep = format!("/{}", s.name);
         let ep = s.pseudo_path.as_deref().unwrap_or(&default_ep);
         println!("  - {} → {} (host: {})", s.name, ep, s.host_path.display());
-        if let Some(w) =
-            nfs_klldap_config::ShareFieldWarning::for_share(&config.share_warnings, idx, &s.name)
-        {
+        if let Some(w) = nfs_klldap_config::ShareFieldWarning::for_share(
+            &loaded_config.share_warnings,
+            idx,
+            &s.name,
+        ) {
             println!("    WARN: {}", w.display_message());
         }
+        let serve = loaded_config.serve_path_for(s);
+        println!("    serve: {} (exists={})", serve, std::path::Path::new(&serve).is_dir());
     }
 
+    let config = std::sync::Arc::new(std::sync::RwLock::new(loaded_config.clone()));
+
     // Keytab host: [server] override, else two-tier consistent hostname.
-    let keytab_host = if let Some(h) = &config.server.hostname {
+    let keytab_host = if let Some(h) = &loaded_config.server.hostname {
         if !h.trim().is_empty() {
             h.trim().to_string()
         } else {
@@ -87,27 +93,29 @@ async fn main() {
     };
 
     // Reads the realm from loaded config for keytab reminders (see krb5.conf).
-    let keytab_realm = config.display_realm();
+    let keytab_realm = loaded_config.display_realm();
 
     let principals = nfs_klldap_config::format_nfs_principal_list(&keytab_host, &keytab_realm);
     println!("\nKeytab reminder: include {principals}");
     println!("(Use --uts=host; optional [server] hostname or --hostname to override.)");
 
     // Filesystem manager (real-time, no DB) — driven by central shares config.
-    let fs = Arc::new(crate::fs::FsManager::new((*config).clone()));
+    let fs = Arc::new(std::sync::RwLock::new(crate::fs::FsManager::new(
+        loaded_config.clone(),
+    )));
 
-    let realm = config.display_realm();
+    let realm = loaded_config.display_realm();
     let resolver =
-        nfs_klldap_config::from_sssd_section(&config.ldap_uri, &config.sssd, &realm);
+        nfs_klldap_config::from_sssd_section(&loaded_config.ldap_uri, &loaded_config.sssd, &realm);
     let posix_attrs = resolver.posix_attributes().clone();
     let user_base = resolver.user_base().to_string();
     let group_base = resolver.group_base().to_string();
 
     let (no_tls_verify, start_tls) = nfs_klldap_config::ldap_tls_policy(
-        &config.ldap_uri,
-        config.sssd.ldap_tls_reqcert.as_deref(),
-        config.sssd.ldap_tls_cacert.as_deref(),
-        config.sssd.ldap_id_use_start_tls,
+        &loaded_config.ldap_uri,
+        loaded_config.sssd.ldap_tls_reqcert.as_deref(),
+        loaded_config.sssd.ldap_tls_cacert.as_deref(),
+        loaded_config.sssd.ldap_id_use_start_tls,
     );
 
     if no_tls_verify {
@@ -117,7 +125,7 @@ async fn main() {
     }
 
     let mut lldap = crate::ldap::LdapClient::new_with_attributes(
-        &config.ldap_uri,
+        &loaded_config.ldap_uri,
         &user_base,
         &group_base,
         posix_attrs,
@@ -126,7 +134,7 @@ async fn main() {
     );
 
     // Loads bind credentials from NFS_KLLDAP_LLDAP_* env or [sssd] verbatim.
-    let (lldap_user, lldap_pass) = crate::config::ldap_service_creds(&config);
+    let (lldap_user, lldap_pass) = crate::config::ldap_service_creds(&loaded_config);
     if lldap_pass.trim().is_empty()
         || lldap_pass == "CHANGE_THIS_TO_A_STRONG_SECRET"
         || lldap_pass == "SET_ME"
@@ -156,7 +164,7 @@ async fn main() {
     }
 
     // Hybrid auth manager (localhost simple-pw sidecar + LLDAP + admin group).
-    let admin_group = config.management.webui_admin_group.clone();
+    let admin_group = loaded_config.management.webui_admin_group.clone();
     let auth = Arc::new(crate::auth::AuthManager::new(&config_path, admin_group));
 
     // Keytab banner off-thread so klist cannot block startup.
@@ -181,13 +189,13 @@ async fn main() {
     // Enables TLS when NFS_KLLDAP_WEBUI_TLS or [webui].tls requests it.
     let webui_tls_off = if nfs_klldap_config::webui_tls_disabled() {
         true
-    } else if let Some(t) = config.webui.tls {
+    } else if let Some(t) = loaded_config.webui.tls {
         !t
     } else {
         crate::certs::webui_tls_disabled()
     };
 
-    let host_nfs_mode = nfs_klldap_config::host_nfs_active(&config);
+    let host_nfs_mode = nfs_klldap_config::host_nfs_active(&loaded_config);
 
     let state = crate::web::AppState {
         fs,
@@ -221,7 +229,7 @@ async fn main() {
             .expect("WebUI HTTP server failed");
     } else {
         // The existing axum_server is :bind_rustls path (TLS enabled).
-        let cert_hostname = if let Some(h) = &config.server.hostname {
+        let cert_hostname = if let Some(h) = &loaded_config.server.hostname {
             if !h.trim().is_empty() {
                 h.trim().to_string()
             } else {
@@ -236,11 +244,11 @@ async fn main() {
         let default_key = "/var/lib/nfs-klldap/webui-certs/webui.key".to_string();
         let cert_path = std::env::var("NFS_KLLDAP_WEBUI_TLS_CERT")
             .ok()
-            .or_else(|| config.webui.tls_cert.clone())
+            .or_else(|| loaded_config.webui.tls_cert.clone())
             .unwrap_or(default_cert);
         let key_path = std::env::var("NFS_KLLDAP_WEBUI_TLS_KEY")
             .ok()
-            .or_else(|| config.webui.tls_key.clone())
+            .or_else(|| loaded_config.webui.tls_key.clone())
             .unwrap_or(default_key);
         let mut tls_paths = crate::certs::ensure_webui_tls_certs(
             &cert_path,

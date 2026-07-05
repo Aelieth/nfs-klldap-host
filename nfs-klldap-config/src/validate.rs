@@ -287,6 +287,8 @@ impl NfsKlldapConfig {
                     )));
                 }
             }
+            let root = self.storage.container_root.trim_end_matches('/').to_string();
+            auto_ganesha_path_when_heuristic_missing(&root, share);
         }
 
         for share in &self.shares {
@@ -490,43 +492,7 @@ impl NfsKlldapConfig {
 
     /// Builds the FsManager path from container_root and the host_path tail.
     pub fn container_path_for(&self, share: &Share) -> String {
-        let root = self.storage.container_root.trim_end_matches('/');
-
-        let hp = share.host_path.to_string_lossy();
-        let hp_trim = hp.trim_end_matches('/');
-
-        let segments: Vec<&str> = hp_trim
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if !segments.is_empty() {
-            let tail = if segments.len() > 1 {
-                segments[1..].join("/")
-            } else {
-                String::new()
-            };
-            let sub = if tail.is_empty() {
-                String::new()
-            } else {
-                format!("/{}", tail)
-            };
-            return format!("{}{}", root, sub);
-        }
-
-        let ep_owned: String = share
-            .pseudo_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("/{}", share.name));
-        let ep = if ep_owned.starts_with('/') {
-            ep_owned
-        } else {
-            format!("/{}", ep_owned)
-        };
-        format!("{}{}", root, ep)
+        share_container_path_heuristic(self.storage.container_root.trim_end_matches('/'), share)
     }
 
     /// Returns the Ganesha EXPORT Path and fs probe target for a share.
@@ -548,5 +514,90 @@ impl NfsKlldapConfig {
     /// Container generates configs and runs WebUI + SSSD; host runs Ganesha.
     pub fn is_host_nfs(&self) -> bool {
         self.host.host_nfs.unwrap_or(false)
+    }
+}
+
+/// Heuristic container path from bind-root model (ignores `ganesha_path` override).
+fn share_container_path_heuristic(container_root: &str, share: &Share) -> String {
+    let hp = share.host_path.to_string_lossy();
+    let hp_trim = hp.trim_end_matches('/');
+
+    let segments: Vec<&str> = hp_trim
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if !segments.is_empty() {
+        let tail = if segments.len() > 1 {
+            segments[1..].join("/")
+        } else {
+            String::new()
+        };
+        let sub = if tail.is_empty() {
+            String::new()
+        } else {
+            format!("/{tail}")
+        };
+        return format!("{container_root}{sub}");
+    }
+
+    // host_path had no segments (e.g. "/"); use share name — never pseudo_path (client-only).
+    format!("{container_root}/{}", share.name)
+}
+
+/// When no explicit `ganesha_path` is set and the first-segment heuristic path does not
+/// exist inside the container, try `{container_root}/{last_host_segment}` (common when the
+/// bind is `PARENT:/export` and the share leaf is a single directory name).
+fn auto_ganesha_path_when_heuristic_missing(container_root: &str, share: &mut Share) {
+    if share
+        .ganesha_path
+        .as_ref()
+        .is_some_and(|g| !g.trim().is_empty())
+    {
+        return;
+    }
+    let derived = share_container_path_heuristic(container_root, share);
+    if std::path::Path::new(&derived).exists() {
+        return;
+    }
+    let last = share
+        .host_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty());
+    let Some(last) = last else {
+        return;
+    };
+    let alt = format!("{container_root}/{last}");
+    if alt != derived && std::path::Path::new(&alt).is_dir() {
+        share.ganesha_path = Some(alt);
+    }
+}
+
+#[cfg(test)]
+mod auto_ganesha_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn auto_ganesha_path_uses_last_host_segment_when_heuristic_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let export = dir.path().join("export");
+        let stuff = export.join("stuff");
+        std::fs::create_dir_all(&stuff).expect("mkdir stuff");
+
+        let root = export.to_string_lossy().into_owned();
+        let mut share = Share {
+            name: "stuff".into(),
+            host_path: PathBuf::from("/home/local/Projects/test-nfs-work/stuff"),
+            ..Default::default()
+        };
+
+        auto_ganesha_path_when_heuristic_missing(&root, &mut share);
+
+        assert_eq!(
+            share.ganesha_path.as_deref(),
+            Some(stuff.to_string_lossy().as_ref())
+        );
     }
 }

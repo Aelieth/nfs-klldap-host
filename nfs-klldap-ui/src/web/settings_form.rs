@@ -64,14 +64,16 @@ pub(crate) fn share_override_ganesha_path_from_raw(doc: &toml_edit::DocumentMut,
 }
 
 pub(crate) fn share_pseudo_path_explicit_in_raw(doc: &toml_edit::DocumentMut, idx: usize) -> bool {
-    doc.get("shares").and_then(|s| s.as_array_of_tables()).is_some_and(|a| a.get(idx).is_some_and(|t| t.get("pseudo_path").is_some()))
+    doc.get("shares").and_then(|s| s.as_array_of_tables()).is_some_and(|a| a.get(idx).is_some_and(|t| t.get("pseudo_path").is_some() || t.get("export_path").is_some()))
 }
 
 pub(crate) fn share_pseudo_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize) -> String {
     let arr = match doc.get("shares").and_then(|s| s.as_array_of_tables()) { Some(a) => a, None => return String::new() };
     let tbl = match arr.get(idx) { Some(t) => t, None => return String::new() };
-    if tbl.get("pseudo_path").is_none() { return String::new(); }
-    let raw = tbl.get("pseudo_path").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    // Prefer current key, fall back to legacy export_path for old on-disk configs.
+    let key = if tbl.get("pseudo_path").is_some() { "pseudo_path" } else { "export_path" };
+    if tbl.get(key).is_none() { return String::new(); }
+    let raw = tbl.get(key).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     if raw.is_empty() { String::new() } else if raw.starts_with('/') { raw } else { format!("/{}", raw) }
 }
 
@@ -119,7 +121,10 @@ pub(crate) fn collect_shares_from_structured_form(
                     manage_gids: extra.get(&format!("share_manage_gids_{}", idx)).and_then(|v| parse_tri_bool(v)),
                     read_access_policy: extra.get(&format!("share_read_access_policy_{}", idx)).and_then(|vv| if vv.trim() == "pre" { Some("pre".into()) } else if vv.trim() == "post" { Some("post".into()) } else { None }),
                     manage_gids_expiration: extra.get(&format!("share_manage_gids_expiration_{}", idx)).and_then(|vv| vv.trim().parse().ok()),
-                    ganesha_path: if extra.contains_key(&format!("share_override_ganesha_path_{}", idx)) { extra.get(&format!("share_ganesha_path_{}", idx)).cloned().filter(|s| !s.trim().is_empty()) } else { None },
+                    ganesha_path: extra
+                        .get(&format!("share_ganesha_path_{}", idx))
+                        .cloned()
+                        .filter(|s| !s.trim().is_empty()),
                     umask: extra.get(&format!("share_umask_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
                 });
             }

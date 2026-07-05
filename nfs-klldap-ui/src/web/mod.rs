@@ -11,7 +11,7 @@ use axum::{
     Router,
 };
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
 use tower_http::normalize_path::NormalizePathLayer;
@@ -42,9 +42,9 @@ pub(crate) use settings::{
 /// Shared state for all handlers.
 #[derive(Clone)]
 pub struct AppState {
-    pub fs: Arc<FsManager>,
+    pub fs: Arc<RwLock<FsManager>>,
     pub lldap: Arc<Mutex<crate::ldap::LdapClient>>,
-    pub config: Arc<Config>,
+    pub config: Arc<RwLock<Config>>,
     pub auth: Arc<AuthManager>,
     pub config_path: PathBuf,
     pub keytab_hostname: String,
@@ -84,6 +84,21 @@ impl AppState {
             realm: self.keytab_realm.clone(),
             alert: self.keytab_alert.lock().unwrap().clone(),
         }
+    }
+
+    /// Re-read nfs-klldap.conf and rebuild the in-memory FsManager (share paths / allow-list).
+    pub fn reload_config_and_fs(&self) -> Result<(), String> {
+        let cfg = crate::config::load_config_from(&self.config_path)?;
+        let fs = FsManager::new(cfg.clone());
+        *self
+            .config
+            .write()
+            .map_err(|e| format!("config lock poisoned: {e}"))? = cfg;
+        *self
+            .fs
+            .write()
+            .map_err(|e| format!("fs lock poisoned: {e}"))? = fs;
+        Ok(())
     }
 }
 
@@ -224,8 +239,9 @@ name = "data"
 host_path = "/foo/data"
 "#;
         std::fs::write(&cp, min).ok();
-        let cfg = Arc::new(nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("ok"));
-        let fs = Arc::new(FsManager::new((*cfg).clone()));
+        let cfg_val = nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("ok");
+        let cfg = Arc::new(RwLock::new(cfg_val.clone()));
+        let fs = Arc::new(RwLock::new(FsManager::new(cfg_val)));
         let _dm = nfs_klldap_config::PosixAttributeMapping { user_object_class:"posixAccount".into(), group_object_class:"posixGroup".into(), user_name:"uid".into(), user_uid_number:"uidNumber".into(), user_gid_number:"gidNumber".into(), user_home_directory:"homeDirectory".into(), user_shell:"loginShell".into(), user_full_name:"displayName".into(), group_name:"cn".into(), group_gid_number:"gidNumber".into(), group_member:"member".into(), user_principal_name:"krbPrincipalName".into() };
         let l = Arc::new(Mutex::new(crate::create_test_lldap()));
         let a = Arc::new(AuthManager::new(&cp, None));
@@ -239,11 +255,22 @@ host_path = "/foo/data"
         let (state, _tmp, _guard) = make_test_state_with_limited_fs_mountinfo();
         // Exercise acl_limited and fs warning badge paths with limited mountinfo fixture (noacl) via shipped config funcs used by renders.
         let mp_path = state.fs_probe_mountinfo_path.as_ref().expect("mp set in helper").clone();
-        let s0 = &state.config.shares[0];
-        let is_limited = nfs_klldap_config::share_fs_acl_limited_with_mountinfo(&state.config, s0, Some(&mp_path));
-        assert!(is_limited, "noacl mountinfo fixture must make acl_limited true via shipped func");
-        let wmsg = nfs_klldap_config::share_fs_warning_message_with_mountinfo(&state.config, s0, Some(&mp_path));
-        assert!(wmsg.is_some() && wmsg.unwrap().contains("limited"), "limited mountinfo must yield fs warning via shipped func");
+        {
+            let cfg = state.config.read().expect("config lock");
+            let s0 = &cfg.shares[0];
+            let is_limited =
+                nfs_klldap_config::share_fs_acl_limited_with_mountinfo(&cfg, s0, Some(&mp_path));
+            assert!(
+                is_limited,
+                "noacl mountinfo fixture must make acl_limited true via shipped func"
+            );
+            let wmsg =
+                nfs_klldap_config::share_fs_warning_message_with_mountinfo(&cfg, s0, Some(&mp_path));
+            assert!(
+                wmsg.is_some() && wmsg.unwrap().contains("limited"),
+                "limited mountinfo must yield fs warning via shipped func"
+            );
+        }
         let cp = state.config_path.clone();
         let auth = state.auth.clone();
         let token = auth.create_privileged_session("testadmin");
@@ -322,7 +349,7 @@ host_path = "/foo/data"
         let grds = app.clone().oneshot(grd).await.unwrap();
         let gbd = axum::body::to_bytes(grds.into_body(), 1024*1024).await.unwrap();
         let ghd = String::from_utf8_lossy(&gbd);
-        assert!(ghd.contains("derived from Host Path") || ghd.contains("data-default-path"), "settings render must reflect derived ganesha path (not override) via template row");
+        assert!(ghd.contains("effective serve path") || ghd.contains("data-default-path"), "settings render must reflect derived ganesha path (not override) via template row");
     }
 
     // Dedicated integration test for ACL apply path: POST /acl-apply, wait on shipped ApplyProgress, hard assert via shipped fs.get_dir_acl only.
@@ -354,16 +381,18 @@ host_path = "{}"
             logical.display()
         );
         std::fs::write(&cp, min_cfg).unwrap();
-        let cfg = Arc::new(nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("load"));
-        let fs = Arc::new(FsManager::new((*cfg).clone()));
+        let cfg_val = nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("load");
+        let cfg = Arc::new(RwLock::new(cfg_val.clone()));
+        let fs = Arc::new(RwLock::new(FsManager::new(cfg_val)));
 
         // Minimal AppState for auth + router (no decoy mountinfo needed for ACL apply path).
         let l = Arc::new(Mutex::new(crate::create_test_lldap()));
         let a = Arc::new(AuthManager::new(&cp, None));
         let sm = tmp.path().join(".s");
         std::fs::write(&sm, "ok\n").ok();
+        let fs_for_assert = fs.clone();
         let st = AppState {
-            fs: fs.clone(),
+            fs,
             lldap: l,
             config: cfg,
             auth: a,
@@ -417,7 +446,11 @@ host_path = "{}"
         assert!(wait_res.is_ok(), "should have observed progress finish");
 
         // Hard assert ONLY via the shipped fs wrapper on the exact logical path the POST targeted.
-        let entries = fs.get_dir_acl(logical).expect("path must be allowed under share");
+        let entries = fs_for_assert
+            .read()
+            .expect("fs lock")
+            .get_dir_acl(logical)
+            .expect("path must be allowed under share");
         let has = entries.iter().any(|e| {
             matches!(&e.kind, crate::privileged::AclEntryKind::User(4242)) && e.perms.to_str() == "r-x"
         });

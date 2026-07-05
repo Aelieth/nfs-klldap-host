@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use nfs_klldap_config::{
     compute_startup_step, compute_wizard_step, fingerprint_exports_dir,
-    fingerprint_identity_artifacts, GaneshaNssEnv,
+    fingerprint_identity_artifacts, fingerprint_shares, GaneshaNssEnv,
     ganesha_readiness::{
         build_ganesha_envp, check_ganesha_readiness, filter_proc_environ_keys,
         probe_ganesha_process_groups, probe_id_g_under_env, probe_socket_grps,
@@ -40,6 +40,8 @@ struct Supervisor {
     /// True after start_ganesha until stop_ganesha completes.
     /// Enables daemon pid adoption.
     ganesha_managed: bool,
+    /// Last seen [[shares]] fingerprint (host_path / ganesha_path etc.) for WebUI recycle.
+    last_shares_fingerprint: u64,
 }
 
 /// Entry point for pid-1 supervision (replaces entrypoint.sh main loop).
@@ -51,6 +53,7 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
         pids: pids::ChildPids::default(),
         services_started: false,
         ganesha_managed: false,
+        last_shares_fingerprint: 0,
     };
 
     sup.log_info("=== Starting nfs-klldap-host (Rust supervisor) ===");
@@ -229,6 +232,9 @@ impl Supervisor {
         }
         self.run_post_generate_hooks()?;
         self.fix_derived_permissions();
+        self.last_shares_fingerprint = NfsKlldapConfig::load(&self.env.nfs_config)
+            .map(|c| fingerprint_shares(&c))
+            .unwrap_or(0);
 
         self.log_info("Supervise-recycle-probe: starting stub ganesha.nfsd");
         services::start_ganesha(self);
@@ -359,6 +365,9 @@ while :; do :; done
         }
         self.run_post_generate_hooks()?;
         self.fix_derived_permissions();
+        self.last_shares_fingerprint = NfsKlldapConfig::load(&self.env.nfs_config)
+            .map(|c| fingerprint_shares(&c))
+            .unwrap_or(0);
         services::start_ganesha(self);
         thread::sleep(Duration::from_millis(400));
         if !self.ganesha_running() {
@@ -422,6 +431,9 @@ while :; do :; done
             return Err("identity recycle probe: initial generate failed".into());
         }
         self.fix_derived_permissions();
+        self.last_shares_fingerprint = NfsKlldapConfig::load(&self.env.nfs_config)
+            .map(|c| fingerprint_shares(&c))
+            .unwrap_or(0);
 
         services::start_ganesha(self);
         thread::sleep(Duration::from_millis(400));
@@ -474,6 +486,9 @@ while :; do :; done
         }
         self.run_post_generate_hooks()?;
         self.fix_derived_permissions();
+        self.last_shares_fingerprint = NfsKlldapConfig::load(&self.env.nfs_config)
+            .map(|c| fingerprint_shares(&c))
+            .unwrap_or(0);
         for d in [
             "/var/lib/nfs-klldap",
             "/var/run/nfs-klldap",
@@ -661,6 +676,7 @@ while :; do :; done
             &self.env.krb5_conf,
             &self.env.idmap_conf,
         );
+        let shares_fp_before = self.last_shares_fingerprint;
         let status = Command::new(&self.env.config_bin)
             .args(["generate", "--config"])
             .arg(&self.env.nfs_config)
@@ -681,15 +697,24 @@ while :; do :; done
         );
         let exports_changed = exports_fp_before != exports_fp_after;
         let identity_changed = identity_fp_before != identity_fp_after;
+        let shares_fp_after = NfsKlldapConfig::load(&self.env.nfs_config)
+            .map(|c| fingerprint_shares(&c))
+            .unwrap_or(shares_fp_before);
+        let shares_changed = shares_fp_before != shares_fp_after;
+        self.last_shares_fingerprint = shares_fp_after;
         self.log_info(&format!(
             "Export fragments fingerprint: before={exports_fp_before} after={exports_fp_after} changed={exports_changed}"
         ));
         self.log_info(&format!(
             "Identity artifacts fingerprint: before={identity_fp_before} after={identity_fp_after} changed={identity_changed}"
         ));
+        self.log_info(&format!(
+            "Shares fingerprint: before={shares_fp_before} after={shares_fp_after} changed={shares_changed}"
+        ));
         let plan = plan_from_changes(
             exports_changed,
             identity_changed,
+            shares_changed,
             self.env.host_nfs_mode,
             self.ganesha_running(),
         );
@@ -873,7 +898,7 @@ while :; do :; done
         }
         if plan.is_noop() {
             self.log_info(
-                "No service recycle required — export and identity artifacts unchanged",
+                "No service recycle required — export, identity, and share mapping unchanged",
             );
             return;
         }

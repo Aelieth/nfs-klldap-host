@@ -33,10 +33,11 @@ impl ServiceRecyclePlan {
 pub fn plan_from_changes(
     exports_changed: bool,
     identity_changed: bool,
+    shares_changed: bool,
     host_nfs_mode: bool,
     ganesha_running: bool,
 ) -> ServiceRecyclePlan {
-    if !exports_changed && !identity_changed {
+    if !exports_changed && !identity_changed && !shares_changed {
         return ServiceRecyclePlan {
             ganesha: GaneshaAction::Skip,
             restart_sssd: false,
@@ -57,7 +58,7 @@ pub fn plan_from_changes(
         ganesha,
         restart_sssd: identity_changed,
         restart_idhelper: identity_changed,
-        restart_webui: exports_changed || identity_changed,
+        restart_webui: exports_changed || identity_changed || shares_changed,
     }
 }
 
@@ -78,8 +79,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shares_only_recycles_webui_not_ganesha_or_identity() {
+        let plan = plan_from_changes(false, false, true, false, true);
+        assert_eq!(plan.ganesha, GaneshaAction::Skip);
+        assert!(!plan.restart_sssd);
+        assert!(!plan.restart_idhelper);
+        assert!(plan.restart_webui);
+    }
+
+    #[test]
     fn exports_only_sighup_and_webui_recycle_without_identity_recycle() {
-        let plan = plan_from_changes(true, false, false, true);
+        let plan = plan_from_changes(true, false, false, false, true);
         assert_eq!(plan.ganesha, GaneshaAction::Sighup);
         assert!(!plan.restart_sssd);
         assert!(!plan.restart_idhelper);
@@ -88,7 +98,7 @@ mod tests {
 
     #[test]
     fn identity_only_recycles_sssd_idhelper_webui_not_ganesha() {
-        let plan = plan_from_changes(false, true, false, true);
+        let plan = plan_from_changes(false, true, false, false, true);
         assert_eq!(plan.ganesha, GaneshaAction::Skip);
         assert!(plan.restart_sssd);
         assert!(plan.restart_idhelper);
@@ -97,7 +107,7 @@ mod tests {
 
     #[test]
     fn both_changed_full_recycle_with_ganesha_sighup() {
-        let plan = plan_from_changes(true, true, false, true);
+        let plan = plan_from_changes(true, true, false, false, true);
         assert_eq!(plan.ganesha, GaneshaAction::Sighup);
         assert!(plan.restart_sssd);
         assert!(plan.restart_idhelper);
@@ -106,13 +116,13 @@ mod tests {
 
     #[test]
     fn neither_changed_is_noop_when_ganesha_running() {
-        let plan = plan_from_changes(false, false, false, true);
+        let plan = plan_from_changes(false, false, false, false, true);
         assert!(plan.is_noop());
     }
 
     #[test]
     fn exports_changed_ganesha_down_uses_stop_start() {
-        let plan = plan_from_changes(true, false, false, false);
+        let plan = plan_from_changes(true, false, false, false, false);
         assert_eq!(plan.ganesha, GaneshaAction::StopStart);
         assert!(!plan.restart_sssd);
         assert!(plan.restart_webui);
@@ -120,7 +130,7 @@ mod tests {
 
     #[test]
     fn host_nfs_skips_ganesha_even_when_exports_change() {
-        let plan = plan_from_changes(true, true, true, true);
+        let plan = plan_from_changes(true, true, false, true, true);
         assert_eq!(plan.ganesha, GaneshaAction::Skip);
         assert!(plan.restart_sssd);
         assert!(plan.restart_webui);
@@ -128,7 +138,7 @@ mod tests {
 
     #[test]
     fn host_nfs_export_only_recycles_webui_not_ganesha() {
-        let plan = plan_from_changes(true, false, true, true);
+        let plan = plan_from_changes(true, false, false, true, true);
         assert_eq!(plan.ganesha, GaneshaAction::Skip);
         assert!(!plan.restart_sssd);
         assert!(!plan.restart_idhelper);

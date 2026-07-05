@@ -61,8 +61,19 @@ pub struct ApplyProgress {
     pub last_path: StdMutex<Option<String>>,
 }
 
+#[derive(Clone)]
 pub struct FsManager {
     pub config: crate::config::Config,
+}
+
+/// Diagnostic for permission-tree failures (logical host path → container serve path).
+#[derive(Debug, Clone)]
+pub struct PathDiagnostic {
+    pub allowed: bool,
+    pub container_path: Option<PathBuf>,
+    pub container_exists: bool,
+    pub heuristic_path: String,
+    pub serve_path: String,
 }
 
 impl FsManager {
@@ -71,6 +82,44 @@ impl FsManager {
     }
 
     /// Builds the permission tree in host_path space before privileged work.
+    /// Explains why tree/meta may fail for a logical host_path.
+    pub fn diagnose_path(&self, host_path: &Path) -> PathDiagnostic {
+        let normalized = self.normalize_for_matching(host_path);
+        let allowed = self.is_allowed(&normalized);
+        let heuristic = self
+            .config
+            .shares
+            .iter()
+            .find(|s| {
+                let sn = self.normalize_for_matching(&s.host_path);
+                normalized.starts_with(&sn)
+            })
+            .map(|s| self.config.container_path_for(s))
+            .unwrap_or_default();
+        let serve_path = self
+            .config
+            .shares
+            .iter()
+            .filter(|s| {
+                let sn = self.normalize_for_matching(&s.host_path);
+                normalized.starts_with(&sn)
+            })
+            .max_by_key(|s| self.normalize_for_matching(&s.host_path).as_os_str().len())
+            .map(|s| self.config.serve_path_for(s))
+            .unwrap_or_default();
+        let container_path = self.host_path_to_container_path(host_path).ok();
+        let container_exists = container_path
+            .as_ref()
+            .is_some_and(|p| std::path::Path::new(p).is_dir());
+        PathDiagnostic {
+            allowed,
+            container_path,
+            container_exists,
+            heuristic_path: heuristic,
+            serve_path,
+        }
+    }
+
     pub fn build_tree(&self, root: &Path) -> Option<DirectoryNode> {
         // Normalize early so trailing slashes don't break matching or child.
         let normalized = self.normalize_for_matching(root);
@@ -620,6 +669,46 @@ mod tests {
 
         // Also for a non-existing sub (to prove it reaches metadata which would fail for wrong path)
         // but mainly the root case proves the unavailable bug is fixed when ganesha_path used.
+    }
+
+    #[test]
+    fn get_dir_meta_fails_when_heuristic_serve_path_missing() {
+        let tmp = TempDir::new().unwrap();
+        let export_root = tmp.path().join("export");
+        let stuff = export_root.join("stuff");
+        std::fs::create_dir_all(&stuff).unwrap();
+
+        let cfg = make_test_config_with_container_mapping(
+            "/home/local/Projects/test-nfs-work/stuff",
+            export_root.to_string_lossy().as_ref(),
+            "stuff",
+        );
+        let fs = FsManager::new(cfg.clone());
+        assert!(
+            fs.get_dir_meta(Path::new("/home/local/Projects/test-nfs-work/stuff")).is_none(),
+            "heuristic must miss real dir at /export/stuff"
+        );
+
+        let wrong = fs
+            .host_path_to_container_path(Path::new("/home/local/Projects/test-nfs-work/stuff"))
+            .unwrap();
+        assert_ne!(wrong, stuff);
+
+        let mut fixed = cfg;
+        fixed.shares[0].ganesha_path = Some(stuff.to_string_lossy().into_owned());
+        let fs2 = FsManager::new(fixed);
+        assert!(fs2
+            .get_dir_meta(Path::new("/home/local/Projects/test-nfs-work/stuff"))
+            .is_some());
+    }
+
+    #[test]
+    fn single_segment_host_path_maps_to_container_root_not_pseudo_tail() {
+        let mut cfg = make_test_config_with_container_mapping("/stuff", "/export", "stuff");
+        cfg.shares[0].pseudo_path = Some("/stuff".into());
+        let fs = FsManager::new(cfg);
+        let p = fs.host_path_to_container_path(Path::new("/stuff")).unwrap();
+        assert_eq!(p, PathBuf::from("/export"));
     }
 
     #[test]

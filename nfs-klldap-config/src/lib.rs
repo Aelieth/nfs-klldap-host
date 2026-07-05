@@ -39,7 +39,7 @@ pub use validate::detect_share_unknown_keys;
 pub mod ignored_attributes;
 pub use error::ConfigError;
 pub use exports_fingerprint::{
-    fingerprint_exports_dir, fingerprint_identity_artifacts, FNV1A_SEED,
+    fingerprint_exports_dir, fingerprint_identity_artifacts, fingerprint_shares, FNV1A_SEED,
 };
 pub use ganesha_liveness::{
     discover_ganesha_daemon_pid, ganesha_is_live, pgrep_live_pids, pgrep_pids, process_is_live,

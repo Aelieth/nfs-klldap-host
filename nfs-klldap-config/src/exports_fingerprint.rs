@@ -3,6 +3,8 @@
 use std::fs;
 use std::path::Path;
 
+use crate::NfsKlldapConfig;
+
 /// FNV-1a seed (shared with IdCache content fingerprint and file fingerprints).
 pub const FNV1A_SEED: u64 = 0xcbf29ce484222325;
 
@@ -63,6 +65,27 @@ pub fn fingerprint_exports_dir(exports_dir: &Path) -> u64 {
     h
 }
 
+/// FNV-1a over share fields that affect WebUI allow-list / serve-path mapping but not Ganesha fragments.
+pub fn fingerprint_shares(cfg: &NfsKlldapConfig) -> u64 {
+    let mut h: u64 = FNV1A_SEED;
+    h = fingerprint_bytes(cfg.storage.container_root.as_bytes(), h);
+    h ^= 0x01;
+    h = h.wrapping_mul(0x100000001b3);
+    for share in &cfg.shares {
+        h = fingerprint_bytes(share.name.as_bytes(), h);
+        h = fingerprint_bytes(share.host_path.to_string_lossy().as_bytes(), h);
+        if let Some(ref p) = share.pseudo_path {
+            h = fingerprint_bytes(p.as_bytes(), h);
+        }
+        if let Some(ref g) = share.ganesha_path {
+            h = fingerprint_bytes(g.as_bytes(), h);
+        }
+        h ^= 0xff;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +125,23 @@ mod tests {
             fingerprint_exports_dir(dir),
             fingerprint_exports_dir(dir)
         );
+    }
+
+    #[test]
+    fn shares_fingerprint_changes_when_host_path_changes() {
+        use std::path::PathBuf;
+
+        use crate::Share;
+
+        let mut cfg = NfsKlldapConfig::default();
+        cfg.shares.push(Share {
+            name: "data".into(),
+            host_path: PathBuf::from("/media/data"),
+            ..Default::default()
+        });
+        let fp1 = fingerprint_shares(&cfg);
+        cfg.shares[0].host_path = PathBuf::from("/media/data2");
+        let fp2 = fingerprint_shares(&cfg);
+        assert_ne!(fp1, fp2);
     }
 }

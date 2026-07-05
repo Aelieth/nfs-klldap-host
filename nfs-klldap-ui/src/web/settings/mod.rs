@@ -198,7 +198,7 @@ pub(crate) fn build_settings_template(
         .enumerate()
         .map(|(idx, s)| {
             let override_ganesha_path = share_override_ganesha_path_from_raw(&doc, idx);
-            let default_ganesha_path = cfg.container_path_for(s);
+            let default_ganesha_path = cfg.serve_path_for(s);
             let ganesha_path = if override_ganesha_path {
                 s.ganesha_path.clone().unwrap_or_default()
             } else {
@@ -210,7 +210,14 @@ pub(crate) fn build_settings_template(
             idx,
             name: s.name.clone(),
             host_path: s.host_path.display().to_string(),
-            pseudo_path: share_pseudo_path_from_raw(&doc, idx),
+            // For the Pseudo Path input: show the auto-derived value (/{name}) when not explicitly
+            // set in the on-disk TOML. This makes the field reflect the correct default instead of
+            // a generic placeholder. On save we strip it back to "auto" (not persisted) if it matches derived.
+            pseudo_path: if share_pseudo_path_explicit_in_raw(&doc, idx) {
+                share_pseudo_path_from_raw(&doc, idx)
+            } else {
+                nfs_klldap_config::derive_share_pseudo(s)
+            },
             pseudo_editable: eff.enable_acl,
             effective_pseudo: nfs_klldap_config::derive_share_pseudo(s),
             security: s.security.clone().unwrap_or_default(),
@@ -398,6 +405,19 @@ pub(crate) async fn settings_save_shares(
     let doc: toml_edit::DocumentMut = original_text.parse().unwrap_or_default();
     let old_cfg = nfs_klldap_config::NfsKlldapConfig::load(&state.config_path).unwrap_or_default();
     let mut new_shares = collect_shares_from_structured_form(&form.extra);
+
+    // If the pseudo_path submitted matches the auto-derived (/{name}), treat as not-explicit
+    // so we don't persist the default value in TOML (keeps it clean/"auto").
+    for new_share in &mut new_shares {
+        if let Some(p) = &new_share.pseudo_path {
+            let auto = format!("/{}", new_share.name);
+            let norm = if p.starts_with('/') { p.clone() } else { format!("/{}", p) };
+            if norm == auto {
+                new_share.pseudo_path = None;
+            }
+        }
+    }
+
     for (idx, new_share) in new_shares.iter_mut().enumerate() {
         if new_share.pseudo_path.is_none() && share_pseudo_path_explicit_in_raw(&doc, idx) {
             let old = old_cfg
@@ -446,10 +466,21 @@ pub(crate) async fn settings_save_shares(
         );
         return Ok(Html(tpl.render().unwrap()));
     }
+    let reload_msg = match state.reload_config_and_fs() {
+        Ok(()) => String::new(),
+        Err(e) => format!(" (in-memory reload failed: {e})"),
+    };
+    let _ = try_schedule_service_recycle(
+        &state,
+        &format!("Shares saved by '{}'", user.0),
+    )
+    .await;
     let tpl = make_settings_success_template(
         Some(user.0),
         &state.config_path,
-        "Shares saved (SSSD and other sections left untouched in TOML). The config watcher (or Restart and apply) will make Ganesha + WebUI see them shortly.".into(),
+        format!(
+            "Shares saved (SSSD and other sections left untouched in TOML).{reload_msg} Service recycle scheduled so Ganesha + WebUI pick up the new paths."
+        ),
         state.keytab_display(),
         state.host_nfs_mode,
         state.fs_probe_mountinfo_path.as_deref(),

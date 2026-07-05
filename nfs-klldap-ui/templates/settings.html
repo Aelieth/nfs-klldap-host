@@ -163,7 +163,7 @@
             <input name="share_name_{{ row.idx }}" value="{{ row.name }}" style="width:115px" placeholder="name">
             <input name="share_host_{{ row.idx }}" value="{{ row.host_path }}" style="flex:1" placeholder="host_path">
             <div style="width:140px;display:flex;flex-direction:column;">
-            <input name="share_pseudo_{{ row.idx }}" value="{{ row.pseudo_path }}" style="width:140px" placeholder="/movies" title="Ganesha Pseudo (pseudo_path) — client mount server:/this." {% if !row.pseudo_editable %}disabled{% endif %}>
+            <input name="share_pseudo_{{ row.idx }}" value="{{ row.pseudo_path }}" style="width:140px" placeholder="/<name>" title="Ganesha Pseudo (pseudo_path) — client mount server:/this." {% if !row.pseudo_editable %}disabled{% endif %}>
             {% if !row.pseudo_editable %}
             <small style="color:var(--text-muted);font-size:0.62em;margin-top:2px;line-height:1.2;" title="Emitted in Ganesha EXPORT on NOACL shares (0.9.40-style derivation).">
                 Pseudo: <code>{{ row.effective_pseudo }}</code> (auto, NOACL export)
@@ -218,7 +218,7 @@
             <label style="display:flex;align-items:center;gap:4px;flex:1;min-width:240px;" title="Ganesha Path= — internal serve directory + fs probe target. TOML: ganesha_path.">
                 <input type="checkbox" name="share_override_ganesha_path_{{ row.idx }}" value="true" {% if row.override_ganesha_path %}checked{% endif %}>
                 Override Path
-                <input id="share_ganesha_path_{{ row.idx }}" name="share_ganesha_path_{{ row.idx }}" value="{{ row.ganesha_path }}" data-default-path="{{ row.default_ganesha_path }}" style="flex:1;min-width:120px;" placeholder="{% if row.override_ganesha_path %}/export/staging/...{% else %}derived from Host Path{% endif %}" {% if !row.override_ganesha_path %}disabled{% endif %}>
+                <input id="share_ganesha_path_{{ row.idx }}" name="share_ganesha_path_{{ row.idx }}" value="{{ row.ganesha_path }}" data-default-path="{{ row.default_ganesha_path }}" style="flex:1;min-width:120px;" placeholder="{% if row.override_ganesha_path %}/export/staging/...{% else %}effective serve path (auto){% endif %}" {% if !row.override_ganesha_path %}readonly{% endif %}>
             </label>
         </div>
         </div>
@@ -262,7 +262,7 @@ function addShareRow() {
     block.innerHTML = `<div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
                    <input name="share_name_${idx}" placeholder="name" style="width:115px">
                    <input name="share_host_${idx}" placeholder="host_path" style="flex:1">
-                   <input name="share_pseudo_${idx}" placeholder="/movies" style="width:140px" title="Ganesha Pseudo (pseudo_path) — client mount server:/this.">
+                   <input name="share_pseudo_${idx}" placeholder="/<name>" style="width:140px" title="Ganesha Pseudo (pseudo_path) — client mount server:/this.">
                    <select name="share_security_${idx}" style="width:90px">
                      <option value="">default</option>
                      <option value="krb5p">krb5p</option>
@@ -317,6 +317,19 @@ function addShareRow() {
     c.appendChild(block);
     wireShareGaneshaOverrides();
     wireShareHostPathListeners(block);
+
+    // For newly added rows, auto-suggest the pseudo value from the share name (if the pseudo field is still empty)
+    (function wireNewPseudoFromName() {
+      const nameIn = block.querySelector(`input[name="share_name_${idx}"]`);
+      const pseudoIn = block.querySelector(`input[name="share_pseudo_${idx}"]`);
+      if (!nameIn || !pseudoIn) return;
+      nameIn.addEventListener('input', function() {
+        const n = (nameIn.value || '').trim();
+        if (n && !pseudoIn.value.trim()) {
+          pseudoIn.value = '/' + n;
+        }
+      });
+    })();
 }
 
 // Wire override checkboxes to enable/disable their associated fields.
@@ -362,14 +375,17 @@ function wireShareGaneshaOverride(checkbox) {
   if (!field) return;
   function update() {
     const isOverriding = checkbox.checked;
-    field.disabled = !isOverriding;
+    // readonly (not disabled) so the effective serve path is always submitted with the form
+    field.readOnly = !isOverriding;
+    field.disabled = false;
     if (isOverriding) {
       field.style.opacity = '';
       field.style.backgroundColor = '';
       field.placeholder = '/export/staging/...';
     } else {
       field.value = field.dataset.defaultPath || '';
-      field.placeholder = 'derived from Host Path';
+      field.placeholder = 'effective serve path (auto)';
+      field.style.opacity = '0.85';
     }
   }
   checkbox.addEventListener('change', update);

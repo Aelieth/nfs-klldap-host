@@ -133,7 +133,7 @@ pub fn collect_fs_warnings(cfg: &NfsKlldapConfig) -> Vec<FsShareWarning> {
             FsShareWarning {
                 share_name: share.name.clone(),
                 host_path: share.host_path.display().to_string(),
-                container_path: cfg.container_path_for(share),
+                container_path: cfg.serve_path_for(share),
                 serve_path: cfg.serve_path_for(share),
                 fstype: caps.fstype.clone(),
                 acl_capable: caps.acl_capable,
@@ -223,6 +223,7 @@ mod tests {
             shares: vec![Share {
                 name: "data".into(),
                 host_path: "/media/data".into(),
+                container_path: "/export/data".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -257,6 +258,7 @@ mod tests {
             shares: vec![Share {
                 name: "t".into(),
                 host_path: "/media/t".into(),
+                container_path: "/export/t".into(),
                 ..Default::default()
             }],
             ..Default::default()

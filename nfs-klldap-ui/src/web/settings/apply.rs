@@ -1,6 +1,6 @@
 //! Apply logic for structured settings and shares to config/TOML.
 //! Extracted mechanically to keep settings/mod.rs <=1000 LOC.
-//! ACL (enable_acl) and ganesha_path/override kept explicit in maps and emission.
+//! ACL (enable_acl) and container_path kept explicit in maps and emission.
 
 use super::{build_settings_template, KeytabDisplayContext, SettingsTemplate, StructuredSettingsForm};
 
@@ -13,10 +13,6 @@ pub(crate) fn apply_structured_form_to_config(
     }
     if let Some(v) = form.storage_container_root.clone() {
         cfg.storage.container_root = v;
-    }
-    if let Some(v) = form.storage_host_bind_path.clone() {
-        let t = v.trim();
-        cfg.storage.host_bind_path = if t.is_empty() { None } else { Some(t.to_string()) };
     }
     if form.override_server_hostname.unwrap_or(false) {
         if let Some(v) = form.server_hostname.clone() {
@@ -143,17 +139,6 @@ pub(crate) fn apply_structured_form_to_toml_doc(
         let item = doc.entry("storage").or_insert(toml_edit::table());
         if let Some(tbl) = item.as_table_mut() {
             tbl["container_root"] = toml_edit::value(v.clone());
-        }
-    }
-    if let Some(v) = &form.storage_host_bind_path {
-        let t = v.trim();
-        let item = doc.entry("storage").or_insert(toml_edit::table());
-        if let Some(tbl) = item.as_table_mut() {
-            if t.is_empty() {
-                let _ = tbl.remove("host_bind_path");
-            } else {
-                tbl["host_bind_path"] = toml_edit::value(t);
-            }
         }
     }
     if form.override_server_hostname.unwrap_or(false) {
@@ -323,7 +308,7 @@ pub(crate) fn apply_structured_form_to_toml_doc(
 }
 
 /// Replace only the `[[shares]]` array in the raw TOML doc (shares-save path).
-/// ACL vs NOACL kept explicit via enable_acl field write; ganesha_path override explicit.
+/// ACL vs NOACL kept explicit via enable_acl field write; container_path required per share.
 pub(crate) fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_klldap_config::Share]) {
     let had_shares = doc.get("shares").is_some();
     let _ = doc.as_table_mut().remove("shares");
@@ -332,6 +317,7 @@ pub(crate) fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_sha
         let mut t = toml_edit::Table::new();
         t["name"] = toml_edit::value(s.name.clone());
         t["host_path"] = toml_edit::value(s.host_path.display().to_string());
+        t["container_path"] = toml_edit::value(s.container_path.clone());
         if let Some(ep) = &s.pseudo_path {
             t["pseudo_path"] = toml_edit::value(ep.clone());
         }
@@ -372,11 +358,6 @@ pub(crate) fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_sha
         }
         if let Some(exp) = s.manage_gids_expiration {
             t["manage_gids_expiration"] = toml_edit::value(exp as i64);
-        }
-        if let Some(gp) = &s.ganesha_path {
-            if !gp.trim().is_empty() {
-                t["ganesha_path"] = toml_edit::value(gp.clone());
-            }
         }
         shares.push(t);
     }

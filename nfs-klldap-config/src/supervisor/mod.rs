@@ -40,7 +40,7 @@ struct Supervisor {
     /// True after start_ganesha until stop_ganesha completes.
     /// Enables daemon pid adoption.
     ganesha_managed: bool,
-    /// Last seen [[shares]] fingerprint (host_path / ganesha_path etc.) for WebUI recycle.
+    /// Last seen [[shares]] fingerprint (host_path / container_path etc.) for WebUI recycle.
     last_shares_fingerprint: u64,
 }
 
@@ -262,8 +262,8 @@ impl Supervisor {
         fs::write(
             &self.env.nfs_config,
             conf_text.replace(
-                "host_path = \"/media/data\"",
-                "host_path = \"/media/data-changed\"",
+                "container_path = \"/export/data\"",
+                "container_path = \"/export/data-changed\"",
             ),
         )
         .map_err(|e| format!("recycle probe: mutate config: {e}"))?;

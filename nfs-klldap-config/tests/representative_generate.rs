@@ -24,6 +24,7 @@ default_security = "krb5p"
 [[shares]]
 name = "movies"
 host_path = "/media/NVME-RAID/movies"
+container_path = "/export/NVME-RAID/movies"
 pseudo_path = "/movies"
 security = "krb5p"
 rw = true

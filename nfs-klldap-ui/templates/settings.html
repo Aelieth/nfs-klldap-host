@@ -64,7 +64,6 @@
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
         <label>ldap_uri<br><input name="ldap_uri" value="{{ ldap_uri }}" style="width:100%" placeholder="ldaps://kllap.example.com:6360"></label>
         <label>storage.container_root<br><input name="storage_container_root" value="{{ storage_container_root }}" style="width:100%"></label>
-        <label>storage.host_bind_path (optional)<br><input name="storage_host_bind_path" value="{{ storage_host_bind_path }}" style="width:100%" placeholder="/var/data when bind is /var/data:/export"></label>
         <label>server.hostname (optional)<br><input name="server_hostname" id="server_hostname" value="{{ server_hostname }}" style="width:100%" {% if !override_server_hostname %}disabled{% endif %}>
             <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_server_hostname" value="true" {% if override_server_hostname %}checked{% endif %}> override (persist explicit)</span>
         </label>
@@ -141,10 +140,7 @@
         <span style="width:115px">Share Name <span style="color:var(--warning-amber-text)">*</span></span>
         <span style="flex:1">Host Path <span style="color:var(--warning-amber-text)">*</span></span>
         <span style="width:140px" title="Ganesha Pseudo — client-visible NFSv4 mount path (server:/this). TOML: pseudo_path. Controls the Pseudo= in the EXPORT block.">Pseudo Path</span>
-        <span style="width:90px" title="Ganesha SecType — per-share krb5p/krb5i/krb5 override (default from [ganesha]). TOML: security.">SecType</span>
-        <span style="width:65px" title="Ganesha CLIENT Access_Type (RW or RO). TOML: rw.">Access Type</span>
-        <span style="width:50px" title="Ganesha Squash — checked = root_squash; unchecked = no_root_squash. TOML: squash.">Squash</span>
-        <span style="width:145px" title="Ganesha PrefRead/PrefWrite profile. TOML: cache_profile. See README for the matrix.">Pref Cache</span>
+        <span style="flex:1;min-width:160px" title="Directory inside the container where Ganesha serves this share (EXPORT Path=). TOML: container_path. Required.">Container Path <span style="color:var(--warning-amber-text)">*</span></span>
         <span style="width:18px"></span>
     </div>
     <div id="shares-container">
@@ -171,42 +167,51 @@
             </small>
             {% endif %}
             </div>
-            <select name="share_security_{{ row.idx }}" style="width:90px">
-                <option value="">default</option>
-                <option value="krb5p" {% if row.security == "krb5p" %}selected{% endif %}>krb5p</option>
-                <option value="krb5i" {% if row.security == "krb5i" %}selected{% endif %}>krb5i</option>
-                <option value="krb5" {% if row.security == "krb5" %}selected{% endif %}>krb5</option>
-            </select>
-            <select name="share_rw_{{ row.idx }}" style="width:65px">
-                <option value="true" {% if row.rw %}selected{% endif %}>RW</option>
-                <option value="false" {% if !row.rw %}selected{% endif %}>RO</option>
-            </select>
-            <input type="checkbox" name="share_root_squash_{{ row.idx }}" {% if row.root_squash %}checked{% endif %} style="width:50px;margin-top:3px;" title="Squash = root_squash when checked">
-            <select name="share_cache_profile_{{ row.idx }}" style="width:145px" title="Pref Cache — maps to Ganesha PrefRead/PrefWrite (cache_profile)">
-                <option value="Default" {% if row.cache_profile == "Default" %}selected{% endif %}>Default</option>
-                <option value="Read - Basic" {% if row.cache_profile == "Read - Basic" %}selected{% endif %}>Read - Basic</option>
-                <option value="Read - Heavy" {% if row.cache_profile == "Read - Heavy" %}selected{% endif %}>Read - Heavy</option>
-                <option value="Mixed Use" {% if row.cache_profile == "Mixed Use" %}selected{% endif %}>Mixed Use</option>
-                <option value="Write - Heavy" {% if row.cache_profile == "Write - Heavy" %}selected{% endif %}>Write - Heavy</option>
-            </select>
+            <input name="share_container_path_{{ row.idx }}" value="{{ row.container_path }}" style="flex:1;min-width:160px;" placeholder="/export/..." title="Container Path (container_path) — Ganesha EXPORT Path= and WebUI serve directory." required>
             <button type="button" onclick="this.closest('.share-row-block').remove()">×</button>
         </div>
-        <div class="share-advanced-row" style="display:flex;gap:6px;margin:0 0 4px 0;font-size:0.85em;flex-wrap:wrap;align-items:center;">
-            <label title="ACL primary (native on capable FS): on=enable_acl=true (no Disable_ACL); auto=probe prefers ACL; off=NOACL compat (Disable_ACL=true). TOML: enable_acl. Renewed focus on ACL EXPORT path.">ACL
+        <div class="share-options-row" style="display:flex;gap:6px;margin:0 0 4px 0;font-size:0.85em;flex-wrap:wrap;align-items:center;">
+            <label title="Ganesha SecType — per-share krb5p/krb5i/krb5 override (default from [ganesha]). TOML: security.">SecType
+                <select name="share_security_{{ row.idx }}" style="width:90px;margin-left:4px;">
+                    <option value="">default</option>
+                    <option value="krb5p" {% if row.security == "krb5p" %}selected{% endif %}>krb5p</option>
+                    <option value="krb5i" {% if row.security == "krb5i" %}selected{% endif %}>krb5i</option>
+                    <option value="krb5" {% if row.security == "krb5" %}selected{% endif %}>krb5</option>
+                </select>
+            </label>
+            <label title="Ganesha CLIENT Access_Type (RW or RO). TOML: rw.">Access
+                <select name="share_rw_{{ row.idx }}" style="width:65px;margin-left:4px;">
+                    <option value="true" {% if row.rw %}selected{% endif %}>RW</option>
+                    <option value="false" {% if !row.rw %}selected{% endif %}>RO</option>
+                </select>
+            </label>
+            <label title="Ganesha Squash — checked = root_squash; unchecked = no_root_squash. TOML: squash.">Squash
+                <input type="checkbox" name="share_root_squash_{{ row.idx }}" {% if row.root_squash %}checked{% endif %} style="margin-left:4px;" title="Squash = root_squash when checked">
+            </label>
+            <label title="Ganesha PrefRead/PrefWrite profile. TOML: cache_profile.">Pref Cache
+                <select name="share_cache_profile_{{ row.idx }}" style="width:145px;margin-left:4px;" title="Pref Cache — maps to Ganesha PrefRead/PrefWrite (cache_profile)">
+                    <option value="Default" {% if row.cache_profile == "Default" %}selected{% endif %}>Default</option>
+                    <option value="Read - Basic" {% if row.cache_profile == "Read - Basic" %}selected{% endif %}>Read - Basic</option>
+                    <option value="Read - Heavy" {% if row.cache_profile == "Read - Heavy" %}selected{% endif %}>Read - Heavy</option>
+                    <option value="Mixed Use" {% if row.cache_profile == "Mixed Use" %}selected{% endif %}>Mixed Use</option>
+                    <option value="Write - Heavy" {% if row.cache_profile == "Write - Heavy" %}selected{% endif %}>Write - Heavy</option>
+                </select>
+            </label>
+            <label title="ACL primary (native on capable FS): on=enable_acl=true (no Disable_ACL); auto=probe prefers ACL; off=NOACL compat (Disable_ACL=true). TOML: enable_acl.">ACL
                 <select name="share_enable_acl_{{ row.idx }}" style="width:72px;margin-left:4px;">
                     <option value="auto" {% if row.enable_acl == "auto" %}selected{% endif %}>auto</option>
                     <option value="true" {% if row.enable_acl == "true" %}selected{% endif %}>on</option>
                     <option value="false" {% if row.enable_acl == "false" %}selected{% endif %}>off</option>
                 </select>
             </label>
-            <label title="Ganesha Manage_Gids (independent of ACL; auto defaults true). TOML: manage_gids. Applies to both ACL and NOACL paths.">Manage Gids
+            <label title="Ganesha Manage_Gids (independent of ACL; auto defaults true). TOML: manage_gids.">Manage Gids
                 <select name="share_manage_gids_{{ row.idx }}" style="width:72px;margin-left:4px;">
                     <option value="auto" {% if row.manage_gids == "auto" %}selected{% endif %}>auto</option>
                     <option value="true" {% if row.manage_gids == "true" %}selected{% endif %}>on</option>
                     <option value="false" {% if row.manage_gids == "false" %}selected{% endif %}>off</option>
                 </select>
             </label>
-            <label title="Ganesha Read_Access_Check_Policy. ACL primary omits (native pre); NOACL emits pre. Explicit overrides both. TOML: read_access_policy.">Read Access Policy
+            <label title="Ganesha Read_Access_Check_Policy. ACL primary omits (native pre); NOACL emits pre. TOML: read_access_policy.">Read Access Policy
                 <select name="share_read_access_policy_{{ row.idx }}" style="width:72px;margin-left:4px;">
                     <option value="auto" {% if row.read_access_policy == "auto" %}selected{% endif %}>auto</option>
                     <option value="pre" {% if row.read_access_policy == "pre" %}selected{% endif %}>pre</option>
@@ -215,11 +220,6 @@
             </label>
             <label title="Further ACL option: Manage_Gids_Expiration secs (emitted on ACL exports when set). TOML: manage_gids_expiration.">MGE
                 <input name="share_manage_gids_expiration_{{ row.idx }}" value="{% if let Some(e) = row.manage_gids_expiration %}{{ e }}{% endif %}" style="width:55px;margin-left:2px;" placeholder="600">
-            </label>
-            <label style="display:flex;align-items:center;gap:4px;flex:1;min-width:240px;" title="Ganesha Path= — internal serve directory + fs probe target. TOML: ganesha_path.">
-                <input type="checkbox" name="share_override_ganesha_path_{{ row.idx }}" value="true" {% if row.override_ganesha_path %}checked{% endif %}>
-                Override Path
-                <input id="share_ganesha_path_{{ row.idx }}" name="share_ganesha_path_{{ row.idx }}" value="{{ row.ganesha_path }}" data-default-path="{{ row.default_ganesha_path }}" style="flex:1;min-width:120px;" placeholder="{% if row.override_ganesha_path %}/export/staging/...{% else %}effective serve path (auto){% endif %}" {% if !row.override_ganesha_path %}readonly{% endif %}>
             </label>
         </div>
         </div>
@@ -240,27 +240,6 @@
 // never collide with existing idx values used for name/host/security fields.
 
 let nextShareIdx = {{ next_share_idx }};
-const storageContainerRoot = "{{ storage_container_root }}";
-const storageHostBindPath = "{{ storage_host_bind_path }}";
-
-function deriveGaneshaPath(hostPath, shareName, containerRoot, hostBindPath) {
-  const root = (containerRoot || '/export').replace(/\/+$/, '');
-  const trimmed = (hostPath || '').trim().replace(/\/+$/, '');
-  const bind = (hostBindPath || '').trim().replace(/\/+$/, '');
-  if (bind) {
-    if (trimmed === bind) return root;
-    if (trimmed.startsWith(bind + '/')) {
-      return root + trimmed.slice(bind.length);
-    }
-  }
-  const segments = trimmed.split('/').filter((s) => s.length > 0);
-  if (segments.length > 0) {
-    const tail = segments.length > 1 ? segments.slice(1).join('/') : '';
-    return tail ? `${root}/${tail}` : root;
-  }
-  const name = (shareName || '').trim();
-  return name ? `${root}/${name}` : root;
-}
 
 function addShareRow() {
     const c = document.getElementById('shares-container');
@@ -272,60 +251,62 @@ function addShareRow() {
                    <input name="share_name_${idx}" placeholder="name" style="width:115px">
                    <input name="share_host_${idx}" placeholder="host_path" style="flex:1">
                    <input name="share_pseudo_${idx}" placeholder="/<name>" style="width:140px" title="Ganesha Pseudo (pseudo_path) — client mount server:/this.">
-                   <select name="share_security_${idx}" style="width:90px">
-                     <option value="">default</option>
-                     <option value="krb5p">krb5p</option>
-                     <option value="krb5i">krb5i</option>
-                     <option value="krb5">krb5</option>
-                   </select>
-                   <select name="share_rw_${idx}" style="width:65px">
-                     <option value="true" selected>RW</option>
-                     <option value="false">RO</option>
-                   </select>
-                   <input type="checkbox" name="share_root_squash_${idx}" style="width:50px;margin-top:3px;" title="Squash = root_squash when checked">
-                   <select name="share_cache_profile_${idx}" style="width:145px" title="Pref Cache — Ganesha PrefRead/PrefWrite (cache_profile)">
-                     <option value="Default" selected>Default</option>
-                     <option value="Read - Basic">Read - Basic</option>
-                     <option value="Read - Heavy">Read - Heavy</option>
-                     <option value="Mixed Use">Mixed Use</option>
-                     <option value="Write - Heavy">Write - Heavy</option>
-                   </select>
+                   <input name="share_container_path_${idx}" placeholder="/export/..." style="flex:1;min-width:160px;" title="Container Path (container_path) — required." required>
                    <button type="button" onclick="this.closest('.share-row-block').remove()">×</button>
                  </div>
-                 <div class="share-advanced-row" style="display:flex;gap:6px;margin:0 0 4px 0;font-size:0.85em;flex-wrap:wrap;align-items:center;">
-                   <label title="ACL primary (native): on=enable_acl=true; auto=probe (prefers ACL); off=NOACL (Disable_ACL).">ACL
+                 <div class="share-options-row" style="display:flex;gap:6px;margin:0 0 4px 0;font-size:0.85em;flex-wrap:wrap;align-items:center;">
+                   <label title="Ganesha SecType per-share override.">SecType
+                     <select name="share_security_${idx}" style="width:90px;margin-left:4px;">
+                       <option value="">default</option>
+                       <option value="krb5p">krb5p</option>
+                       <option value="krb5i">krb5i</option>
+                       <option value="krb5">krb5</option>
+                     </select>
+                   </label>
+                   <label title="RW or RO.">Access
+                     <select name="share_rw_${idx}" style="width:65px;margin-left:4px;">
+                       <option value="true" selected>RW</option>
+                       <option value="false">RO</option>
+                     </select>
+                   </label>
+                   <label title="root_squash when checked.">Squash
+                     <input type="checkbox" name="share_root_squash_${idx}" style="margin-left:4px;">
+                   </label>
+                   <label title="Pref Cache profile.">Pref Cache
+                     <select name="share_cache_profile_${idx}" style="width:145px;margin-left:4px;">
+                       <option value="Default" selected>Default</option>
+                       <option value="Read - Basic">Read - Basic</option>
+                       <option value="Read - Heavy">Read - Heavy</option>
+                       <option value="Mixed Use">Mixed Use</option>
+                       <option value="Write - Heavy">Write - Heavy</option>
+                     </select>
+                   </label>
+                   <label title="ACL on/auto/off.">ACL
                      <select name="share_enable_acl_${idx}" style="width:72px;margin-left:4px;">
                        <option value="auto" selected>auto</option>
                        <option value="true">on</option>
                        <option value="false">off</option>
                      </select>
                    </label>
-                   <label title="Ganesha Manage_Gids (independent; auto=true default). Applies on ACL/NOACL paths.">Manage Gids
+                   <label title="Manage_Gids on/auto/off.">Manage Gids
                      <select name="share_manage_gids_${idx}" style="width:72px;margin-left:4px;">
                        <option value="auto" selected>auto</option>
                        <option value="true">on</option>
                        <option value="false">off</option>
                      </select>
                    </label>
-                   <label title="Read_Access_Check_Policy. ACL primary: omit (default); NOACL: pre. Explicit for both.">Read Access Policy
+                   <label title="Read_Access_Check_Policy.">Read Access Policy
                      <select name="share_read_access_policy_${idx}" style="width:72px;margin-left:4px;">
                        <option value="auto" selected>auto</option>
                        <option value="pre">pre</option>
                        <option value="post">post</option>
                      </select>
                    </label>
-                   <label title="Further ACL: Manage_Gids_Expiration (s) — ACL path. TOML manage_gids_expiration.">
+                   <label title="Manage_Gids_Expiration (s).">
                      MGE <input name="share_manage_gids_expiration_${idx}" style="width:55px;margin-left:2px;" placeholder="600">
-                   </label>
-                   <label style="display:flex;align-items:center;gap:4px;flex:1;min-width:240px;" title="Ganesha Path= — internal serve directory. Override via ganesha_path.">
-                     <input type="checkbox" name="share_override_ganesha_path_${idx}" value="true">
-                     Override Path
-                     <input id="share_ganesha_path_${idx}" name="share_ganesha_path_${idx}" data-default-path="" style="flex:1;min-width:120px;" placeholder="derived from Host Path" disabled>
                    </label>
                  </div>`;
     c.appendChild(block);
-    wireShareGaneshaOverrides();
-    wireShareHostPathListeners(block);
 
     // For newly added rows, auto-suggest the pseudo value from the share name (if the pseudo field is still empty)
     (function wireNewPseudoFromName() {
@@ -378,73 +359,6 @@ wireOverride('input[name="override_sssd_ldap_tls_cacert"]', '#sssd_ldap_tls_cace
 wireOverride('input[name="override_sssd_ldap_id_use_start_tls"]', '#sssd_ldap_id_use_start_tls');
 wireOverride('input[name="override_sssd_enumerate"]', '#sssd_enumerate');
 
-function wireShareGaneshaOverride(checkbox) {
-  const id = checkbox.getAttribute('name').replace('share_override_ganesha_path_', 'share_ganesha_path_');
-  const field = document.getElementById(id);
-  if (!field) return;
-  function update() {
-    const isOverriding = checkbox.checked;
-    // readonly (not disabled) so the effective serve path is always submitted with the form
-    field.readOnly = !isOverriding;
-    field.disabled = false;
-    if (isOverriding) {
-      field.style.opacity = '';
-      field.style.backgroundColor = '';
-      field.placeholder = '/export/staging/...';
-    } else {
-      field.value = field.dataset.defaultPath || '';
-      field.placeholder = 'effective serve path (auto)';
-      field.style.opacity = '0.85';
-    }
-  }
-  checkbox.addEventListener('change', update);
-  update();
-}
-
-function wireShareGaneshaOverrides() {
-  document.querySelectorAll('input[name^="share_override_ganesha_path_"]').forEach((cb) => {
-    if (!cb.dataset.wired) {
-      cb.dataset.wired = '1';
-      wireShareGaneshaOverride(cb);
-    }
-  });
-}
-
-function wireShareHostPathListeners(block) {
-  const hostInput = block.querySelector('input[name^="share_host_"]');
-  const nameInput = block.querySelector('input[name^="share_name_"]');
-  const pathInput = block.querySelector('input[id^="share_ganesha_path_"]');
-  const overrideCb = block.querySelector('input[name^="share_override_ganesha_path_"]');
-  if (!hostInput || !pathInput) return;
-  if (hostInput.dataset.ganeshaWired) return;
-  hostInput.dataset.ganeshaWired = '1';
-
-  function refreshDefault() {
-    const derived = deriveGaneshaPath(
-      hostInput.value,
-      nameInput ? nameInput.value : '',
-      storageContainerRoot,
-      storageHostBindPath,
-    );
-    pathInput.dataset.defaultPath = derived;
-    if (!overrideCb || !overrideCb.checked) {
-      pathInput.value = derived;
-    }
-  }
-
-  hostInput.addEventListener('input', refreshDefault);
-  if (nameInput) nameInput.addEventListener('input', refreshDefault);
-  refreshDefault();
-}
-
-function wireAllShareHostPathListeners() {
-  document.querySelectorAll('.share-row-block').forEach((block) => {
-    wireShareHostPathListeners(block);
-  });
-}
-
-wireShareGaneshaOverrides();
-wireAllShareHostPathListeners();
 </script>
 
 <hr>

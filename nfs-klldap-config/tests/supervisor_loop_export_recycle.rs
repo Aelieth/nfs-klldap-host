@@ -15,6 +15,7 @@ ldap_default_authtok = "sekret"
 [[shares]]
 name = "data"
 host_path = "/media/data"
+container_path = "/export/data"
 "#;
 
 fn cargo_bin(name: &str) -> PathBuf {
@@ -169,8 +170,8 @@ exec sleep 3600
     fs::write(
         &conf,
         conf_text.replace(
-            "host_path = \"/media/data\"",
-            "host_path = \"/media/data2\"",
+            "container_path = \"/export/data\"",
+            "container_path = \"/export/data2\"",
         ),
     )
     .unwrap();

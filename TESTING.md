@@ -2,7 +2,7 @@
 
 **0.9.x branch.** `cargo test --workspace` (or `make test` + `make clippy`). Workspace crates: `nfs-klldap-identity`, `nfs-klldap-config`, `nfs-klldap-ui`.
 
-Representative full-config generation: `nfs-klldap-config/tests/representative_generate.rs`. Filesystem probe fixtures: `nfs-klldap-config/tests/fs_probe_fixtures.rs`. Limited-FS `generate_all` path: `nfs-klldap-config/tests/limited_fs_generate.rs`. Shipped CLI generate gate: `nfs-klldap-config/tests/cli_generate_gate.rs`. `ganesha_path` staging probe: `tests/ganesha_path_generate.rs`. `fs-warnings` CLI: `tests/fs_warnings_cli.rs`. Post-generate hook: `tests/post_generate_hook.rs`.
+Representative full-config generation: `nfs-klldap-config/tests/representative_generate.rs`. Filesystem probe fixtures: `nfs-klldap-config/tests/fs_probe_fixtures.rs`. Limited-FS `generate_all` path: `nfs-klldap-config/tests/limited_fs_generate.rs`. Shipped CLI generate gate: `nfs-klldap-config/tests/cli_generate_gate.rs`. `container_path` staging probe: `tests/container_path_generate.rs`. `fs-warnings` CLI: `tests/fs_warnings_cli.rs`. Post-generate hook: `tests/post_generate_hook.rs`.
 
 ## Strategy
 

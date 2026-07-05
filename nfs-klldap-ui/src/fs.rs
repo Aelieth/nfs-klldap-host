@@ -1,5 +1,6 @@
 //! FsManager applies direct chown/chmod (via privileged) on allow-listed share paths.
-//! Host-to-container path translation via bind-root model (using `serve_path_for` which honors `ganesha_path` override for WebUI stat/list/apply + Ganesha; falls back to `container_path_for` heuristic). ACL path vs NOACL kept in config.
+//! Host-to-container path translation maps each share's host_path to its required container_path
+//! (Ganesha EXPORT Path=). ACL path vs NOACL kept in config.
 
 #![deny(clippy::unwrap_used)]
 
@@ -72,7 +73,6 @@ pub struct PathDiagnostic {
     pub allowed: bool,
     pub container_path: Option<PathBuf>,
     pub container_exists: bool,
-    pub heuristic_path: String,
     pub serve_path: String,
 }
 
@@ -86,16 +86,6 @@ impl FsManager {
     pub fn diagnose_path(&self, host_path: &Path) -> PathDiagnostic {
         let normalized = self.normalize_for_matching(host_path);
         let allowed = self.is_allowed(&normalized);
-        let heuristic = self
-            .config
-            .shares
-            .iter()
-            .find(|s| {
-                let sn = self.normalize_for_matching(&s.host_path);
-                normalized.starts_with(&sn)
-            })
-            .map(|s| self.config.container_path_for(s))
-            .unwrap_or_default();
         let serve_path = self
             .config
             .shares
@@ -115,7 +105,6 @@ impl FsManager {
             allowed,
             container_path,
             container_exists,
-            heuristic_path: heuristic,
             serve_path,
         }
     }
@@ -302,10 +291,8 @@ impl FsManager {
 
         // Choose the *most specific* (longest host_path) share that is a prefix of the
         // requested logical path. This ensures that if a user declares both a broad
-        // parent share and a more specific child share (each potentially with its own
-        // ganesha_path), the child's mapping wins for paths under the child.
-        // Previously the first-in-list match could pick a broad share without the
-        // right override, producing the wrong container path and "(unavailable)" meta.
+        // parent share and a more specific child share (each with its own container_path),
+        // the child's mapping wins for paths under the child.
         let mut best: Option<(usize, PathBuf)> = None; // (specificity = share host len, cpath)
 
         for share in &self.config.shares {
@@ -314,9 +301,6 @@ impl FsManager {
                 let rel = normalized
                     .strip_prefix(&share_normalized)
                     .unwrap_or(Path::new(""));
-                // Use serve_path_for so explicit ganesha_path (staging / non-standard binds)
-                // is honored for WebUI stat/list/apply. container_path_for is only the
-                // default first-segment heuristic and is still used for settings defaults etc.
                 let mut cpath = PathBuf::from(self.config.serve_path_for(share));
                 if !rel.as_os_str().is_empty() {
                     cpath.push(rel);
@@ -549,9 +533,15 @@ mod tests {
 
     fn make_test_config_with_container_mapping(
         host_path: &str,
-        container_root: &str,
+        container_path: &str,
         share_name: &str,
     ) -> crate::config::Config {
+        let container_root = container_path
+            .trim_end_matches('/')
+            .rsplit_once('/')
+            .map(|(prefix, _)| prefix)
+            .filter(|p| !p.is_empty())
+            .unwrap_or(container_path);
         crate::config::Config {
             storage: nfs_klldap_config::StorageSection {
                 container_root: container_root.to_string(),
@@ -560,6 +550,7 @@ mod tests {
             shares: vec![nfs_klldap_config::Share {
                 name: share_name.to_string(),
                 host_path: PathBuf::from(host_path),
+                container_path: container_path.to_string(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -582,7 +573,7 @@ mod tests {
     fn host_path_to_container_path_exact_and_subpath() {
         let cfg = make_test_config_with_container_mapping(
             "/hostroot/myshare",
-            "/container/root",
+            "/container/root/myshare",
             "myshare",
         );
         let fs = FsManager::new(cfg);
@@ -600,7 +591,7 @@ mod tests {
     fn host_path_to_container_path_ignores_pseudo_path_for_mapping() {
         let mut cfg = make_test_config_with_container_mapping(
             "/media/HDD-RAID/media",
-            "/export",
+            "/export/HDD-RAID/media",
             "media",
         );
         cfg.shares[0].pseudo_path = Some("/HDD-RAID/media".to_string());
@@ -621,18 +612,16 @@ mod tests {
     }
 
     #[test]
-    fn var_data_bind_maps_via_host_bind_path_config() {
+    fn container_path_maps_var_data_bind_layout() {
         let tmp = TempDir::new().unwrap();
-        let export = tmp.path().join("export");
-        let users = export.join("nvme-raid").join("users");
+        let users = tmp.path().join("export").join("nvme-raid").join("users");
         std::fs::create_dir_all(&users).unwrap();
 
-        let mut cfg = make_test_config_with_container_mapping(
+        let cfg = make_test_config_with_container_mapping(
             "/var/data/nvme-raid/users",
-            export.to_string_lossy().as_ref(),
+            users.to_string_lossy().as_ref(),
             "users",
         );
-        cfg.storage.host_bind_path = Some("/var/data".into());
 
         let fs = FsManager::new(cfg);
         let mapped = fs
@@ -646,16 +635,12 @@ mod tests {
     }
 
     #[test]
-    fn host_path_to_container_path_respects_ganesha_path_override() {
-        // Simulates user's bind (/var/data:/export) + deep host_path + explicit ganesha_path
-        // (the supported way to make Ganesha land at /export/nvme-raid/users).
-        // Before the fix this would have derived /export/data/nvme-raid/users (unavailable meta).
-        let mut cfg = make_test_config_with_container_mapping(
+    fn host_path_to_container_path_uses_configured_container_path() {
+        let cfg = make_test_config_with_container_mapping(
             "/var/data/nvme-raid/users",
-            "/export",
+            "/export/nvme-raid/users",
             "users",
         );
-        cfg.shares[0].ganesha_path = Some("/export/nvme-raid/users".to_string());
 
         let fs = FsManager::new(cfg);
 
@@ -665,7 +650,7 @@ mod tests {
             .unwrap();
         assert_eq!(root, PathBuf::from("/export/nvme-raid/users"));
 
-        // Nested subdir must append relative tail to the *ganesha_path* base.
+        // Nested subdir must append relative tail to the container_path base.
         let sub = fs
             .host_path_to_container_path(Path::new("/var/data/nvme-raid/users/sub/dir"))
             .unwrap();
@@ -673,55 +658,45 @@ mod tests {
     }
 
     #[test]
-    fn get_dir_meta_works_with_ganesha_path_override() {
-        // End-to-end: when ganesha_path points at a real location (bypassing heuristic),
-        // get_dir_meta must succeed and return the on-disk uid/gid/mode instead of None.
+    fn get_dir_meta_works_with_container_path() {
         let tmp = TempDir::new().unwrap();
         let physical = tmp.path().join("real_users");
         std::fs::create_dir_all(&physical).unwrap();
 
-        let mut cfg = make_test_config_with_container_mapping(
+        let cfg = make_test_config_with_container_mapping(
             "/var/data/nvme-raid/users",
-            "/export", // heuristic would produce /export/data/... which we deliberately do not create
+            physical.to_string_lossy().as_ref(),
             "users",
         );
-        // Point serve directly at the physical location we created.
-        cfg.shares[0].ganesha_path = Some(physical.to_string_lossy().into_owned());
 
         let fs = FsManager::new(cfg);
 
         let meta = fs.get_dir_meta(Path::new("/var/data/nvme-raid/users"));
-        assert!(meta.is_some(), "get_dir_meta must succeed via ganesha_path mapping (not the bad heuristic)");
-
-        // Also for a non-existing sub (to prove it reaches metadata which would fail for wrong path)
-        // but mainly the root case proves the unavailable bug is fixed when ganesha_path used.
+        assert!(meta.is_some(), "get_dir_meta must succeed when container_path exists on disk");
     }
 
     #[test]
-    fn get_dir_meta_fails_when_heuristic_serve_path_missing() {
+    fn get_dir_meta_fails_when_container_path_missing_on_disk() {
         let tmp = TempDir::new().unwrap();
-        let export_root = tmp.path().join("export");
-        let stuff = export_root.join("stuff");
+        let stuff = tmp.path().join("export").join("stuff");
         std::fs::create_dir_all(&stuff).unwrap();
 
         let cfg = make_test_config_with_container_mapping(
             "/home/local/Projects/test-nfs-work/stuff",
-            export_root.to_string_lossy().as_ref(),
+            "/export/wrong/stuff",
             "stuff",
         );
-        let fs = FsManager::new(cfg.clone());
+        let fs = FsManager::new(cfg);
         assert!(
             fs.get_dir_meta(Path::new("/home/local/Projects/test-nfs-work/stuff")).is_none(),
-            "heuristic must miss real dir at /export/stuff"
+            "missing container_path on disk must yield unavailable meta"
         );
 
-        let wrong = fs
-            .host_path_to_container_path(Path::new("/home/local/Projects/test-nfs-work/stuff"))
-            .unwrap();
-        assert_ne!(wrong, stuff);
-
-        let mut fixed = cfg;
-        fixed.shares[0].ganesha_path = Some(stuff.to_string_lossy().into_owned());
+        let fixed = make_test_config_with_container_mapping(
+            "/home/local/Projects/test-nfs-work/stuff",
+            stuff.to_string_lossy().as_ref(),
+            "stuff",
+        );
         let fs2 = FsManager::new(fixed);
         assert!(fs2
             .get_dir_meta(Path::new("/home/local/Projects/test-nfs-work/stuff"))
@@ -729,36 +704,32 @@ mod tests {
     }
 
     #[test]
-    fn single_segment_host_path_maps_to_container_root_not_pseudo_tail() {
-        let mut cfg = make_test_config_with_container_mapping("/stuff", "/export", "stuff");
+    fn container_path_is_used_as_serve_base() {
+        let mut cfg = make_test_config_with_container_mapping("/stuff", "/export/stuff", "stuff");
         cfg.shares[0].pseudo_path = Some("/stuff".into());
         let fs = FsManager::new(cfg);
         let p = fs.host_path_to_container_path(Path::new("/stuff")).unwrap();
-        assert_eq!(p, PathBuf::from("/export"));
+        assert_eq!(p, PathBuf::from("/export/stuff"));
     }
 
     #[test]
     fn host_path_to_container_path_prefers_most_specific_share() {
-        // Overlapping shares: broad parent + specific child, each with own ganesha_path.
-        // Most-specific (longest host_path) must win so the child's mapping is used.
         let mut cfg = make_test_config_with_container_mapping(
             "/var/data/nvme-raid",
-            "/export",
+            "/export/nvme-raid",
             "nvme-raid",
         );
-        cfg.shares[0].ganesha_path = Some("/export/nvme-raid".to_string());
 
-        // Add a more specific child share later in the vec (order should not matter).
         cfg.shares.push(nfs_klldap_config::Share {
             name: "users".into(),
             host_path: PathBuf::from("/var/data/nvme-raid/users"),
-            ganesha_path: Some("/export/nvme-raid/users".to_string()),
+            container_path: "/export/nvme-raid/users".into(),
             ..Default::default()
         });
 
         let fs = FsManager::new(cfg);
 
-        // Path exactly under the specific child share must use the child's ganesha_path base.
+        // Path exactly under the specific child share must use the child's container_path base.
         let users_root = fs
             .host_path_to_container_path(Path::new("/var/data/nvme-raid/users"))
             .unwrap();
@@ -783,6 +754,7 @@ mod tests {
         cfg.storage.container_root = tmp_root.to_string_lossy().into_owned();
         if let Some(s0) = cfg.shares.first_mut() {
             s0.name.clear();
+            s0.container_path = tmp_root.to_string_lossy().into_owned();
         }
         cfg
     }
@@ -919,6 +891,7 @@ mod tests {
         let mut cfg = cfg;
         cfg.storage.container_root = root.to_string_lossy().into_owned();
         cfg.shares[0].name.clear();
+        cfg.shares[0].container_path = root.to_string_lossy().into_owned();
 
         let fs = FsManager::new(cfg);
 
@@ -985,6 +958,7 @@ mod tests {
         let mut cfg = cfg;
         cfg.storage.container_root = root.to_string_lossy().into_owned();
         cfg.shares[0].name.clear();
+        cfg.shares[0].container_path = root.to_string_lossy().into_owned();
 
         let _fs = FsManager::new(cfg);
         let prog = std::sync::Arc::new(ApplyProgress::default());
@@ -1008,8 +982,9 @@ mod tests {
         let container2 = root.to_string_lossy().into_owned();
         let join = tokio::task::spawn_blocking(move || {
             let mut cfg2 = make_test_config_with_shares(&[logical2.to_str().unwrap()]);
-            cfg2.storage.container_root = container2;
+            cfg2.storage.container_root = container2.clone();
             cfg2.shares[0].name.clear();
+            cfg2.shares[0].container_path = container2;
             let fs2 = FsManager::new(cfg2);
             fs2.apply_permissions_with_progress(&pth, target_uid, target_gid, target_mode, true, &prog_clone)
         }).await.expect("join ok");

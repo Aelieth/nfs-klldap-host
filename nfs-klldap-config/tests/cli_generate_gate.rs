@@ -16,6 +16,7 @@ ldap_default_authtok = "sekret"
 [[shares]]
 name = "users"
 host_path = "/media/users"
+container_path = "/export/users"
 security = "krb5p"
 "#;
 
@@ -84,11 +85,13 @@ default_security = "krb5"
 [[shares]]
 name = "movies-acl"
 host_path = "/media/movies"
+container_path = "/export/movies"
 enable_acl = true
 manage_gids = true
 [[shares]]
 name = "docs-noacl"
 host_path = "/media/docs"
+container_path = "/export/docs"
 enable_acl = false
 manage_gids = true
 read_access_policy = "pre"

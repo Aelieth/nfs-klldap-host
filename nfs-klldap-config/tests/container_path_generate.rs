@@ -1,4 +1,4 @@
-//! ganesha_path: probe + EXPORT Path= use staging serve path, not container data path.
+//! container_path: probe + EXPORT Path= use the configured serve path.
 
 use std::fs;
 use std::sync::Mutex;
@@ -25,7 +25,7 @@ fn generate_with_mountinfo(mountinfo: &str, toml: &str) -> String {
 }
 
 #[test]
-fn ganesha_path_staging_ext4_avoids_disable_acl() {
+fn container_path_staging_ext4_avoids_disable_acl() {
     let toml = r#"
 ldap_uri = "ldaps://kllap.test:6360"
 [storage]
@@ -36,7 +36,7 @@ ldap_default_authtok = "sekret"
 [[shares]]
 name = "movies"
 host_path = "/media/movies"
-ganesha_path = "/export/staging/movies"
+container_path = "/export/staging/movies"
 "#;
     let frag = generate_with_mountinfo(MOUNTINFO_MIXED, toml);
     assert!(frag.contains("Path = /export/staging/movies;"));

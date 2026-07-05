@@ -13,6 +13,7 @@ ldap_default_authtok = "sekret"
 [[shares]]
 name = "data"
 host_path = "/media/data"
+container_path = "/export/data"
 "#;
 
 fn cargo_bin(name: &str) -> PathBuf {

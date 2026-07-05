@@ -347,9 +347,8 @@ pub(crate) async fn tree_fragment(
         "Could not map this <code>host_path</code> to a container serve path.".to_string()
     } else if !diag.container_exists {
         format!(
-            "Mapped container path <code>{safe_mapped}</code> does not exist (heuristic was <code>{}</code>, effective serve <code>{}</code>). \
-             Set <code>ganesha_path</code> to the real bind target under <code>storage.container_root</code> and ensure the volume is mounted.",
-            diag.heuristic_path.replace('<', "&lt;"),
+            "Mapped container path <code>{safe_mapped}</code> does not exist (configured serve path <code>{}</code>). \
+             Set <code>container_path</code> to the real directory under <code>storage.container_root</code> and ensure the volume is mounted.",
             diag.serve_path.replace('<', "&lt;"),
         )
     } else {
@@ -416,9 +415,8 @@ pub(crate) async fn dir_meta(
         let hint = if !diag.container_exists {
             format!(
                 "Serve path <code>{safe_serve}</code> missing (exists={exists}). \
-                 For binds like <code>/var/data:/export</code>, set <code>ganesha_path</code> to \
-                 <code>/export/&lt;tail&gt;</code> (e.g. <code>/export/nvme-raid/users</code>) \
-                 or <code>storage.host_bind_path = \"/var/data\"</code>."
+                 Set <code>container_path</code> to the directory inside the container where this share is bind-mounted \
+                 (e.g. <code>/export/nvme-raid/users</code> when using <code>/var/data:/export</code>)."
             )
         } else {
             format!("Serve path <code>{safe_serve}</code> exists but metadata could not be read.")

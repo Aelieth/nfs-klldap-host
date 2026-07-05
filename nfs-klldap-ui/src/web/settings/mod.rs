@@ -31,7 +31,6 @@ pub(crate) struct SettingsTemplate {
     keytab_found_principals: Vec<String>,
     ldap_uri: String,
     storage_container_root: String,
-    storage_host_bind_path: String,
     server_hostname: String,
     sssd_bind_dn: String,
     sssd_search_base: String,
@@ -120,7 +119,6 @@ pub(crate) struct RawSaveForm {
 pub(crate) struct StructuredSettingsForm {
     ldap_uri: Option<String>,
     storage_container_root: Option<String>,
-    storage_host_bind_path: Option<String>,
     server_hostname: Option<String>,
     override_server_hostname: Option<bool>,
     sssd_bind_dn: Option<String>,
@@ -170,7 +168,7 @@ fn share_caps_for_settings(
 }
 
 // Form items from modular settings_form
-use super::settings_form::{ShareTemplateRow, collect_shares_from_structured_form, has_explicit, get_explicit_str, share_override_ganesha_path_from_raw, share_pseudo_path_explicit_in_raw, share_pseudo_path_from_raw, infer_profile_from_prefs};
+use super::settings_form::{ShareTemplateRow, collect_shares_from_structured_form, has_explicit, get_explicit_str, share_pseudo_path_explicit_in_raw, share_pseudo_path_from_raw, infer_profile_from_prefs};
 
 
 
@@ -199,13 +197,6 @@ pub(crate) fn build_settings_template(
         .iter()
         .enumerate()
         .map(|(idx, s)| {
-            let override_ganesha_path = share_override_ganesha_path_from_raw(&doc, idx);
-            let default_ganesha_path = cfg.container_path_for(s);
-            let ganesha_path = if override_ganesha_path {
-                s.ganesha_path.clone().unwrap_or_default()
-            } else {
-                default_ganesha_path.clone()
-            };
             let caps = share_caps_for_settings(&cfg, s, fs_probe_mountinfo_path);
             let eff = nfs_klldap_config::compute_effective_flags(s, &caps);
             ShareTemplateRow {
@@ -222,6 +213,7 @@ pub(crate) fn build_settings_template(
             },
             pseudo_editable: eff.enable_acl,
             effective_pseudo: nfs_klldap_config::derive_share_pseudo(s),
+            container_path: s.container_path.clone(),
             security: s.security.clone().unwrap_or_default(),
             rw: s.rw.unwrap_or(true),
             root_squash: s.squash.as_deref() == Some("root_squash"),
@@ -246,9 +238,6 @@ pub(crate) fn build_settings_template(
                 _ => "auto".to_string(),
             },
             manage_gids_expiration: s.manage_gids_expiration,
-            override_ganesha_path,
-            ganesha_path,
-            default_ganesha_path,
             warning: nfs_klldap_config::ShareFieldWarning::for_share(
                 &cfg.share_warnings,
                 idx,
@@ -276,11 +265,6 @@ pub(crate) fn build_settings_template(
             .found_nfs_principals,
         ldap_uri: cfg.ldap_uri,
         storage_container_root: cfg.storage.container_root.clone(),
-        storage_host_bind_path: cfg
-            .storage
-            .host_bind_path
-            .clone()
-            .unwrap_or_default(),
         server_hostname: cfg.server.hostname.clone().unwrap_or_default(),
         sssd_bind_dn: cfg.sssd.ldap_default_bind_dn.clone(),
         sssd_search_base: cfg.sssd.ldap_search_base.clone().unwrap_or_default(),

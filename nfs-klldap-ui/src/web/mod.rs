@@ -237,6 +237,7 @@ ldap_default_authtok = "s"
 [[shares]]
 name = "data"
 host_path = "/foo/data"
+container_path = "/data"
 "#;
         std::fs::write(&cp, min).ok();
         let cfg_val = nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("ok");
@@ -284,18 +285,18 @@ host_path = "/foo/data"
         let ghtml = String::from_utf8_lossy(&gbody);
         assert!(ghtml.contains("alert alert-warning") && (ghtml.contains("limited") || ghtml.contains("fs_warning") || ghtml.contains("NOACL")), "settings render must include limited fs warning badge via shipped template + mountinfo probe");
 
-        let body_noacl = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=false&share_read_access_policy_0=pre&share_override_ganesha_path_0=true&share_ganesha_path_0=%2Fexport%2Fstaging%2Fdata&share_root_squash_0=on";
+        let body_noacl = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=false&share_read_access_policy_0=pre&share_container_path_0=%2Fexport%2Fstaging%2Fdata&share_root_squash_0=on";
         let req = Request::builder().method("POST").uri("/settings/save-shares").header("content-type","application/x-www-form-urlencoded").body(Body::from(body_noacl)).unwrap();
         let req = add_session_cookie(req, &token);
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let written = std::fs::read_to_string(&cp).unwrap();
         assert!(written.contains("enable_acl = false"));
-        assert!(written.contains("ganesha_path = \"/export/staging/data\""));
+        assert!(written.contains("container_path = \"/export/staging/data\""));
         // root_squash from checkbox presence now roundtrips via collect
         assert!(written.contains("squash = \"root_squash\"") || written.contains("squash = 'root_squash'") || written.contains("root_squash"));
 
-        let body_acl = "share_name_0=acldata&share_host_0=%2Fmedia%2Facldata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=true&share_manage_gids_0=true&share_read_access_policy_0=auto&share_manage_gids_expiration_0=900";
+        let body_acl = "share_name_0=acldata&share_host_0=%2Fmedia%2Facldata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=true&share_manage_gids_0=true&share_read_access_policy_0=auto&share_manage_gids_expiration_0=900&share_container_path_0=%2Fexport%2Facldata";
         let req2 = Request::builder().method("POST").uri("/settings/save-shares").header("content-type","application/x-www-form-urlencoded").body(Body::from(body_acl)).unwrap();
         let req2 = add_session_cookie(req2, &token);
         let _ = app.clone().oneshot(req2).await.unwrap();
@@ -335,21 +336,19 @@ host_path = "/foo/data"
         let hsec = String::from_utf8_lossy(&bsec);
         assert!(hsec.contains("ganesha_default_security") && (hsec.contains("nfs") || hsec.contains("value=\"nfs\"") || hsec.contains("selected")), "settings render must show the overridden default_security value");
 
-        // cover override_ganesha_path=false + omit (no ganesha_path key emitted; derived default used)
-        let body_off = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=true&share_read_access_policy_0=pre&share_manage_gids_expiration_0=900";
+        let body_off = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=true&share_read_access_policy_0=pre&share_manage_gids_expiration_0=900&share_container_path_0=%2Fexport%2Fdata";
         let reqoff = Request::builder().method("POST").uri("/settings/save-shares").header("content-type","application/x-www-form-urlencoded").body(Body::from(body_off)).unwrap();
         let reqoff = add_session_cookie(reqoff, &token);
         let _ = app.clone().oneshot(reqoff).await.unwrap();
         let woff = std::fs::read_to_string(&cp).unwrap();
-        assert!(!woff.contains("ganesha_path"), "override off must omit ganesha_path (derived used on render)");
+        assert!(woff.contains("container_path = \"/export/data\""));
 
-        // Drive render GET after override=false save-shares to exercise derived ganesha_path in settings HTML (ShareTemplateRow.default_ganesha_path / placeholder)
         let grd = Request::builder().uri("/settings").body(Body::empty()).unwrap();
         let grd = add_session_cookie(grd, &token);
         let grds = app.clone().oneshot(grd).await.unwrap();
         let gbd = axum::body::to_bytes(grds.into_body(), 1024*1024).await.unwrap();
         let ghd = String::from_utf8_lossy(&gbd);
-        assert!(ghd.contains("effective serve path") || ghd.contains("data-default-path"), "settings render must reflect derived ganesha path (not override) via template row");
+        assert!(ghd.contains("share_container_path_0") && ghd.contains("/export/data"), "settings render must show container_path input");
     }
 
     // Dedicated integration test for ACL apply path: POST /acl-apply, wait on shipped ApplyProgress, hard assert via shipped fs.get_dir_acl only.
@@ -376,9 +375,11 @@ ldap_default_authtok = "s"
 [[shares]]
 name = "acldata"
 host_path = "{}"
+container_path = "{}"
 "#,
             real_root.display(),
-            logical.display()
+            logical.display(),
+            real_root.display()
         );
         std::fs::write(&cp, min_cfg).unwrap();
         let cfg_val = nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("load");

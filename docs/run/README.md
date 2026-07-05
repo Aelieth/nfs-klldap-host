@@ -205,7 +205,7 @@ This project exports real directories from the Docker *host* via Ganesha VFS ins
 
 ### Core contract (unchanged but worth repeating)
 - `host_path` values in `nfs-klldap.conf` (and the UI) are **absolute paths on the Docker host** (unchanged by this layout).
-- Inside the container the data for a share is visible at the *effective internal* location given by `serve_path_for`: `ganesha_path` when explicitly set on the share (for staging or non-standard binds e.g. host `/var/data` bound to container `/export` but wanting Ganesha/WebUI at `/export/nvme-raid/...`), otherwise `storage.container_root` + (tail of the share's `host_path` after its first directory component). The first dir component of `host_path` acts as the implicit per-share bind root (e.g. host `/media/NVME-RAID/nvme` → internal `/export/NVME-RAID/nvme` when no `ganesha_path`). `pseudo_path` (editable in the Shares section; defaults to `/<name>`) is used *only* for the client-visible Pseudo path and can be a short/friendly name independently of the internal layout. When `ganesha_path` is unset, the heuristic applies to both Ganesha and WebUI.
+- Inside the container each share is served from its required `container_path` (maps to Ganesha EXPORT `Path=` and WebUI permission tree). Example: bind `/var/data:/export` with `host_path = "/var/data/nvme-raid/users"` → `container_path = "/export/nvme-raid/users"`. `pseudo_path` (editable in the Shares section; defaults to `/<name>`) is used *only* for the client-visible Pseudo path and can be a short/friendly name independently of the internal layout.
 - Translation (host_path → real container path for chown/chmod/readdir) happens only at the syscall boundary (`FsManager` + `privileged.rs`).
 - **Numeric UID/GID identity must be identical** on the host and inside the container for the bind-mounted trees. Do **not** use `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts. The on-disk owners written by the WebUI (and seen by NFS clients) are the raw numbers from LLDAP `uidNumber`/`gidNumber`.
 
@@ -218,7 +218,7 @@ cap_add:
   - SYS_ADMIN
   - DAC_READ_SEARCH
 volumes:
-  - /media/:/export:rw                # single (or multiple) root-level bind(s) of host parent dir(s). First dir component of each share's host_path is the implicit per-share bind root; the tail is the subpath under /export (or the `ganesha_path` if set). `ganesha_path` overrides the effective container path used for Ganesha and the WebUI (permissions, meta, ACLs, apply). pseudo_path only controls the external Pseudo (can be short).
+  - /media/:/export:rw                # bind host parent dir(s) to container_root. Set each share's container_path to the internal serve directory. pseudo_path only controls the external Pseudo (can be short).
   - ./config:/config:rw
   - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 ```

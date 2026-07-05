@@ -55,7 +55,6 @@ pub fn detect_share_unknown_keys(contents: &str) -> Vec<ShareFieldWarning> {
             share_index: idx,
             share_name,
             unknown_keys,
-            serve_path_hint: None,
         });
     }
     warnings
@@ -220,7 +219,7 @@ impl NfsKlldapConfig {
                     share.name
                 )));
             }
-            normalize_blank(&mut share.ganesha_path);
+            share.container_path = share.container_path.trim().to_string();
             {
                 let ep = share.pseudo_path.take();
                 let normalized = match ep {
@@ -291,15 +290,26 @@ impl NfsKlldapConfig {
         }
 
         let container_root = self.storage.container_root.trim_end_matches('/').to_string();
-        let host_bind = self.resolved_host_bind_prefix();
-        for (idx, share) in self.shares.iter_mut().enumerate() {
-            if let Some(hint) = ensure_share_serve_path(&container_root, host_bind.as_deref(), share) {
-                self.share_warnings.push(ShareFieldWarning {
-                    share_index: idx,
-                    share_name: Some(share.name.clone()),
-                    unknown_keys: vec![],
-                    serve_path_hint: Some(hint),
-                });
+        for share in &self.shares {
+            if share.container_path.is_empty() {
+                return Err(ConfigError::Validation(format!(
+                    "share '{}' requires container_path (absolute path inside the container; maps to Ganesha Path=)",
+                    share.name
+                )));
+            }
+            if !share.container_path.starts_with('/') {
+                return Err(ConfigError::Validation(format!(
+                    "share '{}' container_path must be absolute (got '{}')",
+                    share.name, share.container_path
+                )));
+            }
+            let under_root = share.container_path == container_root
+                || share.container_path.starts_with(&format!("{container_root}/"));
+            if !under_root {
+                return Err(ConfigError::Validation(format!(
+                    "share '{}' container_path '{}' must be under storage.container_root '{}'",
+                    share.name, share.container_path, container_root
+                )));
             }
         }
 
@@ -502,34 +512,9 @@ impl NfsKlldapConfig {
         }
     }
 
-    /// Host path prefix bind-mounted at `container_root` (config override or mountinfo).
-    pub fn resolved_host_bind_prefix(&self) -> Option<String> {
-        if let Some(ref p) = self.storage.host_bind_path {
-            let t = p.trim();
-            if !t.is_empty() {
-                return Some(crate::fs_probe::normalize_path(t));
-            }
-        }
-        crate::fs_probe::host_bind_prefix_from_mountinfo(
-            self.storage.container_root.trim_end_matches('/'),
-        )
-    }
-
-    /// Builds the FsManager path from container_root and the host_path tail.
-    pub fn container_path_for(&self, share: &Share) -> String {
-        let root = self.storage.container_root.trim_end_matches('/');
-        share_container_path_mapped(root, self.resolved_host_bind_prefix().as_deref(), share)
-    }
-
     /// Returns the Ganesha EXPORT Path and fs probe target for a share.
     pub fn serve_path_for(&self, share: &Share) -> String {
-        if let Some(ref gp) = share.ganesha_path {
-            let t = gp.trim();
-            if !t.is_empty() {
-                return t.to_string();
-            }
-        }
-        self.container_path_for(share)
+        share.container_path.trim().to_string()
     }
 
     pub fn host_paths(&self) -> Vec<PathBuf> {
@@ -543,196 +528,55 @@ impl NfsKlldapConfig {
     }
 }
 
-/// Container path using host bind prefix when set, else first-segment heuristic.
-pub(crate) fn share_container_path_mapped(
-    container_root: &str,
-    host_bind_prefix: Option<&str>,
-    share: &Share,
-) -> String {
-    let hp = share.host_path.to_string_lossy();
-    let hp_trim = hp.trim_end_matches('/');
-
-    if let Some(prefix) = host_bind_prefix {
-        let p = prefix.trim_end_matches('/');
-        if !p.is_empty() {
-            if hp_trim == p {
-                return container_root.to_string();
-            }
-            let prefix_slash = format!("{p}/");
-            if hp_trim.starts_with(&prefix_slash) {
-                let rel = &hp_trim[p.len()..];
-                return format!("{container_root}{rel}");
-            }
-        }
-    }
-
-    share_container_path_heuristic(container_root, share)
-}
-
-/// First-segment-drop heuristic (legacy `/media/SSD/...` style binds).
-fn share_container_path_heuristic(container_root: &str, share: &Share) -> String {
-    let hp = share.host_path.to_string_lossy();
-    let hp_trim = hp.trim_end_matches('/');
-
-    let segments: Vec<&str> = hp_trim
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    if !segments.is_empty() {
-        let tail = if segments.len() > 1 {
-            segments[1..].join("/")
-        } else {
-            String::new()
-        };
-        let sub = if tail.is_empty() {
-            String::new()
-        } else {
-            format!("/{tail}")
-        };
-        return format!("{container_root}{sub}");
-    }
-
-    // host_path had no segments (e.g. "/"); use share name — never pseudo_path (client-only).
-    format!("{container_root}/{}", share.name)
-}
-
-/// Ensures `ganesha_path` points at an existing directory when possible.
-/// Returns a warning message when the serve path is still missing on disk.
-fn ensure_share_serve_path(
-    container_root: &str,
-    host_bind_prefix: Option<&str>,
-    share: &mut Share,
-) -> Option<String> {
-    let mapped = share_container_path_mapped(container_root, host_bind_prefix, share);
-    let previous = share
-        .ganesha_path
-        .as_ref()
-        .filter(|g| !g.trim().is_empty())
-        .map(|g| g.trim().to_string());
-    let current = previous.clone().unwrap_or_else(|| mapped.clone());
-
-    if std::path::Path::new(&current).is_dir() {
-        return None;
-    }
-
-    if mapped != current && std::path::Path::new(&mapped).is_dir() {
-        let msg = if let Some(ref old) = previous {
-            format!(
-                "share '{}': corrected ganesha_path from '{}' to '{}' (bind-aware mapping)",
-                share.name, old, mapped
-            )
-        } else {
-            format!(
-                "share '{}': auto-set ganesha_path to '{}' (bind-aware mapping)",
-                share.name, mapped
-            )
-        };
-        share.ganesha_path = Some(mapped);
-        return Some(msg);
-    }
-
-    let last = share
-        .host_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty());
-    if let Some(last) = last {
-        let alt = format!("{container_root}/{last}");
-        if alt != current
-            && alt != mapped
-            && std::path::Path::new(&alt).is_dir()
-        {
-            share.ganesha_path = Some(alt.clone());
-            return Some(format!(
-                "share '{}': auto-set ganesha_path to '{}' (leaf directory fallback)",
-                share.name, alt
-            ));
-        }
-    }
-
-    None
-}
-
 #[cfg(test)]
-mod bind_path_tests {
+mod container_path_validation_tests {
     use super::*;
     use std::path::PathBuf;
 
-    #[test]
-    fn var_data_bind_maps_nvme_raid_users() {
-        assert_eq!(
-            share_container_path_mapped(
-                "/export",
-                Some("/var/data"),
-                &Share {
-                    name: "users".into(),
-                    host_path: PathBuf::from("/var/data/nvme-raid/users"),
-                    ..Default::default()
-                },
-            ),
-            "/export/nvme-raid/users"
-        );
-    }
-
-    #[test]
-    fn first_segment_heuristic_preserved_without_bind_prefix() {
-        assert_eq!(
-            share_container_path_mapped(
-                "/export",
-                None,
-                &Share {
-                    name: "data".into(),
-                    host_path: PathBuf::from("/media/SSD/data"),
-                    ..Default::default()
-                },
-            ),
-            "/export/SSD/data"
-        );
-    }
-
-    #[test]
-    fn ensure_share_corrects_wrong_explicit_ganesha_path() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let export = dir.path().join("export");
-        let users = export.join("nvme-raid").join("users");
-        std::fs::create_dir_all(&users).expect("mkdir");
-
-        let root = export.to_string_lossy().into_owned();
-        let mut share = Share {
-            name: "users".into(),
-            host_path: PathBuf::from("/var/data/nvme-raid/users"),
-            ganesha_path: Some("/export/data/nvme-raid/users".into()),
+    fn minimal_share() -> Share {
+        Share {
+            name: "movies".into(),
+            host_path: PathBuf::from("/media/movies"),
+            container_path: "/export/movies".into(),
             ..Default::default()
-        };
+        }
+    }
 
-        let warn = ensure_share_serve_path(&root, Some("/var/data"), &mut share);
-        assert!(warn.is_some());
-        assert_eq!(
-            share.ganesha_path.as_deref(),
-            Some(users.to_string_lossy().as_ref())
-        );
+    fn minimal_cfg_with_share(share: Share) -> NfsKlldapConfig {
+        NfsKlldapConfig {
+            ldap_uri: "ldaps://kllap.test:6360".into(),
+            sssd: crate::SssdSection {
+                ldap_default_bind_dn: "uid=admin,ou=people,dc=test,dc=com".into(),
+                ldap_default_authtok: "sekret".into(),
+                ..Default::default()
+            },
+            shares: vec![share],
+            ..Default::default()
+        }
     }
 
     #[test]
-    fn ensure_share_leaf_fallback_when_bind_unknown() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let export = dir.path().join("export");
-        let stuff = export.join("stuff");
-        std::fs::create_dir_all(&stuff).expect("mkdir stuff");
+    fn container_path_required() {
+        let mut share = minimal_share();
+        share.container_path.clear();
+        let mut cfg = minimal_cfg_with_share(share);
+        let err = cfg.validate_and_derive().unwrap_err().to_string();
+        assert!(err.contains("container_path"));
+    }
 
-        let root = export.to_string_lossy().into_owned();
-        let mut share = Share {
-            name: "stuff".into(),
-            host_path: PathBuf::from("/home/local/Projects/test-nfs-work/stuff"),
-            ..Default::default()
-        };
+    #[test]
+    fn container_path_must_be_under_container_root() {
+        let mut share = minimal_share();
+        share.container_path = "/other/movies".into();
+        let mut cfg = minimal_cfg_with_share(share);
+        assert!(cfg.validate_and_derive().is_err());
+    }
 
-        ensure_share_serve_path(&root, None, &mut share);
-
-        assert_eq!(
-            share.ganesha_path.as_deref(),
-            Some(stuff.to_string_lossy().as_ref())
-        );
+    #[test]
+    fn serve_path_for_returns_container_path() {
+        let share = minimal_share();
+        let mut cfg = minimal_cfg_with_share(share);
+        cfg.validate_and_derive().expect("valid");
+        assert_eq!(cfg.serve_path_for(&cfg.shares[0]), "/export/movies");
     }
 }

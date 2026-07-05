@@ -657,6 +657,7 @@ ldap_default_authtok = "sekret"
 [[shares]]
 name = "t"
 host_path = "/tmp/d"
+container_path = "/export/d"
 serve_path = "/export/d"
 "#).unwrap();
         let old = std::env::var("NFS_CONFIG").ok();

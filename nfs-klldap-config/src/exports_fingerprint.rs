@@ -69,9 +69,6 @@ pub fn fingerprint_exports_dir(exports_dir: &Path) -> u64 {
 pub fn fingerprint_shares(cfg: &NfsKlldapConfig) -> u64 {
     let mut h: u64 = FNV1A_SEED;
     h = fingerprint_bytes(cfg.storage.container_root.as_bytes(), h);
-    if let Some(ref p) = cfg.storage.host_bind_path {
-        h = fingerprint_bytes(p.as_bytes(), h);
-    }
     h ^= 0x01;
     h = h.wrapping_mul(0x100000001b3);
     for share in &cfg.shares {
@@ -80,9 +77,7 @@ pub fn fingerprint_shares(cfg: &NfsKlldapConfig) -> u64 {
         if let Some(ref p) = share.pseudo_path {
             h = fingerprint_bytes(p.as_bytes(), h);
         }
-        if let Some(ref g) = share.ganesha_path {
-            h = fingerprint_bytes(g.as_bytes(), h);
-        }
+        h = fingerprint_bytes(share.container_path.as_bytes(), h);
         h ^= 0xff;
         h = h.wrapping_mul(0x100000001b3);
     }
@@ -140,6 +135,7 @@ mod tests {
         cfg.shares.push(Share {
             name: "data".into(),
             host_path: PathBuf::from("/media/data"),
+            container_path: "/export/data".into(),
             ..Default::default()
         });
         let fp1 = fingerprint_shares(&cfg);

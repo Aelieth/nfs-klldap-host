@@ -31,9 +31,11 @@ ldap_default_authtok = "sekret"
 [[shares]]
 name = "users"
 host_path = "/media/users"
+container_path = "/export/users"
 [[shares]]
 name = "data"
 host_path = "/media/data"
+container_path = "/export/data"
 "#,
     )
     .unwrap();

@@ -20,6 +20,7 @@ ldap_default_authtok = "sekret"
 [[shares]]
 name = "users"
 host_path = "/media/users"
+container_path = "/export/users"
 security = "krb5p"
 "#;
 
@@ -41,6 +42,7 @@ ldap_default_authtok = "sekret"
 [[shares]]
 name = "users"
 host_path = "/media/users"
+container_path = "/export/users"
 security = "krb5p"
 enable_acl = false
 manage_gids = false
@@ -118,6 +120,7 @@ ldap_default_authtok = "sekret"
 [[shares]]
 name = "movies"
 host_path = "/media/movies"
+container_path = "/export/movies"
 "#;
     let (_tmp, frag, _) = generate_with_mountinfo(MOUNTINFO_EXT4, ext4_toml);
     assert!(!frag.contains("Disable_ACL = true;"), "capable ext4 omits Disable_ACL");

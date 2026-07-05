@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 /// Diagnosis for Ganesha 9.6 ACL-path defect on staging.
 pub const GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB: &str =
     "Ganesha 9.6: Disable_ACL on noacl still lets nfs_access_op see ACL mask in some paths; \
-     use ganesha_path staging on acl-capable tree for full compatibility.";
+     use container_path staging on acl-capable tree for full compatibility.";
 
 /// Researched V9.6 EXPORT keys: no mode-only OP_ACCESS/GETATTR knob when Disa.
 pub fn ganesha_96_has_mode_only_access_knob() -> bool {
@@ -225,6 +225,6 @@ complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
     fn ganesha_96_no_mode_only_knob_documented_and_false() {
         assert!(!ganesha_96_has_mode_only_access_knob());
         assert!(GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB.contains("nfs_access_op"));
-        assert!(GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB.contains("ganesha_path"));
+        assert!(GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB.contains("container_path"));
     }
 }

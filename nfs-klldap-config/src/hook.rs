@@ -63,14 +63,7 @@ fn run_hook_for_share(
     cfg: &NfsKlldapConfig,
     share: &crate::Share,
 ) -> Result<(), ConfigError> {
-    let container_path = cfg.container_path_for(share);
     let serve_path = cfg.serve_path_for(share);
-    let ganesha_path = share
-        .ganesha_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(serve_path.as_str());
 
     eprintln!(
         "INFO [nfs-klldap-config] post_generate_hook: {} (share={})",
@@ -81,9 +74,9 @@ fn run_hook_for_share(
     let mut child = Command::new(hook_path)
         .env("SHARE_NAME", &share.name)
         .env("HOST_PATH", share.host_path.display().to_string())
-        .env("CONTAINER_PATH", &container_path)
+        .env("CONTAINER_PATH", &serve_path)
         .env("SERVE_PATH", &serve_path)
-        .env("GANESHA_PATH", ganesha_path)
+        .env("GANESHA_PATH", &serve_path)
         .env(
             "EXPORT_PATH",
             share.pseudo_path.as_deref().unwrap_or(&format!("/{}", share.name)),

@@ -57,7 +57,7 @@ pub const SHARE_KNOWN_KEYS: &[&str] = &[
     "manage_gids",
     "read_access_policy",
     "manage_gids_expiration",
-    "ganesha_path",
+    "container_path",
 ];
 
 /// Warning for unrecognized keys in a `[[shares]]` table (config still loads).
@@ -66,8 +66,6 @@ pub struct ShareFieldWarning {
     pub share_index: usize,
     pub share_name: Option<String>,
     pub unknown_keys: Vec<String>,
-    /// Set when serve path was auto-corrected or is missing on disk after validation.
-    pub serve_path_hint: Option<String>,
 }
 
 impl ShareFieldWarning {
@@ -88,14 +86,18 @@ impl ShareFieldWarning {
             .as_deref()
             .map(|n| format!("\"{}\"", n))
             .unwrap_or_else(|| format!("index {}", self.share_index));
-        if !self.unknown_keys.is_empty() {
+        if self.unknown_keys.iter().any(|k| k == "ganesha_path") {
             return format!(
-                "share {} (index {}): unrecognized [[shares]] key(s) {:?} — ignored by generator. \
-                 Remove from nfs-klldap.conf or delete this share and re-add via System Settings → Shares.",
-                label, self.share_index, self.unknown_keys
+                "share {} (index {}): `ganesha_path` was renamed to required `container_path` — \
+                 set `container_path` to the directory inside the container (maps to Ganesha Path=).",
+                label, self.share_index
             );
         }
-        self.serve_path_hint.clone().unwrap_or_default()
+        format!(
+            "share {} (index {}): unrecognized [[shares]] key(s) {:?} — ignored by generator. \
+             Remove from nfs-klldap.conf or delete this share and re-add via System Settings → Shares.",
+            label, self.share_index, self.unknown_keys
+        )
     }
 }
 
@@ -103,9 +105,6 @@ impl ShareFieldWarning {
 pub struct StorageSection {
     #[serde(default = "default_container_root")]
     pub container_root: String,
-    /// Host path prefix bind-mounted to `container_root` (e.g. `/var/data` when using
-    /// `/var/data:/export`). When set, overrides mountinfo auto-detection for path mapping.
-    pub host_bind_path: Option<String>,
 }
 
 fn default_container_root() -> String {
@@ -250,7 +249,8 @@ pub struct Share {
     pub manage_gids: Option<bool>,
     pub read_access_policy: Option<String>,
     pub manage_gids_expiration: Option<u64>, // further ACL
-    pub ganesha_path: Option<String>,
+    /// Absolute path inside the container where Ganesha serves this share (EXPORT Path=).
+    pub container_path: String,
     /// Umask (octal e.g. "0022") emitted *inside* FSAL block on ACL path only.
     /// Default "0022" sensible for creation; pairs with directory default ACLs.
     /// Omitted on NOACL path to preserve separation (host umask governs).
@@ -285,7 +285,7 @@ impl Default for Share {
             manage_gids: None,
             read_access_policy: None,
             manage_gids_expiration: None,
-            ganesha_path: None,
+            container_path: String::new(),
             umask: None,
         }
     }

@@ -8,7 +8,7 @@ Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+de
 
 | Contract                  | Rule |
 |---------------------------|------|
-| `host_path` vs container  | UI + allow-list + ownership use the host-visible absolute path (unchanged). The *effective* internal container/serve location for Ganesha EXPORT `Path=` , fs probes, *and* WebUI permission tree / `get_dir_meta` (owner/group/mode display) / ACLs / chown+chmod applies is `serve_path_for(share)`: `ganesha_path` when set (explicit override for staging or non-standard bind depths), otherwise the derived container path. Default derivation: when `storage.host_bind_path` is set (or auto-detected from mountinfo for `container_root`), strip that full host prefix and append the remainder under `container_root`; otherwise fall back to first-segment-drop (`/media/SSD/data` → `/export/SSD/data`). `pseudo_path` (defaults to `/<name>`) controls *only* the client-visible Pseudo path. Example: bind `/var/data:/export` + `host_path = "/var/data/nvme-raid/users"` maps to `/export/nvme-raid/users` via `host_bind_path = "/var/data"` or mountinfo auto-detect; wrong explicit `ganesha_path = "/export/data/nvme-raid/users"` is auto-corrected on load when the bind-aware path exists. Translation only at the syscall boundary (`FsManager`). |
+| `host_path` vs container  | UI + allow-list + ownership use the host-visible absolute path (unchanged). Each share requires `container_path`: the absolute directory inside the container where Ganesha serves the export (EXPORT `Path=`), fs probes run, and the WebUI permission tree / `get_dir_meta` / ACLs / chown+chmod apply (`serve_path_for(share)` returns `container_path`). `pseudo_path` (defaults to `/<name>`) controls *only* the client-visible Pseudo path. Example: bind `/var/data:/export` with `host_path = "/var/data/nvme-raid/users"` → set `container_path = "/export/nvme-raid/users"`. Translation only at the syscall boundary (`FsManager`). |
 | Hostname                  | `get_consistent_hostname()` (hostname(1) == /proc/sys/kernel/hostname). Mismatch → loud diagnostic. `--uts=host` is the normal way to get the real name. |
 | Realm                     | Strictly required. No silent EXAMPLE.COM. Auto-derived from ldap_uri host or NFS_KLLDAP_KERBEROS_REALM. |
 | ldap_uri                  | DNS hostname only (IP rejected). Forward+reverse DNS required. Keytab: `nfs/<short>@REALM` and `nfs/<fqdn>@REALM` when they differ (`--uts=host`). |
@@ -19,7 +19,7 @@ Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+de
 
 ```yaml
 volumes:
-  - /media/:/export:rw                # Recommended: single (or multiple) root-level bind(s) of host parent dir(s). First dir of each share's host_path is the implicit bind root; tail becomes subpath under container_root (unless overridden by `ganesha_path`). `ganesha_path` controls the effective container path used for Ganesha *and* WebUI. pseudo_path is only for the client Pseudo (can be short).
+  - /media/:/export:rw                # Recommended: bind host parent dir(s) to container_root. Each share sets container_path to the internal serve directory (e.g. /export/NVME-RAID/movies). pseudo_path is only for the client Pseudo (can be short).
   - ./config:/config:rw               # nfs-klldap.conf (single source)
   - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 ```
@@ -28,18 +28,18 @@ See container/healthcheck.sh for service checks. See TESTING.md for test coverag
 
 ## ACL and filesystem compatibility
 
-At validate/generate time nfs-klldap-config probes `/proc/self/mountinfo` for each share's **serve path** (`ganesha_path` when set, otherwise the derived container path from `host_path`). The generator maintains two distinct supported mainline paths:
+At validate/generate time nfs-klldap-config probes `/proc/self/mountinfo` for each share's **serve path** (`container_path`). The generator maintains two distinct supported mainline paths:
 
 - ACL-capable (ext4, xfs, btrfs+acl, or explicit `enable_acl=true`): full native NFSv4 ACL behavior.
 - NOACL/limited (btrfs+noacl, vfat/fat, ntfs, or explicit `enable_acl=false`): 0.9.40-style simple disk/share settings (`Pseudo = /<name>;` from `pseudo_path` or share name, plus `Disable_ACL = true; Manage_Gids = true; Read_Access_Check_Policy = pre;` (auto default; explicit `manage_gids=false` overrides) emitted before SecType; no per-export Enable_NLM/Enable_RQUOTA/POSIX marker). Explicit pre (no quotes) access check policy for noacl mounts. Auto-detect via fstype+noacl mountopt (overrides allowed). WebUI disables the Pseudo field on NOACL shares and shows the derived value as muted info.
 
 Limited filesystems automatically use the NOACL path — basic file reads and connectivity work for noacl clients (per 0.9.40). Identity resolution (UID/GID/groups via 0.9.65 nss/idhelper/UseGetpwnam) is shared by both paths.
 
-**Ganesha 9.6 ACL-path limitation (not a regression fix):** On direct noacl, some OP_ACCESS/GETATTR may still surface NFS4ERR_NOTSUPP under ACL masks in ganesha.log for certain clients. Use `ganesha_path` staging + post-generate hook to an ACL-capable tree when full-feature `ls` / extended ACLs are required on the share. Staging remains supported.
+**Ganesha 9.6 ACL-path limitation (not a regression fix):** On direct noacl, some OP_ACCESS/GETATTR may still surface NFS4ERR_NOTSUPP under ACL masks in ganesha.log for certain clients. Use `container_path` staging + post-generate hook to an ACL-capable tree when full-feature `ls` / extended ACLs are required on the share. Staging remains supported.
 
 Preflight identity uses `ganesha_identity_pipeline` (tempdir materialize + nss contract) plus runtime nss materialize, socket GRPS, `ganesha-ctl id-resolve`, and ganesha.log uid2grp tags — the same nss_wrapper getent path Ganesha uses at request time per `idmap_log_contract`.
 
-**Staging pattern:** set `ganesha_path` to an ACL-capable tree (e.g. ext4 under `/export/staging/...`) while keeping `host_path` for WebUI chown and validation. Use `[ganesha] post_generate_hook` (see `examples/post-generate-staging-sync.sh`) to sync data into the staging path after each generate.
+**Staging pattern:** set `container_path` to an ACL-capable tree (e.g. ext4 under `/export/staging/...`) while keeping `host_path` for WebUI chown and validation. Use `[ganesha] post_generate_hook` (see `examples/post-generate-staging-sync.sh`) to sync data into the staging path after each generate.
 
 | Filesystem | Typical behavior |
 |------------|------------------|
@@ -48,7 +48,7 @@ Preflight identity uses `ganesha_identity_pipeline` (tempdir materialize + nss c
 | btrfs + `noacl` | NOACL path (0.9.40-style: Disable_ACL + Manage_Gids=true auto); basics work; may need staging for some clients |
 | vfat/fat, ntfs | NOACL path (auto) |
 
-Explicit `enable_acl` / `manage_gids` in nfs-klldap.conf override probe defaults. On limited filesystems (detected via mountinfo or ganesha_path), NOACL settings applied automatically; capable default to full native. The two paths coexist. Diagnose with `ganesha_log_contract`: ACL-path NOTSUPP vs identity-path NOTSUPP.
+Explicit `enable_acl` / `manage_gids` in nfs-klldap.conf override probe defaults. On limited filesystems (detected via mountinfo at `container_path`), NOACL settings applied automatically; capable default to full native. The two paths coexist. Diagnose with `ganesha_log_contract`: ACL-path NOTSUPP vs identity-path NOTSUPP.
 
 ## NFS create inheritance, umask, and ACL default entries
 

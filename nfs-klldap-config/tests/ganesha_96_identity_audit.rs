@@ -20,6 +20,7 @@ ldap_default_authtok = "sekret"
 [[shares]]
 name = "users"
 host_path = "/media/users"
+container_path = "/export/users"
 security = "krb5p"
 "#;
 
@@ -159,7 +160,7 @@ Ganesha 9.6 krb5p identity chain (this build):
 3. _MSPAC_SUPPORT stubs uid2grp_allocate_by_principal in uid2grp.c — principal-based group path unavailable.
 4. UseGetpwnam=true: uid2grp_allocate_by_uid -> getpwuid_r -> pw_name (short) -> getgrouplist(pw_name, pw_gid).
 5. Auto NOACL exports emit Manage_Gids=true; explicit manage_gids=false skips AUTH_SYS managed gids only — krb5p/krb5i still call rpcsec_gss_fetch_managed_groups -> uid2grp path above.
-6. NOACL path (0.9.40-style): Disable_ACL=true + Manage_Gids=true auto (simple, no Read_Access post); ACL path uses native. Ganesha 9.6 may still ACL-check OP_ACCESS on direct noacl — use ganesha_path staging when full ls needed.
+6. NOACL path (0.9.40-style): Disable_ACL=true + Manage_Gids=true auto (simple, no Read_Access post); ACL path uses native. Ganesha 9.6 may still ACL-check OP_ACCESS on direct noacl — use container_path staging when full ls needed.
 
 Addressed (via idhelper materialization + nss_wrapper):
 - Root uid0 + supplemental groups materialized for reliable getpwuid_r / getgrouplist under nss_wrapper.

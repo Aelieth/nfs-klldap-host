@@ -14,6 +14,7 @@ ldap_default_authtok = "sekret"
 [[shares]]
 name = "data"
 host_path = "/media/data"
+container_path = "/export/data"
 "#;
 
 fn recycle_marker_for(tmp: &tempfile::TempDir) -> PathBuf {

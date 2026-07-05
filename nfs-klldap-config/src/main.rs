@@ -215,7 +215,6 @@ fn handle_fs_warnings(path: &Path) -> Result<(), ConfigError> {
 }
 
 fn print_share_probe_line(cfg: &NfsKlldapConfig, s: &Share, dry_run: bool) {
-    let container = cfg.container_path_for(s);
     let serve = cfg.serve_path_for(s);
     let caps = probe_fs_capabilities(Path::new(&serve)).unwrap_or_else(|_| FsCapabilities {
         fstype: "unknown".into(),
@@ -225,10 +224,9 @@ fn print_share_probe_line(cfg: &NfsKlldapConfig, s: &Share, dry_run: bool) {
     if !caps.acl_capable {
         let eff = compute_effective_flags(s, &caps);
         println!(
-            "  - {} → host:{}  container:{}  serve:{}  fs:{} acl_capable=false effective_enable_acl={} effective_manage_gids={}",
+            "  - {} → host:{}  serve:{}  fs:{} acl_capable=false effective_enable_acl={} effective_manage_gids={}",
             s.name,
             s.host_path.display(),
-            container,
             serve,
             caps.fstype,
             eff.enable_acl,
@@ -238,10 +236,9 @@ fn print_share_probe_line(cfg: &NfsKlldapConfig, s: &Share, dry_run: bool) {
     }
     if dry_run {
         println!(
-            "  - {} → host:{}  container:{}  serve:{}",
+            "  - {} → host:{}  serve:{}",
             s.name,
             s.host_path.display(),
-            container,
             serve
         );
     } else {

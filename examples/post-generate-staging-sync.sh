@@ -1,5 +1,5 @@
 #!/bin/sh
-# Example post-generate hook: sync host data tree into ganesha_path staging (idempotent rsync).
+# Example post-generate hook: sync host data tree into container_path staging (idempotent rsync).
 # Configure in nfs-klldap.conf:
 #   [ganesha]
 #   post_generate_hook = "/config/post-generate-staging-sync.sh"

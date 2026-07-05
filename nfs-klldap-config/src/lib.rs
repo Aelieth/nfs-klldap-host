@@ -728,11 +728,13 @@ mod tests {
                 Share {
                     name: "movies".into(),
                     host_path: "/media/SSD/movies".into(),
+                    container_path: "/export/SSD/movies".into(),
                     ..Default::default()
                 },
                 Share {
                     name: "data".into(),
                     host_path: "/media/SSD/data".into(),
+                    container_path: "/export/SSD/data".into(),
                     security: Some("krb5i".into()),
                     ..Default::default()
                 },
@@ -751,7 +753,7 @@ mod tests {
         assert_eq!(c.effective_realm(), "TEST");
         assert!(c.sssd.port.is_some());
         assert_eq!(c.shares.len(), 2);
-        assert_eq!(c.container_path_for(&c.shares[0]), "/export/SSD/movies");
+        assert_eq!(c.serve_path_for(&c.shares[0]), "/export/SSD/movies");
     }
 
     #[test]
@@ -931,6 +933,7 @@ mod tests {
         c.shares.push(Share {
             name: "movies".into(),
             host_path: "/x".into(),
+            container_path: "/export".into(),
             ..Default::default()
         });
         assert!(c.validate_and_derive().is_err());
@@ -1029,6 +1032,7 @@ mod tests {
             [[shares]]
             name = "movies"
             host_path = "/media/movies"
+            container_path = "/export/movies"
             enable_acll = true
         "#;
         fs::write(&path, toml).unwrap();
@@ -1052,6 +1056,7 @@ mod tests {
             [[shares]]
             name = "movies"
             host_path = "/media/movies"
+            container_path = "/export/movies"
             manage_gids = false
         "#;
         fs::write(&path, toml).unwrap();
@@ -1073,6 +1078,7 @@ mod tests {
             [[shares]]
             name = "movies"
             host_path = "/media/movies"
+            container_path = "/export/movies"
             enable_acl = false
         "#;
         fs::write(&path, toml).unwrap();
@@ -1094,6 +1100,7 @@ mod tests {
             [[shares]]
             name = "movies"
             host_path = "/media/movies"
+            container_path = "/export/movies"
             export_path = "/legacy-movies"
         "#;
         fs::write(&path, toml).unwrap();
@@ -1149,6 +1156,7 @@ mod tests {
             shares: vec![Share {
                 name: "t".into(),
                 host_path: "/t".into(),
+                container_path: "/export".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -1180,6 +1188,7 @@ mod tests {
             shares: vec![Share {
                 name: "t".into(),
                 host_path: "/t".into(),
+                container_path: "/export".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -1210,6 +1219,7 @@ mod tests {
             shares: vec![Share {
                 name: "t".into(),
                 host_path: "/t".into(),
+                container_path: "/export".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -1237,6 +1247,7 @@ mod tests {
             shares: vec![Share {
                 name: "t".into(),
                 host_path: "/t".into(),
+                container_path: "/export".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -1331,6 +1342,7 @@ mod tests {
                 shares: vec![Share {
                     name: "t".into(),
                     host_path: "/t".into(),
+                    container_path: "/export".into(),
                     ..Default::default()
                 }],
                 ..Default::default()

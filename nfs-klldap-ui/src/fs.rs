@@ -452,15 +452,9 @@ impl FsManager {
     }
 
     /// Normalizes a path for prefix matching by stripping trailing slashes.
-    /// Avoids prefix mismatches from trailing slashes in UI or config.
+    /// Delegates to shared impl in nfs-klldap-config to eliminate duplication.
     fn normalize_for_matching(&self, p: &Path) -> PathBuf {
-        let s = p.to_string_lossy();
-        let trimmed = s.trim_end_matches('/');
-        if trimmed.is_empty() {
-            PathBuf::from("/")
-        } else {
-            PathBuf::from(trimmed)
-        }
+        PathBuf::from(nfs_klldap_config::normalize_path(&p.to_string_lossy()))
     }
 }
 

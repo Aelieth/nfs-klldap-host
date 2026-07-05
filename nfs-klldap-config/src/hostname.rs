@@ -348,6 +348,17 @@ pub fn parse_host_nfs_env_value(value: &str) -> bool {
     t == "true" || t == "1" || t == "yes" || t == "on"
 }
 
+/// True when NFS_KLLDAP_WEBUI_TLS signals reverse-proxy TLS (off/false/0/no).
+/// Central helper to eliminate repeated ad-hoc env checks.
+pub fn webui_tls_disabled() -> bool {
+    if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
+        let t = v.trim().to_ascii_lowercase();
+        t == "off" || t == "false" || t == "0" || t == "no"
+    } else {
+        false
+    }
+}
+
 /// HOST_NFS / NFS_KLLDAP_HOST_NFS env override, if set.
 pub fn host_nfs_from_env() -> Option<bool> {
     std::env::var("HOST_NFS")

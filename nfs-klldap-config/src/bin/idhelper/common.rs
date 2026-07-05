@@ -7,7 +7,7 @@ use std::path::Path;
 
 use nfs_klldap_config::{
     any_share_manage_gids_enabled, runtime_realm_from_disk,
-    runtime_server_variants_from_disk, NfsKlldapConfig,
+    runtime_server_variants_from_disk, NfsKlldapConfig, FNV1A_SEED,
 };
 use nfs_klldap_identity::{
     is_numeric_local_principal, machine_short_name, normalize_principal, principal_has_realm,
@@ -137,7 +137,7 @@ impl IdCache {
     pub(crate) fn content_fingerprint(&self) -> u64 {
         let mut keys: Vec<_> = self.entries.keys().collect();
         keys.sort();
-        let mut h: u64 = 0xcbf29ce484222325;
+        let mut h: u64 = FNV1A_SEED;
         for k in keys {
             if let Some(r) = self.entries.get(k) {
                 for b in k

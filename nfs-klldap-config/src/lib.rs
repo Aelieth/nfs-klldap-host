@@ -39,7 +39,7 @@ pub use validate::detect_share_unknown_keys;
 pub mod ignored_attributes;
 pub use error::ConfigError;
 pub use exports_fingerprint::{
-    fingerprint_exports_dir, fingerprint_identity_artifacts,
+    fingerprint_exports_dir, fingerprint_identity_artifacts, FNV1A_SEED,
 };
 pub use ganesha_liveness::{
     discover_ganesha_daemon_pid, ganesha_is_live, pgrep_live_pids, pgrep_pids, process_is_live,
@@ -56,8 +56,8 @@ pub use signals::{
 pub use constants::PROC_COMM_NAME_MAX;
 
 pub use fs_probe::{
-    compute_effective_flags, compute_read_access_policy_emit, probe_from_mountinfo,
-    probe_fs_capabilities, EffectiveShareFlags, ReadAccessPolicyEmit,
+    compute_effective_flags, compute_read_access_policy_emit, normalize_path,
+    probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags, ReadAccessPolicyEmit,
     FsCapabilities,
 };
 pub use ganesha_log_contract::{
@@ -176,27 +176,9 @@ fn resolve_idhelper_bin() -> String {
     "nfs-klldap-idhelper".into()
 }
 
-fn resolve_ganesha_ctl_bin() -> Option<String> {
-    if let Ok(p) = std::env::var("GANESHA_CTL_BIN") {
-        let p = p.trim().to_string();
-        if !p.is_empty() && std::path::Path::new(&p).exists() {
-            return Some(p);
-        }
-    }
-    for cand in [
-        "/usr/local/bin/ganesha-ctl",
-        "/container/scripts/ganesha-ctl",
-    ] {
-        if std::path::Path::new(cand).exists() {
-            return Some(cand.to_string());
-        }
-    }
-    None
-}
-
 /// ganesha-ctl id-resolve exercises uid2grp/getent group path (shipped Ganesha diag
 fn probe_ganesha_id_resolve(principal: &str) -> Option<(bool, String)> {
-    let ctl = resolve_ganesha_ctl_bin()?;
+    let ctl = ganesha_readiness::resolve_ganesha_ctl_bin()?;
     let idh = resolve_idhelper_bin();
     let nss = GaneshaNssEnv::from_runtime_defaults();
     let mut cmd = std::process::Command::new(&ctl);
@@ -498,6 +480,7 @@ pub use hostname::{
     looks_like_docker_default_hostname, nfs_keytab_host_matches, nfs_keytab_host_variants,
     parse_host_nfs_env_value, resolve_host_nfs_mode, runtime_hostname, runtime_realm,
     runtime_realm_from_disk, runtime_server_variants, runtime_server_variants_from_disk,
+    webui_tls_disabled,
     ConsistentHostname, HostnameInconsistency, HostnameObservation, HostnameSource,
 };
 pub use persist::{is_persistent_config, load_host_paths_only};

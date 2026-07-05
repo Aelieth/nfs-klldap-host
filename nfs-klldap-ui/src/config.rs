@@ -36,9 +36,9 @@ pub fn load_config_from(path: &Path) -> Result<Config, String> {
 }
 
 /// Return host_path values the WebUI may manage.
-/// Values come from configured shares.
+/// Values come from configured shares (delegates to central impl).
 pub fn all_managed_roots(cfg: &Config) -> Vec<PathBuf> {
-    cfg.shares.iter().map(|s| s.host_path.clone()).collect()
+    cfg.host_paths()
 }
 
 /// Returns LDAP bind identity and password from NFS_KLLDAP_LLDAP_* env.

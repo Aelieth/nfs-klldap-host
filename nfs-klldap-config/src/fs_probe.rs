@@ -169,7 +169,7 @@ fn path_under_mount(path: &str, mount_point: &str) -> bool {
     path.starts_with(&format!("{mount_point}/"))
 }
 
-fn normalize_path(path: &str) -> String {
+pub fn normalize_path(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
         "/".to_string()

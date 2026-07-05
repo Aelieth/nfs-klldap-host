@@ -35,16 +35,7 @@ pub struct TlsPaths {
 
 /// True when NFS_KLLDAP_WEBUI_TLS=off; reverse proxy serves TLS instead.
 pub fn webui_tls_disabled() -> bool {
-    if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
-        let t = v.trim().to_ascii_lowercase();
-        if t == "off" || t == "false" || t == "0" || t == "no" {
-            return true;
-        }
-        if t == "on" || t == "true" || t == "1" || t == "yes" {
-            return false;
-        }
-    }
-    false
+    nfs_klldap_config::webui_tls_disabled()
 }
 
 /// SAN entries used for the self-signed WebUI certificate (for startup banners).

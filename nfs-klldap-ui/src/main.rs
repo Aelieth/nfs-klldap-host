@@ -179,9 +179,8 @@ async fn main() {
     // NFS_KLLDAP_WEBUI_BIND is used for TLS and plain-http modes. Plain-http.
     let addr = std::env::var("NFS_KLLDAP_WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
     // Enables TLS when NFS_KLLDAP_WEBUI_TLS or [webui].tls requests it.
-    let webui_tls_off = if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
-        let t = v.trim().to_ascii_lowercase();
-        t == "off" || t == "false" || t == "0" || t == "no"
+    let webui_tls_off = if nfs_klldap_config::webui_tls_disabled() {
+        true
     } else if let Some(t) = config.webui.tls {
         !t
     } else {

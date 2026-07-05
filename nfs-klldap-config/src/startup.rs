@@ -583,12 +583,7 @@ pub fn webui_setup_url() -> String {
                 .filter(|h| !h.is_empty())
         })
         .unwrap_or_else(|| "localhost".to_string());
-    let tls_off = std::env::var("NFS_KLLDAP_WEBUI_TLS")
-        .map(|v| {
-            let t = v.trim().to_ascii_lowercase();
-            t == "off" || t == "false" || t == "0" || t == "no"
-        })
-        .unwrap_or(false);
+    let tls_off = crate::webui_tls_disabled();
     let scheme = if tls_off { "http" } else { "https" };
     format!("{scheme}://{host}:9630/setup")
 }

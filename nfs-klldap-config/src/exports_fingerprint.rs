@@ -3,6 +3,9 @@
 use std::fs;
 use std::path::Path;
 
+/// FNV-1a seed (shared with IdCache content fingerprint and file fingerprints).
+pub const FNV1A_SEED: u64 = 0xcbf29ce484222325;
+
 /// FNV-1a over raw bytes (shared by export-dir and identity-artifact helpers)
 pub fn fingerprint_bytes(bytes: &[u8], mut h: u64) -> u64 {
     for &b in bytes {
@@ -17,7 +20,7 @@ pub fn fingerprint_file(path: &Path) -> u64 {
     let Ok(bytes) = fs::read(path) else {
         return 0;
     };
-    fingerprint_bytes(&bytes, 0xcbf29ce484222325)
+    fingerprint_bytes(&bytes, FNV1A_SEED)
 }
 
 /// Combined fingerprint of SSSD/Kerberos/idmap derived configs.
@@ -26,7 +29,7 @@ pub fn fingerprint_identity_artifacts(
     krb5_conf: &Path,
     idmap_conf: &Path,
 ) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
+    let mut h: u64 = FNV1A_SEED;
     for path in [sssd_conf, krb5_conf, idmap_conf] {
         let fp = fingerprint_file(path);
         h ^= fp;
@@ -37,7 +40,7 @@ pub fn fingerprint_identity_artifacts(
 
 /// FNV-1a over sorted export fragment contents (empty dir → 0)
 pub fn fingerprint_exports_dir(exports_dir: &Path) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
+    let mut h: u64 = FNV1A_SEED;
     let Ok(entries) = fs::read_dir(exports_dir) else {
         return 0;
     };

@@ -467,9 +467,8 @@ impl NfsKlldapConfig {
             self.sssd.ldap_id_use_start_tls = Some(t == "true" || t == "1" || t == "yes" || t == "on");
         }
 
-        if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
-            let t = v.trim().to_ascii_lowercase();
-            let disabled = t == "off" || t == "false" || t == "0" || t == "no";
+        if std::env::var("NFS_KLLDAP_WEBUI_TLS").is_ok() {
+            let disabled = crate::webui_tls_disabled();
             self.webui.tls = Some(!disabled);
         }
         if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS_CERT") {

@@ -252,7 +252,7 @@ pub fn probe_ganesha_process_groups(pid: u32, who: &str) -> Option<Vec<u32>> {
     probe_id_g_under_env(who, &envp)
 }
 
-fn resolve_ganesha_ctl_bin() -> Option<String> {
+pub(crate) fn resolve_ganesha_ctl_bin() -> Option<String> {
     if let Ok(p) = std::env::var("GANESHA_CTL_BIN") {
         let p = p.trim().to_string();
         if !p.is_empty() && Path::new(&p).exists() {

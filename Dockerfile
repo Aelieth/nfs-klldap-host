@@ -3,8 +3,23 @@ ARG FEDORA_VERSION=44
 FROM registry.fedoraproject.org/fedora-minimal:${FEDORA_VERSION} AS chef
 
 # Build deps for Rust (openldap-clients for ldapsearch is in runtime only; used by setup wizard probes)
+# openssl-devel + krb5-devel removed (2026 audit): we only use rustls+ring (no openssl-sys linking).
+# perl + pkgconf also removed: see detailed analysis below.
+#
+# perl:
+#   - ring uses it only for perlasm source generation when building *from a git checkout of ring itself*.
+#   - For published ring crate (our case): pregenerated/ dir is used directly.
+#   - aws-lc-sys only enables Perl (via DISABLE_PERL=OFF) when NO_PREGENERATED_SRC or FIPS/bindgen paths.
+#   - On our targets + normal features we get pregenerated sources under generated-src/.
+#
+# pkgconf (pkg-config binary):
+#   - No "pkg-config" Rust crate in our tree at all.
+#   - aws-lc/CMakeLists.txt does a QUIET find_package(PkgConfig) only for optional unwind tests + .pc file generation.
+#   - Was probably only needed historically alongside the removed *-devel packages.
+#
+# gcc + make are still required (used by the cc and cmake crates for ring + aws-lc-sys).
 RUN microdnf install -y --assumeyes \
-        shadow-utils pkgconf openssl-devel gcc make perl curl gzip krb5-devel \
+        shadow-utils gcc make curl gzip \
     && microdnf clean all
 
 # Non-root build user
@@ -92,6 +107,16 @@ ENV NSS_EXTRAUSERS_GROUP=/var/lib/extrausers/group
 # ca-certificates must be installed before adding the HTTPS backports source.
 # Keep apt installs separate from nsswitch sed: a trailing "|| true" on those
 # seds previously made the whole RUN succeed even when apt-get install failed.
+#
+# 2026 package audit notes (see plan.md):
+#   Core: nfs-ganesha* (Ganesha 9.6 VFS), sssd* + libnss-sss (identity via LLDAP + nsswitch files+extrausers+sss),
+#         libnss-wrapper + libnss-extrausers (nss_wrapper + extrausers materialization for idhelper/Ganesha),
+#         krb5-user (klist/keytab for startup + ganesha-ctl), acl (getfacl/setfacl for WebUI ACL editor).
+#   Daemons/helpers: dbus (dbus-daemon + dbus-send for Ganesha bus), rpcbind (best-effort, 111 compat),
+#         inotify-tools (conf-watcher), procps (pgrep/pkill in supervisor/health), iproute2 (ip/ss for bridge/net checks).
+#   Probes: ldap-utils (ldapsearch in startup wizard bind/DNS checks), netcat-openbsd (nc in ldap reachability).
+#   Base debian:13-slim already provides: hostname, findutils, dpkg (for dpkg-architecture), coreutils (id/getent/timeout), etc.
+#   Removed as unused: openssl (no /usr/bin/openssl calls anywhere), hostname (redundant with base).
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates; \
@@ -106,7 +131,6 @@ RUN set -eux; \
         inotify-tools procps iproute2 netcat-openbsd \
         ldap-utils \
         libnss-wrapper libnss-extrausers \
-        openssl hostname \
         acl; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*

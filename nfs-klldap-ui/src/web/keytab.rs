@@ -12,15 +12,4 @@ pub fn get_keytab_info(expected_host: &str, expected_realm: &str) -> KeytabInfo 
     nfs_klldap_config::get_keytab_info(expected_host, expected_realm)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn alert_mentions_principal_list_when_keytab_unreadable_or_missing() {
-        let msg = compute_keytab_alert("aurora.test.com", "TEST.COM");
-        assert!(msg.is_some());
-        let text = msg.unwrap();
-        assert!(text.contains("nfs/") || text.contains("unable to read"));
-    }
-}

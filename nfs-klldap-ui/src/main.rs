@@ -314,3 +314,28 @@ async fn main() {
             .expect("WebUI HTTPS server failed");
     }
 }
+
+#[cfg(test)]
+pub fn create_test_lldap() -> crate::ldap::LdapClient {
+    crate::ldap::LdapClient::new_with_attributes(
+        "ldaps://localhost:6360",
+        "ou=people,dc=test,dc=com",
+        "ou=groups,dc=test,dc=com",
+        nfs_klldap_config::PosixAttributeMapping {
+            user_object_class: "posixAccount".to_string(),
+            group_object_class: "posixGroup".to_string(),
+            user_name: "uid".to_string(),
+            user_uid_number: "uidNumber".to_string(),
+            user_gid_number: "gidNumber".to_string(),
+            user_home_directory: "homeDirectory".to_string(),
+            user_shell: "loginShell".to_string(),
+            user_full_name: "displayName".to_string(),
+            group_name: "cn".to_string(),
+            group_gid_number: "gidNumber".to_string(),
+            group_member: "member".to_string(),
+            user_principal_name: "krbPrincipalName".to_string(),
+        },
+        true,
+        false,
+    )
+}

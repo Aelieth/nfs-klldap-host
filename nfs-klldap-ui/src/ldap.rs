@@ -56,8 +56,6 @@ pub struct LdapClient {
 #[derive(Debug, Clone)]
 pub struct User {
     pub id: String,
-    #[allow(dead_code)]
-    pub dn: String,
     pub display_name: Option<String>,
     pub uid_number: Option<i32>,
 }
@@ -65,8 +63,6 @@ pub struct User {
 #[derive(Debug, Clone)]
 pub struct Group {
     pub id: String,
-    #[allow(dead_code)]
-    pub dn: String,
     pub display_name: Option<String>,
     pub gid_number: Option<i32>,
 }
@@ -450,8 +446,6 @@ impl LdapClient {
     pub async fn resolve_user(&self, name: &str) -> Option<(i32, String)> {
         // Direct delegate to shared resolver (caches deduped out of UI). 1 sentence.
         let name_owned = name.to_string();
-        let filter = self.user_filter_by_name(name);
-        let user_base = self.user_base.clone();
         let resolved = self
             .with_identity(move |resolver, bind_dn, bind_pw| {
                 resolver.resolve_user(&name_owned, bind_dn, bind_pw)
@@ -459,12 +453,7 @@ impl LdapClient {
             .await?;
 
         let (uid, _, display) = resolved;
-        let dn = self
-            .fetch_entry_dn(&user_base, &filter)
-            .await
-            .unwrap_or_default();
-
-        let _user = User { id: name.to_string(), dn, display_name: Some(display.clone()), uid_number: Some(uid) };
+        let _user = User { id: name.to_string(), display_name: Some(display.clone()), uid_number: Some(uid) };
         Some((uid, display))
     }
 
@@ -494,11 +483,6 @@ impl LdapClient {
     /// Resolves uidNumber to a user name and fills caches via subtree search.
     pub async fn resolve_user_by_uid(&self, uid: i32) -> Option<(String, String)> {
         // Delegate uid lookup to resolver (caches deduped). 1 sentence.
-        let filter = format!(
-            "(&(objectClass={})({}={}))",
-            self.posix_attributes.user_object_class, self.posix_attributes.user_uid_number, uid
-        );
-        let user_base = self.user_base.clone();
         let resolved = self
             .with_identity(move |resolver, bind_dn, bind_pw| {
                 resolver.resolve_user_by_uid(uid, bind_dn, bind_pw)
@@ -506,7 +490,6 @@ impl LdapClient {
             .await?;
 
         let (id, display) = resolved;
-        let _dn = self.fetch_entry_dn(&user_base, &filter).await.unwrap_or_default();
         Some((id, display))
     }
 
@@ -514,12 +497,6 @@ impl LdapClient {
     /// Uses dedicated 10m cache.
     pub async fn resolve_group_by_gid(&self, gid: i32) -> Option<(String, String)> {
         // gid cache delegated.
-
-        let filter = format!(
-            "(&(objectClass={})({}={}))",
-            self.posix_attributes.group_object_class, self.posix_attributes.group_gid_number, gid
-        );
-        let group_base = self.group_base.clone();
         let resolved = self
             .with_identity(move |resolver, bind_dn, bind_pw| {
                 resolver.resolve_group_by_gid(gid, bind_dn, bind_pw)
@@ -527,14 +504,8 @@ impl LdapClient {
             .await?;
 
         let (id, display) = resolved;
-        let dn = self
-            .fetch_entry_dn(&group_base, &filter)
-            .await
-            .unwrap_or_default();
-
         let _group = Group {
             id: id.clone(),
-            dn,
             display_name: Some(display.clone()),
             gid_number: Some(gid),
         };
@@ -559,7 +530,6 @@ impl LdapClient {
                     &q_lower,
                     User {
                         id,
-                        dn: String::new(),
                         display_name: Some(display),
                         uid_number: uid,
                     },
@@ -585,14 +555,13 @@ impl LdapClient {
                 })
                 .await
             {
-                for (id, uid, display, dn) in rows {
+                for (id, uid, display, _dn) in rows {
                     Self::try_push_user(
                         &mut results,
                         &mut seen_ids,
                         &q_lower,
                         User {
                             id,
-                            dn,
                             display_name: Some(display),
                             uid_number: uid,
                         },
@@ -636,7 +605,6 @@ impl LdapClient {
                     &q_lower,
                     Group {
                         id,
-                        dn: String::new(),
                         display_name: Some(display),
                         gid_number: gid,
                     },
@@ -661,14 +629,13 @@ impl LdapClient {
                 })
                 .await
             {
-                for (id, gid, display, dn) in rows {
+                for (id, gid, display, _dn) in rows {
                     Self::try_push_group(
                         &mut results,
                         &mut seen_ids,
                         &q_lower,
                         Group {
                             id,
-                            dn,
                             display_name: Some(display),
                             gid_number: gid,
                         },
@@ -837,7 +804,6 @@ mod list_search_tests {
             "",
             User {
                 id: "noid".into(),
-                dn: String::new(),
                 display_name: None,
                 uid_number: None,
             },
@@ -850,7 +816,6 @@ mod list_search_tests {
             "bob",
             User {
                 id: "bob".into(),
-                dn: String::new(),
                 display_name: Some("Bob".into()),
                 uid_number: Some(1000),
             },
@@ -858,3 +823,6 @@ mod list_search_tests {
         assert_eq!(results.len(), 1);
     }
 }
+
+#[cfg(test)]
+mod tests {}

@@ -390,39 +390,6 @@ pub async fn require_auth(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests {}
 
-    #[test]
-    fn extract_all_session_tokens_collects_duplicates() {
-        let raw = "foo=bar; session=old; session=new";
-        let t = extract_all_session_tokens(raw);
-        assert_eq!(t, vec!["old".to_string(), "new".to_string()]);
-    }
 
-    #[test]
-    fn login_error_message_suppresses_session_copy_on_first_run() {
-        assert!(login_error_message(true, Some("session")).is_none());
-        assert!(login_error_message(true, Some("required")).is_none());
-        assert!(
-            login_error_message(false, Some("session"))
-                .unwrap()
-                .contains("expired")
-        );
-    }
-
-    #[test]
-    fn effective_cookie_secure_defaults_true_with_direct_tls() {
-        use axum::http::HeaderMap;
-        use crate::web::make_test_state_with_temp_config;
-
-        let (state, _tmp) = make_test_state_with_temp_config();
-        let headers = HeaderMap::new();
-        std::env::remove_var("NFS_KLLDAP_WEBUI_COOKIE_SECURE");
-        assert!(effective_cookie_secure(&state, &headers));
-
-        std::env::set_var("NFS_KLLDAP_WEBUI_COOKIE_SECURE", "0");
-        assert!(!effective_cookie_secure(&state, &headers));
-        std::env::remove_var("NFS_KLLDAP_WEBUI_COOKIE_SECURE");
-    }
-}

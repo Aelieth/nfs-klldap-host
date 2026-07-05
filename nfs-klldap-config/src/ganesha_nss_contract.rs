@@ -330,7 +330,25 @@ pub fn evaluate_nss_contract(
 
 fn ld_preload_for_ganesha_nss() -> PathBuf {
     let nss = resolve_nss_wrapper_so().unwrap_or_default();
-    crate::ganesha_getgrouplist::ld_preload_chain_for_ganesha(&nss)
+    ld_preload_for_ganesha(&nss)
+}
+
+/// Build the LD_PRELOAD value passed to ganesha.nfsd (when nss_wrapper is used).
+/// nss_wrapper first, followed by any pre-existing LD_PRELOAD entries (deduped, existing files only).
+pub fn ld_preload_for_ganesha(nss_wrapper_so: &Path) -> PathBuf {
+    let mut parts = Vec::new();
+    if nss_wrapper_so.is_file() {
+        parts.push(nss_wrapper_so.display().to_string());
+    }
+    if let Ok(cur) = std::env::var("LD_PRELOAD") {
+        for p in cur.split(':') {
+            let p = p.trim();
+            if !p.is_empty() && !parts.iter().any(|x| x == p) && Path::new(p).exists() {
+                parts.push(p.to_string());
+            }
+        }
+    }
+    PathBuf::from(parts.join(":"))
 }
 
 fn resolve_nss_wrapper_so() -> Option<PathBuf> {
@@ -514,27 +532,17 @@ mod tests {
     }
 
     #[test]
-    fn ganesha_ld_preload_prepends_shim_before_nss_wrapper() {
+    fn ganesha_ld_preload_includes_nss_wrapper() {
         let preload = ld_preload_for_ganesha_nss();
         let s = preload.to_string_lossy();
         if s.is_empty() {
             return;
         }
         let parts: Vec<&str> = s.split(':').filter(|p| !p.is_empty()).collect();
-        if parts.len() >= 2 {
-            assert!(
-                parts[0].contains("getgrouplist_shim"),
-                "shim must be first in LD_PRELOAD chain: {s}"
-            );
-            assert!(
-                parts.iter().any(|p| p.contains("nss_wrapper")),
-                "nss_wrapper must follow shim: {s}"
-            );
-        } else if parts.len() == 1 {
-            assert!(
-                parts[0].contains("nss_wrapper") || parts[0].contains("getgrouplist_shim"),
-                "single preload entry must be shim or nss_wrapper: {s}"
-            );
-        }
+        // nss_wrapper (when present on the system) must appear in the preload value
+        assert!(
+            parts.iter().any(|p| p.contains("nss_wrapper")),
+            "nss_wrapper must be present in LD_PRELOAD for ganesha (or prior LD_PRELOAD): {s}"
+        );
     }
 }

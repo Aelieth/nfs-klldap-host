@@ -23,7 +23,6 @@ pub struct GaneshaSpawnEnv {
     pub idhelper_bin: PathBuf,
     pub idhelper_socket: String,
     pub nss_wrapper_so: PathBuf,
-    pub getgrouplist_shim_so: Option<PathBuf>,
     pub use_nss_wrapper: bool,
 }
 
@@ -148,7 +147,7 @@ pub fn build_ganesha_envp(cfg: &GaneshaSpawnEnv) -> Vec<(OsString, OsString)> {
                 OsString::from("_nss_sss_"),
             );
         }
-        let chain = crate::ganesha_getgrouplist::ld_preload_chain_for_ganesha(&cfg.nss_wrapper_so);
+        let chain = crate::ld_preload_for_ganesha(&cfg.nss_wrapper_so);
         map.insert(
             OsString::from("LD_PRELOAD"),
             OsString::from(chain.to_string_lossy().into_owned()),
@@ -461,7 +460,6 @@ mod tests {
             idhelper_bin: PathBuf::from("/usr/local/bin/nfs-klldap-idhelper"),
             idhelper_socket: "/var/run/nfs-klldap/idhelper.sock".into(),
             nss_wrapper_so: PathBuf::from("/usr/lib/x86_64-linux-gnu/libnss_wrapper.so"),
-            getgrouplist_shim_so: crate::resolve_getgrouplist_shim_so(),
             use_nss_wrapper: true,
         };
         let envp = build_ganesha_envp(&cfg);

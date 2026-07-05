@@ -22,7 +22,6 @@ use nfs_klldap_config::{
         probe_socket_grouplist, GaneshaSpawnEnv,
     },
     ganesha_sighup_failed, idhelper_socket_path, ldap_bind_configured,
-    resolve_getgrouplist_shim_so,
     warm_principals_for_startup, warm_principals_nss_ready,
     install_signal_handlers, is_preconfigured_deployment, is_setup_wizard_complete,
     discover_ganesha_daemon_pid, mark_setup_wizard_complete, plan_from_changes, process_is_live,
@@ -834,7 +833,6 @@ while :; do :; done
             idhelper_bin: self.env.idhelper_bin.clone(),
             idhelper_socket: idhelper_socket_path(),
             nss_wrapper_so: self.env.nss_wrapper_so.clone(),
-            getgrouplist_shim_so: resolve_getgrouplist_shim_so(),
             use_nss_wrapper: self.env.use_nss_wrapper,
         }
     }
@@ -1425,7 +1423,8 @@ fn chmod_file(path: &Path, mode: u32) {
     let _ = (path, mode);
 }
 
-// getgrouplist shim is prepended before nss_wrapper in LD_PRELOAD (see ganesha_getgrouplist.rs).
+// Only nss_wrapper (when enabled) is injected into LD_PRELOAD for ganesha.nfsd
+// (see ld_preload_for_ganesha in ganesha_nss_contract).
 
 pub(crate) fn resolve_nss_wrapper_so() -> PathBuf {
     if let Ok(p) = std::env::var("NSS_WRAPPER_SO") {

@@ -2,7 +2,6 @@
 members = [
     "nfs-klldap-identity",
     "nfs-klldap-config",
-    "nfs-klldap-getgrouplist-shim",
     "nfs-klldap-ui",
 ]
 resolver = "2"

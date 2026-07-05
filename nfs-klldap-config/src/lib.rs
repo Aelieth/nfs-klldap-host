@@ -14,7 +14,6 @@ mod fs_probe;
 pub mod ganesha_log_contract;
 mod posix_only_policy;
 mod fs_warnings;
-mod ganesha_getgrouplist;
 mod ganesha_identity_pipeline;
 mod ganesha_nss_contract;
 mod generate;
@@ -69,19 +68,15 @@ pub use ganesha_log_contract::{
     NotsuppFailurePath, GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
 };
 pub use posix_only_policy::PosixOnlyPolicy;
-pub use ganesha_getgrouplist::{
-    getgrouplist_intercept_shortnames, ld_preload_chain_for_ganesha,
-    normalize_linux_getgrouplist_ret, principal_query_for_shortname, query_idhelper_socket_gids,
-    resolve_getgrouplist_shim_so, should_intercept_getgrouplist,
-};
 pub use ganesha_identity_pipeline::{
     identity_principals_for_check, run_identity_pipeline, warm_principals_for_startup,
     warm_principals_nss_ready, IdentityPrincipals,
 };
 pub use ganesha_nss_contract::{
-    evaluate_nss_contract, evaluate_short_name_getgrouplist_contract, nss_lookup_names,
-    probe_nss_groups, probe_nss_groups_exact, probe_nss_passwd, probe_nss_passwd_exact,
-    probe_nss_passwd_from_file_exact, short_pw_name_for_principal, GaneshaNssEnv,
+    evaluate_nss_contract, evaluate_short_name_getgrouplist_contract, ld_preload_for_ganesha,
+    nss_lookup_names, probe_nss_groups, probe_nss_groups_exact, probe_nss_passwd,
+    probe_nss_passwd_exact, probe_nss_passwd_from_file_exact, short_pw_name_for_principal,
+    GaneshaNssEnv,
 };
 pub use ganesha_readiness::{
     build_ganesha_envp, check_ganesha_readiness, check_synthetic_krb_log_clean,

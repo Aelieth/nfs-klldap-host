@@ -82,7 +82,6 @@ fn check_ganesha_readiness_succeeds_with_mock_socket_and_nss_fixture() {
         idhelper_bin: PathBuf::from("/usr/local/bin/nfs-klldap-idhelper"),
         idhelper_socket: sock.to_string_lossy().to_string(),
         nss_wrapper_so,
-        getgrouplist_shim_so: nfs_klldap_config::resolve_getgrouplist_shim_so(),
         use_nss_wrapper: true,
     };
     let envp = build_ganesha_envp(&cfg);

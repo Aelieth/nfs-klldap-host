@@ -394,9 +394,10 @@ pub(crate) async fn dir_meta(
     let _user = require_auth(&state, &headers).await?;
 
     let path = params.path;
-    let meta = {
+    let host = std::path::Path::new(&path);
+    let (meta, diag) = {
         let fs = state.fs.read().expect("fs lock poisoned");
-        fs.get_dir_meta(std::path::Path::new(&path))
+        (fs.get_dir_meta(host), fs.diagnose_path(host))
     };
     let (owner_display, group_display, mode_octal) = if let Some((owner, group, mode)) = meta {
         let l = state.lldap.lock().await;
@@ -406,8 +407,27 @@ pub(crate) async fn dir_meta(
             format!("{:o}", mode),
         )
     } else {
-        let safe = path.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-        ("(unavailable)".into(), "(unavailable)".into(), format!("<span style=\"color:var(--danger-text)\">{}</span>", safe))
+        let safe_serve = diag
+            .serve_path
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
+        let exists = if diag.container_exists { "yes" } else { "no" };
+        let hint = if !diag.container_exists {
+            format!(
+                "Serve path <code>{safe_serve}</code> missing (exists={exists}). \
+                 For binds like <code>/var/data:/export</code>, set <code>ganesha_path</code> to \
+                 <code>/export/&lt;tail&gt;</code> (e.g. <code>/export/nvme-raid/users</code>) \
+                 or <code>storage.host_bind_path = \"/var/data\"</code>."
+            )
+        } else {
+            format!("Serve path <code>{safe_serve}</code> exists but metadata could not be read.")
+        };
+        (
+            "(unavailable)".into(),
+            "(unavailable)".into(),
+            format!("<span style=\"color:var(--danger-text);font-size:0.9em;\">{hint}</span>"),
+        )
     };
 
     let acl_limited = acl_limited_for_path(&state, std::path::Path::new(&path));

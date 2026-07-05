@@ -121,10 +121,16 @@ pub(crate) fn collect_shares_from_structured_form(
                     manage_gids: extra.get(&format!("share_manage_gids_{}", idx)).and_then(|v| parse_tri_bool(v)),
                     read_access_policy: extra.get(&format!("share_read_access_policy_{}", idx)).and_then(|vv| if vv.trim() == "pre" { Some("pre".into()) } else if vv.trim() == "post" { Some("post".into()) } else { None }),
                     manage_gids_expiration: extra.get(&format!("share_manage_gids_expiration_{}", idx)).and_then(|vv| vv.trim().parse().ok()),
-                    ganesha_path: extra
-                        .get(&format!("share_ganesha_path_{}", idx))
-                        .cloned()
-                        .filter(|s| !s.trim().is_empty()),
+                    ganesha_path: if extra
+                        .contains_key(&format!("share_override_ganesha_path_{}", idx))
+                    {
+                        extra
+                            .get(&format!("share_ganesha_path_{}", idx))
+                            .cloned()
+                            .filter(|s| !s.trim().is_empty())
+                    } else {
+                        None
+                    },
                     umask: extra.get(&format!("share_umask_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
                 });
             }

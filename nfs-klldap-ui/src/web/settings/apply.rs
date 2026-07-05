@@ -14,6 +14,10 @@ pub(crate) fn apply_structured_form_to_config(
     if let Some(v) = form.storage_container_root.clone() {
         cfg.storage.container_root = v;
     }
+    if let Some(v) = form.storage_host_bind_path.clone() {
+        let t = v.trim();
+        cfg.storage.host_bind_path = if t.is_empty() { None } else { Some(t.to_string()) };
+    }
     if form.override_server_hostname.unwrap_or(false) {
         if let Some(v) = form.server_hostname.clone() {
             cfg.server.hostname = if v.trim().is_empty() { None } else { Some(v) };
@@ -139,6 +143,17 @@ pub(crate) fn apply_structured_form_to_toml_doc(
         let item = doc.entry("storage").or_insert(toml_edit::table());
         if let Some(tbl) = item.as_table_mut() {
             tbl["container_root"] = toml_edit::value(v.clone());
+        }
+    }
+    if let Some(v) = &form.storage_host_bind_path {
+        let t = v.trim();
+        let item = doc.entry("storage").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            if t.is_empty() {
+                let _ = tbl.remove("host_bind_path");
+            } else {
+                tbl["host_bind_path"] = toml_edit::value(t);
+            }
         }
     }
     if form.override_server_hostname.unwrap_or(false) {

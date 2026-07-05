@@ -64,6 +64,7 @@
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
         <label>ldap_uri<br><input name="ldap_uri" value="{{ ldap_uri }}" style="width:100%" placeholder="ldaps://kllap.example.com:6360"></label>
         <label>storage.container_root<br><input name="storage_container_root" value="{{ storage_container_root }}" style="width:100%"></label>
+        <label>storage.host_bind_path (optional)<br><input name="storage_host_bind_path" value="{{ storage_host_bind_path }}" style="width:100%" placeholder="/var/data when bind is /var/data:/export"></label>
         <label>server.hostname (optional)<br><input name="server_hostname" id="server_hostname" value="{{ server_hostname }}" style="width:100%" {% if !override_server_hostname %}disabled{% endif %}>
             <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_server_hostname" value="true" {% if override_server_hostname %}checked{% endif %}> override (persist explicit)</span>
         </label>
@@ -240,10 +241,18 @@
 
 let nextShareIdx = {{ next_share_idx }};
 const storageContainerRoot = "{{ storage_container_root }}";
+const storageHostBindPath = "{{ storage_host_bind_path }}";
 
-function deriveGaneshaPath(hostPath, shareName, containerRoot) {
+function deriveGaneshaPath(hostPath, shareName, containerRoot, hostBindPath) {
   const root = (containerRoot || '/export').replace(/\/+$/, '');
   const trimmed = (hostPath || '').trim().replace(/\/+$/, '');
+  const bind = (hostBindPath || '').trim().replace(/\/+$/, '');
+  if (bind) {
+    if (trimmed === bind) return root;
+    if (trimmed.startsWith(bind + '/')) {
+      return root + trimmed.slice(bind.length);
+    }
+  }
   const segments = trimmed.split('/').filter((s) => s.length > 0);
   if (segments.length > 0) {
     const tail = segments.length > 1 ? segments.slice(1).join('/') : '';
@@ -415,6 +424,7 @@ function wireShareHostPathListeners(block) {
       hostInput.value,
       nameInput ? nameInput.value : '',
       storageContainerRoot,
+      storageHostBindPath,
     );
     pathInput.dataset.defaultPath = derived;
     if (!overrideCb || !overrideCb.checked) {

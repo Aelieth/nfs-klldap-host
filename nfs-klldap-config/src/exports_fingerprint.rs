@@ -69,6 +69,9 @@ pub fn fingerprint_exports_dir(exports_dir: &Path) -> u64 {
 pub fn fingerprint_shares(cfg: &NfsKlldapConfig) -> u64 {
     let mut h: u64 = FNV1A_SEED;
     h = fingerprint_bytes(cfg.storage.container_root.as_bytes(), h);
+    if let Some(ref p) = cfg.storage.host_bind_path {
+        h = fingerprint_bytes(p.as_bytes(), h);
+    }
     h ^= 0x01;
     h = h.wrapping_mul(0x100000001b3);
     for share in &cfg.shares {

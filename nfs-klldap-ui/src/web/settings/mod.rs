@@ -31,6 +31,7 @@ pub(crate) struct SettingsTemplate {
     keytab_found_principals: Vec<String>,
     ldap_uri: String,
     storage_container_root: String,
+    storage_host_bind_path: String,
     server_hostname: String,
     sssd_bind_dn: String,
     sssd_search_base: String,
@@ -119,6 +120,7 @@ pub(crate) struct RawSaveForm {
 pub(crate) struct StructuredSettingsForm {
     ldap_uri: Option<String>,
     storage_container_root: Option<String>,
+    storage_host_bind_path: Option<String>,
     server_hostname: Option<String>,
     override_server_hostname: Option<bool>,
     sssd_bind_dn: Option<String>,
@@ -198,7 +200,7 @@ pub(crate) fn build_settings_template(
         .enumerate()
         .map(|(idx, s)| {
             let override_ganesha_path = share_override_ganesha_path_from_raw(&doc, idx);
-            let default_ganesha_path = cfg.serve_path_for(s);
+            let default_ganesha_path = cfg.container_path_for(s);
             let ganesha_path = if override_ganesha_path {
                 s.ganesha_path.clone().unwrap_or_default()
             } else {
@@ -274,6 +276,11 @@ pub(crate) fn build_settings_template(
             .found_nfs_principals,
         ldap_uri: cfg.ldap_uri,
         storage_container_root: cfg.storage.container_root.clone(),
+        storage_host_bind_path: cfg
+            .storage
+            .host_bind_path
+            .clone()
+            .unwrap_or_default(),
         server_hostname: cfg.server.hostname.clone().unwrap_or_default(),
         sssd_bind_dn: cfg.sssd.ldap_default_bind_dn.clone(),
         sssd_search_base: cfg.sssd.ldap_search_base.clone().unwrap_or_default(),
@@ -453,7 +460,7 @@ pub(crate) async fn settings_save_shares(
         return Ok(Html(tpl.render().unwrap()));
     }
     let mut doc = doc;
-    apply_shares_to_toml_doc(&mut doc, &new_shares);
+    apply_shares_to_toml_doc(&mut doc, &cfg.shares);
     let text = doc.to_string();
     if let Err(msg) = atomic_write_config(&state.config_path, &text) {
         let tpl = make_settings_error_template(

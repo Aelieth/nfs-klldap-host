@@ -555,6 +555,7 @@ mod tests {
         crate::config::Config {
             storage: nfs_klldap_config::StorageSection {
                 container_root: container_root.to_string(),
+                ..Default::default()
             },
             shares: vec![nfs_klldap_config::Share {
                 name: share_name.to_string(),
@@ -617,6 +618,31 @@ mod tests {
             .host_path_to_container_path(Path::new("/media/HDD-RAID/media/videos/4k"))
             .unwrap();
         assert_eq!(sub, PathBuf::from("/export/HDD-RAID/media/videos/4k"));
+    }
+
+    #[test]
+    fn var_data_bind_maps_via_host_bind_path_config() {
+        let tmp = TempDir::new().unwrap();
+        let export = tmp.path().join("export");
+        let users = export.join("nvme-raid").join("users");
+        std::fs::create_dir_all(&users).unwrap();
+
+        let mut cfg = make_test_config_with_container_mapping(
+            "/var/data/nvme-raid/users",
+            export.to_string_lossy().as_ref(),
+            "users",
+        );
+        cfg.storage.host_bind_path = Some("/var/data".into());
+
+        let fs = FsManager::new(cfg);
+        let mapped = fs
+            .host_path_to_container_path(Path::new("/var/data/nvme-raid/users"))
+            .unwrap();
+        assert_eq!(mapped, users);
+        assert!(
+            fs.get_dir_meta(Path::new("/var/data/nvme-raid/users"))
+                .is_some()
+        );
     }
 
     #[test]

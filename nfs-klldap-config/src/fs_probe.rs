@@ -178,6 +178,34 @@ pub fn normalize_path(path: &str) -> String {
     }
 }
 
+/// True when mountinfo `mount_source` looks like an absolute host directory bind.
+pub fn mount_source_looks_like_host_path(source: &str) -> bool {
+    let s = source.trim();
+    s.starts_with('/')
+        && !s.starts_with("/dev/")
+        && !s.starts_with("/proc/")
+        && !s.starts_with("/sys/")
+}
+
+/// Returns the `mount_source` for an exact `mount_point` match (e.g. `/export` → `/var/data`).
+pub fn mount_source_for_mount_point(content: &str, mount_point: &str) -> Option<String> {
+    let target = normalize_path(mount_point);
+    let entries = parse_mountinfo(content);
+    entries
+        .iter()
+        .filter(|e| normalize_path(&e.mount_point) == target)
+        .map(|e| e.mount_source.trim().to_string())
+        .find(|src| mount_source_looks_like_host_path(src))
+}
+
+/// Resolves the host directory bind-mounted at `container_root` from live mountinfo.
+pub fn host_bind_prefix_from_mountinfo(container_root: &str) -> Option<String> {
+    let mountinfo_path = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH")
+        .unwrap_or_else(|_| "/proc/self/mountinfo".to_string());
+    let content = std::fs::read_to_string(mountinfo_path).ok()?;
+    mount_source_for_mount_point(&content, container_root)
+}
+
 fn acl_capable_from_mount(fstype: &str, options: &[String], mount_source: &str) -> bool {
     if options.iter().any(|o| o.eq_ignore_ascii_case("noacl")) {
         return false;
@@ -236,6 +264,15 @@ mod tests {
         let caps = probe_from_mountinfo(FIXTURE, Path::new("/other/new"));
         assert_eq!(caps.fstype, "unknown");
         assert!(caps.acl_capable);
+    }
+
+    #[test]
+    fn mount_source_for_container_root_bind() {
+        let fixture = "99 1 0:59 / /export rw,relatime - btrfs /var/data rw\n";
+        assert_eq!(
+            mount_source_for_mount_point(fixture, "/export").as_deref(),
+            Some("/var/data")
+        );
     }
 
     #[test]

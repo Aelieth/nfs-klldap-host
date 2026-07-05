@@ -66,6 +66,8 @@ pub struct ShareFieldWarning {
     pub share_index: usize,
     pub share_name: Option<String>,
     pub unknown_keys: Vec<String>,
+    /// Set when serve path was auto-corrected or is missing on disk after validation.
+    pub serve_path_hint: Option<String>,
 }
 
 impl ShareFieldWarning {
@@ -86,11 +88,14 @@ impl ShareFieldWarning {
             .as_deref()
             .map(|n| format!("\"{}\"", n))
             .unwrap_or_else(|| format!("index {}", self.share_index));
-        format!(
-            "share {} (index {}): unrecognized [[shares]] key(s) {:?} — ignored by generator. \
-             Remove from nfs-klldap.conf or delete this share and re-add via System Settings → Shares.",
-            label, self.share_index, self.unknown_keys
-        )
+        if !self.unknown_keys.is_empty() {
+            return format!(
+                "share {} (index {}): unrecognized [[shares]] key(s) {:?} — ignored by generator. \
+                 Remove from nfs-klldap.conf or delete this share and re-add via System Settings → Shares.",
+                label, self.share_index, self.unknown_keys
+            );
+        }
+        self.serve_path_hint.clone().unwrap_or_default()
     }
 }
 
@@ -98,6 +103,9 @@ impl ShareFieldWarning {
 pub struct StorageSection {
     #[serde(default = "default_container_root")]
     pub container_root: String,
+    /// Host path prefix bind-mounted to `container_root` (e.g. `/var/data` when using
+    /// `/var/data:/export`). When set, overrides mountinfo auto-detection for path mapping.
+    pub host_bind_path: Option<String>,
 }
 
 fn default_container_root() -> String {

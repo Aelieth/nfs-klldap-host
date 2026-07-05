@@ -8,7 +8,7 @@ Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+de
 
 | Contract                  | Rule |
 |---------------------------|------|
-| `host_path` vs container  | UI + allow-list + ownership use the host-visible absolute path (unchanged). The internal container location (Ganesha Path + FsManager translations) is derived as `storage.container_root` + (tail of share `host_path` after its first directory component). `export_path` (defaults to `/<name>`) controls *only* the client-visible Pseudo path. First dir component of `host_path` acts as the implicit per-share bind root. A single (or multiple) root bind(s) (host parent(s) → /export) is the stable pattern. Translation only at the syscall boundary (`FsManager`). |
+| `host_path` vs container  | UI + allow-list + ownership use the host-visible absolute path (unchanged). The *effective* internal container/serve location for Ganesha EXPORT `Path=` , fs probes, *and* WebUI permission tree / `get_dir_meta` (owner/group/mode display) / ACLs / chown+chmod applies is `serve_path_for(share)`: `ganesha_path` when set (explicit override for staging or non-standard bind depths), otherwise the derived container path. The default derivation (no `ganesha_path`) is `storage.container_root` + (tail of share `host_path` after its first directory component) — the first dir component of `host_path` is the implicit per-share bind root. `export_path` (defaults to `/<name>`) controls *only* the client-visible Pseudo path. A single (or multiple) root bind(s) (host parent(s) → /export) is the stable pattern. For example, bind `/var/data:/export` + `host_path = "/var/data/nvme-raid/users"` + `ganesha_path = "/export/nvme-raid/users"` makes WebUI and Ganesha see the data at `/export/nvme-raid/users` (without `ganesha_path` the heuristic would wrongly target `/export/data/nvme-raid/users`). Translation only at the syscall boundary (`FsManager`). |
 | Hostname                  | `get_consistent_hostname()` (hostname(1) == /proc/sys/kernel/hostname). Mismatch → loud diagnostic. `--uts=host` is the normal way to get the real name. |
 | Realm                     | Strictly required. No silent EXAMPLE.COM. Auto-derived from ldap_uri host or NFS_KLLDAP_KERBEROS_REALM. |
 | ldap_uri                  | DNS hostname only (IP rejected). Forward+reverse DNS required. Keytab: `nfs/<short>@REALM` and `nfs/<fqdn>@REALM` when they differ (`--uts=host`). |
@@ -19,7 +19,7 @@ Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+de
 
 ```yaml
 volumes:
-  - /media/:/export:rw                # Recommended: single (or multiple) root-level bind(s) of host parent dir(s). First dir of each share's host_path is the implicit bind root; tail becomes subpath under container_root. export_path is only for the client Pseudo (can be short).
+  - /media/:/export:rw                # Recommended: single (or multiple) root-level bind(s) of host parent dir(s). First dir of each share's host_path is the implicit bind root; tail becomes subpath under container_root (unless overridden by `ganesha_path`). `ganesha_path` controls the effective container path used for Ganesha *and* WebUI. export_path is only for the client Pseudo (can be short).
   - ./config:/config:rw               # nfs-klldap.conf (single source)
   - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
 ```

@@ -29,7 +29,7 @@ pub fn generate_default_template() -> String {
 ldap_uri = "ldaps:// Kllap.example.com:6360"                     # Required - LLDAP default secur.
 
 [storage]
-container_root = "/export"                                      # Required - Ganesha Path base + UI translation root. Bind one or more host parent dirs to this target (e.g. /media/:/export and/or /mount/:/export). The first directory component of each share's host_path is treated as the implicit per-share bind root; the tail becomes the subpath under container_root. This lets export_path (below) be a short external name only.
+container_root = "/export"                                      # Required - Ganesha Path base + UI translation root. Bind one or more host parent dirs to this target (e.g. /media/:/export and/or /mount/:/export). The first directory component of each share's host_path is treated as the implicit per-share bind root; the tail becomes the subpath under container_root *unless* `ganesha_path` is set on the share (in which case `ganesha_path` is the effective container/serve path for Ganesha, fs probes, WebUI permission tree, dir meta display, ACLs and applies). This lets export_path (below) be a short external name only. If `ganesha_path` omitted, the first-segment heuristic applies for all uses.
 
 [management]
 # webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins

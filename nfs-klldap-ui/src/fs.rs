@@ -1,5 +1,5 @@
 //! FsManager applies direct chown/chmod (via privileged) on allow-listed share paths.
-//! Host-to-container path translation via bind-root model. ACL path vs NOACL kept in config.
+//! Host-to-container path translation via bind-root model (using `serve_path_for` which honors `ganesha_path` override for WebUI stat/list/apply + Ganesha; falls back to `container_path_for` heuristic). ACL path vs NOACL kept in config.
 
 #![deny(clippy::unwrap_used)]
 
@@ -257,7 +257,10 @@ impl FsManager {
                 let rel = normalized
                     .strip_prefix(&share_normalized)
                     .unwrap_or(Path::new(""));
-                let mut cpath = PathBuf::from(self.config.container_path_for(share));
+                // Use serve_path_for so explicit ganesha_path (staging / non-standard binds)
+                // is honored for WebUI stat/list/apply. container_path_for is only the
+                // default first-segment heuristic and is still used for settings defaults etc.
+                let mut cpath = PathBuf::from(self.config.serve_path_for(share));
                 if !rel.as_os_str().is_empty() {
                     cpath.push(rel);
                 }
@@ -552,7 +555,32 @@ mod tests {
         assert_eq!(sub, PathBuf::from("/export/HDD-RAID/media/videos/4k"));
     }
 
+    #[test]
+    fn host_path_to_container_path_respects_ganesha_path_override() {
+        // Simulates user's bind (/var/data:/export) + deep host_path + explicit ganesha_path
+        // (the supported way to make Ganesha land at /export/nvme-raid/users).
+        // Before the fix this would have derived /export/data/nvme-raid/users (unavailable meta).
+        let mut cfg = make_test_config_with_container_mapping(
+            "/var/data/nvme-raid/users",
+            "/export",
+            "users",
+        );
+        cfg.shares[0].ganesha_path = Some("/export/nvme-raid/users".to_string());
 
+        let fs = FsManager::new(cfg);
+
+        // Exact share root.
+        let root = fs
+            .host_path_to_container_path(Path::new("/var/data/nvme-raid/users"))
+            .unwrap();
+        assert_eq!(root, PathBuf::from("/export/nvme-raid/users"));
+
+        // Nested subdir must append relative tail to the *ganesha_path* base.
+        let sub = fs
+            .host_path_to_container_path(Path::new("/var/data/nvme-raid/users/sub/dir"))
+            .unwrap();
+        assert_eq!(sub, PathBuf::from("/export/nvme-raid/users/sub/dir"));
+    }
 
     // === ACL read/mutation unit tests (shipped entry points via safe getfacl/setfacl, real FS, temp trees) ===
 

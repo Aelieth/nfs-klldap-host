@@ -41,10 +41,8 @@ usage() {
 ganesha-ctl - NFS-Ganesha helper (supervisor SIGHUP; container bus is for Ganesha internals)
 
 Usage:
-  add-export <file> [name]   # (no-op / deprecated; edit nfs-klldap.conf instead)
   remove-export <name>       # delete matching fragment + signal supervisor reload
   show-fragments             # list on-disk exports.d fragments (not live D-Bus state)
-  show-exports               # alias for show-fragments (deprecated)
   reload                     # signal supervisor (regenerate + full service recycle)
   id-resolve <principal>     # resolve full user@REALM (exercises uid2grp/getent group); surfaces ID MAPPER
   id-check                   # quick health of the idhelper translator + ID MAPPER greps
@@ -110,22 +108,6 @@ CMD="${1:-}"
 shift || true
 
 case "$CMD" in
-    add-export)
-        # Deprecated/no-op: exports are generated from nfs-klldap.conf [[shares]].
-        FILE="${1:-}"
-        if [ -z "$FILE" ]; then
-            die "Usage: ganesha-ctl add-export <file-in-exports.d> [name]"
-        fi
-        if [ ! -f "$FILE" ]; then
-            if [ -f "${EXPORTS_DIR}/$(basename "$FILE")" ]; then
-                FILE="${EXPORTS_DIR}/$(basename "$FILE")"
-            else
-                die "Fragment file not found: $FILE (write it into ${EXPORTS_DIR})"
-            fi
-        fi
-        log "add-export (no-op): edit nfs-klldap.conf [[shares]] and apply via WebUI or kill -HUP 1"
-        ;;
-
     remove-export)
         # Best effort: delete the fragment file that matches the given name or old ID.
         TARGET="${1:-}"
@@ -151,10 +133,7 @@ case "$CMD" in
         signal_supervisor_reload
         ;;
 
-    show-fragments|show-exports)
-        if [ "$CMD" = "show-exports" ]; then
-            log "show-exports is deprecated; use show-fragments"
-        fi
+    show-fragments)
         log "Export fragments in ${EXPORTS_DIR} (on-disk; not live D-Bus state):"
 
         shopt -s nullglob

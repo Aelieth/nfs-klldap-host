@@ -16,7 +16,6 @@ When `HOST_NFS=true` the supervisor and healthcheck skip ganesha.nfsd entirely (
 | `container/scripts/check-common.sh` | `/container/scripts/check-common.sh` | Shared advisory checks (sourced by healthcheck + verify) |
 | `container/scripts/nfs-klldap-conf-watcher` | `/usr/local/bin/nfs-klldap-conf-watcher` | inotify on nfs-klldap.conf → SIGHUP pid 1 |
 | `container/scripts/ganesha-ctl` | `/usr/local/bin/ganesha-ctl` | Supervisor reload (SIGHUP) + idhelper diagnostics |
-| `container/scripts/nfsidmap-idhelper` | nfsidmap shim | Principal→uid via idhelper (fallback path) |
 | `scripts/verify-ganesha.sh` | `/usr/local/bin/verify-ganesha.sh` | Post-deploy diagnostics (runs healthcheck + extended checks) |
 
 **Networking:** run with `network_mode: host` (compose) or `--network=host` (`docker run`) — see [docs/run/README.md](../docs/run/README.md).

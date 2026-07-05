@@ -31,7 +31,7 @@ pub const GANESHA_ALLOWED_SQUASH: &[&str] = &[
 // Ganesha 9.6 EXPORT Read_Access_Check_Policy values (ganesha-export-co.
 pub const GANESHA_READ_ACCESS_POLICIES: &[&str] = &["pre", "post"];
 
-/// Default idmapd.conf values for Ganesha 9.6 and the libnfsidmap shim.
+/// Default idmapd.conf values for Ganesha 9.6 (idmapping uses libnfsidmap + nss_wrapper in-process).
 pub const IDMAPD_TRANSLATION_METHOD: &str = "nsswitch";
 pub const IDMAPD_GSS_METHODS: &str = "nsswitch";
 pub const IDMAPD_NOBODY_USER: &str = "nobody";

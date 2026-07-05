@@ -1463,6 +1463,7 @@ mod tests {
         // + materialize_nss_wrappers_at + ganesha contract evaluate. No UUT mocks.
         // Asserts: root passwd leading, root group line has non-empty base members (root,daemon,bin),
         // machine host/ form present, contract ok for exact principal (uid/gid 0 + root gid).
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         resolve::reset_id_resolver_for_test();
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path();

@@ -40,7 +40,7 @@ entrypoint → nfs-klldap-startup supervise (pid 1) → restart/reload daemons
         └── nfs-klldap-ui (9630, HTTPS) ──direct──> chown/chmod on bind-mounted host_path trees
 ```
 
-One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, /etc/idmapd.conf (standardized NFSv4 Domain + Local-Realms + GSS-Methods for idhelper/shim/clients + Kerberos realm handling), and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. Use `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN strongly suggested).
+One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, /etc/idmapd.conf (standardized NFSv4 Domain + Local-Realms + GSS-Methods for idhelper/clients + Kerberos realm handling), and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. Use `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN strongly suggested).
 
 See [docs/ganesha-architecture.md](docs/ganesha-architecture.md) for the `host_path` / `export_path` / bind-mount contract table.
 

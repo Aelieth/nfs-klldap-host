@@ -135,20 +135,11 @@ RUN cp /output/nfs-klldap-config /usr/local/bin/ && \
     rm -rf /output
 COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl
 COPY container/scripts/nfs-klldap-conf-watcher /usr/local/bin/nfs-klldap-conf-watcher
-COPY container/scripts/nfsidmap-idhelper /usr/local/bin/nfsidmap-idhelper
 COPY container/healthcheck.sh /container/healthcheck.sh
 COPY container/scripts/check-common.sh /container/scripts/check-common.sh
 COPY scripts/verify-ganesha.sh /usr/local/bin/verify-ganesha.sh
-RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher /usr/local/bin/nfsidmap-idhelper \
-        /container/healthcheck.sh /container/scripts/check-common.sh /usr/local/bin/verify-ganesha.sh && \
-    # Create the literal 'nfsidmap' name (both in PATH and /usr/sbin) so that when ganesha.nfsd
-    # execs "nfsidmap ..." (or absolute /usr/sbin/nfsidmap as seen in ID MAPPER "using nfsidmap" logs)
-    # our shim is found first. Backup original for fallback inside the shim.
-    # This ensures interception even for full-path calls in ganesha 9.6 on trixie-backports.
-    [ -f /usr/sbin/nfsidmap ] && mv /usr/sbin/nfsidmap /usr/sbin/nfsidmap.system || true; \
-    ln -sf /usr/local/bin/nfsidmap-idhelper /usr/local/bin/nfsidmap; \
-    ln -sf /usr/local/bin/nfsidmap-idhelper /usr/sbin/nfsidmap; \
-    true
+RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher \
+        /container/healthcheck.sh /container/scripts/check-common.sh /usr/local/bin/verify-ganesha.sh
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

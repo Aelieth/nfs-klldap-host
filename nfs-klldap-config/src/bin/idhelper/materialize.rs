@@ -796,8 +796,8 @@ mod root_snapshot_tests {
     fn build_nss_snapshot_root_group_has_minimal_members_not_machine_logins() {
         // Drive shipped resolve_groups_for_principal (not manual cache insert) so supplemental_gids
         // are populated from LDAP snapshot membership for machines + GROUPLIST root backstop.
-        crate::resolve::reset_id_resolver_for_test();
         let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        crate::resolve::reset_id_resolver_for_test();
         let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
         std::env::set_var(
             "TEST_REBULK_POPULATE",

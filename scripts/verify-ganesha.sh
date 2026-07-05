@@ -75,11 +75,6 @@ if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
         echo "  OK: Read_Access_Check_Policy omitted in fragments (9.6 default pre for ACL-capable)"
     fi
 fi
-if [ -e /usr/local/bin/nfsidmap ] || [ -e /usr/sbin/nfsidmap ] || [ -L /usr/sbin/nfsidmap ]; then
-    echo "  OK: nfsidmap shim visible (fallback path; principal2uid uses in-process libnfsidmap)"
-else
-    echo "  WARN: no nfsidmap shim visible"
-fi
 if ! grep -qi 'idmapconf\|idmapd.conf\|Idmapping' /etc/ganesha/ganesha.conf 2>/dev/null; then
     echo "  OK: no Idmap* keys in ganesha.conf"
 else

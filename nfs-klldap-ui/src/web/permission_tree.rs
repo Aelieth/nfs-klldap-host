@@ -117,12 +117,23 @@ async fn friendly_group_label(lldap: &Ldap, gid: u32) -> String {
     gid.to_string()
 }
 /// Compute whether ACLs are limited for a host_path (logical) by finding owning share and using the probe.
+/// Prefers the most specific (longest host_path) matching share so nested shares can have independent ACL settings.
 fn acl_limited_for_path(state: &AppState, host_path: &std::path::Path) -> bool {
     let mountinfo = state.fs_probe_mountinfo_path.as_deref();
+    let mut best: Option<(&nfs_klldap_config::Share, usize)> = None;
+
     for s in &state.config.shares {
-        if host_path.starts_with(&s.host_path) || host_path == s.host_path.as_path() {
-            return nfs_klldap_config::share_fs_acl_limited_with_mountinfo(&state.config, s, mountinfo);
+        let hp = &s.host_path;
+        if host_path.starts_with(hp) || host_path == hp.as_path() {
+            let spec = hp.as_os_str().len();
+            if best.as_ref().is_none_or(|b| spec > b.1) {
+                best = Some((s, spec));
+            }
         }
+    }
+
+    if let Some((s, _)) = best {
+        return nfs_klldap_config::share_fs_acl_limited_with_mountinfo(&state.config, s, mountinfo);
     }
     false
 }
@@ -220,7 +231,7 @@ pub(crate) async fn index(
         .enumerate()
         .map(|(idx, s)| {
             let pseudo = s
-                .export_path
+                .pseudo_path
                 .as_deref()
                 .map(|p| {
                     if p.starts_with('/') {
@@ -321,7 +332,7 @@ pub(crate) async fn tree_fragment(
         r#"<div class="alert alert-danger" style="padding:0.5em;">
             <strong>Cannot display directory tree.</strong><br>
             <code>{}</code> is allowed by your config but is not visible inside the container
-            (check bind mounts / <code>storage.container_root</code> + share <code>host_path</code> (first dir component is the implicit bind root; `ganesha_path` overrides the effective container path used for WebUI tree/meta/ACLs/applies too) + <code>export_path</code> (for Pseudo) and the startup diagnostics
+            (check bind mounts / <code>storage.container_root</code> + share <code>host_path</code> (first dir component is the implicit bind root; `ganesha_path` overrides the effective container path used for WebUI tree/meta/ACLs/applies too) + <code>pseudo_path</code> (for Pseudo) and the startup diagnostics
             for the suggested <code>-v HOST:CONTAINER</code> line; single (or multiple) root parent bind(s) recommended for independent export names).
         </div>"#,
         safe_path

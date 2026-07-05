@@ -139,7 +139,7 @@
     <div style="display:flex;gap:6px;margin-bottom:1px;font-size:0.62em;color:var(--text-muted);font-weight:600;">
         <span style="width:115px">Share Name <span style="color:var(--warning-amber-text)">*</span></span>
         <span style="flex:1">Host Path <span style="color:var(--warning-amber-text)">*</span></span>
-        <span style="width:140px" title="Ganesha Pseudo — client-visible NFSv4 mount path (server:/this). TOML: export_path. Internal Path is derived from Host Path.">Pseudo Path</span>
+        <span style="width:140px" title="Ganesha Pseudo — client-visible NFSv4 mount path (server:/this). TOML: pseudo_path. Controls the Pseudo= in the EXPORT block.">Pseudo Path</span>
         <span style="width:90px" title="Ganesha SecType — per-share krb5p/krb5i/krb5 override (default from [ganesha]). TOML: security.">SecType</span>
         <span style="width:65px" title="Ganesha CLIENT Access_Type (RW or RO). TOML: rw.">Access Type</span>
         <span style="width:50px" title="Ganesha Squash — checked = root_squash; unchecked = no_root_squash. TOML: squash.">Squash</span>
@@ -163,7 +163,7 @@
             <input name="share_name_{{ row.idx }}" value="{{ row.name }}" style="width:115px" placeholder="name">
             <input name="share_host_{{ row.idx }}" value="{{ row.host_path }}" style="flex:1" placeholder="host_path">
             <div style="width:140px;display:flex;flex-direction:column;">
-            <input name="share_export_{{ row.idx }}" value="{{ row.export_path }}" style="width:140px" placeholder="/movies" title="Ganesha Pseudo (export_path) — client mount server:/this. Internal Path derived from Host Path." {% if !row.pseudo_editable %}disabled{% endif %}>
+            <input name="share_pseudo_{{ row.idx }}" value="{{ row.pseudo_path }}" style="width:140px" placeholder="/movies" title="Ganesha Pseudo (pseudo_path) — client mount server:/this." {% if !row.pseudo_editable %}disabled{% endif %}>
             {% if !row.pseudo_editable %}
             <small style="color:var(--text-muted);font-size:0.62em;margin-top:2px;line-height:1.2;" title="Emitted in Ganesha EXPORT on NOACL shares (0.9.40-style derivation).">
                 Pseudo: <code>{{ row.effective_pseudo }}</code> (auto, NOACL export)
@@ -262,7 +262,7 @@ function addShareRow() {
     block.innerHTML = `<div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
                    <input name="share_name_${idx}" placeholder="name" style="width:115px">
                    <input name="share_host_${idx}" placeholder="host_path" style="flex:1">
-                   <input name="share_export_${idx}" placeholder="/movies" style="width:140px" title="Ganesha Pseudo (export_path) — client mount server:/this.">
+                   <input name="share_pseudo_${idx}" placeholder="/movies" style="width:140px" title="Ganesha Pseudo (pseudo_path) — client mount server:/this.">
                    <select name="share_security_${idx}" style="width:90px">
                      <option value="">default</option>
                      <option value="krb5p">krb5p</option>

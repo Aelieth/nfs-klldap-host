@@ -251,6 +251,14 @@ impl FsManager {
     pub(crate) fn host_path_to_container_path(&self, host_path: &Path) -> Result<PathBuf, String> {
         let normalized = self.normalize_for_matching(host_path);
 
+        // Choose the *most specific* (longest host_path) share that is a prefix of the
+        // requested logical path. This ensures that if a user declares both a broad
+        // parent share and a more specific child share (each potentially with its own
+        // ganesha_path), the child's mapping wins for paths under the child.
+        // Previously the first-in-list match could pick a broad share without the
+        // right override, producing the wrong container path and "(unavailable)" meta.
+        let mut best: Option<(usize, PathBuf)> = None; // (specificity = share host len, cpath)
+
         for share in &self.config.shares {
             let share_normalized = self.normalize_for_matching(&share.host_path);
             if normalized.starts_with(&share_normalized) {
@@ -264,8 +272,15 @@ impl FsManager {
                 if !rel.as_os_str().is_empty() {
                     cpath.push(rel);
                 }
-                return Ok(cpath);
+                let spec = share_normalized.as_os_str().len();
+                if best.as_ref().is_none_or(|b| spec > b.0) {
+                    best = Some((spec, cpath));
+                }
             }
+        }
+
+        if let Some((_, cpath)) = best {
+            return Ok(cpath);
         }
 
         Err(format!(
@@ -532,13 +547,13 @@ mod tests {
     }
 
     #[test]
-    fn host_path_to_container_path_respects_explicit_export_path() {
+    fn host_path_to_container_path_ignores_pseudo_path_for_mapping() {
         let mut cfg = make_test_config_with_container_mapping(
             "/media/HDD-RAID/media",
             "/export",
             "media",
         );
-        cfg.shares[0].export_path = Some("/HDD-RAID/media".to_string());
+        cfg.shares[0].pseudo_path = Some("/HDD-RAID/media".to_string());
 
         let fs = FsManager::new(cfg);
 
@@ -580,6 +595,70 @@ mod tests {
             .host_path_to_container_path(Path::new("/var/data/nvme-raid/users/sub/dir"))
             .unwrap();
         assert_eq!(sub, PathBuf::from("/export/nvme-raid/users/sub/dir"));
+    }
+
+    #[test]
+    fn get_dir_meta_works_with_ganesha_path_override() {
+        // End-to-end: when ganesha_path points at a real location (bypassing heuristic),
+        // get_dir_meta must succeed and return the on-disk uid/gid/mode instead of None.
+        let tmp = TempDir::new().unwrap();
+        let physical = tmp.path().join("real_users");
+        std::fs::create_dir_all(&physical).unwrap();
+
+        let mut cfg = make_test_config_with_container_mapping(
+            "/var/data/nvme-raid/users",
+            "/export", // heuristic would produce /export/data/... which we deliberately do not create
+            "users",
+        );
+        // Point serve directly at the physical location we created.
+        cfg.shares[0].ganesha_path = Some(physical.to_string_lossy().into_owned());
+
+        let fs = FsManager::new(cfg);
+
+        let meta = fs.get_dir_meta(Path::new("/var/data/nvme-raid/users"));
+        assert!(meta.is_some(), "get_dir_meta must succeed via ganesha_path mapping (not the bad heuristic)");
+
+        // Also for a non-existing sub (to prove it reaches metadata which would fail for wrong path)
+        // but mainly the root case proves the unavailable bug is fixed when ganesha_path used.
+    }
+
+    #[test]
+    fn host_path_to_container_path_prefers_most_specific_share() {
+        // Overlapping shares: broad parent + specific child, each with own ganesha_path.
+        // Most-specific (longest host_path) must win so the child's mapping is used.
+        let mut cfg = make_test_config_with_container_mapping(
+            "/var/data/nvme-raid",
+            "/export",
+            "nvme-raid",
+        );
+        cfg.shares[0].ganesha_path = Some("/export/nvme-raid".to_string());
+
+        // Add a more specific child share later in the vec (order should not matter).
+        cfg.shares.push(nfs_klldap_config::Share {
+            name: "users".into(),
+            host_path: PathBuf::from("/var/data/nvme-raid/users"),
+            ganesha_path: Some("/export/nvme-raid/users".to_string()),
+            ..Default::default()
+        });
+
+        let fs = FsManager::new(cfg);
+
+        // Path exactly under the specific child share must use the child's ganesha_path base.
+        let users_root = fs
+            .host_path_to_container_path(Path::new("/var/data/nvme-raid/users"))
+            .unwrap();
+        assert_eq!(users_root, PathBuf::from("/export/nvme-raid/users"));
+
+        let users_sub = fs
+            .host_path_to_container_path(Path::new("/var/data/nvme-raid/users/sub"))
+            .unwrap();
+        assert_eq!(users_sub, PathBuf::from("/export/nvme-raid/users/sub"));
+
+        // A sibling under the broad share (not under the child) uses the broad mapping.
+        let nvme = fs
+            .host_path_to_container_path(Path::new("/var/data/nvme-raid/nvme"))
+            .unwrap();
+        assert_eq!(nvme, PathBuf::from("/export/nvme-raid/nvme"));
     }
 
     // === ACL read/mutation unit tests (shipped entry points via safe getfacl/setfacl, real FS, temp trees) ===

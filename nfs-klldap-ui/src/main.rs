@@ -66,7 +66,7 @@ async fn main() {
     println!("Configured shares: {}", config.shares.len());
     for (idx, s) in config.shares.iter().enumerate() {
         let default_ep = format!("/{}", s.name);
-        let ep = s.export_path.as_deref().unwrap_or(&default_ep);
+        let ep = s.pseudo_path.as_deref().unwrap_or(&default_ep);
         println!("  - {} → {} (host: {})", s.name, ep, s.host_path.display());
         if let Some(w) =
             nfs_klldap_config::ShareFieldWarning::for_share(&config.share_warnings, idx, &s.name)

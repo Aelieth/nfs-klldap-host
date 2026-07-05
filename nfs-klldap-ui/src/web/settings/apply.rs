@@ -317,8 +317,8 @@ pub(crate) fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_sha
         let mut t = toml_edit::Table::new();
         t["name"] = toml_edit::value(s.name.clone());
         t["host_path"] = toml_edit::value(s.host_path.display().to_string());
-        if let Some(ep) = &s.export_path {
-            t["export_path"] = toml_edit::value(ep.clone());
+        if let Some(ep) = &s.pseudo_path {
+            t["pseudo_path"] = toml_edit::value(ep.clone());
         }
         if let Some(sec) = &s.security {
             t["security"] = toml_edit::value(sec.clone());

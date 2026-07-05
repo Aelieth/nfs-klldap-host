@@ -257,7 +257,7 @@ host_path = "/foo/data"
         let ghtml = String::from_utf8_lossy(&gbody);
         assert!(ghtml.contains("alert alert-warning") && (ghtml.contains("limited") || ghtml.contains("fs_warning") || ghtml.contains("NOACL")), "settings render must include limited fs warning badge via shipped template + mountinfo probe");
 
-        let body_noacl = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_export_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=false&share_read_access_policy_0=pre&share_override_ganesha_path_0=true&share_ganesha_path_0=%2Fexport%2Fstaging%2Fdata&share_root_squash_0=on";
+        let body_noacl = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=false&share_read_access_policy_0=pre&share_override_ganesha_path_0=true&share_ganesha_path_0=%2Fexport%2Fstaging%2Fdata&share_root_squash_0=on";
         let req = Request::builder().method("POST").uri("/settings/save-shares").header("content-type","application/x-www-form-urlencoded").body(Body::from(body_noacl)).unwrap();
         let req = add_session_cookie(req, &token);
         let resp = app.clone().oneshot(req).await.unwrap();
@@ -268,7 +268,7 @@ host_path = "/foo/data"
         // root_squash from checkbox presence now roundtrips via collect
         assert!(written.contains("squash = \"root_squash\"") || written.contains("squash = 'root_squash'") || written.contains("root_squash"));
 
-        let body_acl = "share_name_0=acldata&share_host_0=%2Fmedia%2Facldata&share_export_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=true&share_manage_gids_0=true&share_read_access_policy_0=auto&share_manage_gids_expiration_0=900";
+        let body_acl = "share_name_0=acldata&share_host_0=%2Fmedia%2Facldata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=true&share_manage_gids_0=true&share_read_access_policy_0=auto&share_manage_gids_expiration_0=900";
         let req2 = Request::builder().method("POST").uri("/settings/save-shares").header("content-type","application/x-www-form-urlencoded").body(Body::from(body_acl)).unwrap();
         let req2 = add_session_cookie(req2, &token);
         let _ = app.clone().oneshot(req2).await.unwrap();
@@ -309,7 +309,7 @@ host_path = "/foo/data"
         assert!(hsec.contains("ganesha_default_security") && (hsec.contains("nfs") || hsec.contains("value=\"nfs\"") || hsec.contains("selected")), "settings render must show the overridden default_security value");
 
         // cover override_ganesha_path=false + omit (no ganesha_path key emitted; derived default used)
-        let body_off = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_export_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=true&share_read_access_policy_0=pre&share_manage_gids_expiration_0=900";
+        let body_off = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=true&share_read_access_policy_0=pre&share_manage_gids_expiration_0=900";
         let reqoff = Request::builder().method("POST").uri("/settings/save-shares").header("content-type","application/x-www-form-urlencoded").body(Body::from(body_off)).unwrap();
         let reqoff = add_session_cookie(reqoff, &token);
         let _ = app.clone().oneshot(reqoff).await.unwrap();

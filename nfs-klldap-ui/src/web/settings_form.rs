@@ -6,7 +6,7 @@ pub(crate) struct ShareFormRow {
     pub idx: usize,
     pub name: String,
     pub host: String,
-    pub export_path: Option<String>,
+    pub pseudo_path: Option<String>,
     pub security: Option<String>,
     pub rw: bool,
     pub root_squash: bool,
@@ -26,7 +26,7 @@ pub(crate) struct ShareTemplateRow {
     pub idx: usize,
     pub name: String,
     pub host_path: String,
-    pub export_path: String,
+    pub pseudo_path: String,
     pub pseudo_editable: bool,
     pub effective_pseudo: String,
     pub security: String,
@@ -63,15 +63,15 @@ pub(crate) fn share_override_ganesha_path_from_raw(doc: &toml_edit::DocumentMut,
     doc.get("shares").and_then(|s| s.as_array_of_tables()).and_then(|a| a.get(idx)).is_some_and(|t| t.get("ganesha_path").is_some())
 }
 
-pub(crate) fn share_export_path_explicit_in_raw(doc: &toml_edit::DocumentMut, idx: usize) -> bool {
-    doc.get("shares").and_then(|s| s.as_array_of_tables()).is_some_and(|a| a.get(idx).is_some_and(|t| t.get("export_path").is_some()))
+pub(crate) fn share_pseudo_path_explicit_in_raw(doc: &toml_edit::DocumentMut, idx: usize) -> bool {
+    doc.get("shares").and_then(|s| s.as_array_of_tables()).is_some_and(|a| a.get(idx).is_some_and(|t| t.get("pseudo_path").is_some()))
 }
 
-pub(crate) fn share_export_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize) -> String {
+pub(crate) fn share_pseudo_path_from_raw(doc: &toml_edit::DocumentMut, idx: usize) -> String {
     let arr = match doc.get("shares").and_then(|s| s.as_array_of_tables()) { Some(a) => a, None => return String::new() };
     let tbl = match arr.get(idx) { Some(t) => t, None => return String::new() };
-    if tbl.get("export_path").is_none() { return String::new(); }
-    let raw = tbl.get("export_path").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if tbl.get("pseudo_path").is_none() { return String::new(); }
+    let raw = tbl.get("pseudo_path").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     if raw.is_empty() { String::new() } else if raw.starts_with('/') { raw } else { format!("/{}", raw) }
 }
 
@@ -108,7 +108,7 @@ pub(crate) fn collect_shares_from_structured_form(
                     idx,
                     name: nm,
                     host: ht,
-                    export_path: extra.get(&format!("share_export_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
+                    pseudo_path: extra.get(&format!("share_pseudo_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
                     security: extra.get(&format!("share_security_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
                     rw: extra.get(&format!("share_rw_{}", idx)).map(|vv| vv.trim() == "true").unwrap_or(true),
                     root_squash: extra.contains_key(&format!("share_root_squash_{}", idx)),
@@ -129,7 +129,7 @@ pub(crate) fn collect_shares_from_structured_form(
     rows.into_iter().map(|r| nfs_klldap_config::Share {
         name: r.name,
         host_path: std::path::PathBuf::from(r.host),
-        export_path: r.export_path,
+        pseudo_path: r.pseudo_path,
         security: Some(r.security.unwrap_or_else(|| "krb5p".to_string())),
         rw: Some(r.rw),
         cache_profile: Some(r.cache_profile.unwrap_or_else(|| "Default".to_string())),

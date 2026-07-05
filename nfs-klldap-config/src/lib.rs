@@ -1083,6 +1083,31 @@ mod tests {
     }
 
     #[test]
+    fn legacy_export_path_alias_populates_pseudo_path_no_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("legacy.conf");
+        let toml = r#"
+            ldap_uri = "ldaps://kllap.test:6360"
+            [sssd]
+            ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+            ldap_default_authtok = "sekret"
+            [[shares]]
+            name = "movies"
+            host_path = "/media/movies"
+            export_path = "/legacy-movies"
+        "#;
+        fs::write(&path, toml).unwrap();
+
+        let cfg = NfsKlldapConfig::load(&path).expect("must load legacy export_path");
+        assert_eq!(cfg.shares.len(), 1);
+        // serde alias + detector suppression => value captured, no warning for the alias
+        assert!(cfg.share_warnings.is_empty(), "legacy export_path must not produce unknown key warning");
+        assert_eq!(cfg.shares[0].pseudo_path.as_deref(), Some("/legacy-movies"));
+        // ensure derive still works from it
+        assert_eq!(crate::derive_share_pseudo(&cfg.shares[0]), "/legacy-movies");
+    }
+
+    #[test]
     fn load_host_paths_only_returns_only_host_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("partial.conf");

@@ -38,7 +38,10 @@ pub fn detect_share_unknown_keys(contents: &str) -> Vec<ShareFieldWarning> {
         };
         let unknown_keys: Vec<String> = table
             .keys()
-            .filter(|k| !SHARE_KNOWN_KEYS.contains(&k.as_str()))
+            .filter(|k| {
+                let ks = k.as_str();
+                !SHARE_KNOWN_KEYS.contains(&ks) && ks != "export_path"
+            })
             .cloned()
             .collect();
         if unknown_keys.is_empty() {
@@ -218,7 +221,7 @@ impl NfsKlldapConfig {
             }
             normalize_blank(&mut share.ganesha_path);
             {
-                let ep = share.export_path.take();
+                let ep = share.pseudo_path.take();
                 let normalized = match ep {
                     Some(v) => {
                         let t = v.trim();
@@ -232,7 +235,7 @@ impl NfsKlldapConfig {
                     }
                     None => format!("/{}", share.name),
                 };
-                share.export_path = Some(normalized);
+                share.pseudo_path = Some(normalized);
             }
             if let Some(ref sec) = share.security {
                 if !crate::constants::GANESHA_ALLOWED_SECTYPES.contains(&sec.as_str()) {
@@ -512,7 +515,7 @@ impl NfsKlldapConfig {
         }
 
         let ep_owned: String = share
-            .export_path
+            .pseudo_path
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())

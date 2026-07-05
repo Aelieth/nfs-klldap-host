@@ -46,7 +46,7 @@ pub struct NfsKlldapConfig {
 pub const SHARE_KNOWN_KEYS: &[&str] = &[
     "name",
     "host_path",
-    "export_path",
+    "pseudo_path",
     "security",
     "rw",
     "squash",
@@ -224,8 +224,10 @@ pub struct Share {
     /// Host-visible path for allow-list and chown/chmod.
     /// See docs/ganesha-architecture.md.
     pub host_path: PathBuf,
-    /// Sets the NFSv4 pseudo path and defaults to slash-name when omitted.
-    pub export_path: Option<String>,
+    /// Sets the NFSv4 pseudo path (Ganesha `Pseudo = ...;`) and defaults to slash-name when omitted.
+    /// Accepts `export_path` as alias for backward compatibility with older configs.
+    #[serde(alias = "export_path")]
+    pub pseudo_path: Option<String>,
     pub security: Option<String>,
     pub rw: Option<bool>,
     pub squash: Option<String>,
@@ -248,10 +250,10 @@ pub struct Share {
     pub umask: Option<String>,
 }
 
-/// Derive the Ganesha NFSv4 Pseudo path from `export_path` or `/{name}` (0.9.40-style).
+/// Derive the Ganesha NFSv4 Pseudo path from `pseudo_path` or `/{name}` (0.9.40-style).
 pub fn derive_share_pseudo(share: &Share) -> String {
     let default = format!("/{}", share.name);
-    let raw = share.export_path.as_deref().unwrap_or(&default);
+    let raw = share.pseudo_path.as_deref().unwrap_or(&default);
     if raw.starts_with('/') {
         raw.to_string()
     } else {
@@ -264,7 +266,7 @@ impl Default for Share {
         Self {
             name: String::new(),
             host_path: PathBuf::new(),
-            export_path: None,
+            pseudo_path: None,
             security: None,
             rw: Some(true),
             squash: Some("no_root_squash".to_string()),

@@ -86,7 +86,7 @@ fn run_hook_for_share(
         .env("GANESHA_PATH", ganesha_path)
         .env(
             "EXPORT_PATH",
-            share.export_path.as_deref().unwrap_or(&format!("/{}", share.name)),
+            share.pseudo_path.as_deref().unwrap_or(&format!("/{}", share.name)),
         )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

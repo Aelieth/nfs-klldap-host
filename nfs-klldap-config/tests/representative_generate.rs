@@ -24,7 +24,7 @@ default_security = "krb5p"
 [[shares]]
 name = "movies"
 host_path = "/media/NVME-RAID/movies"
-export_path = "/movies"
+pseudo_path = "/movies"
 security = "krb5p"
 rw = true
 cache_profile = "Read - Heavy"

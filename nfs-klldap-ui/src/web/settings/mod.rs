@@ -168,12 +168,12 @@ fn share_caps_for_settings(
 }
 
 // Form items from modular settings_form
-use super::settings_form::{ShareTemplateRow, collect_shares_from_structured_form, has_explicit, get_explicit_str, share_override_ganesha_path_from_raw, share_export_path_explicit_in_raw, share_export_path_from_raw, infer_profile_from_prefs};
+use super::settings_form::{ShareTemplateRow, collect_shares_from_structured_form, has_explicit, get_explicit_str, share_override_ganesha_path_from_raw, share_pseudo_path_explicit_in_raw, share_pseudo_path_from_raw, infer_profile_from_prefs};
 
 
 
 // Form logic modularized (settings_form.rs)
-/// Share export_path for the editor when explicit in raw TOML.
+/// Share pseudo_path for the editor when explicit in raw TOML.
 /// Normalized to an absolute path.
 /// Maps legacy pref_read/pref_write pairs to cache profile names.
 /// Used to prefill the dropdown.
@@ -210,7 +210,7 @@ pub(crate) fn build_settings_template(
             idx,
             name: s.name.clone(),
             host_path: s.host_path.display().to_string(),
-            export_path: share_export_path_from_raw(&doc, idx),
+            pseudo_path: share_pseudo_path_from_raw(&doc, idx),
             pseudo_editable: eff.enable_acl,
             effective_pseudo: nfs_klldap_config::derive_share_pseudo(s),
             security: s.security.clone().unwrap_or_default(),
@@ -399,13 +399,13 @@ pub(crate) async fn settings_save_shares(
     let old_cfg = nfs_klldap_config::NfsKlldapConfig::load(&state.config_path).unwrap_or_default();
     let mut new_shares = collect_shares_from_structured_form(&form.extra);
     for (idx, new_share) in new_shares.iter_mut().enumerate() {
-        if new_share.export_path.is_none() && share_export_path_explicit_in_raw(&doc, idx) {
+        if new_share.pseudo_path.is_none() && share_pseudo_path_explicit_in_raw(&doc, idx) {
             let old = old_cfg
                 .shares
                 .get(idx)
                 .or_else(|| old_cfg.shares.iter().find(|s| s.name == new_share.name));
             if let Some(old) = old {
-                new_share.export_path = old.export_path.clone();
+                new_share.pseudo_path = old.pseudo_path.clone();
             }
         }
         if new_share.umask.is_none() {

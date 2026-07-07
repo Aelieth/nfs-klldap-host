@@ -110,6 +110,8 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
 
 #[test]
 fn generate_all_capable_ext4_omits_limited_flags() {
+    // ACL is opt-in: an ACL-capable ext4 share that explicitly enables ACL takes the ACL
+    // path (no Disable_ACL, no auto-detect comment).
     let ext4_toml = r#"
 ldap_uri = "ldaps://kllap.test:6360"
 [storage]
@@ -121,9 +123,10 @@ ldap_default_authtok = "sekret"
 name = "movies"
 host_path = "/media/movies"
 container_path = "/export/movies"
+enable_acl = true
 "#;
     let (_tmp, frag, _) = generate_with_mountinfo(MOUNTINFO_EXT4, ext4_toml);
-    assert!(!frag.contains("Disable_ACL = true;"), "capable ext4 omits Disable_ACL");
+    assert!(!frag.contains("Disable_ACL = true;"), "capable ext4 + enable_acl omits Disable_ACL");
     assert!(frag.contains("Manage_Gids = true;"));
     assert!(frag.contains("Path = /export/movies;"), "acl capable must contain Path:\n{frag}");
     assert!(frag.contains("    Pseudo = /movies;"), "acl capable (auto) must include the Pseudo line:\n{frag}");

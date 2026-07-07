@@ -18,6 +18,7 @@ pub(crate) struct ShareFormRow {
     pub read_access_policy: Option<String>,
     pub manage_gids_expiration: Option<u64>,
     pub container_path: String,
+    pub source_path: Option<String>,
     pub umask: Option<String>,
 }
 
@@ -122,6 +123,7 @@ pub(crate) fn collect_shares_from_structured_form(
                     read_access_policy: extra.get(&format!("share_read_access_policy_{}", idx)).and_then(|vv| if vv.trim() == "pre" { Some("pre".into()) } else if vv.trim() == "post" { Some("post".into()) } else { None }),
                     manage_gids_expiration: extra.get(&format!("share_manage_gids_expiration_{}", idx)).and_then(|vv| vv.trim().parse().ok()),
                     container_path: cp,
+                    source_path: extra.get(&format!("share_source_path_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
                     umask: extra.get(&format!("share_umask_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
                 });
             }
@@ -142,6 +144,7 @@ pub(crate) fn collect_shares_from_structured_form(
         read_access_policy: r.read_access_policy,
         manage_gids_expiration: r.manage_gids_expiration,
         container_path: r.container_path,
+        source_path: r.source_path,
         umask: r.umask,
         squash: if r.root_squash { Some("root_squash".to_string()) } else { None },
     }).collect()

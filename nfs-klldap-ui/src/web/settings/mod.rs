@@ -428,6 +428,17 @@ pub(crate) async fn settings_save_shares(
                 new_share.umask = old.umask.clone();
             }
         }
+        // source_path (ACL staging source) has no structured-form control yet; preserve any
+        // value set via raw TOML so a structured save does not silently drop staging.
+        if new_share.source_path.is_none() {
+            let old = old_cfg
+                .shares
+                .get(idx)
+                .or_else(|| old_cfg.shares.iter().find(|s| s.name == new_share.name));
+            if let Some(old) = old {
+                new_share.source_path = old.source_path.clone();
+            }
+        }
     }
     let mut cfg = old_cfg;
     cfg.shares = new_shares.clone();

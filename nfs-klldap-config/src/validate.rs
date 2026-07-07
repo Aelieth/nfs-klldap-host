@@ -290,7 +290,7 @@ impl NfsKlldapConfig {
         }
 
         let container_root = self.storage.container_root.trim_end_matches('/').to_string();
-        for share in &self.shares {
+        for share in &mut self.shares {
             if share.container_path.is_empty() {
                 return Err(ConfigError::Validation(format!(
                     "share '{}' requires container_path (absolute path inside the container; maps to Ganesha Path=)",
@@ -309,6 +309,55 @@ impl NfsKlldapConfig {
                 return Err(ConfigError::Validation(format!(
                     "share '{}' container_path '{}' must be under storage.container_root '{}'",
                     share.name, share.container_path, container_root
+                )));
+            }
+            if let Some(src) = share.source_path.as_mut() {
+                *src = src.trim().to_string();
+                if src.is_empty() {
+                    share.source_path = None;
+                } else {
+                    if !src.starts_with('/') {
+                        return Err(ConfigError::Validation(format!(
+                            "share '{}' source_path must be absolute (got '{}')",
+                            share.name, src
+                        )));
+                    }
+                    let src_under_root = *src == container_root
+                        || src.starts_with(&format!("{container_root}/"));
+                    if !src_under_root {
+                        return Err(ConfigError::Validation(format!(
+                            "share '{}' source_path '{}' must be under storage.container_root '{}'",
+                            share.name, src, container_root
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Reject duplicate effective Pseudo paths and duplicate serve paths: both collide
+        // in Ganesha's NFSv4 pseudo-fs / export table and prevent the second export from
+        // loading. Also reject Pseudo "/" (reserved for the auto-synthesized pseudo root).
+        let mut seen_pseudo = HashSet::new();
+        let mut seen_serve = HashSet::new();
+        for share in &self.shares {
+            let pseudo = crate::derive_share_pseudo(share);
+            if pseudo == "/" {
+                return Err(ConfigError::Validation(format!(
+                    "share '{}': pseudo_path '/' collides with the NFSv4 pseudo-fs root; use a distinct path like /{}",
+                    share.name, share.name
+                )));
+            }
+            if !seen_pseudo.insert(pseudo.clone()) {
+                return Err(ConfigError::Validation(format!(
+                    "share '{}': duplicate Pseudo path '{}' — each export needs a unique pseudo_path",
+                    share.name, pseudo
+                )));
+            }
+            let serve = self.serve_path_for(share);
+            if !seen_serve.insert(serve.clone()) {
+                return Err(ConfigError::Validation(format!(
+                    "share '{}': duplicate container_path '{}' — two exports cannot serve the same Path",
+                    share.name, serve
                 )));
             }
         }
@@ -330,14 +379,21 @@ impl NfsKlldapConfig {
                         .unwrap_or(crate::FsCapabilities {
                             fstype: "unknown".into(),
                             mount_options: vec![],
-                            acl_capable: true,
+                            acl_capable: false,
                         });
                     let eff = crate::compute_effective_flags(share, &caps);
                     if !eff.enable_acl {
-                        return Err(ConfigError::Validation(format!(
-                            "share '{}': read_access_policy = post is not allowed on NOACL exports (limited FS or enable_acl=false); use pre or auto",
+                        // Not fatal: the share is NOACL (ACL is opt-in), so
+                        // `read_access_policy = post` is meaningless here and is
+                        // normalized to `pre` at emit time. Warn loudly so the operator
+                        // can set `enable_acl = true` if they actually wanted the ACL path.
+                        eprintln!(
+                            "WARN [nfs-klldap-config] share '{}': read_access_policy = post \
+                             only applies to ACL exports; this share is NOACL (enable_acl is not \
+                             true), so post is ignored and pre is emitted. Set enable_acl = true \
+                             (and an ACL-capable serve path) to use post.",
                             share.name
-                        )));
+                        );
                     }
                 }
             }

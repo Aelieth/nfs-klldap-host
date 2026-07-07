@@ -57,8 +57,8 @@ pub use constants::PROC_COMM_NAME_MAX;
 
 pub use fs_probe::{
     compute_effective_flags, compute_read_access_policy_emit, normalize_path,
-    probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags, ReadAccessPolicyEmit,
-    FsCapabilities,
+    probe_from_mountinfo, probe_fs_capabilities, serve_path_posix_acl_supported,
+    EffectiveShareFlags, ReadAccessPolicyEmit, FsCapabilities,
 };
 pub use ganesha_log_contract::{
     classify_notsupp_failure_path, ganesha_96_has_mode_only_access_knob, load_logs_txt_fixture,
@@ -977,10 +977,58 @@ mod tests {
         c2.shares[0].read_access_policy = Some("pre".into());
         assert!(c2.validate_and_derive().is_ok());
 
+        // post on a NOACL (opt-out) share is not fatal: it is normalized to pre at emit
+        // time with a loud warning, so validation still succeeds.
         let mut c3 = minimal_cfg();
         c3.shares[0].enable_acl = Some(false);
         c3.shares[0].read_access_policy = Some("post".into());
-        assert!(c3.validate_and_derive().is_err());
+        assert!(c3.validate_and_derive().is_ok());
+
+        // post with ACL explicitly enabled is accepted (ACL path).
+        let mut c4 = minimal_cfg();
+        c4.shares[0].enable_acl = Some(true);
+        c4.shares[0].read_access_policy = Some("post".into());
+        assert!(c4.validate_and_derive().is_ok());
+    }
+
+    #[test]
+    fn duplicate_pseudo_and_serve_paths_rejected() {
+        let _env = env_lock();
+        let _guards = clean_core_env();
+
+        // Two shares resolving to the same Pseudo path collide in the NFSv4 pseudo-fs.
+        let mut dup_pseudo = minimal_cfg();
+        dup_pseudo.shares[0].pseudo_path = Some("/shared".into());
+        dup_pseudo.shares[1].pseudo_path = Some("/shared".into());
+        assert!(dup_pseudo.validate_and_derive().is_err());
+
+        // Two shares serving the same container_path collide in the export table.
+        let mut dup_serve = minimal_cfg();
+        dup_serve.shares[1].container_path = dup_serve.shares[0].container_path.clone();
+        assert!(dup_serve.validate_and_derive().is_err());
+
+        // pseudo_path "/" is reserved for the pseudo-fs root.
+        let mut root_pseudo = minimal_cfg();
+        root_pseudo.shares[0].pseudo_path = Some("/".into());
+        assert!(root_pseudo.validate_and_derive().is_err());
+    }
+
+    #[test]
+    fn source_path_must_be_absolute_and_under_root() {
+        let _env = env_lock();
+        let _guards = clean_core_env();
+
+        let mut ok = minimal_cfg();
+        ok.shares[0].source_path = Some("/export/SSD/movies-src".into());
+        assert!(ok.validate_and_derive().is_ok());
+
+        let mut rel = minimal_cfg();
+        rel.shares[0].source_path = Some("relative/path".into());
+        assert!(rel.validate_and_derive().is_err());
+
+        let mut outside = minimal_cfg();
+        outside.shares[0].source_path = Some("/somewhere/else".into());
+        assert!(outside.validate_and_derive().is_err());
     }
 
     #[test]

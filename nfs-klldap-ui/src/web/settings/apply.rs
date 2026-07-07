@@ -359,6 +359,16 @@ pub(crate) fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_sha
         if let Some(exp) = s.manage_gids_expiration {
             t["manage_gids_expiration"] = toml_edit::value(exp as i64);
         }
+        if let Some(sp) = &s.source_path {
+            if !sp.trim().is_empty() {
+                t["source_path"] = toml_edit::value(sp.clone());
+            }
+        }
+        if let Some(um) = &s.umask {
+            if !um.trim().is_empty() {
+                t["umask"] = toml_edit::value(um.clone());
+            }
+        }
         shares.push(t);
     }
     let shares_item = toml_edit::Item::ArrayOfTables(shares);

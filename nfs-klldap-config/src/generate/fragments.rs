@@ -41,10 +41,30 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
         let pref_read_line = pref_r.map(|v| format!("    PrefRead = {};\n", v)).unwrap_or_default();
         let pref_write_line = pref_w.map(|v| format!("    PrefWrite = {};\n", v)).unwrap_or_default();
 
-        let caps = if let Some(ref c) = mountinfo_once { crate::probe_from_mountinfo(c, Path::new(&path)) } else { crate::probe_fs_capabilities(Path::new(&path)).unwrap_or_else(|_| FsCapabilities{fstype:"unknown".into(),mount_options:vec![],acl_capable:true}) };
+        let caps = if let Some(ref c) = mountinfo_once { crate::probe_from_mountinfo(c, Path::new(&path)) } else { crate::probe_fs_capabilities(Path::new(&path)).unwrap_or_else(|_| FsCapabilities{fstype:"unknown".into(),mount_options:vec![],acl_capable:false}) };
         let (disable_acl_line, manage_gids_line, umask_line, auto_comment) = export_fs_directives(share, &caps);
         let read_access_line = export_read_access_line(share, &caps);
         let eff = crate::compute_effective_flags(share, &caps);
+        if eff.enable_acl {
+            // ACL was explicitly opted into. Warn loudly if the serve path does not look
+            // ACL-capable so the operator can stage onto an ACL-capable tree (source_path)
+            // or switch Ganesha builds instead of shipping an export that returns
+            // NFS4ERR_NOTSUPP. Authoritative check: scripts/verify-ganesha.sh.
+            let posix_acl = crate::serve_path_posix_acl_supported(Path::new(&path));
+            if !caps.acl_capable || posix_acl == Some(false) {
+                eprintln!(
+                    "WARN [nfs-klldap-config] share '{}': enable_acl = true but serve path '{}' \
+                     (fstype={}{}) does not look ACL-capable — Ganesha 9.6 VFS may return \
+                     NFS4ERR_NOTSUPP for NFSv4 ACL ops. Stage onto an ACL-capable tree via \
+                     source_path, or use an ACL-capable Ganesha build. Verify with \
+                     verify-ganesha.sh (docs/ganesha-architecture.md).",
+                    share.name,
+                    path,
+                    caps.fstype,
+                    if posix_acl == Some(false) { ", no POSIX ACL" } else { "" }
+                );
+            }
+        }
         let mge_line = if eff.enable_acl { share.manage_gids_expiration.map(|e| format!("    Manage_Gids_Expiration = {};\n", e)).unwrap_or_default() } else { String::new() };
         let pseudo_line = export_pseudo_line(&pseudo);
         let client_block = format!(r#"

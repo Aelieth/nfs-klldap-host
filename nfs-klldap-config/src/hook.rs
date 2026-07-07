@@ -63,7 +63,15 @@ fn run_hook_for_share(
     cfg: &NfsKlldapConfig,
     share: &crate::Share,
 ) -> Result<(), ConfigError> {
+    // serve_path = container_path (Ganesha EXPORT Path=). source_path defaults to the
+    // serve path (no staging); when set distinctly, the hook stages source -> serve.
     let serve_path = cfg.serve_path_for(share);
+    let source_path = share
+        .source_path
+        .as_deref()
+        .map(str::to_string)
+        .unwrap_or_else(|| serve_path.clone());
+    let pseudo = crate::derive_share_pseudo(share);
 
     eprintln!(
         "INFO [nfs-klldap-config] post_generate_hook: {} (share={})",
@@ -74,13 +82,14 @@ fn run_hook_for_share(
     let mut child = Command::new(hook_path)
         .env("SHARE_NAME", &share.name)
         .env("HOST_PATH", share.host_path.display().to_string())
-        .env("CONTAINER_PATH", &serve_path)
+        // SOURCE_PATH = where the real data lives inside the container (staging source).
+        .env("SOURCE_PATH", &source_path)
+        // SERVE_PATH = Ganesha EXPORT Path= (the ACL-capable serve/staging tree).
         .env("SERVE_PATH", &serve_path)
-        .env("GANESHA_PATH", &serve_path)
-        .env(
-            "EXPORT_PATH",
-            share.pseudo_path.as_deref().unwrap_or(&format!("/{}", share.name)),
-        )
+        // Back-compat: CONTAINER_PATH historically meant the serve path.
+        .env("CONTAINER_PATH", &serve_path)
+        .env("PSEUDO_PATH", &pseudo)
+        .env("EXPORT_PATH", &pseudo)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

@@ -53,6 +53,30 @@ kllldap_ignored_attributes = true                               # KLLDAP specifi
 
 [ganesha]
 default_security = "krb5p"                                      # Security, krb5p (default) | krb5i | krb5
+# post_generate_hook = "/config/post-generate-staging-sync.sh"  # optional; runs after each generate (see examples/)
+
+# ---------------------------------------------------------------------------
+# Shares (repeat the [[shares]] block per export). Uncomment and edit:
+# ---------------------------------------------------------------------------
+# [[shares]]
+# name          = "users"                                        # Required - unique; drives default Pseudo (/users)
+# host_path     = "/var/data/nvme-raid/users"                    # Required - host path (WebUI chown/allow-list)
+# container_path = "/export/nvme-raid/users"                     # Required - Ganesha EXPORT Path= (serve dir in container)
+# pseudo_path   = "/users"                                       # Optional - client-visible NFSv4 Pseudo (defaults to /<name>)
+# rw            = true                                           # Optional - default true
+# manage_gids   = true                                           # Optional - default true
+#
+# ACL is opt-in. Omit enable_acl (or set false) for a reliable NOACL export that
+# works over krb5p on any POSIX filesystem. Set enable_acl = true ONLY when the
+# serve path can actually serve NFSv4 ACLs on this Ganesha 9.6 build — verify with
+# scripts/verify-ganesha.sh, since the packaged VFS FSAL may return NFS4ERR_NOTSUPP.
+# enable_acl    = true                                           # opt-in ACL path (FSAL Umask, no Disable_ACL)
+# umask         = "0022"                                         # ACL path only (inside FSAL)
+#
+# ACL staging: when the real data lives on a filesystem the VFS can't serve ACLs
+# from, set source_path to where it lands and container_path to an ACL-capable tree;
+# the post_generate_hook syncs source_path -> container_path.
+# source_path   = "/export/nvme-raid/users"                      # staging source (Ganesha serves container_path)
 
 [webui]
 # tls = false                                                   # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.

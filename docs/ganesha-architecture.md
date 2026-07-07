@@ -28,27 +28,26 @@ See container/healthcheck.sh for service checks. See TESTING.md for test coverag
 
 ## ACL and filesystem compatibility
 
-At validate/generate time nfs-klldap-config probes `/proc/self/mountinfo` for each share's **serve path** (`container_path`). The generator maintains two distinct supported mainline paths:
+**ACL is opt-in, per share.** The generator maintains two distinct supported mainline paths, and the default is the safe one:
 
-- ACL-capable (ext4, xfs, btrfs+acl, or explicit `enable_acl=true`): full native NFSv4 ACL behavior.
-- NOACL/limited (btrfs+noacl, vfat/fat, ntfs, or explicit `enable_acl=false`): 0.9.40-style simple disk/share settings (`Pseudo = /<name>;` from `pseudo_path` or share name, plus `Disable_ACL = true; Manage_Gids = true; Read_Access_Check_Policy = pre;` (auto default; explicit `manage_gids=false` overrides) emitted before SecType; no per-export Enable_NLM/Enable_RQUOTA/POSIX marker). Explicit pre (no quotes) access check policy for noacl mounts. Auto-detect via fstype+noacl mountopt (overrides allowed). WebUI disables the Pseudo field on NOACL shares and shows the derived value as muted info.
+- **NOACL (default / opt-out)** — any share where `enable_acl` is unset or `false`. Emits 0.9.40-style simple disk/share settings (`Pseudo = /<name>;` from `pseudo_path` or share name, plus `Disable_ACL = true; Manage_Gids = true; Read_Access_Check_Policy = pre;`; explicit `manage_gids=false` overrides) before SecType; no per-export Enable_NLM/Enable_RQUOTA/POSIX marker. Basic file reads, writes, and connectivity work over krb5p on any POSIX filesystem. `read_access_policy = post` on a NOACL share is normalized to `pre` (with a warning). WebUI disables the Pseudo field on NOACL shares and shows the derived value as muted info.
+- **ACL (explicit `enable_acl = true`)** — full native NFSv4 ACL behavior (`FSAL { Umask; }`, optional `Manage_Gids_Expiration`, `Read_Access_Check_Policy` omitted-or-`post`, no `Disable_ACL`).
 
-Limited filesystems automatically use the NOACL path — basic file reads and connectivity work for noacl clients (per 0.9.40). Identity resolution (UID/GID/groups via 0.9.65 nss/idhelper/UseGetpwnam) is shared by both paths.
+There is **no fail-open**: an unset `enable_acl` never auto-promotes a share onto the ACL path, even on ext4/xfs, because the packaged Ganesha 9.6 VFS FSAL may not be able to service NFSv4 ACL operations (see the limitation below). At validate/generate time nfs-klldap-config still probes `/proc/self/mountinfo` for each share's **serve path** (`container_path`) to annotate limited filesystems and, for `enable_acl = true` shares, best-effort `getfacl` to warn when the serve path does not look ACL-capable. Identity resolution (UID/GID/groups via nss/idhelper/UseGetpwnam) is shared by both paths.
 
-**Ganesha 9.6 ACL-path limitation (not a regression fix):** On direct noacl, some OP_ACCESS/GETATTR may still surface NFS4ERR_NOTSUPP under ACL masks in ganesha.log for certain clients. Use `container_path` staging + post-generate hook to an ACL-capable tree when full-feature `ls` / extended ACLs are required on the share. Staging remains supported.
+**Ganesha 9.6 ACL limitation (packaged VFS FSAL):** on this build, ACL-dependent OP_ACCESS/GETATTR can return `NFS4ERR_NOTSUPP` — modern Linux clients then fail `ls`/access even though the mount and krb5p auth succeed. This is why ACL is opt-in and default-NOACL. Confirm whether your specific build+filesystem can serve NFSv4 ACLs with `scripts/verify-ganesha.sh` (empirical ACL probe). When ACLs are required and the real data lives on a filesystem the VFS cannot serve ACLs from, use the **staging pattern**: set `source_path` to where the data lands and `container_path` to an ACL-capable serve tree; the post-generate hook syncs `source_path` → `container_path`.
 
 Preflight identity uses `ganesha_identity_pipeline` (tempdir materialize + nss contract) plus runtime nss materialize, socket GRPS, `ganesha-ctl id-resolve`, and ganesha.log uid2grp tags — the same nss_wrapper getent path Ganesha uses at request time per `idmap_log_contract`.
 
-**Staging pattern:** set `container_path` to an ACL-capable tree (e.g. ext4 under `/export/staging/...`) while keeping `host_path` for WebUI chown and validation. Use `[ganesha] post_generate_hook` (see `examples/post-generate-staging-sync.sh`) to sync data into the staging path after each generate.
+**Staging pattern (for `enable_acl = true`):** set `source_path` to the container path where the real data is bind-mounted, and `container_path` to an ACL-capable serve tree (e.g. ext4 under `/export/staging/...`), while keeping `host_path` for WebUI chown and validation. Use `[ganesha] post_generate_hook` (see `examples/post-generate-staging-sync.sh`) to sync `source_path` → `container_path` (rsync `-aAX`, preserving ACLs) after each generate. When `source_path` is unset, source == serve and no staging runs.
 
-| Filesystem | Typical behavior |
-|------------|------------------|
-| ext4, xfs | Full NFSv4.2 ACL features (default; ACL path) |
-| btrfs + `acl` | Full features (ACL path) |
-| btrfs + `noacl` | NOACL path (0.9.40-style: Disable_ACL + Manage_Gids=true auto); basics work; may need staging for some clients |
-| vfat/fat, ntfs | NOACL path (auto) |
+| Filesystem / setting | Behavior |
+|----------------------|----------|
+| any, `enable_acl` unset/false | NOACL path (Disable_ACL + Manage_Gids=true); basics work over krb5p |
+| ext4/xfs/btrfs+acl, `enable_acl = true` | ACL path — works only if the packaged VFS can serve NFSv4 ACLs (verify with `scripts/verify-ganesha.sh`); otherwise stage or change build |
+| vfat/fat, ntfs, btrfs+noacl | limited FS — annotated with an auto-detect comment; keep NOACL |
 
-Explicit `enable_acl` / `manage_gids` in nfs-klldap.conf override probe defaults. On limited filesystems (detected via mountinfo at `container_path`), NOACL settings applied automatically; capable default to full native. The two paths coexist. Diagnose with `ganesha_log_contract`: ACL-path NOTSUPP vs identity-path NOTSUPP.
+`enable_acl` is opt-in: `true` selects the ACL path, unset/`false` selects NOACL. `manage_gids` defaults `true` on both paths. The two paths coexist per share. Diagnose with `ganesha_log_contract`: ACL-path NOTSUPP vs identity-path NOTSUPP.
 
 ## NFS create inheritance, umask, and ACL default entries
 

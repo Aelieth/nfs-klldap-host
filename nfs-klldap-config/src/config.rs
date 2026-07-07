@@ -58,6 +58,8 @@ pub const SHARE_KNOWN_KEYS: &[&str] = &[
     "read_access_policy",
     "manage_gids_expiration",
     "container_path",
+    "source_path",
+    "umask",
 ];
 
 /// Warning for unrecognized keys in a `[[shares]]` table (config still loads).
@@ -251,6 +253,12 @@ pub struct Share {
     pub manage_gids_expiration: Option<u64>, // further ACL
     /// Absolute path inside the container where Ganesha serves this share (EXPORT Path=).
     pub container_path: String,
+    /// Optional distinct data-source path inside the container for ACL staging.
+    /// When set (and different from `container_path`), the post-generate hook syncs
+    /// `source_path` → `container_path` so Ganesha can serve an ACL-capable copy while the
+    /// real data lands elsewhere (see docs/ganesha-architecture.md staging pattern). Unset
+    /// means source == serve (no staging).
+    pub source_path: Option<String>,
     /// Umask (octal e.g. "0022") emitted *inside* FSAL block on ACL path only.
     /// Default "0022" sensible for creation; pairs with directory default ACLs.
     /// Omitted on NOACL path to preserve separation (host umask governs).
@@ -286,6 +294,7 @@ impl Default for Share {
             read_access_policy: None,
             manage_gids_expiration: None,
             container_path: String::new(),
+            source_path: None,
             umask: None,
         }
     }

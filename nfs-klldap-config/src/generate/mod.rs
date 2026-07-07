@@ -486,7 +486,7 @@ DIRECTORY_SERVICES {{
 
 NFS_KRB5 {{
     PrincipalName = "nfs";
-    KeytabPath = "/etc/krb5.keytab";
+    KeytabPath = "{keytab}";
     Active_krb5 = TRUE;
 }}
 
@@ -511,6 +511,11 @@ EXPORT_DEFAULTS {{
         root_krb = constants::GANESHA_ROOT_KRB_PRINCIPALS,
         idmap_validity = idmap_validity,
         rpc_cred_line = rpc_cred_line,
+        keytab = std::env::var("NFS_KLLDAP_KEYTAB_PATH")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "/etc/krb5.keytab".to_string()),
     );
 
     if ganesha_debug_enabled() {

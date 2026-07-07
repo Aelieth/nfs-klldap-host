@@ -105,9 +105,49 @@ if [ -f /etc/ganesha/ganesha.conf ]; then
 fi
 
 echo
-echo "[7] Network mode..."
+echo "[7] ACL capability of serve paths (Ganesha 9.6 VFS FSAL)..."
+# Whether the packaged Ganesha VFS can serve NFSv4 ACLs depends on BOTH the build and the
+# backing filesystem. These are best-effort server-side signals; the authoritative check is
+# a krb5p mount + nfs4_getfacl from a client (see scripts/fedora-krb5p-client-validate.sh).
+_acl_probe_path() {
+    p="$1"
+    if [ ! -d "$p" ]; then
+        echo "    $p: (not present in container)"
+        return
+    fi
+    if getfacl -c -- "$p" >/dev/null 2>&1; then
+        echo "    $p: POSIX ACLs readable (getfacl ok)"
+    else
+        echo "    $p: POSIX ACLs NOT supported here — ACL exports will return NFS4ERR_NOTSUPP; keep NOACL or stage onto an ACL-capable tree"
+    fi
+}
+if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
+    for f in /etc/ganesha/exports.d/*.conf; do
+        path="$(awk -F'=' '/^[[:space:]]*Path[[:space:]]*=/{gsub(/[; ]/,"",$2);print $2;exit}' "$f")"
+        mode="ACL"; grep -q 'Disable_ACL = true;' "$f" && mode="NOACL"
+        echo "  $(basename "$f"): Path=${path:-?} [$mode]"
+        [ -n "${path:-}" ] && _acl_probe_path "$path"
+    done
+fi
+# Packaged Ganesha VFS FSAL build: does it reference ACL symbols at all?
+VFS_SO="$(ls /usr/lib/*/ganesha/libfsalvfs.so* /usr/lib/ganesha/libfsalvfs.so* 2>/dev/null | head -1 || true)"
+if [ -n "$VFS_SO" ]; then
+    if strings "$VFS_SO" 2>/dev/null | grep -qiE 'nfs4_acl|posix_acl|richacl'; then
+        echo "  NOTE: $VFS_SO references ACL symbols (build may support ACLs; confirm end-to-end)"
+    else
+        echo "  WARN: $VFS_SO shows no ACL symbols — NFSv4 ACL ops may be unsupported in this build"
+    fi
+fi
+# The failure this guards against: ACL-path NFS4ERR_NOTSUPP already in ganesha.log.
+if [ -f /var/log/ganesha.log ] && grep -q 'Permission check for ACL.*Operation not supported' /var/log/ganesha.log 2>/dev/null; then
+    echo "  FAIL: ganesha.log shows ACL-path NFS4ERR_NOTSUPP — set enable_acl=false (NOACL) or stage/rebuild for ACLs"
+fi
+
+echo
+echo "[8] Network mode..."
 warn_bridge_network
 
 echo
 echo "=== Verification complete ==="
 echo "See docs/run/README.md — ganesha-ctl show-fragments, id-check, id-map-test."
+echo "ACL end-to-end: mount krb5p + nfs4_getfacl from a client (scripts/fedora-krb5p-client-validate.sh)."

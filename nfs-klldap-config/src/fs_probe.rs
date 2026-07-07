@@ -34,7 +34,9 @@ struct MountEntry {
 }
 
 /// Probes path against live mountinfo.
-/// On failure it assumes ACL-capable so generate never aborts.
+/// On failure it assumes NOT ACL-capable so generate never emits a broken ACL
+/// export (fail-safe). ACL is opt-in via `enable_acl = true` (see
+/// `compute_effective_flags`), so a conservative probe never suppresses a share.
 pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
     let mountinfo_path = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH")
         .unwrap_or_else(|_| "/proc/self/mountinfo".to_string());
@@ -55,10 +57,13 @@ pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
                 acl_capable,
             }
         }
+        // Unresolved path: fail safe. ACL is opt-in and separately verified, so a
+        // conservative "not capable" here only affects the auto-detect comment, never
+        // whether a share is served.
         None => FsCapabilities {
             fstype: "unknown".into(),
             mount_options: vec![],
-            acl_capable: true,
+            acl_capable: false,
         },
     }
 }
@@ -77,14 +82,21 @@ pub fn compute_read_access_policy_emit(
     share: &Share,
     caps: &FsCapabilities,
 ) -> ReadAccessPolicyEmit {
+    let eff = compute_effective_flags(share, caps);
     if let Some(ref raw) = share.read_access_policy {
         let policy = raw.trim().to_ascii_lowercase();
         if policy == "post" {
-            return ReadAccessPolicyEmit::Post;
+            // post is only meaningful on the ACL path. On a NOACL export (the default,
+            // or a share not opted into ACL) it is silently normalized to pre so an
+            // existing `read_access_policy = post` never blocks generation.
+            return if eff.enable_acl {
+                ReadAccessPolicyEmit::Post
+            } else {
+                ReadAccessPolicyEmit::Pre
+            };
         }
         return ReadAccessPolicyEmit::Pre;
     }
-    let eff = compute_effective_flags(share, caps);
     if eff.enable_acl {
         ReadAccessPolicyEmit::Omit
     } else {
@@ -99,10 +111,15 @@ pub(crate) fn is_valid_umask(s: &str) -> bool {
 
 pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> EffectiveShareFlags {
     let probe_limited = !caps.acl_capable;
-    let enable_acl = share.enable_acl.unwrap_or(!probe_limited);
+    // ACL is opt-in (per-share operator choice). Unset or false => NOACL. This removes
+    // the old fail-open where a "capable" probe silently emitted an ACL export that the
+    // packaged Ganesha 9.6 VFS FSAL cannot service (NFS4ERR_NOTSUPP). enable_acl = true
+    // is separately capability-verified (loud warning) before the ACL path is taken.
+    let enable_acl = share.enable_acl == Some(true);
     let manage_gids = share.manage_gids.unwrap_or(true);
-    let auto_applied =
-        probe_limited && share.enable_acl.is_none() && share.manage_gids.is_none();
+    // Auto-detect comment is informational only: it fires when the operator did not opt
+    // into ACL and the probe found a genuinely limited FS (vfat/ntfs/noacl mount).
+    let auto_applied = probe_limited && share.enable_acl.is_none();
     let umask = share.umask.as_deref().filter(|u| is_valid_umask(u)).map(|u| u.to_string()).or_else(|| {
         if enable_acl { Some("0022".to_string()) } else { None }
     });
@@ -178,6 +195,34 @@ pub fn normalize_path(path: &str) -> String {
     }
 }
 
+/// Best-effort local check: does the serve path's filesystem support POSIX ACLs at all?
+///
+/// This is only a partial predictor of whether Ganesha's VFS FSAL can service NFSv4 ACL
+/// operations (that also depends on the packaged Ganesha build — see
+/// docs/ganesha-architecture.md and `scripts/verify-ganesha.sh` for the authoritative,
+/// empirical check). It reliably catches filesystems that cannot do ACLs at all.
+///
+/// Implemented via `getfacl` (from the already-installed `acl` package) to keep this crate
+/// `unsafe`-free. Returns `Some(false)` when the filesystem reports ACLs unsupported,
+/// `Some(true)` when ACLs are readable, and `None` when inconclusive (tool or path missing).
+pub fn serve_path_posix_acl_supported(path: &Path) -> Option<bool> {
+    let out = std::process::Command::new("getfacl")
+        .arg("-c") // omit the file-name header
+        .arg("--")
+        .arg(path)
+        .output()
+        .ok()?;
+    if out.status.success() {
+        return Some(true);
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr).to_ascii_lowercase();
+    if stderr.contains("not supported") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 fn acl_capable_from_mount(fstype: &str, options: &[String], mount_source: &str) -> bool {
     if options.iter().any(|o| o.eq_ignore_ascii_case("noacl")) {
         return false;
@@ -232,10 +277,12 @@ mod tests {
     }
 
     #[test]
-    fn unknown_path_assumes_capable() {
+    fn unknown_path_assumes_not_capable() {
+        // Fail-safe: an unresolved path must not be treated as ACL-capable, so a share
+        // is never silently promoted onto the (packaged-VFS-broken) ACL path.
         let caps = probe_from_mountinfo(FIXTURE, Path::new("/other/new"));
         assert_eq!(caps.fstype, "unknown");
-        assert!(caps.acl_capable);
+        assert!(!caps.acl_capable);
     }
 
     #[test]
@@ -268,8 +315,11 @@ mod tests {
     }
 
     #[test]
-    fn read_access_policy_auto_acl_omits() {
-        let share = Share::default();
+    #[allow(clippy::field_reassign_with_default)]
+    fn read_access_policy_acl_omits() {
+        // ACL is opt-in: enable_acl = true is required to take the ACL path.
+        let mut share = Share::default();
+        share.enable_acl = Some(true);
         let caps = FsCapabilities {
             fstype: "ext4".into(),
             mount_options: vec![],
@@ -282,8 +332,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn read_access_policy_explicit_post_on_acl() {
         let mut share = Share::default();
+        share.enable_acl = Some(true);
         share.read_access_policy = Some("post".into());
         let caps = FsCapabilities {
             fstype: "ext4".into(),
@@ -294,6 +346,45 @@ mod tests {
             compute_read_access_policy_emit(&share, &caps),
             ReadAccessPolicyEmit::Post
         );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn read_access_policy_post_on_noacl_normalizes_to_pre() {
+        // post is meaningless on a NOACL (default/opt-out) share and must normalize to pre
+        // rather than emit an invalid post line.
+        let mut share = Share::default();
+        share.read_access_policy = Some("post".into());
+        let caps = FsCapabilities {
+            fstype: "ext4".into(),
+            mount_options: vec![],
+            acl_capable: true,
+        };
+        assert_eq!(
+            compute_read_access_policy_emit(&share, &caps),
+            ReadAccessPolicyEmit::Pre
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn enable_acl_is_opt_in_only() {
+        // Unset enable_acl => NOACL even on an ACL-capable FS (no fail-open).
+        let unset = Share::default();
+        let caps = FsCapabilities {
+            fstype: "ext4".into(),
+            mount_options: vec![],
+            acl_capable: true,
+        };
+        assert!(!compute_effective_flags(&unset, &caps).enable_acl);
+        // enable_acl = false => NOACL.
+        let mut off = Share::default();
+        off.enable_acl = Some(false);
+        assert!(!compute_effective_flags(&off, &caps).enable_acl);
+        // enable_acl = true => ACL.
+        let mut on = Share::default();
+        on.enable_acl = Some(true);
+        assert!(compute_effective_flags(&on, &caps).enable_acl);
     }
 
     #[test]

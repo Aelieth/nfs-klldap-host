@@ -24,5 +24,12 @@ serve-path filesystem is ACL-capable. If `enable_acl = true` but the filesystem 
 (e.g. Ganesha 9.6 VFS FSAL → `NFS4ERR_NOTSUPP`), the section reverts to **Non-ACL** with an explicit
 reason. The share-card status dot follows the same rule (green = ACL supported, blue = Non-ACL).
 
+## System Settings → Shares
+
+Share-card status dots use the **same effective rule** as Share Permissions and Ganesha export
+emission: green only when `enable_acl = true` and the serve-path FS is ACL-capable. Values
+`auto` (unset) and `off` are both NOACL (`Disable_ACL = true`) and show blue. The `enable_acl`
+dropdown labels `auto` as “auto (NOACL)” to match the opt-in policy.
+
 See templates/ + source for current UX. (Historical decisions resolved: lazy tree, detached
 permissions panel, structured shares, full progress.)

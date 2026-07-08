@@ -36,7 +36,7 @@ pub(crate) use permission_tree::{
 pub(crate) use settings::{
     clear_ldap_cache, lldap_status, reload_nfs_client, restart_status, settings_page,
     settings_save_raw, settings_save_structured, settings_save_shares,
-    system_restart,
+    settings_test_bind, settings_test_ldap, system_restart,
 };
 
 /// Shared state for all handlers.
@@ -180,6 +180,8 @@ pub fn router(state: AppState) -> Router {
         .route("/settings/reload-nfs-client", post(reload_nfs_client))
         .route("/settings/clear-ldap-cache", post(clear_ldap_cache))
         .route("/settings/restart", post(system_restart))
+        .route("/settings/test-ldap", post(settings_test_ldap))
+        .route("/settings/test-bind", post(settings_test_bind))
 
         .with_state(state);
 
@@ -282,6 +284,21 @@ container_path = "/data"
         let gbody = axum::body::to_bytes(grs.into_body(), 1024*1024).await.unwrap();
         let ghtml = String::from_utf8_lossy(&gbody);
         assert!(ghtml.contains("alert alert-warning") && (ghtml.contains("limited") || ghtml.contains("fs_warning") || ghtml.contains("NOACL")), "settings render must include limited fs warning badge via shipped template + mountinfo probe");
+        // enable_acl unset (auto) must show Non-ACL status-dot — same as Share Permissions / Disable_ACL export.
+        // (Legend also has bare share-dot.acl / .noacl keys; assert titled card dots only.)
+        assert!(
+            ghtml.contains(r#"share-dot noacl" title="Non-ACL limited""#)
+                || ghtml.contains("share-dot noacl") && ghtml.contains(r#"title="Non-ACL limited""#),
+            "settings share with enable_acl=auto must render Non-ACL limited status-dot"
+        );
+        assert!(
+            !ghtml.contains(r#"share-dot acl" title="ACL supported""#),
+            "settings share with enable_acl=auto must not render an ACL-supported status-dot"
+        );
+        assert!(
+            ghtml.contains("data-acl-chip") && ghtml.contains("acl auto"),
+            "settings chip must still show acl auto for unset enable_acl"
+        );
 
         let body_noacl = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=false&share_read_access_policy_0=pre&share_container_path_0=%2Fexport%2Fstaging%2Fdata&share_root_squash_0=on";
         let req = Request::builder().method("POST").uri("/settings/save-shares").header("content-type","application/x-www-form-urlencoded").body(Body::from(body_noacl)).unwrap();

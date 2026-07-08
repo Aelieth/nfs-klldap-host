@@ -35,7 +35,11 @@ pub(crate) struct ShareTemplateRow {
     pub rw: bool,
     pub root_squash: bool,
     pub cache_profile: String,
+    /// Raw select value: "auto" | "true" | "false".
     pub enable_acl: String,
+    /// True only when the export will actually serve ACLs (enable_acl opted-in AND
+    /// serve-path FS is ACL-capable). Drives status-dot / legend alignment with Share Permissions.
+    pub effective_acl_capable: bool,
     pub manage_gids: String,
     pub read_access_policy: String,
     pub manage_gids_expiration: Option<u64>,

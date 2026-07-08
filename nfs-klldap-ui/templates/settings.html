@@ -1,396 +1,756 @@
 {% extends "base.html" %}
 
+{#
+  System Settings — paned redesign (drop-in for nfs-klldap-ui/templates/settings.html).
+  Extends base.html (theme vars, .btn, .alert, .mono-log-panel, htmx, theme tray).
+
+  Preserves the existing POST contract:
+    /settings/save        (structured settings: Core + SSSD + TLS)   -> #settings-form
+    /settings/save-shares (shares)                                   -> #shares-form
+    /settings/save-raw    (raw TOML)                                 -> #raw-form
+    /settings/restart     (apply / restart)
+  and the existing context vars + override_* checkbox semantics (the
+  Auto/Custom segmented control just drives the same hidden override_* checkbox).
+
+  Two NEW lightweight endpoints power the Diagnostics buttons (see handoff/README.md):
+    POST /settings/test-ldap  { ldap_uri }                       -> JSON {ok, log, message?, error?}
+    POST /settings/test-bind  { ldap_default_bind_dn, ldap_default_authtok } -> JSON {ok, log, ...}
+  Reuse the probe logic from /setup/2/test and /setup/3/test. A failing test never blocks Save.
+#}
+
 {% block content %}
-<h2>System Settings</h2>
-<p>Editing: <code>{{ config_path }}</code></p>
+<style>
+  /* ---- shell / rail / panes ---- */
+  #settings-app{color:var(--text);font-size:13px;line-height:1.45}
+  .set-shell{display:flex;min-height:560px;border:1px solid var(--border);border-radius:9px;overflow:hidden;background:var(--bg)}
+  .set-rail{flex:0 0 176px;background:var(--bg-alt);border-right:1px solid var(--border-light);padding:12px 9px;display:flex;flex-direction:column;gap:2px}
+  .set-rail .rl-hd{font:700 .62em ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:.08em;color:var(--text-light);padding:2px 10px 8px}
+  .rail-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;color:var(--text-muted);font-size:.9em;font-weight:600;border:1px solid transparent;background:transparent;text-align:left;width:100%;font-family:inherit;white-space:nowrap}
+  .rail-item:hover{background:var(--dir-hover)}
+  .rail-item.active{background:var(--accent-light);color:var(--text);border-color:var(--selected-border)}
+  .rail-dot{width:7px;height:7px;border-radius:50%;background:var(--warning-amber-border);margin-left:auto;opacity:0}
+  .rail-item.dirty .rail-dot{opacity:1}
+  .set-main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .set-scroll{flex:1;padding:18px 22px}
+  .set-section{scroll-margin-top:12px}
+  .set-section[hidden]{display:none}
+  .sec-hd{display:flex;align-items:center;gap:9px;margin:0 0 14px;padding-bottom:7px;border-bottom:1px solid var(--border-light)}
+  .sec-hd h3{margin:0;font-size:1.05em}
+  .sec-hd .sec-sub{font-size:.74em;color:var(--text-light)}
 
-{% if host_nfs_mode %}
-<div class="alert alert-info" style="margin:0.5rem 0; padding:8px 12px; border-left:4px solid var(--accent, #0af);">
-    <strong>HOST_NFS mode active</strong> — NFS server runs on the host and reads Ganesha configs written to (bind-mounted) <code>/etc/ganesha</code>.
-    This container manages share definitions, Kerberos material, LDAP/SSSD identity mapping, and direct POSIX permission changes via the WebUI.
-    Many server controls below are muted (host-enforced).
-</div>
-{% endif %}
+  /* ---- fields ---- */
+  .fld-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px}
+  .fld{margin-bottom:2px;min-width:0;position:static}
+  .fld.wide{grid-column:1 / -1}
+  .fld-lab{display:inline-flex;align-items:center;gap:5px;font:600 .78em ui-monospace,Menlo,monospace;color:var(--text-muted);margin-bottom:4px;cursor:help;position:static}
+  .ico{width:11px;height:11px;border-radius:50%;border:1px solid currentColor;font:italic 700 8px/1 Georgia,serif;display:inline-flex;align-items:center;justify-content:center;opacity:.55;flex:none}
+  .fld input[type=text],.fld input[type=password],.fld input[type=number],.fld select{width:100%;padding:5px 8px;border-radius:5px;font-size:.92em;box-sizing:border-box}
+  .ac-head{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+  .ac-head .fld-lab{margin-bottom:0}
+  .seg{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;flex:none}
+  .seg button{border:0;border-right:1px solid var(--border);background:var(--bg-alt);color:var(--text-muted);padding:3px 11px;font-size:.76em;font-weight:600;cursor:pointer;font-family:inherit}
+  .seg button:last-child{border-right:0}
+  .seg button.on{background:var(--accent);color:#fff}
+  .derived-note{font-size:.72em;color:var(--text-light);margin-top:3px}
+  .chkline{display:flex;align-items:center;gap:7px;font-size:.9em;color:var(--text);cursor:pointer;position:static}
+  .chkline input{transform:scale(1.1)}
 
-<div class="current-state">
-    <span class="state-label">NFS Kerberos hostname: </span>
-    <strong>{{ effective_hostname }}</strong><br>
-    <span class="mode-hint">
-        Keytab should include <code>nfs/&lt;short&gt;@{{ effective_realm }}</code> and
-        <code>nfs/{{ effective_hostname }}@{{ effective_realm }}</code>.
-    </span>
-    {% if !keytab_found_principals.is_empty() %}
-    <div style="margin-top:4px; font-size:0.9em;">
-        <span class="state-label">Keytab NFS principals:</span>
-        {% for p in keytab_found_principals %}
-            <code>{{ p }}</code>{% if !loop.last %}, {% endif %}
-        {% endfor %}
-    </div>
-    {% endif %}
-    {% if let Some(keytab_msg) = keytab_alert %}
-    <br><strong style="color: var(--warning-text);">{{ keytab_msg }}</strong>
-    {% endif %}
-</div>
+  /* ---- overview ---- */
+  .ov-card{background:var(--bg-alt);border:1px solid var(--border);border-radius:7px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;max-width:660px}
+  .ov-row{display:flex;align-items:baseline;gap:10px;font-size:.9em;flex-wrap:wrap}
+  .ov-k{flex:0 0 66px;font:700 .78em ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:.04em;color:var(--text-light)}
+  .ov-row code{font-family:ui-monospace,Menlo,monospace;font-size:.92em;color:var(--text-muted)}
+  .ov-row .kp{background:var(--input-bg-disabled);border:1px solid var(--border-light);border-radius:4px;padding:1px 6px;margin-right:4px}
+  .muted{color:var(--text-light)}
 
-<div style="margin-top:8px; font-size:0.85em; opacity:0.9;">
-    <span class="state-label">Kerberos ID helper:</span>
-    <code>nfs-klldap-idhelper</code> is running as a daemon for machine vs. LDAP user principal translation.
-    Use <code>docker exec ... ganesha-ctl id-resolve 'user@REALM'</code> or <code>nfs-klldap-idhelper resolve ...</code> for diagnostics.
-    This is especially important for Fedora Immutable clients with host keytabs.
-</div>
+  /* ---- share cards ---- */
+  .shares-split{display:flex;gap:16px;align-items:flex-start}
+  .shares-col{flex:1;min-width:0}
+  .toml-side{flex:0 0 288px;min-width:0;position:sticky;top:8px}
+  .side-hd{font:700 .72em ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:.05em;color:var(--text-light);margin-bottom:6px}
+  .shares-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  .sh-legend{display:flex;align-items:center;gap:14px;font-size:.74em;color:var(--text-muted);padding:6px 11px;background:var(--bg-alt);border:1px solid var(--border-light);border-radius:6px}
+  .sh-lg-lbl{font-weight:700;text-transform:uppercase;letter-spacing:.04em;font-size:.9em;color:var(--text-light)}
+  .sh-lg-key{display:inline-flex;align-items:center;gap:6px}
+  .sh-bulk{display:flex;gap:6px;margin-left:auto}
+  .sh-bulk button{border:1px solid var(--border);background:var(--bg);color:var(--text-muted);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:.78em;font-family:inherit}
+  .sh-bulk button:hover{border-color:var(--accent);color:var(--text)}
+  #shares-container{display:flex;flex-direction:column;gap:12px}
+  .share-card-ed{border:1px solid var(--border);background:var(--card-bg);border-radius:8px;padding:12px 13px}
+  .sc-hd{display:flex;align-items:center;gap:9px}
+  .sc-caret{flex:none;width:22px;height:22px;border:0;background:transparent;color:var(--text-light);cursor:pointer;font-size:.8em;transition:transform .12s;display:inline-flex;align-items:center;justify-content:center;font-family:inherit}
+  .share-card-ed.open .sc-caret{transform:rotate(90deg)}
+  .share-dot{width:10px;height:10px;border-radius:50%;flex:none}
+  .share-dot.acl{background:var(--success-border);box-shadow:0 0 0 2px var(--success-bg)}
+  .share-dot.noacl{background:var(--noacl);box-shadow:0 0 0 2px var(--noacl-ring)}
+  .sc-name{flex:1;font:700 .98em ui-monospace,Menlo,monospace;padding:5px 8px}
+  .sc-sum{display:flex;gap:5px;flex-wrap:wrap;flex:none}
+  .share-card-ed.open .sc-sum{display:none}
+  .sc-chip{font-size:.72em;padding:1px 8px;border-radius:20px;background:var(--accent-light);color:var(--text);border:1px solid var(--selected-border);white-space:nowrap}
+  .sc-chip.noacl{background:var(--noacl-ring);border-color:var(--noacl);color:var(--text)}
+  .sc-del{flex:none;width:26px;height:26px;border:1px solid var(--border);background:var(--bg-alt);color:var(--text-light);border-radius:5px;cursor:pointer;font-size:.85em}
+  .sc-del:hover{border-color:var(--danger-border);color:var(--danger-text)}
+  .sc-body{display:none}
+  .share-card-ed.open .sc-body{display:block;margin-top:11px;padding-top:11px;border-top:1px dashed var(--border-light)}
+  .sc-optwrap{margin-top:11px;padding-top:11px;border-top:1px dashed var(--border-light);display:flex;flex-direction:column;gap:11px}
+  .sc-access{display:grid;grid-template-columns:repeat(3,1fr);gap:9px 12px}
+  .sc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(116px,1fr));gap:9px 12px}
+  .scf{min-width:0}
+  .scf .fld-lab{margin-bottom:3px}
+  .scf select,.scf input{width:100%;padding:4px 6px;border-radius:5px;font-size:.86em;box-sizing:border-box}
+  .scf .chkline{padding:5px 0}
+  .add-share{align-self:flex-start;margin-top:14px;border:1px dashed var(--border);background:transparent;color:var(--accent);padding:7px 14px;border-radius:6px;cursor:pointer;font-weight:600;font-size:.88em;font-family:inherit}
+  .add-share:hover{background:var(--accent-light);border-style:solid}
 
-{% if let Some(msg) = message %}
-    <div class="alert alert-success" style="margin:1rem 0;">
-        {{ msg }}
-    </div>
-{% endif %}
+  /* ---- live toml ---- */
+  .toml-host{border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--bg-alt)}
+  .tl-pre{margin:0;padding:10px 0;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:auto;max-height:540px}
+  .tl{padding:0 14px;white-space:pre;color:var(--text-muted)}
+  .tl.chg{background:var(--accent-light);border-left:3px solid var(--accent);padding-left:11px;color:var(--text)}
 
-<!-- NFS Permission Client status (LLDAP connection used for uid/gid resolution on shares).
-     HTMX-loaded so it can be refreshed after "Reload NFS client" without full page reload. -->
-<div id="nfs-client-status"
-     hx-get="/settings/lldap-status"
-     hx-trigger="load"
-     style="border:1px solid var(--border); background:var(--bg-alt); padding:10px; margin:1rem 0; border-radius:4px;">
-    <em>Loading NFS client status…</em>
-</div>
+  /* ---- diagnostics ---- */
+  .diag{margin-top:18px;padding-top:15px;border-top:1px solid var(--border-light)}
+  .diag-hd{font:700 .72em ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:.05em;color:var(--text-light);margin-bottom:9px}
+  .test-row{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .test-row .btn{white-space:nowrap}
+  .test-hint{font-size:.78em;color:var(--text-light);margin-bottom:8px}
+  .tpill{font-size:.74em;font-weight:600;padding:2px 9px;border-radius:20px;border:1px solid var(--border);color:var(--text-light);background:var(--bg-alt)}
+  .tpill.testing{background:var(--warning-amber-bg);color:var(--warning-amber-text);border-color:var(--warning-amber-border)}
+  .tpill.pass{background:var(--success-bg);color:var(--success-text);border-color:var(--success-border)}
+  .tpill.fail{background:var(--danger-bg);color:var(--danger-text);border-color:var(--danger-border)}
 
-<h3>Structured Editor</h3>
-<div style="font-size:0.75em; color:var(--text-light); margin:-0.2rem 0 0.4rem;">
-    Settings and Shares are saved separately (one does not overwrite the other in raw TOML).
-</div>
-<form method="post" action="/settings/save" style="max-width: 920px;">
-    <div class="settings-group">
-    <h4>Core</h4>
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-        <label>ldap_uri<br><input name="ldap_uri" value="{{ ldap_uri }}" style="width:100%" placeholder="ldaps://klldap.example.com:6360"></label>
-        <label>storage.container_root<br><input name="storage_container_root" value="{{ storage_container_root }}" style="width:100%"></label>
-        <label>server.hostname (optional)<br><input name="server_hostname" id="server_hostname" value="{{ server_hostname }}" style="width:100%" {% if !override_server_hostname %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_server_hostname" value="true" {% if override_server_hostname %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-        <label>kerberos.realm (optional, usually derived)<br><input name="kerberos_realm" id="kerberos_realm" value="{{ kerberos_realm }}" style="width:100%" {% if !override_kerberos_realm %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_kerberos_realm" value="true" {% if override_kerberos_realm %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-        <label>ganesha.default_security<br>
-            <select name="ganesha_default_security" id="ganesha_default_security" style="width:100%" {% if host_nfs_mode %}disabled{% else %}{% if !override_ganesha_default_security %}disabled{% endif %}{% endif %}>
-                {% if ganesha_default_security == "krb5p" %}<option value="krb5p" selected>krb5p</option>{% else %}<option value="krb5p">krb5p</option>{% endif %}
-                {% if ganesha_default_security == "krb5i" %}<option value="krb5i" selected>krb5i</option>{% else %}<option value="krb5i">krb5i</option>{% endif %}
-                {% if ganesha_default_security == "krb5" %}<option value="krb5" selected>krb5</option>{% else %}<option value="krb5">krb5</option>{% endif %}
-            </select>
-            {% if host_nfs_mode %}
-            <span style="font-size:0.7em; display:block; margin-top:2px; color:var(--text-light);">host-managed (NFS server runs outside this container)</span>
-            {% else %}
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_ganesha_default_security" value="true" {% if override_ganesha_default_security %}checked{% endif %}> override (persist explicit)</span>
-            {% endif %}
-        </label>
-    </div>
-    </div>
+  /* ---- save bar ---- */
+  .savebar{flex:none;display:flex;align-items:center;gap:12px;padding:10px 16px;border-top:1px solid var(--border-light);background:var(--bg-alt)}
+  #save-hint{font-size:.86em;color:var(--text-light)}
+  #save-hint.dirty{color:var(--warning-amber-text);font-weight:600}
+  .sb-spacer{margin-left:auto}
 
-    <div class="settings-group">
-    <h4 style="margin-top:1rem">SSSD Credentials</h4>
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-        <label>sssd.bind_dn<br><input name="sssd_bind_dn" value="{{ sssd_bind_dn }}" style="width:100%" required></label>
-        <label>sssd.bind_pw (secret)<br><input type="password" name="sssd_bind_pw" style="width:100%" placeholder="leave blank to keep current"></label>
-        <label>sssd.ldap_search_base (optional override)<br><input name="sssd_search_base" id="sssd_search_base" value="{{ sssd_search_base }}" placeholder="dc=...,dc=..." style="width:100%" {% if !override_sssd_search_base %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_search_base" value="true" {% if override_sssd_search_base %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-        <label>sssd.ldap_user_search_base<br><input name="sssd_user_base" id="sssd_user_base" value="{{ sssd_user_base }}" style="width:100%" {% if !override_sssd_user_base %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_user_base" value="true" {% if override_sssd_user_base %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-        <label>sssd.ldap_group_search_base<br><input name="sssd_group_base" id="sssd_group_base" value="{{ sssd_group_base }}" style="width:100%" {% if !override_sssd_group_base %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_group_base" value="true" {% if override_sssd_group_base %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-    </div>
-    <label style="display:block; margin:4px 0;">
-        <input type="checkbox" name="kllldap_ignored_attributes" value="true" {% if kllldap_ignored_attributes %}checked{% endif %}>
-        kllldap_ignored_attributes (true = emit server-side ignore blocks + use 'member'; uncheck for false)
-    </label>
-    </div>
+  @media (max-width:900px){.shares-split{flex-direction:column}.toml-side{flex:1 1 auto;position:static;width:100%}}
+  @media (max-width:640px){.fld-grid{grid-template-columns:1fr}.sc-access{grid-template-columns:1fr}}
+</style>
 
-    <div class="settings-group">
-    <h4 style="margin-top:0.6rem">SSSD TLS / Security</h4>
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-        <label>sssd.ldap_tls_reqcert (e.g. never / demand)<br><input name="sssd_ldap_tls_reqcert" id="sssd_ldap_tls_reqcert" value="{{ sssd_ldap_tls_reqcert }}" placeholder="never" style="width:100%" {% if !override_sssd_ldap_tls_reqcert %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_ldap_tls_reqcert" value="true" {% if override_sssd_ldap_tls_reqcert %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-        <label>sssd.ldap_tls_cacert (optional path)<br><input name="sssd_ldap_tls_cacert" id="sssd_ldap_tls_cacert" value="{{ sssd_ldap_tls_cacert }}" placeholder="/etc/pki/..." style="width:100%" {% if !override_sssd_ldap_tls_cacert %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_ldap_tls_cacert" value="true" {% if override_sssd_ldap_tls_cacert %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-    </div>
-    <label style="display:block; margin:4px 0;">
-        <input type="checkbox" id="sssd_ldap_id_use_start_tls" name="sssd_ldap_id_use_start_tls" value="true" {% if sssd_ldap_id_use_start_tls %}checked{% endif %} {% if !override_sssd_ldap_id_use_start_tls %}disabled{% endif %}>
-        sssd.ldap_id_use_start_tls (only for plain ldap:// + STARTTLS)
-        <span style="font-size:0.7em; margin-left:8px;"><input type="checkbox" name="override_sssd_ldap_id_use_start_tls" value="true" {% if override_sssd_ldap_id_use_start_tls %}checked{% endif %}> override</span>
-    </label>
-    <label style="display:block; margin:4px 0;">
-        <input type="checkbox" id="sssd_enumerate" name="sssd_enumerate" value="true" {% if sssd_enumerate %}checked{% endif %} {% if !override_sssd_enumerate %}disabled{% endif %}>
-        sssd.enumerate (default false; do NOT enable casually on KLLDAP — high load/attribute noise)
-        <span style="font-size:0.7em; margin-left:8px;"><input type="checkbox" name="override_sssd_enumerate" value="true" {% if override_sssd_enumerate %}checked{% endif %}> override</span>
-    </label>
-    </div>
+<h2 style="margin-bottom:.5rem">System Settings</h2>
 
-    <br>
-    <button type="submit" class="btn btn-primary" style="padding:8px 16px;">Save Settings</button>
-</form>
+{# keytab_alert intentionally not repeated here — base.html already banners it #}
+{% if let Some(msg) = message %}<div class="alert alert-success" style="margin:0 0 12px">{{ msg }}</div>{% endif %}
 
-<h4 style="margin-top:1rem">Shares</h4>
-<form method="post" action="/settings/save-shares" style="max-width: 920px;">
-    <div class="settings-group">
-    <!-- Column headings for the dynamic share rows (aligns with the input widths below) -->
-    <div style="display:flex;gap:6px;margin-bottom:1px;font-size:0.62em;color:var(--text-muted);font-weight:600;">
-        <span style="width:115px">Share Name <span style="color:var(--warning-amber-text)">*</span></span>
-        <span style="flex:1">Host Path <span style="color:var(--warning-amber-text)">*</span></span>
-        <span style="width:140px" title="Ganesha Pseudo — client-visible NFSv4 mount path (server:/this). TOML: pseudo_path. Controls the Pseudo= in the EXPORT block.">Pseudo Path</span>
-        <span style="flex:1;min-width:160px" title="Directory inside the container where Ganesha serves this share (EXPORT Path=). TOML: container_path. Required.">Container Path <span style="color:var(--warning-amber-text)">*</span></span>
-        <span style="width:18px"></span>
-    </div>
-    <div id="shares-container">
-        {% for row in current_shares %}
-        <div class="share-row-block" style="margin-bottom:8px;">
-        {% if let Some(warn) = row.warning %}
-        <div class="alert alert-warning" style="margin:0 0 4px 0;font-size:0.75em;padding:6px 8px;">
-            {{ warn }}
-        </div>
-        {% endif %}
-        {% if let Some(fw) = row.fs_warning %}
-        <div class="alert alert-warning" style="margin:0 0 4px 0;font-size:0.75em;padding:6px 8px;">
-            {{ fw }}
-        </div>
-        {% endif %}
-        <div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
-            <input name="share_name_{{ row.idx }}" value="{{ row.name }}" style="width:115px" placeholder="name">
-            <input name="share_host_{{ row.idx }}" value="{{ row.host_path }}" style="flex:1" placeholder="host_path">
-            <div style="width:140px;display:flex;flex-direction:column;">
-            <input name="share_pseudo_{{ row.idx }}" value="{{ row.pseudo_path }}" style="width:140px" placeholder="/<name>" title="Ganesha Pseudo (pseudo_path) — client mount server:/this." {% if !row.pseudo_editable %}disabled{% endif %}>
-            {% if !row.pseudo_editable %}
-            <small style="color:var(--text-muted);font-size:0.62em;margin-top:2px;line-height:1.2;" title="Emitted in Ganesha EXPORT on NOACL shares (0.9.40-style derivation).">
-                Pseudo: <code>{{ row.effective_pseudo }}</code> (auto, NOACL export)
-            </small>
-            {% endif %}
+<div id="settings-app">
+  <div class="set-shell">
+    <nav class="set-rail">
+      <div class="rl-hd">Settings</div>
+      <button type="button" class="rail-item active" data-pane="overview"><span>Overview</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="core"><span>Core</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="sssd"><span>SSSD</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="tls"><span>TLS &amp; Security</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="shares"><span>Shares</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="raw"><span>Raw TOML</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="apply"><span>Apply</span><span class="rail-dot"></span></button>
+    </nav>
+
+    <div class="set-main">
+      <div class="set-scroll">
+
+        {# ===================== OVERVIEW ===================== #}
+        <section class="set-section" data-pane-content="overview">
+          <div class="sec-hd"><h3>Overview</h3></div>
+
+          <div class="ov-card">
+            <div class="ov-row"><span class="ov-k">config</span><code>{{ config_path }}</code></div>
+            <div class="ov-row"><span class="ov-k">nfs host</span><strong>{{ effective_hostname }}</strong><span class="muted">@ {{ effective_realm }}</span></div>
+            <div class="ov-row"><span class="ov-k">keytab</span>
+              <span>
+                {% for p in keytab_found_principals %}<code class="kp">{{ p }}</code>{% endfor %}
+                {% if keytab_found_principals.is_empty() %}<span class="muted">expects nfs/&lt;short&gt;@{{ effective_realm }}, nfs/{{ effective_hostname }}@{{ effective_realm }}</span>{% endif %}
+              </span>
             </div>
-            <input name="share_container_path_{{ row.idx }}" value="{{ row.container_path }}" style="flex:1;min-width:160px;" placeholder="/export/..." title="Container Path (container_path) — Ganesha EXPORT Path= and WebUI serve directory." required>
-            <button type="button" onclick="this.closest('.share-row-block').remove()">×</button>
-        </div>
-        <div class="share-options-row" style="display:flex;gap:6px;margin:0 0 4px 0;font-size:0.85em;flex-wrap:wrap;align-items:center;">
-            <label title="Ganesha SecType — per-share krb5p/krb5i/krb5 override (default from [ganesha]). TOML: security.">SecType
-                <select name="share_security_{{ row.idx }}" style="width:90px;margin-left:4px;">
-                    <option value="">default</option>
-                    <option value="krb5p" {% if row.security == "krb5p" %}selected{% endif %}>krb5p</option>
-                    <option value="krb5i" {% if row.security == "krb5i" %}selected{% endif %}>krb5i</option>
-                    <option value="krb5" {% if row.security == "krb5" %}selected{% endif %}>krb5</option>
-                </select>
-            </label>
-            <label title="Ganesha CLIENT Access_Type (RW or RO). TOML: rw.">Access
-                <select name="share_rw_{{ row.idx }}" style="width:65px;margin-left:4px;">
-                    <option value="true" {% if row.rw %}selected{% endif %}>RW</option>
-                    <option value="false" {% if !row.rw %}selected{% endif %}>RO</option>
-                </select>
-            </label>
-            <label title="Ganesha Squash — checked = root_squash; unchecked = no_root_squash. TOML: squash.">Squash
-                <input type="checkbox" name="share_root_squash_{{ row.idx }}" {% if row.root_squash %}checked{% endif %} style="margin-left:4px;" title="Squash = root_squash when checked">
-            </label>
-            <label title="Ganesha PrefRead/PrefWrite profile. TOML: cache_profile.">Pref Cache
-                <select name="share_cache_profile_{{ row.idx }}" style="width:145px;margin-left:4px;" title="Pref Cache — maps to Ganesha PrefRead/PrefWrite (cache_profile)">
-                    <option value="Default" {% if row.cache_profile == "Default" %}selected{% endif %}>Default</option>
-                    <option value="Read - Basic" {% if row.cache_profile == "Read - Basic" %}selected{% endif %}>Read - Basic</option>
-                    <option value="Read - Heavy" {% if row.cache_profile == "Read - Heavy" %}selected{% endif %}>Read - Heavy</option>
-                    <option value="Mixed Use" {% if row.cache_profile == "Mixed Use" %}selected{% endif %}>Mixed Use</option>
-                    <option value="Write - Heavy" {% if row.cache_profile == "Write - Heavy" %}selected{% endif %}>Write - Heavy</option>
-                </select>
-            </label>
-            <label title="on = enable_acl=true (NFSv4 ACLs; needs ACL-capable FS and Ganesha build); auto/off = NOACL default (Disable_ACL=true). TOML: enable_acl.">ACL
-                <select name="share_enable_acl_{{ row.idx }}" style="width:72px;margin-left:4px;">
-                    <option value="auto" {% if row.enable_acl == "auto" %}selected{% endif %}>auto</option>
-                    <option value="true" {% if row.enable_acl == "true" %}selected{% endif %}>on</option>
-                    <option value="false" {% if row.enable_acl == "false" %}selected{% endif %}>off</option>
-                </select>
-            </label>
-            <label title="Ganesha Manage_Gids (independent of ACL; auto defaults true). TOML: manage_gids.">Manage Gids
-                <select name="share_manage_gids_{{ row.idx }}" style="width:72px;margin-left:4px;">
-                    <option value="auto" {% if row.manage_gids == "auto" %}selected{% endif %}>auto</option>
-                    <option value="true" {% if row.manage_gids == "true" %}selected{% endif %}>on</option>
-                    <option value="false" {% if row.manage_gids == "false" %}selected{% endif %}>off</option>
-                </select>
-            </label>
-            <label title="Ganesha Read_Access_Check_Policy: NOACL shares always emit pre (post is normalized to pre); ACL opt-in shares omit unless set. TOML: read_access_policy.">Read Access Policy
-                <select name="share_read_access_policy_{{ row.idx }}" style="width:72px;margin-left:4px;">
-                    <option value="auto" {% if row.read_access_policy == "auto" %}selected{% endif %}>auto</option>
-                    <option value="pre" {% if row.read_access_policy == "pre" %}selected{% endif %}>pre</option>
-                    <option value="post" {% if row.read_access_policy == "post" %}selected{% endif %}>post</option>
-                </select>
-            </label>
-            <label title="Further ACL option: Manage_Gids_Expiration secs (emitted on ACL exports when set). TOML: manage_gids_expiration.">MGE
-                <input name="share_manage_gids_expiration_{{ row.idx }}" value="{% if let Some(e) = row.manage_gids_expiration %}{{ e }}{% endif %}" style="width:55px;margin-left:2px;" placeholder="600">
-            </label>
-        </div>
-        </div>
-        {% endfor %}
-        {% if current_shares.is_empty() %}
-        <!-- no shares yet; first add will create idx 0 -->
-        {% endif %}
-    </div>
-    <button type="button" onclick="addShareRow()" style="margin:6px 0;">+ Add share</button>
+            <div class="ov-row"><span class="ov-k">mode</span>
+              {% if host_nfs_mode %}<span class="sc-chip">HOST_NFS</span><span class="muted" style="font-size:.85em">host runs NFS; server controls are host-enforced</span>
+              {% else %}<span class="sc-chip">Container-managed</span><span class="muted" style="font-size:.85em">this container runs Ganesha</span>{% endif %}
+            </div>
+          </div>
 
-    <br>
-    <button type="submit" class="btn btn-primary" style="padding:8px 16px;">Save Shares</button>
+          {# LLDAP NFS client status — htmx-loaded (unchanged endpoint) #}
+          {# outerHTML swap: the fragment brings its own #nfs-client-status wrapper #}
+          <div id="nfs-client-status" hx-get="/settings/lldap-status" hx-trigger="load" hx-swap="outerHTML"
+               style="border:1px solid var(--border);background:var(--bg-alt);padding:10px;margin:14px 0 0;border-radius:6px;max-width:660px">
+            <em>Loading NFS client status…</em>
+          </div>
+        </section>
+
+        {# ============ SETTINGS FORM (Core + SSSD + TLS) ============ #}
+        <form id="settings-form" method="post" action="/settings/save">
+
+          {# ---------- CORE ---------- #}
+          <section class="set-section" data-pane-content="core" hidden>
+            <div class="sec-hd"><h3>Core</h3></div>
+            <div class="fld-grid">
+              <div class="fld">
+                <label class="fld-lab" title="LLDAP server used to resolve uid/gid on shares.&#10;&rarr; sssd.conf ldap_uri">ldap_uri <span class="ico">i</span></label>
+                <input type="text" name="ldap_uri" id="ldap_uri" value="{{ ldap_uri }}" placeholder="ldaps://klldap.example.com:6360">
+              </div>
+              <div class="fld">
+                <label class="fld-lab" title="Base path in the container under which shares are served.&#10;&rarr; [storage] container_root">storage.container_root <span class="ico">i</span></label>
+                <input type="text" name="storage_container_root" value="{{ storage_container_root }}">
+              </div>
+
+              {# server.hostname — Auto/Custom #}
+              <div class="fld" data-ac-field="server_hostname">
+                <div class="ac-head">
+                  <label class="fld-lab" title="NFS Kerberos hostname. Auto = derived from the container host.&#10;&rarr; server.hostname / krb5 principal nfs/&lt;host&gt;">server.hostname <span class="ico">i</span></label>
+                  <div class="seg" data-ac-for="server_hostname">
+                    <button type="button" data-ac="auto" class="{% if !override_server_hostname %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if override_server_hostname %}on{% endif %}">Custom</button>
+                  </div>
+                </div>
+                <input type="text" name="server_hostname" id="server_hostname" value="{{ server_hostname }}" {% if !override_server_hostname %}disabled{% endif %}>
+                <input type="checkbox" name="override_server_hostname" id="override_server_hostname" value="true" {% if override_server_hostname %}checked{% endif %} hidden>
+                <div class="derived-note">Auto persists the derived value; Custom writes an explicit override.</div>
+              </div>
+
+              {# kerberos.realm — Auto/Custom #}
+              <div class="fld" data-ac-field="kerberos_realm">
+                <div class="ac-head">
+                  <label class="fld-lab" title="Kerberos realm. Auto = derived from the domain.&#10;&rarr; kerberos.realm / krb5.conf">kerberos.realm <span class="ico">i</span></label>
+                  <div class="seg" data-ac-for="kerberos_realm">
+                    <button type="button" data-ac="auto" class="{% if !override_kerberos_realm %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if override_kerberos_realm %}on{% endif %}">Custom</button>
+                  </div>
+                </div>
+                <input type="text" name="kerberos_realm" id="kerberos_realm" value="{{ kerberos_realm }}" {% if !override_kerberos_realm %}disabled{% endif %}>
+                <input type="checkbox" name="override_kerberos_realm" id="override_kerberos_realm" value="true" {% if override_kerberos_realm %}checked{% endif %} hidden>
+              </div>
+
+              {# ganesha.default_security — host-managed OR Auto/Custom select #}
+              <div class="fld" data-ac-field="ganesha_default_security">
+                <div class="ac-head">
+                  <label class="fld-lab" title="Default NFS security flavor applied to every share.&#10;&rarr; [ganesha] default_security / EXPORT SecType">ganesha.default_security <span class="ico">i</span></label>
+                  {% if !host_nfs_mode %}
+                  <div class="seg" data-ac-for="ganesha_default_security">
+                    <button type="button" data-ac="auto" class="{% if !override_ganesha_default_security %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if override_ganesha_default_security %}on{% endif %}">Custom</button>
+                  </div>
+                  {% endif %}
+                </div>
+                <select name="ganesha_default_security" id="ganesha_default_security"
+                        {% if host_nfs_mode %}disabled{% else %}{% if !override_ganesha_default_security %}disabled{% endif %}{% endif %}>
+                  <option value="krb5p" {% if ganesha_default_security == "krb5p" %}selected{% endif %}>krb5p</option>
+                  <option value="krb5i" {% if ganesha_default_security == "krb5i" %}selected{% endif %}>krb5i</option>
+                  <option value="krb5" {% if ganesha_default_security == "krb5" %}selected{% endif %}>krb5</option>
+                </select>
+                {% if host_nfs_mode %}
+                <div class="derived-note">host-managed (NFS server runs outside this container)</div>
+                {% else %}
+                <input type="checkbox" name="override_ganesha_default_security" id="override_ganesha_default_security" value="true" {% if override_ganesha_default_security %}checked{% endif %} hidden>
+                {% endif %}
+              </div>
+            </div>
+
+            <div class="diag">
+              <div class="diag-hd">Diagnostics</div>
+              <div class="test-row">
+                <button type="button" id="test-ldap-btn" class="btn btn-primary">Test connectivity</button>
+                <span id="test-ldap-pill" class="tpill">not tested</span>
+              </div>
+              <div class="test-hint">DNS resolution + TCP reachability (getent + nc).</div>
+              <div id="test-ldap-log" class="mono-log-panel"><em style="color:var(--text-light)">Enter ldap_uri and run the test.</em></div>
+            </div>
+          </section>
+
+          {# ---------- SSSD ---------- #}
+          <section class="set-section" data-pane-content="sssd" hidden>
+            <div class="sec-hd"><h3>SSSD</h3></div>
+            <div class="fld-grid">
+              <div class="fld">
+                <label class="fld-lab" title="Service account DN that SSSD binds with.&#10;&rarr; sssd.conf ldap_default_bind_dn">sssd.bind_dn <span class="ico">i</span></label>
+                <input type="text" name="sssd_bind_dn" id="sssd_bind_dn" value="{{ sssd_bind_dn }}" required>
+              </div>
+              <div class="fld">
+                <label class="fld-lab" title="Bind password (secret). Blank keeps the current value.&#10;&rarr; sssd.conf ldap_default_authtok">sssd.bind_pw <span class="ico">i</span></label>
+                <input type="password" name="sssd_bind_pw" id="sssd_bind_pw" placeholder="leave blank to keep current" autocomplete="new-password">
+              </div>
+
+              <div class="fld" data-ac-field="sssd_search_base">
+                <div class="ac-head">
+                  <label class="fld-lab" title="Base DN for searches. Auto = derived from the realm.&#10;&rarr; sssd.ldap_search_base">sssd.ldap_search_base <span class="ico">i</span></label>
+                  <div class="seg" data-ac-for="sssd_search_base">
+                    <button type="button" data-ac="auto" class="{% if !override_sssd_search_base %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if override_sssd_search_base %}on{% endif %}">Custom</button>
+                  </div>
+                </div>
+                <input type="text" name="sssd_search_base" id="sssd_search_base" value="{{ sssd_search_base }}" placeholder="dc=…,dc=…" {% if !override_sssd_search_base %}disabled{% endif %}>
+                <input type="checkbox" name="override_sssd_search_base" id="override_sssd_search_base" value="true" {% if override_sssd_search_base %}checked{% endif %} hidden>
+              </div>
+
+              <div class="fld" data-ac-field="sssd_user_base">
+                <div class="ac-head">
+                  <label class="fld-lab" title="Where user entries live.&#10;&rarr; sssd.ldap_user_search_base">sssd.ldap_user_search_base <span class="ico">i</span></label>
+                  <div class="seg" data-ac-for="sssd_user_base">
+                    <button type="button" data-ac="auto" class="{% if !override_sssd_user_base %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if override_sssd_user_base %}on{% endif %}">Custom</button>
+                  </div>
+                </div>
+                <input type="text" name="sssd_user_base" id="sssd_user_base" value="{{ sssd_user_base }}" {% if !override_sssd_user_base %}disabled{% endif %}>
+                <input type="checkbox" name="override_sssd_user_base" id="override_sssd_user_base" value="true" {% if override_sssd_user_base %}checked{% endif %} hidden>
+              </div>
+
+              <div class="fld" data-ac-field="sssd_group_base">
+                <div class="ac-head">
+                  <label class="fld-lab" title="Where group entries live.&#10;&rarr; sssd.ldap_group_search_base">sssd.ldap_group_search_base <span class="ico">i</span></label>
+                  <div class="seg" data-ac-for="sssd_group_base">
+                    <button type="button" data-ac="auto" class="{% if !override_sssd_group_base %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if override_sssd_group_base %}on{% endif %}">Custom</button>
+                  </div>
+                </div>
+                <input type="text" name="sssd_group_base" id="sssd_group_base" value="{{ sssd_group_base }}" {% if !override_sssd_group_base %}disabled{% endif %}>
+                <input type="checkbox" name="override_sssd_group_base" id="override_sssd_group_base" value="true" {% if override_sssd_group_base %}checked{% endif %} hidden>
+              </div>
+            </div>
+
+            <div class="fld" style="margin-top:12px">
+              <label class="chkline" title="Emit server-side ignore blocks + use 'member'.&#10;&rarr; kllldap_ignored_attributes">
+                <input type="checkbox" name="kllldap_ignored_attributes" value="true" {% if kllldap_ignored_attributes %}checked{% endif %}>
+                <span style="font-family:ui-monospace,Menlo,monospace;font-weight:600;font-size:.9em">kllldap_ignored_attributes</span>
+              </label>
+            </div>
+
+            <div class="diag">
+              <div class="diag-hd">Diagnostics</div>
+              <div class="test-row">
+                <button type="button" id="test-bind-btn" class="btn btn-primary">Test bind</button>
+                <span id="test-bind-pill" class="tpill">not tested</span>
+              </div>
+              <div class="test-hint">ldapsearch bind using the same POSIX attributes as SSSD.</div>
+              <div id="test-bind-log" class="mono-log-panel"><em style="color:var(--text-light)">Enter bind credentials and run the test.</em></div>
+            </div>
+          </section>
+
+          {# ---------- TLS & SECURITY ---------- #}
+          <section class="set-section" data-pane-content="tls" hidden>
+            <div class="sec-hd"><h3>TLS &amp; Security</h3></div>
+            <div class="fld-grid">
+              <div class="fld" data-ac-field="sssd_ldap_tls_reqcert">
+                <div class="ac-head">
+                  <label class="fld-lab" title="TLS certificate validation (never / demand).&#10;&rarr; sssd.ldap_tls_reqcert">sssd.ldap_tls_reqcert <span class="ico">i</span></label>
+                  <div class="seg" data-ac-for="sssd_ldap_tls_reqcert">
+                    <button type="button" data-ac="auto" class="{% if !override_sssd_ldap_tls_reqcert %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if override_sssd_ldap_tls_reqcert %}on{% endif %}">Custom</button>
+                  </div>
+                </div>
+                <input type="text" name="sssd_ldap_tls_reqcert" id="sssd_ldap_tls_reqcert" value="{{ sssd_ldap_tls_reqcert }}" placeholder="never" {% if !override_sssd_ldap_tls_reqcert %}disabled{% endif %}>
+                <input type="checkbox" name="override_sssd_ldap_tls_reqcert" id="override_sssd_ldap_tls_reqcert" value="true" {% if override_sssd_ldap_tls_reqcert %}checked{% endif %} hidden>
+              </div>
+
+              <div class="fld" data-ac-field="sssd_ldap_tls_cacert">
+                <div class="ac-head">
+                  <label class="fld-lab" title="Path to a CA certificate.&#10;&rarr; sssd.ldap_tls_cacert">sssd.ldap_tls_cacert <span class="ico">i</span></label>
+                  <div class="seg" data-ac-for="sssd_ldap_tls_cacert">
+                    <button type="button" data-ac="auto" class="{% if !override_sssd_ldap_tls_cacert %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if override_sssd_ldap_tls_cacert %}on{% endif %}">Custom</button>
+                  </div>
+                </div>
+                <input type="text" name="sssd_ldap_tls_cacert" id="sssd_ldap_tls_cacert" value="{{ sssd_ldap_tls_cacert }}" placeholder="/etc/pki/…" {% if !override_sssd_ldap_tls_cacert %}disabled{% endif %}>
+                <input type="checkbox" name="override_sssd_ldap_tls_cacert" id="override_sssd_ldap_tls_cacert" value="true" {% if override_sssd_ldap_tls_cacert %}checked{% endif %} hidden>
+              </div>
+            </div>
+
+            <div class="fld" data-ac-field="sssd_ldap_id_use_start_tls" style="margin-top:12px">
+              <div class="ac-head">
+                <label class="fld-lab" title="STARTTLS on plain ldap:// only.&#10;&rarr; sssd.ldap_id_use_start_tls">sssd.ldap_id_use_start_tls <span class="ico">i</span></label>
+                <div class="seg" data-ac-for="sssd_ldap_id_use_start_tls">
+                  <button type="button" data-ac="auto" class="{% if !override_sssd_ldap_id_use_start_tls %}on{% endif %}">Auto</button>
+                  <button type="button" data-ac="custom" class="{% if override_sssd_ldap_id_use_start_tls %}on{% endif %}">Custom</button>
+                </div>
+              </div>
+              <label class="chkline"><input type="checkbox" name="sssd_ldap_id_use_start_tls" id="sssd_ldap_id_use_start_tls" value="true" {% if sssd_ldap_id_use_start_tls %}checked{% endif %} {% if !override_sssd_ldap_id_use_start_tls %}disabled{% endif %}> enabled</label>
+              <input type="checkbox" name="override_sssd_ldap_id_use_start_tls" id="override_sssd_ldap_id_use_start_tls" value="true" {% if override_sssd_ldap_id_use_start_tls %}checked{% endif %} hidden>
+            </div>
+
+            <div class="fld" data-ac-field="sssd_enumerate" style="margin-top:12px">
+              <div class="ac-head">
+                <label class="fld-lab" title="Enumerate all users/groups — heavy; avoid on KLLDAP.&#10;&rarr; sssd.enumerate">sssd.enumerate <span class="ico">i</span></label>
+                <div class="seg" data-ac-for="sssd_enumerate">
+                  <button type="button" data-ac="auto" class="{% if !override_sssd_enumerate %}on{% endif %}">Auto</button>
+                  <button type="button" data-ac="custom" class="{% if override_sssd_enumerate %}on{% endif %}">Custom</button>
+                </div>
+              </div>
+              <label class="chkline"><input type="checkbox" name="sssd_enumerate" id="sssd_enumerate" value="true" {% if sssd_enumerate %}checked{% endif %} {% if !override_sssd_enumerate %}disabled{% endif %}> enabled</label>
+              <input type="checkbox" name="override_sssd_enumerate" id="override_sssd_enumerate" value="true" {% if override_sssd_enumerate %}checked{% endif %} hidden>
+            </div>
+          </section>
+        </form>
+
+        {# ===================== SHARES ===================== #}
+        <form id="shares-form" method="post" action="/settings/save-shares">
+          <section class="set-section" data-pane-content="shares" hidden>
+            <div class="sec-hd"><h3>Shares</h3></div>
+            <div class="shares-split">
+              <div class="shares-col">
+                <div class="shares-toolbar">
+                  <div class="sh-legend">
+                    <span class="sh-lg-lbl">Legend</span>
+                    <span class="sh-lg-key"><span class="share-dot acl"></span>ACL supported</span>
+                    <span class="sh-lg-key"><span class="share-dot noacl"></span>Non-ACL limited</span>
+                  </div>
+                  <div class="sh-bulk">
+                    <button type="button" data-shbulk="expand">Expand all</button>
+                    <button type="button" data-shbulk="collapse">Collapse all</button>
+                  </div>
+                </div>
+
+                <div id="shares-container">
+                  {% for row in current_shares %}
+                  <div class="share-card-ed" data-idx="{{ row.idx }}" data-fs-limited="{% if row.fs_warning.is_some() %}1{% else %}0{% endif %}">
+                    <div class="sc-hd">
+                      <button type="button" class="sc-caret">&#9656;</button>
+                      <span class="share-dot {% if row.effective_acl_capable %}acl{% else %}noacl{% endif %}"
+                            title="{% if row.effective_acl_capable %}ACL supported{% else %}Non-ACL limited{% endif %}"></span>
+                      <input class="sc-name" data-f="name" name="share_name_{{ row.idx }}" value="{{ row.name }}" placeholder="name" required>
+                      <span class="sc-sum">
+                        <span class="sc-chip">{% if row.rw %}RW{% else %}RO{% endif %}</span>
+                        <span class="sc-chip {% if !row.effective_acl_capable %}noacl{% endif %}" data-acl-chip>acl {% if row.enable_acl == "true" %}on{% else if row.enable_acl == "false" %}off{% else %}auto{% endif %}</span>
+                        {% if row.security != "" %}<span class="sc-chip">{{ row.security }}</span>{% endif %}
+                      </span>
+                      <button type="button" class="sc-del" title="Remove share">&#10005;</button>
+                    </div>
+                    <div class="sc-body">
+                      {% if let Some(warn) = row.warning %}<div class="alert alert-warning" style="font-size:.75em;padding:6px 8px;margin:0 0 8px">{{ warn }}</div>{% endif %}
+                      {% if let Some(fw) = row.fs_warning %}<div class="alert alert-warning" style="font-size:.75em;padding:6px 8px;margin:0 0 8px">{{ fw }}</div>{% endif %}
+                      <div class="fld-grid">
+                        <div class="fld wide">
+                          <label class="fld-lab" title="Path on the host that backs this share.&#10;&rarr; host_path (required)">host_path <span class="ico">i</span></label>
+                          <input type="text" data-f="host_path" name="share_host_{{ row.idx }}" value="{{ row.host_path }}" placeholder="/srv/nfs/…" required>
+                        </div>
+                        <div class="fld">
+                          <label class="fld-lab" title="Directory in the container Ganesha serves + WebUI edits.&#10;&rarr; container_path / EXPORT Path= (required)">container_path <span class="ico">i</span></label>
+                          <input type="text" data-f="container_path" name="share_container_path_{{ row.idx }}" value="{{ row.container_path }}" placeholder="/export/…" required>
+                        </div>
+                        <div class="fld">
+                          <label class="fld-lab" title="Client-visible NFSv4 mount path (server:/this).&#10;&rarr; pseudo_path / EXPORT Pseudo=">pseudo_path <span class="ico">i</span></label>
+                          <input type="text" data-f="pseudo_path" name="share_pseudo_{{ row.idx }}" value="{{ row.pseudo_path }}" placeholder="/{{ row.name }}" {% if !row.pseudo_editable %}disabled{% endif %}>
+                          {% if !row.pseudo_editable %}<small class="muted" style="font-size:.62em;display:block;margin-top:2px">auto: <code>{{ row.effective_pseudo }}</code> (NOACL export)</small>{% endif %}
+                        </div>
+                      </div>
+                      <div class="sc-optwrap">
+                        <div class="sc-access">
+                          <div class="scf">
+                            <label class="fld-lab" title="Per-share SecType override; blank = default from [ganesha].&#10;&rarr; security / EXPORT SecType">security <span class="ico">i</span></label>
+                            <select data-f="security" name="share_security_{{ row.idx }}">
+                              <option value="">default</option>
+                              <option value="krb5p" {% if row.security == "krb5p" %}selected{% endif %}>krb5p</option>
+                              <option value="krb5i" {% if row.security == "krb5i" %}selected{% endif %}>krb5i</option>
+                              <option value="krb5" {% if row.security == "krb5" %}selected{% endif %}>krb5</option>
+                            </select>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="Read-write or read-only access.&#10;&rarr; rw / CLIENT Access_Type">rw <span class="ico">i</span></label>
+                            <select data-f="rw" name="share_rw_{{ row.idx }}">
+                              <option value="true" {% if row.rw %}selected{% endif %}>RW</option>
+                              <option value="false" {% if !row.rw %}selected{% endif %}>RO</option>
+                            </select>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="On = root_squash; off = no_root_squash.&#10;&rarr; squash / EXPORT Squash">squash <span class="ico">i</span></label>
+                            <label class="chkline"><input type="checkbox" data-f="root_squash" name="share_root_squash_{{ row.idx }}" {% if row.root_squash %}checked{% endif %}> root_squash</label>
+                          </div>
+                        </div>
+                        <div class="sc-grid">
+                          <div class="scf">
+                            <label class="fld-lab" title="Read/write tuning profile.&#10;&rarr; cache_profile / PrefRead/PrefWrite">cache_profile <span class="ico">i</span></label>
+                            <select data-f="cache_profile" name="share_cache_profile_{{ row.idx }}">
+                              <option value="Default" {% if row.cache_profile == "Default" %}selected{% endif %}>Default</option>
+                              <option value="Read - Basic" {% if row.cache_profile == "Read - Basic" %}selected{% endif %}>Read - Basic</option>
+                              <option value="Read - Heavy" {% if row.cache_profile == "Read - Heavy" %}selected{% endif %}>Read - Heavy</option>
+                              <option value="Mixed Use" {% if row.cache_profile == "Mixed Use" %}selected{% endif %}>Mixed Use</option>
+                              <option value="Write - Heavy" {% if row.cache_profile == "Write - Heavy" %}selected{% endif %}>Write - Heavy</option>
+                            </select>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="on = ACL path (native NFSv4 ACL); auto/unset = NOACL default (Disable_ACL); off = explicit NOACL.&#10;&rarr; enable_acl">enable_acl <span class="ico">i</span></label>
+                            <select data-f="enable_acl" name="share_enable_acl_{{ row.idx }}">
+                              <option value="auto" {% if row.enable_acl == "auto" %}selected{% endif %}>auto (NOACL)</option>
+                              <option value="true" {% if row.enable_acl == "true" %}selected{% endif %}>on</option>
+                              <option value="false" {% if row.enable_acl == "false" %}selected{% endif %}>off</option>
+                            </select>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="Resolve supplementary gids server-side (auto defaults on).&#10;&rarr; manage_gids / Manage_Gids">manage_gids <span class="ico">i</span></label>
+                            <select data-f="manage_gids" name="share_manage_gids_{{ row.idx }}">
+                              <option value="auto" {% if row.manage_gids == "auto" %}selected{% endif %}>auto</option>
+                              <option value="true" {% if row.manage_gids == "true" %}selected{% endif %}>on</option>
+                              <option value="false" {% if row.manage_gids == "false" %}selected{% endif %}>off</option>
+                            </select>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="Read_Access_Check_Policy. ACL omits (native pre); NOACL emits pre.&#10;&rarr; read_access_policy">read_access <span class="ico">i</span></label>
+                            <select data-f="read_access_policy" name="share_read_access_policy_{{ row.idx }}">
+                              <option value="auto" {% if row.read_access_policy == "auto" %}selected{% endif %}>auto</option>
+                              <option value="pre" {% if row.read_access_policy == "pre" %}selected{% endif %}>pre</option>
+                              <option value="post" {% if row.read_access_policy == "post" %}selected{% endif %}>post</option>
+                            </select>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="Manage_Gids cache lifetime in seconds (ACL exports).&#10;&rarr; manage_gids_expiration">mg_expiration <span class="ico">i</span></label>
+                            <input type="number" data-f="manage_gids_expiration" name="share_manage_gids_expiration_{{ row.idx }}" value="{% if let Some(e) = row.manage_gids_expiration %}{{ e }}{% endif %}" placeholder="600">
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  {% endfor %}
+                </div>
+
+                <button type="button" id="add-share" class="add-share">+ Add share</button>
+              </div>
+
+              <aside class="toml-side">
+                <div class="side-hd">live [[shares]] toml</div>
+                <div class="toml-host"><pre class="tl-pre" id="shares-toml"></pre></div>
+              </aside>
+            </div>
+          </section>
+        </form>
+
+        {# ===================== RAW TOML ===================== #}
+        <form id="raw-form" method="post" action="/settings/save-raw">
+          <section class="set-section" data-pane-content="raw" hidden>
+            <div class="sec-hd"><h3>Raw TOML</h3><span class="sec-sub">full control · comments preserved</span></div>
+            <textarea name="raw_content" rows="20" style="width:100%;font-family:ui-monospace,Menlo,monospace;font-size:.86em;border-radius:6px;padding:10px">{{ raw_toml }}</textarea>
+            <p class="muted" style="font-size:.82em;margin:.5rem 0 0">The container watches the config file and regenerates + reloads automatically.</p>
+          </section>
+        </form>
+
+        {# ===================== APPLY ===================== #}
+        <section class="set-section" data-pane-content="apply" hidden>
+          <div class="sec-hd"><h3>{% if host_nfs_mode %}Apply to host{% else %}Restart &amp; apply{% endif %}</h3></div>
+          <p class="muted" style="font-size:.88em;max-width:560px">
+            {% if host_nfs_mode %}
+            Regenerate the Ganesha fragments (sssd.conf + krb5.conf) so the host NFS server sees the latest definitions. No local bounce.
+            {% else %}
+            Bounce Ganesha + SSSD + WebUI via the supervisor so the updated config + shares are active. NFS is briefly unavailable.
+            {% endif %}
+          </p>
+          <form method="post" action="/settings/restart" style="margin-top:.6rem">
+            <button type="submit" class="btn {% if host_nfs_mode %}btn-primary{% else %}btn-danger{% endif %}" style="padding:8px 16px"
+                    onclick="return confirm('{% if host_nfs_mode %}Apply latest fragments to the host-managed NFS server?{% else %}Restart services now to apply changes? NFS and the WebUI will be briefly unavailable.{% endif %}');">
+              {% if host_nfs_mode %}Apply to host NFS{% else %}Restart and apply{% endif %}
+            </button>
+          </form>
+          <p style="margin-top:1rem"><a href="/">&larr; Back to Share Permissions</a></p>
+        </section>
+
+      </div>
+
+      <div class="savebar">
+        <span id="save-hint">No unsaved changes</span>
+        <span class="sb-spacer"></span>
+        <button type="submit" id="primary-save" class="btn btn-primary" form="settings-form" style="padding:6px 15px;display:none">Save Settings</button>
+      </div>
     </div>
-</form>
+  </div>
+</div>
 
 <script>
-// nextShareIdx initialized from server (len of rendered current shares) so added rows
-// never collide with existing idx values used for name/host/security fields.
+(function () {
+  const root = document.getElementById('settings-app');
+  if (!root) return;
+  const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
-let nextShareIdx = {{ next_share_idx }};
+  // ---------- pane switching (client-side, no round trip) ----------
+  const rail = root.querySelector('.set-rail');
+  const panes = [].slice.call(root.querySelectorAll('[data-pane-content]'));
+  const saveBtn = document.getElementById('primary-save');
+  const SAVE = {
+    core: ['settings-form', 'Save Settings'], sssd: ['settings-form', 'Save Settings'], tls: ['settings-form', 'Save Settings'],
+    shares: ['shares-form', 'Save Shares'], raw: ['raw-form', 'Save Raw TOML']
+  };
+  function setPane(name) {
+    panes.forEach(p => { p.hidden = p.dataset.paneContent !== name; });
+    rail.querySelectorAll('[data-pane]').forEach(b => b.classList.toggle('active', b.dataset.pane === name));
+    const cfg = SAVE[name];
+    if (cfg) { saveBtn.style.display = ''; saveBtn.setAttribute('form', cfg[0]); saveBtn.textContent = cfg[1]; }
+    else { saveBtn.style.display = 'none'; }
+    try { localStorage.setItem('settings-pane', name); } catch (e) {}
+  }
+  rail.addEventListener('click', e => { const b = e.target.closest('[data-pane]'); if (b) setPane(b.dataset.pane); });
+  let initial = 'overview';
+  try { initial = localStorage.getItem('settings-pane') || 'overview'; } catch (e) {}
+  if (!panes.some(p => p.dataset.paneContent === initial)) initial = 'overview';
+  setPane(initial);
 
-function addShareRow() {
-    const c = document.getElementById('shares-container');
-    const idx = nextShareIdx++;
-    const block = document.createElement('div');
-    block.className = 'share-row-block';
-    block.style.cssText = 'margin-bottom:8px;';
-    block.innerHTML = `<div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
-                   <input name="share_name_${idx}" placeholder="name" style="width:115px">
-                   <input name="share_host_${idx}" placeholder="host_path" style="flex:1">
-                   <input name="share_pseudo_${idx}" placeholder="/<name>" style="width:140px" title="Ganesha Pseudo (pseudo_path) — client mount server:/this.">
-                   <input name="share_container_path_${idx}" placeholder="/export/..." style="flex:1;min-width:160px;" title="Container Path (container_path) — required." required>
-                   <button type="button" onclick="this.closest('.share-row-block').remove()">×</button>
-                 </div>
-                 <div class="share-options-row" style="display:flex;gap:6px;margin:0 0 4px 0;font-size:0.85em;flex-wrap:wrap;align-items:center;">
-                   <label title="Ganesha SecType per-share override.">SecType
-                     <select name="share_security_${idx}" style="width:90px;margin-left:4px;">
-                       <option value="">default</option>
-                       <option value="krb5p">krb5p</option>
-                       <option value="krb5i">krb5i</option>
-                       <option value="krb5">krb5</option>
-                     </select>
-                   </label>
-                   <label title="RW or RO.">Access
-                     <select name="share_rw_${idx}" style="width:65px;margin-left:4px;">
-                       <option value="true" selected>RW</option>
-                       <option value="false">RO</option>
-                     </select>
-                   </label>
-                   <label title="root_squash when checked.">Squash
-                     <input type="checkbox" name="share_root_squash_${idx}" style="margin-left:4px;">
-                   </label>
-                   <label title="Pref Cache profile.">Pref Cache
-                     <select name="share_cache_profile_${idx}" style="width:145px;margin-left:4px;">
-                       <option value="Default" selected>Default</option>
-                       <option value="Read - Basic">Read - Basic</option>
-                       <option value="Read - Heavy">Read - Heavy</option>
-                       <option value="Mixed Use">Mixed Use</option>
-                       <option value="Write - Heavy">Write - Heavy</option>
-                     </select>
-                   </label>
-                   <label title="ACL on/auto/off.">ACL
-                     <select name="share_enable_acl_${idx}" style="width:72px;margin-left:4px;">
-                       <option value="auto" selected>auto</option>
-                       <option value="true">on</option>
-                       <option value="false">off</option>
-                     </select>
-                   </label>
-                   <label title="Manage_Gids on/auto/off.">Manage Gids
-                     <select name="share_manage_gids_${idx}" style="width:72px;margin-left:4px;">
-                       <option value="auto" selected>auto</option>
-                       <option value="true">on</option>
-                       <option value="false">off</option>
-                     </select>
-                   </label>
-                   <label title="Read_Access_Check_Policy.">Read Access Policy
-                     <select name="share_read_access_policy_${idx}" style="width:72px;margin-left:4px;">
-                       <option value="auto" selected>auto</option>
-                       <option value="pre">pre</option>
-                       <option value="post">post</option>
-                     </select>
-                   </label>
-                   <label title="Manage_Gids_Expiration (s).">
-                     MGE <input name="share_manage_gids_expiration_${idx}" style="width:55px;margin-left:2px;" placeholder="600">
-                   </label>
-                 </div>`;
-    c.appendChild(block);
+  // ---------- Auto/Custom toggles (drive the existing override_* checkbox) ----------
+  root.addEventListener('click', e => {
+    const btn = e.target.closest('.seg[data-ac-for] button');
+    if (!btn) return;
+    const key = btn.closest('.seg').dataset.acFor;
+    const custom = btn.dataset.ac === 'custom';
+    btn.closest('.seg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === btn));
+    const field = document.getElementById(key);
+    const cb = document.getElementById('override_' + key);
+    if (field) field.disabled = !custom;
+    if (cb) cb.checked = custom;
+    markDirty();
+  });
 
-    // For newly added rows, auto-suggest the pseudo value from the share name (if the pseudo field is still empty)
-    (function wireNewPseudoFromName() {
-      const nameIn = block.querySelector(`input[name="share_name_${idx}"]`);
-      const pseudoIn = block.querySelector(`input[name="share_pseudo_${idx}"]`);
-      if (!nameIn || !pseudoIn) return;
-      nameIn.addEventListener('input', function() {
-        const n = (nameIn.value || '').trim();
-        if (n && !pseudoIn.value.trim()) {
-          pseudoIn.value = '/' + n;
-        }
-      });
-    })();
-}
+  // ---------- shares: collapse / expand / add / remove ----------
+  const container = document.getElementById('shares-container');
+  let nextShareIdx = {{ next_share_idx }};
 
-// Wire override checkboxes to enable/disable their associated fields.
-// Non-checked override => field is disabled (non-editable).
-// Visual "muted/inactive" look is provided by the global CSS rule for :disabled + --input-bg-disabled
-// (theme-aware; no more hardcoded bright #fafafa in dark mode).
-function wireOverride(overrideSelector, fieldSelector) {
-  const overrideCb = document.querySelector(overrideSelector);
-  const field = document.querySelector(fieldSelector);
-  if (!overrideCb || !field) return;
-
-  function update() {
-    const isOverriding = overrideCb.checked;
-    field.disabled = !isOverriding;
-    // When enabling, clear any stale inline styles that may have come from old server HTML/prior JS.
-    if (isOverriding) {
-      field.style.opacity = '';
-      field.style.backgroundColor = '';
+  root.addEventListener('click', e => {
+    const hd = e.target.closest('.sc-hd');
+    if (hd && !e.target.closest('input') && !e.target.closest('select') && !e.target.closest('.sc-del')) {
+      hd.closest('.share-card-ed').classList.toggle('open'); return;
     }
-    // When disabling, just let the disabled attr + CSS rule do the (correctly themed) work.
+    const bulk = e.target.closest('[data-shbulk]');
+    if (bulk) {
+      const open = bulk.dataset.shbulk === 'expand';
+      root.querySelectorAll('.share-card-ed').forEach(c => c.classList.toggle('open', open));
+      return;
+    }
+    const del = e.target.closest('.sc-del');
+    if (del) { del.closest('.share-card-ed').remove(); buildToml(); markDirty(); return; }
+    if (e.target.closest('#add-share')) { addShareRow(); markDirty(); return; }
+  });
+
+  function sel(f, idx, opts) {
+    return '<select data-f="' + f + '" name="share_' + f.replace('root_squash','root_squash') + '_' + idx + '">' +
+      opts.map(o => '<option value="' + o[0] + '">' + o[1] + '</option>').join('') + '</select>';
+  }
+  function shareCardHtml(idx) {
+    const p = 'share_';
+    return '' +
+    '<div class="share-card-ed open" data-idx="' + idx + '" data-fs-limited="0">' +
+      '<div class="sc-hd">' +
+        '<button type="button" class="sc-caret">&#9656;</button>' +
+        '<span class="share-dot noacl" title="Non-ACL limited"></span>' +
+        '<input class="sc-name" data-f="name" name="' + p + 'name_' + idx + '" placeholder="name" required>' +
+        '<span class="sc-sum"><span class="sc-chip">RW</span><span class="sc-chip noacl" data-acl-chip>acl auto</span></span>' +
+        '<button type="button" class="sc-del" title="Remove share">&#10005;</button>' +
+      '</div>' +
+      '<div class="sc-body"><div class="fld-grid">' +
+        '<div class="fld wide"><label class="fld-lab">host_path <span class="ico">i</span></label><input type="text" data-f="host_path" name="' + p + 'host_' + idx + '" placeholder="/srv/nfs/…" required></div>' +
+        '<div class="fld"><label class="fld-lab">container_path <span class="ico">i</span></label><input type="text" data-f="container_path" name="' + p + 'container_path_' + idx + '" placeholder="/export/…" required></div>' +
+        '<div class="fld"><label class="fld-lab">pseudo_path <span class="ico">i</span></label><input type="text" data-f="pseudo_path" name="' + p + 'pseudo_' + idx + '" placeholder="/name"></div>' +
+      '</div><div class="sc-optwrap"><div class="sc-access">' +
+        '<div class="scf"><label class="fld-lab">security <span class="ico">i</span></label><select data-f="security" name="' + p + 'security_' + idx + '"><option value="">default</option><option value="krb5p">krb5p</option><option value="krb5i">krb5i</option><option value="krb5">krb5</option></select></div>' +
+        '<div class="scf"><label class="fld-lab">rw <span class="ico">i</span></label><select data-f="rw" name="' + p + 'rw_' + idx + '"><option value="true">RW</option><option value="false">RO</option></select></div>' +
+        '<div class="scf"><label class="fld-lab">squash <span class="ico">i</span></label><label class="chkline"><input type="checkbox" data-f="root_squash" name="' + p + 'root_squash_' + idx + '"> root_squash</label></div>' +
+      '</div><div class="sc-grid">' +
+        '<div class="scf"><label class="fld-lab">cache_profile <span class="ico">i</span></label><select data-f="cache_profile" name="' + p + 'cache_profile_' + idx + '"><option>Default</option><option>Read - Basic</option><option>Read - Heavy</option><option>Mixed Use</option><option>Write - Heavy</option></select></div>' +
+        '<div class="scf"><label class="fld-lab" title="on = ACL path; auto/unset = NOACL default (Disable_ACL); off = explicit NOACL.&#10;&rarr; enable_acl">enable_acl <span class="ico">i</span></label><select data-f="enable_acl" name="' + p + 'enable_acl_' + idx + '"><option value="auto">auto (NOACL)</option><option value="true">on</option><option value="false">off</option></select></div>' +
+        '<div class="scf"><label class="fld-lab">manage_gids <span class="ico">i</span></label><select data-f="manage_gids" name="' + p + 'manage_gids_' + idx + '"><option value="auto">auto</option><option value="true">on</option><option value="false">off</option></select></div>' +
+        '<div class="scf"><label class="fld-lab">read_access <span class="ico">i</span></label><select data-f="read_access_policy" name="' + p + 'read_access_policy_' + idx + '"><option value="auto">auto</option><option value="pre">pre</option><option value="post">post</option></select></div>' +
+        '<div class="scf"><label class="fld-lab">mg_expiration <span class="ico">i</span></label><input type="number" data-f="manage_gids_expiration" name="' + p + 'manage_gids_expiration_' + idx + '" placeholder="600"></div>' +
+      '</div></div></div>' +
+    '</div>';
+  }
+  function addShareRow() {
+    const idx = nextShareIdx++;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = shareCardHtml(idx);
+    container.appendChild(tmp.firstElementChild);
+    buildToml();
   }
 
-  overrideCb.addEventListener('change', update);
-  // Run once for initial state (in case disabled attr from server didn't fully apply styles)
-  update();
-}
+  // ---------- live [[shares]] TOML (regenerated from the form; changed lines highlighted) ----------
+  const tomlBox = document.getElementById('shares-toml');
+  let baseCount = null;
+  const q = s => '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  function buildLines() {
+    const out = [];
+    root.querySelectorAll('#shares-container .share-card-ed').forEach(card => {
+      const g = n => { const el = card.querySelector('[data-f="' + n + '"]'); return el ? el.value : ''; };
+      const chk = n => { const el = card.querySelector('[data-f="' + n + '"]'); return el ? el.checked : false; };
+      out.push('');
+      out.push('[[shares]]');
+      out.push('name = ' + q(g('name')));
+      out.push('host_path = ' + q(g('host_path')));
+      out.push('container_path = ' + q(g('container_path')));
+      if (g('pseudo_path')) out.push('pseudo_path = ' + q(g('pseudo_path')));
+      if (g('security')) out.push('security = ' + q(g('security')));
+      out.push('rw = ' + (g('rw') === 'true' ? 'true' : 'false'));
+      out.push('squash = ' + q(chk('root_squash') ? 'root_squash' : 'no_root_squash'));
+      out.push('cache_profile = ' + q(g('cache_profile')));
+      out.push('enable_acl = ' + q(g('enable_acl')));
+      out.push('manage_gids = ' + q(g('manage_gids')));
+      out.push('read_access_policy = ' + q(g('read_access_policy')));
+      if (g('manage_gids_expiration')) out.push('manage_gids_expiration = ' + g('manage_gids_expiration'));
+    });
+    return out;
+  }
+  function buildToml() {
+    if (!tomlBox) return;
+    const lines = buildLines();
+    if (baseCount === null) { baseCount = {}; lines.forEach(l => { baseCount[l] = (baseCount[l] || 0) + 1; }); }
+    const rem = Object.assign({}, baseCount);
+    tomlBox.innerHTML = lines.map(l => {
+      const known = rem[l] > 0;
+      if (known) rem[l]--;
+      return '<div class="tl' + (known ? '' : ' chg') + '">' + (l ? esc(l) : '&nbsp;') + '</div>';
+    }).join('');
+  }
 
-// Wire all overridable fields. Use name= for overrides (they are checkboxes), id= for the value controls.
-wireOverride('input[name="override_server_hostname"]', '#server_hostname');
-wireOverride('input[name="override_kerberos_realm"]', '#kerberos_realm');
-wireOverride('input[name="override_ganesha_default_security"]', '#ganesha_default_security');
-wireOverride('input[name="override_sssd_search_base"]', '#sssd_search_base');
-wireOverride('input[name="override_sssd_user_base"]', '#sssd_user_base');
-wireOverride('input[name="override_sssd_group_base"]', '#sssd_group_base');
-wireOverride('input[name="override_sssd_ldap_tls_reqcert"]', '#sssd_ldap_tls_reqcert');
-wireOverride('input[name="override_sssd_ldap_tls_cacert"]', '#sssd_ldap_tls_cacert');
-wireOverride('input[name="override_sssd_ldap_id_use_start_tls"]', '#sssd_ldap_id_use_start_tls');
-wireOverride('input[name="override_sssd_enumerate"]', '#sssd_enumerate');
+  // ---------- input / change: live toml, dot + chip sync, dirty ----------
+  root.addEventListener('input', e => {
+    const t = e.target;
+    if (t.closest && t.closest('#shares-container')) {
+      if (t.dataset.f === 'name') {
+        const card = t.closest('.share-card-ed');
+        const ps = card.querySelector('[data-f="pseudo_path"]');
+        if (ps && !ps.disabled && !ps.value.trim() && t.value.trim()) ps.value = '/' + t.value.trim();
+      }
+      buildToml();
+    }
+    markDirty();
+  });
+  function syncAclStatus(card, enableVal) {
+    // Match Share Permissions / Ganesha: ACL only when opted-in AND FS not limited.
+    const fsLimited = card.dataset.fsLimited === '1';
+    const capable = enableVal === 'true' && !fsLimited;
+    const label = enableVal === 'true' ? 'on' : (enableVal === 'false' ? 'off' : 'auto');
+    const dot = card.querySelector('.share-dot');
+    if (dot) {
+      dot.className = 'share-dot ' + (capable ? 'acl' : 'noacl');
+      dot.title = capable ? 'ACL supported' : 'Non-ACL limited';
+    }
+    const chip = card.querySelector('[data-acl-chip]');
+    if (chip) {
+      chip.className = 'sc-chip' + (capable ? '' : ' noacl');
+      chip.textContent = 'acl ' + label;
+    }
+  }
+  root.addEventListener('change', e => {
+    const t = e.target;
+    if (t.closest && t.closest('#shares-container')) {
+      if (t.dataset.f === 'enable_acl') {
+        syncAclStatus(t.closest('.share-card-ed'), t.value);
+      }
+      buildToml();
+    }
+    markDirty();
+  });
+  buildToml();
 
+  // ---------- dirty hint ----------
+  const saveHint = document.getElementById('save-hint');
+  function markDirty() { if (saveHint) { saveHint.textContent = 'Unsaved changes'; saveHint.classList.add('dirty'); } }
+
+  // ---------- diagnostics (independent of Save) ----------
+  function runProbe(url, body, pill, log) {
+    pill.className = 'tpill testing'; pill.textContent = 'testing…';
+    log.textContent = 'Stand-by, running probe…';
+    fetch(url, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body) })
+      .then(r => r.text().then(txt => { if (!r.ok) throw new Error('HTTP ' + r.status); return JSON.parse(txt); }))
+      .then(d => { if (d.log) log.innerHTML = d.log; pill.className = 'tpill ' + (d.ok ? 'pass' : 'fail'); pill.textContent = d.ok ? 'passed' : 'failed'; })
+      .catch(err => { pill.className = 'tpill fail'; pill.textContent = 'error'; log.textContent = 'Test request failed: ' + (err.message || err); });
+  }
+  const ldapBtn = document.getElementById('test-ldap-btn');
+  if (ldapBtn) ldapBtn.addEventListener('click', () => runProbe('/settings/test-ldap',
+    { ldap_uri: document.getElementById('ldap_uri').value },
+    document.getElementById('test-ldap-pill'), document.getElementById('test-ldap-log')));
+  const bindBtn = document.getElementById('test-bind-btn');
+  if (bindBtn) bindBtn.addEventListener('click', () => runProbe('/settings/test-bind',
+    { ldap_default_bind_dn: document.getElementById('sssd_bind_dn').value, ldap_default_authtok: document.getElementById('sssd_bind_pw').value },
+    document.getElementById('test-bind-pill'), document.getElementById('test-bind-log')));
+})();
 </script>
-
-<hr>
-
-<h3>Raw TOML Editor (full control + comments preserved)</h3>
-<form method="post" action="/settings/save-raw">
-    <textarea name="raw_content" rows="16" style="width:100%; font-family:monospace;">{{ raw_toml }}</textarea><br>
-    <button type="submit" class="btn btn-primary" style="margin-top:6px;">Save Raw TOML</button>
-</form>
-
-<p style="color: var(--text-light); font-size:0.9em; margin-top:1rem;">
-    The container watches the config file and will regenerate + reload automatically.
-</p>
-
-<hr style="margin: 1.1rem 0 0.6rem;">
-
-<div style="margin-top:0.1rem;">
-    <strong>{% if host_nfs_mode %}Apply config to host{% else %}Restart and apply{% endif %}</strong><br>
-    <span style="font-size:0.82em; color:var(--text-light);">
-        {% if host_nfs_mode %}
-        In HOST_NFS mode this regenerates the Ganesha fragments (sssd.conf + krb5.conf too) so the *host* NFS server sees the latest share definitions and security settings. No local Ganesha bounce occurs.
-        {% else %}
-        Shares (and some core settings) are loaded at startup of Ganesha and/or the WebUI. This triggers a targeted bounce of Ganesha + SSSD + WebUI (via the supervisor) so the updated config + shares list is fully active. NFS will be briefly unavailable.
-        {% endif %}
-    </span>
-    <form method="post" action="/settings/restart" style="margin-top:0.45rem;">
-        <button type="submit" class="btn {% if host_nfs_mode %}btn-primary{% else %}btn-danger{% endif %}" style="padding:8px 16px;"
-                onclick="return confirm('{% if host_nfs_mode %}Apply latest fragments to the host-managed NFS server?{% else %}Restart services now to apply changes? NFS and the WebUI will be briefly unavailable.{% endif %}');">
-            {% if host_nfs_mode %}Apply to host NFS{% else %}Restart and apply{% endif %}
-        </button>
-    </form>
-</div>
-
-<p><a href="/">← Back to Share Permissions</a></p>
 {% endblock %}

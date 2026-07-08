@@ -28,10 +28,10 @@ pub struct SetupTestState {
 
 #[derive(Serialize)]
 pub(crate) struct SetupTestResponse {
-    ok: bool,
-    message: Option<String>,
-    error: Option<String>,
-    log: Option<String>,
+    pub(crate) ok: bool,
+    pub(crate) message: Option<String>,
+    pub(crate) error: Option<String>,
+    pub(crate) log: Option<String>,
 }
 
 /// Shared context for all setup step templates.
@@ -182,7 +182,7 @@ fn is_wizard_complete(state: &super::AppState) -> bool {
         .unwrap_or_else(is_setup_wizard_complete)
 }
 
-fn validate_ldap_uri(uri: &str) -> Result<&str, String> {
+pub(crate) fn validate_ldap_uri(uri: &str) -> Result<&str, String> {
     let uri = uri.trim();
     if uri.is_empty() || (!uri.starts_with("ldap://") && !uri.starts_with("ldaps://")) {
         return Err("ldap_uri must start with ldap:// or ldaps://".into());
@@ -602,7 +602,7 @@ fn clear_step3_test(state: &super::AppState) {
     t.step3_pw = None;
 }
 
-fn run_bind_probe_blocking(
+pub(crate) fn run_bind_probe_blocking(
     config_path: &Path,
     dn: &str,
     pw: &str,
@@ -617,7 +617,10 @@ fn run_bind_probe_blocking(
         }
     };
     cfg.sssd.ldap_default_bind_dn = dn.trim().to_string();
-    cfg.sssd.ldap_default_authtok = pw.to_string();
+    // Blank password keeps the stored authtok (settings test-bind fallback).
+    if !pw.is_empty() {
+        cfg.sssd.ldap_default_authtok = pw.to_string();
+    }
     let result = check_ldap_bind(&cfg);
     let log = format_bind_probe(&cfg, result.clone());
     (result, log)

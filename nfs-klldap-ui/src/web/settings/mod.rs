@@ -2,9 +2,10 @@ use askama::Template;
 use axum::{
     extract::{Form, State},
     http::HeaderMap,
-    response::{Html, IntoResponse, Redirect},
+    response::{Html, IntoResponse, Json, Redirect},
 };
 use serde::Deserialize;
+use super::setup::{run_bind_probe_blocking, validate_ldap_uri, BindForm, LdapUriForm, SetupTestResponse};
 use super::{get_keytab_info, AppState, KeytabDisplayContext, require_auth};
 
 mod apply;
@@ -227,6 +228,8 @@ pub(crate) fn build_settings_template(
                 Some(false) => "false".to_string(),
                 None => "auto".to_string(),
             },
+            // Same rule as Share Permissions / Ganesha: ACL only when opted-in and FS-capable.
+            effective_acl_capable: eff.enable_acl && caps.acl_capable,
             manage_gids: match s.manage_gids {
                 Some(true) => "true".to_string(),
                 Some(false) => "false".to_string(),
@@ -681,4 +684,87 @@ pub(crate) async fn system_restart(
     let user = require_auth(&state, &headers).await?;
     let _ = try_schedule_service_recycle(&state, &format!("Restart and apply by '{}'", user.0)).await;
     Ok(render_restarting_page())
+}
+
+/// POST /settings/test-ldap — diagnostic DNS + TCP probe of ldap_uri.
+/// Purely informational; a failing test never blocks Save.
+pub(crate) async fn settings_test_ldap(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<LdapUriForm>,
+) -> Result<impl IntoResponse, Redirect> {
+    require_auth(&state, &headers).await?;
+    let uri = match validate_ldap_uri(&form.ldap_uri) {
+        Ok(u) => u.to_string(),
+        Err(e) => {
+            let log = format!(
+                "<strong>Command</strong>\n(validation)\n\n<strong>Status</strong>\n{e}"
+            );
+            return Ok(Json(SetupTestResponse {
+                ok: false,
+                message: None,
+                error: Some(e),
+                log: Some(log),
+            }));
+        }
+    };
+    let host = nfs_klldap_config::extract_host_from_uri(&uri);
+    let host_probe = host.clone();
+    let uri_probe = uri.clone();
+    let result =
+        tokio::task::spawn_blocking(move || {
+            nfs_klldap_config::check_ldap_reachability(&host_probe, &uri_probe)
+        })
+        .await
+        .unwrap_or(nfs_klldap_config::LdapReachability::Unreachable {
+            detail: "Reachability probe task failed".into(),
+        });
+    let log = nfs_klldap_config::format_reachability_probe(&host, &uri, &result);
+    let ok = result.is_reachable();
+    Ok(Json(SetupTestResponse {
+        ok,
+        message: ok.then(|| "Reachability test passed.".into()),
+        error: (!ok).then(|| result.user_message()),
+        log: Some(log),
+    }))
+}
+
+/// POST /settings/test-bind — diagnostic ldapsearch bind with SSSD attributes.
+/// Blank password reuses the stored authtok; never blocks Save.
+pub(crate) async fn settings_test_bind(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<BindForm>,
+) -> Result<impl IntoResponse, Redirect> {
+    require_auth(&state, &headers).await?;
+    if form.ldap_default_bind_dn.trim().is_empty() {
+        let log = "<strong>Command</strong>\n(validation)\n\n<strong>Status</strong>\nBind DN is required."
+            .to_string();
+        return Ok(Json(SetupTestResponse {
+            ok: false,
+            message: None,
+            error: Some("Bind DN is required.".into()),
+            log: Some(log),
+        }));
+    }
+    let config_path = state.config_path.clone();
+    let dn = form.ldap_default_bind_dn.clone();
+    let pw = form.ldap_default_authtok.clone();
+    let (result, log) =
+        tokio::task::spawn_blocking(move || run_bind_probe_blocking(&config_path, &dn, &pw))
+            .await
+            .unwrap_or((
+                Err("Bind probe task failed".into()),
+                "<strong>Status</strong>\nBind probe task failed".to_string(),
+            ));
+    let (ok, error) = match result {
+        Ok(()) => (true, None),
+        Err(e) => (false, Some(e)),
+    };
+    Ok(Json(SetupTestResponse {
+        ok,
+        message: ok.then(|| "Bind test passed.".into()),
+        error,
+        log: Some(log),
+    }))
 }

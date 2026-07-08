@@ -1,5 +1,5 @@
 {# Panel body for the detached "Permissions" panel (GET /dir-perms?path=...).
-   Renders in VIEW mode (inputs disabled); permissions.js flips `disabled` off on Edit,
+   Renders in VIEW mode (inputs disabled); the base.html permissions script flips `disabled` off on Edit,
    re-fetches this fragment on Cancel, and POSTs to the existing /apply (POSIX) and
    /acl-apply (ACL) endpoints. Owner/Group carry live LLDAP search + a hidden numeric
    uid/gid so name→id translation matches the old inline editor. #}
@@ -12,7 +12,7 @@
   <input type="hidden" name="path" value="{{ path }}">
   <input type="hidden" name="owner_user_uid" value="{{ owner_uid_hidden }}">
   <input type="hidden" name="owner_group_gid" value="{{ owner_gid_hidden }}">
-  {# permissions.js copies the header "recursive" checkbox into this before submit. #}
+  {# the base.html permissions script copies the header "recursive" checkbox into this before submit. #}
   <input type="hidden" name="recursive" class="rec-field" value="false">
 
   <div class="sec-title">POSIX permissions</div>
@@ -69,12 +69,12 @@
     </label>
   </div>
 
-  {# name="mode" is what /apply expects; permissions.js keeps it in sync with the checkboxes. #}
+  {# name="mode" is what /apply expects; the base.html permissions script keeps it in sync with the checkboxes. #}
   <input type="hidden" name="mode" class="mode-field" value="{{ mode_octal }}">
   <div class="perm-readout">
     <span class="lbl">Mode</span>
     <span class="octal">{{ mode_octal }}</span>
-    <code class="symbolic"></code>{# filled by permissions.js from the octal #}
+    <code class="symbolic"></code>{# filled by the base.html permissions script from the octal #}
   </div>
 </form>
 
@@ -87,7 +87,7 @@
   </div>
 
   {% if acl_supported %}
-  <div class="acl-note">Named NFSv4 ACL entries (live xattr).</div>
+  <div class="acl-note">Named POSIX ACL entries (live; Ganesha maps them to NFSv4 for clients).</div>
   {% else %}
   <div class="acl-reason">{{ acl_reason }}</div>
   {% endif %}

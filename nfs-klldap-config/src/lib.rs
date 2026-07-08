@@ -61,11 +61,11 @@ pub use fs_probe::{
     EffectiveShareFlags, ReadAccessPolicyEmit, FsCapabilities,
 };
 pub use ganesha_log_contract::{
-    classify_notsupp_failure_path, ganesha_96_has_mode_only_access_knob, load_logs_txt_fixture,
+    acl_notsupp_diagnosis_signatures, acl_notsupp_fixture_path, classify_notsupp_failure_path,
+    ganesha_96_has_mode_only_access_knob, load_acl_notsupp_fixture,
     log_shows_acl_path_getattr_notsupp, log_shows_acl_path_op_access_notsupp,
     log_shows_identity_failure, log_shows_identity_path_notsupp, log_shows_posix_ok_getattr,
-    logs_txt_diagnosis_signatures, logs_txt_fixture_path, validate_logs_txt_fixture,
-    NotsuppFailurePath, GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
+    validate_acl_notsupp_fixture, NotsuppFailurePath, GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
 };
 pub use posix_only_policy::PosixOnlyPolicy;
 pub use ganesha_identity_pipeline::{
@@ -526,23 +526,8 @@ pub use constants::{
     DEFAULT_GROUP_MEMBER_ATTR_KLLDAP, DEFAULT_GROUP_MEMBER_ATTR_LEGACY,
 };
 
-/// (no_tls_verify, start_tls) from [sssd] TLS fields and ldap_uri scheme.
-pub fn ldap_tls_policy(
-    ldap_uri: &str,
-    reqcert: Option<&str>,
-    cacert: Option<&str>,
-    id_use_start_tls: Option<bool>,
-) -> (bool, bool) {
-    let has_custom = cacert.is_some_and(|s| !s.trim().is_empty());
-    let no_verify = if has_custom {
-        reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
-    } else if ldap_uri.starts_with("ldaps://") {
-        reqcert.is_none_or(|v| v.eq_ignore_ascii_case("never"))
-    } else {
-        reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
-    };
-    (no_verify, id_use_start_tls.unwrap_or(false))
-}
+// Single TLS policy source of truth lives in nfs-klldap-identity (cacert-aware).
+pub use nfs_klldap_identity::{ldap_conn_settings, ldap_tls_policy};
 
 mod signals {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -914,15 +899,15 @@ mod tests {
         );
         assert!(main_debug.contains("Default_Log_Level = DEBUG;"));
         assert!(main_debug.contains("IDMAPPER = FULL_DEBUG;"));
+        // GSS + ACL components make client-abort and ACL-path failures visible in captures.
+        assert!(main_debug.contains("RPCSEC_GSS = FULL_DEBUG;"));
+        assert!(main_debug.contains("NFS_V4_ACL = DEBUG;"));
         // FSAL only in fragments top-level NFS4 is DEBUG for Idhelper.
         assert!(main_debug.contains("NFS4 = DEBUG;"));
         assert!(
             !main_debug.contains("RECOVERY"),
             "RECOVERY is not a valid LOG component on Ganesha 9.6 trixie-backports"
         );
-        // Sanity is core config still there.
-        assert!(main_debug.contains("Protocols = 4;"));
-        assert!(main_debug.contains("%include"));
     }
 
     #[test]

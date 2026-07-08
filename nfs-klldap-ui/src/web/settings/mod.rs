@@ -608,6 +608,7 @@ pub(crate) async fn reload_nfs_client(
         posix_attrs,
         no_tls_verify,
         start_tls,
+        fresh.sssd.ldap_tls_cacert.clone(),
     );
     match new_client.authenticate(&user, &pass).await {
         Ok(()) => {

@@ -142,9 +142,9 @@ pub fn router(state: AppState) -> Router {
         .route("/login", get(login_page).post(login))
         .route("/setup-password", post(setup_password))
         .route("/logout", get(logout).post(logout))
-        // Public status for the post-restart poller (no auth used By.
+        // Public status for the post-restart poller (no auth required).
         .route("/restart-status", get(restart_status))
-        // The === public is first-run setup wizard (replaces terminal TUI).
+        // Public first-run setup wizard (replaces the old terminal TUI).
         .route("/setup", get(setup::setup_redirect))
         .route("/setup/1", get(setup::setup_step1))
         .route("/setup/1/verify", post(setup::setup_step1_verify))
@@ -155,7 +155,6 @@ pub fn router(state: AppState) -> Router {
         .route("/setup/3/test", post(setup::setup_step3_test))
         .route("/setup/3/status", get(setup::setup_step3_status))
         .route("/setup/3/continue", post(setup::setup_step3_continue))
-        .route("/setup/complete", get(setup::setup_complete))
 
         // The === protected is Main permission tree UI (/) ===.
         .route("/", get(index))

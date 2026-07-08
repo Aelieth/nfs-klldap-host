@@ -88,7 +88,7 @@ pub async fn login(
             Err(e) => Err(e),
         }
     } else {
-        // LLDAP path — uses LdapClient is :verify_user_is_admin (single lock.
+        // LLDAP path — LdapClient::verify_user_is_admin under a single lock.
         let l = state.lldap.lock().await;
         match l
             .verify_user_is_admin(username, password, state.auth.admin_group())
@@ -390,6 +390,17 @@ pub async fn require_auth(
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::extract_all_session_tokens;
+
+    #[test]
+    fn extracts_every_session_cookie_in_order_skipping_empty_and_quotes() {
+        // Duplicate session cookies happen after re-login; validation prefers the newest (last).
+        let tokens = extract_all_session_tokens("session=old; theme=dark; session=\"new\"; session=");
+        assert_eq!(tokens, vec!["old".to_string(), "new".to_string()]);
+        assert!(extract_all_session_tokens("theme=dark").is_empty());
+        assert!(extract_all_session_tokens("").is_empty());
+    }
+}
 
 

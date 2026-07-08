@@ -240,7 +240,7 @@ fn compute_gids_for_resolved(r: &Resolved, principal: &str) -> Vec<u32> {
         let mut extra: Vec<u32> = r.supplemental_gids.clone();
         if let Some((resolver, dn, pw)) = get_or_init_resolver() {
             ensure_resolver_snapshot(resolver, dn, pw);
-            let more = nfs_klldap_identity::resolve_groups_for_principal(resolver, principal, dn, pw);
+            let more = resolver.resolve_groups_for_principal(principal, dn, pw);
             for g in more.into_iter().map(|g| g as u32).filter(|&g| g != primary) {
                 if !extra.contains(&g) {
                     extra.push(g);
@@ -256,7 +256,7 @@ fn compute_gids_for_resolved(r: &Resolved, principal: &str) -> Vec<u32> {
         let mut extra: Vec<u32> = vec![];
         if let Some((resolver, dn, pw)) = get_or_init_resolver() {
             ensure_resolver_snapshot(resolver, dn, pw);
-            let more = nfs_klldap_identity::resolve_groups_for_principal(resolver, principal, dn, pw);
+            let more = resolver.resolve_groups_for_principal(principal, dn, pw);
             extra = more.into_iter().map(|g| g as u32).collect();
             let _ = resolver.resolve_group_by_gid(primary as i32, dn, pw);
             for &g in &extra {
@@ -389,8 +389,9 @@ pub(crate) fn refresh_supplemental_nss_for_cached_users(
 
 /// Load resolver + bind creds from NfsKlldapConfig (NFS_CONFIG).
 fn load_resolver_from_config() -> Option<(IdLdapResolver, String, String)> {
+    // test-support: dummy resolver so CLI subprocess tests get supp discovery without LDAP.
+    #[cfg(feature = "test-support")]
     if std::env::var("TEST_REBULK_POPULATE").is_ok() {
-        // dummy resolver when TEST_ set (enables supp discovery in CLI subprocess during verif; harmless outside).
         let r = IdLdapResolver::from_inputs(&::nfs_klldap_identity::LdapResolverInputs::default());
         return Some((r, "dn".into(), "pw".into()));
     }

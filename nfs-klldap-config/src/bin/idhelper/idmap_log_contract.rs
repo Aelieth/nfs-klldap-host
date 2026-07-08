@@ -198,16 +198,16 @@ complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
     }
 
     #[test]
-    fn idmap_log_contract_logs_txt_fixture_acl_path_notsupp() {
-        let path = nfs_klldap_config::logs_txt_fixture_path();
-        let content = nfs_klldap_config::load_logs_txt_fixture().expect("repo logs.txt");
-        nfs_klldap_config::validate_logs_txt_fixture(&path).expect("logs.txt signatures");
+    fn idmap_log_contract_committed_fixture_acl_path_notsupp() {
+        let path = nfs_klldap_config::acl_notsupp_fixture_path();
+        let content = nfs_klldap_config::load_acl_notsupp_fixture().expect("committed fixture");
+        nfs_klldap_config::validate_acl_notsupp_fixture(&path).expect("fixture signatures");
         assert_eq!(
             nfs_klldap_config::classify_notsupp_failure_path(&content),
             nfs_klldap_config::NotsuppFailurePath::AclPath
         );
         assert!(!nfs_klldap_config::log_shows_identity_failure(&content));
-        let (op, ga_acl, ga_ok) = nfs_klldap_config::logs_txt_diagnosis_signatures(&content);
+        let (op, ga_acl, ga_ok) = nfs_klldap_config::acl_notsupp_diagnosis_signatures(&content);
         eprintln!("logs-diagnosis OP_ACCESS: {}", op.expect("op_access line"));
         eprintln!("logs-diagnosis GETATTR ACL: {}", ga_acl.expect("getattr acl line"));
         eprintln!("logs-diagnosis GETATTR OK: {}", ga_ok.expect("getattr ok line"));

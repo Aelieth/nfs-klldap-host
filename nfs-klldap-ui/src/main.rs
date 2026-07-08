@@ -131,6 +131,7 @@ async fn main() {
         posix_attrs,
         no_tls_verify,
         start_tls,
+        loaded_config.sssd.ldap_tls_cacert.clone(),
     );
 
     // Loads bind credentials from NFS_KLLDAP_LLDAP_* env or [sssd] verbatim.
@@ -148,8 +149,6 @@ async fn main() {
     if let Err(e) = lldap.authenticate(&lldap_user, &lldap_pass).await {
         eprintln!("Warning: KLLDAP auth failed at startup: {}", e);
     }
-
-    // Do not extract the RDN value from the bind DN and search using.
 
     let lldap = Arc::new(Mutex::new(lldap));
 
@@ -344,5 +343,6 @@ pub fn create_test_lldap() -> crate::ldap::LdapClient {
         },
         true,
         false,
+        None,
     )
 }

@@ -59,7 +59,5 @@ pub fn ldap_service_creds(cfg: &Config) -> (String, String) {
     (bind_identity, password)
 }
 
-#[cfg(test)]
-mod tests {}
 
 

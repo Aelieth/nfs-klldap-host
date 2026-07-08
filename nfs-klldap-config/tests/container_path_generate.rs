@@ -21,7 +21,7 @@ fn generate_with_mountinfo(mountinfo: &str, toml: &str) -> String {
     let ps=GenerationPaths{sssd_conf:out.join("s"),krb5_conf:out.join("k"),ganesha_conf:out.join("g"),exports_dir:out.join("e.d"),idmap_conf:out.join("i"),nfs_conf:out.join("n")};
     generate_all(&cfg,&ps).expect("g");
     if let Some(p)=pv{std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH",p);}else{std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");}
-    fs::read_dir(out.join("e.d")).unwrap().map(|e|e.unwrap().path()).find(|p|p.extension().map_or(false,|x|x=="conf")).map(|p|fs::read_to_string(p).unwrap()).unwrap()
+    fs::read_dir(out.join("e.d")).unwrap().map(|e|e.unwrap().path()).find(|p|p.extension().is_some_and(|x| x == "conf")).map(|p|fs::read_to_string(p).unwrap()).unwrap()
 }
 
 #[test]
@@ -45,6 +45,51 @@ enable_acl = true
     assert!(frag.contains("Path = /export/staging/movies;"));
     assert!(!frag.contains("Disable_ACL = true;"), "staging ext4 keeps ACL enabled");
     assert!(frag.contains("Manage_Gids = true;"));
+}
+
+#[test]
+fn acl_share_emits_custom_umask_and_manage_gids_expiration() {
+    let toml = r#"
+ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "/export"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "movies"
+host_path = "/media/movies"
+container_path = "/export/staging/movies"
+enable_acl = true
+umask = "0027"
+manage_gids_expiration = 900
+"#;
+    let frag = generate_with_mountinfo(MOUNTINFO_MIXED, toml);
+    assert!(frag.contains("        Umask = 0027;"), "custom umask must land in FSAL block: {frag}");
+    assert!(frag.contains("Manage_Gids_Expiration = 900;"), "{frag}");
+}
+
+#[test]
+fn acl_share_umask_defaults_to_0022_when_unset_or_invalid() {
+    let base = r#"
+ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "/export"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "movies"
+host_path = "/media/movies"
+container_path = "/export/staging/movies"
+enable_acl = true
+"#;
+    let frag = generate_with_mountinfo(MOUNTINFO_MIXED, base);
+    assert!(frag.contains("        Umask = 0022;"), "unset umask must default on ACL path: {frag}");
+    // Invalid umask (not 4-digit octal with leading 0) falls back to the safe default.
+    let invalid = format!("{base}umask = \"999\"\n");
+    let frag = generate_with_mountinfo(MOUNTINFO_MIXED, &invalid);
+    assert!(frag.contains("        Umask = 0022;"), "invalid umask must fall back: {frag}");
 }
 
 #[test]

@@ -63,8 +63,6 @@ pub struct AclEntry {
     pub perms: AclPerms,
 }
 
-impl AclEntry {}
-
 /// Modification to apply (add/overwrite one entry, or remove one-or-more).
 #[derive(Debug, Clone)]
 pub enum AclModification {

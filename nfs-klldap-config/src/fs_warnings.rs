@@ -13,7 +13,6 @@ use crate::{
 pub struct FsShareWarning {
     pub share_name: String,
     pub host_path: String,
-    pub container_path: String,
     pub serve_path: String,
     pub fstype: String,
     pub acl_capable: bool,
@@ -32,11 +31,10 @@ impl FsShareWarning {
             )
         } else {
             format!(
-                "share={} host_path={} container_path={} serve_path={} fstype={} acl_capable=false \
+                "share={} host_path={} serve_path={} fstype={} acl_capable=false \
                  effective_enable_acl={} effective_manage_gids={} — {}",
                 self.share_name,
                 self.host_path,
-                self.container_path,
                 self.serve_path,
                 self.fstype,
                 self.effective_enable_acl,
@@ -47,6 +45,8 @@ impl FsShareWarning {
     }
 }
 
+// Display fallback only: an unprobeable path stays quiet here (no badge nag), while the
+// generator's emission fallback is acl_capable=false (fail-safe). Intentional asymmetry.
 fn default_capable_unknown() -> FsCapabilities {
     FsCapabilities {
         fstype: "unknown".into(),
@@ -133,7 +133,6 @@ pub fn collect_fs_warnings(cfg: &NfsKlldapConfig) -> Vec<FsShareWarning> {
             FsShareWarning {
                 share_name: share.name.clone(),
                 host_path: share.host_path.display().to_string(),
-                container_path: cfg.serve_path_for(share),
                 serve_path: cfg.serve_path_for(share),
                 fstype: caps.fstype.clone(),
                 acl_capable: caps.acl_capable,

@@ -15,6 +15,7 @@ Debian 13-slim runtime (Rust build stages remain on Fedora minimal) providing a 
 ## Documentation
 
 - [Running & deployment](docs/run/README.md)
+- [Client setup: Fedora Immutable (Bazzite / Silverblue)](docs/client-fedora-immutable.md)
 - [LDAP / SSSD / Kerberos integration](docs/ldap-integration.md)
 - [Ganesha architecture & contracts](docs/ganesha-architecture.md)
 - [WebUI security model](nfs-klldap-ui/docs/security.md)
@@ -89,11 +90,9 @@ ldap_uri = "ldaps://klldap.example.com:6360"                     # LLDAP default
 
 [storage]
 container_root = "/export"                                      # Anchor for Ganesha paths + UI container translation.
-# No explicit host_root key. The first directory component of each share's host_path
-# (e.g. "media" from "/media/NVME-RAID/nvme") is the implicit per-share bind root.
-# The remainder of the host_path becomes the subpath under container_root.
-# This lets the editable "Export Path" (in [[shares]] or the Shares editor) be used
-# purely for the external/client Pseudo name while the internal stays correct.
+# Each share sets container_path explicitly (required; must live under container_root)
+# to the absolute in-container path of its data — no auto-derivation from host_path.
+# pseudo_path ("Pseudo Path" in the Shares editor) is only the client-visible NFSv4 name.
 
 [management]
 # webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins
@@ -126,7 +125,7 @@ default_security = "krb5p"                                      # security, krb5
 # pseudo_path = "/movies"                                       # optional; the *external* client Pseudo (short/friendly name OK). Derives to /<name> when absent.
 # security = "krb5p"                                            # optional per-share override (krb5p|krb5i|krb5); default from [ganesha]
 # rw = true                                                     # default RW; set false for RO
-# enable_acl = false                                            # optional; set false (or omit for auto) to emit Disable_ACL = true on limited FS
+# enable_acl = false                                            # optional; NOACL default — omit or false emits Disable_ACL = true; true opts into NFSv4 ACLs (needs ACL-capable FS + Ganesha build)
 # manage_gids = true                                            # optional; default true (including auto on limited FS) for krb5* uid2grp
 # umask = "0002"                                                # optional; emitted inside FSAL{} on ACL path only (default 0022). Addresses umask/ACL-inherit gotcha.
 
@@ -232,7 +231,7 @@ ganesha-ctl id-check
 See [docs/ldap-integration.md](docs/ldap-integration.md) for SSSD/POSIX requirements, TLS behavior, idhelper architecture, and verification commands.
 
 ## Kerberos user principal idmap
-Supported: full `user@REALM` and `host/hostname@REALM` via idhelper GRPS/resolve (POSIX groups for users; machine principals map to uid/gid 0) + nss/extrausers. Numeric reverse rejected for stable getpwuid. Ganesha uses Only_Numeric + Allow_Numeric. Limited FS exports auto-emit `Manage_Gids=true` by default (set `manage_gids=false` to skip AUTH_SYS managed gids); krb5p/krb5i still call `rpcsec_gss_fetch_managed_groups` → observable `getpwuid_r for uid:` + `getgrouplist for uname:` LogInfo under nss_wrapper/idhelper (Debian 9.6 `_MSPAC_SUPPORT` stubs `allocate_by_principal` in uid2grp.c). Principals are warmed in nss_wrapper before Ganesha starts. Use ganesha-ctl id-resolve.
+Supported: full `user@REALM` and `host/hostname@REALM` via idhelper GRPS/resolve (POSIX groups for users; machine principals map to uid/gid 0) + nss/extrausers. Numeric reverse rejected for stable getpwuid. Ganesha uses `Only_Numeric_Owners` + `Allow_Numeric_Owners`. Limited FS exports auto-emit `Manage_Gids=true` by default (set `manage_gids=false` to skip AUTH_SYS managed gids); krb5p/krb5i still call `rpcsec_gss_fetch_managed_groups` → observable `getpwuid_r for uid:` + `getgrouplist for uname:` LogInfo under nss_wrapper/idhelper (Debian 9.6 `_MSPAC_SUPPORT` stubs `allocate_by_principal` in uid2grp.c). Principals are warmed in nss_wrapper before Ganesha starts. Use ganesha-ctl id-resolve.
 
 Ganesha 9.6 omits `Read_Access_Check_Policy` by default (pre) in main/ACL paths. The NOACL path explicitly sets `Read_Access_Check_Policy = pre;` + 0.9.40-style `Disable_ACL=true; Manage_Gids=true;` (basics work; explicit `manage_gids=false` still supported); full ACL features on capable FS. The idhelper ensures complete supp membership (incl uid0/root for machines) in nss+extrausers via proactive+reactive (observer/resolve/GRPS) + cache; periodic rebulk is secondary. Set REBULK_INTERVAL=0 to disable timer; observer handles new principals.
 

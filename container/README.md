@@ -2,7 +2,7 @@
 
 Thin shell (entrypoint exec, healthcheck, watcher, ganesha-ctl) + Rust binaries. `entrypoint.sh` only execs `nfs-klldap-startup supervise`; orchestration (preflight, SSSD/idhelper waits, Ganesha recycle, SIGHUP) lives in Rust. Privileged work (0600 derived files, direct chown/chmod on bind-mounted host_paths) happens here only.
 
-NSS: files extrausers sss. idhelper (proactive+reactive+cache) materializes complete supps+uid0 root to nss_wrapper + extrausers for UseGetpwnam/getgrouplist reliability. Machine->0. Ganesha after socket, under wrapper. Limited FS: POSIX post. Preflight via GRPS/ctl.
+NSS: files extrausers sss. idhelper (proactive+reactive+cache) materializes complete supps+uid0 root to nss_wrapper + extrausers for UseGetpwnam/getgrouplist reliability. Machine->0. Ganesha after socket, under wrapper. NOACL default: `Disable_ACL = true` + `Read_Access_Check_Policy = pre` (no POSIX marker). Preflight via GRPS/ctl.
 
 The container includes dbus-daemon (launched by the supervisor before Ganesha) and rpcbind for Ganesha/runtime compatibility. Export fragments under `/etc/ganesha/exports.d/` plus `/etc/nfs.conf` (`use-machine-creds=0`) are generated from `nfs-klldap.conf` by `nfs-klldap-config`; reload is triggered via SIGHUP to pid 1 (conf-watcher, WebUI apply, or `ganesha-ctl reload`), not D-Bus RPCs to Ganesha. The supervisor spawns `ganesha.nfsd -F` with an explicit envp (LD_PRELOAD, NSS_WRAPPER_*, IDHELPER socket vars) so the foreground daemon pid receives nss/idhelper env directly; pid recovery only runs if the tracked process exits.
 

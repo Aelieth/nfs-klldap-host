@@ -37,7 +37,7 @@ fn generate_limited(mountinfo: &str, toml: &str) -> (tempfile::TempDir, String, 
     let ps = GenerationPaths { sssd_conf: out.join("s"), krb5_conf: out.join("k"), ganesha_conf: out.join("g"), exports_dir: out.join("e"), idmap_conf: out.join("i"), nfs_conf: out.join("n") };
     generate_all(&cfg, &ps).expect("gen");
     if let Some(p) = prev { std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", p); } else { std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH"); }
-    let frag = fs::read_dir(out.join("e")).unwrap().map(|e|e.unwrap().path()).find(|p|p.extension().map_or(false,|x|x=="conf")).and_then(|p|fs::read_to_string(p).ok()).unwrap();
+    let frag = fs::read_dir(out.join("e")).unwrap().map(|e|e.unwrap().path()).find(|p|p.extension().is_some_and(|x| x == "conf")).and_then(|p|fs::read_to_string(p).ok()).unwrap();
     (tmp, frag, fs::read_to_string(out.join("g")).unwrap_or_default())
 }
 
@@ -150,31 +150,8 @@ fn ganesha_96_root_grouplist_and_nss_integration() {
     );
 }
 
-/// Documents Ganesha 9.6 krb5p identity chain under _MSPAC_SUPPORT + UseGetpwnam=true.
-#[test]
-fn ganesha_96_uid2grp_flow_audit_under_noacl_conservative_config() {
-    let audit = r#"
-Ganesha 9.6 krb5p identity chain (this build):
-1. rpcsec_gss authenticates Kerberos principal on the wire.
-2. principal2uid via libnfsidmap nsswitch -> getpwnam under nss_wrapper/extrausers/sss.
-3. _MSPAC_SUPPORT stubs uid2grp_allocate_by_principal in uid2grp.c — principal-based group path unavailable.
-4. UseGetpwnam=true: uid2grp_allocate_by_uid -> getpwuid_r -> pw_name (short) -> getgrouplist(pw_name, pw_gid).
-5. Auto NOACL exports emit Manage_Gids=true; explicit manage_gids=false skips AUTH_SYS managed gids only — krb5p/krb5i still call rpcsec_gss_fetch_managed_groups -> uid2grp path above.
-6. NOACL path (0.9.40-style): Disable_ACL=true + Manage_Gids=true auto (simple, no Read_Access post); ACL path uses native. Ganesha 9.6 may still ACL-check OP_ACCESS on direct noacl — use container_path staging when full ls needed.
-
-Addressed (via idhelper materialization + nss_wrapper):
-- Root uid0 + supplemental groups materialized for reliable getpwuid_r / getgrouplist under nss_wrapper.
-- GROUPLIST / GRPS socket + proactive+reactive seeding ensure complete supps (incl uid0 machines).
-
-Remaining risks:
-- FSAL referral Operation not supported on btrfs subvol exports (orthogonal).
-- Live ganesha.log success markers require client activity or ganesha-ctl id-resolve after deploy.
-"#;
-    assert!(audit.contains("Manage_Gids=true"));
-    assert!(audit.contains("_MSPAC_SUPPORT stubs"));
-    assert!(audit.contains("GROUPLIST"));
-    eprintln!("{audit}");
-}
+// The prose audit of the 9.6 identity chain (_MSPAC_SUPPORT stub, UseGetpwnam uid path)
+// lives in docs/ganesha-architecture.md; the executable contract is the tests around it.
 
 #[test]
 fn enable_rpc_cred_fallback_disabled_when_configured() {

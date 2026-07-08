@@ -25,7 +25,7 @@ const MOUNTINFO_BTRFS_NOACL: &str = r#"
 "#;
 
 fn cargo_bin(name: &str) -> PathBuf {
-    if let Ok(p) = std::env::var(&format!("CARGO_BIN_EXE_{}", name.replace('-', "_"))) { return PathBuf::from(p); }
+    if let Ok(p) = std::env::var(format!("CARGO_BIN_EXE_{}", name.replace('-', "_"))) { return PathBuf::from(p); }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/debug").join(name)
 }
 fn write_fixture(d: &Path) -> (PathBuf, PathBuf) { let m = d.join("mi"); fs::write(&m, MOUNTINFO_BTRFS_NOACL).unwrap(); let c = d.join("c.toml"); fs::write(&c, LIMITED_TOML).unwrap(); (c, m) }
@@ -34,7 +34,7 @@ fn run_cli_generate(c: &Path, m: &Path, o: &Path) {
     let st = Command::new(cargo_bin("nfs-klldap-config")).args(["generate","--config"]).arg(c).env("NFS_KLLDAP_MOUNTINFO_PATH", m).env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK","1").env("EXPORTS_DIR",&e).env("GANESHA_CONF",o.join("g")).env("SSSD_CONF",o.join("s")).env("KRB5_CONF",o.join("k")).env("IDMAP_CONF",o.join("i")).env("NFS_CONF",o.join("n")).status().expect("cli");
     assert!(st.success());
 }
-fn read_single_fragment(ed: &Path) -> String { fs::read_dir(ed).unwrap().map(|e|e.unwrap().path()).find(|p|p.extension().map_or(false,|x|x=="conf")).map(|p|fs::read_to_string(p).unwrap()).unwrap() }
+fn read_single_fragment(ed: &Path) -> String { fs::read_dir(ed).unwrap().map(|e|e.unwrap().path()).find(|p|p.extension().is_some_and(|x| x == "conf")).map(|p|fs::read_to_string(p).unwrap()).unwrap() }
 
 #[test]
 fn cli_generate_limited_btrfs_twice_is_identical() {
@@ -101,7 +101,7 @@ read_access_policy = "pre"
     for _r in 1..=2 {
         let st = Command::new(cargo_bin("nfs-klldap-config")).args(["generate","--config"]).arg(&cp).env("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK","1").env("EXPORTS_DIR",&ed).env("GANESHA_CONF",sc.join("gm")).env("SSSD_CONF",sc.join("sm")).env("KRB5_CONF",sc.join("km")).env("IDMAP_CONF",sc.join("im")).env("NFS_CONF",sc.join("nm")).status().expect("mix");
         assert!(st.success());
-        let fs: Vec<_> = fs::read_dir(&ed).unwrap().filter_map(|e|e.ok()).filter(|e|e.path().extension().map_or(false,|x|x=="conf")).map(|e|fs::read_to_string(e.path()).unwrap()).collect();
+        let fs: Vec<_> = fs::read_dir(&ed).unwrap().filter_map(|e|e.ok()).filter(|e|e.path().extension().is_some_and(|x| x == "conf")).map(|e|fs::read_to_string(e.path()).unwrap()).collect();
         let cmb = fs.join("\n---\n");
         if let Some(p)=&rf { assert_eq!(p,&cmb); } rf=Some(cmb);
     }

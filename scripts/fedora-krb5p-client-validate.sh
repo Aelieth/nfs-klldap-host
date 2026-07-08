@@ -19,7 +19,7 @@ chmod 600 /etc/krb5.keytab
 modprobe nfs 2>/dev/null || true
 
 mkdir -p /var/lib/nfs/rpc_pipefs
-# Host bind mount of rpc_pipefs (see capture-plan-gate.sh) is required for gssd/idmap in Docker.
+# Host bind mount of rpc_pipefs is required for gssd/idmap in Docker.
 if ! mountpoint -q /var/lib/nfs/rpc_pipefs 2>/dev/null; then
   mount -t rpc_pipefs rpc_pipefs /var/lib/nfs/rpc_pipefs 2>/dev/null || true
 fi
@@ -38,9 +38,9 @@ mkdir -p /mnt/stuff /mnt/junk
 
 echo "=== ATTEMPTING KRB5P MOUNTS ==="
 set +e
-mount -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/stuff /mnt/stuff
+mount -vvv -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/stuff /mnt/stuff >/tmp/mount-stuff.log 2>&1
 M1=$?
-mount -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/junk /mnt/junk
+mount -vvv -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/junk /mnt/junk >/tmp/mount-junk.log 2>&1
 M2=$?
 set -e
 
@@ -49,6 +49,10 @@ mount | grep -E '/mnt/(stuff|junk)' || true
 
 if [ "$M1" != "0" ] || [ "$M2" != "0" ]; then
   echo "MOUNT FAILED (M1=$M1 M2=$M2)"
+  # Preserve the client-side abort reason: mount -vvv output + kernel NFS/RPC messages.
+  echo "--- mount -vvv /mnt/stuff ---"; cat /tmp/mount-stuff.log || true
+  echo "--- mount -vvv /mnt/junk ---"; cat /tmp/mount-junk.log || true
+  echo "--- dmesg tail (nfs/rpc/gss) ---"; dmesg 2>/dev/null | grep -iE 'nfs|rpc|gss' | tail -40 || true
   kill "$GSSD_PID" 2>/dev/null || true
   exit 32
 fi
@@ -195,7 +199,17 @@ RKCONF
   chown "${exp_uid}:${exp_gid}" "/hostdata/stuff/${MARKER}" 2>/dev/null || true
   chmod 666 "/hostdata/stuff/${MARKER}" 2>/dev/null || true
 
-  mount -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/stuff /mnt/stuff
+  set +e
+  mount -vvv -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/stuff /mnt/stuff >/tmp/mount-user.log 2>&1
+  MU=$?
+  set -e
+  if [ "$MU" != "0" ]; then
+    echo "USER TGT MOUNT FAILED (rc=$MU)"
+    cat /tmp/mount-user.log || true
+    dmesg 2>/dev/null | grep -iE 'nfs|rpc|gss' | tail -40 || true
+    kill "$GSSD_USER_PID" "$IDMAP_PID" 2>/dev/null || true
+    exit 42
+  fi
   marker="${MARKER}"
   out="/mnt/stuff/${marker}"
   set +e

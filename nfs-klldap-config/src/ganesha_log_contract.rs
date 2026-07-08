@@ -22,14 +22,14 @@ pub enum NotsuppFailurePath {
     Unknown,
 }
 
-/// Path to repo-root logs.txt (runtime fixture for classification tests)
-pub fn logs_txt_fixture_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../logs.txt")
+/// Path to the committed ACL-NOTSUPP reference transcript (classification tests).
+pub fn acl_notsupp_fixture_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ganesha-acl-notsupp.log")
 }
 
-/// Load repo-root logs.txt; fails if the reference transcript is missing.
-pub fn load_logs_txt_fixture() -> std::io::Result<String> {
-    std::fs::read_to_string(logs_txt_fixture_path())
+/// Load the committed ACL-NOTSUPP reference transcript.
+pub fn load_acl_notsupp_fixture() -> std::io::Result<String> {
+    std::fs::read_to_string(acl_notsupp_fixture_path())
 }
 
 fn line_is_identity_failure(line: &str) -> bool {
@@ -99,6 +99,40 @@ pub fn log_shows_posix_ok_getattr(content: &str) -> bool {
     content.contains("No permission check for ACL") && content.contains("OP_GETATTR")
 }
 
+/// Diagnosis for a clean client abort after successful session setup.
+pub const CLIENT_ABORT_BEFORE_NAMESPACE_DIAGNOSIS: &str =
+    "Server-side Kerberos auth and NFSv4.1 session setup succeeded; the client destroyed the \
+     session before any namespace op (PUTROOTFH/LOOKUP/GETATTR). Failure is client-side: check \
+     rpc.gssd logs, /etc/krb5.keytab, mount options (vers=4.2,sec=krb5*), and the client journal.";
+
+fn op_status_ok(content: &str, op: &str) -> bool {
+    let needle = format!("Status of {op} in position");
+    content
+        .lines()
+        .any(|l| l.contains(&needle) && l.contains("NFS4_OK"))
+}
+
+/// True when EXCHANGE_ID/CREATE_SESSION/RECLAIM_COMPLETE all succeeded, the client then
+/// destroyed session+clientid, and no namespace traversal op was ever attempted.
+pub fn log_shows_client_abort_before_namespace(content: &str) -> bool {
+    let namespace_attempted = [
+        "OP_PUTROOTFH",
+        "OP_PUTFH",
+        "OP_LOOKUP",
+        "OP_GETATTR",
+        "OP_SECINFO",
+        "OP_READDIR",
+    ]
+    .iter()
+    .any(|op| content.contains(op));
+    op_status_ok(content, "OP_EXCHANGE_ID")
+        && op_status_ok(content, "OP_CREATE_SESSION")
+        && op_status_ok(content, "OP_RECLAIM_COMPLETE")
+        && op_status_ok(content, "OP_DESTROY_SESSION")
+        && op_status_ok(content, "OP_DESTROY_CLIENTID")
+        && !namespace_attempted
+}
+
 /// True when identity/principal failure and NOTSUPP occur in the same line wi.
 pub fn log_shows_identity_path_notsupp(content: &str) -> bool {
     let lines: Vec<&str> = content.lines().collect();
@@ -125,8 +159,8 @@ pub fn classify_notsupp_failure_path(content: &str) -> NotsuppFailurePath {
     NotsuppFailurePath::Unknown
 }
 
-/// Three signature lines from logs.txt for diagnosis evidence (OP_ACCESS ACL,
-pub fn logs_txt_diagnosis_signatures(content: &str) -> (Option<String>, Option<String>, Option<String>) {
+/// Three signature lines from a ganesha.log for diagnosis evidence (OP_ACCESS ACL,
+pub fn acl_notsupp_diagnosis_signatures(content: &str) -> (Option<String>, Option<String>, Option<String>) {
     let mut op_access = None;
     let mut getattr_acl = None;
     let mut getattr_ok = None;
@@ -147,21 +181,21 @@ pub fn logs_txt_diagnosis_signatures(content: &str) -> (Option<String>, Option<S
     (op_access, getattr_acl, getattr_ok)
 }
 
-/// Validate logs.txt fixture exists and carries the three known failure/OK si.
-pub fn validate_logs_txt_fixture(path: &Path) -> Result<(), String> {
+/// Validate an ACL-NOTSUPP transcript carries the three known failure/OK signatures.
+pub fn validate_acl_notsupp_fixture(path: &Path) -> Result<(), String> {
     let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let (op, ga_acl, ga_ok) = logs_txt_diagnosis_signatures(&content);
+    let (op, ga_acl, ga_ok) = acl_notsupp_diagnosis_signatures(&content);
     if op.is_none() {
-        return Err("logs.txt missing OP_ACCESS ACL mask line".into());
+        return Err("fixture missing OP_ACCESS ACL mask line".into());
     }
     if ga_acl.is_none() {
-        return Err("logs.txt missing GETATTR Permission check for ACL NOTSUPP line".into());
+        return Err("fixture missing GETATTR Permission check for ACL NOTSUPP line".into());
     }
     if ga_ok.is_none() {
-        return Err("logs.txt missing No permission check for ACL getattr OK line".into());
+        return Err("fixture missing No permission check for ACL getattr OK line".into());
     }
     if classify_notsupp_failure_path(&content) != NotsuppFailurePath::AclPath {
-        return Err("logs.txt full transcript must classify as ACL-path NOTSUPP".into());
+        return Err("fixture transcript must classify as ACL-path NOTSUPP".into());
     }
     Ok(())
 }
@@ -171,8 +205,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn logs_txt_fixture_classifies_acl_path_notsupp() {
-        let content = load_logs_txt_fixture().expect("repo logs.txt must exist");
+    fn committed_fixture_classifies_acl_path_notsupp() {
+        let content = load_acl_notsupp_fixture().expect("committed ACL-NOTSUPP fixture must exist");
         assert!(log_shows_acl_path_op_access_notsupp(&content));
         assert!(log_shows_acl_path_getattr_notsupp(&content));
         assert!(log_shows_posix_ok_getattr(&content));
@@ -181,8 +215,8 @@ mod tests {
             classify_notsupp_failure_path(&content),
             NotsuppFailurePath::AclPath
         );
-        validate_logs_txt_fixture(&logs_txt_fixture_path()).expect("logs.txt signatures");
-        let (op, ga_acl, ga_ok) = logs_txt_diagnosis_signatures(&content);
+        validate_acl_notsupp_fixture(&acl_notsupp_fixture_path()).expect("fixture signatures");
+        let (op, ga_acl, ga_ok) = acl_notsupp_diagnosis_signatures(&content);
         eprintln!("logs-diagnosis OP_ACCESS: {}", op.unwrap());
         eprintln!("logs-diagnosis GETATTR ACL: {}", ga_acl.unwrap());
         eprintln!("logs-diagnosis GETATTR OK: {}", ga_ok.unwrap());
@@ -219,6 +253,46 @@ process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
 complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
 "#;
         assert_eq!(classify_notsupp_failure_path(real), NotsuppFailurePath::IdentityPath);
+    }
+
+    // Condensed from a real 2026-07-08 capture: krb5 session up, torn down, no namespace ops.
+    const CLEAN_ABORT_LOG: &str = r#"
+nfs_null :NFS3 :DEBUG :REQUEST PROCESSING: Calling NFS_NULL
+process_one_op :NFS4 :DEBUG :Request 0: opcode 42 is OP_EXCHANGE_ID
+complete_op :NFS4 :DEBUG :Status of OP_EXCHANGE_ID in position 0 = NFS4_OK, op response size is 0 total response size is 36
+process_one_op :NFS4 :DEBUG :Request 0: opcode 43 is OP_CREATE_SESSION
+complete_op :NFS4 :DEBUG :Status of OP_CREATE_SESSION in position 0 = NFS4_OK, op response size is 112 total response size is 148
+process_one_op :NFS4 :DEBUG :Request 0: opcode 53 is OP_SEQUENCE
+complete_op :NFS4 :DEBUG :Status of OP_SEQUENCE in position 0 = NFS4_OK, op response size is 40 total response size is 76
+process_one_op :NFS4 :DEBUG :Request 1: opcode 58 is OP_RECLAIM_COMPLETE
+complete_op :NFS4 :DEBUG :Status of OP_RECLAIM_COMPLETE in position 1 = NFS4_OK, op response size is 4 total response size is 84
+process_one_op :NFS4 :DEBUG :Request 0: opcode 44 is OP_DESTROY_SESSION
+complete_op :NFS4 :DEBUG :Status of OP_DESTROY_SESSION in position 0 = NFS4_OK, op response size is 4 total response size is 40
+process_one_op :NFS4 :DEBUG :Request 0: opcode 57 is OP_DESTROY_CLIENTID
+complete_op :NFS4 :DEBUG :Status of OP_DESTROY_CLIENTID in position 0 = NFS4_OK, op response size is 4 total response size is 40
+"#;
+
+    #[test]
+    fn clean_client_abort_detected_when_session_destroyed_without_namespace_ops() {
+        assert!(log_shows_client_abort_before_namespace(CLEAN_ABORT_LOG));
+        assert!(CLIENT_ABORT_BEFORE_NAMESPACE_DIAGNOSIS.contains("client-side"));
+    }
+
+    #[test]
+    fn clean_client_abort_not_flagged_when_namespace_traversal_happened() {
+        // A successful mount reaches GETATTR/PUTROOTFH before any later session teardown.
+        let successful = format!(
+            "{CLEAN_ABORT_LOG}\nprocess_one_op :NFS4 :DEBUG :Request 1: opcode 9 is OP_GETATTR\n\
+             complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 1 = NFS4_OK"
+        );
+        assert!(!log_shows_client_abort_before_namespace(&successful));
+        // Session still open (no DESTROY yet) is not an abort either.
+        let in_flight: String = CLEAN_ABORT_LOG
+            .lines()
+            .filter(|l| !l.contains("OP_DESTROY_CLIENTID"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!log_shows_client_abort_before_namespace(&in_flight));
     }
 
     #[test]

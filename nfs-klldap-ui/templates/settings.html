@@ -197,7 +197,7 @@
                     <option value="Write - Heavy" {% if row.cache_profile == "Write - Heavy" %}selected{% endif %}>Write - Heavy</option>
                 </select>
             </label>
-            <label title="ACL primary (native on capable FS): on=enable_acl=true (no Disable_ACL); auto=probe prefers ACL; off=NOACL compat (Disable_ACL=true). TOML: enable_acl.">ACL
+            <label title="on = enable_acl=true (NFSv4 ACLs; needs ACL-capable FS and Ganesha build); auto/off = NOACL default (Disable_ACL=true). TOML: enable_acl.">ACL
                 <select name="share_enable_acl_{{ row.idx }}" style="width:72px;margin-left:4px;">
                     <option value="auto" {% if row.enable_acl == "auto" %}selected{% endif %}>auto</option>
                     <option value="true" {% if row.enable_acl == "true" %}selected{% endif %}>on</option>
@@ -211,7 +211,7 @@
                     <option value="false" {% if row.manage_gids == "false" %}selected{% endif %}>off</option>
                 </select>
             </label>
-            <label title="Ganesha Read_Access_Check_Policy. ACL primary omits (native pre); NOACL emits pre. TOML: read_access_policy.">Read Access Policy
+            <label title="Ganesha Read_Access_Check_Policy: NOACL shares always emit pre (post is normalized to pre); ACL opt-in shares omit unless set. TOML: read_access_policy.">Read Access Policy
                 <select name="share_read_access_policy_{{ row.idx }}" style="width:72px;margin-left:4px;">
                     <option value="auto" {% if row.read_access_policy == "auto" %}selected{% endif %}>auto</option>
                     <option value="pre" {% if row.read_access_policy == "pre" %}selected{% endif %}>pre</option>

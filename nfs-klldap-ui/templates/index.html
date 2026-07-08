@@ -102,7 +102,7 @@
 
 <script>
   // Wires share selection to the detached panel. Directory selection + panel behaviour live in
-  // permissions.js (base.html). currentShareName is shared on window so permissions.js can read it.
+  // the inline permissions script in base.html; currentShareName is shared on window so it can read it.
   window.currentShareName = null;
 
   function selectShare(name, nfsPath, hostPath, aclCapable) {
@@ -120,7 +120,7 @@
       });
   }
   function selectShareFromCard(card) {
-    // permissions.js blocks share switching while the panel is in edit / apply lock.
+    // the base.html permissions script blocks share switching while the panel is in edit / apply lock.
     if (window.permIsLocked && window.permIsLocked()) { if (window.permFlashLock) window.permFlashLock(); return; }
     if (card.dataset.hostPath)
       selectShare(card.dataset.name || '', card.dataset.nfsPath || '',

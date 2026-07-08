@@ -93,7 +93,7 @@ if grep -q '^root:' /var/lib/extrausers/passwd /var/lib/nfs-klldap/nss_passwd 2>
 fi
 if [ -f /etc/ganesha/ganesha.conf ]; then
     if grep -q 'UseGetpwnam = true' /etc/ganesha/ganesha.conf 2>/dev/null; then
-        echo "  OK: UseGetpwnam=true (getpwuid_r + getgrouplist via nss_wrapper; Manage_Gids=false skips AUTH_SYS only)"
+        echo "  OK: UseGetpwnam=true (getpwuid_r + getgrouplist via nss_wrapper; Manage_Gids defaults true, non-default false skips AUTH_SYS managed gids only)"
     elif grep -q 'UseGetpwnam = false' /etc/ganesha/ganesha.conf 2>/dev/null; then
         GANESHA_BIN="$(command -v ganesha.nfsd 2>/dev/null || true)"
         if [ -n "$GANESHA_BIN" ] && strings "$GANESHA_BIN" 2>/dev/null | grep -qi mspac; then

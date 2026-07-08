@@ -32,7 +32,7 @@ cache_profile = "Read - Heavy"
 "#;
 
 fn cargo_bin(name: &str) -> PathBuf {
-    if let Ok(p) = std::env::var(&format!("CARGO_BIN_EXE_{}", name.replace('-',"_"))) { return PathBuf::from(p); }
+    if let Ok(p) = std::env::var(format!("CARGO_BIN_EXE_{}", name.replace('-',"_"))) { return PathBuf::from(p); }
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/debug").join(name);
     assert!(p.is_file(), "bin {name} missing"); p
 }
@@ -53,7 +53,7 @@ fn representative_config_generate_twice_is_consistent() {
     let out = tmp.path().join("out"); fs::create_dir_all(out.join("e.d")).unwrap(); let ps = generation_paths(&out);
     generate_all(&cfg, &ps).expect("r1"); let g1=fs::read_to_string(&ps.ganesha_conf).unwrap();
     generate_all(&cfg, &ps).expect("r2"); let g2=fs::read_to_string(&ps.ganesha_conf).unwrap(); let i1=fs::read_to_string(&ps.idmap_conf).unwrap();
-    let fr = fs::read_dir(&ps.exports_dir).unwrap().filter_map(|e|e.ok()).find(|e|e.path().extension().map_or(false,|x|x=="conf")).map(|e|fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
+    let fr = fs::read_dir(&ps.exports_dir).unwrap().filter_map(|e|e.ok()).find(|e|e.path().extension().is_some_and(|x| x == "conf")).map(|e|fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
     assert!(fr.contains("Pseudo = /movies;") && fr.contains("Path = /export/NVME-RAID/movies;"));
     assert_eq!(g1,g2); assert_ganesha_96_compliant(&g1,&i1);
     let vs = nfs_keytab_host_variants("nfs-server.example.com");
@@ -70,7 +70,7 @@ fn representative_config_cli_generate_exit_zero() {
         assert!(o.status.success());
     }
     let g=fs::read_to_string(out.join("g")).unwrap(); let i=fs::read_to_string(out.join("i")).unwrap();
-    let fr=fs::read_dir(out.join("e.d")).unwrap().filter_map(|e|e.ok()).find(|e|e.path().extension().map_or(false,|x|x=="conf")).map(|e|fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
+    let fr=fs::read_dir(out.join("e.d")).unwrap().filter_map(|e|e.ok()).find(|e|e.path().extension().is_some_and(|x| x == "conf")).map(|e|fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
     assert!(fr.contains("Pseudo = /movies;") && fr.contains("Path = /export/NVME-RAID/movies;"));
     assert_ganesha_96_compliant(&g,&i);
 }

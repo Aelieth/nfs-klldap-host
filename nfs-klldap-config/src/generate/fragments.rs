@@ -46,10 +46,7 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
         let read_access_line = export_read_access_line(share, &caps);
         let eff = crate::compute_effective_flags(share, &caps);
         if eff.enable_acl {
-            // ACL was explicitly opted into. Warn loudly if the serve path does not look
-            // ACL-capable so the operator can stage onto an ACL-capable tree (source_path)
-            // or switch Ganesha builds instead of shipping an export that returns
-            // NFS4ERR_NOTSUPP. Authoritative check: scripts/verify-ganesha.sh.
+            // Warn loudly when opted-in ACL hits a non-capable serve path.
             let posix_acl = crate::serve_path_posix_acl_supported(Path::new(&path));
             if !caps.acl_capable || posix_acl == Some(false) {
                 eprintln!(

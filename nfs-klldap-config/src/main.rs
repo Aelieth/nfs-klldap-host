@@ -215,6 +215,7 @@ fn handle_fs_warnings(path: &Path) -> Result<(), ConfigError> {
 
 fn print_share_probe_line(cfg: &NfsKlldapConfig, s: &Share, dry_run: bool) {
     let serve = cfg.serve_path_for(s);
+    // Display fallback: unprobeable = quiet (generator emission fails safe to false instead).
     let caps = probe_fs_capabilities(Path::new(&serve)).unwrap_or_else(|_| FsCapabilities {
         fstype: "unknown".into(),
         mount_options: vec![],

@@ -860,7 +860,7 @@ mod root_snapshot_tests {
         // Drives real shipped build_nss_snapshot (UUT) with empty + populated cache; must emit exact root passwd+group so getgrouplist("root",0) succeeds (AC2).
         let empty: IdCache = IdCache::default();
         let (pw0, gr0) = build_nss_snapshot(&empty, None);
-        assert!(pw0.first().map_or(false, |l| l == "root:x:0:0:root:/root:/bin/sh"), "exact root passwd must lead even empty: {pw0:?}");
+        assert!(pw0.first().is_some_and(|l| l == "root:x:0:0:root:/root:/bin/sh"), "exact root passwd must lead even empty: {pw0:?}");
         assert!(gr0.iter().any(|l| l.starts_with("root:x:0:") && l.contains("root")), "root group must be present for getgrouplist root");
 
         // With a dynamic user, still force exact root first + its group.

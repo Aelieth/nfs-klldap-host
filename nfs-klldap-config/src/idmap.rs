@@ -35,6 +35,7 @@ pub fn sssd_resolver_inputs(ldap_uri: &str, sssd: &SssdSection, realm: &str) -> 
             kllldap_ignored_attributes: sssd.kllldap_ignored_attributes,
         },
         ldap_tls_reqcert: sssd.ldap_tls_reqcert.clone(),
+        ldap_tls_cacert: sssd.ldap_tls_cacert.clone(),
         ldap_id_use_start_tls: sssd.ldap_id_use_start_tls,
     }
 }

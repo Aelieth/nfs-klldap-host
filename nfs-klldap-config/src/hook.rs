@@ -133,3 +133,101 @@ fn run_hook_for_share(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg_with_share(source_path: Option<&str>) -> NfsKlldapConfig {
+        let mut cfg = NfsKlldapConfig {
+            ldap_uri: "ldaps://klldap.test:6360".into(),
+            sssd: crate::SssdSection {
+                ldap_default_bind_dn: "uid=a,ou=people,dc=x,dc=com".into(),
+                ldap_default_authtok: "s".into(),
+                ..Default::default()
+            },
+            shares: vec![crate::Share {
+                name: "media".into(),
+                host_path: "/media/data".into(),
+                container_path: "/export/media".into(),
+                source_path: source_path.map(str::to_string),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        cfg.validate_and_derive().expect("valid cfg");
+        cfg
+    }
+
+    fn write_env_dump_hook(dir: &Path, dump: &Path) -> std::path::PathBuf {
+        let hook = dir.join("hook.sh");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nenv | grep -E '^(SHARE_NAME|HOST_PATH|SOURCE_PATH|SERVE_PATH|CONTAINER_PATH|PSEUDO_PATH|EXPORT_PATH)=' | sort > {}\n",
+                dump.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        hook
+    }
+
+    #[test]
+    fn hook_env_carries_source_serve_split_and_pseudo_back_compat() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
+        std::env::remove_var("NFS_KLLDAP_POST_GENERATE_HOOK");
+        let tmp = tempfile::tempdir().unwrap();
+        let dump = tmp.path().join("env.dump");
+        let hook = write_env_dump_hook(tmp.path(), &dump);
+
+        let mut cfg = cfg_with_share(Some("/export/raid/media"));
+        cfg.ganesha.post_generate_hook = Some(hook.display().to_string());
+        run_post_generate_hooks(&cfg).expect("hook must run");
+
+        let env = std::fs::read_to_string(&dump).unwrap();
+        assert!(env.contains("SHARE_NAME=media"), "{env}");
+        assert!(env.contains("HOST_PATH=/media/data"), "{env}");
+        assert!(env.contains("SOURCE_PATH=/export/raid/media"), "{env}");
+        assert!(env.contains("SERVE_PATH=/export/media"), "{env}");
+        // Back-compat names: CONTAINER_PATH mirrors serve, EXPORT_PATH mirrors pseudo.
+        assert!(env.contains("CONTAINER_PATH=/export/media"), "{env}");
+        assert!(env.contains("PSEUDO_PATH=/media"), "{env}");
+        assert!(env.contains("EXPORT_PATH=/media"), "{env}");
+    }
+
+    #[test]
+    fn hook_source_defaults_to_serve_when_unset() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
+        std::env::remove_var("NFS_KLLDAP_POST_GENERATE_HOOK");
+        let tmp = tempfile::tempdir().unwrap();
+        let dump = tmp.path().join("env.dump");
+        let hook = write_env_dump_hook(tmp.path(), &dump);
+
+        let mut cfg = cfg_with_share(None);
+        cfg.ganesha.post_generate_hook = Some(hook.display().to_string());
+        run_post_generate_hooks(&cfg).expect("hook must run");
+
+        let env = std::fs::read_to_string(&dump).unwrap();
+        assert!(env.contains("SOURCE_PATH=/export/media"), "{env}");
+        assert!(env.contains("SERVE_PATH=/export/media"), "{env}");
+    }
+
+    #[test]
+    fn non_executable_hook_aborts_with_validation_error() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
+        std::env::remove_var("NFS_KLLDAP_POST_GENERATE_HOOK");
+        let tmp = tempfile::tempdir().unwrap();
+        let hook = tmp.path().join("not-exec.sh");
+        std::fs::write(&hook, "#!/bin/sh\ntrue\n").unwrap();
+
+        let mut cfg = cfg_with_share(None);
+        cfg.ganesha.post_generate_hook = Some(hook.display().to_string());
+        let err = run_post_generate_hooks(&cfg).expect_err("must reject non-executable hook");
+        assert!(err.to_string().contains("not executable"), "{err}");
+    }
+}

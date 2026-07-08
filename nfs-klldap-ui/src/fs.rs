@@ -547,7 +547,6 @@ mod tests {
         crate::config::Config {
             storage: nfs_klldap_config::StorageSection {
                 container_root: container_root.to_string(),
-                ..Default::default()
             },
             shares: vec![nfs_klldap_config::Share {
                 name: share_name.to_string(),

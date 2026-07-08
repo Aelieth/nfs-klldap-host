@@ -526,6 +526,8 @@ EXPORT_DEFAULTS {{
         CLIENTID = FULL_DEBUG;
         SESSIONS = FULL_DEBUG;
         IDMAPPER = FULL_DEBUG;
+        RPCSEC_GSS = FULL_DEBUG;
+        NFS_V4_ACL = DEBUG;
         NFS4 = DEBUG;
         DISPATCH = DEBUG;
         XPRT = DEBUG;

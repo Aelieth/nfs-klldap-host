@@ -1,0 +1,18 @@
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] nfs_rpc_process_request :DISP :DEBUG :Request from ::ffff:10.10.10.108 for Program 100003, Version 4, Function 1 has xid=411223344
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] nfs4_Compound :NFS4 :DEBUG :COMPOUND: There are 3 operations, res = 0x7f2c48011a20, tag = NO TAG
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] process_one_op :NFS4 :DEBUG :Request 0: opcode 53 is OP_SEQUENCE
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] complete_op :NFS4 :DEBUG :Status of OP_SEQUENCE in position 0 = NFS4_OK, op response size is 40 total response size is 76
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] process_one_op :NFS4 :DEBUG :Request 1: opcode 3 is OP_ACCESS
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] fsal_check_access :NFS4 ACL :DEBUG :access_mask = mode(0100) ACL(0x21) for obj 0x7f2c48012de0
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] fsal_check_access :NFS4 ACL :DEBUG :ACL check on noacl VFS tree failed with Operation not supported
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] complete_op :NFS4 :DEBUG :Status of OP_ACCESS in position 1 = NFS4ERR_NOTSUPP, op response size is 4 total response size is 80
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] nfs_rpc_process_request :DISP :DEBUG :Request from ::ffff:10.10.10.108 for Program 100003, Version 4, Function 1 has xid=411223345
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] nfs4_Compound :NFS4 :DEBUG :COMPOUND: There are 3 operations, res = 0x7f2c48013b40, tag = NO TAG
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] file_To_Fattr :NFS4 ACL :DEBUG :Permission check for ACL for obj 0x7f2c48012de0
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] file_To_Fattr :NFS4 ACL :DEBUG :Permission check for ACL for obj 0x7f2c48012de0 failed with Operation not supported
+06/07/2026 21:12:44 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_9] complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP, op response size is 4 total response size is 84
+06/07/2026 21:12:45 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_12] nfs_rpc_process_request :DISP :DEBUG :Request from ::ffff:10.10.10.108 for Program 100003, Version 4, Function 1 has xid=411223346
+06/07/2026 21:12:45 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_12] process_one_op :NFS4 :DEBUG :Request 1: opcode 9 is OP_GETATTR
+06/07/2026 21:12:45 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_12] file_To_Fattr :NFS4 ACL :DEBUG :No permission check for ACL for obj 0x7f2c48014c50
+06/07/2026 21:12:45 : epoch 6a4c9f31 : zima-nas : nfs-ganesha-241[svc_12] complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 1 = NFS4_OK, op response size is 92 total response size is 128

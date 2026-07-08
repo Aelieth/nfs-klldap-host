@@ -27,6 +27,7 @@ pub struct LdapResolverInputs {
     pub search_bases: LdapSearchBasesInput,
     pub posix_mapping: PosixMappingInput,
     pub ldap_tls_reqcert: Option<String>,
+    pub ldap_tls_cacert: Option<String>,
     pub ldap_id_use_start_tls: Option<bool>,
 }
 
@@ -38,6 +39,7 @@ pub struct IdLdapResolver {
     posix_attributes: PosixAttributeMapping,
     no_tls_verify: bool,
     start_tls: bool,
+    tls_cacert: Option<String>,
 
     user_cache: Mutex<HashMap<String, CachedUser>>,
     group_cache: Mutex<HashMap<String, CachedGroup>>,
@@ -118,6 +120,7 @@ impl IdLdapResolver {
         posix_attributes: PosixAttributeMapping,
         no_tls_verify: bool,
         start_tls: bool,
+        tls_cacert: Option<String>,
     ) -> Self {
         Self {
             ldap_uri: ldap_uri.to_string(),
@@ -126,6 +129,7 @@ impl IdLdapResolver {
             posix_attributes,
             no_tls_verify,
             start_tls,
+            tls_cacert,
             user_cache: Mutex::new(HashMap::new()),
             group_cache: Mutex::new(HashMap::new()),
             user_by_uid_cache: Mutex::new(HashMap::new()),
@@ -135,19 +139,18 @@ impl IdLdapResolver {
         }
     }
 
-    /// TLS: reqcert=never or ldaps:// without explicit policy disables verify.
+    /// TLS decisions delegate to the shared ldap_tls_policy (cacert-aware).
     pub fn from_inputs(inputs: &LdapResolverInputs) -> Self {
         let (user_base, group_base) =
             effective_ldap_search_bases(&inputs.search_bases, &inputs.realm);
         let attrs = resolve_posix_attribute_mapping(&inputs.posix_mapping);
 
-        let no_tls_verify = inputs
-            .ldap_tls_reqcert
-            .as_deref()
-            .map(|v| v.eq_ignore_ascii_case("never"))
-            .unwrap_or_else(|| inputs.ldap_uri.starts_with("ldaps://"));
-
-        let start_tls = inputs.ldap_id_use_start_tls.unwrap_or(false);
+        let (no_tls_verify, start_tls) = crate::ldap::tls::ldap_tls_policy(
+            &inputs.ldap_uri,
+            inputs.ldap_tls_reqcert.as_deref(),
+            inputs.ldap_tls_cacert.as_deref(),
+            inputs.ldap_id_use_start_tls,
+        );
 
         Self::new(
             &inputs.ldap_uri,
@@ -156,6 +159,7 @@ impl IdLdapResolver {
             attrs,
             no_tls_verify,
             start_tls,
+            inputs.ldap_tls_cacert.clone(),
         )
     }
 
@@ -201,14 +205,11 @@ impl IdLdapResolver {
     }
 
     fn build_conn_settings(&self) -> LdapConnSettings {
-        let mut s = LdapConnSettings::new();
-        if self.start_tls {
-            s = s.set_starttls(true);
-        }
-        if self.no_tls_verify {
-            s = s.set_no_tls_verify(true);
-        }
-        s
+        crate::ldap::tls::ldap_conn_settings(
+            self.no_tls_verify,
+            self.start_tls,
+            self.tls_cacert.as_deref(),
+        )
     }
 
     fn extract_first_attr(se: &SearchEntry, name: &str) -> Option<String> {
@@ -356,8 +357,8 @@ impl IdLdapResolver {
         }
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
-        // Test harness: TEST_REBULK_POPULATE seeds an authoritative snapshot; principals
-        // absent from cache after load_full are LDAP misses (no live directory round-trip).
+        // test-support: seeded snapshot is authoritative; cache miss = LDAP miss.
+        #[cfg(feature = "test-support")]
         if std::env::var("TEST_REBULK_POPULATE").is_ok() {
             return None;
         }
@@ -601,7 +602,8 @@ impl IdLdapResolver {
         }
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
-        // runtime test shim: for primary gid resolve in rebulk loop, seed group with LDAP display (so mat uses real name not private)
+        // test-support: seed primary-gid groups for the rebulk loop without live LDAP.
+        #[cfg(feature = "test-support")]
         if std::env::var("TEST_REBULK_POPULATE").is_ok() {
             let (name, disp) = if gid == 1001 { ("staff", "staff") } else if gid == 600 { ("oldgrp", "oldgrp") } else if gid == 500 { ("devs", "devs") } else { ("g", "g") };
             if name != "g" {
@@ -656,7 +658,8 @@ impl IdLdapResolver {
     }
 
     fn group_gid_from_dn(&self, group_dn: &str, bind_dn: &str, bind_pw: &str) -> Option<i32> {
-        // runtime shim (always compiled): return gid from TEST spec for GRPS memberOf path
+        // test-support: gid from the TEST spec for the GRPS memberOf path.
+        #[cfg(feature = "test-support")]
         if let Ok(spec) = std::env::var("TEST_REBULK_POPULATE") {
             for tok in spec.split(';') {
                 let f: Vec<&str> = tok.split(':').collect();
@@ -843,7 +846,8 @@ impl IdLdapResolver {
         bind_dn: &str,
         bind_pw: &str,
     ) -> Option<(String, Vec<String>)> {
-        // runtime shim (always compiled): drive memberOf for GRPS tests via env
+        // test-support: fixed memberOf answer for GRPS tests.
+        #[cfg(feature = "test-support")]
         if std::env::var("TEST_REBULK_POPULATE").is_ok() {
             return Some(("uid=test,ou=people".into(), vec!["cn=staff,ou=groups".into()]));
         }
@@ -930,17 +934,24 @@ impl IdLdapResolver {
         )
     }
 
+    /// (user, group) cache entry counts for UI stats display.
+    pub fn cache_entry_counts(&self) -> (usize, usize) {
+        (
+            self.user_cache.lock().unwrap().len(),
+            self.group_cache.lock().unwrap().len(),
+        )
+    }
+
     /// Preloads posix users and groups and indexes UPN aliases in caches.
     pub fn load_full_identities(&self, bind_dn: &str, bind_pw: &str) -> usize {
-        #[cfg(test)]
-        eprintln!("DEBUG load_full var={:?}", std::env::var("TEST_REBULK_POPULATE").ok());
         // Clear so removed groups/users are absent from snapshot (prune before reseed, like IdCache).
         self.user_cache.lock().unwrap().clear();
         self.user_by_uid_cache.lock().unwrap().clear();
         self.group_cache.lock().unwrap().clear();
         self.group_by_gid_cache.lock().unwrap().clear();
 
-        // runtime test shim (always compiled, gated by env): drive rebulk + primary loop w/o live LDAP
+        // test-support: drive rebulk + primary loop without live LDAP.
+        #[cfg(feature = "test-support")]
         if let Ok(spec) = std::env::var("TEST_REBULK_POPULATE") {
             let mut cnt = 0usize;
             for tok in spec.split(';') {
@@ -1180,16 +1191,6 @@ pub fn extract_first_attr_value(se: &SearchEntry, name: &str) -> Option<String> 
     IdLdapResolver::extract_first_attr(se, name)
 }
 
-/// Identity-crate groups API: resolve supplemental gids for a Kerberos principal.
-pub fn resolve_groups_for_principal(
-    resolver: &IdLdapResolver,
-    name_or_principal: &str,
-    bind_dn: &str,
-    bind_pw: &str,
-) -> Vec<i32> {
-    resolver.resolve_groups_for_principal(name_or_principal, bind_dn, bind_pw)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1227,7 +1228,7 @@ mod tests {
     #[test]
     fn resolve_groups_for_principal_host_blue_lt_returns_root_gid() {
         let r = IdLdapResolver::from_inputs(&LdapResolverInputs::default());
-        let gs = resolve_groups_for_principal(&r, "host/blue-lt@SATOMLIN.COM", "dn", "pw");
+        let gs = r.resolve_groups_for_principal("host/blue-lt@SATOMLIN.COM", "dn", "pw");
         assert_eq!(gs, vec![MACHINE_GID as i32]);
         assert!(!gs.contains(&(FALLBACK_NOBODY_GID as i32)));
     }
@@ -1258,12 +1259,14 @@ mod tests {
         assert_eq!(gids, vec![0, 3005, 3007]);
     }
 
+    // Runs when the workspace enables test-support (config dev-deps); skipped standalone.
+    #[cfg(feature = "test-support")]
     #[test]
     fn user_principal_groups_unchanged_via_ldap_shim() {
         std::env::set_var("TEST_REBULK_POPULATE", "u:testuser1:3001:100;g:staff:2002");
         let r = IdLdapResolver::from_inputs(&LdapResolverInputs::default());
         let _ = r.load_full_identities("dn", "pw");
-        let gs = resolve_groups_for_principal(&r, "testuser1@REALM", "dn", "pw");
+        let gs = r.resolve_groups_for_principal("testuser1@REALM", "dn", "pw");
         std::env::remove_var("TEST_REBULK_POPULATE");
         assert!(!gs.is_empty());
         assert!(gs.contains(&2002));

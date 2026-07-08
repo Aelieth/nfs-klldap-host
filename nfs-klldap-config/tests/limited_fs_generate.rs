@@ -149,10 +149,10 @@ fn generate_all_noacl_with_explicit_manage_gids_false_override() {
     let caps = FsCapabilities { fstype: "btrfs".into(), mount_options: vec!["noacl".into()], acl_capable: false };
     let eff = compute_effective_flags(&cfg.shares[0], &caps);
     assert!(!eff.enable_acl && !eff.manage_gids);
-    let out = t2.path().join("o"); fs::create_dir_all(&out.join("e.d")).unwrap();
+    let out = t2.path().join("o"); fs::create_dir_all(out.join("e.d")).unwrap();
     let ps = GenerationPaths { sssd_conf: out.join("s"), krb5_conf: out.join("k"), ganesha_conf: out.join("g"), exports_dir: out.join("e.d"), idmap_conf: out.join("i"), nfs_conf: out.join("n") };
     generate_all(&cfg, &ps).unwrap();
-    let gf = fs::read_dir(&ps.exports_dir).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().map_or(false,|x|x=="conf")).map(|e| fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
+    let gf = fs::read_dir(&ps.exports_dir).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().is_some_and(|x| x == "conf")).map(|e| fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
     assert!(gf.contains("Manage_Gids = false;"));
     let ws: Vec<_> = collect_fs_warnings(&cfg).into_iter().filter(|w| !w.acl_capable).collect();
     let w = ws.iter().find(|ww| ww.share_name == "users").unwrap();

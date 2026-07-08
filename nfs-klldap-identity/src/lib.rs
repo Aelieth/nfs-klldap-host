@@ -28,8 +28,9 @@ pub use krb5::{
 };
 pub use ldap::{
     effective_ldap_search_bases, escape_ldap_filter, extract_first_attr_value, IdLdapResolver,
-    IdMapSnapshot, LdapResolverInputs, LdapSearchBasesInput, machine_group_gids_for_principal,
-    machine_supplemental_gids_from_snapshot, PosixAttributeMapping, PosixGroupEntry,
-    PosixMappingInput, PosixUserEntry, resolve_groups_for_principal, resolve_posix_attribute_mapping,
+    IdMapSnapshot, ldap_conn_settings, ldap_tls_policy, LdapResolverInputs, LdapSearchBasesInput,
+    machine_group_gids_for_principal, machine_supplemental_gids_from_snapshot,
+    PosixAttributeMapping, PosixGroupEntry, PosixMappingInput, PosixUserEntry,
+    resolve_posix_attribute_mapping,
 };
 pub use nss::{parse_getent_group, parse_getent_passwd};

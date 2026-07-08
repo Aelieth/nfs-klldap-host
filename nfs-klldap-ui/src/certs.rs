@@ -325,6 +325,4 @@ fn read_san_metadata(cert_path: &Path) -> Option<Vec<String>> {
     }
 }
 
-#[cfg(test)]
-mod tests {}
 

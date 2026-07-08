@@ -9,3 +9,14 @@ description = "Minimal shared LDAP + Kerberos identity resolution for nfs-klldap
 
 [dependencies]
 ldap3 = { workspace = true, features = ["sync", "tls-rustls-ring"] }
+# Custom-CA verification for LDAPS (shared TLS policy in ldap::tls).
+rustls = { workspace = true }
+rustls-pemfile = "2.2"
+rustls-native-certs = "0.8"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+# Env-driven LDAP stubs (TEST_REBULK_POPULATE) for dependent crates' tests; never in release builds.
+test-support = []

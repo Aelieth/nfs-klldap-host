@@ -38,12 +38,12 @@ pub struct LdapClient {
     posix_attributes: PosixAttributeMapping,
     no_tls_verify: bool,
     start_tls: bool,
+    tls_cacert: Option<String>,
 
     // UI-only recent search caches (short TTL). Main POSIX caches delegated to identity_resolver.
     recent_user_searches: Mutex<HashMap<String, CachedSearch>>,
     recent_group_searches: Mutex<HashMap<String, CachedSearch>>,
     last_verified_memberofs: Mutex<Option<(String, Vec<String>, Instant)>>,
-    admin_group_dn: Mutex<Option<String>>,
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
     cache_clears: AtomicU64,
@@ -102,6 +102,7 @@ impl LdapClient {
         posix_attributes: PosixAttributeMapping,
         no_tls_verify: bool,
         start_tls: bool,
+        tls_cacert: Option<String>,
     ) -> Self {
         let identity_resolver = Arc::new(Mutex::new(IdLdapResolver::new(
             ldap_uri,
@@ -110,6 +111,7 @@ impl LdapClient {
             posix_attributes.clone(),
             no_tls_verify,
             start_tls,
+            tls_cacert.clone(),
         )));
         Self {
             ldap_uri: ldap_uri.to_string(),
@@ -122,10 +124,10 @@ impl LdapClient {
             posix_attributes,
             no_tls_verify,
             start_tls,
+            tls_cacert,
             recent_user_searches: Mutex::new(HashMap::new()),
             recent_group_searches: Mutex::new(HashMap::new()),
             last_verified_memberofs: Mutex::new(None),
-            admin_group_dn: Mutex::new(None),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
             cache_clears: AtomicU64::new(0),
@@ -142,6 +144,7 @@ impl LdapClient {
             self.posix_attributes.clone(),
             self.no_tls_verify,
             self.start_tls,
+            self.tls_cacert.clone(),
         )
     }
 
@@ -180,15 +183,12 @@ impl LdapClient {
     // Connection settings (sync ldap3).
 
     fn build_conn_settings(&self) -> LdapConnSettings {
-        let mut s = LdapConnSettings::new();
-        if self.start_tls {
-            s = s.set_starttls(true);
-        }
-        if self.no_tls_verify {
-            s = s.set_no_tls_verify(true);
-        }
-        // TLS provider is installed early at application startup (see.
-        s
+        // TLS provider is installed early at application startup (main.rs).
+        nfs_klldap_config::ldap_conn_settings(
+            self.no_tls_verify,
+            self.start_tls,
+            self.tls_cacert.as_deref(),
+        )
     }
 
     // These tests cover cache helpers (private). all callers must have.
@@ -248,7 +248,6 @@ impl LdapClient {
         self.recent_user_searches.lock().unwrap().clear();
         self.recent_group_searches.lock().unwrap().clear();
         *self.last_verified_memberofs.lock().unwrap() = None;
-        *self.admin_group_dn.lock().unwrap() = None;
         *self.identity_resolver.lock().unwrap() = self.build_identity_resolver();
         self.cache_clears.fetch_add(1, Ordering::Relaxed);
         *self.last_cache_clear.lock().unwrap() = Some(Instant::now());
@@ -257,10 +256,11 @@ impl LdapClient {
     pub fn cache_stats_summary(&self) -> LdapCacheStats {
         // Report resolver-backed counts + UI search recents only (after dedup). 1 sentence.
         let last_ago = self.last_cache_clear.lock().unwrap().map(|t| Instant::now().duration_since(t).as_secs());
-        let resolver_counts = if let Ok(_r) = self.identity_resolver.lock() {
-            // Snapshot sizes approximate; resolver internals private so use 0 for UI display simplicity post-merge.
-            (0usize, 0usize)
-        } else { (0,0) };
+        let resolver_counts = self
+            .identity_resolver
+            .lock()
+            .map(|r| r.cache_entry_counts())
+            .unwrap_or((0, 0));
         LdapCacheStats {
             user_entries: resolver_counts.0,
             group_entries: resolver_counts.1,
@@ -285,17 +285,6 @@ impl LdapClient {
         false
     }
 
-    async fn resolve_admin_group_dn(&self, admin_group_name: &str) -> Option<String> {
-        if let Some(dn) = &*self.admin_group_dn.lock().unwrap() {
-            return Some(dn.clone());
-        }
-        if let Some((_, _)) = self.resolve_group(admin_group_name).await {
-            // admin group dn via resolver lookup (group_cache removed).
-            if false { let _cached = (); *self.admin_group_dn.lock().unwrap() = Some(String::new()); return Some(String::new()); }
-        }
-        None
-    }
-
     async fn get_or_bind_service(&mut self) -> Result<(), LdapError> {
         // No-op for now (we use fresh connect+bind+op+unbind per call inside.
         if self.username.is_none() || self.password.is_none() {
@@ -307,10 +296,6 @@ impl LdapClient {
 
     fn user_filter_by_name(&self, name: &str) -> String {
         self.identity_resolver.lock().unwrap().user_filter_by_name(name)
-    }
-
-    fn group_filter_by_name(&self, name: &str) -> String {
-        self.identity_resolver.lock().unwrap().group_filter_by_name(name)
     }
 
     /// Strip permission-editor values like `Alice (1000)`.
@@ -453,7 +438,6 @@ impl LdapClient {
             .await?;
 
         let (uid, _, display) = resolved;
-        let _user = User { id: name.to_string(), display_name: Some(display.clone()), uid_number: Some(uid) };
         Some((uid, display))
     }
 
@@ -467,17 +451,10 @@ impl LdapClient {
     pub async fn resolve_group(&self, name: &str) -> Option<(i32, String)> {
         // Delegate to shared resolver (deduped cache). 1 sentence.
         let name_owned = name.to_string();
-        let filter = self.group_filter_by_name(name);
-        let group_base = self.group_base.clone();
-        let resolved = self
-            .with_identity(move |resolver, bind_dn, bind_pw| {
-                resolver.resolve_group(&name_owned, bind_dn, bind_pw)
-            })
-            .await?;
-
-        let (gid, display) = resolved;
-        let _dn = self.fetch_entry_dn(&group_base, &filter).await.unwrap_or_default();
-        Some((gid, display))
+        self.with_identity(move |resolver, bind_dn, bind_pw| {
+            resolver.resolve_group(&name_owned, bind_dn, bind_pw)
+        })
+        .await
     }
 
     /// Resolves uidNumber to a user name and fills caches via subtree search.
@@ -504,11 +481,6 @@ impl LdapClient {
             .await?;
 
         let (id, display) = resolved;
-        let _group = Group {
-            id: id.clone(),
-            display_name: Some(display.clone()),
-            gid_number: Some(gid),
-        };
         Some((id, display))
     }
 
@@ -723,13 +695,6 @@ impl LdapClient {
     }
 
     async fn user_is_member_of(&self, username: &str, group_name: &str) -> bool {
-        // Fast path: if we just verified this exact user use the memberOf.
-        if let Some(admin_dn) = self.resolve_admin_group_dn(group_name).await {
-            if self.has_recent_memberof(username, &admin_dn) {
-                return true;
-            }
-        }
-
         let group_name = group_name.to_string();
         let group_dn = match self
             .with_identity(move |resolver, bind_dn, bind_pw| {
@@ -824,5 +789,3 @@ mod list_search_tests {
     }
 }
 
-#[cfg(test)]
-mod tests {}

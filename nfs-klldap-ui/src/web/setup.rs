@@ -602,12 +602,6 @@ fn clear_step3_test(state: &super::AppState) {
     t.step3_pw = None;
 }
 
-/// Serves the legacy setup complete URL with the same restart poller as step3.
-pub async fn setup_complete(State(state): State<super::AppState>) -> impl IntoResponse {
-    let _ = super::settings::try_schedule_service_recycle(&state, "First-run setup complete").await;
-    super::settings::render_restarting_page().into_response()
-}
-
 fn run_bind_probe_blocking(
     config_path: &Path,
     dn: &str,
@@ -709,6 +703,33 @@ fn render_step3_error(
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_ldap_uri_requires_ldap_scheme_and_dns_hostname() {
+        assert_eq!(validate_ldap_uri(" ldaps://kl.example:6360 "), Ok("ldaps://kl.example:6360"));
+        assert!(validate_ldap_uri("ldap://kl.example").is_ok());
+        assert!(validate_ldap_uri("").is_err());
+        assert!(validate_ldap_uri("http://kl.example").is_err());
+        assert!(validate_ldap_uri("ldaps://10.0.0.5:636").is_err(), "IP hosts break Kerberos rDNS");
+    }
+
+    #[test]
+    fn step2_continue_requires_exact_tested_uri() {
+        assert!(step2_test_matches(Some("ldaps://kl:636"), " ldaps://kl:636 "));
+        assert!(!step2_test_matches(Some("ldaps://kl:636"), "ldaps://other:636"));
+        assert!(!step2_test_matches(None, "ldaps://kl:636"), "continue without a test must stall");
+    }
+
+    #[test]
+    fn step3_continue_requires_tested_dn_and_password_pair() {
+        let (dn, pw) = ("uid=admin,ou=people,dc=x,dc=com", "s3cret");
+        assert!(step3_test_matches(Some(dn), Some(pw), &format!(" {dn} "), pw));
+        assert!(!step3_test_matches(Some(dn), Some(pw), dn, "different"));
+        assert!(!step3_test_matches(None, Some(pw), dn, pw));
+        assert!(!step3_test_matches(Some(dn), None, dn, pw));
+    }
+}
 
 

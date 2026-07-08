@@ -241,6 +241,16 @@ fn acl_capable_from_mount(fstype: &str, options: &[String], mount_source: &str) 
 mod tests {
     use super::*;
 
+    #[test]
+    fn is_valid_umask_accepts_4_digit_octal_with_leading_zero_only() {
+        for ok in ["0022", "0027", "0777", " 0002 "] {
+            assert!(is_valid_umask(ok), "{ok}");
+        }
+        for bad in ["022", "999", "0088", "22", "", "00222", "umask"] {
+            assert!(!is_valid_umask(bad), "{bad}");
+        }
+    }
+
     const FIXTURE: &str = r#"
 36 35 0:59 / /export rw,relatime - btrfs /dev/sda1 rw,noacl
 37 36 0:60 / /export/movies rw,relatime - ext4 /dev/sdb1 rw

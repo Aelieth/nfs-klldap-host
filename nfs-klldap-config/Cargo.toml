@@ -39,5 +39,11 @@ nfs-klldap-identity = { path = "../nfs-klldap-identity" }
 nix = { workspace = true }
 signal-hook = { workspace = true }
 
+[features]
+# Env-driven LDAP stubs (TEST_REBULK_POPULATE) for tests incl. spawned idhelper; off in release.
+test-support = ["nfs-klldap-identity/test-support"]
+
 [dev-dependencies]
 tempfile = { workspace = true }
+# Self dev-dep turns test-support on for cargo test builds (lib + spawned bins).
+nfs-klldap-config = { path = ".", features = ["test-support"] }

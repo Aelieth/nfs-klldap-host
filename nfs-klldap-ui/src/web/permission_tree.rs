@@ -153,27 +153,31 @@ fn acl_capability_for_path(state: &AppState, host_path: &std::path::Path) -> (bo
         return (false, "Path is not under a configured share.".to_string());
     };
     let fs_limited = nfs_klldap_config::share_fs_acl_limited_with_mountinfo(&cfg, s, mountinfo);
-    let enabled = s.enable_acl == Some(true);
     let warn = nfs_klldap_config::share_fs_warning_message_with_mountinfo(&cfg, s, mountinfo)
         .unwrap_or_default();
-    acl_capability_decision(enabled, fs_limited, &warn)
+    acl_capability_decision(s.enable_acl, fs_limited, &warn)
 }
-/// Pure ACL-support decision: supported only when opted-in AND fs-capable; otherwise the reason
-/// distinguishes enable_acl=false from enable_acl=true-on-a-filesystem-that-cannot-honor-ACLs.
-fn acl_capability_decision(enabled: bool, fs_limited: bool, warn: &str) -> (bool, String) {
-    match (enabled, fs_limited) {
-        (true, false) => (true, String::new()),
-        (true, true) => (
+/// Pure ACL-support decision: supported only when opted-in AND fs-capable; the reason
+/// distinguishes explicit enable_acl=false, the NOACL default (unset), and enabled-but-limited-FS.
+fn acl_capability_decision(enable_acl: Option<bool>, fs_limited: bool, warn: &str) -> (bool, String) {
+    let with_warn = |mut msg: String| {
+        if fs_limited && !warn.is_empty() {
+            msg.push(' ');
+            msg.push_str(warn);
+        }
+        (false, msg)
+    };
+    match (enable_acl, fs_limited) {
+        (Some(true), false) => (true, String::new()),
+        (Some(true), true) => (
             false,
             format!("enable_acl = true, but the serve-path filesystem is not ACL-capable — treated as Non-ACL. {}", warn),
         ),
-        (false, false) => (
-            false,
+        (Some(false), _) => with_warn(
             "This share is exported without ACL support (enable_acl = false); ACL entries here are not honored by the NFS export.".to_string(),
         ),
-        (false, true) => (
-            false,
-            format!("Non-ACL: the serve-path filesystem is not ACL-capable. {}", warn),
+        (None, _) => with_warn(
+            "This share uses the NOACL default (ACL not opted in); ACL entries here are not honored by the NFS export.".to_string(),
         ),
     }
 }
@@ -988,13 +992,13 @@ mod acl_capability_tests {
 
     #[test]
     fn supported_only_when_enabled_and_fs_capable() {
-        let (ok, reason) = acl_capability_decision(true, false, "");
+        let (ok, reason) = acl_capability_decision(Some(true), false, "");
         assert!(ok && reason.is_empty(), "enable_acl + capable FS must be supported with no reason");
     }
 
     #[test]
     fn enabled_but_limited_fs_reverts_to_non_acl_with_reason() {
-        let (ok, reason) = acl_capability_decision(true, true, "share \"x\": vfat limited filesystem");
+        let (ok, reason) = acl_capability_decision(Some(true), true, "share \"x\": vfat limited filesystem");
         assert!(!ok, "enable_acl on a limited FS must NOT be supported");
         assert!(reason.contains("treated as Non-ACL"), "must explain the fallback: {reason}");
         assert!(reason.contains("limited filesystem"), "must surface the fs warning: {reason}");
@@ -1002,16 +1006,24 @@ mod acl_capability_tests {
 
     #[test]
     fn disabled_reports_enable_acl_false() {
-        let (ok, reason) = acl_capability_decision(false, false, "");
+        let (ok, reason) = acl_capability_decision(Some(false), false, "");
         assert!(!ok);
         assert!(reason.contains("enable_acl = false"), "reason must name enable_acl=false: {reason}");
     }
 
     #[test]
-    fn disabled_and_limited_is_non_acl() {
-        let (ok, reason) = acl_capability_decision(false, true, "share \"x\": ntfs limited filesystem");
+    fn unset_reports_noacl_default_not_false() {
+        let (ok, reason) = acl_capability_decision(None, false, "");
         assert!(!ok);
-        assert!(reason.contains("not ACL-capable"), "reason must cite the FS: {reason}");
+        assert!(reason.contains("NOACL default"), "auto must not claim enable_acl=false: {reason}");
+        assert!(!reason.contains("enable_acl = false"));
+    }
+
+    #[test]
+    fn disabled_and_limited_appends_fs_warning() {
+        let (ok, reason) = acl_capability_decision(Some(false), true, "share \"x\": ntfs limited filesystem");
+        assert!(!ok);
+        assert!(reason.contains("limited filesystem"), "reason must cite the FS warning: {reason}");
     }
 }
 

@@ -650,7 +650,7 @@ mod rebulk_ldap_users_tests {
         let paths = rebulk_paths_in(tmp.path());
         let cfgp = tmp.path().join("c.conf");
         std::fs::write(&cfgp, r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [sssd]
 ldap_default_bind_dn = "dummy"
 ldap_default_authtok = "sekret"
@@ -798,7 +798,7 @@ mod grps_socket_tests {
         std::fs::write(
             &conf,
             r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [kerberos]
 realm = "MISS.REALM"
 [sssd]

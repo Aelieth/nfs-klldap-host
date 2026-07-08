@@ -741,7 +741,7 @@ mod tests {
     use nfs_klldap_config::PosixUserEntry;
 
     const MINIMAL_TEST_NFS_CONFIG: &str = r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [kerberos]
 realm = "MISS.REALM"
 [sssd]

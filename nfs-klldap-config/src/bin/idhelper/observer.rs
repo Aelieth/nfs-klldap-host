@@ -676,7 +676,7 @@ mod managed_gids_log_tests {
         fs::write(
             &conf,
             r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
 ldap_default_authtok = "sekret"
@@ -717,7 +717,7 @@ manage_gids = false
         fs::write(
             &conf,
             r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
 ldap_default_authtok = "sekret"

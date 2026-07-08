@@ -85,7 +85,7 @@ See [docs/run/README.md](docs/run/README.md) for compose examples, env vars, TLS
 Sample generated `nfs-klldap.conf`:
 
 ```toml
-ldap_uri = "ldaps://kllap.example.com:6360"                     # LLDAP default secure port. 3890 for LLDAP unencrypted
+ldap_uri = "ldaps://klldap.example.com:6360"                     # LLDAP default secure port. 3890 for LLDAP unencrypted
 
 [storage]
 container_root = "/export"                                      # Anchor for Ganesha paths + UI container translation.
@@ -171,7 +171,7 @@ Example in compose:
 
 ```
 environment:
-  NFS_KLLDAP_LDAP_URI: ldaps://kllap.example.com:6360
+  NFS_KLLDAP_LDAP_URI: ldaps://klldap.example.com:6360
   NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN: uid=admin,ou=people,dc=example,dc=com
   NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK: "..."
   NFS_KLLDAP_KERBEROS_REALM: EXAMPLE.COM

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const COMPLETE_TOML: &str = r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [ganesha]
 post_generate_hook = "HOOK_PLACEHOLDER"
 [sssd]

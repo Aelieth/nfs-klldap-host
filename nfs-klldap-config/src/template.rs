@@ -26,7 +26,7 @@ pub fn generate_default_template() -> String {
 # Advanced users may insert 1:1 value overrides under respective section.
 # =============================================================================
 
-ldap_uri = "ldaps:// Kllap.example.com:6360"                     # Required - LLDAP default secur.
+ldap_uri = ""                                                  # Required - e.g. ldaps://klldap.example.com:6360 (DNS name, not an IP; 6360 is the LLDAP default LDAPS port)
 
 [storage]
 container_root = "/export"                                      # Required - Ganesha Path base. Each share also requires container_path (absolute path inside the container; maps to Ganesha EXPORT Path=). Example: bind /var/data:/export and host_path=/var/data/nvme-raid/users → container_path=/export/nvme-raid/users. pseudo_path (below) is only the client-visible NFSv4 Pseudo.
@@ -38,8 +38,8 @@ container_root = "/export"                                      # Required - Gan
 # hostname = "myhost.example.com"                               # Default - Optional override for keytab only. Recommended: docker run --uts=host
 
 [sssd]
-ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"  # Required - LDAP bind DN
-ldap_default_authtok = "strong-secret"                          # Required - LDAP bind password
+ldap_default_bind_dn = ""                                      # Required - LDAP bind DN, e.g. uid=admin,ou=people,dc=example,dc=com
+ldap_default_authtok = ""                                      # Required - LDAP bind password (your LLDAP admin secret)
 # ldap_user_search_base = "ou=people,dc=example,dc=com"          # Optional - defaults to dc=<realm> (Subtree)
 # ldap_group_search_base = "ou=people,dc=example,dc=com"        # Optional - defaults to dc=<realm> (Subtree)
 kllldap_ignored_attributes = true                               # KLLDAP specific - improves lookup time, prevents attribute spam

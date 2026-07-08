@@ -6,7 +6,7 @@ pub use nfs_klldap_config::NfsKlldapConfig as Config;
 
 fn minimal_default_config() -> Config {
     Config {
-        ldap_uri: "ldaps://kllap.example.com:6360".into(),
+        ldap_uri: "ldaps://klldap.example.com:6360".into(),
         sssd: nfs_klldap_config::SssdSection {
             ldap_default_bind_dn: "uid=admin,ou=people,dc=example,dc=com".into(),
             ldap_default_authtok: "SET_ME".into(),

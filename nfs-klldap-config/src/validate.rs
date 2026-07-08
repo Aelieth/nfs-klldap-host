@@ -160,7 +160,7 @@ impl NfsKlldapConfig {
         }
 
         if self.sssd.port.is_none() {
-            self.sssd.port = Some(if self.ldap_uri.starts_with("ldaps:// ") {
+            self.sssd.port = Some(if self.ldap_uri.starts_with("ldaps://") {
                 636
             } else {
                 389
@@ -452,7 +452,7 @@ impl NfsKlldapConfig {
     }
 
     /// Apply NFS_KLLDAP_* env overrides for core options (env wins)
-    fn apply_core_env_overrides(&mut self) {
+    pub(crate) fn apply_core_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("NFS_KLLDAP_LDAP_URI") {
             let t = v.trim();
             if !t.is_empty() {
@@ -600,7 +600,7 @@ mod container_path_validation_tests {
 
     fn minimal_cfg_with_share(share: Share) -> NfsKlldapConfig {
         NfsKlldapConfig {
-            ldap_uri: "ldaps://kllap.test:6360".into(),
+            ldap_uri: "ldaps://klldap.test:6360".into(),
             sssd: crate::SssdSection {
                 ldap_default_bind_dn: "uid=admin,ou=people,dc=test,dc=com".into(),
                 ldap_default_authtok: "sekret".into(),

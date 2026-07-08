@@ -8,7 +8,7 @@ use nfs_klldap_config::{classify_principal, generate_all, GenerationPaths, NfsKl
 use nfs_klldap_identity::nfs_keytab_host_variants;
 
 const REPRESENTATIVE_TOML: &str = r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 
 [storage]
 container_root = "/export"

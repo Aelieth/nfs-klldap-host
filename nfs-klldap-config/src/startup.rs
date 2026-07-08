@@ -367,25 +367,26 @@ pub fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
 }
 
 /// Wizard step from on-disk structure only (no live LDAP probes).
+///
+/// Gates on field *presence* + structural ldap_uri validity, not full validation.
+/// The first-run config is deliberately incomplete, so realm/ganesha/share validation
+/// (done by the strict `load`) must not run here — that belongs at service bring-up
+/// (`compute_startup_step`). Uses `load_unchecked` + env overrides to mirror the lenient
+/// loader the WebUI already relies on.
 pub fn compute_wizard_step(config_path: &Path) -> StartupStep {
     if !check_persistent_writable(config_path) {
         return StartupStep::WaitForPersistentVolume;
     }
 
-    let cfg = match NfsKlldapConfig::load(config_path) {
-        Ok(c) => c,
+    let cfg = match NfsKlldapConfig::load_unchecked(config_path) {
+        Ok(mut c) => {
+            c.apply_core_env_overrides();
+            c
+        }
         Err(_) => return StartupStep::SetLdapUri,
     };
 
-    // Lightweight id resolution check on startup path (objective: post-generate or startup in nfs-klldap-config)
-    {
-        let realm = cfg.effective_realm();
-        let hs = crate::get_consistent_hostname().map(|h| h.hostname.split('.').next().unwrap_or(&h.hostname).to_string()).unwrap_or_else(|_| "localhost".to_string());
-        let (ok, msg) = crate::check_idhelper_sample_resolutions(&realm, &hs);
-        crate::emit_idhelper_check_log(ok, &msg);
-    }
-
-    if cfg.ldap_uri.trim().is_empty() {
+    if !ldap_uri_is_structurally_valid(&cfg.ldap_uri) {
         return StartupStep::SetLdapUri;
     }
 
@@ -443,15 +444,22 @@ pub fn compute_startup_step(config_path: &Path) -> StartupStep {
     StartupStep::Ready
 }
 
-/// True when ldap_uri and SSSD bind fields are present and structurally valid.
-/// Does not probe LDAP reachability — used for pre-defined conf+keytab bypass.
-pub fn config_has_required_startup_fields(cfg: &NfsKlldapConfig) -> bool {
-    let uri = cfg.ldap_uri.trim();
+/// True when ldap_uri has a valid scheme (ldap://|ldaps://) and a non-IP DNS host.
+/// Structural only — does not derive the realm or probe reachability, so it never
+/// rejects a first-run URI just because the realm auto-derives to a placeholder.
+pub fn ldap_uri_is_structurally_valid(uri: &str) -> bool {
+    let uri = uri.trim();
     if uri.is_empty() || (!uri.starts_with("ldap://") && !uri.starts_with("ldaps://")) {
         return false;
     }
     let host = extract_host_from_uri(uri);
-    if host.is_empty() || host_is_ip(&host) {
+    !host.is_empty() && !host_is_ip(&host)
+}
+
+/// True when ldap_uri and SSSD bind fields are present and structurally valid.
+/// Does not probe LDAP reachability — used for pre-defined conf+keytab bypass.
+pub fn config_has_required_startup_fields(cfg: &NfsKlldapConfig) -> bool {
+    if !ldap_uri_is_structurally_valid(&cfg.ldap_uri) {
         return false;
     }
     if cfg.sssd.ldap_default_bind_dn.trim().is_empty()
@@ -678,7 +686,7 @@ mod tests {
     #[test]
     fn check_ldap_bind_rejects_empty_credentials_without_running_search() {
         let cfg = NfsKlldapConfig {
-            ldap_uri: "ldaps://kllap.test:6360".into(),
+            ldap_uri: "ldaps://klldap.test:6360".into(),
             sssd: crate::SssdSection {
                 ldap_default_bind_dn: String::new(),
                 ldap_default_authtok: String::new(),
@@ -691,7 +699,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let p = tmp.path().join("c.conf");
             let toml = r#"
-                ldap_uri = "ldaps://kllap.test:6360"
+                ldap_uri = "ldaps://klldap.test:6360"
                 [sssd]
                 ldap_default_bind_dn = ""
                 ldap_default_authtok = ""
@@ -707,7 +715,7 @@ mod tests {
 
     fn complete_preconf_toml() -> &'static str {
         r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
 ldap_default_authtok = "sekret"
@@ -799,6 +807,42 @@ ldap_default_authtok = "sekret"
         assert_eq!(compute_wizard_step(&path), StartupStep::Ready);
     }
 
+    /// Regression guard for the first-run stall: the default template must be free
+    /// of the refactor's `ldaps:// ` / `Kllap` corruption and land a fresh install on
+    /// step 2; then a valid ldap_uri whose realm auto-derives to the EXAMPLE.COM
+    /// placeholder (the exact trap) must advance to step 3 rather than bounce back —
+    /// the strict-`load` wizard gate this replaced pinned it to step 2.
+    #[test]
+    fn wizard_advances_past_step_two_and_template_is_uncorrupted() {
+        let tmpl = crate::generate_default_template();
+        assert!(
+            !tmpl.contains("ldaps:// ") && !tmpl.contains("Kllap"),
+            "default template must not carry the refactor's space/Kllap corruption"
+        );
+
+        let _persist = TestPersistentEnv::set();
+        let _env = TestCoreEnvClean::set();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nfs-klldap.conf");
+        let marker = tmp.path().join(".setup_wizard_done");
+        let _marker_env = TestSetupMarkerEnv::set(&marker);
+
+        // Fresh default template lands cleanly on step 2.
+        fs::write(&path, &tmpl).unwrap();
+        assert_eq!(compute_wizard_step(&path), StartupStep::SetLdapUri);
+
+        // Placeholder-realm host with full creds advances to step 3, not step 2.
+        fs::write(
+            &path,
+            "ldap_uri = \"ldaps://klldap.example.com:6360\"\n\
+             [sssd]\n\
+             ldap_default_bind_dn = \"uid=admin,ou=people,dc=example,dc=com\"\n\
+             ldap_default_authtok = \"secret\"\n",
+        )
+        .unwrap();
+        assert_eq!(compute_wizard_step(&path), StartupStep::AddBindCredentials);
+    }
+
     #[test]
     fn config_has_required_startup_fields_accepts_complete_config() {
         let tmp = tempfile::tempdir().unwrap();
@@ -811,7 +855,7 @@ ldap_default_authtok = "sekret"
     #[test]
     fn config_has_required_startup_fields_rejects_missing_bind() {
         let cfg = NfsKlldapConfig {
-            ldap_uri: "ldaps://kllap.test:6360".into(),
+            ldap_uri: "ldaps://klldap.test:6360".into(),
             sssd: crate::SssdSection {
                 ldap_default_bind_dn: String::new(),
                 ldap_default_authtok: String::new(),
@@ -923,7 +967,7 @@ ldap_default_authtok = "sekret"
     #[test]
     fn format_bind_probe_masks_password() {
         let cfg = NfsKlldapConfig {
-            ldap_uri: "ldaps://kllap.test:6360".into(),
+            ldap_uri: "ldaps://klldap.test:6360".into(),
             sssd: crate::SssdSection {
                 ldap_default_bind_dn: "uid=admin,dc=test".into(),
                 ldap_default_authtok: "sekret".into(),

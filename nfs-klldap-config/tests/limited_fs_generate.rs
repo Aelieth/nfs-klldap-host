@@ -11,7 +11,7 @@ use nfs_klldap_identity::nfs_keytab_host_variants;
 static MOUNTINFO_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 const LIMITED_TOML: &str = r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [storage]
 container_root = "/export"
 [sssd]
@@ -33,7 +33,7 @@ const MOUNTINFO_EXT4: &str = r#"
 "#;
 
 const NOACL_MANAGE_FALSE_TOML: &str = r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [storage]
 container_root = "/export"
 [sssd]
@@ -113,7 +113,7 @@ fn generate_all_capable_ext4_omits_limited_flags() {
     // ACL is opt-in: an ACL-capable ext4 share that explicitly enables ACL takes the ACL
     // path (no Disable_ACL, no auto-detect comment).
     let ext4_toml = r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [storage]
 container_root = "/export"
 [sssd]

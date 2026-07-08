@@ -16,7 +16,7 @@ pub fn extract_host_from_uri(uri: &str) -> String {
 }
 
 /// Derive a Kerberos realm from an ldap/ldaps URI host. Example:.
-/// Ldaps://kllap.example.com:6360 → "EXAMPLE.COM".
+/// ldaps://klldap.example.com:6360 → "EXAMPLE.COM".
 pub fn derive_realm_from_uri(uri: &str) -> Option<String> {
     let host = extract_host_from_uri(uri);
     if host.is_empty() {
@@ -42,8 +42,8 @@ mod tests {
     #[test]
     fn extract_host_ipv4_and_port() {
         assert_eq!(
-            extract_host_from_uri("ldaps://kllap.example.com:6360"),
-            "kllap.example.com"
+            extract_host_from_uri("ldaps://klldap.example.com:6360"),
+            "klldap.example.com"
         );
     }
 
@@ -58,7 +58,7 @@ mod tests {
     #[test]
     fn derive_realm_from_fqdn() {
         assert_eq!(
-            derive_realm_from_uri("ldaps://kllap.example.com:6360"),
+            derive_realm_from_uri("ldaps://klldap.example.com:6360"),
             Some("EXAMPLE.COM".into())
         );
     }

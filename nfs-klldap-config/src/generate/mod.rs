@@ -53,7 +53,7 @@ fn write_sssd_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "default".to_string());
 
-    let is_plain_ldap = cfg.ldap_uri.starts_with("ldap:// ");
+    let is_plain_ldap = cfg.ldap_uri.starts_with("ldap://");
     let auth_provider = cfg
         .sssd
         .auth_provider

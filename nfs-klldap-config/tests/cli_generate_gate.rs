@@ -7,7 +7,7 @@ use std::process::Command;
 use nfs_klldap_config::ganesha_96_has_mode_only_access_knob;
 
 const LIMITED_TOML: &str = r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [storage]
 container_root = "/export"
 [sssd]
@@ -74,7 +74,7 @@ fn cli_generate_gate_noacl_binary_twice_pseudo_in_scratch() {
 fn cli_generate_gate_mixed_acl_noacl_twice_in_scratch() {
     let sc = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
     let _ = fs::create_dir_all(&sc); let ed = sc.join("mix-e.d"); let _=fs::remove_dir_all(&ed); fs::create_dir_all(&ed).unwrap();
-    let mt = r#"ldap_uri = "ldaps://kllap.test:6360"
+    let mt = r#"ldap_uri = "ldaps://klldap.test:6360"
 [storage]
 container_root = "/export"
 [sssd]

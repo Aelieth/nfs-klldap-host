@@ -109,7 +109,7 @@ mod tests {
         fs::write(&krb5, b"[libdefaults]\n").unwrap();
         fs::write(&idmap, b"[General]\n").unwrap();
         let fp1 = fingerprint_identity_artifacts(&sssd, &krb5, &idmap);
-        fs::write(&sssd, b"[sssd]\nldap_uri = ldaps:// X\n").unwrap();
+        fs::write(&sssd, b"[sssd]\nldap_uri = ldaps://klldap.test:6360\n").unwrap();
         let fp2 = fingerprint_identity_artifacts(&sssd, &krb5, &idmap);
         assert_ne!(fp1, fp2);
     }

@@ -40,7 +40,7 @@ Edit [sssd] in `nfs-klldap.conf`. The generator writes `/etc/sssd/sssd.conf` wit
 ### Example `[sssd]` snippet
 
 ```toml
-ldap_uri = "ldaps://kllap.example.com:6360"
+ldap_uri = "ldaps://klldap.example.com:6360"
 
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"

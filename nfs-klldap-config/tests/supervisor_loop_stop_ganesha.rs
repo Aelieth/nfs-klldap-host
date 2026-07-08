@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 const COMPLETE_TOML: &str = r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
 ldap_default_authtok = "sekret"

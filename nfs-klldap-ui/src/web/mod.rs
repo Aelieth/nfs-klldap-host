@@ -228,7 +228,7 @@ mod tests {
         let mp = tmp.path().join("m"); std::fs::write(&mp, "24 1 8:1 / /data rw - ext4 /dev/sda1 rw,noacl\n").ok();
         let cp = tmp.path().join("c"); let sm = tmp.path().join(".s");
         std::fs::write(&sm, "ok\n").ok();
-        let min = r#"ldap_uri = "ldaps://kllap.test:6360"
+        let min = r#"ldap_uri = "ldaps://klldap.test:6360"
 [storage]
 container_root = "/"
 [sssd]
@@ -366,7 +366,7 @@ container_path = "/data"
         // Build minimal NfsKlldapConfig so the logical path is allowed and maps to our real dir for setfacl/getfacl.
         let cp = tmp.path().join("c");
         let min_cfg = format!(
-            r#"ldap_uri = "ldaps://kllap.test:6360"
+            r#"ldap_uri = "ldaps://klldap.test:6360"
 [storage]
 container_root = "{}"
 [sssd]

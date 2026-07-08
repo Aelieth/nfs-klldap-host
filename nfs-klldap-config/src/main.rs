@@ -1,7 +1,6 @@
 #![deny(unsafe_code, dead_code)]
 
-//! The nfs-klldap-config CLI provides init, generate, and val.
-//! The nfs-klldap-config CLI provides init, generate, and val.
+//! The nfs-klldap-config CLI provides init, generate, and validate.
 
 use std::env;
 use std::path::{Path, PathBuf};

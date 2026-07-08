@@ -11,7 +11,7 @@ use nfs_klldap_config::{
 static MOUNTINFO_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 const LIMITED_TOML: &str = r#"
-ldap_uri = "ldaps://kllap.test:6360"
+ldap_uri = "ldaps://klldap.test:6360"
 [storage]
 container_root = "/export"
 [sssd]

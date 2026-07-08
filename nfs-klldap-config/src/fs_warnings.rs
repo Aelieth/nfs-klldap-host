@@ -214,7 +214,7 @@ mod tests {
         )
         .unwrap();
         let mut cfg = NfsKlldapConfig {
-            ldap_uri: "ldaps:// Kllap.test:6360".into(),
+            ldap_uri: "ldaps://klldap.test:6360".into(),
             sssd: SssdSection {
                 ldap_default_bind_dn: "uid=a,ou=people,dc=x,dc=com".into(),
                 ldap_default_authtok: "s".into(),
@@ -249,7 +249,7 @@ mod tests {
         let _lock = crate::ENV_TEST_LOCK.lock().unwrap();
         std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");
         let mut cfg = NfsKlldapConfig {
-            ldap_uri: "ldaps:// Kllap.test:6360".into(),
+            ldap_uri: "ldaps://klldap.test:6360".into(),
             sssd: SssdSection {
                 ldap_default_bind_dn: "uid=a,ou=people,dc=x,dc=com".into(),
                 ldap_default_authtok: "s".into(),

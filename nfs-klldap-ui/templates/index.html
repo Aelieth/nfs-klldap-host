@@ -11,119 +11,129 @@
     {% endif %}
 </p>
 
-{% if shares.len() > 0 %}
-    <div class="shares-list" style="margin-bottom: 1.5rem;">
-        {% for share in shares %}
-            <div class="share-card"
-                 style="padding: 10px 14px; margin-bottom: 8px; border-radius: 6px; cursor: pointer;{% if share.warning.is_some() %} border: 1px solid var(--warning-amber-border, #c9a227);{% endif %}"
-                 data-name="{{ share.name }}"
-                 data-nfs-path="{{ share.nfs_path }}"
-                 data-host-path="{{ share.host_path }}"
-                 onclick="selectShareFromCard(this)">
-                {% if let Some(warn) = share.warning %}
-                <div class="alert alert-warning" style="margin: 0 0 6px 0; font-size: 0.78em; padding: 6px 8px;">
-                    {{ warn }}
-                </div>
-                {% endif %}
-                {% if share.acl_limited %}
-                <strong style="display:block;margin:0 0 6px 0;font-size:0.78em;color:var(--text-muted);">ACL support disabled.</strong>
-                {% endif %}
-                <strong>{{ share.name }}</strong>
-                <span style="margin-left: 0.85em; font-size: 0.76em; color: var(--text-muted); white-space: nowrap;">
-                    {{ share.access }} · {{ share.squash_label }} · {{ share.cache_profile }}
-                </span><br>
-                <small style="color: var(--text-muted); display: block; margin-top: 2px;">Pseudo: <code>{{ share.nfs_path }}</code></small>
-                <small style="color: var(--text-muted); display: block;">Host: <code>{{ share.host_path }}</code></small>
-            </div>
-        {% endfor %}
-    </div>
-{% else %}
-    <p style="color: var(--text-light);">No shares are configured, please add a share in System Settings</p>
-{% endif %}
-
-{# Exports generation moved to container (see web/ layer) #}
-{# <p><a href="/exports" style="font-weight:600;">→ Manage / Create Ganesha Exports (direct runtime control)</a></p> #}
-
-<h3 id="current-share-title" style="margin-top: 0.5rem;">Directory tree</h3>
-
-<div id="tree-root">
-    Loading tree...
+{# Legend: what the share-card / panel status dots mean. #}
+<div class="perm-legend">
+  <span class="lbl">Legend</span>
+  <span class="key"><span class="legend-dot acl"></span>ACL supported</span>
+  <span class="key"><span class="legend-dot noacl"></span>Non-ACL limited</span>
+  <span class="key"><span class="legend-dot editing"></span>Editing permissions</span>
 </div>
 
-<!-- Apply Log box: permanently attached bottom-right (fixed), shows last permission apply command+result.
-     Populated via hx-swap-oob from the /apply POST response and from /apply-progress polling.
-     Stays visible across share switches. The Cancel button on the right is normally muted;
-     it activates (red, clickable) only while an apply (rec or non-rec) is in flight. -->
-<div id="apply-status" class="apply-status" style="display:block;">
-    <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">
-      <span>Apply Log</span>
-      <button type="button" disabled class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--border); color:var(--text-light); opacity:0.6; border-radius:2px;">Cancel Apply</button>
+<div class="perm-layout">
+
+  {# ---- LEFT: shares + directory tree (adapt to viewport width) ---- #}
+  <div class="perm-side">
+    {% if shares.len() > 0 %}
+    <div class="shares-host">
+      {% for share in shares %}
+      <div class="share-card {% if !share.acl_capable %}noacl{% endif %}"
+           style="padding:8px 12px;border-radius:6px;cursor:pointer;"
+           data-name="{{ share.name }}" data-nfs-path="{{ share.nfs_path }}"
+           data-host-path="{{ share.host_path }}" data-acl="{% if share.acl_capable %}1{% else %}0{% endif %}"
+           onclick="selectShareFromCard(this)">
+        <div class="share-hd">
+          <span class="share-dot {% if share.acl_capable %}acl{% else %}noacl{% endif %}"
+                title="{% if share.acl_capable %}ACL supported{% else %}Non-ACL limited{% endif %}"></span>
+          <strong>{{ share.name }}</strong>
+        </div>
+        <div class="share-path"><code>{{ share.host_path }}</code></div>
+        <div class="share-chips">
+          <span class="share-chip">{{ share.access }}</span>
+          <span class="share-chip">{{ share.squash_label }}</span>
+          <span class="share-chip">cache: {{ share.cache_profile }}</span>
+          {% if let Some(warn) = share.warning %}
+          <span class="share-chip warn" title="{{ warn }}">{{ warn }}</span>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
     </div>
-    <div id="apply-status-content" class="apply-status-content"
-         style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
+    {% else %}
+    <p style="color:var(--text-light);">No shares are configured — add one in System Settings.</p>
+    {% endif %}
+
+    <h3 id="current-share-title" style="margin:.4rem 0 6px;font-size:.92em;">Directory tree</h3>
+    <div id="tree-root">Loading tree…</div>
+  </div>
+
+  {# ---- RIGHT: detached permissions panel + in-flow apply log ---- #}
+  <div class="perm-main">
+    <div id="perm-panel" class="perm-panel">
+      <div class="perm-head">
+        <div style="min-width:0">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="perm-title">Permissions</span>
+            <span class="perm-state">viewing</span>
+          </div>
+          <div class="perm-loc">
+            <span class="share-tag"><span class="share-lbl">Share</span>
+              <span class="perm-share"></span></span>
+            <code class="perm-path"></code>
+          </div>
+        </div>
+        <div class="perm-actions">
+          <label class="perm-recursive" style="display:none">
+            <input type="checkbox" class="rec-box" style="transform:scale(1.1)"> recursive
+          </label>
+          <button type="button" class="btn btn-edit"
+                  style="border-color:var(--accent);background:var(--accent-light);font-weight:600">Edit</button>
+          <button type="button" class="btn btn-cancel" style="display:none">Cancel</button>
+          <button type="button" class="btn btn-primary btn-apply" style="display:none">Apply</button>
+        </div>
+      </div>
+      {# Fragment body from /dir-perms is injected here (split on wide, stacked on narrow). #}
+      <div class="perm-body split"><em style="color:var(--text-light);font-size:.85em">Select a directory to view its permissions.</em></div>
+    </div>
+
+    {# Apply Log — in-flow below the panel. Markup matches render_apply_status_oob so oob swaps
+       replace it cleanly. Populated from /apply + /apply-progress polling (hx-swap-oob). #}
+    <div id="apply-status" class="apply-status" style="display:block;">
+      <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">
+        <span>Apply Log</span>
+        <button type="button" disabled class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--border); color:var(--text-light); opacity:0.6; border-radius:2px;">Cancel Apply</button>
+      </div>
+      <div id="apply-status-content" class="apply-status-content apply-log-content"
+           style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
         <em style="color:var(--text-light);">No permission applies yet.</em>
+      </div>
     </div>
+  </div>
 </div>
-
-<!-- Old separate permission panel removed by the inline tree meta refactor.
-     Ownership/permissions + Edit now appear directly under the selected directory row. -->
 
 <script>
-    let currentShareName = null;
+  // Wires share selection to the detached panel. Directory selection + panel behaviour live in
+  // permissions.js (base.html). currentShareName is shared on window so permissions.js can read it.
+  window.currentShareName = null;
 
-    function selectShare(name, nfsPath, hostPath) {
-        currentShareName = name;
-        document.getElementById('current-share-title').innerHTML =
-            'Directory tree for share <strong>' + name + '</strong> <small>(Pseudo: ' + nfsPath + ')</small>';
+  function selectShare(name, nfsPath, hostPath, aclCapable) {
+    window.currentShareName = name;
+    document.getElementById('current-share-title').innerHTML =
+      'Directory tree for share <strong>' + name + '</strong>';
+    document.querySelectorAll('.share-card').forEach(c =>
+      c.classList.toggle('active', c.dataset.name === name));
+    // Load the tree root; auto-select the root dir (which loads the panel via the .dir handler).
+    htmx.ajax('GET', '/tree?path=' + encodeURIComponent(hostPath) + '&root=true',
+      { target: '#tree-root', swap: 'innerHTML' }).then(() => {
+        const root = document.querySelector('#tree-root .root-dir, #tree-root .dir');
+        if (root && root.dataset.path)
+          root.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+  }
+  function selectShareFromCard(card) {
+    // permissions.js blocks share switching while the panel is in edit / apply lock.
+    if (window.permIsLocked && window.permIsLocked()) { if (window.permFlashLock) window.permFlashLock(); return; }
+    if (card.dataset.hostPath)
+      selectShare(card.dataset.name || '', card.dataset.nfsPath || '',
+                  card.dataset.hostPath || '', card.dataset.acl === '1');
+  }
 
-        // Load the share *root* as the top clickable row, with its direct children visible underneath.
-        // On completion, auto-select the root dir so the user immediately sees the inline
-        // Owner/Group/Permissions + Edit button (reliable, no timing guesswork).
-        htmx.ajax('GET', '/tree?path=' + encodeURIComponent(hostPath) + '&root=true', {
-            target: '#tree-root',
-            swap: 'innerHTML'
-        }).then(() => {
-            const rootDir = document.querySelector('#tree-root .root-dir, #tree-root .dir');
-            if (rootDir && rootDir.dataset.path) {
-                rootDir.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            }
-        });
-
-        // The new inline meta (Owner/Group/Perms + Edit) is loaded automatically by the
-        // .dir click handler when the user (or auto-select above) clicks a row.
-        // Apply Log stays visible (bottom-right) across share changes.
+  document.addEventListener('DOMContentLoaded', function () {
+    const first = document.querySelector('.share-card');
+    if (first && first.dataset.hostPath) selectShareFromCard(first);
+    else {
+      const root = document.getElementById('tree-root');
+      if (root) root.innerHTML = '<em>No shares are configured — add a share in System Settings.</em>';
     }
-
-    // Click handler for share cards (reads data-* attributes so paths with spaces/special
-    // chars are never interpolated raw into attributes or JS string literals).
-    function selectShareFromCard(card) {
-        const name = card.dataset.name || '';
-        const nfsPath = card.dataset.nfsPath || '';
-        const hostPath = card.dataset.hostPath || '';
-        if (hostPath) {
-            selectShare(name, nfsPath, hostPath);
-        }
-    }
-
-    // Initial load of the first share (if any). After the tree fragment lands, auto-select
-    // the root directory so the user immediately sees Owner/Group/Permissions + Edit button
-    // (per feedback). The 5min client meta cache (in base.html) will avoid re-fetch on
-    // quick re-visits.
-    document.addEventListener('DOMContentLoaded', function () {
-        const firstCard = document.querySelector('.share-card');
-        if (firstCard && firstCard.dataset.hostPath) {
-            selectShareFromCard(firstCard);
-            // Auto-select happens inside selectShare via .then() on the tree htmx load (reliable).
-        } else {
-            const root = document.getElementById('tree-root');
-            if (root) root.innerHTML = '<em>No shares are configured, please add a share in System Settings.</em>';
-        }
-    });
-
-    // Delegated click handler for .dir lives in base.html to avoid duplicate registration.
+  });
 </script>
-
-<style>
-    /* share-card hover is now defined in base.html using CSS vars for light/dark */
-</style>
 {% endblock %}

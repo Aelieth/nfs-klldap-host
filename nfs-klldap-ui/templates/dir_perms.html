@@ -1,0 +1,152 @@
+{# Panel body for the detached "Permissions" panel (GET /dir-perms?path=...).
+   Renders in VIEW mode (inputs disabled); permissions.js flips `disabled` off on Edit,
+   re-fetches this fragment on Cancel, and POSTs to the existing /apply (POSIX) and
+   /acl-apply (ACL) endpoints. Owner/Group carry live LLDAP search + a hidden numeric
+   uid/gid so name→id translation matches the old inline editor. #}
+
+{% if !meta_available %}
+<div class="acl-reason" style="margin-bottom:10px">{{ meta_hint }}</div>
+{% endif %}
+
+<form class="posix-sec" hx-post="/apply" hx-target="#perm-panel .perm-body" hx-swap="innerHTML">
+  <input type="hidden" name="path" value="{{ path }}">
+  <input type="hidden" name="owner_user_uid" value="{{ owner_uid_hidden }}">
+  <input type="hidden" name="owner_group_gid" value="{{ owner_gid_hidden }}">
+  {# permissions.js copies the header "recursive" checkbox into this before submit. #}
+  <input type="hidden" name="recursive" class="rec-field" value="false">
+
+  <div class="sec-title">POSIX permissions</div>
+
+  <div class="perm-owner-row">
+    <label style="position:relative">Owner
+      <input type="text" name="owner_user" class="p-owner" value="{{ owner_display }}"
+             hx-get="/users/search" hx-trigger="focus, click, input changed delay:220ms"
+             hx-target="#perm-user-suggestions" hx-swap="innerHTML"
+             hx-include="this" hx-params="owner_user"
+             placeholder="user or 0-60000" autocomplete="off" disabled>
+      <div id="perm-user-suggestions" class="suggestions" style="min-width:180px;"></div>
+    </label>
+    <label style="position:relative">Group
+      <input type="text" name="owner_group" class="p-group" value="{{ group_display }}"
+             hx-get="/groups/search" hx-trigger="focus, click, input changed delay:220ms"
+             hx-target="#perm-group-suggestions" hx-swap="innerHTML"
+             hx-include="this" hx-params="owner_group"
+             placeholder="group or 0-60000" autocomplete="off" disabled>
+      <div id="perm-group-suggestions" class="suggestions" style="min-width:180px;"></div>
+    </label>
+  </div>
+
+  <div style="font-size:.72em;color:var(--text-muted);margin-bottom:5px">Permission bits</div>
+  <div class="perm-matrix">
+    <div></div>
+    <div class="colhd">Read</div><div class="colhd">Write</div><div class="colhd">Exec</div>
+
+    <div class="rowhd">Owner</div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="4" {% if u_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="2" {% if u_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="1" {% if u_x %}checked{% endif %} disabled></div>
+
+    <div class="rowhd">Group</div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="4" {% if g_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="2" {% if g_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="1" {% if g_x %}checked{% endif %} disabled></div>
+
+    <div class="rowhd">Other</div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="4" {% if o_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="2" {% if o_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="1" {% if o_x %}checked{% endif %} disabled></div>
+  </div>
+
+  {# setgid + sticky are the only special bits meaningful on directory shares (setuid is omitted). #}
+  <div class="perm-special">
+    <label title="setgid: new files & subdirectories inherit this directory's group. Recommended for shared team shares.">
+      <input type="checkbox" class="sbit" data-special="2" {% if setgid %}checked{% endif %} disabled>
+      <span>setgid <span style="color:var(--text-light)">(inherit group)</span></span>
+    </label>
+    <label title="sticky bit: only the file owner (or root) may delete or rename entries. Useful for common drop / upload directories.">
+      <input type="checkbox" class="sbit" data-special="1" {% if sticky %}checked{% endif %} disabled>
+      <span>sticky <span style="color:var(--text-light)">(restrict delete)</span></span>
+    </label>
+  </div>
+
+  {# name="mode" is what /apply expects; permissions.js keeps it in sync with the checkboxes. #}
+  <input type="hidden" name="mode" class="mode-field" value="{{ mode_octal }}">
+  <div class="perm-readout">
+    <span class="lbl">Mode</span>
+    <span class="octal">{{ mode_octal }}</span>
+    <code class="symbolic"></code>{# filled by permissions.js from the octal #}
+  </div>
+</form>
+
+<div class="divider"></div>
+
+<div class="acl-sec {% if !acl_supported %}disabled{% endif %}" data-path="{{ path }}">
+  <div class="sec-title">ACL / xattr permissions
+    {% if acl_supported %}<span class="pill on">enabled</span>
+    {% else %}<span class="pill off">non-ACL limited</span>{% endif %}
+  </div>
+
+  {% if acl_supported %}
+  <div class="acl-note">Named NFSv4 ACL entries (live xattr).</div>
+  {% else %}
+  <div class="acl-reason">{{ acl_reason }}</div>
+  {% endif %}
+
+  <div class="acl-body">
+    {# Users group #}
+    <div class="acl-grp" data-grp="user">
+      <div class="acl-grp-head"><span class="acl-caret">&#9662;</span>Users
+        <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-light)">&middot; {{ users.len() }}</span>
+      </div>
+      <div class="acl-grp-rows">
+        {% for e in users %}
+        <div class="acl-row" data-type="user" data-id="{{ e.id }}">
+          <span class="who"><span class="kind user">U</span>{{ e.name }} <span class="id">({{ e.id }})</span></span>
+          <span class="rwx">
+            <label title="read"><input type="checkbox" class="abit" data-ch="r" {% if e.r %}checked{% endif %} disabled>r</label>
+            <label title="write"><input type="checkbox" class="abit" data-ch="w" {% if e.w %}checked{% endif %} disabled>w</label>
+            <label title="execute"><input type="checkbox" class="abit" data-ch="x" {% if e.x %}checked{% endif %} disabled>x</label>
+          </span>
+          <button type="button" class="acl-del" title="Remove entry" style="display:none">&#10005;</button>
+        </div>
+        {% endfor %}
+        <div class="acl-add" data-type="user" style="display:none;position:relative">
+          <input type="text" class="acl-add-name" placeholder="add user or id" autocomplete="off"
+                 style="flex:1;min-width:0;padding:2px 6px;font-size:.82em;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px">
+          <input type="text" class="acl-add-perms" value="r-x" size="3" title="rwx"
+                 style="width:42px;padding:2px 5px;font-size:.82em;font-family:ui-monospace,monospace;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px">
+          <button type="button" class="acl-add-btn btn">Add</button>
+          <div class="suggestions acl-sugg" style="min-width:160px"></div>
+        </div>
+      </div>
+    </div>
+
+    {# Groups group #}
+    <div class="acl-grp" data-grp="group">
+      <div class="acl-grp-head"><span class="acl-caret">&#9662;</span>Groups
+        <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-light)">&middot; {{ groups.len() }}</span>
+      </div>
+      <div class="acl-grp-rows">
+        {% for e in groups %}
+        <div class="acl-row" data-type="group" data-id="{{ e.id }}">
+          <span class="who"><span class="kind group">G</span>{{ e.name }} <span class="id">({{ e.id }})</span></span>
+          <span class="rwx">
+            <label title="read"><input type="checkbox" class="abit" data-ch="r" {% if e.r %}checked{% endif %} disabled>r</label>
+            <label title="write"><input type="checkbox" class="abit" data-ch="w" {% if e.w %}checked{% endif %} disabled>w</label>
+            <label title="execute"><input type="checkbox" class="abit" data-ch="x" {% if e.x %}checked{% endif %} disabled>x</label>
+          </span>
+          <button type="button" class="acl-del" title="Remove entry" style="display:none">&#10005;</button>
+        </div>
+        {% endfor %}
+        <div class="acl-add" data-type="group" style="display:none;position:relative">
+          <input type="text" class="acl-add-name" placeholder="add group or id" autocomplete="off"
+                 style="flex:1;min-width:0;padding:2px 6px;font-size:.82em;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px">
+          <input type="text" class="acl-add-perms" value="r-x" size="3" title="rwx"
+                 style="width:42px;padding:2px 5px;font-size:.82em;font-family:ui-monospace,monospace;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px">
+          <button type="button" class="acl-add-btn btn">Add</button>
+          <div class="suggestions acl-sugg" style="min-width:160px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

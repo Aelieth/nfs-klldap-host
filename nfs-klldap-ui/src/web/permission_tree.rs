@@ -54,37 +54,42 @@ struct ShareInfo {
     pub squash_label: String,
     pub cache_profile: String,
     pub warning: Option<String>,
-    pub acl_limited: bool,
-}
-#[derive(Template)]
-#[template(path = "dir_meta.html")]
-pub(crate) struct DirMetaTemplate {
-    pub(crate) path: String,
-    pub(crate) owner_display: String,
-    pub(crate) group_display: String,
-    pub(crate) mode_octal: String,
-    /// If true, the ACL Permissions button and panel edit controls should be disabled/hidden (noacl or limited FS).
-    pub(crate) acl_limited: bool,
+    /// True when the share actually serves ACLs (operator opted in via enable_acl AND the
+    /// serve-path filesystem can honor them). Drives the share-card status dot.
+    pub acl_capable: bool,
 }
 
+/// Panel body for the detached Permissions view (POSIX matrix + ACL/xattr), served by /dir-perms.
 #[derive(Template)]
-#[template(path = "dir_editor.html")]
-struct DirEditorTemplate {
+#[template(path = "dir_perms.html")]
+pub(crate) struct DirPermsTemplate {
     path: String,
-    owner_value: String,
-    group_value: String,
+    owner_display: String,
+    group_display: String,
     owner_uid_hidden: String,
     owner_gid_hidden: String,
-    mode_value: String,
-    recursive_checked: String,
+    mode_octal: String,
+    u_r: bool, u_w: bool, u_x: bool,
+    g_r: bool, g_w: bool, g_x: bool,
+    o_r: bool, o_w: bool, o_x: bool,
+    setgid: bool, sticky: bool,
+    /// False when the directory could not be stat'd; the template shows meta_hint and hides Apply.
+    meta_available: bool,
+    meta_hint: String,
+    acl_supported: bool,
+    acl_reason: String,
+    users: Vec<AclEntryView>,
+    groups: Vec<AclEntryView>,
 }
-#[derive(Template)]
-#[template(path = "acl_fragment.html")]
-pub(crate) struct AclFragmentTemplate {
-    path: String,
-    users_list: String,
-    groups_list: String,
-    acl_limited: bool,
+
+/// One named ACL row for the panel (friendly name already LDAP-resolved).
+#[derive(Clone)]
+pub(crate) struct AclEntryView {
+    name: String,
+    id: u32,
+    r: bool,
+    w: bool,
+    x: bool,
 }
 /// Friendly label for permission editor / meta row.
 /// Shows `display (uid)` when LDAP resolves.
@@ -116,27 +121,61 @@ async fn friendly_group_label(lldap: &Ldap, gid: u32) -> String {
     }
     gid.to_string()
 }
-/// Compute whether ACLs are limited for a host_path (logical) by finding owning share and using the probe.
-/// Prefers the most specific (longest host_path) matching share so nested shares can have independent ACL settings.
-fn acl_limited_for_path(state: &AppState, host_path: &std::path::Path) -> bool {
+/// Bare friendly name (no trailing "(id)") for ACL rows; falls back to the numeric id.
+async fn friendly_user_name(lldap: &Ldap, uid: u32) -> String {
+    if let Some((id, display)) = lldap.resolve_user_by_uid(uid as i32).await {
+        if !display.is_empty() && display != id { display } else { id }
+    } else {
+        uid.to_string()
+    }
+}
+async fn friendly_group_name(lldap: &Ldap, gid: u32) -> String {
+    if let Some((id, display)) = lldap.resolve_group_by_gid(gid as i32).await {
+        if !display.is_empty() && display != id { display } else { id }
+    } else {
+        gid.to_string()
+    }
+}
+/// (acl_supported, reason) for a host_path. ACLs are supported only when the owning share opted in
+/// (enable_acl = true) AND its serve-path filesystem can honor them; otherwise a reason explains the
+/// limited case (including enable_acl=true on a filesystem that cannot support it → treated Non-ACL).
+/// Prefers the most specific (longest host_path) matching share so nested shares stay independent.
+fn acl_capability_for_path(state: &AppState, host_path: &std::path::Path) -> (bool, String) {
     let cfg = state.config.read().expect("config lock poisoned");
     let mountinfo = state.fs_probe_mountinfo_path.as_deref();
-    let mut best: Option<(&nfs_klldap_config::Share, usize)> = None;
+    let best = cfg
+        .shares
+        .iter()
+        .filter(|s| host_path.starts_with(&s.host_path) || host_path == s.host_path.as_path())
+        .max_by_key(|s| s.host_path.as_os_str().len());
 
-    for s in &cfg.shares {
-        let hp = &s.host_path;
-        if host_path.starts_with(hp) || host_path == hp.as_path() {
-            let spec = hp.as_os_str().len();
-            if best.as_ref().is_none_or(|b| spec > b.1) {
-                best = Some((s, spec));
-            }
-        }
+    let Some(s) = best else {
+        return (false, "Path is not under a configured share.".to_string());
+    };
+    let fs_limited = nfs_klldap_config::share_fs_acl_limited_with_mountinfo(&cfg, s, mountinfo);
+    let enabled = s.enable_acl == Some(true);
+    let warn = nfs_klldap_config::share_fs_warning_message_with_mountinfo(&cfg, s, mountinfo)
+        .unwrap_or_default();
+    acl_capability_decision(enabled, fs_limited, &warn)
+}
+/// Pure ACL-support decision: supported only when opted-in AND fs-capable; otherwise the reason
+/// distinguishes enable_acl=false from enable_acl=true-on-a-filesystem-that-cannot-honor-ACLs.
+fn acl_capability_decision(enabled: bool, fs_limited: bool, warn: &str) -> (bool, String) {
+    match (enabled, fs_limited) {
+        (true, false) => (true, String::new()),
+        (true, true) => (
+            false,
+            format!("enable_acl = true, but the serve-path filesystem is not ACL-capable — treated as Non-ACL. {}", warn),
+        ),
+        (false, false) => (
+            false,
+            "This share is exported without ACL support (enable_acl = false); ACL entries here are not honored by the NFS export.".to_string(),
+        ),
+        (false, true) => (
+            false,
+            format!("Non-ACL: the serve-path filesystem is not ACL-capable. {}", warn),
+        ),
     }
-
-    if let Some((s, _)) = best {
-        return nfs_klldap_config::share_fs_acl_limited_with_mountinfo(&cfg, s, mountinfo);
-    }
-    false
 }
 
 #[derive(Deserialize)]
@@ -147,11 +186,7 @@ pub(crate) struct TreeParams {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct DirMetaParams {
-    path: String,
-}
-#[derive(Deserialize)]
-pub(crate) struct DirEditorParams {
+pub(crate) struct DirPermsQuery {
     path: String,
 }
 #[derive(Deserialize)]
@@ -201,10 +236,6 @@ pub(crate) struct ApplyForm {
     owner_group_gid: String,
 }
 #[derive(Deserialize)]
-pub(crate) struct AclListParams {
-    path: String,
-}
-#[derive(Deserialize)]
 pub(crate) struct AclApplyForm {
     path: String,
     #[serde(default)]
@@ -213,6 +244,9 @@ pub(crate) struct AclApplyForm {
     typ: String,
     #[serde(default)]
     id: String,
+    /// Optional principal name (or "name (id)") to resolve via LDAP when a numeric id is absent.
+    #[serde(default)]
+    name: String,
     #[serde(default)]
     perms: String,
     #[serde(default)]
@@ -267,11 +301,13 @@ pub(crate) async fn index(
                 &s.name,
             )
             .map(|w| w.display_message());
-            let acl_limited = nfs_klldap_config::share_fs_acl_limited_with_mountinfo(
+            let fs_limited = nfs_klldap_config::share_fs_acl_limited_with_mountinfo(
                 &cfg,
                 s,
                 state.fs_probe_mountinfo_path.as_deref(),
             );
+            // ACL-capable only when the operator opted in AND the serve-path FS can honor ACLs.
+            let acl_capable = s.enable_acl == Some(true) && !fs_limited;
             ShareInfo {
                 name: s.name.clone(),
                 nfs_path,
@@ -280,7 +316,7 @@ pub(crate) async fn index(
                 squash_label,
                 cache_profile,
                 warning,
-                acl_limited,
+                acl_capable,
             }
         })
         .collect();
@@ -385,155 +421,94 @@ pub(crate) async fn fs_children(
     Ok(Html(tpl.render().unwrap()))
 }
 
-pub(crate) async fn dir_meta(
+// GET /dir-perms?path=... — panel body: POSIX (owner/group + rwx matrix + setgid/sticky) and the
+// named ACL list, both LDAP-resolved. Replaces the retired /dir-meta + /dir-editor + /dir-acl trio.
+pub(crate) async fn dir_perms(
     State(state): State<AppState>,
-    Query(params): Query<DirMetaParams>,
+    Query(q): Query<DirPermsQuery>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
-
-    let path = params.path;
+    let path = q.path;
     let host = std::path::Path::new(&path);
     let (meta, diag) = {
         let fs = state.fs.read().expect("fs lock poisoned");
         (fs.get_dir_meta(host), fs.diagnose_path(host))
     };
-    let (owner_display, group_display, mode_octal) = if let Some((owner, group, mode)) = meta {
+
+    let mut owner_display = "(unavailable)".to_string();
+    let mut group_display = "(unavailable)".to_string();
+    let mut owner_uid_hidden = String::new();
+    let mut owner_gid_hidden = String::new();
+    let mut mode_octal = "0755".to_string();
+    let (mut u_r, mut u_w, mut u_x) = (false, false, false);
+    let (mut g_r, mut g_w, mut g_x) = (false, false, false);
+    let (mut o_r, mut o_w, mut o_x) = (false, false, false);
+    let (mut setgid, mut sticky) = (false, false);
+    let mut meta_available = false;
+    let mut meta_hint = String::new();
+
+    if let Some((owner, group, mode)) = meta {
         let l = state.lldap.lock().await;
-        (
-            friendly_user_label(&l, owner).await,
-            friendly_group_label(&l, group).await,
-            format!("{:o}", mode),
-        )
+        owner_display = friendly_user_label(&l, owner).await;
+        group_display = friendly_group_label(&l, group).await;
+        drop(l);
+        owner_uid_hidden = if owner > 0 { owner.to_string() } else { String::new() };
+        owner_gid_hidden = if group > 0 { group.to_string() } else { String::new() };
+        mode_octal = format!("{:04o}", mode & 0o7777);
+        u_r = mode & 0o400 != 0; u_w = mode & 0o200 != 0; u_x = mode & 0o100 != 0;
+        g_r = mode & 0o040 != 0; g_w = mode & 0o020 != 0; g_x = mode & 0o010 != 0;
+        o_r = mode & 0o004 != 0; o_w = mode & 0o002 != 0; o_x = mode & 0o001 != 0;
+        setgid = mode & 0o2000 != 0; sticky = mode & 0o1000 != 0;
+        meta_available = true;
     } else {
-        let safe_serve = diag
-            .serve_path
-            .replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;");
-        let exists = if diag.container_exists { "yes" } else { "no" };
-        let hint = if !diag.container_exists {
-            format!(
-                "Serve path <code>{safe_serve}</code> missing (exists={exists}). \
-                 Set <code>container_path</code> to the directory inside the container where this share is bind-mounted \
-                 (e.g. <code>/export/nvme-raid/users</code> when using <code>/var/data:/export</code>)."
-            )
+        // Askama escapes {{ meta_hint }}, so keep it plain text (no manual HTML escaping).
+        meta_hint = if !diag.container_exists {
+            format!("Serve path {} is missing — set container_path to the directory inside the container where this share is bind-mounted.", diag.serve_path)
         } else {
-            format!("Serve path <code>{safe_serve}</code> exists but metadata could not be read.")
+            format!("Serve path {} exists but its metadata could not be read (permissions?).", diag.serve_path)
         };
-        (
-            "(unavailable)".into(),
-            "(unavailable)".into(),
-            format!("<span style=\"color:var(--danger-text);font-size:0.9em;\">{hint}</span>"),
-        )
-    };
+    }
 
-    let acl_limited = acl_limited_for_path(&state, std::path::Path::new(&path));
-    let tpl = DirMetaTemplate {
-        path: path.clone(),
-        owner_display,
-        group_display,
-        mode_octal,
-        acl_limited,
-    };
-    Ok(Html(tpl.render().unwrap()))
-}
-pub(crate) async fn acl_list(
-    State(state): State<AppState>,
-    Query(params): Query<AclListParams>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse, Redirect> {
-    let _user = require_auth(&state, &headers).await?;
+    let (acl_supported, acl_reason) = acl_capability_for_path(&state, host);
 
-    let path = params.path;
+    // Named ACL entries are always listed (resolved to friendly names); the section greys when unsupported.
     let entries = {
         let fs = state.fs.read().expect("fs lock poisoned");
-        fs.get_dir_acl(std::path::Path::new(&path))
-            .unwrap_or_default()
+        fs.get_dir_acl(host).unwrap_or_default()
     };
-    let l = state.lldap.lock().await;
-    let mut users = String::new();
-    let mut groups = String::new();
-    for e in entries {
-        let (label, id_str, is_u) = match e.kind {
-            crate::privileged::AclEntryKind::User(uid) => {
-                let lab = friendly_user_label(&l, uid).await;
-                (lab, uid.to_string(), true)
+    let mut users: Vec<AclEntryView> = Vec::new();
+    let mut groups: Vec<AclEntryView> = Vec::new();
+    {
+        let l = state.lldap.lock().await;
+        for e in entries {
+            match e.kind {
+                crate::privileged::AclEntryKind::User(uid) => users.push(AclEntryView {
+                    name: friendly_user_name(&l, uid).await, id: uid, r: e.perms.r, w: e.perms.w, x: e.perms.x,
+                }),
+                crate::privileged::AclEntryKind::Group(gid) => groups.push(AclEntryView {
+                    name: friendly_group_name(&l, gid).await, id: gid, r: e.perms.r, w: e.perms.w, x: e.perms.x,
+                }),
             }
-            crate::privileged::AclEntryKind::Group(gid) => {
-                let lab = friendly_group_label(&l, gid).await;
-                (lab, gid.to_string(), false)
-            }
-        };
-        let p = e.perms.to_str();
-        let safe_label = label.replace('&', "&amp;").replace('<', "&lt;");
-        let row = format!(
-            r#"<div class="acl-item" data-id="{}" data-perms="{}" title="{} {} (click in edit modes to select)">{} <code style="font-size:0.95em">{}</code></div>"#,
-            id_str, p,
-            if is_u { "user" } else { "group" }, id_str,
-            safe_label, p
-        );
-        if is_u {
-            users.push_str(&row);
-        } else {
-            groups.push_str(&row);
         }
     }
-    if users.is_empty() {
-        users = r#"<em style="color:var(--text-light);font-size:0.9em;">(none)</em>"#.to_string();
-    }
-    if groups.is_empty() {
-        groups = r#"<em style="color:var(--text-light);font-size:0.9em;">(none)</em>"#.to_string();
-    }
-    let acl_limited = acl_limited_for_path(&state, std::path::Path::new(&path));
-    let tpl = AclFragmentTemplate {
+
+    let tpl = DirPermsTemplate {
         path,
-        users_list: users,
-        groups_list: groups,
-        acl_limited,
-    };
-    Ok(Html(tpl.render().unwrap()))
-}
-pub(crate) async fn dir_editor(
-    State(state): State<AppState>,
-    Query(params): Query<DirEditorParams>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse, Redirect> {
-    let _user = require_auth(&state, &headers).await?;
-
-    let path = params.path;
-
-    let meta = {
-        let fs = state.fs.read().expect("fs lock poisoned");
-        fs.get_dir_meta(std::path::Path::new(&path))
-    };
-    let (owner_value, group_value, owner_uid_hidden, owner_gid_hidden, mode_value) =
-        if let Some((owner, group, mode)) = meta {
-            let l = state.lldap.lock().await;
-            let owner_label = friendly_user_label(&l, owner).await;
-            let group_label = friendly_group_label(&l, group).await;
-            let uid_h = if owner > 0 { owner.to_string() } else { String::new() };
-            let gid_h = if group > 0 { group.to_string() } else { String::new() };
-            (owner_label, group_label, uid_h, gid_h, format!("{:o}", mode))
-        } else {
-            (
-                "1000".into(),
-                "1000".into(),
-                "1000".into(),
-                "1000".into(),
-                "755".into(),
-            )
-        };
-    let tpl = DirEditorTemplate {
-        path: path.clone(),
-        owner_value,
-        group_value,
+        owner_display,
+        group_display,
         owner_uid_hidden,
         owner_gid_hidden,
-        mode_value,
-        recursive_checked: String::new(),
+        mode_octal,
+        u_r, u_w, u_x, g_r, g_w, g_x, o_r, o_w, o_x,
+        setgid, sticky,
+        meta_available,
+        meta_hint,
+        acl_supported,
+        acl_reason,
+        users,
+        groups,
     };
-
     Ok(Html(tpl.render().unwrap()))
 }
 pub(crate) async fn search_users(
@@ -630,7 +605,7 @@ pub(crate) async fn apply_permissions(
                     let html = format!(
                         r#"<div class="alert alert-danger" style="font-size:0.85em; padding:4px;">
                             Could not find user <strong>{}</strong> in LLDAP (or invalid number).
-                            <button type="button" hx-get="/dir-editor?path={}" hx-target="closest .dir-meta" hx-swap="innerHTML">Retry</button>
+                            <button type="button" hx-get="/dir-perms?path={}" hx-target=".perm-body" hx-swap="innerHTML">Retry</button>
                         </div>"#,
                         form.owner_user,
                         urlencoding::encode(&form.path)
@@ -646,7 +621,7 @@ pub(crate) async fn apply_permissions(
                     let html = format!(
                         r#"<div class="alert alert-danger" style="font-size:0.85em; padding:4px;">
                             Could not find group <strong>{}</strong> in LLDAP (or invalid number).
-                            <button type="button" hx-get="/dir-editor?path={}" hx-target="closest .dir-meta" hx-swap="innerHTML">Retry</button>
+                            <button type="button" hx-get="/dir-perms?path={}" hx-target=".perm-body" hx-swap="innerHTML">Retry</button>
                         </div>"#,
                         form.owner_group,
                         urlencoding::encode(&form.path)
@@ -777,11 +752,14 @@ pub(crate) async fn apply_permissions(
         }
         prog.finished.store(true, Ordering::Relaxed);
     });
+    // Lands in #perm-panel .perm-body; the poller drives the Apply Log and, on finish, permissions.js
+    // refetches /dir-perms for this data-path. data-attrs are the coordination points for the client.
+    let safe_path = form.path.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
     let placeholder = format!(
-        r#"<div class="dir-meta-inner" data-path="{}" data-applying="1">
-    <span style="color:var(--warning-text);">⏳ Applying permissions — see Apply Log for progress. Tree navigation locked until complete.</span>
+        r#"<div class="perm-applying" data-path="{}" data-applying="1" style="padding:10px 4px;">
+    <span style="color:var(--warning-amber-text);">⏳ Applying permissions — see the Apply Log below. Navigation locked until complete.</span>
 </div>"#,
-        form.path
+        safe_path
     );
 
     let status_html = render_apply_status_oob(&cmd, "Stand-by, estimating total... (live updates below)", true);
@@ -801,7 +779,7 @@ fn render_apply_status_oob(cmd: &str, result_or_live: &str, active_cancel: bool)
       <span>Apply Log</span>
       {cancel_btn}
     </div>
-    <div class="apply-status-content"
+    <div id="apply-status-content" class="apply-status-content apply-log-content"
          style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
 <strong>Command</strong>
 {cmd}
@@ -853,7 +831,7 @@ pub(crate) async fn apply_progress(
       <span>Apply Log</span>
       <button type="button" disabled class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--border); color:var(--text-light); opacity:0.6; border-radius:2px;">Cancel Apply</button>
     </div>
-    <div class="apply-status-content" style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
+    <div id="apply-status-content" class="apply-status-content apply-log-content" style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
 <em style="color:var(--text-light);">No permission apply in progress.</em>
     </div>
 </div>"#.to_string()
@@ -883,7 +861,7 @@ pub(crate) async fn acl_apply(
     let typ = form.typ.trim().to_lowercase();
     let is_user = typ == "user" || typ == "u";
 
-    let id: u32 = form.id.trim().parse().or_else(|_| {
+    let mut id: u32 = form.id.trim().parse().or_else(|_| {
         if let Some(first) = form.selected.split(',').next() {
             if let Some(num) = first.split(':').next_back() {
                 return num.trim().parse();
@@ -891,9 +869,22 @@ pub(crate) async fn acl_apply(
         }
         Ok(0u32)
     }).unwrap_or(0);
+    // No numeric id but a typed principal name: resolve it via LDAP (same name translation as POSIX).
+    if id == 0 && op != "delete" && !form.name.trim().is_empty() {
+        if let Some(stripped) = crate::ldap::LdapClient::normalize_editor_search_query(Some(&form.name)) {
+            let lldap = state.lldap.lock().await;
+            if let Ok(n) = stripped.parse::<u32>() {
+                id = n;
+            } else if is_user {
+                if let Some((uid, _)) = lldap.resolve_user(&stripped).await { id = uid as u32; }
+            } else if let Some((gid, _)) = lldap.resolve_group(&stripped).await {
+                id = gid as u32;
+            }
+        }
+    }
     if id == 0 && op != "delete" {
-        let fb = r#"<div style="color:var(--danger-text);font-size:0.7em;">Invalid principal id</div>"#.to_string();
-        return Ok(Html(format!("{}\n{}", fb, render_apply_status_oob("acl: invalid id", "error", false))));
+        let fb = r#"<div style="color:var(--danger-text);font-size:0.7em;">Could not resolve that user/group (unknown name or invalid id).</div>"#.to_string();
+        return Ok(Html(format!("{}\n{}", fb, render_apply_status_oob("acl: unresolved principal", "error", false))));
     }
     let kind = if is_user {
         crate::privileged::AclEntryKind::User(id)
@@ -989,6 +980,39 @@ pub(crate) async fn acl_apply(
     );
     let oob = render_apply_status_oob(&cmd, "Stand-by (ACL op)...", true);
     Ok(Html(format!("{}\n{}", fb, oob)))
+}
+
+#[cfg(test)]
+mod acl_capability_tests {
+    use super::acl_capability_decision;
+
+    #[test]
+    fn supported_only_when_enabled_and_fs_capable() {
+        let (ok, reason) = acl_capability_decision(true, false, "");
+        assert!(ok && reason.is_empty(), "enable_acl + capable FS must be supported with no reason");
+    }
+
+    #[test]
+    fn enabled_but_limited_fs_reverts_to_non_acl_with_reason() {
+        let (ok, reason) = acl_capability_decision(true, true, "share \"x\": vfat limited filesystem");
+        assert!(!ok, "enable_acl on a limited FS must NOT be supported");
+        assert!(reason.contains("treated as Non-ACL"), "must explain the fallback: {reason}");
+        assert!(reason.contains("limited filesystem"), "must surface the fs warning: {reason}");
+    }
+
+    #[test]
+    fn disabled_reports_enable_acl_false() {
+        let (ok, reason) = acl_capability_decision(false, false, "");
+        assert!(!ok);
+        assert!(reason.contains("enable_acl = false"), "reason must name enable_acl=false: {reason}");
+    }
+
+    #[test]
+    fn disabled_and_limited_is_non_acl() {
+        let (ok, reason) = acl_capability_decision(false, true, "share \"x\": ntfs limited filesystem");
+        assert!(!ok);
+        assert!(reason.contains("not ACL-capable"), "reason must cite the FS: {reason}");
+    }
 }
 
 #[cfg(test)]

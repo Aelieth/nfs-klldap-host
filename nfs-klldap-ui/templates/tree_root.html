@@ -1,6 +1,7 @@
 {# Renders a directory as the top-level "root" row in the tree view.
    Used for the initial load of a share so the share root itself is a visible,
-   clickable item for permission management (owners + mode from LLDAP + FS).
+   clickable item. Clicking a .dir loads its permissions into the detached panel
+   (#perm-panel) and expands its children (see permissions.js).
 #}
 <ul class="tree">
   <li>
@@ -9,8 +10,6 @@
           style="cursor: pointer; user-select: none; font-weight: 600;">
       ▶ {{ root.name }}
     </span>
-    <!-- Stable placeholder for selected-dir meta on the share root itself. -->
-    <div class="dir-meta" data-path="{{ root.path }}" style="display:none;"></div>
     <div class="children" style="margin-left: 1.5em;" data-loaded="true">
       {# Direct children of the root (pre-rendered for the initial view).
          data-loaded avoids redundant fetch on expand. #}
@@ -22,7 +21,6 @@
                 style="cursor: pointer; user-select: none;">
             ▶ {{ child.name }}
           </span>
-          <div class="dir-meta" data-path="{{ child.path }}" style="display:none;"></div>
           <div class="children" style="margin-left: 1.5em;"></div>
         </li>
       {% endfor %}

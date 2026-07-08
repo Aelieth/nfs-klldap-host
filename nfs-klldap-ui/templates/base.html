@@ -307,109 +307,10 @@
             border-radius: 2px;
             box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
         }
-        .dir-meta {
-            margin-left: 1.6em;
-        }
-        .dir-meta[style*="display:none"] { display: none !important; }
-
-        /* Only the currently highlighted/selected directory's meta row shows the Edit button.
-           All other visible meta rows (from clicking multiple dirs) show just the ownership info. */
-        .dir-meta .edit-btn {
-            display: none !important;
-        }
-        .dir.selected + .dir-meta .edit-btn,
-        .dir.selected ~ .dir-meta .edit-btn {   /* fallback for any minor DOM variation */
-            display: inline-block !important;
-        }
-        .tree-editing .dir:not(.selected) {
-            opacity: 0.6;
-            pointer-events: none;
-        }
-        .edit-mode-banner {
-            background: var(--warning-bg);
-            border: 1px solid var(--warning-border);
-            color: var(--warning-text);
-            font-size: 0.8em;
-            padding: 2px 8px;
-            margin: 4px 0 8px;
-            border-radius: 3px;
-            max-width: 640px;  /* Edit Mode banner width; gives room for Permissions on same line in editor */
-        }
         .suggestions { max-height: 320px; } /* room for 25 items + scroll */
 
-        /* Compact, aesthetically pleasing permissions meta row (shortened width).
-           Kept narrow enough to avoid running into the fixed bottom-right Apply Log. */
-        .dir-meta-inner {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
-            font-size: 0.81em;
-            color: var(--text);
-            margin: 3px 0 5px 0.1em;
-            max-width: 640px;           /* edit mode width; gives room for "Permissions" on same line */
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            padding: 3px 8px 3px 6px;
-        }
-        .dir-meta-inner .perm-info {
-            line-height: 1.25;
-        }
-        .dir-meta-inner .edit-btn {
-            font-size: 0.73em;
-            padding: 1px 7px;
-            margin-left: 2px;
-            cursor: pointer;
-            border: 1px solid var(--accent);
-            background: var(--accent-light);
-            border-radius: 3px;
-            white-space: nowrap;
-            color: var(--text);
-        }
-
-        /* Larger ACL Permissions button (distinct, primary action for ACL focus). Compact. */
-        .dir-meta-inner .acl-btn {
-            font-size: 0.78em;
-            padding: 2px 9px;
-            margin-left: 4px;
-            cursor: pointer;
-            border: 1px solid var(--accent);
-            background: var(--selected-bg);
-            border-radius: 3px;
-            white-space: nowrap;
-            color: var(--text);
-            font-weight: 600;
-        }
-        .dir-meta-inner .acl-btn:hover {
-            background: var(--accent-light);
-        }
-
-        /* ACL boxes inside expanded panel (compact lists) */
-        .acl-box { font-size: 0.75em; }
-        .acl-list .acl-item {
-            padding: 1px 2px;
-            cursor: default;
-            white-space: nowrap;
-        }
-        .acl-list .acl-item.selected {
-            background: var(--accent-light);
-            outline: 1px solid var(--accent);
-        }
-        .acl-modebar { min-height: 1.1em; }
-        .acl-ops button { min-width: 52px; text-align:left; }
-
-        /* Apply Log: permanently attached to bottom-right, out of the way of share lists and directory tree.
-           Fixed positioning keeps it docked; scrolls internally if long. */
-        .apply-status {
-            position: fixed;
-            bottom: 10px;
-            right: 10px;
-            z-index: 160;
-            max-width: 380px;
-            min-width: 240px;
-            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.18);
-        }
+        /* Apply Log styling (now an in-flow section — see the .perm-panel / .apply-log-content
+           rules appended below). Shared monospace log look with the settings mono-log panel. */
         .apply-status-content,
         .mono-log-panel {
             max-height: 220px;
@@ -450,26 +351,6 @@
             border-color: var(--accent);
         }
 
-        /* Themed container for the dynamic permission editor form.
-           Constrained width to stay clear of the Apply Log (bottom-right). */
-        .dir-edit-form {
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            max-width: 640px;
-            box-sizing: border-box;
-        }
-
-        /* Slightly larger interactive elements in the edit form and Apply Log, per request.
-           Checkbox scaled for visibility; buttons get a bit more font/padding. */
-        .dir-edit-form input[type="checkbox"] {
-            transform: scale(1.15);
-            margin-right: 3px;
-            vertical-align: middle;
-        }
-        .dir-edit-form button {
-            font-size: 0.82em !important;
-            padding: 3px 10px !important;
-        }
         .apply-status button {
             font-size: 0.72em !important;
             padding: 2px 8px !important;
@@ -527,6 +408,149 @@
         .theme-tray label span {
             font-size: 0.95em;
         }
+
+        /* ===== Detached "Share Permissions" panel (redesign) ===== */
+        /* Non-ACL indicator colour: one literal kept the same across light/dark for CVD contrast. */
+        :root { --noacl:#1e40af; --noacl-ring:rgba(96,140,240,.35); }
+
+        .perm-layout        { display:flex; gap:18px; align-items:flex-start; flex-wrap:wrap; }
+        .perm-side          { flex:1 1 auto; min-width:200px; }
+        .perm-main          { flex:0 0 560px; max-width:560px; }
+        .shares-host        { display:flex; flex-direction:column; gap:6px; margin-bottom:12px;
+                              max-height:min(34vh,300px); overflow:auto; padding-right:4px; }
+        #tree-root,
+        .tree-host          { max-height:min(46vh,360px); overflow:auto; padding-right:4px; }
+
+        .perm-legend        { display:flex; gap:16px; flex-wrap:wrap; align-items:center;
+                              margin:0 0 14px; padding:7px 11px; background:var(--bg-alt);
+                              border:1px solid var(--border-light); border-radius:6px;
+                              font-size:.72em; color:var(--text-muted); }
+        .perm-legend .lbl   { font-weight:700; text-transform:uppercase; letter-spacing:.04em;
+                              font-size:.9em; color:var(--text-light); }
+        .perm-legend .key   { display:inline-flex; align-items:center; gap:6px; }
+        .legend-dot         { width:10px; height:10px; border-radius:50%; flex:none; }
+        .legend-dot.acl     { background:var(--success-border); box-shadow:0 0 0 2px var(--success-bg); }
+        .legend-dot.noacl   { background:var(--noacl);          box-shadow:0 0 0 2px var(--noacl-ring); }
+        .legend-dot.editing { background:var(--warning-amber-border); box-shadow:0 0 0 2px var(--warning-amber-bg); }
+
+        .share-card .share-hd   { display:flex; align-items:center; gap:7px; }
+        .share-dot              { width:9px; height:9px; border-radius:50%; flex:none; }
+        .share-dot.acl          { background:var(--success-border); box-shadow:0 0 0 2px var(--success-bg); }
+        .share-dot.noacl        { background:var(--noacl);          box-shadow:0 0 0 2px var(--noacl-ring); }
+        .share-card.noacl:not(.active) { background:var(--bg-alt); }
+        .share-card.active      { border-color:var(--accent); background:var(--selected-bg); }
+        .share-path             { color:var(--text-light); font-size:.85em; margin-top:2px; }
+        .share-chips            { display:flex; gap:5px; flex-wrap:wrap; margin-top:7px; }
+        .share-chip             { font-size:.82em; padding:1px 8px; border-radius:20px; white-space:nowrap;
+                                  background:var(--accent-light); color:var(--text);
+                                  border:1px solid var(--selected-border); max-width:100%;
+                                  overflow:hidden; text-overflow:ellipsis; }
+        .share-chip.warn        { background:var(--warning-amber-bg); color:var(--warning-amber-text);
+                                  border-color:var(--warning-amber-border); }
+
+        .perm-panel         { background:var(--card-bg); border:1px solid var(--border);
+                              border-radius:7px; padding:11px 13px 13px; margin-bottom:14px; }
+        .perm-head          { display:flex; justify-content:space-between; align-items:flex-start;
+                              gap:12px; flex-wrap:wrap; margin-bottom:6px; }
+        .perm-title         { font-weight:700; font-size:.95em; }
+        .perm-state         { font-size:.62em; font-weight:600; text-transform:uppercase; letter-spacing:.05em;
+                              padding:2px 6px; border-radius:20px; background:var(--bg-alt);
+                              color:var(--text-light); border:1px solid var(--border-light); }
+        .perm-panel.editing .perm-state { background:var(--warning-amber-bg); color:var(--warning-amber-text);
+                              border-color:var(--warning-amber-border); }
+        .perm-loc           { display:flex; align-items:baseline; gap:8px; margin-top:6px;
+                              flex-wrap:nowrap; min-width:0; overflow:hidden; }
+        .perm-loc .share-tag{ display:inline-flex; align-items:baseline; gap:5px; flex:none; }
+        .perm-loc .share-lbl{ font-size:.58em; font-weight:700; text-transform:uppercase;
+                              letter-spacing:.07em; color:var(--text-light); }
+        .perm-share         { font-size:.8em; font-weight:600; color:var(--text); }
+        .perm-path          { font-size:.78em; color:var(--text-muted); white-space:nowrap;
+                              overflow:hidden; text-overflow:ellipsis; min-width:0; }
+        .perm-actions       { display:flex; align-items:center; gap:8px; }
+        .perm-recursive     { font-size:.75em; white-space:nowrap; align-items:center; gap:4px; }
+
+        .perm-body          { margin-top:12px; }
+        .perm-body.split    { display:flex; gap:16px; align-items:stretch; }
+        .perm-body.split .posix-sec { flex:0 0 250px; }
+        .perm-body.split .acl-sec   { flex:1; min-width:0; }
+        .perm-body .divider { width:1px; background:var(--border-light); }
+
+        .sec-title          { font-size:.7em; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
+                              color:var(--text-muted); margin-bottom:8px; display:flex; align-items:center; gap:7px; }
+        .pill               { font-size:.82em; font-weight:600; text-transform:none; letter-spacing:0;
+                              padding:1px 6px; border-radius:20px; }
+        .pill.on            { background:var(--success-bg); color:var(--success-text); border:1px solid var(--success-border); }
+        .pill.off           { background:var(--bg-alt);     color:var(--text-light);   border:1px solid var(--border); }
+
+        .perm-owner-row     { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+        .perm-owner-row label { flex:1; min-width:120px; font-size:.74em; color:var(--text-muted); }
+        .perm-owner-row input { width:100%; margin-top:2px; padding:3px 6px; font-size:1.05em;
+                              background:var(--input-bg); color:var(--text);
+                              border:1px solid var(--input-border); border-radius:4px; }
+
+        .perm-matrix        { display:grid; grid-template-columns:64px repeat(3,1fr); gap:5px 4px;
+                              align-items:center; max-width:280px; }
+        .perm-matrix .colhd { text-align:center; font-size:.66em; font-weight:700; color:var(--text-light);
+                              text-transform:uppercase; letter-spacing:.04em; }
+        .perm-matrix .rowhd { font-size:.8em; font-weight:600; }
+        .perm-matrix .cell  { text-align:center; }
+        .perm-matrix input  { transform:scale(1.25); }
+        .perm-special       { display:flex; gap:16px; margin-top:10px; flex-wrap:wrap; }
+        .perm-special label { display:flex; align-items:center; gap:5px; font-size:.78em; }
+        .perm-special input { transform:scale(1.15); }
+        .perm-readout       { display:flex; align-items:center; gap:10px; margin-top:12px; padding-top:10px;
+                              border-top:1px dashed var(--border-light); }
+        .perm-readout .lbl  { font-size:.68em; color:var(--text-light); text-transform:uppercase;
+                              letter-spacing:.05em; font-weight:700; }
+        .octal              { font-family:ui-monospace,monospace; font-size:1.35em; font-weight:700;
+                              color:var(--accent); background:var(--bg-alt); border:1px solid var(--border);
+                              border-radius:5px; padding:1px 9px; }
+        .symbolic           { font-size:.9em; color:var(--text-muted); }
+
+        .acl-note           { font-size:.68em; color:var(--text-light); margin-bottom:6px; }
+        .acl-reason         { font-size:.74em; color:var(--text-muted); background:var(--bg-alt);
+                              border:1px solid var(--border-light); border-left:3px solid var(--text-light);
+                              border-radius:4px; padding:6px 9px; margin-bottom:8px; }
+        .acl-sec.disabled .acl-body { opacity:.5; pointer-events:none; filter:grayscale(.3); }
+        .acl-grp            { margin-bottom:8px; }
+        .acl-grp-head       { display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none;
+                              font-size:.72em; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
+                              color:var(--text-muted); padding:2px 0; }
+        .acl-caret          { display:inline-block; width:10px; transition:transform .12s; }
+        .acl-grp.collapsed .acl-caret { transform:rotate(-90deg); }
+        .acl-grp.collapsed .acl-grp-rows { display:none; }
+        .acl-row            { display:flex; align-items:center; gap:8px; padding:3px 4px; border-radius:4px; }
+        .acl-row .who       { flex:1; min-width:0; font-size:.82em; overflow:hidden;
+                              text-overflow:ellipsis; white-space:nowrap; }
+        .acl-row .kind      { font-size:.78em; font-weight:700; margin-right:5px; }
+        .acl-row .kind.user { color:var(--accent); }
+        .acl-row .kind.group{ color:var(--text-light); }
+        .acl-row .id        { color:var(--text-light); font-size:.85em; }
+        .acl-row .rwx       { display:flex; gap:9px; }
+        .acl-row .rwx label { display:flex; align-items:center; gap:2px; font-size:.9em; }
+        .acl-del            { font-size:.72em; line-height:1; padding:2px 6px; border:1px solid var(--danger-border);
+                              background:transparent; color:var(--danger-text); border-radius:3px; cursor:pointer; }
+        .acl-add            { display:flex; gap:6px; align-items:center; margin-top:3px; padding-top:4px;
+                              border-top:1px dashed var(--border-light); }
+
+        .perm-locked .dir:not(.selected)      { opacity:.4; cursor:not-allowed; }
+        .perm-locked .share-card:not(.active) { opacity:.4; cursor:not-allowed; }
+        .edit-lock-banner   { font-size:.72em; padding:4px 9px; margin:0 0 8px; border-radius:4px;
+                              background:var(--warning-amber-bg); color:var(--warning-amber-text);
+                              border:1px solid var(--warning-amber-border); }
+        .edit-lock-banner.flash { background:var(--danger-bg); color:var(--danger-text);
+                              border-color:var(--danger-border); transition:background .45s,border-color .45s,color .45s; }
+
+        /* In-flow Apply Log directly below the panel (was fixed bottom-right). */
+        .apply-log-content  { max-height:min(48vh,360px); overflow-y:auto; min-height:2.4em; }
+
+        /* Narrow screens: let the panel take the full width and stack POSIX above ACL. */
+        @media (max-width:640px) {
+          .perm-main       { flex:1 1 100%; max-width:100%; }
+          .perm-body.split { display:block; }
+          .perm-body.split .posix-sec { margin-bottom:14px; }
+          .perm-body .divider { display:none; }
+        }
     </style>
     <!-- Early theme init (before body paint) to avoid FOUC. Sets data-theme based on localStorage or system. -->
     <script>
@@ -561,19 +585,6 @@
             }
             return v;
         };
-
-        function selectUser(name, uid) {
-            const input = document.getElementById('owner_user');
-            if (input) input.value = name;
-            const suggestions = document.getElementById('user-suggestions');
-            if (suggestions) suggestions.innerHTML = '';
-        }
-        function selectGroup(name, gid) {
-            const input = document.getElementById('owner_group');
-            if (input) input.value = name;
-            const suggestions = document.getElementById('group-suggestions');
-            if (suggestions) suggestions.innerHTML = '';
-        }
 
         // === Theme manager (3-state: auto / dark / light) ===
         // Persists in localStorage 'theme'. Auto follows prefers-color-scheme live.
@@ -638,67 +649,115 @@
             }
         }
 
-        // === Edit mode state (tree locked while editing one directory's permissions) ===
-        let currentEditPath = null;
-        let applyInProgress = false;
-        const META_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes per user feedback
-        const metaCache = new Map(); // path -> { html: string, ts: number }
+        // ===== Detached "Share Permissions" panel behaviour (replaces inline dir-meta/editor/acl) =====
+        // Shared on window so index.html's page script and the apply poller can coordinate lock state.
+        window.applyInProgress = false;
+        const panel = () => document.getElementById('perm-panel');
+        const pbody = () => panel() && panel().querySelector('.perm-body');
+        const isEditing = () => !!(panel() && panel().classList.contains('editing'));
 
-        function setEditMode(active, path) {
-            currentEditPath = active ? path : null;
-            const treeRoot = document.getElementById('tree-root');
-            if (treeRoot) {
-                if (active) treeRoot.classList.add('tree-editing');
-                else treeRoot.classList.remove('tree-editing');
-            }
-            // Subtle banner (feedback #5)
-            let banner = document.getElementById('edit-mode-banner');
-            if (active) {
-                if (!banner) {
-                    banner = document.createElement('div');
-                    banner.id = 'edit-mode-banner';
-                    banner.className = 'edit-mode-banner';
-                    banner.textContent = 'Edit mode active — click Cancel or Apply to finish.';
-                    const tree = document.getElementById('tree-root');
-                    if (tree && tree.parentNode) tree.parentNode.insertBefore(banner, tree);
-                }
-            } else if (banner) {
-                banner.remove();
-            }
+        // Selection lock: edit mode OR an in-flight apply blocks navigating to another dir/share.
+        window.permIsLocked = () => isEditing() || window.applyInProgress;
+        window.permFlashLock = function () {
+            const b = document.getElementById('edit-lock-banner');
+            if (!b) return;
+            b.classList.add('flash');
+            setTimeout(() => b.classList.remove('flash'), 500);
+        };
+        function setTreeLock(on) {
+            const tree = document.getElementById('tree-root');
+            if (tree) tree.classList.toggle('perm-locked', on);
+            document.querySelectorAll('.shares-host').forEach(s => s.classList.toggle('perm-locked', on));
+            let banner = document.getElementById('edit-lock-banner');
+            if (on && !banner) {
+                banner = document.createElement('div');
+                banner.id = 'edit-lock-banner';
+                banner.className = 'edit-lock-banner';
+                banner.textContent = 'Editing — directory selection is locked. Cancel or Apply to change directory.';
+                const title = document.getElementById('current-share-title');
+                if (title && title.parentNode) title.parentNode.insertBefore(banner, title);
+            } else if (!on && banner) { banner.remove(); }
         }
 
-        window.startDirEdit = function(btn) {
-            const meta = btn.closest('.dir-meta');
-            if (!meta) return;
-            // Prefer data-path (safe, HTML-escaped, no JS string interpolation needed)
-            const path = btn.dataset.path || meta.dataset.path || btn.getAttribute('data-path');
-            if (!path) return;
-            // Guard: collapse any open ACL panel to avoid collision with POSIX edit mode
-            const aclc = meta.querySelector('.acl-container');
-            if (aclc) { aclc.style.display='none'; aclc.innerHTML=''; }
-            clearAclEditState(); currentAclPath = null;
-            setEditMode(true, path);
-            htmx.ajax('GET', '/dir-editor?path=' + encodeURIComponent(path), {
-                target: meta,
-                swap: 'innerHTML'
+        // Clear the hidden numeric uid/gid when the visible owner/group name is edited by hand, so
+        // Apply re-resolves the typed name via LDAP (matches the old inline editor's translation).
+        function attachEditorInputListeners(root) {
+            if (!root) return;
+            root.querySelectorAll('input[name="owner_user"], input[name="owner_group"]').forEach(inp => {
+                if (inp.dataset.clrWired) return;
+                inp.dataset.clrWired = '1';
+                inp.addEventListener('input', () => {
+                    const hidden = inp.name === 'owner_user'
+                        ? root.querySelector('input[name="owner_user_uid"]')
+                        : root.querySelector('input[name="owner_group_gid"]');
+                    if (hidden) hidden.value = '';
+                });
             });
+        }
+
+        // Load the panel body (view mode) for a selected directory.
+        window.loadDirPerms = function (path) {
+            if (!panel()) return;
+            panel().classList.remove('editing');
+            htmx.ajax('GET', '/dir-perms?path=' + encodeURIComponent(path),
+                { target: '#perm-panel .perm-body', swap: 'innerHTML' }).then(() => {
+                    const pl = panel();
+                    pl.querySelector('.perm-share').textContent = window.currentShareName || '';
+                    pl.querySelector('.perm-path').textContent = path;
+                    setPanelMode(false);
+                    recomputeMode();
+                    attachEditorInputListeners(pbody());
+                });
         };
 
-        // Native (non-htmx) cancel for the Apply Log button. Works even while the long
-        // apply is running and the only "safe" UI action.
+        function setPanelMode(editing) {
+            const pl = panel(); if (!pl) return;
+            pl.classList.toggle('editing', editing);
+            pl.querySelector('.perm-state').textContent = editing ? 'editing' : 'viewing';
+            pl.querySelectorAll('.p-owner,.p-group,.pbit,.sbit,.abit').forEach(el => el.disabled = !editing);
+            pl.querySelectorAll('.acl-del').forEach(b => b.style.display = editing ? '' : 'none');
+            pl.querySelectorAll('.acl-add').forEach(b => b.style.display = editing ? 'flex' : 'none');
+            const rec = pl.querySelector('.perm-recursive'); if (rec) rec.style.display = editing ? 'flex' : 'none';
+            pl.querySelector('.btn-edit').style.display   = editing ? 'none' : '';
+            pl.querySelector('.btn-cancel').style.display = editing ? '' : 'none';
+            pl.querySelector('.btn-apply').style.display  = editing ? '' : 'none';
+            setTreeLock(editing);
+        }
+
+        // rwx matrix + setgid/sticky -> live octal + symbolic; keeps the hidden name="mode" field in sync.
+        function recomputeMode() {
+            const pl = panel(); if (!pl) return;
+            const oct = pl.querySelector('.octal'); if (!oct) return;
+            const sum = { u: 0, g: 0, o: 0 };
+            pl.querySelectorAll('.pbit').forEach(cb => { if (cb.checked) sum[cb.dataset.role] += +cb.dataset.bit; });
+            let s = 0;
+            pl.querySelectorAll('.sbit').forEach(cb => { if (cb.checked) s += +cb.dataset.special; });
+            const octal = '' + s + sum.u + sum.g + sum.o;
+            oct.textContent = octal;
+            const field = pl.querySelector('.mode-field'); if (field) field.value = octal;
+            const sym = pl.querySelector('.symbolic'); if (sym) sym.textContent = symbolicMode(s, sum.u, sum.g, sum.o);
+        }
+        function symbolicMode(s, u, g, o) {
+            const trip = (b, kind) => {
+                const r = (b & 4) ? 'r' : '-', w = (b & 2) ? 'w' : '-';
+                let x;
+                if (kind === 'g') x = (s & 2) ? ((b & 1) ? 's' : 'S') : ((b & 1) ? 'x' : '-');
+                else if (kind === 'o') x = (s & 1) ? ((b & 1) ? 't' : 'T') : ((b & 1) ? 'x' : '-');
+                else x = (b & 1) ? 'x' : '-';
+                return r + w + x;
+            };
+            return trip(u, 'u') + trip(g, 'g') + trip(o, 'o');
+        }
+
+        // Native cancel for the Apply Log button (works during a long apply).
         window.cancelCurrentApply = function() {
-            // Best-effort; no confirm to keep it a fast bail-out as requested.
-            fetch('/cancel-apply', { method: 'POST', credentials: 'include' })
-                .catch(() => { /* ignore network errors for a cancel */ });
+            fetch('/cancel-apply', { method: 'POST', credentials: 'include' }).catch(() => {});
         };
 
-        // Hidden poller element (htmx) that drives live updates to #apply-status (oob)
-        // while an apply is in flight. Created on demand when we receive the placeholder
-        // from /apply. Stopped (hx-trigger removed) when we see data-apply-finished.
+        // Hidden htmx poller that drives live #apply-status oob updates while an apply runs.
         let applyPollerEl = null;
         function startApplyProgressPoller() {
             if (applyPollerEl && document.body.contains(applyPollerEl)) {
-                // Already running; just make sure the trigger is present.
                 if (!applyPollerEl.getAttribute('hx-trigger')) {
                     applyPollerEl.setAttribute('hx-trigger', 'every 350ms');
                     if (window.htmx) htmx.process(applyPollerEl);
@@ -710,700 +769,220 @@
             applyPollerEl.style.display = 'none';
             applyPollerEl.setAttribute('hx-get', '/apply-progress');
             applyPollerEl.setAttribute('hx-trigger', 'every 350ms');
-            applyPollerEl.setAttribute('hx-swap', 'none'); // oob in the response does the real work
+            applyPollerEl.setAttribute('hx-swap', 'none');
             document.body.appendChild(applyPollerEl);
             if (window.htmx) htmx.process(applyPollerEl);
         }
         function stopApplyProgressPoller() {
-            if (applyPollerEl) {
-                applyPollerEl.removeAttribute('hx-trigger');
-                // Leave the element; next start will reuse or recreate.
-            }
+            if (applyPollerEl) applyPollerEl.removeAttribute('hx-trigger');
         }
 
-        window.cancelDirEdit = function(el) {
-            const meta = el.closest('.dir-meta');
-            if (!meta) return;
-            // Prefer data-path for safety (no JS string interpolation of paths)
-            const path = meta.dataset.path || el.dataset.path || currentEditPath;
-            setEditMode(false, null);
-            if (path) {
-                htmx.ajax('GET', '/dir-meta?path=' + encodeURIComponent(path), {
-                    target: meta,
-                    swap: 'innerHTML'
-                });
-            }
-        };
-
-        // === ACL Permissions UI: compact per-dir expand with Users/Groups boxes + 5-button edit mode ===
-        // Follows existing styling (compact, card-bg, small fonts, tooltips). Separate from POSIX edit.
-        // State: per-dir but only one active ACL edit at a time. Apply feeds the shared Apply Log.
-        let currentAclPath = null;
-        let aclBoxMode = null; // 'user' or 'group' when in box edit, else null
-        let aclSubMode = null; // 'add'|'edit'|'delete' when a primary action selected
-        let aclStaged = null;  // for add: {type, id, label, perms}
-        let aclEditSel = null; // for edit: {type, id, origPerms, newPerms}
-        let aclDeleteSels = []; // array of {type, id} for multi (shift/ctrl)
-
-        function clearAclEditState() {
-            aclBoxMode = null;
-            aclSubMode = null;
-            aclStaged = null;
-            aclEditSel = null;
-            aclDeleteSels = [];
-            // remove any temp add/edit controls
-            document.querySelectorAll('.acl-add-ctl, .acl-edit-ctl, .acl-ops').forEach(el => el.remove());
-            document.querySelectorAll('.acl-item.selected').forEach(el => el.classList.remove('selected'));
+        // POST an ACL add/delete to /acl-apply, then refresh the panel (+ Apply Log via oob).
+        function aclApply(fields) {
+            const pl = panel(); if (!pl) return;
+            const path = pl.querySelector('.perm-path').textContent;
+            const fd = new URLSearchParams(Object.assign({ path }, fields));
+            fetch('/acl-apply', { method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: fd.toString() })
+                .then(() => window.loadDirPerms(path)).catch(() => {});
         }
 
-        function setAclModebar(container, text) {
-            let bar = container.querySelector('.acl-modebar');
-            if (bar) {
-                bar.style.display = text ? 'block' : 'none';
-                bar.textContent = text || '';
-            }
+        // Live LDAP suggestions for the ACL "add user/group" field (parallels the owner/group search).
+        function wireAclAddSearch(box) {
+            const type = box.dataset.type;
+            const inp = box.querySelector('.acl-add-name');
+            const sugg = box.querySelector('.acl-sugg');
+            if (!inp || !sugg || inp.dataset.wired) return;
+            inp.dataset.wired = '1';
+            let tmr = null;
+            inp.addEventListener('input', () => {
+                delete inp.dataset.pickId;
+                clearTimeout(tmr);
+                const q = inp.value.trim();
+                if (!q) { sugg.innerHTML = ''; return; }
+                tmr = setTimeout(() => {
+                    const url = type === 'user'
+                        ? '/users/search?owner_user=' + encodeURIComponent(q)
+                        : '/groups/search?owner_group=' + encodeURIComponent(q);
+                    fetch(url, { credentials: 'include' }).then(r => r.text()).then(html => {
+                        sugg.innerHTML = html;
+                        sugg.querySelectorAll('.suggestion').forEach(s => {
+                            s.onclick = (ev) => {
+                                ev.stopPropagation();
+                                inp.dataset.pickId = s.dataset.uid || s.dataset.gid || '';
+                                inp.value = (s.textContent || '').trim();
+                                sugg.innerHTML = '';
+                            };
+                        });
+                    }).catch(() => {});
+                }, 180);
+            });
         }
 
-        window.toggleAclPanel = function(btn) {
-            const meta = btn.closest('.dir-meta');
-            if (!meta) return;
-            const path = btn.dataset.path || meta.dataset.path;
-            if (!path) return;
-            const cont = meta.querySelector('.acl-container');
-            if (!cont) return;
-
-            if (cont.style.display !== 'none' && cont.innerHTML.trim()) {
-                cont.style.display = 'none';
-                cont.innerHTML = '';
-                if (currentAclPath === path) { clearAclEditState(); currentAclPath = null; }
+        // ===== Delegated clicks: tree select+expand, panel edit/cancel/apply, ACL collapse/add/del =====
+        document.addEventListener('click', function (e) {
+            const dir = e.target.closest('#tree-root .dir');
+            if (dir && dir.dataset.path) {
+                if (window.permIsLocked()) { window.permFlashLock(); e.stopPropagation(); return; }
+                const path = dir.dataset.path;
+                document.querySelectorAll('#tree-root .dir.selected').forEach(d => d.classList.remove('selected'));
+                dir.classList.add('selected');
+                window.loadDirPerms(path);
+                // Expand children (lazy 1-level fetch) and flip the caret glyph.
+                let sib = dir.nextElementSibling;
+                while (sib && !sib.classList.contains('children')) sib = sib.nextElementSibling;
+                if (sib) {
+                    if (sib.dataset.loaded !== 'true') {
+                        htmx.ajax('GET', '/fs/children?path=' + encodeURIComponent(path),
+                            { target: sib, swap: 'innerHTML' });
+                        sib.dataset.loaded = 'true';
+                    }
+                    sib.style.display = '';
+                    dir.textContent = dir.textContent.replace('▶', '▼');
+                }
                 return;
             }
 
-            // load fresh list (always view mode start)
-            clearAclEditState();
-            currentAclPath = path;
-            cont.style.display = '';
-            htmx.ajax('GET', '/dir-acl?path=' + encodeURIComponent(path), {
-                target: cont,
-                swap: 'innerHTML'
-            }).then(() => {
-                attachAclListHandlers(cont, path);
-            });
-        };
-
-        function attachAclListHandlers(panel, path) {
-            // clicking items in view does nothing (selection only in modes)
-            panel.querySelectorAll('.acl-item').forEach(item => {
-                item.addEventListener('click', (e) => {
-                    if (!aclBoxMode) return;
-                    // selection logic handled in mode buttons below
-                });
-            });
-        }
-
-        // Render the 5 right-side buttons for a box; placed via flex or append to box.
-        // Now takes explicit path (from panel data) to avoid undefined closure.
-        function renderAclOps(boxEl, type, pathForApply) {
-            // remove prior
-            const prior = boxEl.parentNode.querySelector('.acl-ops');
-            if (prior) prior.remove();
-
-            const ops = document.createElement('div');
-            ops.className = 'acl-ops';
-            ops.style.cssText = 'display:flex; flex-direction:column; gap:2px; margin-left:4px; font-size:0.68em;';
-
-            const mkBtn = (label, onClick, disabled=false, primary=false) => {
-                const b = document.createElement('button');
-                b.type = 'button';
-                b.textContent = label;
-                b.style.cssText = `font-size:0.68em; padding:1px 5px; ${primary ? 'font-weight:700; border:1px solid var(--accent);' : ''}`;
-                if (disabled) b.disabled = true;
-                b.onclick = onClick;
-                return b;
-            };
-
-            const addDisabled = aclSubMode && aclSubMode !== 'add';
-            const editDisabled = aclSubMode && aclSubMode !== 'edit';
-            const delDisabled = aclSubMode && aclSubMode !== 'delete';
-            const bAdd = mkBtn('Add (User or Group)', () => enterAclSubMode(boxEl, type, 'add', pathForApply), !!addDisabled, aclSubMode==='add');
-            const bEdit = mkBtn('Edit (User or Group)', () => enterAclSubMode(boxEl, type, 'edit', pathForApply), !!editDisabled, aclSubMode==='edit');
-            const bDel = mkBtn('Delete (User or Group)', () => enterAclSubMode(boxEl, type, 'delete', pathForApply), !!delDisabled, aclSubMode==='delete');
-            const bApply = mkBtn('Apply', () => doAclApply(boxEl, type, pathForApply), !isAclApplyReady(type));
-            const bCancel = mkBtn('Cancel', () => exitAclBoxEdit(boxEl, type, panelFromBox(boxEl)), false);
-
-            ops.appendChild(bAdd);
-            ops.appendChild(bEdit);
-            ops.appendChild(bDel);
-            ops.appendChild(bApply);
-            ops.appendChild(bCancel);
-
-            // place on right of box (insert after list)
-            const list = boxEl.querySelector('.acl-list');
-            if (list && list.parentNode) {
-                list.parentNode.insertBefore(ops, list.nextSibling);
-            } else {
-                boxEl.appendChild(ops);
+            const pl = panel(); if (!pl) return;
+            if (e.target.closest('.btn-edit')) {
+                setPanelMode(true);
+                pl.querySelectorAll('.acl-add').forEach(wireAclAddSearch);
+                attachEditorInputListeners(pbody());
+                return;
             }
-            // hide the original box Edit while ops visible
-            const ed = boxEl.querySelector('.acl-box-edit');
-            if (ed) ed.style.display = 'none';
-            return ops;
-        }
-
-        function panelFromBox(boxEl) {
-            return boxEl.closest('.acl-panel') || boxEl.closest('.acl-container');
-        }
-
-        function isAclApplyReady(typ) {
-            if (aclSubMode === 'add') return !!(aclStaged && aclStaged.type === typ && aclStaged.id);
-            if (aclSubMode === 'edit') return !!(aclEditSel && aclEditSel.type === typ && aclEditSel.newPerms && aclEditSel.newPerms !== aclEditSel.origPerms);
-            if (aclSubMode === 'delete') return aclDeleteSels.length > 0;
-            return false;
-        }
-
-        function updateApplyButtons() {
-            document.querySelectorAll('.acl-ops button').forEach(b => {
-                if (b.textContent.startsWith('Apply')) {
-                    const typ = b.closest('.acl-box') ? (b.closest('.acl-box').dataset.aclType || aclBoxMode) : aclBoxMode;
-                    b.disabled = !isAclApplyReady(typ);
-                }
-            });
-        }
-
-        function enterAclSubMode(boxEl, type, sub, pathForApply) {
-            aclBoxMode = type;
-            aclSubMode = sub;
-            aclStaged = null;
-            aclEditSel = null;
-            aclDeleteSels = [];
-
-            // deactivate other primary buttons visually (by re-render)
-            const ops = renderAclOps(boxEl, type, pathForApply || currentAclPath); // re-renders with primary highlight
-
-            const list = boxEl.querySelector('.acl-list');
-            if (!list) return;
-            const panel = panelFromBox(boxEl);
-            setAclModebar(panel, sub === 'add' ? 'Add: pick '+(type==='user'?'user':'group')+' + perms then Apply' : (sub==='edit' ? 'Edit: select entry, change perms, Apply' : 'Delete: ctrl/shift multi-select, Apply'));
-
-            // prepare list for interaction
-            list.querySelectorAll('.acl-item').forEach(it => it.classList.remove('selected'));
-
-            if (sub === 'add') {
-                // inject compact add controls below list (dropdown via fetch reuse of search)
-                const addCtl = document.createElement('div');
-                addCtl.className = 'acl-add-ctl';
-                addCtl.style.cssText = 'margin-top:2px;';
-                const cap = type === 'user' ? 'user' : 'group';
-                addCtl.innerHTML = `
-                    <input type="text" placeholder="search ${cap} or uid" style="width:78%;font-size:0.9em;" class="acl-add-inp">
-                    <input type="text" placeholder="rwx" value="r-x" size="3" style="font-size:0.9em;width:18%;" class="acl-add-perms">
-                    <div class="suggestions acl-sugg" style="min-width:140px;max-height:90px;"></div>
-                `;
-                list.parentNode.appendChild(addCtl);
-                const inp = addCtl.querySelector('.acl-add-inp');
-                const perminp = addCtl.querySelector('.acl-add-perms');
-                const sugg = addCtl.querySelector('.acl-sugg');
-                let tmr = null;
-                inp.addEventListener('input', () => {
-                    clearTimeout(tmr);
-                    const q = inp.value.trim();
-                    if (!q) { sugg.innerHTML=''; return; }
-                    tmr = setTimeout(() => {
-                        const url = type==='user' ? '/users/search?owner_user=' + encodeURIComponent(q) : '/groups/search?owner_group=' + encodeURIComponent(q);
-                        fetch(url, {credentials:'include'}).then(r=>r.text()).then(html => {
-                            sugg.innerHTML = html;
-                            // wire picks
-                            sugg.querySelectorAll('.suggestion').forEach(s => {
-                                s.onclick = () => {
-                                    const id = s.dataset.uid || s.dataset.gid || '0';
-                                    const lab = (s.textContent||'').trim();
-                                    aclStaged = { type, id: parseInt(id,10)||0, label: lab, perms: perminp.value.trim() || 'r--' };
-                                    inp.value = lab;
-                                    sugg.innerHTML = '';
-                                    updateApplyButtons();
-                                };
-                            });
-                        }).catch(()=>{});
-                    }, 160);
-                });
-                perminp.addEventListener('input', () => {
-                    if (aclStaged) aclStaged.perms = perminp.value.trim();
-                    updateApplyButtons();
-                });
-                // initial apply disabled until pick
-            } else if (sub === 'edit') {
-                // make items single selectable; on pick show inline perms editor
-                list.querySelectorAll('.acl-item').forEach(item => {
-                    item.style.cursor = 'pointer';
-                    item.onclick = (ev) => {
-                        list.querySelectorAll('.acl-item').forEach(i=>i.classList.remove('selected'));
-                        item.classList.add('selected');
-                        const id = parseInt(item.dataset.id || '0',10);
-                        const orig = item.dataset.perms || '---';
-                        aclEditSel = { type, id, origPerms: orig, newPerms: orig };
-                        // inline ctl
-                        let ctl = boxEl.querySelector('.acl-edit-ctl');
-                        if (ctl) ctl.remove();
-                        ctl = document.createElement('div');
-                        ctl.className = 'acl-edit-ctl';
-                        ctl.style.cssText = 'font-size:0.68em;margin-top:1px;';
-                        ctl.innerHTML = `perms: <input size="3" value="${orig}" class="acl-e-perms"> <span style="color:var(--text-light)">change to enable Apply</span>`;
-                        list.parentNode.appendChild(ctl);
-                        const pi = ctl.querySelector('.acl-e-perms');
-                        pi.oninput = () => {
-                            aclEditSel.newPerms = pi.value.trim();
-                            updateApplyButtons();
-                        };
-                        updateApplyButtons();
-                    };
-                });
-            } else if (sub === 'delete') {
-                // multi select with shift/ctrl simulation (simple: click toggles; shift last range)
-                let lastIdx = -1;
-                const items = Array.from(list.querySelectorAll('.acl-item'));
-                items.forEach((item, idx) => {
-                    item.style.cursor = 'pointer';
-                    item.onclick = (ev) => {
-                        const id = parseInt(item.dataset.id||'0',10);
-                        const isSel = item.classList.contains('selected');
-                        if (ev.shiftKey && lastIdx >=0) {
-                            const [a,b] = [Math.min(lastIdx,idx), Math.max(lastIdx,idx)];
-                            for (let i=a; i<=b; i++) {
-                                const it = items[i];
-                                it.classList.add('selected');
-                                const iid = parseInt(it.dataset.id||'0',10);
-                                if (iid && !aclDeleteSels.find(x=>x.id===iid)) aclDeleteSels.push({type, id:iid});
-                            }
-                        } else if (ev.ctrlKey || ev.metaKey) {
-                            if (isSel) {
-                                item.classList.remove('selected');
-                                aclDeleteSels = aclDeleteSels.filter(x=>x.id !== id);
-                            } else {
-                                item.classList.add('selected');
-                                if (id && !aclDeleteSels.find(x=>x.id===id)) aclDeleteSels.push({type,id});
-                            }
-                        } else {
-                            // plain click: toggle single (or start new)
-                            items.forEach(i=>i.classList.remove('selected'));
-                            aclDeleteSels = [];
-                            if (!isSel && id) {
-                                item.classList.add('selected');
-                                aclDeleteSels.push({type, id});
-                            }
-                        }
-                        lastIdx = idx;
-                        updateApplyButtons();
-                    };
-                });
+            if (e.target.closest('.btn-cancel')) {
+                const path = pl.querySelector('.perm-path').textContent;
+                if (path) window.loadDirPerms(path);
+                return;
             }
-            updateApplyButtons();
-        }
-
-        function exitAclBoxEdit(boxEl, type, panel) {
-            clearAclEditState();
-            // restore the list Edit btn, hide ops
-            const ed = boxEl.querySelector('.acl-box-edit');
-            if (ed) ed.style.display = '';
-            const ops = boxEl.parentNode.querySelector('.acl-ops');
-            if (ops) ops.remove();
-            // re-fetch clean list into panel to reset handlers
-            if (panel && currentAclPath) {
-                htmx.ajax('GET', '/dir-acl?path=' + encodeURIComponent(currentAclPath), { target: panel, swap: 'innerHTML' })
-                  .then(() => attachAclListHandlers(panel, currentAclPath));
-            }
-            setAclModebar(panel, '');
-        }
-
-        function doAclApply(boxEl, type, path) {
-            if (!isAclApplyReady(type)) return;
-            let op = aclSubMode;
-            let id = 0, perms = '', sel = '';
-            if (op === 'add' && aclStaged) {
-                id = aclStaged.id; perms = aclStaged.perms || 'r--';
-            } else if (op === 'edit' && aclEditSel) {
-                id = aclEditSel.id; perms = aclEditSel.newPerms;
-            } else if (op === 'delete') {
-                sel = aclDeleteSels.map(s => (s.type==='group'?'g:':'u:') + s.id ).join(',');
-            }
-
-            const formData = new URLSearchParams();
-            formData.set('path', path);
-            formData.set('op', op);
-            formData.set('typ', type);
-            formData.set('id', String(id||''));
-            formData.set('perms', perms);
-            formData.set('selected', sel);
-
-            const panel = panelFromBox(boxEl);
-            // POST, target feedback near, but also oob will hit apply-status
-            fetch('/acl-apply', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                body: formData.toString(),
-                credentials: 'include'
-            }).then(r => r.text()).then(html => {
-                // show brief feedback inline
-                let fb = document.createElement('div');
-                fb.style.cssText = 'font-size:0.68em;color:var(--success-text);margin:2px 0;';
-                fb.innerHTML = (html.split('\n')[0] || 'Applied');
-                const bar = panel ? panel.querySelector('.acl-modebar') : null;
-                if (bar) { bar.innerHTML = ''; bar.appendChild(fb); }
-                // refresh the acl list view
-                if (panel && currentAclPath) {
-                    setTimeout(() => {
-                        htmx.ajax('GET', '/dir-acl?path=' + encodeURIComponent(currentAclPath), {target: panel, swap:'innerHTML'})
-                          .then(() => {
-                              attachAclListHandlers(panel, currentAclPath);
-                              clearAclEditState();
-                              // restore box edits visible
-                              panel.querySelectorAll('.acl-box-edit').forEach(e=>e.style.display='');
-                          });
-                    }, 120);
-                }
-                // Apply log already updated via oob in response
-            }).catch(e => {
-                if (panel) setAclModebar(panel, 'Apply error: ' + e);
-            });
-        }
-
-        // Public entry from the per-box "Edit" button in the ACL fragment (template onclick).
-        // Surfaces exactly the 5 buttons on the right of the box.
-        window.startAclBoxEdit = function(btn, typ) {
-            if (!currentAclPath) return;
-            const box = btn.closest('.acl-box');
-            if (!box) return;
-            const path = currentAclPath;
-            // Render the 5 buttons (Add/Edit/Delete/Apply/Cancel) to the right of this box.
-            renderAclOps(box, typ, path);
-            aclBoxMode = typ;
-            aclSubMode = null;
-            const panel = panelFromBox(box);
-            setAclModebar(panel, 'Choose action: Add, Edit or Delete then use Apply (or Cancel)');
-            // Clear any prior selections
-            const list = box.querySelector('.acl-list');
-            if (list) list.querySelectorAll('.acl-item').forEach(i => i.classList.remove('selected'));
-        };
-
-        // Also allow clicking ACL button to work even if other meta clicks; extend tree lock guard if needed
-        // (existing currentEditPath / applyInProgress already prevent most during POSIX).
-
-        // Clear stale hidden numeric when user edits the visible name/uid field (after a selection)
-        function attachEditorInputListeners(metaEl) {
-            if (!metaEl) return;
-            metaEl.querySelectorAll('input[name="owner_user"], input[name="owner_group"]').forEach(inp => {
-                inp.addEventListener('input', () => {
-                    const hidden = inp.name === 'owner_user'
-                        ? metaEl.querySelector('input[name="owner_user_uid"]')
-                        : metaEl.querySelector('input[name="owner_group_gid"]');
-                    if (hidden) hidden.value = '';
-                });
-            });
-        }
-
-        // 5-minute client-side meta cache (used on auto-select / re-click of recently viewed dir)
-        function getCachedMeta(path) {
-            const entry = metaCache.get(path);
-            if (entry && (Date.now() - entry.ts) < META_CACHE_TTL_MS) return entry.html;
-            return null;
-        }
-        function putCachedMeta(path, html) {
-            metaCache.set(path, { html, ts: Date.now() });
-        }
-
-        function invalidateMetaCacheUnder(rootPath) {
-            const root = (rootPath || '').replace(/\/$/, '');
-            for (const key of metaCache.keys()) {
-                if (key === rootPath || (root && key.startsWith(root + '/'))) {
-                    metaCache.delete(key);
-                }
-            }
-        }
-
-        // After a recursive apply, refresh visible permission rows for all descendant dirs.
-        window.refreshSubtreeMetas = function(rootPath) {
-            if (!rootPath) return;
-            invalidateMetaCacheUnder(rootPath);
-            const root = rootPath.replace(/\/$/, '');
-            document.querySelectorAll('.dir-meta[data-path]').forEach(meta => {
-                const p = meta.dataset.path;
-                if (!p || p === rootPath) return;
-                if (!root || !p.startsWith(root + '/')) return;
-                if (meta.style.display === 'none') return;
-                htmx.ajax('GET', '/dir-meta?path=' + encodeURIComponent(p), {
-                    target: meta,
-                    swap: 'innerHTML'
-                }).then(() => putCachedMeta(p, meta.innerHTML));
-            });
-        };
-
-        // Helper to attach delegated .dir handlers (tree expansion + new inline meta/edit).
-        function attachDirClickHandlers() {
-            // Main delegated .dir click: select (bold + meta) + expand/collapse.
-            // While editing, only the current dir's meta is interactive; other clicks are ignored.
-            document.body.addEventListener('click', function(evt) {
-                const dir = evt.target.closest('.dir');
-                if (!dir) return;
-
-                const path = dir.dataset.path;
-                if (!path) return;
-
-                if (currentEditPath || applyInProgress) {
-                    // Edit mode or a running apply: no tree expand/collapse/select.
-                    // The apply lock is only released after the background process finishes
-                    // and the final /dir-meta swap has landed.
-                    return;
-                }
-
-                // Robust children lookup (skips .dir-meta placeholders)
-                let sib = dir.nextElementSibling;
-                while (sib && !sib.classList.contains('children')) {
-                    sib = sib.nextElementSibling;
-                }
-                const childrenDiv = sib;
-
-                // Selection + expansion logic.
-                //
-                // Behavior:
-                // - Clicking a directory that is NOT the current selection:
-                //     → Selects/highlights it, **forces expansion** of its subtree,
-                //       and shows its permissions meta.
-                // - Clicking the *same* directory again (the current primary selected one):
-                //     → Collapses it (if open), deselects it, and hides its permissions meta.
-                //
-                // Multiple meta rows can remain visible for viewing other directories,
-                // but only one dir is ever the "primary selected" one (highlighted + has the Edit button).
-                const isAlreadySelected = dir.classList.contains('selected');
-                const li = dir.closest('li');
-                const thisMeta = li ? li.querySelector(':scope > .dir-meta') : null;
-
-                if (isAlreadySelected) {
-                    // This is the currently active/selected directory.
-                    // Treat this click as "close everything for this dir".
-                    if (childrenDiv && childrenDiv.classList.contains('children')) {
-                        const isVisible = childrenDiv.style.display !== 'none';
-                        if (isVisible) {
-                            childrenDiv.style.display = 'none';
-                            dir.textContent = dir.textContent.replace('▼', '▶');
-                        }
-                    }
-                    if (thisMeta) {
-                        thisMeta.style.display = 'none';
-                    }
-                    dir.classList.remove('selected');
-                    return;
-                }
-
-                // Activation of a new directory: always force expand + select + show meta
-                document.querySelectorAll('.dir.selected').forEach(d => d.classList.remove('selected'));
-                dir.classList.add('selected');
-
-                if (childrenDiv && childrenDiv.classList.contains('children')) {
-                    const hasContent = childrenDiv.innerHTML.trim().length > 0;
-
-                    // Force expansion on first activation. Uses the cheap 1-level
-                    // /fs/children endpoint (no full recursive walk on every expand).
-                    if (!hasContent || childrenDiv.dataset.loaded !== 'true') {
-                        htmx.ajax('GET', '/fs/children?path=' + encodeURIComponent(path), {
-                            target: childrenDiv,
-                            swap: 'innerHTML'
-                        });
-                        childrenDiv.dataset.loaded = 'true';
-                    }
-                    childrenDiv.style.display = '';           // ensure it is visible / expanded
-                    dir.textContent = dir.textContent.replace('▶', '▼');
-                }
-
-                // Show / refresh meta for the newly selected dir (the one that now has the highlight + Edit button)
-                // (the li and thisMeta were already resolved above for the toggle check)
-                let meta = thisMeta;
-                if (!meta && li) {
-                    meta = li.querySelector(':scope > .dir-meta');
-                }
-                if (meta) {
-                    meta.style.display = '';
-                    meta.dataset.path = path;
-
-                    const cached = getCachedMeta(path);
-                    if (cached) {
-                        meta.innerHTML = cached;
-                    } else {
-                        htmx.ajax('GET', '/dir-meta?path=' + encodeURIComponent(path), {
-                            target: meta,
-                            swap: 'innerHTML'
-                        }).then(() => {
-                            putCachedMeta(path, meta.innerHTML);
-                        });
-                    }
-                }
-            });
-
-            // Remember recursive flag before apply swaps away the editor form.
-            document.body.addEventListener('htmx:beforeRequest', function(evt) {
-                const elt = evt.detail && evt.detail.elt;
-                const form = elt && elt.classList && elt.classList.contains('dir-edit-form')
-                    ? elt
-                    : (elt && elt.closest ? elt.closest('.dir-edit-form') : null);
+            if (e.target.closest('.btn-apply')) {
+                const form = pl.querySelector('form.posix-sec');
                 if (!form) return;
-                const meta = form.closest('.dir-meta');
-                const path = form.querySelector('input[name="path"]')?.value;
-                const recursive = !!form.querySelector('input[name="recursive"]')?.checked;
-                if (meta && path) {
-                    meta.dataset.pendingRecursive = recursive ? '1' : '0';
-                    meta.dataset.pendingApplyPath = path;
-                }
-            });
+                const rec = pl.querySelector('.rec-box');
+                const recField = form.querySelector('.rec-field');
+                if (recField) recField.value = (rec && rec.checked) ? 'true' : 'false';
+                window.applyInProgress = true;
+                htmx.trigger(form, 'submit');
+                // Leave edit mode visually but keep the tree locked until the apply finishes.
+                pl.classList.remove('editing');
+                pl.querySelector('.perm-state').textContent = 'viewing';
+                pl.querySelector('.btn-edit').style.display = '';
+                pl.querySelector('.btn-cancel').style.display = 'none';
+                pl.querySelector('.btn-apply').style.display = 'none';
+                const recWrap = pl.querySelector('.perm-recursive'); if (recWrap) recWrap.style.display = 'none';
+                setTreeLock(true);
+                return;
+            }
+            const head = e.target.closest('.acl-grp-head');
+            if (head) { head.closest('.acl-grp').classList.toggle('collapsed'); return; }
 
-            // htmx hook: when a .dir-meta receives a swap that leaves no <form> inside, we are back in browse mode
-            document.body.addEventListener('htmx:afterSwap', function(evt) {
-                const target = evt.detail && evt.detail.target;
-                if (target && target.classList && target.classList.contains('dir-meta')) {
-                    // POSIX swap landed: ensure ACL edit state cleaned (panel was replaced)
-                    clearAclEditState();
-                    currentAclPath = null;
-                    if (!target.querySelector('form')) {
-                        // If this swap is the *start* of an apply (we just got the placeholder back from /apply),
-                        // keep the tree locked and let the progress poller drive the final unlock + refresh later.
-                        const isApplyingPlaceholder = !!(target.dataset.applying || target.querySelector('[data-applying]'));
-                        if (isApplyingPlaceholder) {
-                            applyInProgress = true;
-                            if (target.dataset.path) {
-                                currentEditPath = target.dataset.path;
-                            }
-                            // Start (or restart) the background poller that will keep the Apply Log fresh
-                            // with scanned counts + spinner, real %, and will detect finish.
-                            startApplyProgressPoller();
-                            // pending* datasets are left on the container so the *final* meta swap (after finish)
-                            // can still decide whether to call refreshSubtreeMetas.
-                            return;
-                        }
+            const del = e.target.closest('.acl-del');
+            if (del) {
+                const row = del.closest('.acl-row');
+                aclApply({ op: 'delete', typ: row.dataset.type,
+                           selected: (row.dataset.type === 'group' ? 'g:' : 'u:') + row.dataset.id });
+                return;
+            }
 
-                        // Normal case (or the final meta refresh after an apply finished): unlock + optional subtree refresh.
-                        if (!applyInProgress) {
-                            setEditMode(false, null);
-                        }
-                        const p = target.dataset.path;
-                        if (p) {
-                            putCachedMeta(p, target.innerHTML);
-                            if (target.dataset.pendingRecursive === '1') {
-                                invalidateMetaCacheUnder(p);
-                                if (window.refreshSubtreeMetas) {
-                                    window.refreshSubtreeMetas(p);
-                                }
-                            }
-                        }
-                        delete target.dataset.pendingRecursive;
-                        delete target.dataset.pendingApplyPath;
-                        // If we just landed the final meta after an apply, make sure the flag is clear.
-                        applyInProgress = false;
-                    } else {
-                        // Editor just appeared — wire its input listeners (clear hiddens on edit)
-                        attachEditorInputListeners(target);
-                    }
-                }
-            });
+            const add = e.target.closest('.acl-add-btn');
+            if (add) {
+                const box = add.closest('.acl-add');
+                const nameInp = box.querySelector('.acl-add-name');
+                const name = nameInp.value.trim();
+                const perms = box.querySelector('.acl-add-perms').value.trim() || 'r--';
+                if (!name) return;
+                const idm = name.match(/(\d+)/);
+                aclApply({ op: 'add', typ: box.dataset.type,
+                           id: nameInp.dataset.pickId || (idm ? idm[1] : ''), name: name, perms: perms });
+                return;
+            }
+        });
 
-            // Listen for polled /apply-progress responses (the poller itself has hx-swap=none).
-            // When the response contains the finished marker we stop the poller, clear the
-            // applying flag, and fire the *final* /dir-meta request that will cause the real
-            // meta to land and the afterSwap above to unlock the tree + do subtree refresh (if rec).
-            document.body.addEventListener('htmx:afterOnLoad', function(evt) {
-                const elt = evt.detail && evt.detail.elt;
-                if (elt && elt.id === 'apply-poller') {
-                    const xhr = evt.detail.xhr;
-                    const txt = (xhr && xhr.responseText) || '';
-                    if (txt.indexOf('data-apply-finished="true"') !== -1) {
-                        stopApplyProgressPoller();
-                        applyInProgress = false;
-                        // Trigger the final meta refresh for whatever dir is showing the applying placeholder.
-                        // The container keeps data-path (and pendingRecursive if this was a rec apply).
-                        const metas = document.querySelectorAll('.dir-meta[data-applying], .dir-meta-inner[data-applying]');
-                        metas.forEach(function(m) {
-                            const container = m.closest('.dir-meta') || m;
-                            const pth = (container && container.dataset && container.dataset.path) || (m.dataset && m.dataset.path);
-                            if (pth) {
-                                htmx.ajax('GET', '/dir-meta?path=' + encodeURIComponent(pth), {
-                                    target: container,
-                                    swap: 'innerHTML'
-                                });
-                            }
-                        });
-                    }
-                }
-            });
+        // Live octal readout while toggling the matrix / special bits.
+        document.addEventListener('change', function (e) {
+            if (e.target.classList && (e.target.classList.contains('pbit') || e.target.classList.contains('sbit')))
+                recomputeMode();
+        });
 
-            // === Robust suggestion dropdown handling (fixes "does not close after selecting or focus away") ===
-            // Supports the dynamic editor fields via name selectors (and legacy id fallbacks if present).
-            document.body.addEventListener('click', function(evt) {
-                const suggestion = evt.target.closest('.suggestion');
-                if (!suggestion) return;
+        // ===== Suggestion dropdown selection (owner/group search) + outside-click dismiss =====
+        document.body.addEventListener('click', function (evt) {
+            const suggestion = evt.target.closest('.suggestion');
+            if (!suggestion) return;
+            const suggBox = suggestion.closest('.suggestions');
+            if (suggBox && suggBox.classList.contains('acl-sugg')) return; // handled in wireAclAddSearch
+            const container = suggestion.closest('form, .perm-body') || document;
+            const userId = suggestion.dataset.userId;
+            if (userId) {
+                const uid = parseInt(suggestion.dataset.uid || '0', 10);
+                const label = (suggestion.textContent || '').trim();
+                const nameInput = container.querySelector('input[name="owner_user"]');
+                const uidInput  = container.querySelector('input[name="owner_user_uid"]');
+                if (nameInput) nameInput.value = label || userId;
+                if (uidInput)  uidInput.value = String(uid || '');
+                if (suggBox) suggBox.innerHTML = '';
+                return;
+            }
+            const groupId = suggestion.dataset.groupId;
+            if (groupId) {
+                const gid = parseInt(suggestion.dataset.gid || '0', 10);
+                const label = (suggestion.textContent || '').trim();
+                const nameInput = container.querySelector('input[name="owner_group"]');
+                const gidInput  = container.querySelector('input[name="owner_group_gid"]');
+                if (nameInput) nameInput.value = label || groupId;
+                if (gidInput)  gidInput.value = String(gid || '');
+                if (suggBox) suggBox.innerHTML = '';
+            }
+        });
+        document.addEventListener('click', function (evt) {
+            const t = evt.target;
+            if (t.closest('.suggestions') ||
+                t.closest('input[name="owner_user"], input[name="owner_group"], .acl-add-name')) return;
+            document.querySelectorAll('.suggestions').forEach(el => { if (el.innerHTML.trim()) el.innerHTML = ''; });
+        }, true);
+        document.body.addEventListener('focusout', function (evt) {
+            const input = evt.target;
+            if (!input || !input.matches || !input.matches('input[name="owner_user"], input[name="owner_group"], .acl-add-name')) return;
+            setTimeout(() => {
+                const active = document.activeElement;
+                const wrap = input.closest('label, .acl-add');
+                const box = wrap ? wrap.querySelector('.suggestions') : null;
+                if (box && (!active || (active !== input && !box.contains(active)))) box.innerHTML = '';
+            }, 120);
+        });
 
-                // Find the nearest suggestions container and the form/meta that owns the inputs
-                const suggBox = suggestion.closest('.suggestions');
-                const container = suggestion.closest('form, .dir-meta, .dir-editor') || document;
-
-                const userId = suggestion.dataset.userId;
-                if (userId) {
-                    const uid = parseInt(suggestion.dataset.uid || '0', 10);
-                    const label = (suggestion.textContent || '').trim();
-                    const nameInput = container.querySelector('input[name="owner_user"], #owner_user');
-                    const uidInput  = container.querySelector('input[name="owner_user_uid"], #owner_user_uid');
-                    if (nameInput) nameInput.value = label || userId;
-                    if (uidInput)  uidInput.value = String(uid || '');
-                    if (suggBox) suggBox.innerHTML = '';
-                    return;
-                }
-
-                const groupId = suggestion.dataset.groupId;
-                if (groupId) {
-                    const gid = parseInt(suggestion.dataset.gid || '0', 10);
-                    const label = (suggestion.textContent || '').trim();
-                    const nameInput = container.querySelector('input[name="owner_group"], #owner_group');
-                    const gidInput  = container.querySelector('input[name="owner_group_gid"], #owner_group_gid');
-                    if (nameInput) nameInput.value = label || groupId;
-                    if (gidInput)  gidInput.value = String(gid || '');
-                    if (suggBox) suggBox.innerHTML = '';
-                }
-            });
-
-            // Global outside-click dismiss for any open suggestion boxes (capture phase for reliability)
-            document.addEventListener('click', function(evt) {
-                const t = evt.target;
-                if (t.closest('.suggestions') ||
-                    t.closest('input[name="owner_user"], input[name="owner_group"], #owner_user, #owner_group')) {
-                    return; // clicked inside a suggestions box or one of its trigger inputs
-                }
-                document.querySelectorAll('.suggestions').forEach(el => {
-                    if (el.innerHTML.trim()) el.innerHTML = '';
-                });
-            }, true);
-
-            // When an editor is inserted, attach blur handlers to its search inputs so the dropdown
-            // closes when the user tabs away or clicks elsewhere (focusout is more reliable than blur for this).
-            // This augments the global outside-click above.
-            document.body.addEventListener('focusout', function(evt) {
-                const input = evt.target;
-                if (!input || !input.matches('input[name="owner_user"], input[name="owner_group"]')) return;
-
-                // Small delay so that a click on a .suggestion still works (click fires after focusout)
-                setTimeout(() => {
-                    const active = document.activeElement;
-                    const label = input.closest('label');
-                    const box = label ? label.querySelector('.suggestions') : null;
-                    // If focus left this field and its dropdown, collapse suggestions
-                    if (box && (!active || (active !== input && !box.contains(active)))) {
-                        box.innerHTML = '';
-                    }
-                }, 120);
-            });
-        }
+        // ===== Apply lifecycle: /apply placeholder -> poller -> finish refetch of /dir-perms =====
+        document.body.addEventListener('htmx:afterSwap', function (evt) {
+            const t = evt.detail && evt.detail.target;
+            if (!t || !t.closest || !t.closest('#perm-panel .perm-body')) return;
+            recomputeMode();
+            if (t.querySelector('[data-applying]')) {
+                window.applyInProgress = true;
+                setTreeLock(true);
+                startApplyProgressPoller();
+            } else if (window.applyInProgress) {
+                // Apply returned without a placeholder (e.g. LDAP resolve error): unlock.
+                window.applyInProgress = false;
+                setTreeLock(false);
+            }
+        });
+        document.body.addEventListener('htmx:afterOnLoad', function (evt) {
+            const elt = evt.detail && evt.detail.elt;
+            if (!elt || elt.id !== 'apply-poller') return;
+            const xhr = evt.detail.xhr;
+            const txt = (xhr && xhr.responseText) || '';
+            if (txt.indexOf('data-apply-finished="true"') === -1) return;
+            stopApplyProgressPoller();
+            window.applyInProgress = false;
+            const ph = document.querySelector('#perm-panel [data-applying]');
+            const pathEl = panel() && panel().querySelector('.perm-path');
+            const path = ph ? ph.dataset.path : (pathEl ? pathEl.textContent : '');
+            setTreeLock(false);
+            if (path) window.loadDirPerms(path);
+        });
 
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', function() {
-                attachDirClickHandlers();
-                initThemeTray();
-            });
+            document.addEventListener('DOMContentLoaded', initThemeTray);
         } else {
-            attachDirClickHandlers();
             initThemeTray();
         }
     </script>

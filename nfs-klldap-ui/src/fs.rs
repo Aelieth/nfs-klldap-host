@@ -266,8 +266,10 @@ impl FsManager {
         if owner_uid == 0 || group_gid == 0 {
             return Err("Refusing to set UID or GID 0".into());
         }
-        if mode & 0o7000 != 0 {
-            return Err("Refusing mode with setuid/setgid/sticky bits".into());
+        // setgid (2000) + sticky (1000) are valid, meaningful bits on directory shares and are
+        // editable in the UI; only setuid (4000) is refused on a shared tree.
+        if mode & 0o4000 != 0 {
+            return Err("Refusing setuid bit on a share path".into());
         }
 
         let target_path = self.host_path_to_container_path(&normalized)?;

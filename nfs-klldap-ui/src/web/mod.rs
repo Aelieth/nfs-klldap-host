@@ -30,7 +30,7 @@ pub use keytab::{compute_keytab_alert, get_keytab_info};
 // Pub(crate) re-exports for router assembly and in-module integration tests.
 pub(crate) use auth::{login, login_page, logout, require_auth, setup_password};
 pub(crate) use permission_tree::{
-    acl_apply, acl_list, apply_permissions, apply_progress, cancel_apply, dir_editor, dir_meta, fs_children, index,
+    acl_apply, apply_permissions, apply_progress, cancel_apply, dir_perms, fs_children, index,
     search_groups, search_users, tree_fragment,
 };
 pub(crate) use settings::{
@@ -162,15 +162,14 @@ pub fn router(state: AppState) -> Router {
         .route("/tree", get(tree_fragment))
         // Lazy-loading (1-level only, cheap) for tree expands.
         .route("/fs/children", get(fs_children))
-        .route("/dir-meta", get(dir_meta))
-        .route("/dir-editor", get(dir_editor))
+        // Detached Permissions panel body (POSIX + named ACL), replaces dir-meta/dir-editor/dir-acl.
+        .route("/dir-perms", get(dir_perms))
         .route("/users/search", get(search_users))
         .route("/groups/search", get(search_groups))
         .route("/apply", post(apply_permissions))
         .route("/apply-progress", get(apply_progress))
         .route("/cancel-apply", post(cancel_apply))
-        // ACL Permissions panel + apply (reuses search + Apply Log; distinct from POSIX).
-        .route("/dir-acl", get(acl_list))
+        // ACL apply (reuses search + Apply Log; distinct from POSIX apply).
         .route("/acl-apply", post(acl_apply))
 
         // The === protected is System Settings + LLDAP client management ===.
@@ -456,5 +455,64 @@ container_path = "{}"
             matches!(&e.kind, crate::privileged::AclEntryKind::User(4242)) && e.perms.to_str() == "r-x"
         });
         assert!(has, "after POST /acl-apply + wait, shipped fs.get_dir_acl on logical path must show the entry");
+    }
+
+    // GET /dir-perms renders the POSIX matrix + hidden numeric uid/gid fields (for name translation)
+    // and marks the ACL section non-ACL when the share did not opt into enable_acl (default).
+    #[tokio::test]
+    async fn dir_perms_get_renders_posix_matrix_and_noacl_section() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_root = tmp.path().join("permroot");
+        std::fs::create_dir_all(&real_root).unwrap();
+        let logical = std::path::Path::new("/permdata");
+
+        let cp = tmp.path().join("c");
+        let min_cfg = format!(
+            r#"ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "{}"
+[sssd]
+ldap_default_bind_dn = "uid=admin"
+ldap_default_authtok = "s"
+[[shares]]
+name = "permdata"
+host_path = "{}"
+container_path = "{}"
+"#,
+            real_root.display(), logical.display(), real_root.display()
+        );
+        std::fs::write(&cp, min_cfg).unwrap();
+        let cfg_val = nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("load");
+        let cfg = Arc::new(RwLock::new(cfg_val.clone()));
+        let fs = Arc::new(RwLock::new(FsManager::new(cfg_val)));
+        let l = Arc::new(Mutex::new(crate::create_test_lldap()));
+        let a = Arc::new(AuthManager::new(&cp, None));
+        let sm = tmp.path().join(".s");
+        std::fs::write(&sm, "ok\n").ok();
+        let st = AppState {
+            fs, lldap: l, config: cfg, auth: a, config_path: cp.clone(),
+            keytab_hostname: "h".into(), keytab_realm: "R".into(),
+            keytab_alert: Arc::new(StdMutex::new(None)), apply_progress: Arc::new(Mutex::new(None)),
+            restart_requested: Arc::new(Mutex::new(false)), direct_tls: true,
+            setup_marker_override: Some(sm), setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
+            host_nfs_mode: false, fs_probe_mountinfo_path: None,
+        };
+        let token = st.auth.create_privileged_session("permtest");
+        let app = router(st);
+
+        let uri = format!("/dir-perms?path={}", urlencoding::encode(logical.to_str().unwrap()));
+        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let html = String::from_utf8_lossy(&body);
+        assert!(html.contains("perm-matrix"), "must render the POSIX rwx matrix");
+        assert!(html.contains(r#"name="owner_user_uid""#), "must render hidden uid field for name translation");
+        assert!(html.contains(r#"name="mode""#), "must render the mode field /apply expects");
+        assert!(html.contains("class=\"octal\""), "must render the octal readout");
+        // enable_acl unset => Non-ACL: the ACL section must be greyed and labelled.
+        assert!(html.contains("acl-sec disabled"), "NOACL default must grey the ACL section");
+        assert!(html.contains("non-ACL limited"), "NOACL default must show the non-ACL pill");
     }
 }

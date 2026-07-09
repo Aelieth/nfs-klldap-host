@@ -86,18 +86,9 @@
       <div class="perm-body"><em style="color:var(--text-light);font-size:.85em">Select a directory to view its permissions.</em></div>
     </div>
 
-    {# Apply Log — in-flow below the panel. Markup matches render_apply_status_oob so oob swaps
-       replace it cleanly. Populated from /apply + /apply-progress polling (hx-swap-oob). #}
-    <div id="apply-status" class="apply-status" style="display:block;">
-      <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">
-        <span>Apply Log</span>
-        <button type="button" disabled class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--border); color:var(--text-light); opacity:0.6; border-radius:2px;">Cancel Apply</button>
-      </div>
-      <div id="apply-status-content" class="apply-status-content apply-log-content"
-           style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
-        <em style="color:var(--text-light);">No permission applies yet.</em>
-      </div>
-    </div>
+    {# Apply Log — in-flow below the panel; rendered by apply_log_shell (permission_tree.rs) so the
+       initial markup and the /apply + /apply-progress oob swaps come from one source. #}
+    {{ apply_log_initial|safe }}
   </div>
 </div>
 

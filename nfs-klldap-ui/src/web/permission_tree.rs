@@ -22,6 +22,8 @@ struct IndexTemplate {
     keytab_alert: Option<String>,
     /// Mirrors host_nfs_mode so the template adjusts the top Ganesha notice.
     host_nfs_mode: bool,
+    /// Initial Apply Log shell rendered by apply_log_shell so oob swaps match it exactly.
+    apply_log_initial: String,
 }
 #[derive(Template)]
 #[template(path = "tree_fragment.html")]
@@ -332,6 +334,12 @@ pub(crate) async fn index(
         current_user: Some(user.0),
         keytab_alert: state.keytab_alert.lock().unwrap().clone(),
         host_nfs_mode: state.host_nfs_mode,
+        apply_log_initial: apply_log_shell(
+            r#"<em style="color:var(--text-light);">No permission applies yet.</em>"#,
+            false,
+            false,
+            false,
+        ),
     };
 
     Ok(Html(tpl.render().unwrap()))
@@ -783,34 +791,34 @@ pub(crate) async fn apply_permissions(
     let status_html = render_apply_status_oob(&cmd, "Stand-by, estimating total... (live updates below)", true);
     Ok(Html(format!("{}\n{}", placeholder, status_html)))
 }
-/// Renders oob-swappable apply-status and toggles Cancel when active.
-fn render_apply_status_oob(cmd: &str, result_or_live: &str, active_cancel: bool) -> String {
+/// Single source for the #apply-status shell (index initial state, oob updates, empty state).
+/// The ids, the apply-status-content/apply-log-content class pair and the exact
+/// data-apply-finished="true" spelling are contracts with base.html's poller JS.
+fn apply_log_shell(inner_html: &str, active_cancel: bool, finished: bool, oob: bool) -> String {
     let cancel_btn = if active_cancel {
         r#"<button type="button" onclick="if (window.cancelCurrentApply) window.cancelCurrentApply();" class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--danger-border); color:var(--danger-text); background:var(--danger-bg); border-radius:2px; cursor:pointer;">Cancel Apply</button>"#
     } else {
         r#"<button type="button" disabled class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--border); color:var(--text-light); opacity:0.6; border-radius:2px;">Cancel Apply</button>"#
     };
-    let finished_attr = if !active_cancel { r#"data-apply-finished="true""# } else { "" };
+    let oob_attr = if oob { r#" hx-swap-oob="true""# } else { "" };
+    let finished_attr = if finished { r#" data-apply-finished="true""# } else { "" };
     format!(
-        r#"<div id="apply-status" hx-swap-oob="true" class="apply-status" style="display:block;" {finished_attr}>
-    <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">
+        r#"<div id="apply-status"{oob_attr} class="apply-status" style="display:block;"{finished_attr}>
+    <div class="apply-status-hd">
       <span>Apply Log</span>
       {cancel_btn}
     </div>
-    <div id="apply-status-content" class="apply-status-content apply-log-content"
-         style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
-<strong>Command</strong>
-{cmd}
-
-<strong>Status</strong>
-{result_or_live}
+    <div id="apply-status-content" class="apply-status-content apply-log-content">
+{inner_html}
     </div>
-</div>"#,
-        finished_attr = finished_attr,
-        cancel_btn = cancel_btn,
-        cmd = cmd,
-        result_or_live = result_or_live
+</div>"#
     )
+}
+fn render_apply_status_oob(cmd: &str, result_or_live: &str, active_cancel: bool) -> String {
+    let body = format!(
+        "<strong>Command</strong>\n{cmd}\n\n<strong>Status</strong>\n{result_or_live}"
+    );
+    apply_log_shell(&body, active_cancel, !active_cancel, true)
 }
 pub(crate) async fn apply_progress(
     State(state): State<AppState>,
@@ -844,15 +852,12 @@ pub(crate) async fn apply_progress(
             };
             render_apply_status_oob(&cmd, &live_or_final, !finished)
         } else {
-            r#"<div id="apply-status" hx-swap-oob="true" class="apply-status" style="display:block;">
-    <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85em; font-weight:600; margin-bottom:4px; color:var(--text-muted);">
-      <span>Apply Log</span>
-      <button type="button" disabled class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--border); color:var(--text-light); opacity:0.6; border-radius:2px;">Cancel Apply</button>
-    </div>
-    <div id="apply-status-content" class="apply-status-content apply-log-content" style="font-family: ui-monospace, monospace; font-size:0.78em; background:var(--bg-alt); border:1px solid var(--border); border-radius:4px; padding:8px 10px; white-space:pre-wrap; line-height:1.35;">
-<em style="color:var(--text-light);">No permission apply in progress.</em>
-    </div>
-</div>"#.to_string()
+            apply_log_shell(
+                r#"<em style="color:var(--text-light);">No permission apply in progress.</em>"#,
+                false,
+                false,
+                true,
+            )
         }
     };
     Ok(Html(html))

@@ -489,6 +489,26 @@ container_path = "{}"
         assert!(has, "after POST /acl-apply + wait, shipped fs.get_dir_acl on logical path must show the entry");
     }
 
+    // GET / must carry the single-sourced Apply Log shell the poller's oob swaps replace.
+    #[tokio::test]
+    async fn index_renders_apply_log_shell() {
+        let (state, _tmp, _guard) = make_test_state_with_limited_fs_mountinfo();
+        let token = state.auth.create_privileged_session("logtest");
+        let app = router(state);
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let html = String::from_utf8_lossy(&body);
+        assert!(html.contains("apply-status-content apply-log-content"), "shell must keep the JS contract classes");
+        // Exact shell open tag: no hx-swap-oob and no data-apply-finished on the initial render.
+        assert!(
+            html.contains(r#"<div id="apply-status" class="apply-status" style="display:block;">"#),
+            "index must render the initial Apply Log shell without oob/finished attrs"
+        );
+    }
+
     // The vendored htmx asset must bypass the setup gate, and served pages must reference it (no CDN).
     #[tokio::test]
     async fn htmx_asset_served_pre_setup_and_referenced_locally() {

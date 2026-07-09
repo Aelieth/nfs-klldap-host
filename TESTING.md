@@ -51,6 +51,9 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | `ldap_service_creds` (verbatim DN, env override) | `nfs-klldap-ui/src/config.rs` |
 | Core env overrides (NFS_KLLDAP_* only for ldap_uri, bind, realm, [webui] tls etc.) + [serde(default)] for omission | `nfs-klldap-config/src/validate.rs`, `config.rs`, lib.rs tests |
 | `all_managed_roots` / `is_allowed` + host<->container path mapping | `nfs-klldap-ui/src/config.rs`, `fs.rs` |
+| Vendored htmx asset (setup-gate bypass, JS content-type, no CDN refs in served HTML) | `nfs-klldap-ui/src/web/mod.rs` (`htmx_asset_served_pre_setup_and_referenced_locally`) |
+| Apply Log shell single-sourcing (initial `/` render without oob/finished attrs, JS contract classes) | `nfs-klldap-ui/src/web/mod.rs` (`index_renders_apply_log_shell`) |
+| Server-rendered blank share card (idx propagation, NOACL defaults, tooltips present) | `nfs-klldap-ui/src/web/mod.rs` (`share_card_fragment_renders_blank_card_with_tooltips`) |
 | Generated sssd.conf shape + no dups + tls options | `nfs-klldap-config/src/lib.rs` |
 | Filesystem probe (mountinfo fixtures, acl_capable, effective flags, umask validation) | `nfs-klldap-config/src/fs_probe.rs` |
 | EXPORT Disable_ACL / Manage_Gids=true (auto NOACL default) + Pseudo (NOACL 0.9.40-style path); distinct from ACL path; Read_Access pre on NOACL only; no post/Enable/POSIX markers | `nfs-klldap-config/src/posix_only_policy.rs` (warnings), `src/generate/` (two paths), `tests/limited_fs_generate.rs`, `tests/cli_generate_gate.rs`, `tests/container_path_generate.rs`, `tests/ganesha_96_identity_audit.rs` |

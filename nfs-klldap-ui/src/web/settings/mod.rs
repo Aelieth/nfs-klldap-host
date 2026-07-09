@@ -1,6 +1,6 @@
 use askama::Template;
 use axum::{
-    extract::{Form, State},
+    extract::{Form, Query, State},
     http::HeaderMap,
     response::{Html, IntoResponse, Json, Redirect},
 };
@@ -61,6 +61,31 @@ pub(crate) struct SettingsTemplate {
     /// Reflects HOST_NFS mode where host Ganesha serves exports and WebUI.
     host_nfs_mode: bool,
 }
+/// One share card; included per row by settings.html and served blank by /settings/share-card.
+#[derive(Template)]
+#[template(path = "share_card.html")]
+struct ShareCardTemplate {
+    row: ShareTemplateRow,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ShareCardParams {
+    idx: usize,
+}
+
+/// GET /settings/share-card?idx=N — blank card for the Shares pane "+ Add share" htmx append.
+pub(crate) async fn share_card_blank(
+    State(state): State<AppState>,
+    Query(params): Query<ShareCardParams>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Redirect> {
+    let _user = require_auth(&state, &headers).await?;
+    let tpl = ShareCardTemplate {
+        row: ShareTemplateRow::blank(params.idx),
+    };
+    Ok(Html(tpl.render().unwrap()))
+}
+
 /// Self-contained restart page (JS polls until new UI ready, then to /login).
 #[derive(Template)]
 #[template(path = "restarting.html")]

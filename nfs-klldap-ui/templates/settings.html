@@ -396,105 +396,7 @@
                 </div>
 
                 <div id="shares-container">
-                  {% for row in current_shares %}
-                  <div class="share-card-ed" data-idx="{{ row.idx }}" data-fs-limited="{% if row.fs_warning.is_some() %}1{% else %}0{% endif %}">
-                    <div class="sc-hd">
-                      <button type="button" class="sc-caret">&#9656;</button>
-                      <span class="share-dot {% if row.effective_acl_capable %}acl{% else %}noacl{% endif %}"
-                            title="{% if row.effective_acl_capable %}ACL supported{% else %}Non-ACL limited{% endif %}"></span>
-                      <input class="sc-name" data-f="name" name="share_name_{{ row.idx }}" value="{{ row.name }}" placeholder="name" required>
-                      <span class="sc-sum">
-                        <span class="sc-chip">{% if row.rw %}RW{% else %}RO{% endif %}</span>
-                        <span class="sc-chip {% if !row.effective_acl_capable %}noacl{% endif %}" data-acl-chip>acl {% if row.enable_acl == "true" %}on{% else if row.enable_acl == "false" %}off{% else %}auto{% endif %}</span>
-                        {% if row.security != "" %}<span class="sc-chip">{{ row.security }}</span>{% endif %}
-                      </span>
-                      <button type="button" class="sc-del" title="Remove share">&#10005;</button>
-                    </div>
-                    <div class="sc-body">
-                      {% if let Some(warn) = row.warning %}<div class="alert alert-warning" style="font-size:.75em;padding:6px 8px;margin:0 0 8px">{{ warn }}</div>{% endif %}
-                      {% if let Some(fw) = row.fs_warning %}<div class="alert alert-warning" style="font-size:.75em;padding:6px 8px;margin:0 0 8px">{{ fw }}</div>{% endif %}
-                      <div class="fld-grid">
-                        <div class="fld wide">
-                          <label class="fld-lab" title="Path on the host that backs this share.&#10;&rarr; host_path (required)">host_path <span class="ico">i</span></label>
-                          <input type="text" data-f="host_path" name="share_host_{{ row.idx }}" value="{{ row.host_path }}" placeholder="/srv/nfs/…" required>
-                        </div>
-                        <div class="fld">
-                          <label class="fld-lab" title="Directory in the container Ganesha serves + WebUI edits.&#10;&rarr; container_path / EXPORT Path= (required)">container_path <span class="ico">i</span></label>
-                          <input type="text" data-f="container_path" name="share_container_path_{{ row.idx }}" value="{{ row.container_path }}" placeholder="/export/…" required>
-                        </div>
-                        <div class="fld">
-                          <label class="fld-lab" title="Client-visible NFSv4 mount path (server:/this).&#10;&rarr; pseudo_path / EXPORT Pseudo=">pseudo_path <span class="ico">i</span></label>
-                          <input type="text" data-f="pseudo_path" name="share_pseudo_{{ row.idx }}" value="{{ row.pseudo_path }}" placeholder="/{{ row.name }}" {% if !row.pseudo_editable %}disabled{% endif %}>
-                          {% if !row.pseudo_editable %}<small class="muted" style="font-size:.62em;display:block;margin-top:2px">auto: <code>{{ row.effective_pseudo }}</code> (NOACL export)</small>{% endif %}
-                        </div>
-                      </div>
-                      <div class="sc-optwrap">
-                        <div class="sc-access">
-                          <div class="scf">
-                            <label class="fld-lab" title="Per-share SecType override; blank = default from [ganesha].&#10;&rarr; security / EXPORT SecType">security <span class="ico">i</span></label>
-                            <select data-f="security" name="share_security_{{ row.idx }}">
-                              <option value="">default</option>
-                              <option value="krb5p" {% if row.security == "krb5p" %}selected{% endif %}>krb5p</option>
-                              <option value="krb5i" {% if row.security == "krb5i" %}selected{% endif %}>krb5i</option>
-                              <option value="krb5" {% if row.security == "krb5" %}selected{% endif %}>krb5</option>
-                            </select>
-                          </div>
-                          <div class="scf">
-                            <label class="fld-lab" title="Read-write or read-only access.&#10;&rarr; rw / CLIENT Access_Type">rw <span class="ico">i</span></label>
-                            <select data-f="rw" name="share_rw_{{ row.idx }}">
-                              <option value="true" {% if row.rw %}selected{% endif %}>RW</option>
-                              <option value="false" {% if !row.rw %}selected{% endif %}>RO</option>
-                            </select>
-                          </div>
-                          <div class="scf">
-                            <label class="fld-lab" title="On = root_squash; off = no_root_squash.&#10;&rarr; squash / EXPORT Squash">squash <span class="ico">i</span></label>
-                            <label class="chkline"><input type="checkbox" data-f="root_squash" name="share_root_squash_{{ row.idx }}" {% if row.root_squash %}checked{% endif %}> root_squash</label>
-                          </div>
-                        </div>
-                        <div class="sc-grid">
-                          <div class="scf">
-                            <label class="fld-lab" title="Read/write tuning profile.&#10;&rarr; cache_profile / PrefRead/PrefWrite">cache_profile <span class="ico">i</span></label>
-                            <select data-f="cache_profile" name="share_cache_profile_{{ row.idx }}">
-                              <option value="Default" {% if row.cache_profile == "Default" %}selected{% endif %}>Default</option>
-                              <option value="Read - Basic" {% if row.cache_profile == "Read - Basic" %}selected{% endif %}>Read - Basic</option>
-                              <option value="Read - Heavy" {% if row.cache_profile == "Read - Heavy" %}selected{% endif %}>Read - Heavy</option>
-                              <option value="Mixed Use" {% if row.cache_profile == "Mixed Use" %}selected{% endif %}>Mixed Use</option>
-                              <option value="Write - Heavy" {% if row.cache_profile == "Write - Heavy" %}selected{% endif %}>Write - Heavy</option>
-                            </select>
-                          </div>
-                          <div class="scf">
-                            <label class="fld-lab" title="on = ACL path (native NFSv4 ACL); auto/unset = NOACL default (Disable_ACL); off = explicit NOACL.&#10;&rarr; enable_acl">enable_acl <span class="ico">i</span></label>
-                            <select data-f="enable_acl" name="share_enable_acl_{{ row.idx }}">
-                              <option value="auto" {% if row.enable_acl == "auto" %}selected{% endif %}>auto (NOACL)</option>
-                              <option value="true" {% if row.enable_acl == "true" %}selected{% endif %}>on</option>
-                              <option value="false" {% if row.enable_acl == "false" %}selected{% endif %}>off</option>
-                            </select>
-                          </div>
-                          <div class="scf">
-                            <label class="fld-lab" title="Resolve supplementary gids server-side (auto defaults on).&#10;&rarr; manage_gids / Manage_Gids">manage_gids <span class="ico">i</span></label>
-                            <select data-f="manage_gids" name="share_manage_gids_{{ row.idx }}">
-                              <option value="auto" {% if row.manage_gids == "auto" %}selected{% endif %}>auto</option>
-                              <option value="true" {% if row.manage_gids == "true" %}selected{% endif %}>on</option>
-                              <option value="false" {% if row.manage_gids == "false" %}selected{% endif %}>off</option>
-                            </select>
-                          </div>
-                          <div class="scf">
-                            <label class="fld-lab" title="Read_Access_Check_Policy. ACL omits (native pre); NOACL emits pre.&#10;&rarr; read_access_policy">read_access <span class="ico">i</span></label>
-                            <select data-f="read_access_policy" name="share_read_access_policy_{{ row.idx }}">
-                              <option value="auto" {% if row.read_access_policy == "auto" %}selected{% endif %}>auto</option>
-                              <option value="pre" {% if row.read_access_policy == "pre" %}selected{% endif %}>pre</option>
-                              <option value="post" {% if row.read_access_policy == "post" %}selected{% endif %}>post</option>
-                            </select>
-                          </div>
-                          <div class="scf">
-                            <label class="fld-lab" title="Manage_Gids cache lifetime in seconds (ACL exports).&#10;&rarr; manage_gids_expiration">mg_expiration <span class="ico">i</span></label>
-                            <input type="number" data-f="manage_gids_expiration" name="share_manage_gids_expiration_{{ row.idx }}" value="{% if let Some(e) = row.manage_gids_expiration %}{{ e }}{% endif %}" placeholder="600">
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  {% endfor %}
+                  {% for row in current_shares %}{% include "share_card.html" %}{% endfor %}
                 </div>
 
                 <button type="button" id="add-share" class="add-share">+ Add share</button>
@@ -608,40 +510,15 @@
     if (e.target.closest('#add-share')) { addShareRow(); markDirty(); return; }
   });
 
-  function shareCardHtml(idx) {
-    const p = 'share_';
-    return '' +
-    '<div class="share-card-ed open" data-idx="' + idx + '" data-fs-limited="0">' +
-      '<div class="sc-hd">' +
-        '<button type="button" class="sc-caret">&#9656;</button>' +
-        '<span class="share-dot noacl" title="Non-ACL limited"></span>' +
-        '<input class="sc-name" data-f="name" name="' + p + 'name_' + idx + '" placeholder="name" required>' +
-        '<span class="sc-sum"><span class="sc-chip">RW</span><span class="sc-chip noacl" data-acl-chip>acl auto</span></span>' +
-        '<button type="button" class="sc-del" title="Remove share">&#10005;</button>' +
-      '</div>' +
-      '<div class="sc-body"><div class="fld-grid">' +
-        '<div class="fld wide"><label class="fld-lab">host_path <span class="ico">i</span></label><input type="text" data-f="host_path" name="' + p + 'host_' + idx + '" placeholder="/srv/nfs/…" required></div>' +
-        '<div class="fld"><label class="fld-lab">container_path <span class="ico">i</span></label><input type="text" data-f="container_path" name="' + p + 'container_path_' + idx + '" placeholder="/export/…" required></div>' +
-        '<div class="fld"><label class="fld-lab">pseudo_path <span class="ico">i</span></label><input type="text" data-f="pseudo_path" name="' + p + 'pseudo_' + idx + '" placeholder="/name"></div>' +
-      '</div><div class="sc-optwrap"><div class="sc-access">' +
-        '<div class="scf"><label class="fld-lab">security <span class="ico">i</span></label><select data-f="security" name="' + p + 'security_' + idx + '"><option value="">default</option><option value="krb5p">krb5p</option><option value="krb5i">krb5i</option><option value="krb5">krb5</option></select></div>' +
-        '<div class="scf"><label class="fld-lab">rw <span class="ico">i</span></label><select data-f="rw" name="' + p + 'rw_' + idx + '"><option value="true">RW</option><option value="false">RO</option></select></div>' +
-        '<div class="scf"><label class="fld-lab">squash <span class="ico">i</span></label><label class="chkline"><input type="checkbox" data-f="root_squash" name="' + p + 'root_squash_' + idx + '"> root_squash</label></div>' +
-      '</div><div class="sc-grid">' +
-        '<div class="scf"><label class="fld-lab">cache_profile <span class="ico">i</span></label><select data-f="cache_profile" name="' + p + 'cache_profile_' + idx + '"><option>Default</option><option>Read - Basic</option><option>Read - Heavy</option><option>Mixed Use</option><option>Write - Heavy</option></select></div>' +
-        '<div class="scf"><label class="fld-lab" title="on = ACL path; auto/unset = NOACL default (Disable_ACL); off = explicit NOACL.&#10;&rarr; enable_acl">enable_acl <span class="ico">i</span></label><select data-f="enable_acl" name="' + p + 'enable_acl_' + idx + '"><option value="auto">auto (NOACL)</option><option value="true">on</option><option value="false">off</option></select></div>' +
-        '<div class="scf"><label class="fld-lab">manage_gids <span class="ico">i</span></label><select data-f="manage_gids" name="' + p + 'manage_gids_' + idx + '"><option value="auto">auto</option><option value="true">on</option><option value="false">off</option></select></div>' +
-        '<div class="scf"><label class="fld-lab">read_access <span class="ico">i</span></label><select data-f="read_access_policy" name="' + p + 'read_access_policy_' + idx + '"><option value="auto">auto</option><option value="pre">pre</option><option value="post">post</option></select></div>' +
-        '<div class="scf"><label class="fld-lab">mg_expiration <span class="ico">i</span></label><input type="number" data-f="manage_gids_expiration" name="' + p + 'manage_gids_expiration_' + idx + '" placeholder="600"></div>' +
-      '</div></div></div>' +
-    '</div>';
-  }
+  // New cards come from the server (share_card.html) so Askama stays the single card source.
   function addShareRow() {
     const idx = nextShareIdx++;
-    const tmp = document.createElement('div');
-    tmp.innerHTML = shareCardHtml(idx);
-    container.appendChild(tmp.firstElementChild);
-    buildToml();
+    htmx.ajax('GET', '/settings/share-card?idx=' + idx,
+      { target: '#shares-container', swap: 'beforeend' }).then(() => {
+        const card = container.lastElementChild;
+        if (card) card.classList.add('open');
+        buildToml();
+      });
   }
 
   // ---------- live [[shares]] TOML (regenerated from the form; changed lines highlighted) ----------

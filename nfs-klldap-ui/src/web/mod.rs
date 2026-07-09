@@ -39,7 +39,7 @@ pub(crate) use permission_tree::{
 pub(crate) use settings::{
     clear_ldap_cache, lldap_status, reload_nfs_client, restart_status, settings_page,
     settings_save_raw, settings_save_structured, settings_save_shares,
-    settings_test_bind, settings_test_ldap, system_restart,
+    settings_test_bind, settings_test_ldap, share_card_blank, system_restart,
 };
 
 /// Shared state for all handlers.
@@ -189,6 +189,7 @@ pub fn router(state: AppState) -> Router {
 
         // The === protected is System Settings + LLDAP client management ===.
         .route("/settings", get(settings_page))
+        .route("/settings/share-card", get(share_card_blank))
         .route("/settings/save-raw", post(settings_save_raw))
         .route("/settings/save", post(settings_save_structured))
         .route("/settings/save-shares", post(settings_save_shares))
@@ -487,6 +488,27 @@ container_path = "{}"
             matches!(&e.kind, crate::privileged::AclEntryKind::User(4242)) && e.perms.to_str() == "r-x"
         });
         assert!(has, "after POST /acl-apply + wait, shipped fs.get_dir_acl on logical path must show the entry");
+    }
+
+    // GET /settings/share-card must render a blank card with the field tooltips the JS copy had lost.
+    #[tokio::test]
+    async fn share_card_fragment_renders_blank_card_with_tooltips() {
+        let (state, _tmp, _guard) = make_test_state_with_limited_fs_mountinfo();
+        let token = state.auth.create_privileged_session("cardtest");
+        let app = router(state);
+        let req = Request::builder().uri("/settings/share-card?idx=3").body(Body::empty()).unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let html = String::from_utf8_lossy(&body);
+        assert!(html.contains(r#"name="share_name_3""#), "blank card must carry the requested idx");
+        assert!(
+            html.contains("share-dot noacl") && html.contains(r#"title="Non-ACL limited""#),
+            "blank card defaults to the NOACL dot"
+        );
+        assert!(html.contains("Path on the host that backs this share."), "field tooltips must be present on new cards");
+        assert!(!html.contains("share-card-ed open"), "server sends the card closed; the JS opens it after insert");
     }
 
     // GET / must carry the single-sourced Apply Log shell the poller's oob swaps replace.

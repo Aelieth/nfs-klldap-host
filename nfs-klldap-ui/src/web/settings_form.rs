@@ -47,6 +47,33 @@ pub(crate) struct ShareTemplateRow {
     pub fs_warning: Option<String>,
 }
 
+impl ShareTemplateRow {
+    /// Blank row for the "+ Add share" card, matching the pre-server-render JS defaults
+    /// (RW, unchecked root_squash, auto/NOACL selects, editable pseudo path).
+    pub(crate) fn blank(idx: usize) -> Self {
+        Self {
+            idx,
+            name: String::new(),
+            host_path: String::new(),
+            pseudo_path: String::new(),
+            pseudo_editable: true,
+            effective_pseudo: String::new(),
+            container_path: String::new(),
+            security: String::new(),
+            rw: true,
+            root_squash: false,
+            cache_profile: "Default".to_string(),
+            enable_acl: "auto".to_string(),
+            effective_acl_capable: false,
+            manage_gids: "auto".to_string(),
+            read_access_policy: "auto".to_string(),
+            manage_gids_expiration: None,
+            warning: None,
+            fs_warning: None,
+        }
+    }
+}
+
 pub(crate) fn has_explicit(doc: &toml_edit::DocumentMut, section: &str, key: &str) -> bool {
     if section.is_empty() {
         doc.get(key).is_some()

@@ -598,19 +598,16 @@
         })();
     </script>
     <script>
-        // === Theme manager (3-state: auto / dark / light) ===
-        // Persists in localStorage 'theme'. Auto follows prefers-color-scheme live.
-        // data-theme on <html> drives CSS (explicit wins; absent/removed => media).
+        // === Theme manager (auto / dark / light; localStorage 'theme'; data-theme on <html>) ===
+        // Isolated in its own script block so an error in the page script can never break theming.
         window.setTheme = function(mode) {
             try { localStorage.setItem('theme', mode); } catch (e) {}
             var root = document.documentElement;
             if (mode === 'light' || mode === 'dark') {
                 root.setAttribute('data-theme', mode);
             } else {
-                // auto: remove explicit so media query controls
                 root.removeAttribute('data-theme');
             }
-            // Sync radio tray if present
             var tray = document.getElementById('theme-tray');
             if (tray) {
                 var radio = tray.querySelector('input[name="theme-choice"][value="' + mode + '"]');
@@ -618,49 +615,46 @@
             }
         };
 
-        function initThemeTray() {
-            var tray = document.getElementById('theme-tray');
-            if (!tray) return;
+        // Delegated to document (never document.body — head scripts run before body exists).
+        document.addEventListener('change', function (e) {
+            var t = e.target;
+            if (t && t.name === 'theme-choice' && t.checked) window.setTheme(t.value);
+        });
 
-            // Determine current effective + saved
-            var saved = null;
-            try { saved = localStorage.getItem('theme'); } catch (e) {}
-            var current = saved || 'auto';
-
-            // Select the matching radio
-            var toCheck = tray.querySelector('input[name="theme-choice"][value="' + current + '"]');
-            if (toCheck) toCheck.checked = true;
-
-            // Wire radios (change handler)
-            tray.querySelectorAll('input[name="theme-choice"]').forEach(function(r) {
-                r.addEventListener('change', function() {
-                    if (this.checked) {
-                        window.setTheme(this.value);
-                    }
-                });
-            });
-
-            // Live system change listener (only while in auto)
+        (function () {
             var mql = window.matchMedia('(prefers-color-scheme: dark)');
             function onSystemChange() {
                 var s = null;
                 try { s = localStorage.getItem('theme'); } catch (e) {}
                 if (!s || s === 'auto') {
-                    // Re-apply by removing data-theme (media will pick new)
-                    var rt = document.documentElement;
-                    rt.removeAttribute('data-theme');
-                    // Keep tray on auto
-                    var ar = tray.querySelector('input[name="theme-choice"][value="auto"]');
+                    document.documentElement.removeAttribute('data-theme');
+                    var tray = document.getElementById('theme-tray');
+                    var ar = tray && tray.querySelector('input[name="theme-choice"][value="auto"]');
                     if (ar) ar.checked = true;
                 }
             }
             if (mql && mql.addEventListener) {
                 mql.addEventListener('change', onSystemChange);
             } else if (mql && mql.addListener) {
-                mql.addListener(onSystemChange); // older
+                mql.addListener(onSystemChange);
             }
-        }
 
+            function syncTrayToSaved() {
+                var tray = document.getElementById('theme-tray');
+                if (!tray) return;
+                var saved = null;
+                try { saved = localStorage.getItem('theme'); } catch (e) {}
+                var toCheck = tray.querySelector('input[name="theme-choice"][value="' + (saved || 'auto') + '"]');
+                if (toCheck) toCheck.checked = true;
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', syncTrayToSaved);
+            } else {
+                syncTrayToSaved();
+            }
+        })();
+    </script>
+    <script>
         // ===== Detached "Share Permissions" panel behaviour (replaces inline dir-meta/editor/acl) =====
         // Shared on window so index.html's page script and the apply poller can coordinate lock state.
         window.applyInProgress = false;
@@ -1016,9 +1010,8 @@
         document.addEventListener('htmx:oobAfterSwap', syncApplyLogHeight);
 
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', function () { initThemeTray(); initApplyLogAutosize(); });
+            document.addEventListener('DOMContentLoaded', initApplyLogAutosize);
         } else {
-            initThemeTray();
             initApplyLogAutosize();
         }
     </script>

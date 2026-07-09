@@ -12,7 +12,7 @@
   and the existing context vars + override_* checkbox semantics (the
   Auto/Custom segmented control just drives the same hidden override_* checkbox).
 
-  Two NEW lightweight endpoints power the Diagnostics buttons (see handoff/README.md):
+  Two lightweight endpoints in web/settings/ power the Diagnostics buttons:
     POST /settings/test-ldap  { ldap_uri }                       -> JSON {ok, log, message?, error?}
     POST /settings/test-bind  { ldap_default_bind_dn, ldap_default_authtok } -> JSON {ok, log, ...}
   Reuse the probe logic from /setup/2/test and /setup/3/test. A failing test never blocks Save.
@@ -72,9 +72,7 @@
   .toml-side{flex:0 0 clamp(288px, 100% - 656px, 460px);min-width:0;position:sticky;top:8px}
   .side-hd{font:700 .72em ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:.05em;color:var(--text-light);margin-bottom:6px}
   .shares-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
-  .sh-legend{display:flex;align-items:center;gap:14px;font-size:.74em;color:var(--text-muted);padding:6px 11px;background:var(--bg-alt);border:1px solid var(--border-light);border-radius:6px}
-  .sh-lg-lbl{font-weight:700;text-transform:uppercase;letter-spacing:.04em;font-size:.9em;color:var(--text-light)}
-  .sh-lg-key{display:inline-flex;align-items:center;gap:6px}
+  .shares-toolbar .perm-legend{margin:0}
   .sh-bulk{display:flex;gap:6px;margin-left:auto}
   .sh-bulk button{border:1px solid var(--border);background:var(--bg);color:var(--text-muted);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:.78em;font-family:inherit}
   .sh-bulk button:hover{border-color:var(--accent);color:var(--text)}
@@ -83,9 +81,6 @@
   .sc-hd{display:flex;align-items:center;gap:9px}
   .sc-caret{flex:none;width:22px;height:22px;border:0;background:transparent;color:var(--text-light);cursor:pointer;font-size:.8em;transition:transform .12s;display:inline-flex;align-items:center;justify-content:center;font-family:inherit}
   .share-card-ed.open .sc-caret{transform:rotate(90deg)}
-  .share-dot{width:10px;height:10px;border-radius:50%;flex:none}
-  .share-dot.acl{background:var(--success-border);box-shadow:0 0 0 2px var(--success-bg)}
-  .share-dot.noacl{background:var(--noacl);box-shadow:0 0 0 2px var(--noacl-ring)}
   .sc-name{flex:1;font:700 .98em ui-monospace,Menlo,monospace;padding:5px 8px}
   .sc-sum{display:flex;gap:5px;flex-wrap:wrap;flex:none}
   .share-card-ed.open .sc-sum{display:none}
@@ -389,10 +384,10 @@
             <div class="shares-split">
               <div class="shares-col">
                 <div class="shares-toolbar">
-                  <div class="sh-legend">
-                    <span class="sh-lg-lbl">Legend</span>
-                    <span class="sh-lg-key"><span class="share-dot acl"></span>ACL supported</span>
-                    <span class="sh-lg-key"><span class="share-dot noacl"></span>Non-ACL limited</span>
+                  <div class="perm-legend">
+                    <span class="lbl">Legend</span>
+                    <span class="key"><span class="legend-dot acl"></span>ACL supported</span>
+                    <span class="key"><span class="legend-dot noacl"></span>Non-ACL limited</span>
                   </div>
                   <div class="sh-bulk">
                     <button type="button" data-shbulk="expand">Expand all</button>
@@ -613,10 +608,6 @@
     if (e.target.closest('#add-share')) { addShareRow(); markDirty(); return; }
   });
 
-  function sel(f, idx, opts) {
-    return '<select data-f="' + f + '" name="share_' + f.replace('root_squash','root_squash') + '_' + idx + '">' +
-      opts.map(o => '<option value="' + o[0] + '">' + o[1] + '</option>').join('') + '</select>';
-  }
   function shareCardHtml(idx) {
     const p = 'share_';
     return '' +

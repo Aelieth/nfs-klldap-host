@@ -174,7 +174,6 @@
         .tree { margin-left: 0.5rem; padding-left: 20px; } /* condensed: was margin 1rem + ~40px ul default */
         .dir { cursor: pointer; }
         .dir:hover { background: var(--dir-hover); }
-        .form { margin-top: 1rem; padding: 1rem; border: 1px solid var(--border); background: var(--bg); }
 
         input, select, textarea {
             background: var(--input-bg);
@@ -216,6 +215,15 @@
         .btn-primary:hover {
             filter: brightness(1.08);
             background: var(--accent);
+        }
+        .btn-danger {
+            background: var(--danger-border);
+            color: #fff;
+            border-color: var(--danger-border);
+        }
+        .btn-danger:hover {
+            filter: brightness(1.08);
+            background: var(--danger-border);
         }
         .btn:disabled {
             opacity: 0.55;
@@ -275,22 +283,6 @@
         }
         /* Empty dropdowns are always in the DOM; hide them so the bordered box doesn't show as a stray line. */
         .suggestions:empty { display: none; }
-        .current-state {
-            background: var(--bg-alt);
-            border: 1px solid var(--border);
-            padding: 8px 12px;
-            margin: 12px 0;
-            font-size: 0.9em;
-            border-radius: 4px;
-        }
-        .state-label {
-            font-weight: 600;
-            color: var(--text-muted);
-        }
-        .mode-hint {
-            color: var(--text-light);
-            font-size: 0.85em;
-        }
 
         /* Chunked sections on the settings page for better differentiation (addresses overwhelming flat form).
            Uses existing --card-bg (subtle blue tint in light, #252b35 in dark) + border. */
@@ -319,7 +311,6 @@
             border-radius: 2px;
             box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
         }
-        .suggestions { max-height: 320px; } /* room for 25 items + scroll */
 
         /* Apply Log styling (now an in-flow section — see the .perm-panel / .apply-log-content
            rules appended below). Shared monospace log look with the settings mono-log panel. */
@@ -370,7 +361,7 @@
 
         /* Better contrast for headings and small text in dark mode */
         h1, h2, h3 { color: var(--text); }
-        small, .text-muted { color: var(--text-light); }
+        small { color: var(--text-light); }
 
         /* Make the server-rendered status boxes (in settings) adapt better */
         #nfs-client-status {
@@ -434,8 +425,7 @@
                               min-height:var(--share-card-h); overflow:auto; margin-bottom:10px;
                               padding-right:4px; }
         #current-share-title { flex:0 0 auto; }
-        #tree-root,
-        .tree-host          { flex:1 1 auto; min-height:150px; overflow:auto; padding-right:4px; }
+        #tree-root          { flex:1 1 auto; min-height:150px; overflow:auto; padding-right:4px; }
 
         .perm-legend        { display:flex; gap:16px; flex-wrap:wrap; align-items:center;
                               margin:0 0 14px; padding:7px 11px; background:var(--bg-alt);

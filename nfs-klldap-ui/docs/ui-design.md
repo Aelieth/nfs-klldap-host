@@ -18,6 +18,9 @@ symbolic readout) and, beside it, the **named ACL/xattr** list. POSIX Apply POST
 `/apply` (chown/chmod, incl. setgid/sticky — only setuid is refused); ACL add/remove POST `/acl-apply`
 (names resolved via LDAP, same as POSIX). Edit mode locks tree/share selection until Cancel/Apply,
 and the Apply Log is in-flow below the panel (driven by `/apply-progress` polling + oob swaps).
+When a directory can't be stat'd (serve path missing, unmapped, or unreadable), the panel replaces
+the split editors with a full-width diagnostic (`.panel-alert`) that names the cause, the fix, and the
+host + serve paths — `dir_perms` picks the message per `PathDiagnostic` (allowed / mapped / exists).
 
 ACL support is shown only when the share **actually serves ACLs**: `enable_acl = true` AND the
 serve-path filesystem is ACL-capable. If `enable_acl = true` but the filesystem cannot honor ACLs

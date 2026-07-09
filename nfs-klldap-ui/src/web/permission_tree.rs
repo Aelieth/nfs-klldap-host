@@ -73,9 +73,12 @@ pub(crate) struct DirPermsTemplate {
     g_r: bool, g_w: bool, g_x: bool,
     o_r: bool, o_w: bool, o_x: bool,
     setgid: bool, sticky: bool,
-    /// False when the directory could not be stat'd; the template shows meta_hint and hides Apply.
+    /// False when the directory could not be stat'd; the template shows a full-width diagnostic
+    /// (meta_hint + the paths below) instead of the POSIX/ACL editors.
     meta_available: bool,
     meta_hint: String,
+    /// Serve (container) path shown in the diagnostic; empty when it could not be resolved.
+    serve_path_display: String,
     acl_supported: bool,
     acl_reason: String,
     users: Vec<AclEntryView>,
@@ -467,10 +470,16 @@ pub(crate) async fn dir_perms(
         meta_available = true;
     } else {
         // Askama escapes {{ meta_hint }}, so keep it plain text (no manual HTML escaping).
-        meta_hint = if !diag.container_exists {
-            format!("Serve path {} is missing — set container_path to the directory inside the container where this share is bind-mounted.", diag.serve_path)
+        // Cover the distinct failure modes so the message names a cause and a fix; the paths
+        // themselves are shown separately (host path + serve path) by the template.
+        meta_hint = if !diag.allowed {
+            "This directory is outside the managed share roots, so its permissions can't be read here.".to_string()
+        } else if diag.container_path.is_none() {
+            "This host path couldn't be mapped to a serve path. Check the share's host_path and container_path in System Settings.".to_string()
+        } else if !diag.container_exists {
+            "The serve path below doesn't exist. Create it, or set the share's container_path to the directory where this share is bind-mounted.".to_string()
         } else {
-            format!("Serve path {} exists but its metadata could not be read (permissions?).", diag.serve_path)
+            "The serve path below exists, but its ownership and mode couldn't be read — the WebUI may lack permission to stat it.".to_string()
         };
     }
 
@@ -508,6 +517,11 @@ pub(crate) async fn dir_perms(
         setgid, sticky,
         meta_available,
         meta_hint,
+        serve_path_display: diag
+            .container_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| diag.serve_path.clone()),
         acl_supported,
         acl_reason,
         users,

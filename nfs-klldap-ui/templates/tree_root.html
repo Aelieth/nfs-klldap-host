@@ -10,7 +10,7 @@
           style="cursor: pointer; user-select: none; font-weight: 600;">
       ▶ {{ root.name }}
     </span>
-    <div class="children" style="margin-left: 1.5em;" data-loaded="true">
+    <div class="children" style="margin-left: 0.75em;" data-loaded="true">
       {# Direct children of the root (pre-rendered for the initial view).
          data-loaded avoids redundant fetch on expand. #}
       <ul class="tree">
@@ -21,7 +21,7 @@
                 style="cursor: pointer; user-select: none;">
             ▶ {{ child.name }}
           </span>
-          <div class="children" style="margin-left: 1.5em;"></div>
+          <div class="children" style="margin-left: 0.75em;"></div>
         </li>
       {% endfor %}
       </ul>

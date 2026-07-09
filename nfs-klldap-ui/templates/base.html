@@ -161,7 +161,7 @@
         body { font-family: system-ui, sans-serif; margin: 2rem; }
         a { color: var(--link); }
 
-        .tree { margin-left: 1rem; }
+        .tree { margin-left: 0.5rem; padding-left: 20px; } /* condensed: was margin 1rem + ~40px ul default */
         .dir { cursor: pointer; }
         .dir:hover { background: var(--dir-hover); }
         .form { margin-top: 1rem; padding: 1rem; border: 1px solid var(--border); background: var(--bg); }
@@ -263,6 +263,8 @@
             min-width: 220px;
             margin-top: 2px;
         }
+        /* Empty dropdowns are always in the DOM; hide them so the bordered box doesn't show as a stray line. */
+        .suggestions:empty { display: none; }
         .current-state {
             background: var(--bg-alt);
             border: 1px solid var(--border);
@@ -414,12 +416,19 @@
         :root { --noacl:#1e40af; --noacl-ring:rgba(96,140,240,.35); }
 
         .perm-layout        { display:flex; gap:18px; align-items:flex-start; flex-wrap:wrap; }
-        .perm-side          { flex:1 1 auto; min-width:200px; }
+        /* Left column is a flex stack: the tree (main focus) gets vertical priority; the shares list is capped.
+           flex-basis:0 so the long (non-wrapping) share paths don't inflate the column and wrap the panel off-row. */
+        .perm-side          { flex:1 1 0; min-width:200px; display:flex; flex-direction:column;
+                              max-height:min(86vh,900px); }
         .perm-main          { flex:0 0 560px; max-width:560px; }
-        .shares-host        { display:flex; flex-direction:column; gap:6px; margin-bottom:12px;
-                              max-height:min(34vh,300px); overflow:auto; padding-right:4px; }
+        /* Shares list: at most 5 cards on screen (--share-card-h * 5), never fewer than 1; scrolls beyond. */
+        .shares-host        { --share-card-h:70px; display:flex; flex-direction:column; gap:6px;
+                              flex:0 1 auto; max-height:calc(var(--share-card-h) * 5);
+                              min-height:var(--share-card-h); overflow:auto; margin-bottom:10px;
+                              padding-right:4px; }
+        #current-share-title { flex:0 0 auto; }
         #tree-root,
-        .tree-host          { max-height:min(46vh,360px); overflow:auto; padding-right:4px; }
+        .tree-host          { flex:1 1 auto; min-height:150px; overflow:auto; padding-right:4px; }
 
         .perm-legend        { display:flex; gap:16px; flex-wrap:wrap; align-items:center;
                               margin:0 0 14px; padding:7px 11px; background:var(--bg-alt);
@@ -433,13 +442,18 @@
         .legend-dot.noacl   { background:var(--noacl);          box-shadow:0 0 0 2px var(--noacl-ring); }
         .legend-dot.editing { background:var(--warning-amber-border); box-shadow:0 0 0 2px var(--warning-amber-bg); }
 
-        .share-card .share-hd   { display:flex; align-items:center; gap:7px; }
+        .share-card .share-hd   { display:flex; align-items:center; gap:7px; min-width:0; }
+        .share-card .share-hd strong { flex:none; white-space:nowrap; }
         .share-dot              { width:9px; height:9px; border-radius:50%; flex:none; }
         .share-dot.acl          { background:var(--success-border); box-shadow:0 0 0 2px var(--success-bg); }
         .share-dot.noacl        { background:var(--noacl);          box-shadow:0 0 0 2px var(--noacl-ring); }
         .share-card.noacl:not(.active) { background:var(--bg-alt); }
         .share-card.active      { border-color:var(--accent); background:var(--selected-bg); }
-        .share-path             { color:var(--text-light); font-size:.85em; margin-top:2px; }
+        /* Inline host-path info box: takes the remaining header width, ellipsizes (full path in title). */
+        .share-pathbox          { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
+                                  white-space:nowrap; font-family:ui-monospace,monospace; font-size:.78em;
+                                  color:var(--text-light); background:var(--bg); border:1px solid var(--border);
+                                  border-radius:3px; padding:1px 7px; }
         .share-chips            { display:flex; gap:5px; flex-wrap:wrap; margin-top:7px; }
         .share-chip             { font-size:.82em; padding:1px 8px; border-radius:20px; white-space:nowrap;
                                   background:var(--accent-light); color:var(--text);
@@ -470,10 +484,24 @@
         .perm-recursive     { font-size:.75em; white-space:nowrap; align-items:center; gap:4px; }
 
         .perm-body          { margin-top:12px; }
-        .perm-body.split    { display:flex; gap:16px; align-items:stretch; }
-        .perm-body.split .posix-sec { flex:0 0 250px; }
-        .perm-body.split .acl-sec   { flex:1; min-width:0; }
-        .perm-body .divider { width:1px; background:var(--border-light); }
+        /* Split lives on an inner wrapper so a full-width diagnostic (below) isn't dragged into the flex row. */
+        .perm-split         { display:flex; gap:16px; align-items:stretch; }
+        .perm-split .posix-sec { flex:0 0 250px; }
+        .perm-split .acl-sec   { flex:1; min-width:0; }
+        .perm-split .divider { width:1px; background:var(--border-light); }
+
+        /* Full-width diagnostic shown when a directory can't be stat'd (missing serve path, etc.). */
+        .panel-alert        { border:1px solid var(--warning-amber-border); background:var(--warning-amber-bg);
+                              color:var(--warning-amber-text); border-radius:6px; padding:11px 13px; }
+        .panel-alert-hd     { font-weight:700; font-size:.9em; margin-bottom:5px; }
+        .panel-alert-msg    { margin:0 0 9px; font-size:.86em; line-height:1.45; }
+        .panel-alert-paths  { display:grid; grid-template-columns:auto 1fr; gap:4px 10px; margin:0;
+                              font-size:.82em; align-items:baseline; }
+        .panel-alert-paths dt { color:var(--text-light); font-weight:600; white-space:nowrap; }
+        .panel-alert-paths dd { margin:0; min-width:0; }
+        .panel-alert-paths code { display:inline-block; max-width:100%; word-break:break-all;
+                              background:var(--bg); border:1px solid var(--border-light);
+                              border-radius:3px; padding:1px 6px; }
 
         .sec-title          { font-size:.7em; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
                               color:var(--text-muted); margin-bottom:8px; display:flex; align-items:center; gap:7px; }
@@ -547,9 +575,10 @@
         /* Narrow screens: let the panel take the full width and stack POSIX above ACL. */
         @media (max-width:640px) {
           .perm-main       { flex:1 1 100%; max-width:100%; }
-          .perm-body.split { display:block; }
-          .perm-body.split .posix-sec { margin-bottom:14px; }
-          .perm-body .divider { display:none; }
+          .perm-side       { max-height:none; } /* stacked: let shares + tree flow naturally */
+          .perm-split      { display:block; }
+          .perm-split .posix-sec { margin-bottom:14px; }
+          .perm-split .divider { display:none; }
         }
     </style>
     <!-- Early theme init (before body paint) to avoid FOUC. Sets data-theme based on localStorage or system. -->
@@ -662,6 +691,18 @@
             } else if (!on && banner) { banner.remove(); }
         }
 
+        // Apply Log grows with the panel: cap its height at 90% of the Permissions panel's height.
+        function syncApplyLogHeight() {
+            const pl = panel();
+            const log = document.querySelector('#apply-status .apply-log-content');
+            if (pl && log) log.style.maxHeight = Math.round(pl.offsetHeight * 0.9) + 'px';
+        }
+        function initApplyLogAutosize() {
+            syncApplyLogHeight();
+            if (window.ResizeObserver && panel()) new ResizeObserver(syncApplyLogHeight).observe(panel());
+        }
+        window.addEventListener('resize', syncApplyLogHeight);
+
         // Clear the hidden numeric uid/gid when the visible owner/group name is edited by hand, so
         // Apply re-resolves the typed name via LDAP (matches the old inline editor's translation).
         function attachEditorInputListeners(root) {
@@ -690,6 +731,7 @@
                     setPanelMode(false);
                     recomputeMode();
                     attachEditorInputListeners(pbody());
+                    syncApplyLogHeight();
                 });
         };
 
@@ -808,20 +850,28 @@
             if (dir && dir.dataset.path) {
                 if (window.permIsLocked()) { window.permFlashLock(); e.stopPropagation(); return; }
                 const path = dir.dataset.path;
-                document.querySelectorAll('#tree-root .dir.selected').forEach(d => d.classList.remove('selected'));
-                dir.classList.add('selected');
-                window.loadDirPerms(path);
-                // Expand children (lazy 1-level fetch) and flip the caret glyph.
+                // Select + load perms only when the selection changes, so a collapse click keeps the panel.
+                if (!dir.classList.contains('selected')) {
+                    document.querySelectorAll('#tree-root .dir.selected').forEach(d => d.classList.remove('selected'));
+                    dir.classList.add('selected');
+                    window.loadDirPerms(path);
+                }
+                // Toggle this node: collapse if expanded, else lazy 1-level fetch + expand. Caret ▶/▼ tracks state.
                 let sib = dir.nextElementSibling;
                 while (sib && !sib.classList.contains('children')) sib = sib.nextElementSibling;
                 if (sib) {
-                    if (sib.dataset.loaded !== 'true') {
-                        htmx.ajax('GET', '/fs/children?path=' + encodeURIComponent(path),
-                            { target: sib, swap: 'innerHTML' });
-                        sib.dataset.loaded = 'true';
+                    if (dir.textContent.indexOf('▼') !== -1) {
+                        sib.style.display = 'none';
+                        dir.textContent = dir.textContent.replace('▼', '▶');
+                    } else {
+                        if (sib.dataset.loaded !== 'true') {
+                            htmx.ajax('GET', '/fs/children?path=' + encodeURIComponent(path),
+                                { target: sib, swap: 'innerHTML' });
+                            sib.dataset.loaded = 'true';
+                        }
+                        sib.style.display = '';
+                        dir.textContent = dir.textContent.replace('▶', '▼');
                     }
-                    sib.style.display = '';
-                    dir.textContent = dir.textContent.replace('▶', '▼');
                 }
                 return;
             }
@@ -888,7 +938,7 @@
         });
 
         // ===== Suggestion dropdown selection (owner/group search) + outside-click dismiss =====
-        document.body.addEventListener('click', function (evt) {
+        document.addEventListener('click', function (evt) {
             const suggestion = evt.target.closest('.suggestion');
             if (!suggestion) return;
             const suggBox = suggestion.closest('.suggestions');
@@ -922,7 +972,7 @@
                 t.closest('input[name="owner_user"], input[name="owner_group"], .acl-add-name')) return;
             document.querySelectorAll('.suggestions').forEach(el => { if (el.innerHTML.trim()) el.innerHTML = ''; });
         }, true);
-        document.body.addEventListener('focusout', function (evt) {
+        document.addEventListener('focusout', function (evt) {
             const input = evt.target;
             if (!input || !input.matches || !input.matches('input[name="owner_user"], input[name="owner_group"], .acl-add-name')) return;
             setTimeout(() => {
@@ -934,7 +984,7 @@
         });
 
         // ===== Apply lifecycle: /apply placeholder -> poller -> finish refetch of /dir-perms =====
-        document.body.addEventListener('htmx:afterSwap', function (evt) {
+        document.addEventListener('htmx:afterSwap', function (evt) {
             const t = evt.detail && evt.detail.target;
             if (!t || !t.closest || !t.closest('#perm-panel .perm-body')) return;
             recomputeMode();
@@ -948,7 +998,7 @@
                 setTreeLock(false);
             }
         });
-        document.body.addEventListener('htmx:afterOnLoad', function (evt) {
+        document.addEventListener('htmx:afterOnLoad', function (evt) {
             const elt = evt.detail && evt.detail.elt;
             if (!elt || elt.id !== 'apply-poller') return;
             const xhr = evt.detail.xhr;
@@ -962,11 +1012,14 @@
             setTreeLock(false);
             if (path) window.loadDirPerms(path);
         });
+        // Each apply-status oob swap replaces .apply-log-content, dropping its inline cap — re-apply it.
+        document.addEventListener('htmx:oobAfterSwap', syncApplyLogHeight);
 
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', initThemeTray);
+            document.addEventListener('DOMContentLoaded', function () { initThemeTray(); initApplyLogAutosize(); });
         } else {
             initThemeTray();
+            initApplyLogAutosize();
         }
     </script>
 </head>

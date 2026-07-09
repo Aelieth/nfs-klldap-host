@@ -35,8 +35,9 @@
           <span class="share-dot {% if share.acl_capable %}acl{% else %}noacl{% endif %}"
                 title="{% if share.acl_capable %}ACL supported{% else %}Non-ACL limited{% endif %}"></span>
           <strong>{{ share.name }}</strong>
+          {# Host path as an inline info box on the name's line — frees vertical space for more cards. #}
+          <code class="share-pathbox" title="{{ share.host_path }}">{{ share.host_path }}</code>
         </div>
-        <div class="share-path"><code>{{ share.host_path }}</code></div>
         <div class="share-chips">
           <span class="share-chip">{{ share.access }}</span>
           <span class="share-chip">{{ share.squash_label }}</span>
@@ -81,8 +82,8 @@
           <button type="button" class="btn btn-primary btn-apply" style="display:none">Apply</button>
         </div>
       </div>
-      {# Fragment body from /dir-perms is injected here (split on wide, stacked on narrow). #}
-      <div class="perm-body split"><em style="color:var(--text-light);font-size:.85em">Select a directory to view its permissions.</em></div>
+      {# Fragment body from /dir-perms is injected here; it owns its own split/diagnostic layout. #}
+      <div class="perm-body"><em style="color:var(--text-light);font-size:.85em">Select a directory to view its permissions.</em></div>
     </div>
 
     {# Apply Log — in-flow below the panel. Markup matches render_apply_status_oob so oob swaps

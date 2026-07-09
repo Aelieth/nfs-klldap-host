@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 
 {% block content %}
+<div class="content-narrow">
 <h2>First-run setup <span style="font-size:0.75em; color:var(--text-muted);">Step 1 of 3</span></h2>
 
 <ul style="font-size:0.9em; color:var(--text-muted); list-style:none; padding:0;">
@@ -49,5 +50,6 @@
 <div class="setup-test-log">
     <div class="setup-test-log-header">Test Log</div>
     <div id="setup-test-log-content" class="mono-log-panel">{% if let Some(log) = test_log %}{{ log|safe }}{% else %}<em style="color:var(--text-light);">No volume check yet.</em>{% endif %}</div>
+</div>
 </div>
 {% endblock %}

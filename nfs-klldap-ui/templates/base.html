@@ -153,13 +153,23 @@
             --warning-amber-text: #664e04;
         }
 
+        /* Theme-invariant tokens: page shell widths; --noacl literals identical in light/dark for CVD contrast. */
+        :root {
+            --page-max: 1280px;
+            --content-narrow: 680px;
+            --noacl: #1e40af;
+            --noacl-ring: rgba(96,140,240,.35);
+        }
+
         html, body {
             background: var(--bg);
             color: var(--text);
         }
 
-        body { font-family: system-ui, sans-serif; margin: 2rem; }
+        /* Standard page shell: centered, capped at --page-max so nothing scales unbounded on large displays. */
+        body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: var(--page-max); padding: 0 1.25rem; }
         a { color: var(--link); }
+        .content-narrow { max-width: var(--content-narrow); margin-inline: auto; }
 
         .tree { margin-left: 0.5rem; padding-left: 20px; } /* condensed: was margin 1rem + ~40px ul default */
         .dir { cursor: pointer; }
@@ -412,9 +422,6 @@
         }
 
         /* ===== Detached "Share Permissions" panel (redesign) ===== */
-        /* Non-ACL indicator colour: one literal kept the same across light/dark for CVD contrast. */
-        :root { --noacl:#1e40af; --noacl-ring:rgba(96,140,240,.35); }
-
         .perm-layout        { display:flex; gap:18px; align-items:flex-start; flex-wrap:wrap; }
         /* Left column is a flex stack: the tree (main focus) gets vertical priority; the shares list is capped.
            flex-basis:0 so the long (non-wrapping) share paths don't inflate the column and wrap the panel off-row. */

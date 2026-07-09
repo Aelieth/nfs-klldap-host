@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 
 {% block content %}
+<div class="content-narrow">
 <h2>{% if first_run %}First-run setup{% else %}Login{% endif %}</h2>
 
 {% if first_run %}
@@ -55,5 +56,5 @@
 {% if let Some(err) = error %}
     <p class="alert alert-danger" style="margin-top: 1rem;">{{ err }}</p>
 {% endif %}
-
+</div>
 {% endblock %}

@@ -4,7 +4,10 @@
 use axum::{
     body::Body,
     extract::State,
-    http::{HeaderMap, Request, Response},
+    http::{
+        header::{CACHE_CONTROL, CONTENT_TYPE},
+        HeaderMap, Request, Response,
+    },
     middleware::{self, Next},
     response::{IntoResponse, Redirect},
     routing::{get, post},
@@ -110,6 +113,17 @@ pub struct KeytabDisplayContext {
     pub alert: Option<String>,
 }
 
+/// Serves the vendored htmx build so the UI needs no CDN/internet access.
+async fn htmx_js() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "application/javascript"),
+            (CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        include_str!("../../assets/htmx-1.9.12.min.js"),
+    )
+}
+
 /// Redirect to the setup wizard when first-run steps are incomplete.
 async fn require_setup_complete(
     State(state): State<AppState>,
@@ -118,6 +132,7 @@ async fn require_setup_complete(
 ) -> Response<Body> {
     let path = req.uri().path();
     if path.starts_with("/setup")
+        || path.starts_with("/assets/")
         || path == "/login"
         || path == "/setup-password"
         || path == "/restart-status"
@@ -139,6 +154,7 @@ pub fn router(state: AppState) -> Router {
     let setup_gate_state = state.clone();
     let app = Router::new()
         // Public routes that do not require authentication.
+        .route("/assets/htmx-1.9.12.min.js", get(htmx_js))
         .route("/login", get(login_page).post(login))
         .route("/setup-password", post(setup_password))
         .route("/logout", get(logout).post(logout))
@@ -471,6 +487,35 @@ container_path = "{}"
             matches!(&e.kind, crate::privileged::AclEntryKind::User(4242)) && e.perms.to_str() == "r-x"
         });
         assert!(has, "after POST /acl-apply + wait, shipped fs.get_dir_acl on logical path must show the entry");
+    }
+
+    // The vendored htmx asset must bypass the setup gate, and served pages must reference it (no CDN).
+    #[tokio::test]
+    async fn htmx_asset_served_pre_setup_and_referenced_locally() {
+        let (state, _tmp, _guard) = make_test_state_with_limited_fs_mountinfo();
+        let marker = state.setup_marker_override.clone();
+        let app = router(state);
+
+        // Marker present: /login renders normally and must reference the local asset only.
+        let lreq = Request::builder().uri("/login").body(Body::empty()).unwrap();
+        let lresp = app.clone().oneshot(lreq).await.unwrap();
+        assert_eq!(lresp.status(), StatusCode::OK);
+        let lbody = axum::body::to_bytes(lresp.into_body(), 1024 * 1024).await.unwrap();
+        let lhtml = String::from_utf8_lossy(&lbody);
+        assert!(lhtml.contains("/assets/htmx-"), "pages must load the vendored htmx");
+        assert!(!lhtml.contains("unpkg.com"), "no CDN reference may remain in served HTML");
+
+        // Marker removed (first-run state): the asset must still bypass the setup gate.
+        if let Some(m) = &marker {
+            std::fs::remove_file(m).ok();
+        }
+        let req = Request::builder().uri("/assets/htmx-1.9.12.min.js").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "asset must be served while the setup wizard gate is active");
+        let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        assert!(ct.contains("javascript"), "asset must carry a JS content-type, got {ct}");
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        assert!(!body.is_empty(), "asset body must not be empty");
     }
 
     // GET /dir-perms renders the POSIX matrix + hidden numeric uid/gid fields (for name translation)

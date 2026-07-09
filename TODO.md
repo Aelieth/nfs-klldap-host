@@ -2,7 +2,6 @@
 - Slight decoupling of LLDAP code to simplify NFS share management for those that want it
 - Integration into KLLDAP for quick deployment with built-in keytab
 - Wizard first-share step: after LDAP setup, offer share name + host path with opinionated defaults (NOACL, RW, root_squash, auto pseudo) so first-run ends with a working share
-- Vendor htmx into the image (base.html currently loads it from the unpkg CDN — breaks offline/immutable-LAN deployments)
 - Custom-compiled Ganesha without _MSPAC_SUPPORT to unlock the principal-based uid2grp path (removes the idhelper/nss_wrapper backstop requirement)
 
 ## Known issues / tracking

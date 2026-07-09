@@ -531,7 +531,7 @@ pub(crate) async fn lldap_status(State(state): State<AppState>, headers: HeaderM
         String::new()
     };
     let mut html = String::from(
-        "<div id='nfs-client-status' style='border:1px solid var(--border); background:var(--bg-alt); padding:10px; margin:1rem 0; border-radius:4px;'>"
+        "<div id='nfs-client-status' style='border:1px solid var(--border); background:var(--bg-alt); padding:10px; margin:14px 0 0; border-radius:6px;'>"
     );
     html.push_str("<strong>NFS Permission Client (KLLDAP/LLDAP connection)</strong><br>");
     html.push_str(&format!("Authenticated as: <code>{}</code><br>", auth_as));

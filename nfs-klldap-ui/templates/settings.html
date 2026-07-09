@@ -31,7 +31,9 @@
   .rail-dot{width:7px;height:7px;border-radius:50%;background:var(--warning-amber-border);margin-left:auto;opacity:0}
   .rail-item.dirty .rail-dot{opacity:1}
   .set-main{flex:1;min-width:0;display:flex;flex-direction:column}
-  .set-scroll{flex:1;padding:18px 22px}
+  .set-scroll{flex:1;padding:18px 22px;display:flex;flex-direction:column;min-height:0}
+  #raw-form{display:flex;flex-direction:column;flex:1;min-height:0}
+  #raw-form .set-section:not([hidden]){display:flex;flex-direction:column;flex:1;min-height:0}
   .set-section{scroll-margin-top:12px}
   .set-section[hidden]{display:none}
   .sec-hd{display:flex;align-items:center;gap:9px;margin:0 0 14px;padding-bottom:7px;border-bottom:1px solid var(--border-light)}
@@ -56,7 +58,7 @@
   .chkline input{transform:scale(1.1)}
 
   /* ---- overview ---- */
-  .ov-card{background:var(--bg-alt);border:1px solid var(--border);border-radius:7px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;max-width:660px}
+  .ov-card{background:var(--bg-alt);border:1px solid var(--border);border-radius:7px;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
   .ov-row{display:flex;align-items:baseline;gap:10px;font-size:.9em;flex-wrap:wrap}
   .ov-k{flex:0 0 66px;font:700 .78em ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:.04em;color:var(--text-light)}
   .ov-row code{font-family:ui-monospace,Menlo,monospace;font-size:.92em;color:var(--text-muted)}
@@ -66,7 +68,8 @@
   /* ---- share cards ---- */
   .shares-split{display:flex;gap:16px;align-items:flex-start}
   .shares-col{flex:1;min-width:0}
-  .toml-side{flex:0 0 288px;min-width:0;position:sticky;top:8px}
+  /* Phased growth: cards widen to ~640px first, then the TOML aside 288->460px, then cards again */
+  .toml-side{flex:0 0 clamp(288px, 100% - 656px, 460px);min-width:0;position:sticky;top:8px}
   .side-hd{font:700 .72em ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:.05em;color:var(--text-light);margin-bottom:6px}
   .shares-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
   .sh-legend{display:flex;align-items:center;gap:14px;font-size:.74em;color:var(--text-muted);padding:6px 11px;background:var(--bg-alt);border:1px solid var(--border-light);border-radius:6px}
@@ -172,7 +175,7 @@
           {# LLDAP NFS client status — htmx-loaded (unchanged endpoint) #}
           {# outerHTML swap: the fragment brings its own #nfs-client-status wrapper #}
           <div id="nfs-client-status" hx-get="/settings/lldap-status" hx-trigger="load" hx-swap="outerHTML"
-               style="border:1px solid var(--border);background:var(--bg-alt);padding:10px;margin:14px 0 0;border-radius:6px;max-width:660px">
+               style="border:1px solid var(--border);background:var(--bg-alt);padding:10px;margin:14px 0 0;border-radius:6px">
             <em>Loading NFS client status…</em>
           </div>
         </section>
@@ -514,7 +517,7 @@
         <form id="raw-form" method="post" action="/settings/save-raw">
           <section class="set-section" data-pane-content="raw" hidden>
             <div class="sec-hd"><h3>Raw TOML</h3><span class="sec-sub">full control · comments preserved</span></div>
-            <textarea name="raw_content" rows="20" style="width:100%;font-family:ui-monospace,Menlo,monospace;font-size:.86em;border-radius:6px;padding:10px">{{ raw_toml }}</textarea>
+            <textarea name="raw_content" rows="20" style="width:100%;flex:1;min-height:320px;font-family:ui-monospace,Menlo,monospace;font-size:.86em;border-radius:6px;padding:10px;box-sizing:border-box">{{ raw_toml }}</textarea>
             <p class="muted" style="font-size:.82em;margin:.5rem 0 0">The container watches the config file and regenerates + reloads automatically.</p>
           </section>
         </form>
@@ -535,7 +538,6 @@
               {% if host_nfs_mode %}Apply to host NFS{% else %}Restart and apply{% endif %}
             </button>
           </form>
-          <p style="margin-top:1rem"><a href="/">&larr; Back to Share Permissions</a></p>
         </section>
 
       </div>

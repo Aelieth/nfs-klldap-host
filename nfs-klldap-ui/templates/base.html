@@ -655,6 +655,7 @@
         .spinner            { display:inline-block; width:.9em; height:.9em; flex:none;
                               border:2px solid var(--border); border-top-color:var(--accent);
                               border-radius:50%; animation:spin .7s linear infinite; }
+        .spinner[hidden]    { display:none; } /* author display beats the UA [hidden] rule */
         @keyframes spin     { to { transform:rotate(360deg); } }
         .perm-panel.loading .perm-body { opacity:.45; pointer-events:none; }
         .tree-loading       { display:flex; align-items:center; gap:7px; font-size:.85em;

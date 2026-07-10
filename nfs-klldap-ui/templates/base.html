@@ -607,8 +607,9 @@
                               background:transparent; color:var(--danger-text); border-radius:3px; cursor:pointer; }
         .acl-add            { display:none; gap:6px; align-items:center; margin-top:3px; padding-top:4px;
                               border-top:1px dashed var(--border-light); position:relative; }
-        .perm-panel.editing .acl-del { display:inline-block; }
-        .perm-panel.editing .acl-add { display:flex; }
+        /* Non-ACL directories keep their ACL controls hidden even in edit mode. */
+        .perm-panel.editing .acl-sec:not(.disabled) .acl-del { display:inline-block; }
+        .perm-panel.editing .acl-sec:not(.disabled) .acl-add { display:flex; }
         .acl-add-name       { flex:1; min-width:0; padding:2px 6px; font-size:.82em;
                               background:var(--input-bg); color:var(--text);
                               border:1px solid var(--input-border); border-radius:4px; }

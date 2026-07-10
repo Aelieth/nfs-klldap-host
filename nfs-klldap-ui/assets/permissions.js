@@ -96,11 +96,15 @@
     }
 
     // Button/field visibility for edit mode is CSS-driven off the .editing class.
+    // On a Non-ACL directory (.acl-sec.disabled) the ACL entries stay inert even in
+    // edit mode: pointer-events only blocks the mouse, not keyboard focus.
     function setPanelMode(editing) {
         const pl = panel(); if (!pl) return;
         pl.classList.toggle('editing', editing);
         pl.querySelector('.perm-state').textContent = editing ? 'editing' : 'viewing';
-        pl.querySelectorAll('.p-owner,.p-group,.pbit,.sbit,.abit').forEach(el => el.disabled = !editing);
+        const aclInert = !!pl.querySelector('.acl-sec.disabled');
+        pl.querySelectorAll('.p-owner,.p-group,.pbit,.sbit').forEach(el => el.disabled = !editing);
+        pl.querySelectorAll('.abit').forEach(el => el.disabled = !editing || aclInert);
         setTreeLock(editing);
     }
 

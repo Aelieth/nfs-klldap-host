@@ -52,19 +52,19 @@
     <div class="colhd">Read</div><div class="colhd">Write</div><div class="colhd">Exec</div>
 
     <div class="rowhd">Owner</div>
-    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="4" {% if u_r %}checked{% endif %} disabled></div>
-    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="2" {% if u_w %}checked{% endif %} disabled></div>
-    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="1" {% if u_x %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="4" aria-label="Owner read" {% if u_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="2" aria-label="Owner write" {% if u_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="1" aria-label="Owner execute" {% if u_x %}checked{% endif %} disabled></div>
 
     <div class="rowhd">Group</div>
-    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="4" {% if g_r %}checked{% endif %} disabled></div>
-    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="2" {% if g_w %}checked{% endif %} disabled></div>
-    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="1" {% if g_x %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="4" aria-label="Group read" {% if g_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="2" aria-label="Group write" {% if g_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="1" aria-label="Group execute" {% if g_x %}checked{% endif %} disabled></div>
 
     <div class="rowhd">Other</div>
-    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="4" {% if o_r %}checked{% endif %} disabled></div>
-    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="2" {% if o_w %}checked{% endif %} disabled></div>
-    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="1" {% if o_x %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="4" aria-label="Other read" {% if o_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="2" aria-label="Other write" {% if o_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="1" aria-label="Other execute" {% if o_x %}checked{% endif %} disabled></div>
   </div>
 
   {# setgid + sticky are the only special bits meaningful on directory shares (setuid is omitted). #}
@@ -105,9 +105,9 @@
   <div class="acl-body">
     {# Users group #}
     <div class="acl-grp" data-grp="user">
-      <div class="acl-grp-head"><span class="acl-caret">&#9662;</span>Users
-        <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-light)">&middot; {{ users.len() }}</span>
-      </div>
+      <button type="button" class="acl-grp-head" aria-expanded="true"><span class="acl-caret" aria-hidden="true">&#9662;</span>Users
+        <span class="acl-count">&middot; {{ users.len() }}</span>
+      </button>
       <div class="acl-grp-rows">
         {% for e in users %}
         <div class="acl-row" data-type="user" data-id="{{ e.id }}">
@@ -117,13 +117,13 @@
             <label title="write"><input type="checkbox" class="abit" data-ch="w" {% if e.w %}checked{% endif %} disabled>w</label>
             <label title="execute"><input type="checkbox" class="abit" data-ch="x" {% if e.x %}checked{% endif %} disabled>x</label>
           </span>
-          <button type="button" class="acl-del" title="Remove entry" style="display:none">&#10005;</button>
+          <button type="button" class="acl-del" title="Remove entry" aria-label="Remove entry" style="display:none">&#10005;</button>
         </div>
         {% endfor %}
         <div class="acl-add" data-type="user" style="display:none;position:relative">
-          <input type="text" class="acl-add-name" placeholder="add user or id" autocomplete="off"
+          <input type="text" class="acl-add-name" placeholder="add user or id" aria-label="Add user or id" autocomplete="off"
                  style="flex:1;min-width:0;padding:2px 6px;font-size:.82em;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px">
-          <input type="text" class="acl-add-perms" value="r-x" size="3" title="rwx"
+          <input type="text" class="acl-add-perms" value="r-x" size="3" title="rwx" aria-label="Permissions (rwx)"
                  style="width:42px;padding:2px 5px;font-size:.82em;font-family:ui-monospace,monospace;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px">
           <button type="button" class="acl-add-btn btn">Add</button>
           <div class="suggestions acl-sugg" style="min-width:160px"></div>
@@ -133,9 +133,9 @@
 
     {# Groups group #}
     <div class="acl-grp" data-grp="group">
-      <div class="acl-grp-head"><span class="acl-caret">&#9662;</span>Groups
-        <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-light)">&middot; {{ groups.len() }}</span>
-      </div>
+      <button type="button" class="acl-grp-head" aria-expanded="true"><span class="acl-caret" aria-hidden="true">&#9662;</span>Groups
+        <span class="acl-count">&middot; {{ groups.len() }}</span>
+      </button>
       <div class="acl-grp-rows">
         {% for e in groups %}
         <div class="acl-row" data-type="group" data-id="{{ e.id }}">
@@ -145,13 +145,13 @@
             <label title="write"><input type="checkbox" class="abit" data-ch="w" {% if e.w %}checked{% endif %} disabled>w</label>
             <label title="execute"><input type="checkbox" class="abit" data-ch="x" {% if e.x %}checked{% endif %} disabled>x</label>
           </span>
-          <button type="button" class="acl-del" title="Remove entry" style="display:none">&#10005;</button>
+          <button type="button" class="acl-del" title="Remove entry" aria-label="Remove entry" style="display:none">&#10005;</button>
         </div>
         {% endfor %}
         <div class="acl-add" data-type="group" style="display:none;position:relative">
-          <input type="text" class="acl-add-name" placeholder="add group or id" autocomplete="off"
+          <input type="text" class="acl-add-name" placeholder="add group or id" aria-label="Add group or id" autocomplete="off"
                  style="flex:1;min-width:0;padding:2px 6px;font-size:.82em;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px">
-          <input type="text" class="acl-add-perms" value="r-x" size="3" title="rwx"
+          <input type="text" class="acl-add-perms" value="r-x" size="3" title="rwx" aria-label="Permissions (rwx)"
                  style="width:42px;padding:2px 5px;font-size:.82em;font-family:ui-monospace,monospace;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px">
           <button type="button" class="acl-add-btn btn">Add</button>
           <div class="suggestions acl-sugg" style="min-width:160px"></div>

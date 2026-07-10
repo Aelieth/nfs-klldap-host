@@ -1,13 +1,13 @@
 <ul class="tree">
 {% for child in children %}
     <li>
-        <span class="dir"
-              data-path="{{ child.path }}"
-              style="cursor: pointer; user-select: none;">
-            ▶ {{ child.name }}
+        <span class="dir" data-path="{{ child.path }}">
+            <button type="button" class="dir-caret" aria-expanded="false"
+                    aria-label="{{ child.name }} subdirectories">&#9654;</button>
+            <button type="button" class="dir-label">{{ child.name }}</button>
         </span>
         {# Stable placeholder for JS/HTMX expand (no sibling races). #}
-        <div class="children" style="margin-left: 0.75em;"></div>
+        <div class="children"></div>
     </li>
 {% endfor %}
 </ul>

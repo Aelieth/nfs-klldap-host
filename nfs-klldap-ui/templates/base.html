@@ -172,8 +172,23 @@
         .content-narrow { max-width: var(--content-narrow); margin-inline: auto; }
 
         .tree { margin-left: 0.5rem; padding-left: 20px; } /* condensed: was margin 1rem + ~40px ul default */
-        .dir { cursor: pointer; }
+        .tree .children { margin-left: 0.75em; }
+        /* Tree rows: two real buttons per row — the caret only expands/collapses, the label
+           selects the directory and loads its permissions. Both are keyboard-focusable. */
+        .dir { display: flex; align-items: center; user-select: none; }
         .dir:hover { background: var(--dir-hover); }
+        .dir-caret, .dir-label {
+            background: none; border: none; margin: 0; padding: 1px 3px;
+            font: inherit; color: inherit; cursor: pointer; border-radius: 2px;
+            text-align: left;
+        }
+        .dir-caret { flex: none; width: 1.6em; font-size: 0.78em; }
+        .dir-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .dir-caret:hover, .dir-label:hover { background: var(--selected-bg); border: none; }
+        .dir-caret:focus-visible, .dir-label:focus-visible {
+            outline: 2px solid var(--accent); outline-offset: 1px;
+        }
+        .dir.root-dir .dir-label { font-weight: 600; }
 
         input, select, textarea {
             background: var(--input-bg);
@@ -352,6 +367,10 @@
         .share-card:hover {
             background: var(--card-bg);
             border-color: var(--accent);
+        }
+        .share-card:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
         }
 
         .apply-status button {
@@ -547,9 +566,14 @@
                               border-radius:4px; padding:6px 9px; margin-bottom:8px; }
         .acl-sec.disabled .acl-body { opacity:.5; pointer-events:none; filter:grayscale(.3); }
         .acl-grp            { margin-bottom:8px; }
+        /* Collapse toggle is a real <button>: neutralize the global button chrome. */
         .acl-grp-head       { display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none;
                               font-size:.72em; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
-                              color:var(--text-muted); padding:2px 0; }
+                              color:var(--text-muted); padding:2px 0; width:100%;
+                              background:none; border:none; border-radius:2px; }
+        .acl-grp-head:hover { background:var(--dir-hover); border:none; }
+        .acl-grp-head:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+        .acl-count          { font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-light); }
         .acl-caret          { display:inline-block; width:10px; transition:transform .12s; }
         .acl-grp.collapsed .acl-caret { transform:rotate(-90deg); }
         .acl-grp.collapsed .acl-grp-rows { display:none; }
@@ -568,6 +592,8 @@
                               border-top:1px dashed var(--border-light); }
 
         .perm-locked .dir:not(.selected)      { opacity:.4; cursor:not-allowed; }
+        .perm-locked .dir:not(.selected) .dir-caret,
+        .perm-locked .dir:not(.selected) .dir-label { cursor:not-allowed; }
         .perm-locked .share-card:not(.active) { opacity:.4; cursor:not-allowed; }
         .edit-lock-banner   { font-size:.72em; padding:4px 9px; margin:0 0 8px; border-radius:4px;
                               background:var(--warning-amber-bg); color:var(--warning-amber-text);
@@ -867,34 +893,40 @@
             });
         }
 
-        // ===== Delegated clicks: tree select+expand, panel edit/cancel/apply, ACL collapse/add/del =====
+        // ===== Delegated clicks: tree expand/select, panel edit/cancel/apply, ACL collapse/add/del =====
         document.addEventListener('click', function (e) {
+            // Caret button: expand/collapse ONLY (lazy 1-level fetch on first expand).
+            const caret = e.target.closest('#tree-root .dir-caret');
+            if (caret) {
+                if (window.permIsLocked()) { window.permFlashLock(); e.stopPropagation(); return; }
+                const dir = caret.closest('.dir');
+                let sib = dir && dir.nextElementSibling;
+                while (sib && !sib.classList.contains('children')) sib = sib.nextElementSibling;
+                if (!sib) return;
+                if (caret.getAttribute('aria-expanded') === 'true') {
+                    sib.style.display = 'none';
+                    caret.textContent = '▶';
+                    caret.setAttribute('aria-expanded', 'false');
+                } else {
+                    if (sib.dataset.loaded !== 'true') {
+                        htmx.ajax('GET', '/fs/children?path=' + encodeURIComponent(dir.dataset.path),
+                            { target: sib, swap: 'innerHTML' });
+                        sib.dataset.loaded = 'true';
+                    }
+                    sib.style.display = '';
+                    caret.textContent = '▼';
+                    caret.setAttribute('aria-expanded', 'true');
+                }
+                return;
+            }
+            // Label (or row): select the directory and load its permissions — never toggles expansion.
             const dir = e.target.closest('#tree-root .dir');
             if (dir && dir.dataset.path) {
                 if (window.permIsLocked()) { window.permFlashLock(); e.stopPropagation(); return; }
-                const path = dir.dataset.path;
-                // Select + load perms only when the selection changes, so a collapse click keeps the panel.
                 if (!dir.classList.contains('selected')) {
                     document.querySelectorAll('#tree-root .dir.selected').forEach(d => d.classList.remove('selected'));
                     dir.classList.add('selected');
-                    window.loadDirPerms(path);
-                }
-                // Toggle this node: collapse if expanded, else lazy 1-level fetch + expand. Caret ▶/▼ tracks state.
-                let sib = dir.nextElementSibling;
-                while (sib && !sib.classList.contains('children')) sib = sib.nextElementSibling;
-                if (sib) {
-                    if (dir.textContent.indexOf('▼') !== -1) {
-                        sib.style.display = 'none';
-                        dir.textContent = dir.textContent.replace('▼', '▶');
-                    } else {
-                        if (sib.dataset.loaded !== 'true') {
-                            htmx.ajax('GET', '/fs/children?path=' + encodeURIComponent(path),
-                                { target: sib, swap: 'innerHTML' });
-                            sib.dataset.loaded = 'true';
-                        }
-                        sib.style.display = '';
-                        dir.textContent = dir.textContent.replace('▶', '▼');
-                    }
+                    window.loadDirPerms(dir.dataset.path);
                 }
                 return;
             }
@@ -934,7 +966,12 @@
                 return;
             }
             const head = e.target.closest('.acl-grp-head');
-            if (head) { head.closest('.acl-grp').classList.toggle('collapsed'); return; }
+            if (head) {
+                const grp = head.closest('.acl-grp');
+                grp.classList.toggle('collapsed');
+                head.setAttribute('aria-expanded', grp.classList.contains('collapsed') ? 'false' : 'true');
+                return;
+            }
 
             const del = e.target.closest('.acl-del');
             if (del) {

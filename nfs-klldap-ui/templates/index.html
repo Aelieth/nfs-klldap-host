@@ -28,6 +28,8 @@
       {% for share in shares %}
       <div class="share-card {% if !share.acl_capable %}noacl{% endif %}"
            style="padding:8px 12px;border-radius:6px;cursor:pointer;"
+           role="button" tabindex="0" aria-pressed="false"
+           aria-label="Browse share {{ share.name }}"
            data-name="{{ share.name }}" data-nfs-path="{{ share.nfs_path }}"
            data-host-path="{{ share.host_path }}" data-acl="{% if share.acl_capable %}1{% else %}0{% endif %}"
            onclick="selectShareFromCard(this)">
@@ -64,7 +66,7 @@
         <div style="min-width:0">
           <div style="display:flex;align-items:center;gap:8px">
             <span class="perm-title">Permissions</span>
-            <span class="perm-state">viewing</span>
+            <span class="perm-state" aria-live="polite">viewing</span>
           </div>
           <div class="perm-loc">
             <span class="share-tag"><span class="share-lbl">Share</span>
@@ -101,8 +103,11 @@
     window.currentShareName = name;
     document.getElementById('current-share-title').innerHTML =
       'Directory tree for share <strong>' + name + '</strong>';
-    document.querySelectorAll('.share-card').forEach(c =>
-      c.classList.toggle('active', c.dataset.name === name));
+    document.querySelectorAll('.share-card').forEach(c => {
+      const on = c.dataset.name === name;
+      c.classList.toggle('active', on);
+      c.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
     // Load the tree root; auto-select the root dir (which loads the panel via the .dir handler).
     htmx.ajax('GET', '/tree?path=' + encodeURIComponent(hostPath) + '&root=true',
       { target: '#tree-root', swap: 'innerHTML' }).then(() => {
@@ -118,6 +123,13 @@
       selectShare(card.dataset.name || '', card.dataset.nfsPath || '',
                   card.dataset.hostPath || '', card.dataset.acl === '1');
   }
+
+  // Keyboard activation for the share cards (role="button" divs).
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const card = e.target.closest && e.target.closest('.share-card');
+    if (card) { e.preventDefault(); selectShareFromCard(card); }
+  });
 
   document.addEventListener('DOMContentLoaded', function () {
     const first = document.querySelector('.share-card');

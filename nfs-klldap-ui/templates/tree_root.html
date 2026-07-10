@@ -1,27 +1,29 @@
 {# Renders a directory as the top-level "root" row in the tree view.
    Used for the initial load of a share so the share root itself is a visible,
-   clickable item. Clicking a .dir loads its permissions into the detached panel
-   (#perm-panel) and expands its children (see the base.html permissions script).
+   clickable item. The .dir-label button loads permissions into the detached panel
+   (#perm-panel); the .dir-caret button only expands/collapses children
+   (see the base.html permissions script). The root renders expanded (▼) because
+   its children are pre-rendered visible below.
 #}
 <ul class="tree">
   <li>
-    <span class="dir root-dir"
-          data-path="{{ root.path }}"
-          style="cursor: pointer; user-select: none; font-weight: 600;">
-      ▶ {{ root.name }}
+    <span class="dir root-dir" data-path="{{ root.path }}">
+      <button type="button" class="dir-caret" aria-expanded="true"
+              aria-label="{{ root.name }} subdirectories">&#9660;</button>
+      <button type="button" class="dir-label">{{ root.name }}</button>
     </span>
-    <div class="children" style="margin-left: 0.75em;" data-loaded="true">
+    <div class="children" data-loaded="true">
       {# Direct children of the root (pre-rendered for the initial view).
          data-loaded avoids redundant fetch on expand. #}
       <ul class="tree">
       {% for child in children %}
         <li>
-          <span class="dir"
-                data-path="{{ child.path }}"
-                style="cursor: pointer; user-select: none;">
-            ▶ {{ child.name }}
+          <span class="dir" data-path="{{ child.path }}">
+            <button type="button" class="dir-caret" aria-expanded="false"
+                    aria-label="{{ child.name }} subdirectories">&#9654;</button>
+            <button type="button" class="dir-label">{{ child.name }}</button>
           </span>
-          <div class="children" style="margin-left: 0.75em;"></div>
+          <div class="children"></div>
         </li>
       {% endfor %}
       </ul>

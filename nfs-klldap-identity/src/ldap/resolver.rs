@@ -101,6 +101,9 @@ pub struct PosixGroupEntry {
     pub members: Vec<String>,
 }
 
+/// Raw autocomplete list row from LDAP: (id, numeric uid/gid, display, dn).
+pub type PosixListRow = (String, Option<i32>, String, String);
+
 /// Parameters for list search (avoids clippy::too_many_arguments on the helper).
 struct PosixListParams<'a> {
     base: &'a str,
@@ -745,32 +748,20 @@ impl IdLdapResolver {
         )
     }
 
-    pub(crate) fn build_posix_list_filter(
-        obj_class: &str,
-        num_attr: &str,
-        name_attr: &str,
-        extra_name_attr: Option<&str>,
-        query: &str,
-    ) -> String {
-        if query.is_empty() {
-            return format!("(&(objectClass={})({}=*))", obj_class, num_attr);
-        }
-        let esc = escape_ldap_filter(query);
-        let num_clause = if let Ok(n) = query.parse::<i32>() {
-            format!("({}={})", num_attr, n)
-        } else {
-            format!("({}=*{}*)", num_attr, esc)
-        };
-        let extra = extra_name_attr
-            .map(|a| format!("({}=*{}*)", a, esc))
-            .unwrap_or_default();
-        format!(
-            "(&(objectClass={})({}=*)(|({}=*{}*)(cn=*{}*)(displayName=*{}*){}{}))",
-            obj_class, num_attr, name_attr, esc, esc, esc, extra, num_clause
-        )
+    /// Presence filter for the full POSIX user/group list. The permission-editor
+    /// autocomplete fetches the whole list and matches queries client-side, so no
+    /// query is ever interpolated here (the old query pathway produced exact-only
+    /// numeric clauses and substring assertions on integer attributes that LLDAP
+    /// rejects — both wrong for autocomplete).
+    pub(crate) fn build_posix_list_filter(obj_class: &str, num_attr: &str) -> String {
+        format!("(&(objectClass={})({}=*))", obj_class, num_attr)
     }
 
-    fn search_list_posix(&self, p: &PosixListParams, limit: usize) -> Vec<(String, Option<i32>, String, String)> {
+    fn search_list_posix(
+        &self,
+        p: &PosixListParams,
+        limit: usize,
+    ) -> Result<Vec<PosixListRow>, String> {
         let attrs = vec![
             p.name_attr.into(),
             p.num_attr.into(),
@@ -778,9 +769,7 @@ impl IdLdapResolver {
             "displayName".into(),
             p.display_attr.into(),
         ];
-        let entries = self
-            .service_search(p.base, p.filter, attrs, p.bind_dn, p.bind_pw)
-            .unwrap_or_default();
+        let entries = self.service_search(p.base, p.filter, attrs, p.bind_dn, p.bind_pw)?;
         let mut out = Vec::new();
         for se in entries {
             let id = Self::extract_first_attr(&se, p.name_attr).unwrap_or_default();
@@ -794,25 +783,20 @@ impl IdLdapResolver {
                 break;
             }
         }
-        out
+        Ok(out)
     }
 
-    /// Search users for permission-editor autocomplete.
+    /// Full user list (up to `limit`) for permission-editor autocomplete; the
+    /// caller filters client-side. Err = LDAP unreachable/rejected, distinct
+    /// from an empty directory.
     pub fn search_list_users(
         &self,
-        query: &str,
         bind_dn: &str,
         bind_pw: &str,
         limit: usize,
-    ) -> Vec<(String, Option<i32>, String, String)> {
+    ) -> Result<Vec<PosixListRow>, String> {
         let pa = &self.posix_attributes;
-        let filter = Self::build_posix_list_filter(
-            &pa.user_object_class,
-            &pa.user_uid_number,
-            &pa.user_name,
-            Some(&pa.user_full_name),
-            query,
-        );
+        let filter = Self::build_posix_list_filter(&pa.user_object_class, &pa.user_uid_number);
         let params = PosixListParams {
             base: &self.user_base,
             filter: &filter,
@@ -899,22 +883,17 @@ impl IdLdapResolver {
             .any(|e| e.dn.eq_ignore_ascii_case(user_dn))
     }
 
-    /// Search groups for permission-editor autocomplete.
+    /// Full group list (up to `limit`) for permission-editor autocomplete; the
+    /// caller filters client-side. Err = LDAP unreachable/rejected, distinct
+    /// from an empty directory.
     pub fn search_list_groups(
         &self,
-        query: &str,
         bind_dn: &str,
         bind_pw: &str,
         limit: usize,
-    ) -> Vec<(String, Option<i32>, String, String)> {
+    ) -> Result<Vec<PosixListRow>, String> {
         let pa = &self.posix_attributes;
-        let filter = Self::build_posix_list_filter(
-            &pa.group_object_class,
-            &pa.group_gid_number,
-            &pa.group_name,
-            None,
-            query,
-        );
+        let filter = Self::build_posix_list_filter(&pa.group_object_class, &pa.group_gid_number);
         let params = PosixListParams {
             base: &self.group_base,
             filter: &filter,
@@ -1218,11 +1197,11 @@ mod tests {
     }
 
     #[test]
-    fn posix_list_filters_require_numbers() {
-        let all = IdLdapResolver::build_posix_list_filter("posixAccount", "uidNumber", "uid", None, "");
-        assert!(all.contains("(uidNumber=*)"));
-        let num = IdLdapResolver::build_posix_list_filter("posixGroup", "gidNumber", "cn", None, "1001");
-        assert!(num.contains("(gidNumber=1001)"));
+    fn posix_list_filter_is_presence_only() {
+        let users = IdLdapResolver::build_posix_list_filter("posixAccount", "uidNumber");
+        assert_eq!(users, "(&(objectClass=posixAccount)(uidNumber=*))");
+        let groups = IdLdapResolver::build_posix_list_filter("posixGroup", "gidNumber");
+        assert_eq!(groups, "(&(objectClass=posixGroup)(gidNumber=*))");
     }
 
     #[test]

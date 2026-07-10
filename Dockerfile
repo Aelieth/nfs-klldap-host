@@ -87,20 +87,34 @@ RUN set -euxo pipefail && \
     cp "target/$TARGET/release/nfs-klldap-config" "target/$TARGET/release/nfs-klldap-startup" "target/$TARGET/release/nfs-klldap-idhelper" "target/$TARGET/release/nfs-klldap-ui" /output/ && \
     (strip /output/nfs-klldap-config /output/nfs-klldap-startup /output/nfs-klldap-idhelper /output/nfs-klldap-ui || true)
 
-# Runtime stage: Debian 13-slim (trixie) + Ganesha 9.6 from trixie-backports.
-# ONLY config directives known to be valid for ganesha 9.6 on Debian trixie are emitted.
-# Outdated keys will crash the parser at ganesha startup.
+# Ganesha custom packages (refactor plan 2.1 uplift, realigned 2026-07-10).
+# Rebuilds the stock Debian 9.13-1 source with MSPAC off, VFS as the only
+# FSAL, and the stock POSIX-ACL backend retained (one ACL-capable binary;
+# NOACL is per-export policy); produces /debs consumed by the runtime stage.
+# Build it alone with: docker build --target ganesha-build .
+FROM debian:13-slim AS ganesha-build
+COPY container/ganesha/build-ganesha-debs.sh container/ganesha/klldap-packaging.patch /ganesha-build/
+RUN chmod +x /ganesha-build/build-ganesha-debs.sh && /ganesha-build/build-ganesha-debs.sh
+
+# Runtime stage: Debian 13-slim (trixie) + custom ACL-capable Ganesha 9.13
+# debs from the ganesha-build stage (plan 2.1 uplift: same scaffold, only the
+# packages swapped; NOACL shares are enforced per-export via Disable_ACL).
+# ONLY config directives known to be valid for this ganesha version on Debian
+# trixie are emitted. Outdated keys will crash the parser at ganesha startup.
 # Build remains on Fedora for rustup/cargo-chef reliability.
 FROM debian:13-slim
 
-ARG GANESHA_VERSION=9.6-1~bpo13+1
+# Custom package version (stock 9.13-1 + klldap flag delta; see
+# container/ganesha/README.md). Rollback: the tagged 9.6+klldap1 image
+# (Phase 1 anchor), or stock nfs-ganesha=9.6-1~bpo13+1 from trixie-backports.
+ARG GANESHA_VERSION=9.13-1+klldap1
 
 LABEL maintainer="Aelieth" \
-      version="0.9.78"
+      version="0.9.80"
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 
-# Runtime: Ganesha 9.6 (trixie-backports). Config is strictly limited to supported 9.6 options.
+# Runtime: custom Ganesha (see GANESHA_VERSION). Config is strictly limited to options this version supports.
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NSS_EXTRAUSERS_PASSWD=/var/lib/extrausers/passwd
 ENV NSS_EXTRAUSERS_GROUP=/var/lib/extrausers/group
@@ -109,7 +123,7 @@ ENV NSS_EXTRAUSERS_GROUP=/var/lib/extrausers/group
 # seds previously made the whole RUN succeed even when apt-get install failed.
 #
 # 2026 package audit notes (see plan.md):
-#   Core: nfs-ganesha* (Ganesha 9.6 VFS), sssd* + libnss-sss (identity via LLDAP + nsswitch files+extrausers+sss),
+#   Core: nfs-ganesha* (custom Ganesha VFS), sssd* + libnss-sss (identity via LLDAP + nsswitch files+extrausers+sss),
 #         libnss-wrapper + libnss-extrausers (nss_wrapper + extrausers materialization for idhelper/Ganesha),
 #         krb5-user (klist/keytab for startup + ganesha-ctl), acl (getfacl/setfacl for WebUI ACL editor).
 #   Daemons/helpers: dbus (dbus-daemon + dbus-send for Ganesha bus), rpcbind (best-effort, 111 compat),
@@ -117,13 +131,20 @@ ENV NSS_EXTRAUSERS_GROUP=/var/lib/extrausers/group
 #   Probes: ldap-utils (ldapsearch in startup wizard bind/DNS checks), netcat-openbsd (nc in ldap reachability).
 #   Base debian:13-slim already provides: hostname, findutils, dpkg (for dpkg-architecture), coreutils (id/getent/timeout), etc.
 #   Removed as unused: openssl (no /usr/bin/openssl calls anywhere), hostname (redundant with base).
+COPY --from=ganesha-build /debs/ /tmp/ganesha-debs/
+# Backports stays enabled: the custom debs depend on libntirpc7.2 (>= 7.2),
+# which only trixie-backports carries; -t makes apt prefer it during resolve.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates; \
     echo 'deb https://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends -t trixie-backports \
-        nfs-ganesha=${GANESHA_VERSION} nfs-ganesha-vfs=${GANESHA_VERSION}; \
+        "/tmp/ganesha-debs/nfs-ganesha_${GANESHA_VERSION}_$(dpkg --print-architecture).deb" \
+        "/tmp/ganesha-debs/nfs-ganesha-vfs_${GANESHA_VERSION}_$(dpkg --print-architecture).deb"; \
+    dpkg-query -W -f='${Package} ${Version}\n' nfs-ganesha nfs-ganesha-vfs; \
+    test "$(dpkg-query -W -f='${Version}' nfs-ganesha)" = "${GANESHA_VERSION}"; \
+    rm -rf /tmp/ganesha-debs; \
     apt-get install -y --no-install-recommends \
         sssd sssd-ldap libnss-sss \
         krb5-user \

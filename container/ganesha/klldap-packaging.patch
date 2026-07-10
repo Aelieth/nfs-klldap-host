@@ -1,0 +1,334 @@
+diff -Naur a/debian/changelog b/debian/changelog
+--- a/debian/changelog	2026-06-25 11:47:11.000000000 -0500
++++ b/debian/changelog	2026-07-10 14:46:08.750601655 -0500
+@@ -1,3 +1,25 @@
++nfs-ganesha (9.13-1+klldap1) unstable; urgency=medium
++
++  * nfs-klldap-host Phase 2 uplift build; 9.13 source, flag-only delta
++    (see nfs-klldap-host-ganesha-refactor-plan.md sections 2.1 and the
++    2026-07-10 Realignment).
++  * Disable MSPAC support (_MSPAC_SUPPORT=NO): un-stubs the principal-based
++    group resolution path in uid2grp (uid2grp.c returns NULL for every
++    principal when MSPAC is compiled in) and removes the wbclient/winbind
++    dependency. Carried over from the 9.6+klldap1 Phase 1 build.
++  * Trim FSALs to VFS only: disable CEPH, RGW, GLUSTER, GPFS, PROXY_V4,
++    NULL, MEM, RADOS recovery/URLs and 9P; drop the per-FSAL binary
++    packages and their build dependencies (libcephfs-dev, libglusterfs-dev,
++    librados-dev, librgw-dev, libwbclient-dev). Carried over from Phase 1.
++  * Keep stock ENABLE_VFS_POSIX_ACL=YES (Phase 1 had removed it): Phase 2
++    ships one ACL-capable binary; NOACL shares are enforced per-export via
++    Disable_ACL. ENABLE_VFS_DEBUG_ACL stays off (in-memory store, not
++    suitable for persistent ACLs).
++  * Retained unchanged: GSS, DBus, nfsidmap, admin tools, monitoring,
++    man pages, system ntirpc linkage, source version 9.13.
++
++ -- Aelieth <shaiaelieth@gmail.com>  Fri, 10 Jul 2026 00:00:00 +0000
++
+ nfs-ganesha (9.13-1) unstable; urgency=medium
+ 
+   * New upstream version 9.13
+diff -Naur a/debian/control b/debian/control
+--- a/debian/control	2026-05-03 09:05:46.000000000 -0500
++++ b/debian/control	2026-07-10 14:44:22.932066228 -0500
+@@ -14,19 +14,14 @@
+  libattr1-dev,
+  libblkid-dev,
+  libcap-dev,
+- libcephfs-dev [amd64 arm64 loong64 mips64el ppc64el riscv64 s390x],
+  libdbus-1-dev,
+- libglusterfs-dev (>= 9.0) [amd64 arm64 ia64 loong64 mips64el ppc64 ppc64el riscv64 s390x sparc64],
+  libkrb5-dev,
+  liblttng-ctl-dev,
+  liblttng-ust-dev,
+  libnfsidmap-dev,
+  libntirpc-dev (>= 7.2),
+  libpython3-all-dev,
+- librados-dev [amd64 arm64 loong64 mips64el ppc64el riscv64 s390x],
+- librgw-dev [amd64 arm64 loong64 mips64el ppc64el riscv64 s390x],
+  liburcu-dev,
+- libwbclient-dev,
+  lttng-tools,
+  pkgconf,
+  prometheus-cpp-lite,
+@@ -62,25 +57,6 @@
+  .
+  This package contains the binaries
+ 
+-Package: nfs-ganesha-ceph
+-Architecture: amd64 arm64 loong64 mips64el ppc64el riscv64 s390x
+-Section: libs
+-Depends:
+- nfs-ganesha (=${binary:Version}),
+- ${misc:Depends},
+- ${shlibs:Depends},
+-Replaces:
+- nfs-ganesha (<< 4.0-1),
+-Breaks:
+- nfs-ganesha (<< 4.0-1),
+-Description: nfs-ganesha fsal ceph libraries
+- NFS-GANESHA is a NFS Server running in user space with a large cache.
+- It comes with various backend modules to support different file systems
+- and namespaces. Supported name spaces are POSIX, PROXY, SNMP, FUSE-like,
+- HPSS, LUSTRE and ZFS.
+- .
+- This package contains a library for a FSAL_CEPH and an example ceph.conf file
+-
+ Package: nfs-ganesha-doc
+ Architecture: all
+ Section: doc
+@@ -95,125 +71,6 @@
+  .
+  This package contains documentation and examples for nfs-ganesha
+ 
+-Package: nfs-ganesha-gluster
+-Architecture: amd64 arm64 ia64 loong64 mips64el ppc64 ppc64el riscv64 s390x sparc64
+-Section: libs
+-Depends:
+- libglusterfs0 (>= 6.0),
+- nfs-ganesha (=${binary:Version}),
+- ${misc:Depends},
+- ${shlibs:Depends},
+-Description: nfs-ganesha fsal gluster libraries
+- NFS-GANESHA is a NFS Server running in user space with a large cache.
+- It comes with various backend modules to support different file systems
+- and namespaces. Supported name spaces are POSIX, PROXY, SNMP, FUSE-like,
+- HPSS, LUSTRE and ZFS.
+- .
+- This package contains a library for FSAL_GLUSTER and an example .conf file
+-
+-Package: nfs-ganesha-gpfs
+-Architecture: amd64 arm64 i386 ia64 loong64 mips64el ppc64 ppc64el riscv64 s390x sparc64
+-Section: libs
+-Depends:
+- nfs-ganesha (=${binary:Version}),
+- ${misc:Depends},
+- ${shlibs:Depends},
+-Description: nfs-ganesha fsal gpfs libraries
+- NFS-GANESHA is a NFS Server running in user space with a large cache.
+- It comes with various backend modules to support different file systems
+- and namespaces. Supported name spaces are POSIX, PROXY, SNMP, FUSE-like,
+- HPSS, LUSTRE and ZFS.
+- .
+- This package contains a library for a FSAL_GPFS and conf files.
+-
+-Package: nfs-ganesha-mem
+-Architecture: any
+-Section: libs
+-Depends:
+- nfs-ganesha (=${binary:Version}),
+- ${misc:Depends},
+- ${shlibs:Depends},
+-Description: nfs-ganesha fsal mem libraries
+- NFS-GANESHA is a NFS Server running in user space with a large cache.
+- It comes with various backend modules to support different file systems
+- and namespaces. Supported name spaces are POSIX, PROXY, SNMP, FUSE-like,
+- HPSS, LUSTRE and ZFS.
+- .
+- This package contains a library for a FSAL_MEM
+-
+-Package: nfs-ganesha-mount-9p
+-Architecture: all
+-Depends:
+- nfs-ganesha (>=${source:Version}),
+- ${misc:Depends},
+- ${shlibs:Depends},
+-Description: nfs-ganesha mount.9P
+- NFS-GANESHA is a NFS Server running in user space with a large cache.
+- It comes with various backend modules to support different file systems
+- and namespaces. Supported name spaces are POSIX, PROXY, SNMP, FUSE-like,
+- HPSS, LUSTRE and ZFS.
+- .
+- This package contains mount.9P
+-
+-Package: nfs-ganesha-nullfs
+-Architecture: any
+-Section: libs
+-Depends:
+- nfs-ganesha (=${binary:Version}),
+- ${misc:Depends},
+- ${shlibs:Depends},
+-Description: nfs-ganesha fsal nullfs libraries
+- NFS-GANESHA is a NFS Server running in user space with a large cache.
+- It comes with various backend modules to support different file systems
+- and namespaces. Supported name spaces are POSIX, PROXY, SNMP, FUSE-like,
+- HPSS, LUSTRE and ZFS.
+- .
+- This package contains a library for a FSAL_NULLFS
+-
+-Package: nfs-ganesha-proxy-v4
+-Architecture: any
+-Section: libs
+-Depends:
+- nfs-ganesha (=${binary:Version}),
+- ${misc:Depends},
+- ${shlibs:Depends},
+-Description: nfs-ganesha fsal proxy v4 libraries
+- NFS-GANESHA is a NFS Server running in user space with a large cache.
+- It comes with various backend modules to support different file systems
+- and namespaces. Supported name spaces are POSIX, PROXY, SNMP, FUSE-like,
+- HPSS, LUSTRE and ZFS.
+- .
+- This package contains a library for a FSAL_PROXY_V4
+-
+-Package: nfs-ganesha-rados-grace
+-Architecture: amd64 arm64 loong64 mips64el ppc64el riscv64 s390x
+-Depends:
+- nfs-ganesha (=${binary:Version}),
+- ${misc:Depends},
+- ${shlibs:Depends},
+-Description: nfs-ganesha ganesha-rados-grace program
+- NFS-GANESHA is a NFS Server running in user space with a large cache.
+- It comes with various backend modules to support different file systems
+- and namespaces. Supported name spaces are POSIX, PROXY, SNMP, FUSE-like,
+- HPSS, LUSTRE and ZFS.
+- .
+- This package contains the ganesha-rados-grace program
+-
+-Package: nfs-ganesha-rgw
+-Architecture: amd64 arm64 loong64 mips64el ppc64el riscv64 s390x
+-Section: libs
+-Depends:
+- nfs-ganesha (=${binary:Version}),
+- ${misc:Depends},
+- ${shlibs:Depends},
+-Description: nfs-ganesha fsal rgw libraries
+- NFS-GANESHA is a NFS Server running in user space with a large cache.
+- It comes with various backend modules to support different file systems
+- and namespaces. Supported name spaces are POSIX, PROXY, SNMP, FUSE-like,
+- HPSS, LUSTRE and ZFS.
+- .
+- This package contains a library for a FSAL_RGW and an example rgw.conf file
+-
+ Package: nfs-ganesha-vfs
+ Architecture: any
+ Section: libs
+diff -Naur a/debian/rules b/debian/rules
+--- a/debian/rules	2026-06-25 08:10:07.000000000 -0500
++++ b/debian/rules	2026-07-10 14:45:43.896527341 -0500
+@@ -1,6 +1,20 @@
+ #!/usr/bin/make -f
+ # -*- makefile -*-
+ #
++# nfs-klldap-host Phase 2 uplift build (refactor plan 2.1, realigned
++# 2026-07-10). Delta from stock 9.13-1 rules:
++#   - _MSPAC_SUPPORT=NO (restores uid2grp principal path, drops wbclient)
++#   - FSALs trimmed to VFS only (CEPH/RGW/GLUSTER/GPFS/PROXY/NULL/MEM off,
++#     RADOS recovery+URLs off, 9P off; arch-conditional blocks removed)
++#   - LIZARDFS/SAUNAFS pinned NO (stock left them to auto-disable on
++#     missing libs; pinned for determinism)
++#   - install steps for removed FSAL sample configs dropped
++# ENABLE_VFS_POSIX_ACL=YES is stock and deliberately retained: Phase 2
++# ships ONE ACL-capable binary; NOACL shares are enforced per-export via
++# Disable_ACL (the debug-ACL store was ruled out — in-memory only).
++# Everything else (ntirpc linkage, monitoring, admin tools, DBus, man
++# pages, hardening) is unchanged from stock.
++#
+ # Expected debian/rules file that is used by the dpkg build procedure
+ #
+ #   $ git clone <nfs-ganesha>
+@@ -11,34 +25,10 @@
+ export DESTDIR=$(CURDIR)/debian/tmp
+ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+ 
+-DEB_HOST_ARCH ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
+ DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+-DEB_HOST_ARCH_BITS ?= $(shell dpkg-architecture -qDEB_HOST_ARCH_BITS)
+-ifeq ($(DEB_HOST_ARCH_BITS),64)
+-  FSALGLUSTER=-DUSE_FSAL_GLUSTER=YES
+-else
+-  FSALGLUSTER=-DUSE_FSAL_GLUSTER=NO
+-endif
+-ifneq (,$(findstring $(DEB_HOST_ARCH),"amd64 arm64 loong64 mips64el ppc64el riscv64 s390x"))
+-  FSALCEPH=-DUSE_FSAL_CEPH=YES -DUSE_FSAL_RGW=YES
+-  RADOSOPT=-DUSE_RADOS_RECOV=YES -DRADOS_URLS=YES
+-else
+-  FSALCEPH=-DUSE_FSAL_CEPH=NO -DUSE_FSAL_RGW=NO
+-  RADOSOPT=-DUSE_RADOS_RECOV=NO -DRADOS_URLS=NO
+-endif
+-ifneq (,$(findstring $(DEB_HOST_ARCH),"amd64 arm64 i386 ia64 loong64 mips64el ppc64 ppc64el riscv64 s390x sparc64"))
+-  FSALGPFS=-DUSE_FSAL_GPFS=YES
+-else
+-  FSALGPFS=-DUSE_FSAL_GPFS=NO
+-endif
+ %:
+ 	 dh $@ --with python3
+ 
+-#		-DPython_EXECUTABLE=$(shell which python) \
+-#		-DPython_INCLUDE_DIR=$(shell python -c "from distutils.sysconfig import get_python_inc; print(get_python_inc())") \
+-#		-DPython_LIBRARY=$(shell python -c "import distutils.sysconfig as sysconfig; print(sysconfig.get_config_var('LIBDIR'))") \
+-#		-DPython_Interpreter=$(shell which python) \
+-
+ override_dh_auto_configure:
+ 	 cd src && ln -s ../debian .
+ 	 cd src && dh_auto_configure -- \
+@@ -49,29 +39,31 @@
+ 		-DFSAL_DESTINATION=/usr/lib/${DEB_HOST_MULTIARCH}/ganesha \
+ 		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+ 		-DUSE_MONITORING=YES \
+-		-DUSE_FSAL_NULL=YES \
+-		-DUSE_FSAL_MEM=YES \
++		-DUSE_FSAL_NULL=NO \
++		-DUSE_FSAL_MEM=NO \
+ 		-DUSE_FSAL_XFS=NO \
+ 		-DUSE_FSAL_LUSTRE=NO \
+-		${FSALCEPH} \
+-		${FSALGPFS} \
++		-DUSE_FSAL_CEPH=NO -DUSE_FSAL_RGW=NO \
++		-DUSE_FSAL_GPFS=NO \
+ 		-DUSE_FSAL_KVSFS=NO \
+-		${FSALGLUSTER} \
++		-DUSE_FSAL_GLUSTER=NO \
++		-DUSE_FSAL_LIZARDFS=NO \
++		-DUSE_FSAL_SAUNAFS=NO \
+ 		-DUSE_FSAL_VFS=ON \
+ 		-DENABLE_VFS_POSIX_ACL=YES \
+-		-DUSE_FSAL_PROXY_V4=ON \
++		-DUSE_FSAL_PROXY_V4=OFF \
+ 		-DUSE_FSAL_PROXY_V3=OFF \
+ 		-DUSE_SYSTEM_NTIRPC=YES \
+ 		-DUSE_9P_RDMA=NO \
+ 		-DUSE_LTTNG=NO \
+-		${RADOSOPT} \
++		-DUSE_RADOS_RECOV=NO -DRADOS_URLS=NO \
+ 		-DUSE_ADMIN_TOOLS=YES \
+ 		-DUSE_GUI_ADMIN_TOOLS=YES \
+ 		-DUSE_DBUS=ON \
+-		-DUSE_9P=ON \
++		-DUSE_9P=OFF \
+ 		-DDISTNAME_HAS_GIT_DATA=OFF \
+ 		-DUSE_MAN_PAGE=YES \
+-		-D_MSPAC_SUPPORT=YES \
++		-D_MSPAC_SUPPORT=NO \
+ 		-DSANITIZE_ADDRESS=NO
+ 
+ 
+@@ -88,20 +80,9 @@
+ 	mkdir -p debian/tmp/usr/share/dbus-1/system.d/
+ 	mkdir -p debian/tmp/usr/lib/ganesha
+ 	mkdir -p debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/ganesha
+-	mkdir -p debian/tmp/usr/sbin/
+ 	cp src/config_samples/ganesha.conf.example debian/tmp/etc/ganesha/
+ 	cp src/config_samples/vfs.conf debian/tmp/etc/ganesha/
+-	cp src/config_samples/rgw.conf debian/tmp/etc/ganesha/
+-	cp src/config_samples/mem.conf debian/tmp/etc/ganesha/
+-	cp src/config_samples/gluster.conf debian/tmp/etc/ganesha/
+-	cp src/config_samples/ceph.conf debian/tmp/etc/ganesha/
+-	cp src/config_samples/gpfs.conf debian/tmp/etc/ganesha/
+-	cp src/config_samples/gpfs.ganesha.exports.conf debian/tmp/etc/ganesha/
+-	cp src/config_samples/gpfs.ganesha.log.conf debian/tmp/etc/ganesha/
+-	cp src/config_samples/gpfs.ganesha.main.conf debian/tmp/etc/ganesha/
+-	cp src/config_samples/gpfs.ganesha.nfsd.conf debian/tmp/etc/ganesha/
+ 	cp src/config_samples/logrotate_ganesha debian/tmp/etc/logrotate.d/nfs-ganesha
+-	cp src/config_samples/logrotate_fsal_gluster debian/tmp/etc/logrotate.d/nfs-ganesha-gfapi
+ 	cp src/scripts/systemd/nfs-ganesha.service.debian8 debian/tmp/usr/lib/systemd/system/nfs-ganesha.service
+ 	cp src/scripts/systemd/nfs-ganesha-config.service debian/tmp/usr/lib/systemd/system/
+ 	cp src/scripts/systemd/nfs-ganesha-lock.service.debian10 debian/tmp/usr/lib/systemd/system/nfs-ganesha-lock.service
+@@ -109,8 +90,6 @@
+ 	cp src/scripts/systemd/sysconfig/nfs-ganesha debian/tmp/etc/default/
+ 	cp src/scripts/ganeshactl/org.ganesha.nfsd.conf debian/tmp/usr/share/dbus-1/system.d/nfs-ganesha-dbus.conf
+ 	install -m 0755 src/scripts/nfs-ganesha-config.sh debian/tmp/usr/lib/ganesha/
+-	install -m 0755 src/tools/mount.9P debian/tmp/usr/sbin/
+-	#PYTHONPATH=$(shell pwd)/debian/tmp/usr/local/lib/python3.13/dist-packages make -C src/obj-*-linux-gnu* install
+ 	make -C src/obj-*-linux-gnu* install
+ 	mv debian/tmp/usr/local/bin/* debian/tmp/usr/bin
+ 	mv debian/tmp/usr/local/lib/python3.* debian/tmp/usr/lib

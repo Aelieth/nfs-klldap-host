@@ -2,7 +2,7 @@
 
 {% block content %}
 <h2>Share Permissions</h2>
-<p style="font-size:0.8em; color:var(--text-light); margin-top:-0.4em;">
+<p class="page-note">
     Shares list and allowed roots are loaded at WebUI startup.
     {% if host_nfs_mode %}
     (HOST_NFS mode: the host NFS server reads the generated fragments; use "Apply to host NFS" in System Settings or wait for the watcher.)
@@ -27,7 +27,6 @@
     <div class="shares-host">
       {% for share in shares %}
       <div class="share-card {% if !share.acl_capable %}noacl{% endif %}"
-           style="padding:8px 12px;border-radius:6px;cursor:pointer;"
            role="button" tabindex="0" aria-pressed="false"
            aria-label="Browse share {{ share.name }}"
            data-name="{{ share.name }}" data-nfs-path="{{ share.nfs_path }}"
@@ -52,10 +51,10 @@
       {% endfor %}
     </div>
     {% else %}
-    <p style="color:var(--text-light);">No shares are configured — add one in System Settings.</p>
+    <p class="subtle">No shares are configured — add one in System Settings.</p>
     {% endif %}
 
-    <h3 id="current-share-title" style="margin:.4rem 0 6px;font-size:.92em;">Directory tree</h3>
+    <h3 id="current-share-title">Directory tree</h3>
     <div id="tree-root"><span class="tree-loading"><span class="spinner"></span>Loading tree…</span></div>
   </div>
 
@@ -63,8 +62,8 @@
   <div class="perm-main">
     <div id="perm-panel" class="perm-panel">
       <div class="perm-head">
-        <div style="min-width:0">
-          <div style="display:flex;align-items:center;gap:8px">
+        <div class="perm-head-main">
+          <div class="perm-title-row">
             <span class="perm-title">Permissions</span>
             <span class="perm-state" aria-live="polite">viewing</span>
             <span class="spinner perm-busy" hidden></span>
@@ -76,17 +75,16 @@
           </div>
         </div>
         <div class="perm-actions">
-          <label class="perm-recursive" style="display:none">
-            <input type="checkbox" class="rec-box" style="transform:scale(1.1)"> recursive
+          <label class="perm-recursive">
+            <input type="checkbox" class="rec-box"> recursive
           </label>
-          <button type="button" class="btn btn-edit"
-                  style="border-color:var(--accent);background:var(--accent-light);font-weight:600">Edit</button>
-          <button type="button" class="btn btn-cancel" style="display:none">Cancel</button>
-          <button type="button" class="btn btn-primary btn-apply" style="display:none">Apply</button>
+          <button type="button" class="btn btn-edit">Edit</button>
+          <button type="button" class="btn btn-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary btn-apply">Apply</button>
         </div>
       </div>
       {# Fragment body from /dir-perms is injected here; it owns its own split/diagnostic layout. #}
-      <div class="perm-body"><em style="color:var(--text-light);font-size:.85em">Select a directory to view its permissions.</em></div>
+      <div class="perm-body"><em class="placeholder-note">Select a directory to view its permissions.</em></div>
     </div>
 
     {# Apply Log — in-flow below the panel; rendered by apply_log_shell (permission_tree.rs) so the

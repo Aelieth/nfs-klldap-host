@@ -526,7 +526,7 @@ container_path = "{}"
         assert!(html.contains("apply-status-content apply-log-content"), "shell must keep the JS contract classes");
         // Exact shell open tag: no hx-swap-oob and no data-apply-finished on the initial render.
         assert!(
-            html.contains(r#"<div id="apply-status" class="apply-status" style="display:block;">"#),
+            html.contains(r#"<div id="apply-status" class="apply-status">"#),
             "index must render the initial Apply Log shell without oob/finished attrs"
         );
     }

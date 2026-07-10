@@ -335,7 +335,7 @@ pub(crate) async fn index(
         keytab_alert: state.keytab_alert.lock().unwrap().clone(),
         host_nfs_mode: state.host_nfs_mode,
         apply_log_initial: apply_log_shell(
-            r#"<em style="color:var(--text-light);">No permission applies yet.</em>"#,
+            r#"<em class="placeholder-note">No permission applies yet.</em>"#,
             false,
             false,
             false,
@@ -406,7 +406,7 @@ pub(crate) async fn tree_fragment(
         "Directory exists but could not be read (permissions?).".to_string()
     };
     let msg = format!(
-        r#"<div class="alert alert-danger" style="padding:0.5em;">
+        r#"<div class="alert alert-danger">
             <strong>Cannot display directory tree.</strong><br>
             Logical path: <code>{safe_path}</code><br>
             {hint}
@@ -603,7 +603,7 @@ fn ldap_resolve_failure_alert(kind: &str, name: &str, path: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;");
     format!(
-        r##"<div class="alert alert-danger" style="font-size:0.85em; padding:4px;">
+        r##"<div class="alert alert-danger alert-compact">
                             Could not find {kind} <strong>{safe_name}</strong> in LLDAP (or invalid number).
                             <button type="button" hx-get="/dir-perms?path={path}" hx-target="#perm-panel .perm-body" hx-swap="innerHTML">Retry</button>
                         </div>"##,
@@ -790,8 +790,8 @@ pub(crate) async fn apply_permissions(
     // refetches /dir-perms for this data-path. data-attrs are the coordination points for the client.
     let safe_path = form.path.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
     let placeholder = format!(
-        r#"<div class="perm-applying" data-path="{}" data-applying="1" style="padding:10px 4px;">
-    <span style="color:var(--warning-amber-text);">⏳ Applying permissions — see the Apply Log below. Navigation locked until complete.</span>
+        r#"<div class="perm-applying" data-path="{}" data-applying="1">
+    <span>⏳ Applying permissions — see the Apply Log below. Navigation locked until complete.</span>
 </div>"#,
         safe_path
     );
@@ -804,14 +804,14 @@ pub(crate) async fn apply_permissions(
 /// data-apply-finished="true" spelling are contracts with base.html's poller JS.
 fn apply_log_shell(inner_html: &str, active_cancel: bool, finished: bool, oob: bool) -> String {
     let cancel_btn = if active_cancel {
-        r#"<button type="button" onclick="if (window.cancelCurrentApply) window.cancelCurrentApply();" class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--danger-border); color:var(--danger-text); background:var(--danger-bg); border-radius:2px; cursor:pointer;">Cancel Apply</button>"#
+        r#"<button type="button" onclick="if (window.cancelCurrentApply) window.cancelCurrentApply();" class="btn apply-cancel">Cancel Apply</button>"#
     } else {
-        r#"<button type="button" disabled class="btn" style="font-size:0.72em; padding:2px 8px; border:1px solid var(--border); color:var(--text-light); opacity:0.6; border-radius:2px;">Cancel Apply</button>"#
+        r#"<button type="button" disabled class="btn apply-cancel">Cancel Apply</button>"#
     };
     let oob_attr = if oob { r#" hx-swap-oob="true""# } else { "" };
     let finished_attr = if finished { r#" data-apply-finished="true""# } else { "" };
     format!(
-        r#"<div id="apply-status"{oob_attr} class="apply-status" style="display:block;"{finished_attr}>
+        r#"<div id="apply-status"{oob_attr} class="apply-status"{finished_attr}>
     <div class="apply-status-hd">
       <span>Apply Log</span>
       {cancel_btn}
@@ -863,7 +863,7 @@ pub(crate) async fn apply_progress(
             // A poller with no progress slot at all is stray — stop it too.
             (
                 apply_log_shell(
-                    r#"<em style="color:var(--text-light);">No permission apply in progress.</em>"#,
+                    r#"<em class="placeholder-note">No permission apply in progress.</em>"#,
                     false,
                     false,
                     true,
@@ -889,7 +889,7 @@ pub(crate) async fn cancel_apply(
     if let Some(prog) = state.apply_progress.lock().await.as_ref() {
         prog.cancelled.store(true, Ordering::Relaxed);
     }
-    Ok(Html(r#"<span style="font-size:0.7em; color:var(--danger-text);">Cancel requested.</span>"#.to_string()))
+    Ok(Html(r#"<span class="note-danger">Cancel requested.</span>"#.to_string()))
 }
 
 pub(crate) async fn acl_apply(
@@ -925,7 +925,7 @@ pub(crate) async fn acl_apply(
         }
     }
     if id == 0 && op != "delete" {
-        let fb = r#"<div style="color:var(--danger-text);font-size:0.7em;">Could not resolve that user/group (unknown name or invalid id).</div>"#.to_string();
+        let fb = r#"<div class="note-danger">Could not resolve that user/group (unknown name or invalid id).</div>"#.to_string();
         return Ok(Html(format!("{}\n{}", fb, render_apply_status_oob("acl: unresolved principal", "error", false))));
     }
     let kind = if is_user {
@@ -969,7 +969,7 @@ pub(crate) async fn acl_apply(
         };
         (crate::privileged::AclModification::Remove { kinds: ks }, c)
     } else {
-        let fb = r#"<div style="color:var(--danger-text);font-size:0.7em;">Unknown ACL op</div>"#.to_string();
+        let fb = r#"<div class="note-danger">Unknown ACL op</div>"#.to_string();
         return Ok(Html(format!("{}\n{}", fb, render_apply_status_oob("acl: bad op", "error", false))));
     };
     let progress = Arc::new(ApplyProgress::default());
@@ -1017,7 +1017,7 @@ pub(crate) async fn acl_apply(
     });
 
     let fb = format!(
-        r#"<div style="font-size:0.72em; color:var(--success-text);">ACL {} submitted — see Apply Log.</div>"#,
+        r#"<div class="note-success">ACL {} submitted — see Apply Log.</div>"#,
         op
     );
     let oob = render_apply_status_oob(&cmd, "Stand-by (ACL op)...", true);

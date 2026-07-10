@@ -21,10 +21,10 @@
             <label title="write"><input type="checkbox" class="abit" data-ch="w" {% if e.w %}checked{% endif %} disabled>w</label>
             <label title="execute"><input type="checkbox" class="abit" data-ch="x" {% if e.x %}checked{% endif %} disabled>x</label>
           </span>
-          <button type="button" class="acl-del" title="Remove entry" aria-label="Remove entry" style="display:none">&#10005;</button>
+          <button type="button" class="acl-del" title="Remove entry" aria-label="Remove entry">&#10005;</button>
         </div>
         {% endfor %}
-        <div class="acl-add" data-type="{{ kind }}" style="display:none">
+        <div class="acl-add" data-type="{{ kind }}">
           <input type="text" class="acl-add-name" placeholder="{{ add_label }}" aria-label="{{ add_label }}" autocomplete="off">
           <input type="text" class="acl-add-perms" value="r-x" size="3" title="rwx" aria-label="Permissions (rwx)">
           <button type="button" class="acl-add-btn btn">Add</button>
@@ -57,25 +57,25 @@
   <div class="sec-title">POSIX permissions</div>
 
   <div class="perm-owner-row">
-    <label style="position:relative">Owner
+    <label>Owner
       <input type="text" name="owner_user" class="p-owner" value="{{ owner_display }}"
              hx-get="/users/search" hx-trigger="focus, click, input changed delay:220ms"
              hx-target="#perm-user-suggestions" hx-swap="innerHTML"
              hx-include="this" hx-params="owner_user"
              placeholder="user or 0-60000" autocomplete="off" disabled>
-      <div id="perm-user-suggestions" class="suggestions" style="min-width:180px;"></div>
+      <div id="perm-user-suggestions" class="suggestions"></div>
     </label>
-    <label style="position:relative">Group
+    <label>Group
       <input type="text" name="owner_group" class="p-group" value="{{ group_display }}"
              hx-get="/groups/search" hx-trigger="focus, click, input changed delay:220ms"
              hx-target="#perm-group-suggestions" hx-swap="innerHTML"
              hx-include="this" hx-params="owner_group"
              placeholder="group or 0-60000" autocomplete="off" disabled>
-      <div id="perm-group-suggestions" class="suggestions" style="min-width:180px;"></div>
+      <div id="perm-group-suggestions" class="suggestions"></div>
     </label>
   </div>
 
-  <div style="font-size:.72em;color:var(--text-muted);margin-bottom:5px">Permission bits</div>
+  <div class="perm-bits-lbl">Permission bits</div>
   <div class="perm-matrix">
     <div></div>
     <div class="colhd">Read</div><div class="colhd">Write</div><div class="colhd">Exec</div>
@@ -100,11 +100,11 @@
   <div class="perm-special">
     <label title="setgid: new files & subdirectories inherit this directory's group. Recommended for shared team shares.">
       <input type="checkbox" class="sbit" data-special="2" {% if setgid %}checked{% endif %} disabled>
-      <span>setgid <span style="color:var(--text-light)">(inherit group)</span></span>
+      <span>setgid <span class="subtle">(inherit group)</span></span>
     </label>
     <label title="sticky bit: only the file owner (or root) may delete or rename entries. Useful for common drop / upload directories.">
       <input type="checkbox" class="sbit" data-special="1" {% if sticky %}checked{% endif %} disabled>
-      <span>sticky <span style="color:var(--text-light)">(restrict delete)</span></span>
+      <span>sticky <span class="subtle">(restrict delete)</span></span>
     </label>
   </div>
 

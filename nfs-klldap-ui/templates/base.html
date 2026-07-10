@@ -159,6 +159,7 @@
             --content-narrow: 680px;
             --noacl: #1e40af;
             --noacl-ring: rgba(96,140,240,.35);
+            --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         }
 
         html, body {
@@ -333,7 +334,7 @@
         .mono-log-panel {
             max-height: 220px;
             overflow-y: auto;
-            font-family: ui-monospace, monospace;
+            font-family: var(--font-mono);
             font-size: 0.78em;
             background: var(--bg-alt);
             border: 1px solid var(--border);
@@ -363,6 +364,9 @@
             background: var(--bg-alt);
             border: 1px solid var(--border);
             color: var(--text);
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
         }
         .share-card:hover {
             background: var(--card-bg);
@@ -452,7 +456,7 @@
                               flex:0 1 auto; max-height:calc(var(--share-card-h) * 5);
                               min-height:var(--share-card-h); overflow:auto; margin-bottom:10px;
                               padding-right:4px; }
-        #current-share-title { flex:0 0 auto; }
+        #current-share-title { flex:0 0 auto; margin:.4rem 0 6px; font-size:.92em; }
         #tree-root          { flex:1 1 auto; min-height:150px; overflow:auto; padding-right:4px; }
 
         .perm-legend        { display:flex; gap:16px; flex-wrap:wrap; align-items:center;
@@ -476,7 +480,7 @@
         .share-card.active      { border-color:var(--accent); background:var(--selected-bg); }
         /* Inline host-path info box: takes the remaining header width, ellipsizes (full path in title). */
         .share-pathbox          { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
-                                  white-space:nowrap; font-family:ui-monospace,monospace; font-size:.78em;
+                                  white-space:nowrap; font-family:var(--font-mono); font-size:.78em;
                                   color:var(--text-light); background:var(--bg); border:1px solid var(--border);
                                   border-radius:3px; padding:1px 7px; }
         .share-chips            { display:flex; gap:5px; flex-wrap:wrap; margin-top:7px; }
@@ -506,7 +510,19 @@
         .perm-path          { font-size:.78em; color:var(--text-muted); white-space:nowrap;
                               overflow:hidden; text-overflow:ellipsis; min-width:0; }
         .perm-actions       { display:flex; align-items:center; gap:8px; }
-        .perm-recursive     { font-size:.75em; white-space:nowrap; align-items:center; gap:4px; }
+        .perm-head-main     { min-width:0; }
+        .perm-title-row     { display:flex; align-items:center; gap:8px; }
+
+        /* Edit-mode visibility is CSS-driven by .perm-panel.editing — the JS only toggles the class. */
+        .perm-recursive     { display:none; font-size:.75em; white-space:nowrap; align-items:center; gap:4px; }
+        .rec-box            { transform:scale(1.1); }
+        .btn-edit           { border-color:var(--accent); background:var(--accent-light); font-weight:600; }
+        .perm-actions .btn-cancel,
+        .perm-actions .btn-apply { display:none; }
+        .perm-panel.editing .perm-recursive { display:flex; }
+        .perm-panel.editing .btn-edit       { display:none; }
+        .perm-panel.editing .perm-actions .btn-cancel,
+        .perm-panel.editing .perm-actions .btn-apply { display:inline-block; }
 
         .perm-body          { margin-top:12px; }
         /* Split lives on an inner wrapper so a full-width diagnostic (below) isn't dragged into the flex row. */
@@ -555,7 +571,7 @@
                               border-top:1px dashed var(--border-light); }
         .perm-readout .lbl  { font-size:.68em; color:var(--text-light); text-transform:uppercase;
                               letter-spacing:.05em; font-weight:700; }
-        .octal              { font-family:ui-monospace,monospace; font-size:1.35em; font-weight:700;
+        .octal              { font-family:var(--font-mono); font-size:1.35em; font-weight:700;
                               color:var(--accent); background:var(--bg-alt); border:1px solid var(--border);
                               border-radius:5px; padding:1px 9px; }
         .symbolic           { font-size:.9em; color:var(--text-muted); }
@@ -586,15 +602,18 @@
         .acl-row .id        { color:var(--text-light); font-size:.85em; }
         .acl-row .rwx       { display:flex; gap:9px; }
         .acl-row .rwx label { display:flex; align-items:center; gap:2px; font-size:.9em; }
-        .acl-del            { font-size:.72em; line-height:1; padding:2px 6px; border:1px solid var(--danger-border);
+        .acl-del            { display:none; font-size:.72em; line-height:1; padding:2px 6px;
+                              border:1px solid var(--danger-border);
                               background:transparent; color:var(--danger-text); border-radius:3px; cursor:pointer; }
-        .acl-add            { display:flex; gap:6px; align-items:center; margin-top:3px; padding-top:4px;
+        .acl-add            { display:none; gap:6px; align-items:center; margin-top:3px; padding-top:4px;
                               border-top:1px dashed var(--border-light); position:relative; }
+        .perm-panel.editing .acl-del { display:inline-block; }
+        .perm-panel.editing .acl-add { display:flex; }
         .acl-add-name       { flex:1; min-width:0; padding:2px 6px; font-size:.82em;
                               background:var(--input-bg); color:var(--text);
                               border:1px solid var(--input-border); border-radius:4px; }
         .acl-add-perms      { width:42px; padding:2px 5px; font-size:.82em;
-                              font-family:ui-monospace,monospace;
+                              font-family:var(--font-mono);
                               background:var(--input-bg); color:var(--text);
                               border:1px solid var(--input-border); border-radius:4px; }
         .acl-sugg           { min-width:160px; }
@@ -611,6 +630,26 @@
 
         /* In-flow Apply Log directly below the panel (was fixed bottom-right). */
         .apply-log-content  { max-height:min(48vh,360px); overflow-y:auto; min-height:2.4em; }
+
+        /* Small text utilities shared by templates and Rust-built fragments. */
+        .subtle             { color:var(--text-light); }
+        .page-note          { font-size:.8em; color:var(--text-light); margin-top:-.4em; }
+        .placeholder-note   { color:var(--text-light); font-size:.85em; }
+        .note-danger        { color:var(--danger-text); font-size:.72em; }
+        .note-success       { color:var(--success-text); font-size:.72em; }
+        .alert-compact      { font-size:.85em; padding:4px 8px; }
+        .perm-bits-lbl      { font-size:.72em; color:var(--text-muted); margin-bottom:5px; }
+        .posix-sec .suggestions { min-width:180px; }
+        .perm-inline-error  { margin-bottom:6px; }
+        /* /apply placeholder while the async job runs. */
+        .perm-applying      { padding:10px 4px; color:var(--warning-amber-text); }
+        .apply-status       { display:block; }
+        .apply-cancel       { border:1px solid var(--danger-border); color:var(--danger-text);
+                              background:var(--danger-bg); border-radius:2px; cursor:pointer; }
+        .apply-cancel:hover:not(:disabled) { background:var(--danger-bg); border-color:var(--danger-border);
+                              filter:brightness(1.05); }
+        .apply-cancel:disabled { border-color:var(--border); color:var(--text-light);
+                              background:none; opacity:.6; cursor:default; }
 
         /* Loading feedback: small spinner + dimmed content while a fragment is in flight. */
         .spinner            { display:inline-block; width:.9em; height:.9em; flex:none;
@@ -793,17 +832,12 @@
                 });
         };
 
+        // Button/field visibility for edit mode is CSS-driven off the .editing class.
         function setPanelMode(editing) {
             const pl = panel(); if (!pl) return;
             pl.classList.toggle('editing', editing);
             pl.querySelector('.perm-state').textContent = editing ? 'editing' : 'viewing';
             pl.querySelectorAll('.p-owner,.p-group,.pbit,.sbit,.abit').forEach(el => el.disabled = !editing);
-            pl.querySelectorAll('.acl-del').forEach(b => b.style.display = editing ? '' : 'none');
-            pl.querySelectorAll('.acl-add').forEach(b => b.style.display = editing ? 'flex' : 'none');
-            const rec = pl.querySelector('.perm-recursive'); if (rec) rec.style.display = editing ? 'flex' : 'none';
-            pl.querySelector('.btn-edit').style.display   = editing ? 'none' : '';
-            pl.querySelector('.btn-cancel').style.display = editing ? '' : 'none';
-            pl.querySelector('.btn-apply').style.display  = editing ? '' : 'none';
             setTreeLock(editing);
         }
 
@@ -866,8 +900,7 @@
             let box = host.querySelector('.perm-inline-error');
             if (!box) {
                 box = document.createElement('div');
-                box.className = 'alert alert-danger perm-inline-error';
-                box.style.cssText = 'font-size:0.85em; padding:4px; margin-bottom:6px;';
+                box.className = 'alert alert-danger alert-compact perm-inline-error';
                 host.prepend(box);
             }
             box.textContent = msg;
@@ -997,13 +1030,10 @@
                 panelDirty = false;
                 window.applyInProgress = true;
                 htmx.trigger(form, 'submit');
-                // Leave edit mode visually but keep the tree locked until the apply finishes.
+                // Leave edit mode visually (CSS hides the edit controls) but keep the
+                // tree locked until the apply finishes.
                 pl.classList.remove('editing');
                 pl.querySelector('.perm-state').textContent = 'viewing';
-                pl.querySelector('.btn-edit').style.display = '';
-                pl.querySelector('.btn-cancel').style.display = 'none';
-                pl.querySelector('.btn-apply').style.display = 'none';
-                const recWrap = pl.querySelector('.perm-recursive'); if (recWrap) recWrap.style.display = 'none';
                 setTreeLock(true);
                 return;
             }

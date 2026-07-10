@@ -780,15 +780,12 @@
         };
 
         // Hidden htmx poller that drives live #apply-status oob updates while an apply runs.
+        // htmx 1.9 only ends an `every ...` poll loop when the element leaves the DOM or the
+        // server answers 286 — removing hx-trigger does nothing, and a cancelled element stays
+        // dead even if re-processed. So stop removes the element; start always builds a fresh one.
         let applyPollerEl = null;
         function startApplyProgressPoller() {
-            if (applyPollerEl && document.body.contains(applyPollerEl)) {
-                if (!applyPollerEl.getAttribute('hx-trigger')) {
-                    applyPollerEl.setAttribute('hx-trigger', 'every 350ms');
-                    if (window.htmx) htmx.process(applyPollerEl);
-                }
-                return;
-            }
+            stopApplyProgressPoller();
             applyPollerEl = document.createElement('div');
             applyPollerEl.id = 'apply-poller';
             applyPollerEl.style.display = 'none';
@@ -799,17 +796,43 @@
             if (window.htmx) htmx.process(applyPollerEl);
         }
         function stopApplyProgressPoller() {
-            if (applyPollerEl) applyPollerEl.removeAttribute('hx-trigger');
+            if (applyPollerEl) { applyPollerEl.remove(); applyPollerEl = null; }
+            const stray = document.getElementById('apply-poller');
+            if (stray) stray.remove();
         }
 
-        // POST an ACL add/delete to /acl-apply, then refresh the panel (+ Apply Log via oob).
+        // Inline red note at the top of the panel body (or the Apply Log if the body is gone).
+        function showPermPanelError(msg) {
+            const host = pbody() || document.getElementById('apply-status-content');
+            if (!host) return;
+            let box = host.querySelector('.perm-inline-error');
+            if (!box) {
+                box = document.createElement('div');
+                box.className = 'alert alert-danger perm-inline-error';
+                box.style.cssText = 'font-size:0.85em; padding:4px; margin-bottom:6px;';
+                host.prepend(box);
+            }
+            box.textContent = msg;
+        }
+
+        // POST an ACL add/delete to /acl-apply, then refresh the panel; the poller delivers the
+        // async setfacl result to the Apply Log and self-terminates on the finished (286) response.
         function aclApply(fields) {
             const pl = panel(); if (!pl) return;
             const path = pl.querySelector('.perm-path').textContent;
             const fd = new URLSearchParams(Object.assign({ path }, fields));
             fetch('/acl-apply', { method: 'POST', credentials: 'include',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: fd.toString() })
-                .then(() => window.loadDirPerms(path)).catch(() => {});
+                .then(res => {
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    startApplyProgressPoller();
+                    window.loadDirPerms(path);
+                })
+                .catch(() => {
+                    pl.querySelectorAll('.acl-del:disabled,.acl-add-btn:disabled')
+                        .forEach(b => b.disabled = false);
+                    showPermPanelError('ACL apply failed — the server rejected the request. See server logs.');
+                });
         }
 
         // Live LDAP suggestions for the ACL "add user/group" field (parallels the owner/group search).
@@ -894,6 +917,10 @@
                 const rec = pl.querySelector('.rec-box');
                 const recField = form.querySelector('.rec-field');
                 if (recField) recField.value = (rec && rec.checked) ? 'true' : 'false';
+                if (rec && rec.checked) {
+                    const path = pl.querySelector('.perm-path').textContent;
+                    if (!confirm('Recursively apply owner and mode to EVERYTHING under\n' + path + ' ?')) return;
+                }
                 window.applyInProgress = true;
                 htmx.trigger(form, 'submit');
                 // Leave edit mode visually but keep the tree locked until the apply finishes.
@@ -912,6 +939,7 @@
             const del = e.target.closest('.acl-del');
             if (del) {
                 const row = del.closest('.acl-row');
+                del.disabled = true; // re-enabled by aclApply's error path; success replaces the DOM
                 aclApply({ op: 'delete', typ: row.dataset.type,
                            selected: (row.dataset.type === 'group' ? 'g:' : 'u:') + row.dataset.id });
                 return;
@@ -925,6 +953,7 @@
                 const perms = box.querySelector('.acl-add-perms').value.trim() || 'r--';
                 if (!name) return;
                 const idm = name.match(/(\d+)/);
+                add.disabled = true; // re-enabled by aclApply's error path; success replaces the DOM
                 aclApply({ op: 'add', typ: box.dataset.type,
                            id: nameInp.dataset.pickId || (idm ? idm[1] : ''), name: name, perms: perms });
                 return;
@@ -1005,13 +1034,35 @@
             const txt = (xhr && xhr.responseText) || '';
             if (txt.indexOf('data-apply-finished="true"') === -1) return;
             stopApplyProgressPoller();
-            window.applyInProgress = false;
+            // A stale finished marker (an in-flight poll racing the stop, or an ACL op's
+            // log-only poll) must not touch the panel or the tree lock.
             const ph = document.querySelector('#perm-panel [data-applying]');
+            if (!window.applyInProgress && !ph) return;
+            window.applyInProgress = false;
             const pathEl = panel() && panel().querySelector('.perm-path');
             const path = ph ? ph.dataset.path : (pathEl ? pathEl.textContent : '');
             setTreeLock(false);
             if (path) window.loadDirPerms(path);
         });
+        // A failed request (non-2xx or network error) must never strand the UI locked: if an
+        // apply was in flight, stop polling, unlock, and say so; otherwise just surface a note
+        // for requests that live inside the permissions panel (search, dir-perms, ...).
+        function handleApplyRequestError(evt) {
+            const elt = evt.detail && evt.detail.elt;
+            const isPoller = !!(elt && elt.id === 'apply-poller');
+            if (window.applyInProgress || isPoller) {
+                stopApplyProgressPoller();
+                window.applyInProgress = false;
+                setPanelMode(false);
+                showPermPanelError('Apply failed — the server returned an error. Check the service logs; the permissions may not have been changed.');
+                return;
+            }
+            if (elt && elt.closest && elt.closest('#perm-panel')) {
+                showPermPanelError('Request failed — the server returned an error.');
+            }
+        }
+        document.addEventListener('htmx:responseError', handleApplyRequestError);
+        document.addEventListener('htmx:sendError', handleApplyRequestError);
         // Each apply-status oob swap replaces .apply-log-content, dropping its inline cap — re-apply it.
         document.addEventListener('htmx:oobAfterSwap', syncApplyLogHeight);
 

@@ -1,7 +1,7 @@
 use askama::Template;
 use axum::{
     extract::{Form, Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect},
 };
 use serde::Deserialize;
@@ -629,10 +629,10 @@ pub(crate) async fn apply_permissions(
                 Some((uid, _)) => owner_uid = uid as u32,
                 None => {
                     let html = format!(
-                        r#"<div class="alert alert-danger" style="font-size:0.85em; padding:4px;">
+                        r##"<div class="alert alert-danger" style="font-size:0.85em; padding:4px;">
                             Could not find user <strong>{}</strong> in LLDAP (or invalid number).
-                            <button type="button" hx-get="/dir-perms?path={}" hx-target=".perm-body" hx-swap="innerHTML">Retry</button>
-                        </div>"#,
+                            <button type="button" hx-get="/dir-perms?path={}" hx-target="#perm-panel .perm-body" hx-swap="innerHTML">Retry</button>
+                        </div>"##,
                         form.owner_user,
                         urlencoding::encode(&form.path)
                     );
@@ -645,10 +645,10 @@ pub(crate) async fn apply_permissions(
                 Some((gid, _)) => group_gid = gid as u32,
                 None => {
                     let html = format!(
-                        r#"<div class="alert alert-danger" style="font-size:0.85em; padding:4px;">
+                        r##"<div class="alert alert-danger" style="font-size:0.85em; padding:4px;">
                             Could not find group <strong>{}</strong> in LLDAP (or invalid number).
-                            <button type="button" hx-get="/dir-perms?path={}" hx-target=".perm-body" hx-swap="innerHTML">Retry</button>
-                        </div>"#,
+                            <button type="button" hx-get="/dir-perms?path={}" hx-target="#perm-panel .perm-body" hx-swap="innerHTML">Retry</button>
+                        </div>"##,
                         form.owner_group,
                         urlencoding::encode(&form.path)
                     );
@@ -825,7 +825,7 @@ pub(crate) async fn apply_progress(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
-    let html = {
+    let (html, stop_polling) = {
         let guard = state.apply_progress.lock().await;
         if let Some(prog) = guard.as_ref() {
             let total = prog.total.load(Ordering::Relaxed);
@@ -850,17 +850,28 @@ pub(crate) async fn apply_progress(
                     phase, proc, total, pct, ch, sk, errc
                 )
             };
-            render_apply_status_oob(&cmd, &live_or_final, !finished)
+            (render_apply_status_oob(&cmd, &live_or_final, !finished), finished)
         } else {
-            apply_log_shell(
-                r#"<em style="color:var(--text-light);">No permission apply in progress.</em>"#,
-                false,
-                false,
+            // A poller with no progress slot at all is stray — stop it too.
+            (
+                apply_log_shell(
+                    r#"<em style="color:var(--text-light);">No permission apply in progress.</em>"#,
+                    false,
+                    false,
+                    true,
+                ),
                 true,
             )
         }
     };
-    Ok(Html(html))
+    // htmx only cancels an `every ...` poll loop on HTTP 286; a plain 200 keeps it running.
+    // 286 still performs the oob #apply-status swap, so the final result text lands.
+    let code = if stop_polling {
+        StatusCode::from_u16(286).expect("286 is a valid status code")
+    } else {
+        StatusCode::OK
+    };
+    Ok((code, Html(html)))
 }
 pub(crate) async fn cancel_apply(
     State(state): State<AppState>,

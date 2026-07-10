@@ -618,4 +618,50 @@ container_path = "{}"
         assert!(html.contains("acl-sec disabled"), "NOACL default must grey the ACL section");
         assert!(html.contains("non-ACL limited"), "NOACL default must show the non-ACL pill");
     }
+
+    // /apply-progress must answer HTTP 286 (htmx "stop polling") once the apply is finished —
+    // and when no apply exists at all — while an in-flight apply keeps polling on 200.
+    // A plain 200 after finish left the hidden poller running forever, which yanked the panel
+    // out of edit mode every 350ms (the "Edit untoggles after the first Apply" bug).
+    #[tokio::test]
+    async fn apply_progress_polling_terminates() {
+        use std::sync::atomic::Ordering;
+
+        let (state, _tmp, _guard) = make_test_state_with_limited_fs_mountinfo();
+        let progress_slot = state.apply_progress.clone();
+        let token = state.auth.create_privileged_session("testadmin");
+        let app = router(state);
+
+        async fn poll(app: &axum::Router, token: &str) -> (u16, String) {
+            let req = Request::builder().uri("/apply-progress").body(Body::empty()).unwrap();
+            let req = add_session_cookie(req, token);
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let status = resp.status().as_u16();
+            let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+            (status, String::from_utf8_lossy(&body).to_string())
+        }
+
+        // 1. No apply ever ran: a poller hitting this is stray and must be told to stop.
+        let (status, body) = poll(&app, &token).await;
+        assert_eq!(status, 286, "no-progress poll must return 286 to cancel stray pollers");
+        assert!(!body.contains(r#"data-apply-finished="true""#), "no-progress shell must not carry the finished marker");
+
+        // 2. Apply in flight: keep polling (200), live shell with an active Cancel button.
+        let prog = Arc::new(crate::fs::ApplyProgress::default());
+        *prog.cmd.lock().unwrap() = Some("chmod 770 /data".into());
+        *progress_slot.lock().await = Some(prog.clone());
+        let (status, body) = poll(&app, &token).await;
+        assert_eq!(status, 200, "unfinished apply must keep the poller running");
+        assert!(!body.contains(r#"data-apply-finished="true""#), "unfinished apply must not carry the finished marker");
+        assert!(body.contains("cancelCurrentApply"), "live apply must render an active Cancel button");
+
+        // 3. Apply finished: 286 stops the poll loop, and the oob shell still carries the
+        //    finished marker + result text for the client's finish handler.
+        prog.finished.store(true, Ordering::Relaxed);
+        *prog.final_result_text.lock().unwrap() = Some("Result: 3 changed, 0 skipped, 0 errors".into());
+        let (status, body) = poll(&app, &token).await;
+        assert_eq!(status, 286, "finished apply must cancel htmx polling");
+        assert!(body.contains(r#"data-apply-finished="true""#), "finished shell must carry the finished marker");
+        assert!(body.contains("3 changed"), "finished shell must carry the final result text");
+    }
 }

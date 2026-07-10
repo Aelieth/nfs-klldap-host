@@ -28,6 +28,9 @@ services:
       - /media/:/export:rw
       - ./config:/config:rw
       - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
+      # NFSv4 client recovery state (RecoveryBackend=fs): persists across
+      # container recreation so clients reclaim locks/opens through grace.
+      - ./ganesha-recovery:/var/lib/nfs/ganesha:rw
 
     environment:
       # Optional env overrides for core nfs-klldap.conf options (env wins; only NFS_KLLDAP_* prefixed forms).

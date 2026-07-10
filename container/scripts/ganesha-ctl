@@ -45,6 +45,7 @@ Usage:
   show-fragments             # list on-disk exports.d fragments (not live D-Bus state)
   reload                     # signal supervisor (regenerate + full service recycle)
   id-resolve <principal>     # resolve full user@REALM (exercises uid2grp/getent group); surfaces ID MAPPER
+  id-uid <uid>               # replicate Ganesha uid2grp for a numeric uid under the LIVE daemon environ
   id-check                   # quick health of the idhelper translator + ID MAPPER greps
   id-map-test [name]         # verify getent + principal mapping parity (testuser1 + host/...) for 9.6 mount stability
   fs-warnings                # list limited-filesystem share warnings from nfs-klldap.conf
@@ -198,7 +199,7 @@ case "$CMD" in
         # surface ID MAPPER from ganesha.log (uid2grp_allocate_by_uid under UseGetpwnam=true)
         if [ -f /var/log/ganesha.log ]; then
             echo "[ganesha-ctl] ID MAPPER lines for $P:"
-            grep -iE "ID MAPPER|uid2grp_allocate|getgrouplist|Unsupported code path|Could not map|$P" /var/log/ganesha.log | tail -8 || echo "  (no recent ID MAPPER matches)"
+            grep -iE "ID MAPPER|uid2grp_allocate|getgrouplist|Unsupported code path|Could not map|managed_gids|Attempt to fetch managed|$P" /var/log/ganesha.log | tail -8 || echo "  (no recent ID MAPPER matches)"
             if grep -q "uid2grp_allocate_by_uid" /var/log/ganesha.log 2>/dev/null; then
                 echo "[ganesha-ctl] ganesha-log:uid2grp-by-uid-present"
             elif grep -q "uid2grp_allocate_by_principal" /var/log/ganesha.log 2>/dev/null; then
@@ -212,6 +213,72 @@ case "$CMD" in
                 echo "[ganesha-ctl] WARN: Unsupported principal path for $P — set UseGetpwnam=true (Debian 9.6 _MSPAC_SUPPORT stubs allocate_by_principal)"
             fi
         fi
+        ;;
+    id-uid)
+        # Replicate Ganesha's uid2grp exactly: getpwuid(uid) then getgrouplist
+        # (id -G) under the environment of the RUNNING ganesha.nfsd. This is
+        # the path behind "Attempt to fetch managed_gids for uid: N failed".
+        UID_ARG="${1:-}"
+        if [ -z "$UID_ARG" ] || ! [[ "$UID_ARG" =~ ^[0-9]+$ ]]; then
+            die "Usage: ganesha-ctl id-uid <numeric-uid>"
+        fi
+        GPID=""
+        for d in /proc/[0-9]*; do
+            if [ "$(cat "$d/comm" 2>/dev/null)" = "ganesha.nfsd" ]; then
+                GPID="${d#/proc/}"
+                break
+            fi
+        done
+        ENV_ARGS=()
+        if [ -n "$GPID" ] && [ -r "/proc/$GPID/environ" ]; then
+            log "using live ganesha.nfsd pid $GPID environ (LD_PRELOAD/NSS_*)"
+            while IFS= read -r kv; do
+                ENV_ARGS+=("$kv")
+            done < <(tr '\0' '\n' < "/proc/$GPID/environ" | grep -E '^(LD_PRELOAD|NSS_WRAPPER_|NSS_)' || true)
+        else
+            log "no live ganesha.nfsd (or environ unreadable); using default nss_wrapper env"
+            NP="${NSS_PASSWD:-/var/lib/nfs-klldap/nss_passwd}"
+            NG="${NSS_GROUP:-/var/lib/nfs-klldap/nss_group}"
+            SO="${NSS_WRAPPER_SO:-}"
+            if [ -z "$SO" ]; then
+                for cand in /usr/lib64/libnss_wrapper.so /usr/lib/x86_64-linux-gnu/libnss_wrapper.so /usr/lib/libnss_wrapper.so; do
+                    [ -f "$cand" ] && SO="$cand" && break
+                done
+            fi
+            if [ -n "$SO" ]; then
+                ENV_ARGS=("LD_PRELOAD=$SO" "NSS_WRAPPER_PASSWD=$NP" "NSS_WRAPPER_GROUP=$NG")
+            fi
+        fi
+        FAILED=0
+        echo "[ganesha-ctl] getpwuid($UID_ARG) under daemon env:"
+        PWROW="$(env "${ENV_ARGS[@]}" getent passwd "$UID_ARG" 2>/dev/null | head -1 || true)"
+        if [ -z "$PWROW" ]; then
+            echo "  FAIL: no passwd row for uid $UID_ARG — this is the uid2grp failure Ganesha sees"
+            FAILED=1
+        else
+            echo "  $PWROW"
+            PWNAME="${PWROW%%:*}"
+            echo "[ganesha-ctl] id -G $PWNAME under daemon env (getgrouplist):"
+            if ! env "${ENV_ARGS[@]}" id -G "$PWNAME"; then
+                echo "  FAIL: getgrouplist for $PWNAME failed"
+                FAILED=1
+            fi
+        fi
+        echo "[ganesha-ctl] raw materialized rows with uid $UID_ARG:"
+        FOUND_ROWS=0
+        for f in "${NSS_PASSWD:-/var/lib/nfs-klldap/nss_passwd}" /var/lib/extrausers/passwd; do
+            [ -f "$f" ] || continue
+            while IFS= read -r row; do
+                echo "  $f: $row"
+                FOUND_ROWS=1
+            done < <(awk -F: -v u="$UID_ARG" '$3==u' "$f")
+        done
+        [ "$FOUND_ROWS" = "1" ] || echo "  (none — idhelper has not materialized this uid)"
+        if [ -f /var/log/ganesha.log ]; then
+            echo "[ganesha-ctl] recent managed_gids failures for uid $UID_ARG in ganesha.log:"
+            grep -E "managed_gids.*uid[:=] ?$UID_ARG" /var/log/ganesha.log | tail -5 || echo "  (none)"
+        fi
+        exit "$FAILED"
         ;;
     id-check)
         if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
@@ -229,7 +296,7 @@ case "$CMD" in
         # surface exact ID MAPPER warnings
         if [ -f /var/log/ganesha.log ]; then
             echo "[ganesha-ctl] recent ID MAPPER from ganesha.log:"
-            grep -iE 'ID MAPPER|uid2grp|Unsupported' /var/log/ganesha.log | tail -10 || echo "  (none)"
+            grep -iE 'ID MAPPER|uid2grp|Unsupported|managed_gids|Attempt to fetch managed' /var/log/ganesha.log | tail -10 || echo "  (none)"
         fi
         ;;
     fs-warnings)

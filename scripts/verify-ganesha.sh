@@ -92,15 +92,57 @@ if grep -q '^root:' /var/lib/extrausers/passwd /var/lib/nfs-klldap/nss_passwd 2>
     echo "  OK: root (uid 0) present in materialized files"
 fi
 if [ -f /etc/ganesha/ganesha.conf ]; then
+    # 1.4 hardening: machine host/ keytabs must not be root on exports.
+    rkp="$(grep -o 'Root_Kerberos_Principal = [^;]*' /etc/ganesha/ganesha.conf 2>/dev/null | head -1)"
+    case "${rkp:-}" in
+        '')
+            echo "  WARN: Root_Kerberos_Principal missing from ganesha.conf — Ganesha default is 'all' (every enrolled machine keytab is root)" ;;
+        *all*|*host*)
+            echo "  WARN: ${rkp} — includes host/all; enrolled client machine keytabs can act as root on exports" ;;
+        *)
+            echo "  OK: ${rkp} (machine host/ principals map to anonymous, not root)" ;;
+    esac
+    # 1.4 runtime shaping: recovery state must survive container recreation.
+    recov_root="$(grep -o 'RecoveryRoot = [^;]*' /etc/ganesha/ganesha.conf 2>/dev/null | awk -F'= ' '{print $2}' | head -1)"
+    recov_root="${recov_root:-/var/lib/nfs/ganesha}"
+    if awk -v p="$recov_root" '$5 == p {found=1} END {exit !found}' /proc/self/mountinfo 2>/dev/null; then
+        echo "  OK: RecoveryRoot ${recov_root} is volume-backed (grace/reclaim survives container recreate)"
+    else
+        echo "  WARN: RecoveryRoot ${recov_root} is NOT a mount — client recovery state dies with the container (add the ganesha-recovery bind in nfs-klldap-host.yaml)"
+    fi
+    # Debug LOG block currency: pre-2026-07 images set SESSIONS/CLIENTID
+    # FULL_DEBUG but not IDMAPPER, leaving uid2grp failures undiagnosable
+    # in captures.
+    if grep -q 'Default_Log_Level = DEBUG' /etc/ganesha/ganesha.conf 2>/dev/null; then
+        if grep -q 'IDMAPPER = FULL_DEBUG' /etc/ganesha/ganesha.conf 2>/dev/null; then
+            echo "  OK: debug LOG block includes IDMAPPER = FULL_DEBUG (uid2grp root causes visible)"
+        else
+            echo "  WARN: debug LOG block lacks IDMAPPER = FULL_DEBUG — stale generated config; redeploy current image so captures show uid2grp/idmapper root causes"
+        fi
+    fi
     if grep -q 'UseGetpwnam = true' /etc/ganesha/ganesha.conf 2>/dev/null; then
         echo "  OK: UseGetpwnam=true (getpwuid_r + getgrouplist via nss_wrapper; Manage_Gids defaults true, non-default false skips AUTH_SYS managed gids only)"
     elif grep -q 'UseGetpwnam = false' /etc/ganesha/ganesha.conf 2>/dev/null; then
         GANESHA_BIN="$(command -v ganesha.nfsd 2>/dev/null || true)"
-        if [ -n "$GANESHA_BIN" ] && strings "$GANESHA_BIN" 2>/dev/null | grep -qi mspac; then
+        # grep -a, not strings(1): binutils is not in the image. The probed
+        # string only exists in _MSPAC_SUPPORT builds (uid2grp.c stub).
+        if [ -n "$GANESHA_BIN" ] && grep -qa 'Unsupported code path for principal' "$GANESHA_BIN" 2>/dev/null; then
             echo "  WARN: UseGetpwnam=false with _MSPAC_SUPPORT ganesha.nfsd — user TGT managed groups will hit Unsupported code path"
         else
-            echo "  NOTE: UseGetpwnam=false (principal2grp path; verify ganesha build)"
+            echo "  NOTE: UseGetpwnam=false (principal2grp path compiled in; klldap build)"
         fi
+    fi
+fi
+# Live group-resolution health (1.5 gate: zero failed group-fetch messages).
+# Under RPCSEC_GSS the rpc-cred fallback carries no unix groups, so these
+# failures silently strip every supplementary group from the user.
+if [ -f /var/log/ganesha.log ]; then
+    mg_count="$(grep -cE 'Attempt to fetch managed' /var/log/ganesha.log 2>/dev/null || true)"
+    if [ "${mg_count:-0}" -gt 0 ]; then
+        mg_uids="$(grep -E 'Attempt to fetch managed' /var/log/ganesha.log | grep -oE 'uid[:=] ?[0-9]+' | grep -oE '[0-9]+' | sort -un | tr '\n' ' ')"
+        echo "  FAIL: ${mg_count} managed-groups fetch failure(s) in ganesha.log for uid(s): ${mg_uids:-unknown} — run ganesha-ctl id-uid <uid> to replicate uid2grp under the live daemon env"
+    else
+        echo "  OK: no managed-groups fetch failures in ganesha.log"
     fi
 fi
 
@@ -129,13 +171,16 @@ if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
         [ -n "${path:-}" ] && _acl_probe_path "$path"
     done
 fi
-# Packaged Ganesha VFS FSAL build: does it reference ACL symbols at all?
+# Packaged Ganesha VFS FSAL build: does it carry an ACL backend at all?
+# (grep -a, not strings(1): binutils is not in the image. nfs4_acl_release_entry
+# and the system.posix_acl_access xattr-filter string exist in ALL builds; only
+# the POSIX-ACL backend entry points / debug store mark an ACL-capable FSAL.)
 VFS_SO="$(ls /usr/lib/*/ganesha/libfsalvfs.so* /usr/lib/ganesha/libfsalvfs.so* 2>/dev/null | head -1 || true)"
 if [ -n "$VFS_SO" ]; then
-    if strings "$VFS_SO" 2>/dev/null | grep -qiE 'nfs4_acl|posix_acl|richacl'; then
-        echo "  NOTE: $VFS_SO references ACL symbols (build may support ACLs; confirm end-to-end)"
+    if grep -qaE 'acl_(get|set)_(fd|file)|acl_from_text|acl_to_any_text|vfs_acl_init' "$VFS_SO" 2>/dev/null; then
+        echo "  OK: $VFS_SO carries the POSIX-ACL backend (Phase 2 single ACL-capable binary; NOACL is per-export policy)"
     else
-        echo "  WARN: $VFS_SO shows no ACL symbols — NFSv4 ACL ops may be unsupported in this build"
+        echo "  NOTE: $VFS_SO has no ACL backend — Phase 1 NOACL build is serving (ACL exports would return NFS4ERR_NOTSUPP)"
     fi
 fi
 # The failure this guards against: ACL-path NFS4ERR_NOTSUPP already in ganesha.log.

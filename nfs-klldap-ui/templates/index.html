@@ -56,7 +56,7 @@
     {% endif %}
 
     <h3 id="current-share-title" style="margin:.4rem 0 6px;font-size:.92em;">Directory tree</h3>
-    <div id="tree-root">Loading tree…</div>
+    <div id="tree-root"><span class="tree-loading"><span class="spinner"></span>Loading tree…</span></div>
   </div>
 
   {# ---- RIGHT: detached permissions panel + in-flow apply log ---- #}
@@ -67,6 +67,7 @@
           <div style="display:flex;align-items:center;gap:8px">
             <span class="perm-title">Permissions</span>
             <span class="perm-state" aria-live="polite">viewing</span>
+            <span class="spinner perm-busy" hidden></span>
           </div>
           <div class="perm-loc">
             <span class="share-tag"><span class="share-lbl">Share</span>
@@ -109,6 +110,9 @@
       c.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
     // Load the tree root; auto-select the root dir (which loads the panel via the .dir handler).
+    const treeHost = document.getElementById('tree-root');
+    if (treeHost) treeHost.innerHTML =
+      '<span class="tree-loading"><span class="spinner"></span>Loading tree…</span>';
     htmx.ajax('GET', '/tree?path=' + encodeURIComponent(hostPath) + '&root=true',
       { target: '#tree-root', swap: 'innerHTML' }).then(() => {
         const root = document.querySelector('#tree-root .root-dir, #tree-root .dir');

@@ -604,6 +604,16 @@
         /* In-flow Apply Log directly below the panel (was fixed bottom-right). */
         .apply-log-content  { max-height:min(48vh,360px); overflow-y:auto; min-height:2.4em; }
 
+        /* Loading feedback: small spinner + dimmed content while a fragment is in flight. */
+        .spinner            { display:inline-block; width:.9em; height:.9em; flex:none;
+                              border:2px solid var(--border); border-top-color:var(--accent);
+                              border-radius:50%; animation:spin .7s linear infinite; }
+        @keyframes spin     { to { transform:rotate(360deg); } }
+        .perm-panel.loading .perm-body { opacity:.45; pointer-events:none; }
+        .tree-loading       { display:flex; align-items:center; gap:7px; font-size:.85em;
+                              color:var(--text-light); padding:6px 2px; }
+        .dir-caret.busy     { opacity:.6; cursor:progress; }
+
         /* Narrow screens: let the panel take the full width and stack POSIX above ACL. */
         @media (max-width:640px) {
           .perm-main       { flex:1 1 100%; max-width:100%; }
@@ -745,15 +755,26 @@
             });
         }
 
+        // Foreground busy state for the panel: dim the body, spin, announce via the state chip.
+        function setPanelLoading(on) {
+            const pl = panel(); if (!pl) return;
+            pl.classList.toggle('loading', on);
+            const busy = pl.querySelector('.perm-busy'); if (busy) busy.hidden = !on;
+            pl.querySelector('.perm-state').textContent =
+                on ? 'loading' : (pl.classList.contains('editing') ? 'editing' : 'viewing');
+        }
+
         // Load the panel body (view mode) for a selected directory.
         window.loadDirPerms = function (path) {
             if (!panel()) return;
             panel().classList.remove('editing');
+            setPanelLoading(true);
             htmx.ajax('GET', '/dir-perms?path=' + encodeURIComponent(path),
                 { target: '#perm-panel .perm-body', swap: 'innerHTML' }).then(() => {
                     const pl = panel();
                     pl.querySelector('.perm-share').textContent = window.currentShareName || '';
                     pl.querySelector('.perm-path').textContent = path;
+                    setPanelLoading(false);
                     setPanelMode(false);
                     recomputeMode();
                     attachEditorInputListeners(pbody());
@@ -908,14 +929,20 @@
                     caret.textContent = '▶';
                     caret.setAttribute('aria-expanded', 'false');
                 } else {
-                    if (sib.dataset.loaded !== 'true') {
-                        htmx.ajax('GET', '/fs/children?path=' + encodeURIComponent(dir.dataset.path),
-                            { target: sib, swap: 'innerHTML' });
-                        sib.dataset.loaded = 'true';
-                    }
                     sib.style.display = '';
-                    caret.textContent = '▼';
                     caret.setAttribute('aria-expanded', 'true');
+                    if (sib.dataset.loaded !== 'true') {
+                        sib.dataset.loaded = 'true';
+                        caret.classList.add('busy');
+                        caret.textContent = '⋯';
+                        htmx.ajax('GET', '/fs/children?path=' + encodeURIComponent(dir.dataset.path),
+                            { target: sib, swap: 'innerHTML' }).then(() => {
+                                caret.classList.remove('busy');
+                                caret.textContent = '▼';
+                            });
+                    } else {
+                        caret.textContent = '▼';
+                    }
                 }
                 return;
             }
@@ -1087,6 +1114,7 @@
         function handleApplyRequestError(evt) {
             const elt = evt.detail && evt.detail.elt;
             const isPoller = !!(elt && elt.id === 'apply-poller');
+            setPanelLoading(false);
             if (window.applyInProgress || isPoller) {
                 stopApplyProgressPoller();
                 window.applyInProgress = false;

@@ -706,6 +706,9 @@
 
         // Selection lock: edit mode OR an in-flight apply blocks navigating to another dir/share.
         window.permIsLocked = () => isEditing() || window.applyInProgress;
+
+        // Unsaved-edit tracking: set while editing on any panel input/change; gates Cancel.
+        let panelDirty = false;
         window.permFlashLock = function () {
             const b = document.getElementById('edit-lock-banner');
             if (!b) return;
@@ -960,12 +963,15 @@
 
             const pl = panel(); if (!pl) return;
             if (e.target.closest('.btn-edit')) {
+                panelDirty = false;
                 setPanelMode(true);
                 pl.querySelectorAll('.acl-add').forEach(wireAclAddSearch);
                 attachEditorInputListeners(pbody());
                 return;
             }
             if (e.target.closest('.btn-cancel')) {
+                if (panelDirty && !confirm('Discard unsaved permission changes?')) return;
+                panelDirty = false;
                 const path = pl.querySelector('.perm-path').textContent;
                 if (path) window.loadDirPerms(path);
                 return;
@@ -980,6 +986,7 @@
                     const path = pl.querySelector('.perm-path').textContent;
                     if (!confirm('Recursively apply owner and mode to EVERYTHING under\n' + path + ' ?')) return;
                 }
+                panelDirty = false;
                 window.applyInProgress = true;
                 htmx.trigger(form, 'submit');
                 // Leave edit mode visually but keep the tree locked until the apply finishes.
@@ -1029,6 +1036,17 @@
             if (e.target.classList && (e.target.classList.contains('pbit') || e.target.classList.contains('sbit')))
                 recomputeMode();
         });
+
+        // Mark unsaved edits. ACL quick-add fields are excluded: those apply immediately
+        // via /acl-apply, so text typed there is never "unsaved" POSIX state.
+        function markDirtyIfEditing(e) {
+            const t = e.target;
+            if (!isEditing() || !t || !t.closest) return;
+            if (!t.closest('#perm-panel') || t.closest('.acl-add')) return;
+            panelDirty = true;
+        }
+        document.addEventListener('input', markDirtyIfEditing);
+        document.addEventListener('change', markDirtyIfEditing);
 
         // ===== Suggestion dropdown selection (owner/group search) + outside-click dismiss =====
         document.addEventListener('click', function (evt) {

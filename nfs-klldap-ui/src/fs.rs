@@ -189,35 +189,6 @@ impl FsManager {
             .map_err(|e| format!("ACL apply failed: {}", e))
     }
 
-    /// Immediate child directories only (/fs/children HTMX lazy expand).
-    pub fn list_children(&self, path: &Path) -> Option<Vec<DirectoryNode>> {
-        let normalized = self.normalize_for_matching(path);
-        if !self.is_allowed(&normalized) {
-            return None;
-        }
-
-        let real = self.host_path_to_container_path(&normalized).ok()?;
-        let read = fs::read_dir(&real).ok()?;
-
-        let mut out = Vec::new();
-        for entry in read.flatten() {
-            if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                // Only directories are browsable in the lazy tree.
-                continue;
-            }
-            let child_name = entry.file_name();
-            let logical_child = normalized.join(&child_name);
-
-            // We only need path name for the lazy tree UI (owner/mode come.
-            out.push(DirectoryNode {
-                path: logical_child.clone(),
-                name: child_name.to_string_lossy().into_owned(),
-                children: vec![],
-            });
-        }
-        Some(out)
-    }
-
     /// No-op hook for post-apply cache invalidation.
     pub fn invalidate_path(&self, _path: &Path) {}
 

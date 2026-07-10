@@ -200,8 +200,6 @@ pub(crate) struct DirPermsQuery {
 }
 #[derive(Deserialize)]
 pub(crate) struct SearchParams {
-    /// Legacy/alternate query param (some HTMX configs send `q` via js: vals).
-    q: Option<String>,
     /// Owner field value from hx-include live search.
     #[serde(default)]
     owner_user: Option<String>,
@@ -212,22 +210,12 @@ pub(crate) struct SearchParams {
 
 impl SearchParams {
     fn user_query_raw(&self) -> Option<&str> {
-        let raw = self.q.as_deref().or(self.owner_user.as_deref())?;
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
+        let trimmed = self.owner_user.as_deref()?.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed) }
     }
     fn group_query_raw(&self) -> Option<&str> {
-        let raw = self.q.as_deref().or(self.owner_group.as_deref())?;
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
+        let trimmed = self.owner_group.as_deref()?.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed) }
     }
 }
 
@@ -414,28 +402,6 @@ pub(crate) async fn tree_fragment(
     );
     Ok(Html(msg))
 }
-/// Lazy-load one directory level for HTMX tree expansion.
-pub(crate) async fn fs_children(
-    State(state): State<AppState>,
-    Query(params): Query<TreeParams>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse, Redirect> {
-    let _user = require_auth(&state, &headers).await?;
-    let path = std::path::Path::new(&params.path);
-    let fs = state.fs.read().expect("fs lock poisoned");
-    let children: Vec<DirNode> = fs
-        .list_children(path)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|c| DirNode {
-            path: c.path.to_string_lossy().to_string(),
-            name: c.name,
-        })
-        .collect();
-    let tpl = TreeFragmentTemplate { children };
-    Ok(Html(tpl.render().unwrap()))
-}
-
 // GET /dir-perms?path=... — panel body: POSIX (owner/group + rwx matrix + setgid/sticky) and the
 // named ACL list, both LDAP-resolved. Replaces the retired /dir-meta + /dir-editor + /dir-acl trio.
 pub(crate) async fn dir_perms(
@@ -804,7 +770,7 @@ pub(crate) async fn apply_permissions(
 /// data-apply-finished="true" spelling are contracts with base.html's poller JS.
 fn apply_log_shell(inner_html: &str, active_cancel: bool, finished: bool, oob: bool) -> String {
     let cancel_btn = if active_cancel {
-        r#"<button type="button" onclick="if (window.cancelCurrentApply) window.cancelCurrentApply();" class="btn apply-cancel">Cancel Apply</button>"#
+        r#"<button type="button" onclick="if (window.PermUI) window.PermUI.cancelCurrentApply();" class="btn apply-cancel">Cancel Apply</button>"#
     } else {
         r#"<button type="button" disabled class="btn apply-cancel">Cancel Apply</button>"#
     };
@@ -925,8 +891,13 @@ pub(crate) async fn acl_apply(
         }
     }
     if id == 0 && op != "delete" {
-        let fb = r#"<div class="note-danger">Could not resolve that user/group (unknown name or invalid id).</div>"#.to_string();
-        return Ok(Html(format!("{}\n{}", fb, render_apply_status_oob("acl: unresolved principal", "error", false))));
+        // 422 so the client's fetch treats this as a rejection and surfaces it inline
+        // (a 200 here used to read as success and silently reload the panel).
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Html(r#"<div class="note-danger">Could not resolve that user/group (unknown name or invalid id).</div>"#.to_string()),
+        )
+            .into_response());
     }
     let kind = if is_user {
         crate::privileged::AclEntryKind::User(id)
@@ -969,8 +940,11 @@ pub(crate) async fn acl_apply(
         };
         (crate::privileged::AclModification::Remove { kinds: ks }, c)
     } else {
-        let fb = r#"<div class="note-danger">Unknown ACL op</div>"#.to_string();
-        return Ok(Html(format!("{}\n{}", fb, render_apply_status_oob("acl: bad op", "error", false))));
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Html(r#"<div class="note-danger">Unknown ACL op</div>"#.to_string()),
+        )
+            .into_response());
     };
     let progress = Arc::new(ApplyProgress::default());
     {
@@ -1021,7 +995,7 @@ pub(crate) async fn acl_apply(
         op
     );
     let oob = render_apply_status_oob(&cmd, "Stand-by (ACL op)...", true);
-    Ok(Html(format!("{}\n{}", fb, oob)))
+    Ok(Html(format!("{}\n{}", fb, oob)).into_response())
 }
 
 #[cfg(test)]
@@ -1071,7 +1045,6 @@ mod search_params_tests {
     #[test]
     fn user_query_uses_owner_user_field_from_htmx_include() {
         let p = SearchParams {
-            q: None,
             owner_user: Some("  alice  ".into()),
             owner_group: None,
         };
@@ -1081,7 +1054,6 @@ mod search_params_tests {
     #[test]
     fn empty_owner_user_means_show_all() {
         let p = SearchParams {
-            q: None,
             owner_user: Some("   ".into()),
             owner_group: None,
         };
@@ -1091,10 +1063,9 @@ mod search_params_tests {
     #[test]
     fn group_query_uses_owner_group_field() {
         let p = SearchParams {
-            q: Some("legacy".into()),
             owner_user: None,
             owner_group: Some("admins".into()),
         };
-        assert_eq!(p.group_query_raw(), Some("legacy"));
+        assert_eq!(p.group_query_raw(), Some("admins"));
     }
 }

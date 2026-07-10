@@ -94,12 +94,10 @@
 </div>
 
 <script>
-  // Wires share selection to the detached panel. Directory selection + panel behaviour live in
-  // the inline permissions script in base.html; currentShareName is shared on window so it can read it.
-  window.currentShareName = null;
-
-  function selectShare(name, nfsPath, hostPath, aclCapable) {
-    window.currentShareName = name;
+  // Wires share selection to the detached panel. Directory selection + panel behaviour live
+  // in /assets/permissions.js, reached only through the window.PermUI surface.
+  function selectShare(name, hostPath) {
+    if (window.PermUI) PermUI.setShare(name);
     document.getElementById('current-share-title').innerHTML =
       'Directory tree for share <strong>' + name + '</strong>';
     document.querySelectorAll('.share-card').forEach(c => {
@@ -119,11 +117,9 @@
       });
   }
   function selectShareFromCard(card) {
-    // the base.html permissions script blocks share switching while the panel is in edit / apply lock.
-    if (window.permIsLocked && window.permIsLocked()) { if (window.permFlashLock) window.permFlashLock(); return; }
-    if (card.dataset.hostPath)
-      selectShare(card.dataset.name || '', card.dataset.nfsPath || '',
-                  card.dataset.hostPath || '', card.dataset.acl === '1');
+    // PermUI blocks share switching while the panel is in edit / apply lock.
+    if (window.PermUI && PermUI.isLocked()) { PermUI.flashLock(); return; }
+    if (card.dataset.hostPath) selectShare(card.dataset.name || '', card.dataset.hostPath);
   }
 
   // Keyboard activation for the share cards (role="button" divs).

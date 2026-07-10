@@ -33,7 +33,7 @@ pub use keytab::{compute_keytab_alert, get_keytab_info};
 // Pub(crate) re-exports for router assembly and in-module integration tests.
 pub(crate) use auth::{login, login_page, logout, require_auth, setup_password};
 pub(crate) use permission_tree::{
-    acl_apply, apply_permissions, apply_progress, cancel_apply, dir_perms, fs_children, index,
+    acl_apply, apply_permissions, apply_progress, cancel_apply, dir_perms, index,
     search_groups, search_users, tree_fragment,
 };
 pub(crate) use settings::{
@@ -189,7 +189,6 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/tree", get(tree_fragment))
         // Lazy-loading (1-level only, cheap) for tree expands.
-        .route("/fs/children", get(fs_children))
         // Detached Permissions panel body (POSIX + named ACL), replaces dir-meta/dir-editor/dir-acl.
         .route("/dir-perms", get(dir_perms))
         .route("/users/search", get(search_users))

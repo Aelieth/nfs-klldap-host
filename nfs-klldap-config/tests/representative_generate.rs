@@ -41,8 +41,10 @@ fn generation_paths(out: &std::path::Path) -> GenerationPaths {
 }
 
 fn assert_ganesha_96_compliant(g: &str, i: &str) {
-    for k in ["Pwnam_Implementation = nsswitch", "Root_Kerberos_Principal = host, nfs, root", "Only_Numeric_Owners = true", "NFS_KRB5", "UseGetpwnam = true"] { assert!(g.contains(k)); }
-    for f in ["Read_Access_Check_Policy =", "Manage_Gids_Expiration =", "IdmapConf =", "Transports ="] { assert!(!g.contains(f)); }
+    // 1.4: Root_Kerberos_Principal excludes host/ (machine keytabs never root);
+    // Manage_Gids_Expiration is the deliberate global getgroups() trust window.
+    for k in ["Pwnam_Implementation = nsswitch", "Root_Kerberos_Principal = nfs, root;", "Only_Numeric_Owners = true", "NFS_KRB5", "UseGetpwnam = true", "Manage_Gids_Expiration = 600;", "RecoveryRoot = /var/lib/nfs/ganesha;"] { assert!(g.contains(k), "missing {k}"); }
+    for f in ["Read_Access_Check_Policy =", "IdmapConf =", "Transports ="] { assert!(!g.contains(f), "forbidden {f}"); }
     assert!(i.contains("Domain = TEST") && i.contains("Method = nsswitch"));
 }
 

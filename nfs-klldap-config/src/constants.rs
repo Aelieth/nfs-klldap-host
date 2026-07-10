@@ -15,9 +15,41 @@ pub const PROC_COMM_NAME_MAX: usize = 15;
 /// Ganesha 9.6 / trixie specific safe values.
 pub const GANESHA_PROTOCOLS: &str = "4";
 pub const GANESHA_PWNAM_IMPL: &str = "nsswitch";
-pub const GANESHA_ROOT_KRB_PRINCIPALS: &str = "host, nfs, root";
+/// Root_Kerberos_Principal default deliberately excludes `host` (upstream default
+/// is `all`): enrolled client machines hold host/ keytabs and must not act as
+/// root on exports. host/ principals map through normal idmapping → anonymous.
+pub const GANESHA_ROOT_KRB_PRINCIPALS: &str = "nfs, root";
+/// Valid Root_Kerberos_Principal tokens (Ganesha 9.6 nfs_read_conf.c);
+/// `none` in the list overrides every other token.
+pub const GANESHA_ROOT_KRB_PRINCIPAL_TOKENS: &[&str] = &["none", "nfs", "root", "host", "all"];
 /// Ganesha 9.6 DIRECTORY_SERVICES idmapped cache TTL (seconds)
 pub const GANESHA_IDMAPPED_VALIDITY_SECS: u32 = 600;
+/// NFS_CORE_PARAM Manage_Gids_Expiration (seconds getgroups() results are
+/// trusted; global, NOT a per-export parameter). Aligned with
+/// GANESHA_IDMAPPED_VALIDITY_SECS so one window governs group propagation.
+pub const GANESHA_MANAGE_GIDS_EXPIRATION_SECS: u64 = 600;
+/// Ganesha caps Manage_Gids_Expiration at 7 days.
+pub const GANESHA_MANAGE_GIDS_EXPIRATION_MAX: u64 = 7 * 24 * 60 * 60;
+/// DIRECTORY_SERVICES Negative_Cache_Time_Validity (upstream default 300s):
+/// 60s so users/groups newly added in LDAP stop being negative-cached quickly.
+pub const GANESHA_NEGATIVE_CACHE_VALIDITY_SECS: u32 = 60;
+/// NFS_CORE_PARAM Max_Uid_To_Group_Reqs (upstream 0 = unlimited): bound the
+/// concurrent uid→groups resolutions hitting SSSD/LLDAP on cache-cold storms.
+pub const GANESHA_MAX_UID_TO_GROUP_REQS: u32 = 64;
+/// NFS_CORE_PARAM Readdir_Res_Size bytes (upstream default, emitted explicitly;
+/// tune from the 1.5 baseline numbers). Valid range 4096..=64 MiB.
+pub const GANESHA_READDIR_RES_SIZE: u32 = 32 * 1024;
+pub const GANESHA_READDIR_RES_SIZE_MIN: u32 = 4096;
+pub const GANESHA_READDIR_RES_SIZE_MAX: u32 = 64 * 1024 * 1024;
+/// NFS_CORE_PARAM Readdir_Max_Count entry bounds (emit only when configured).
+pub const GANESHA_READDIR_MAX_COUNT_MIN: u32 = 32;
+pub const GANESHA_READDIR_MAX_COUNT_MAX: u32 = 1024 * 1024;
+/// Malloc_trim_MinThreshold is in MB. Upstream default is 15360 MB — above the
+/// 4 GB container limit, so trim would never fire; 1024 MB makes it real.
+pub const GANESHA_MALLOC_TRIM_MIN_MB: u32 = 1024;
+/// NFSv4 RecoveryRoot (fs backend) — must be volume-backed so clients ride
+/// through grace/reclaim across container recreation (see nfs-klldap-host.yaml).
+pub const GANESHA_RECOVERY_ROOT: &str = "/var/lib/nfs/ganesha";
 pub const GANESHA_DEFAULT_SECTYPE: &str = "krb5p";
 pub const GANESHA_DEFAULT_SQUASH: &str = "no_root_squash";
 pub const GANESHA_ALLOWED_SECTYPES: &[&str] = &["krb5p", "krb5i", "krb5"];

@@ -69,15 +69,12 @@ pub fn export_fs_directives(share: &crate::Share, caps: &FsCapabilities) -> (Str
         } else {
             String::new()
         };
-        (String::new(), comment)
+        // ACL exports declare Disable_ACL = false explicitly, never inherited.
+        ("    Disable_ACL = false;\n".to_string(), comment)
     };
 
-    let umask_line = if eff.enable_acl {
-        let val = eff.umask.as_deref().filter(|u| crate::fs_probe::is_valid_umask(u)).unwrap_or("0022");
-        format!("        Umask = {};\n", val)
-    } else {
-        String::new()
-    };
+    // Per-export FSAL Umask is gone in 9.13; the 0.9.9x POSIX gate owns it.
+    let umask_line = String::new();
     (disable_acl_line, manage_gids_line, umask_line, auto_comment)
 }
 

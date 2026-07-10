@@ -410,6 +410,98 @@ impl NfsKlldapConfig {
             ));
         }
 
+        self.validate_ganesha_tuning()?;
+
+        Ok(())
+    }
+
+    /// Validates [ganesha] identity/runtime tuning fields against Ganesha 9.6
+    /// parameter ranges (nfs_read_conf.c ground truth; see constants.rs).
+    fn validate_ganesha_tuning(&mut self) -> Result<(), ConfigError> {
+        normalize_blank(&mut self.ganesha.root_kerberos_principals);
+        if let Some(ref raw) = self.ganesha.root_kerberos_principals {
+            let tokens: Vec<String> = raw
+                .split(',')
+                .map(|t| t.trim().to_ascii_lowercase())
+                .filter(|t| !t.is_empty())
+                .collect();
+            if tokens.is_empty() {
+                return Err(ConfigError::Validation(
+                    "ganesha.root_kerberos_principals must contain at least one token \
+                     (none|nfs|root|host|all); use \"none\" to grant root to no principal"
+                        .into(),
+                ));
+            }
+            for t in &tokens {
+                if !crate::constants::GANESHA_ROOT_KRB_PRINCIPAL_TOKENS.contains(&t.as_str()) {
+                    return Err(ConfigError::Validation(format!(
+                        "ganesha.root_kerberos_principals token '{}' invalid — allowed: {}",
+                        t,
+                        crate::constants::GANESHA_ROOT_KRB_PRINCIPAL_TOKENS.join(", ")
+                    )));
+                }
+            }
+            if tokens.iter().any(|t| t == "host" || t == "all") {
+                eprintln!(
+                    "WARN [nfs-klldap-config] ganesha.root_kerberos_principals includes \
+                     '{}' — every enrolled client machine keytab (host/...) can act as \
+                     root on all exports. Default \"nfs, root\" closes this.",
+                    if tokens.iter().any(|t| t == "all") { "all" } else { "host" }
+                );
+            }
+            // Canonical comma-space form for the emitted directive.
+            self.ganesha.root_kerberos_principals = Some(tokens.join(", "));
+        }
+        if let Some(v) = self.ganesha.manage_gids_expiration_secs {
+            if v > crate::constants::GANESHA_MANAGE_GIDS_EXPIRATION_MAX {
+                return Err(ConfigError::Validation(format!(
+                    "ganesha.manage_gids_expiration_secs must be <= {} (7 days), got {}",
+                    crate::constants::GANESHA_MANAGE_GIDS_EXPIRATION_MAX,
+                    v
+                )));
+            }
+        }
+        if let Some(v) = self.ganesha.readdir_res_size {
+            let (min, max) = (
+                crate::constants::GANESHA_READDIR_RES_SIZE_MIN,
+                crate::constants::GANESHA_READDIR_RES_SIZE_MAX,
+            );
+            if !(min..=max).contains(&v) {
+                return Err(ConfigError::Validation(format!(
+                    "ganesha.readdir_res_size must be between {} and {} bytes, got {}",
+                    min, max, v
+                )));
+            }
+        }
+        if let Some(v) = self.ganesha.readdir_max_count {
+            let (min, max) = (
+                crate::constants::GANESHA_READDIR_MAX_COUNT_MIN,
+                crate::constants::GANESHA_READDIR_MAX_COUNT_MAX,
+            );
+            if !(min..=max).contains(&v) {
+                return Err(ConfigError::Validation(format!(
+                    "ganesha.readdir_max_count must be between {} and {} entries, got {}",
+                    min, max, v
+                )));
+            }
+        }
+        if self.ganesha.malloc_trim_min_threshold_mb == Some(0) {
+            return Err(ConfigError::Validation(
+                "ganesha.malloc_trim_min_threshold_mb must be >= 1 (value is in MB)".into(),
+            ));
+        }
+        for share in &self.shares {
+            if share.manage_gids_expiration.is_some() {
+                eprintln!(
+                    "WARN [nfs-klldap-config] share '{}': manage_gids_expiration is \
+                     deprecated here — Manage_Gids_Expiration is a global NFS_CORE_PARAM \
+                     in Ganesha 9.6, not a per-export directive. Move it to [ganesha] \
+                     manage_gids_expiration_secs; until then the smallest share value \
+                     seeds the global.",
+                    share.name
+                );
+            }
+        }
         Ok(())
     }
 

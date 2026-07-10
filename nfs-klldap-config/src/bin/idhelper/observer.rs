@@ -34,6 +34,9 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
         std::collections::HashMap::new();
     let dedup_window = Duration::from_secs(30);
     let failure_dedup_window = Duration::from_secs(2);
+    // Per-uid rate limit for nfs_creds managed_gids failure heals.
+    let mut healed_uids: std::collections::HashMap<u32, std::time::Instant> =
+        std::collections::HashMap::new();
 
     loop {
         match File::open(path) {
@@ -59,6 +62,13 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                                 dedup_window,
                             );
                             detect_my_getgrouplist_failure_and_heal(line, &cache, realm, variants);
+                            detect_managed_gids_uid_failure_and_heal(
+                                line,
+                                &cache,
+                                realm,
+                                variants,
+                                &mut healed_uids,
+                            );
                             let failure_line = line.contains("Could not map principal ")
                                 || (line.to_ascii_lowercase().contains("my_getgrouplist_alloc")
                                     && (line.to_ascii_lowercase().contains("failed")
@@ -280,17 +290,46 @@ fn heal_principal_immediately(
         let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);
     }
     if send_sighup {
-        if let Ok(pid_s) = std::env::var("NFS_KLLDAP_GANESHA_PID") {
-            if let Ok(pid) = pid_s.parse::<u32>() {
-                if nfs_klldap_config::signal_ganesha_reload_idmap(pid) {
-                    eprintln!(
-                        "[idhelper] idmap-heal:sighup-sent principal={}",
-                        candidate
-                    );
-                }
+        if let Some(pid) = resolve_live_ganesha_pid() {
+            if nfs_klldap_config::signal_ganesha_reload_idmap(pid) {
+                eprintln!(
+                    "[idhelper] idmap-heal:sighup-sent principal={}",
+                    candidate
+                );
             }
         }
     }
+}
+
+/// True when /proc/<pid>/comm names the ganesha daemon.
+fn proc_comm_is_ganesha(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .map(|c| c.trim() == "ganesha.nfsd")
+        .unwrap_or(false)
+}
+
+/// Live ganesha.nfsd pid for idmap-heal SIGHUP delivery.
+/// NFS_KLLDAP_GANESHA_PID=0 is an explicit disable (tests/CI). idhelper
+/// starts before ganesha, so the env value is absent or stale here; a live
+/// /proc comm scan is the production path.
+pub(crate) fn resolve_live_ganesha_pid() -> Option<u32> {
+    if let Ok(pid_s) = std::env::var("NFS_KLLDAP_GANESHA_PID") {
+        match pid_s.trim().parse::<u32>() {
+            Ok(0) => return None,
+            Ok(pid) if proc_comm_is_ganesha(pid) => return Some(pid),
+            _ => {}
+        }
+    }
+    let rd = std::fs::read_dir("/proc").ok()?;
+    for e in rd.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        if proc_comm_is_ganesha(pid) {
+            return Some(pid);
+        }
+    }
+    None
 }
 
 fn detect_my_getgrouplist_failure_and_heal(
@@ -343,14 +382,12 @@ fn detect_my_getgrouplist_failure_and_heal(
         let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);
     }
     // Clear ganesha idmapper negative cache after nss heal (same as principal map failure path).
-    if let Ok(pid_s) = std::env::var("NFS_KLLDAP_GANESHA_PID") {
-        if let Ok(pid) = pid_s.parse::<u32>() {
-            if nfs_klldap_config::signal_ganesha_reload_idmap(pid) {
-                eprintln!(
-                    "[idhelper] idmap-heal:sighup-sent short_pw_name={} principal={}",
-                    user, principal
-                );
-            }
+    if let Some(pid) = resolve_live_ganesha_pid() {
+        if nfs_klldap_config::signal_ganesha_reload_idmap(pid) {
+            eprintln!(
+                "[idhelper] idmap-heal:sighup-sent short_pw_name={} principal={}",
+                user, principal
+            );
         }
     }
     // recheck grps via socket (non fatal)
@@ -358,6 +395,101 @@ fn detect_my_getgrouplist_failure_and_heal(
     let _ = try_socket_grps(&principal);
     if user != principal {
         let _ = try_socket_grps(&user);
+    }
+}
+
+/// Parse the uid from nfs_creds managed_gids failure lines.
+/// Matches both "managed_gids for uid: 3788 failed" and
+/// "managed_gids failed for uid=3788, using cred info from rpc request".
+pub(crate) fn extract_uid_from_managed_gids_failure(line: &str) -> Option<u32> {
+    let low = line.to_ascii_lowercase();
+    if !low.contains("attempt to fetch managed_gids") || !low.contains("failed") {
+        return None;
+    }
+    for pat in ["uid: ", "uid="] {
+        if let Some(i) = low.find(pat) {
+            let rest = &low[i + pat.len()..];
+            return rest
+                .split(|c: char| !c.is_ascii_digit())
+                .find(|s| !s.is_empty())
+                .and_then(|s| s.parse().ok());
+        }
+    }
+    None
+}
+
+/// True when the materialized passwd file has a row with this numeric uid.
+pub(crate) fn nss_passwd_has_uid(path: &std::path::Path, uid: u32) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let want = uid.to_string();
+    content
+        .lines()
+        .any(|ln| ln.split(':').nth(2) == Some(want.as_str()))
+}
+
+/// Heal uid2grp failures surfaced by nfs_creds (RPCSEC_GSS request path).
+/// These lines carry only a uid (no principal), so extract_candidate_principal
+/// never fires for them; map the uid back through the idhelper cache instead.
+/// Under GSS the rpc-cred fallback leaves the user with zero supplementary
+/// groups, so this failure silently breaks group-gated permission checks.
+fn detect_managed_gids_uid_failure_and_heal(
+    line: &str,
+    cache: &std::sync::Arc<std::sync::Mutex<crate::common::IdCache>>,
+    realm: &str,
+    variants: &[String],
+    healed_uids: &mut std::collections::HashMap<u32, std::time::Instant>,
+) {
+    let Some(uid) = extract_uid_from_managed_gids_failure(line) else {
+        return;
+    };
+    let now = std::time::Instant::now();
+    if healed_uids
+        .get(&uid)
+        .is_some_and(|last| now.duration_since(*last) < Duration::from_secs(30))
+    {
+        return;
+    }
+    healed_uids.insert(uid, now);
+    let prod = crate::materialize::NssMaterializePaths::production();
+    let row_present = nss_passwd_has_uid(prod.nss_passwd, uid);
+    let cached_principal: Option<String> = {
+        let guard = cache.lock().unwrap();
+        guard
+            .entries
+            .values()
+            .find(|r| r.uid == uid)
+            .map(|r| r.principal.clone())
+    };
+    eprintln!(
+        "[idhelper] uid-heal: ganesha uid2grp failed for uid={} (nss_passwd_row={} cache_principal={})",
+        uid,
+        if row_present { "present" } else { "MISSING" },
+        cached_principal.as_deref().unwrap_or("none")
+    );
+    if let Some(principal) = cached_principal {
+        heal_principal_immediately(&principal, cache, realm, variants, true);
+        return;
+    }
+    // No cache entry maps this uid: bulk re-seed, re-materialize, then clear
+    // the ganesha idmapper negative cache so a healed row gets retried.
+    {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        if let Ok(mut st) = UnixStream::connect(crate::common::socket_path()) {
+            let _ = st.write_all(b"REBULK\n");
+            let _ = st.flush();
+        }
+    }
+    {
+        let guard = cache.lock().unwrap();
+        let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);
+    }
+    if let Some(pid) = resolve_live_ganesha_pid() {
+        if nfs_klldap_config::signal_ganesha_reload_idmap(pid) {
+            eprintln!("[idhelper] idmap-heal:sighup-sent uid={uid}");
+        }
     }
 }
 
@@ -781,6 +913,45 @@ manage_gids = true
         let line = "my_getgrouplist_alloc :ID MAPPER :WARN :getgrouplist for user:testuser1 failed, ngroups: 3, errno: 3";
         let cache = std::sync::Arc::new(std::sync::Mutex::new(crate::common::IdCache::default()));
         detect_my_getgrouplist_failure_and_heal(line, &cache, "TEST.COM", &[]);
+        if let Some(v) = old {
+            std::env::set_var("NFS_KLLDAP_GANESHA_PID", v);
+        } else {
+            std::env::remove_var("NFS_KLLDAP_GANESHA_PID");
+        }
+    }
+
+    #[test]
+    fn extract_uid_from_managed_gids_failure_parses_both_forms() {
+        let colon = "set_extended_groups :DISP :INFO :Attempt to fetch managed_gids for uid: 3788 failed";
+        assert_eq!(extract_uid_from_managed_gids_failure(colon), Some(3788));
+        let equals = "set_extended_groups :DISP :INFO :Attempt to fetch managed_gids failed for uid=3788, using cred info from rpc request";
+        assert_eq!(extract_uid_from_managed_gids_failure(equals), Some(3788));
+        let sibling = "rpcsec_gss_fetch_managed_groups :DISP :INFO :Attempt to fetch managed groups failed";
+        assert_eq!(extract_uid_from_managed_gids_failure(sibling), None);
+        assert_eq!(extract_uid_from_managed_gids_failure("nfs4_op ok"), None);
+    }
+
+    #[test]
+    fn nss_passwd_has_uid_matches_third_field_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pw = tmp.path().join("nss_passwd");
+        fs::write(
+            &pw,
+            "root:x:0:0:root:/root:/bin/sh\ntestuser1:x:3788:3788:testuser1@R:/nonexistent:/usr/sbin/nologin\n",
+        )
+        .unwrap();
+        assert!(nss_passwd_has_uid(&pw, 3788));
+        assert!(nss_passwd_has_uid(&pw, 0));
+        assert!(!nss_passwd_has_uid(&pw, 9999));
+        assert!(!nss_passwd_has_uid(tmp.path().join("missing").as_path(), 0));
+    }
+
+    #[test]
+    fn resolve_live_ganesha_pid_env_zero_is_explicit_disable() {
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old = std::env::var("NFS_KLLDAP_GANESHA_PID").ok();
+        std::env::set_var("NFS_KLLDAP_GANESHA_PID", "0");
+        assert_eq!(resolve_live_ganesha_pid(), None);
         if let Some(v) = old {
             std::env::set_var("NFS_KLLDAP_GANESHA_PID", v);
         } else {

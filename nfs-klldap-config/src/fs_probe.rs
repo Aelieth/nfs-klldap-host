@@ -21,7 +21,7 @@ pub struct EffectiveShareFlags {
     pub manage_gids: bool,
     /// True when probe (not explicit TOML) drove the safe defaults.
     pub auto_applied: bool,
-    /// Resolved umask (e.g. "0022") for ACL-path FSAL only.
+    /// Resolved umask (e.g. "0022"); inert since 9.13 (no per-export Umask).
     pub umask: Option<String>,
 }
 

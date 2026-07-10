@@ -462,6 +462,40 @@ fn write_ganesha_main(
         .ganesha
         .idmapped_validity_secs
         .unwrap_or(constants::GANESHA_IDMAPPED_VALIDITY_SECS);
+    // Global (deprecated per-share values seed it — smallest wins).
+    let manage_gids_expiration = cfg
+        .ganesha
+        .manage_gids_expiration_secs
+        .or_else(|| cfg.shares.iter().filter_map(|s| s.manage_gids_expiration).min())
+        .unwrap_or(constants::GANESHA_MANAGE_GIDS_EXPIRATION_SECS);
+    let negative_cache = cfg
+        .ganesha
+        .negative_cache_validity_secs
+        .unwrap_or(constants::GANESHA_NEGATIVE_CACHE_VALIDITY_SECS);
+    let max_uid_to_group_reqs = cfg
+        .ganesha
+        .max_uid_to_group_reqs
+        .unwrap_or(constants::GANESHA_MAX_UID_TO_GROUP_REQS);
+    let readdir_res_size = cfg
+        .ganesha
+        .readdir_res_size
+        .unwrap_or(constants::GANESHA_READDIR_RES_SIZE);
+    let readdir_max_count_line = cfg
+        .ganesha
+        .readdir_max_count
+        .map(|v| format!("    Readdir_Max_Count = {};\n", v))
+        .unwrap_or_default();
+    let getattrs_in_complete_read = cfg.ganesha.getattrs_in_complete_read.unwrap_or(false);
+    let malloc_trim = cfg.ganesha.malloc_trim.unwrap_or(true);
+    let malloc_trim_mb = cfg
+        .ganesha
+        .malloc_trim_min_threshold_mb
+        .unwrap_or(constants::GANESHA_MALLOC_TRIM_MIN_MB);
+    let root_krb = cfg
+        .ganesha
+        .root_kerberos_principals
+        .as_deref()
+        .unwrap_or(constants::GANESHA_ROOT_KRB_PRINCIPALS);
 
     let mut content = format!(
         r#"NFS_CORE_PARAM {{
@@ -472,16 +506,31 @@ fn write_ganesha_main(
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
-{rpc_cred_line}}}
+{rpc_cred_line}    # Seconds getgroups() results stay trusted under Manage_Gids (global param).
+    # Group-change propagation window = SSSD entry_cache_timeout + this value.
+    Manage_Gids_Expiration = {mge};
+    # Bound concurrent uid->groups resolutions hitting SSSD/LLDAP (0 = unlimited).
+    Max_Uid_To_Group_Reqs = {uid2grp_reqs};
+    Readdir_Res_Size = {readdir_res};
+{readdir_max_count_line}    # Extra getattr-per-READ is an ESXi EOF workaround; fleet is Fedora immutable.
+    Getattrs_In_Complete_Read = {gicr};
+    # Return freed heap to the OS on long-running operation (threshold in MB).
+    Enable_malloc_trim = {mtrim};
+    Malloc_trim_MinThreshold = {mtrim_mb};
+}}
 
 DIRECTORY_SERVICES {{
     DomainName = {realm};
     Pwnam_Implementation = {pwnam};
     Pwutils_Use_Fully_Qualified_Names = true;  # principal2uid uses user@ form; getgrouplist uses passwd login from getpwuid_r.
+    # Principal service-name parts granted root. Deliberately excludes `host`
+    # so enrolled client machine keytabs cannot act as root on exports.
     Root_Kerberos_Principal = {root_krb};
     # Idmapped_* negative cache TTL (seconds); lower reduces miss stickiness, increases NSS load.
     Idmapped_User_Time_Validity = {idmap_validity};
     Idmapped_Group_Time_Validity = {idmap_validity};
+    # Failed-lookup memory: new LDAP users/groups become visible within this window.
+    Negative_Cache_Time_Validity = {neg_cache};
 }}
 
 NFS_KRB5 {{
@@ -495,6 +544,9 @@ NFSV4 {{
     Allow_Numeric_Owners = true;
     UseGetpwnam = true;
     RecoveryBackend = fs;
+    # Must be volume-backed (nfs-klldap-host.yaml) so clients reclaim locks/opens
+    # through grace after a container recreate, not just a process restart.
+    RecoveryRoot = {recovery_root};
     Lease_Lifetime = 60;
     Grace_Period = 45;
 }}
@@ -508,9 +560,18 @@ EXPORT_DEFAULTS {{
         sec = sec,
         proto = constants::GANESHA_PROTOCOLS,
         pwnam = constants::GANESHA_PWNAM_IMPL,
-        root_krb = constants::GANESHA_ROOT_KRB_PRINCIPALS,
+        root_krb = root_krb,
         idmap_validity = idmap_validity,
         rpc_cred_line = rpc_cred_line,
+        mge = manage_gids_expiration,
+        uid2grp_reqs = max_uid_to_group_reqs,
+        readdir_res = readdir_res_size,
+        readdir_max_count_line = readdir_max_count_line,
+        gicr = getattrs_in_complete_read,
+        mtrim = malloc_trim,
+        mtrim_mb = malloc_trim_mb,
+        neg_cache = negative_cache,
+        recovery_root = constants::GANESHA_RECOVERY_ROOT,
         keytab = std::env::var("NFS_KLLDAP_KEYTAB_PATH")
             .ok()
             .map(|s| s.trim().to_string())
@@ -519,6 +580,7 @@ EXPORT_DEFAULTS {{
     );
 
     if ganesha_debug_enabled() {
+        // Ganesha 9.13 has no RPCSEC_GSS LOG component; DISPATCH covers GSS.
         content.push_str(
             r#"LOG {
     Default_Log_Level = DEBUG;
@@ -526,7 +588,6 @@ EXPORT_DEFAULTS {{
         CLIENTID = FULL_DEBUG;
         SESSIONS = FULL_DEBUG;
         IDMAPPER = FULL_DEBUG;
-        RPCSEC_GSS = FULL_DEBUG;
         NFS_V4_ACL = DEBUG;
         NFS4 = DEBUG;
         DISPATCH = DEBUG;

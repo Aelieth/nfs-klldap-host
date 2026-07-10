@@ -165,3 +165,80 @@ fn enable_rpc_cred_fallback_disabled_when_configured() {
         "ganesha.conf:\n{ganesha}"
     );
 }
+
+// ---- Plan 1.4 configuration hardening: declared-not-inherited main conf ----
+
+#[test]
+fn main_conf_hardened_defaults_for_identity_and_runtime() {
+    let (_tmp, _frag, ganesha) = generate_limited(MOUNTINFO_BTRFS_NOACL, LIMITED_TOML);
+    // Root privilege restricted: machine host/ keytabs must not be root (1.4).
+    assert!(
+        ganesha.contains("Root_Kerberos_Principal = nfs, root;"),
+        "hardened default must exclude `host`:\n{ganesha}"
+    );
+    // Group management windows declared globally (NFS_CORE_PARAM, not EXPORT).
+    assert!(ganesha.contains("Manage_Gids_Expiration = 600;"), "{ganesha}");
+    assert!(ganesha.contains("Max_Uid_To_Group_Reqs = 64;"), "{ganesha}");
+    assert!(ganesha.contains("Negative_Cache_Time_Validity = 60;"), "{ganesha}");
+    // Runtime/perf shaping: no ESXi getattr, malloc trim on, readdir declared.
+    assert!(ganesha.contains("Getattrs_In_Complete_Read = false;"), "{ganesha}");
+    assert!(ganesha.contains("Enable_malloc_trim = true;"), "{ganesha}");
+    assert!(ganesha.contains("Malloc_trim_MinThreshold = 1024;"), "{ganesha}");
+    assert!(ganesha.contains("Readdir_Res_Size = 32768;"), "{ganesha}");
+    assert!(
+        !ganesha.contains("Readdir_Max_Count"),
+        "Readdir_Max_Count emitted only when configured:\n{ganesha}"
+    );
+    // Recovery state contract: fs backend at the volume-backed path.
+    assert!(ganesha.contains("RecoveryBackend = fs;"), "{ganesha}");
+    assert!(ganesha.contains("RecoveryRoot = /var/lib/nfs/ganesha;"), "{ganesha}");
+}
+
+#[test]
+fn ganesha_tuning_overrides_and_share_seeded_manage_gids_window() {
+    let toml = format!(
+        "{LIMITED_TOML}\n[ganesha]\nroot_kerberos_principals = \"root\"\n\
+         manage_gids_expiration_secs = 900\nnegative_cache_validity_secs = 120\n\
+         max_uid_to_group_reqs = 16\nreaddir_res_size = 65536\nreaddir_max_count = 16384\n\
+         getattrs_in_complete_read = true\nmalloc_trim = false\n"
+    );
+    let (_tmp, _frag, ganesha) = generate_limited(MOUNTINFO_BTRFS_NOACL, &toml);
+    assert!(ganesha.contains("Root_Kerberos_Principal = root;"), "{ganesha}");
+    assert!(ganesha.contains("Manage_Gids_Expiration = 900;"), "{ganesha}");
+    assert!(ganesha.contains("Negative_Cache_Time_Validity = 120;"), "{ganesha}");
+    assert!(ganesha.contains("Max_Uid_To_Group_Reqs = 16;"), "{ganesha}");
+    assert!(ganesha.contains("Readdir_Res_Size = 65536;"), "{ganesha}");
+    assert!(ganesha.contains("Readdir_Max_Count = 16384;"), "{ganesha}");
+    assert!(ganesha.contains("Getattrs_In_Complete_Read = true;"), "{ganesha}");
+    assert!(ganesha.contains("Enable_malloc_trim = false;"), "{ganesha}");
+
+    // Deprecated share-level manage_gids_expiration seeds the global (min wins)
+    // when [ganesha] manage_gids_expiration_secs is unset.
+    let toml = LIMITED_TOML.replace(
+        "security = \"krb5p\"",
+        "security = \"krb5p\"\nmanage_gids_expiration = 450",
+    );
+    let (_tmp, frag, ganesha) = generate_limited(MOUNTINFO_BTRFS_NOACL, &toml);
+    assert!(ganesha.contains("Manage_Gids_Expiration = 450;"), "{ganesha}");
+    assert!(
+        !frag.contains("Manage_Gids_Expiration"),
+        "must never land in EXPORT (unknown export param in 9.6):\n{frag}"
+    );
+}
+
+#[test]
+fn root_kerberos_principals_invalid_token_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cp = tmp.path().join("c");
+    fs::write(
+        &cp,
+        format!("{LIMITED_TOML}\n[ganesha]\nroot_kerberos_principals = \"nfs, machine\"\n"),
+    )
+    .unwrap();
+    let err = NfsKlldapConfig::load(&cp).expect_err("invalid token must fail validation");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("machine") && msg.contains("none, nfs, root, host, all"),
+        "unexpected error: {msg}"
+    );
+}

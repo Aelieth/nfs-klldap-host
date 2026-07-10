@@ -81,6 +81,7 @@ pub use ganesha_nss_contract::{
 pub use ganesha_readiness::{
     build_ganesha_envp, check_ganesha_readiness, check_synthetic_krb_log_clean,
     exercise_ganesha_uid2grp, filter_proc_environ_keys, ganesha_log_has_getgrouplist_warn,
+    ganesha_log_has_managed_gids_failure,
     proc_pid_environ, probe_ganesha_process_groups, probe_id_g_under_env, probe_socket_grps,
     probe_socket_grouplist, resolve_nss_sss_so, signal_ganesha_reload_idmap,
     GaneshaReadinessReport, GaneshaSpawnEnv,
@@ -799,11 +800,15 @@ mod tests {
         assert!(main.contains("Protocols = 4;"));
         assert!(main.contains("Enable_UDP = false"));
         assert!(main.contains("Allow_Set_Io_Flusher_Fail = true"));
-        assert!(main.contains("Root_Kerberos_Principal = host, nfs, root;"));
-        assert!(
-            !main.contains("Manage_Gids_Expiration ="),
-            "use Idmapped_* in DIRECTORY_SERVICES on Ganesha 9.6 trixie-backports"
-        );
+        // 1.4 hardening: host/ machine keytabs are NOT root (upstream default all).
+        assert!(main.contains("Root_Kerberos_Principal = nfs, root;"));
+        // Global getgroups() trust window (core param; complements Idmapped_*).
+        assert!(main.contains("Manage_Gids_Expiration = 600;"));
+        assert!(main.contains("Max_Uid_To_Group_Reqs = 64;"));
+        assert!(main.contains("Negative_Cache_Time_Validity = 60;"));
+        assert!(main.contains("Getattrs_In_Complete_Read = false;"));
+        assert!(main.contains("Enable_malloc_trim = true;"));
+        assert!(main.contains("RecoveryRoot = /var/lib/nfs/ganesha;"));
         assert!(main.contains("NFS_KRB5 {"));
 
         assert!(main.contains("Idmapped_User_Time_Validity = 600;"));
@@ -899,14 +904,20 @@ mod tests {
         );
         assert!(main_debug.contains("Default_Log_Level = DEBUG;"));
         assert!(main_debug.contains("IDMAPPER = FULL_DEBUG;"));
-        // GSS + ACL components make client-abort and ACL-path failures visible in captures.
-        assert!(main_debug.contains("RPCSEC_GSS = FULL_DEBUG;"));
+        // ACL component makes ACL-path failures visible in captures.
         assert!(main_debug.contains("NFS_V4_ACL = DEBUG;"));
+        // Ganesha 9.13 dropped the RPCSEC_GSS LOG component; GSS cred flow
+        // logs under DISPATCH, which the block covers at DEBUG.
+        assert!(
+            !main_debug.contains("RPCSEC_GSS"),
+            "RPCSEC_GSS is not a valid LOG component on Ganesha 9.13"
+        );
+        assert!(main_debug.contains("DISPATCH = DEBUG;"));
         // FSAL only in fragments top-level NFS4 is DEBUG for Idhelper.
         assert!(main_debug.contains("NFS4 = DEBUG;"));
         assert!(
             !main_debug.contains("RECOVERY"),
-            "RECOVERY is not a valid LOG component on Ganesha 9.6 trixie-backports"
+            "RECOVERY stays out of the LOG block (only valid since 9.13)"
         );
     }
 

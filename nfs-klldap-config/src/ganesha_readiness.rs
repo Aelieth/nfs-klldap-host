@@ -204,7 +204,8 @@ pub fn ganesha_log_has_getgrouplist_warn(ganesha_log_path: &str, from_offset: u6
     let Ok(content) = std::fs::read_to_string(ganesha_log_path) else {
         return false;
     };
-    let tail = if from_offset > 0 && (from_offset as usize) < content.len() {
+    // Offset exactly at EOF means no new data: scan nothing, not everything.
+    let tail = if from_offset > 0 && (from_offset as usize) <= content.len() {
         &content[from_offset as usize..]
     } else {
         content.as_str()
@@ -219,6 +220,26 @@ pub fn ganesha_log_has_getgrouplist_warn(ganesha_log_path: &str, from_offset: u6
 /// Synthetic krb log scan.
 pub fn check_synthetic_krb_log_clean(ganesha_log_path: &str) -> bool {
     !ganesha_log_has_getgrouplist_warn(ganesha_log_path, 0)
+}
+
+/// Scan ganesha.log past offset for nfs_creds managed-groups fetch failures.
+/// These log under DISP at INFO (not ID MAPPER WARN) when uid2grp fails on a
+/// live RPCSEC_GSS request; under GSS the fallback strips all supplementary
+/// groups, so they are the primary group-resolution failure signature.
+pub fn ganesha_log_has_managed_gids_failure(ganesha_log_path: &str, from_offset: u64) -> bool {
+    let Ok(content) = std::fs::read_to_string(ganesha_log_path) else {
+        return false;
+    };
+    // Offset exactly at EOF means no new data: scan nothing, not everything.
+    let tail = if from_offset > 0 && (from_offset as usize) <= content.len() {
+        &content[from_offset as usize..]
+    } else {
+        content.as_str()
+    };
+    tail.lines().any(|ln| {
+        let low = ln.to_ascii_lowercase();
+        low.contains("attempt to fetch managed") && low.contains("failed")
+    })
 }
 
 fn apply_envp(cmd: &mut Command, envp: &[(OsString, OsString)]) {
@@ -294,7 +315,8 @@ pub fn exercise_ganesha_uid2grp(
             }
         }
     }
-    let has_warn = ganesha_log_has_getgrouplist_warn(ganesha_log_path, log_offset);
+    let has_warn = ganesha_log_has_getgrouplist_warn(ganesha_log_path, log_offset)
+        || ganesha_log_has_managed_gids_failure(ganesha_log_path, log_offset);
     let msg = if has_warn {
         "ganesha-uid2grp-exercise:warn-seen".into()
     } else {
@@ -538,6 +560,25 @@ mod tests {
         assert!(!check_synthetic_krb_log_clean(log.to_str().unwrap()));
         std::fs::write(&log, "nfs_start :NFS STARTUP :EVENT :ok\n").unwrap();
         assert!(check_synthetic_krb_log_clean(log.to_str().unwrap()));
+    }
+
+    #[test]
+    fn ganesha_log_has_managed_gids_failure_matches_nfs_creds_lines() {
+        let td = tempfile::tempdir().unwrap();
+        let log = td.path().join("ganesha.log");
+        std::fs::write(
+            &log,
+            "set_extended_groups :DISP :INFO :Attempt to fetch managed_gids for uid: 3788 failed\n",
+        )
+        .unwrap();
+        assert!(ganesha_log_has_managed_gids_failure(log.to_str().unwrap(), 0));
+        let off = std::fs::metadata(&log).unwrap().len();
+        assert!(!ganesha_log_has_managed_gids_failure(
+            log.to_str().unwrap(),
+            off
+        ));
+        std::fs::write(&log, "nfs_start :NFS STARTUP :EVENT :ok\n").unwrap();
+        assert!(!ganesha_log_has_managed_gids_failure(log.to_str().unwrap(), 0));
     }
 
     #[test]

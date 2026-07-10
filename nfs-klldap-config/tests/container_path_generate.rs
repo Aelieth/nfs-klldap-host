@@ -44,11 +44,15 @@ enable_acl = true
     let frag = generate_with_mountinfo(MOUNTINFO_MIXED, toml);
     assert!(frag.contains("Path = /export/staging/movies;"));
     assert!(!frag.contains("Disable_ACL = true;"), "staging ext4 keeps ACL enabled");
+    assert!(
+        frag.contains("Disable_ACL = false;"),
+        "ACL exports declare the choice explicitly (1.4): {frag}"
+    );
     assert!(frag.contains("Manage_Gids = true;"));
 }
 
 #[test]
-fn acl_share_emits_custom_umask_and_manage_gids_expiration() {
+fn acl_share_emits_no_umask_and_no_export_level_manage_gids_expiration() {
     let toml = r#"
 ldap_uri = "ldaps://klldap.test:6360"
 [storage]
@@ -65,31 +69,15 @@ umask = "0027"
 manage_gids_expiration = 900
 "#;
     let frag = generate_with_mountinfo(MOUNTINFO_MIXED, toml);
-    assert!(frag.contains("        Umask = 0027;"), "custom umask must land in FSAL block: {frag}");
-    assert!(frag.contains("Manage_Gids_Expiration = 900;"), "{frag}");
-}
-
-#[test]
-fn acl_share_umask_defaults_to_0022_when_unset_or_invalid() {
-    let base = r#"
-ldap_uri = "ldaps://klldap.test:6360"
-[storage]
-container_root = "/export"
-[sssd]
-ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
-ldap_default_authtok = "sekret"
-[[shares]]
-name = "movies"
-host_path = "/media/movies"
-container_path = "/export/staging/movies"
-enable_acl = true
-"#;
-    let frag = generate_with_mountinfo(MOUNTINFO_MIXED, base);
-    assert!(frag.contains("        Umask = 0022;"), "unset umask must default on ACL path: {frag}");
-    // Invalid umask (not 4-digit octal with leading 0) falls back to the safe default.
-    let invalid = format!("{base}umask = \"999\"\n");
-    let frag = generate_with_mountinfo(MOUNTINFO_MIXED, &invalid);
-    assert!(frag.contains("        Umask = 0022;"), "invalid umask must fall back: {frag}");
+    // Ganesha 9.13 dropped per-export FSAL Umask (module-global only). The
+    // TOML key is accepted but inert (loud generate-time warning) until the
+    // 0.9.9x ACL track replaces it with the POSIX-gate envelope (plan 2.4).
+    assert!(!frag.contains("Umask"), "per-export Umask must not be emitted on 9.13: {frag}");
+    // Manage_Gids_Expiration is a global NFS_CORE_PARAM (9.6 and 9.13) — it
+    // must NOT appear inside the EXPORT block (rejected as an unknown export
+    // parameter). The deprecated share value seeds the global in ganesha.conf
+    // (covered in ganesha_96_identity_audit.rs).
+    assert!(!frag.contains("Manage_Gids_Expiration"), "{frag}");
 }
 
 #[test]

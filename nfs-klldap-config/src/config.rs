@@ -198,6 +198,33 @@ pub struct GaneshaSection {
     pub enable_rpc_cred_fallback: Option<bool>,
     /// Override Idmapped_*_Time_Validity seconds (default 600).
     pub idmapped_validity_secs: Option<u32>,
+    /// Kerberos principal service-name parts granted root privilege
+    /// (DIRECTORY_SERVICES Root_Kerberos_Principal). Comma-separated tokens
+    /// from none|nfs|root|host|all. Default "nfs, root" — `host` is excluded
+    /// so enrolled client machine keytabs cannot act as root on exports.
+    pub root_kerberos_principals: Option<String>,
+    /// Seconds Ganesha trusts getgroups() results under Manage_Gids
+    /// (NFS_CORE_PARAM Manage_Gids_Expiration — global, not per-export).
+    /// Default 600, max 604800.
+    pub manage_gids_expiration_secs: Option<u64>,
+    /// DIRECTORY_SERVICES Negative_Cache_Time_Validity seconds (default 60):
+    /// how long a failed user/group lookup is remembered.
+    pub negative_cache_validity_secs: Option<u32>,
+    /// NFS_CORE_PARAM Max_Uid_To_Group_Reqs — concurrent uid→groups lookups
+    /// allowed against SSSD/LDAP (default 64; 0 = unlimited).
+    pub max_uid_to_group_reqs: Option<u32>,
+    /// NFS_CORE_PARAM Readdir_Res_Size response bytes (default 32768).
+    pub readdir_res_size: Option<u32>,
+    /// NFS_CORE_PARAM Readdir_Max_Count entries (emitted only when set).
+    pub readdir_max_count: Option<u32>,
+    /// Extra getattr after each READ to revalidate EOF — only ESXi clients
+    /// need it; default false (upstream default is true).
+    pub getattrs_in_complete_read: Option<bool>,
+    /// Enable_malloc_trim for flat long-running memory (default true).
+    pub malloc_trim: Option<bool>,
+    /// Malloc_trim_MinThreshold in MB (default 1024; upstream 15360 never
+    /// fires under the 4 GB container memory limit).
+    pub malloc_trim_min_threshold_mb: Option<u32>,
 }
 
 fn default_security() -> String {
@@ -250,7 +277,10 @@ pub struct Share {
     pub enable_acl: Option<bool>, // ACL primary vs NOACL
     pub manage_gids: Option<bool>,
     pub read_access_policy: Option<String>,
-    pub manage_gids_expiration: Option<u64>, // further ACL
+    /// DEPRECATED: Manage_Gids_Expiration is a global NFS_CORE_PARAM, not a
+    /// per-export directive. Still accepted; the smallest share value seeds
+    /// the global when [ganesha] manage_gids_expiration_secs is unset.
+    pub manage_gids_expiration: Option<u64>,
     /// Absolute path inside the container where Ganesha serves this share (EXPORT Path=).
     pub container_path: String,
     /// Optional distinct data-source path inside the container for ACL staging.
@@ -259,10 +289,9 @@ pub struct Share {
     /// real data lands elsewhere (see docs/ganesha-architecture.md staging pattern). Unset
     /// means source == serve (no staging).
     pub source_path: Option<String>,
-    /// Umask (octal e.g. "0022") emitted *inside* FSAL block on ACL path only.
-    /// Default "0022" sensible for creation; pairs with directory default ACLs.
-    /// Omitted on NOACL path to preserve separation (host umask governs).
-    /// Addresses common ACL+umask gotcha for new NFS file inheritance.
+    /// Umask (octal e.g. "0022"), accepted but currently inert: Ganesha 9.13
+    /// dropped per-export FSAL Umask (module-global only), so generate warns
+    /// and emits nothing. The 0.9.9x ACL track replaces it (plan 2.4 gate).
     pub umask: Option<String>,
 }
 

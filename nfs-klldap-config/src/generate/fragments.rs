@@ -51,10 +51,10 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
             if !caps.acl_capable || posix_acl == Some(false) {
                 eprintln!(
                     "WARN [nfs-klldap-config] share '{}': enable_acl = true but serve path '{}' \
-                     (fstype={}{}) does not look ACL-capable — Ganesha 9.6 VFS may return \
-                     NFS4ERR_NOTSUPP for NFSv4 ACL ops. Stage onto an ACL-capable tree via \
-                     source_path, or use an ACL-capable Ganesha build. Verify with \
-                     verify-ganesha.sh (docs/ganesha-architecture.md).",
+                     (fstype={}{}) does not look ACL-capable — the Ganesha VFS POSIX-ACL \
+                     backend will return NFS4ERR_NOTSUPP for NFSv4 ACL ops there. Stage onto \
+                     an ACL-capable tree via source_path. Verify with verify-ganesha.sh \
+                     (docs/ganesha-architecture.md).",
                     share.name,
                     path,
                     caps.fstype,
@@ -62,7 +62,15 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
                 );
             }
         }
-        let mge_line = if eff.enable_acl { share.manage_gids_expiration.map(|e| format!("    Manage_Gids_Expiration = {};\n", e)).unwrap_or_default() } else { String::new() };
+        if share.umask.is_some() {
+            eprintln!(
+                "WARN [nfs-klldap-config] share '{}': umask is not emitted — Ganesha 9.13 \
+                 dropped per-export FSAL Umask (module-global only). The key is inert until \
+                 the ACL track (plan 2.4 POSIX gate) replaces it.",
+                share.name
+            );
+        }
+        // Manage_Gids_Expiration is core-only; shares seed the main conf.
         let pseudo_line = export_pseudo_line(&pseudo);
         let client_block = format!(r#"
     CLIENT {{
@@ -79,7 +87,7 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
     Path = {};
 {pseudo_line}{disable_acl_line}    SecType = {};
     Squash = {};
-{manage_gids_line}{mge_line}{read_access_line}{pref_read_line}{pref_write_line}{client_block}    FSAL {{
+{manage_gids_line}{read_access_line}{pref_read_line}{pref_write_line}{client_block}    FSAL {{
         Name = VFS;
 {umask_line}    }}
 }}

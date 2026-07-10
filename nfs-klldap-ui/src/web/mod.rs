@@ -124,6 +124,18 @@ async fn htmx_js() -> impl IntoResponse {
     )
 }
 
+/// Serves the Share Permissions app script (compiled in like the templates).
+/// Unversioned filename, so no immutable caching — a redeploy must always win.
+async fn permissions_js() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "application/javascript"),
+            (CACHE_CONTROL, "no-cache"),
+        ],
+        include_str!("../../assets/permissions.js"),
+    )
+}
+
 /// Redirect to the setup wizard when first-run steps are incomplete.
 async fn require_setup_complete(
     State(state): State<AppState>,
@@ -155,6 +167,7 @@ pub fn router(state: AppState) -> Router {
     let app = Router::new()
         // Public routes that do not require authentication.
         .route("/assets/htmx-1.9.12.min.js", get(htmx_js))
+        .route("/assets/permissions.js", get(permissions_js))
         .route("/login", get(login_page).post(login))
         .route("/setup-password", post(setup_password))
         .route("/logout", get(logout).post(logout))
@@ -545,19 +558,22 @@ container_path = "{}"
         let lbody = axum::body::to_bytes(lresp.into_body(), 1024 * 1024).await.unwrap();
         let lhtml = String::from_utf8_lossy(&lbody);
         assert!(lhtml.contains("/assets/htmx-"), "pages must load the vendored htmx");
+        assert!(lhtml.contains("/assets/permissions.js"), "pages must load the app script asset");
         assert!(!lhtml.contains("unpkg.com"), "no CDN reference may remain in served HTML");
 
-        // Marker removed (first-run state): the asset must still bypass the setup gate.
+        // Marker removed (first-run state): the assets must still bypass the setup gate.
         if let Some(m) = &marker {
             std::fs::remove_file(m).ok();
         }
-        let req = Request::builder().uri("/assets/htmx-1.9.12.min.js").body(Body::empty()).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "asset must be served while the setup wizard gate is active");
-        let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-        assert!(ct.contains("javascript"), "asset must carry a JS content-type, got {ct}");
-        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
-        assert!(!body.is_empty(), "asset body must not be empty");
+        for asset in ["/assets/htmx-1.9.12.min.js", "/assets/permissions.js"] {
+            let req = Request::builder().uri(asset).body(Body::empty()).unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{asset} must be served while the setup wizard gate is active");
+            let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            assert!(ct.contains("javascript"), "{asset} must carry a JS content-type, got {ct}");
+            let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+            assert!(!body.is_empty(), "{asset} body must not be empty");
+        }
     }
 
     // GET /dir-perms renders the POSIX matrix + hidden numeric uid/gid fields (for name translation)

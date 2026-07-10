@@ -513,7 +513,10 @@ pub(crate) async fn search_users(
     }
 
     let lldap = state.lldap.lock().await;
-    let users = lldap.list_users(params.user_query_raw()).await;
+    // None = LDAP unavailable (unreachable / no service creds); Some(vec![]) = no match.
+    let Some(users) = lldap.list_users(params.user_query_raw()).await else {
+        return Html(r#"<div class="suggestion sugg-note">LLDAP search unavailable (server unreachable or service credentials not configured)</div>"#.to_string());
+    };
     let mut html = String::new();
     for user in users.into_iter().filter(|u| u.uid_number.is_some()) {
         let uid = user.uid_number.unwrap_or(0);
@@ -527,7 +530,7 @@ pub(crate) async fn search_users(
         ));
     }
     if html.is_empty() {
-        html = "<div class=\"suggestion\">No matches found in LLDAP</div>".to_string();
+        html = r#"<div class="suggestion sugg-note">No matches found in LLDAP</div>"#.to_string();
     }
     Html(html)
 }
@@ -541,7 +544,9 @@ pub(crate) async fn search_groups(
         return Html("<div class=\"suggestion\">Unauthorized</div>".to_string());
     }
     let lldap = state.lldap.lock().await;
-    let groups = lldap.list_groups(params.group_query_raw()).await;
+    let Some(groups) = lldap.list_groups(params.group_query_raw()).await else {
+        return Html(r#"<div class="suggestion sugg-note">LLDAP search unavailable (server unreachable or service credentials not configured)</div>"#.to_string());
+    };
 
     let mut html = String::new();
     for group in groups.into_iter().filter(|g| g.gid_number.is_some()) {
@@ -556,7 +561,7 @@ pub(crate) async fn search_groups(
         ));
     }
     if html.is_empty() {
-        html = "<div class=\"suggestion\">No matches found in LLDAP</div>".to_string();
+        html = r#"<div class="suggestion sugg-note">No matches found in LLDAP</div>"#.to_string();
     }
     Html(html)
 }

@@ -679,4 +679,31 @@ container_path = "{}"
         assert!(body.contains(r#"data-apply-finished="true""#), "finished shell must carry the finished marker");
         assert!(body.contains("3 changed"), "finished shell must carry the final result text");
     }
+
+    // The autocomplete endpoints must distinguish "LDAP unavailable" from "no match".
+    // The test LLDAP client has no service credentials, so list_users/list_groups
+    // short-circuit to None before any network I/O — deterministic and fast.
+    #[tokio::test]
+    async fn users_and_groups_search_routes_render_fallback_without_ldap() {
+        let (state, _tmp, _guard) = make_test_state_with_limited_fs_mountinfo();
+        let token = state.auth.create_privileged_session("searchtest");
+        let app = router(state);
+
+        for uri in ["/users/search?owner_user=test", "/groups/search?owner_group=300"] {
+            let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+            let req = add_session_cookie(req, &token);
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{uri} must render a fragment");
+            let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+            let html = String::from_utf8_lossy(&body);
+            assert!(html.contains("LLDAP search unavailable"), "{uri} without LDAP creds must say unavailable, got: {html}");
+            assert!(html.contains(r#"class="suggestion"#), "{uri} note must reuse the suggestion styling");
+        }
+
+        // No session: the endpoint must not leak the suggestion machinery.
+        let req = Request::builder().uri("/users/search?owner_user=test").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("Unauthorized"));
+    }
 }

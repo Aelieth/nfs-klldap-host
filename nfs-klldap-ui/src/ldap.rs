@@ -2,7 +2,7 @@
 
 use ldap3::{LdapConn, LdapConnSettings};
 use nfs_klldap_config::{IdLdapResolver, PosixAttributeMapping};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -40,9 +40,10 @@ pub struct LdapClient {
     start_tls: bool,
     tls_cacert: Option<String>,
 
-    // UI-only recent search caches (short TTL). Main POSIX caches delegated to identity_resolver.
-    recent_user_searches: Mutex<HashMap<String, CachedSearch>>,
-    recent_group_searches: Mutex<HashMap<String, CachedSearch>>,
+    // UI-only full-list caches (short TTL) for the permission-editor autocomplete;
+    // queries are matched locally against these. Main POSIX caches live in identity_resolver.
+    full_user_list: Mutex<Option<CachedSearch>>,
+    full_group_list: Mutex<Option<CachedSearch>>,
     last_verified_memberofs: Mutex<Option<(String, Vec<String>, Instant)>>,
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
@@ -67,12 +68,17 @@ pub struct Group {
     pub gid_number: Option<i32>,
 }
 
-// UI-only search recents (short TTL). Main identity caches live in IdLdapResolver. 1 sentence.
+// UI-only full-list cache TTL. Main identity caches live in IdLdapResolver.
 const SEARCH_CACHE_TTL: Duration = Duration::from_secs(2 * 60);
-const MAX_RECENT_SEARCHES: usize = 8;
+/// Max rows fetched from LDAP for the full autocomplete list. Client-side memory
+/// bound only — the resolver sends no server-side size limit.
+const FULL_LIST_FETCH_LIMIT: usize = 1000;
 /// Max autocomplete rows for the permission editor.
 /// The dropdown is scrollable.
 const LIST_RESULT_LIMIT: usize = 25;
+
+/// One autocomplete row: (id, numeric uid/gid, display label).
+type ListRow = (String, Option<i32>, String);
 
 /// Lightweight stats for the settings UI (visible cache effectiveness).
 #[derive(Debug, Clone, Default)]
@@ -88,8 +94,7 @@ pub struct LdapCacheStats {
 
 #[derive(Debug, Clone)]
 struct CachedSearch {
-    // Cached search rows store id, numeric value, and display label.
-    results: Vec<(String, Option<i32>, String)>,
+    results: Vec<ListRow>,
     fetched_at: Instant,
 }
 
@@ -125,8 +130,8 @@ impl LdapClient {
             no_tls_verify,
             start_tls,
             tls_cacert,
-            recent_user_searches: Mutex::new(HashMap::new()),
-            recent_group_searches: Mutex::new(HashMap::new()),
+            full_user_list: Mutex::new(None),
+            full_group_list: Mutex::new(None),
             last_verified_memberofs: Mutex::new(None),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
@@ -194,11 +199,15 @@ impl LdapClient {
     // These tests cover cache helpers (private). all callers must have.
 
     fn evict_expired(&self) {
-        // Delegate POSIX user/group caches to shared IdLdapResolver (dedup). Keep UI-only recent searches + memberof here. 2 sentences.
+        // Delegate POSIX user/group caches to shared IdLdapResolver (dedup). Keep UI-only full lists + memberof here.
         if let Ok(r) = self.identity_resolver.lock() { r.evict_expired(); }
         let now = Instant::now();
-        self.recent_user_searches.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < SEARCH_CACHE_TTL);
-        self.recent_group_searches.lock().unwrap().retain(|_, v| now.duration_since(v.fetched_at) < SEARCH_CACHE_TTL);
+        for slot in [&self.full_user_list, &self.full_group_list] {
+            let mut guard = slot.lock().unwrap();
+            if guard.as_ref().is_some_and(|c| now.duration_since(c.fetched_at) >= SEARCH_CACHE_TTL) {
+                *guard = None;
+            }
+        }
         let mut mem = self.last_verified_memberofs.lock().unwrap();
         if let Some((_, _, t)) = mem.as_ref() {
             if now.duration_since(*t) >= Duration::from_secs(120) {
@@ -207,46 +216,31 @@ impl LdapClient {
         }
     }
 
-    fn cache_put_search(&self, key: &str, is_user: bool, items: &[(String, Option<i32>, String)]) {
-        let entry = CachedSearch {
-            results: items.to_vec(),
+    fn store_full_list(&self, is_user: bool, rows: &[ListRow]) {
+        let slot = if is_user { &self.full_user_list } else { &self.full_group_list };
+        *slot.lock().unwrap() = Some(CachedSearch {
+            results: rows.to_vec(),
             fetched_at: Instant::now(),
-        };
-        if is_user {
-            let mut map = self.recent_user_searches.lock().unwrap();
-            map.insert(key.to_string(), entry);
-            if map.len() > MAX_RECENT_SEARCHES {
-                if let Some(oldest) = map.keys().next().cloned() {
-                    map.remove(&oldest);
-                }
-            }
-        } else {
-            let mut map = self.recent_group_searches.lock().unwrap();
-            map.insert(key.to_string(), entry);
-            if map.len() > MAX_RECENT_SEARCHES {
-                if let Some(oldest) = map.keys().next().cloned() {
-                    map.remove(&oldest);
-                }
-            }
-        }
+        });
     }
 
-    fn cache_get_search(&self, key: &str, is_user: bool) -> Option<Vec<(String, Option<i32>, String)>> {
+    fn cached_full_list(&self, is_user: bool) -> Option<Vec<ListRow>> {
         self.evict_expired();
-        let map = if is_user { self.recent_user_searches.lock().unwrap() } else { self.recent_group_searches.lock().unwrap() };
-        if let Some(hit) = map.get(key) {
+        let slot = if is_user { &self.full_user_list } else { &self.full_group_list };
+        let hit = slot.lock().unwrap().as_ref().map(|c| c.results.clone());
+        if hit.is_some() {
             self.cache_hits.fetch_add(1, Ordering::Relaxed);
-            return Some(hit.results.clone());
+        } else {
+            self.cache_misses.fetch_add(1, Ordering::Relaxed);
         }
-        self.cache_misses.fetch_add(1, Ordering::Relaxed);
-        None
+        hit
     }
 
     pub fn clear_cache(&self) {
-        // Delegate to shared resolver; rebuild it + clear UI recents. 1 sentence.
+        // Delegate to shared resolver; rebuild it + clear UI full lists.
         if let Ok(r) = self.identity_resolver.lock() { r.clear_caches(); }
-        self.recent_user_searches.lock().unwrap().clear();
-        self.recent_group_searches.lock().unwrap().clear();
+        *self.full_user_list.lock().unwrap() = None;
+        *self.full_group_list.lock().unwrap() = None;
         *self.last_verified_memberofs.lock().unwrap() = None;
         *self.identity_resolver.lock().unwrap() = self.build_identity_resolver();
         self.cache_clears.fetch_add(1, Ordering::Relaxed);
@@ -264,7 +258,10 @@ impl LdapClient {
         LdapCacheStats {
             user_entries: resolver_counts.0,
             group_entries: resolver_counts.1,
-            recent_search_entries: self.recent_user_searches.lock().unwrap().len() + self.recent_group_searches.lock().unwrap().len(),
+            recent_search_entries: [&self.full_user_list, &self.full_group_list]
+                .iter()
+                .filter(|s| s.lock().unwrap().is_some())
+                .count(),
             hits: self.cache_hits.load(Ordering::Relaxed),
             misses: self.cache_misses.load(Ordering::Relaxed),
             clears: self.cache_clears.load(Ordering::Relaxed),
@@ -298,43 +295,31 @@ impl LdapClient {
         self.identity_resolver.lock().unwrap().user_filter_by_name(name)
     }
 
-    /// Strip permission-editor values like `Alice (1000)`.
-    /// Keeps `1000` or `Alice` as needed.
+    /// Strip permission-editor values like `Alice (1000)` down to `1000` or `Alice`.
+    /// The field is prefilled "Name (id)", so mid-edit fragments with an unclosed
+    /// paren ("Alice (10", "Alice (UID 10", "Alice (") are normalized the same way —
+    /// otherwise partial backspace-edits would match nothing.
     pub(crate) fn normalize_editor_search_query(q: Option<&str>) -> Option<String> {
         let s = q.map(str::trim).filter(|s| !s.is_empty())?;
         if let Some(open) = s.rfind('(') {
-            if s.ends_with(')') {
-                let inner = s[open + 1..s.len() - 1].trim();
-                let digits = inner
-                    .strip_prefix("UID")
-                    .or_else(|| inner.strip_prefix("uid"))
-                    .or_else(|| inner.strip_prefix("GID"))
-                    .or_else(|| inner.strip_prefix("gid"))
-                    .map(str::trim)
-                    .unwrap_or(inner);
-                if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
-                    return Some(digits.to_string());
-                }
-                let name = s[..open].trim();
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
+            let closed = s.ends_with(')');
+            let inner = if closed { &s[open + 1..s.len() - 1] } else { &s[open + 1..] }.trim();
+            let digits = inner
+                .strip_prefix("UID")
+                .or_else(|| inner.strip_prefix("uid"))
+                .or_else(|| inner.strip_prefix("GID"))
+                .or_else(|| inner.strip_prefix("gid"))
+                .map(str::trim)
+                .unwrap_or(inner);
+            let name = s[..open].trim();
+            if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                return Some(digits.to_string());
+            }
+            if (closed || digits.is_empty()) && !name.is_empty() {
+                return Some(name.to_string());
             }
         }
         Some(s.to_string())
-    }
-
-    /// Normalized query for permission-editor autocomplete.
-    /// Matches name or numeric substring.
-    fn normalize_list_query(filter: Option<&str>) -> (String, String, String) {
-        let q_orig = Self::normalize_editor_search_query(filter).unwrap_or_default();
-        let q_lower = q_orig.to_lowercase();
-        let cache_key = if q_orig.is_empty() {
-            "__all__".to_string()
-        } else {
-            q_orig.clone()
-        };
-        (q_orig, q_lower, cache_key)
     }
 
     fn matches_list_query(q_lower: &str, id: &str, display: &str, num: Option<i32>) -> bool {
@@ -349,56 +334,35 @@ impl LdapClient {
                 .contains(q_lower)
     }
 
-    fn sort_users_for_list(users: &mut [User]) {
-        users.sort_by(|a, b| {
-            let da = a.display_name.as_deref().unwrap_or(&a.id).to_lowercase();
-            let db = b.display_name.as_deref().unwrap_or(&b.id).to_lowercase();
-            da.cmp(&db).then_with(|| a.id.to_lowercase().cmp(&b.id.to_lowercase()))
+    /// Pure: raw resolver rows (id, num, display, dn) → clean list rows.
+    /// Drops rows without a numeric id, dedups by id, falls back empty display → id,
+    /// sorts by lowercase (display, id).
+    fn build_full_rows(raw: Vec<(String, Option<i32>, String, String)>) -> Vec<ListRow> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut rows: Vec<ListRow> = raw
+            .into_iter()
+            .filter(|(id, num, _, _)| num.is_some() && !id.is_empty())
+            .filter(|(id, _, _, _)| seen.insert(id.clone()))
+            .map(|(id, num, display, _dn)| {
+                let display = if display.is_empty() { id.clone() } else { display };
+                (id, num, display)
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            (a.2.to_lowercase(), a.0.to_lowercase()).cmp(&(b.2.to_lowercase(), b.0.to_lowercase()))
         });
+        rows
     }
 
-    fn sort_groups_for_list(groups: &mut [Group]) {
-        groups.sort_by(|a, b| {
-            let da = a.display_name.as_deref().unwrap_or(&a.id).to_lowercase();
-            let db = b.display_name.as_deref().unwrap_or(&b.id).to_lowercase();
-            da.cmp(&db).then_with(|| a.id.to_lowercase().cmp(&b.id.to_lowercase()))
-        });
-    }
-
-    fn try_push_user(
-        results: &mut Vec<User>,
-        seen: &mut HashSet<String>,
-        q_lower: &str,
-        u: User,
-    ) {
-        let Some(uid) = u.uid_number else {
-            return;
-        };
-        let display = u.display_name.as_deref().unwrap_or(&u.id);
-        if !Self::matches_list_query(q_lower, &u.id, display, Some(uid)) {
-            return;
-        }
-        if seen.insert(u.id.clone()) {
-            results.push(u);
-        }
-    }
-
-    fn try_push_group(
-        results: &mut Vec<Group>,
-        seen: &mut HashSet<String>,
-        q_lower: &str,
-        g: Group,
-    ) {
-        let Some(gid) = g.gid_number else {
-            return;
-        };
-        let display = g.display_name.as_deref().unwrap_or(&g.id);
-        if !Self::matches_list_query(q_lower, &g.id, display, Some(gid)) {
-            return;
-        }
-        if seen.insert(g.id.clone()) {
-            results.push(g);
-        }
+    /// Pure: case-insensitive substring match on id/display plus decimal-substring
+    /// match on the numeric id ("300" matches 3002 and 3003); capped at `limit`.
+    fn filter_list_rows(rows: &[ListRow], query: &str, limit: usize) -> Vec<ListRow> {
+        let q_lower = query.to_lowercase();
+        rows.iter()
+            .filter(|(id, num, display)| Self::matches_list_query(&q_lower, id, display, *num))
+            .take(limit)
+            .cloned()
+            .collect()
     }
 
     async fn try_simple_bind(&self, dn: &str, pw: &str) -> bool {
@@ -484,152 +448,68 @@ impl LdapClient {
         Some((id, display))
     }
 
-    pub async fn list_users(&self, filter: Option<&str>) -> Vec<User> {
-        let (q_orig, q_lower, cache_key) = Self::normalize_list_query(filter);
-
-        let mut results: Vec<User> = Vec::new();
-        let mut seen_ids: HashSet<String> = HashSet::new();
-
-        // (old identity cache iter removed during dedup; search cache + LDAP below handle display.)
-
-        // Recent search cache (2m): re-apply query filter stale keys Must not.
-        let search_cached = self.cache_get_search(&cache_key, true);
-        if let Some(cached) = search_cached.clone() {
-            for (id, uid, display) in cached {
-                Self::try_push_user(
-                    &mut results,
-                    &mut seen_ids,
-                    &q_lower,
-                    User {
-                        id,
-                        display_name: Some(display),
-                        uid_number: uid,
-                    },
-                );
-            }
+    /// Cached full list, or one LDAP fetch (presence filter). `Ok(vec![])` from the
+    /// resolver (a genuinely empty directory) IS cached; a fetch error is logged and
+    /// returned as `None` without caching, so a transient failure can't poison the TTL.
+    async fn full_list_rows(&self, is_user: bool) -> Option<Vec<ListRow>> {
+        if let Some(rows) = self.cached_full_list(is_user) {
+            return Some(rows);
         }
-
-        // LDAP when caches miss, typed query misses or a stale empty __all__.
-        let needs_ldap = if q_orig.is_empty() {
-            search_cached.as_ref().is_none_or(|c| c.is_empty())
-        } else {
-            results.is_empty()
-                && (search_cached.is_none()
-                    || !q_lower.is_empty()
-                    || search_cached.as_ref().is_some_and(|c| c.is_empty()))
-        };
-        if needs_ldap {
-            let q = q_orig.clone();
-            let limit = LIST_RESULT_LIMIT;
-            if let Some(rows) = self
-                .with_identity(move |resolver, bind_dn, bind_pw| {
-                    Some(resolver.search_list_users(&q, bind_dn, bind_pw, limit))
-                })
-                .await
-            {
-                for (id, uid, display, _dn) in rows {
-                    Self::try_push_user(
-                        &mut results,
-                        &mut seen_ids,
-                        &q_lower,
-                        User {
-                            id,
-                            display_name: Some(display),
-                            uid_number: uid,
-                        },
-                    );
-                    if results.len() >= LIST_RESULT_LIMIT {
-                        break;
+        let raw = self
+            .with_identity(move |resolver, bind_dn, bind_pw| {
+                let res = if is_user {
+                    resolver.search_list_users(bind_dn, bind_pw, FULL_LIST_FETCH_LIMIT)
+                } else {
+                    resolver.search_list_groups(bind_dn, bind_pw, FULL_LIST_FETCH_LIMIT)
+                };
+                match res {
+                    Ok(rows) => Some(rows),
+                    Err(e) => {
+                        eprintln!(
+                            "LDAP {} list fetch failed: {e}",
+                            if is_user { "user" } else { "group" }
+                        );
+                        None
                     }
                 }
-            }
-        }
-
-        Self::sort_users_for_list(&mut results);
-        results.truncate(LIST_RESULT_LIMIT);
-
-        let cache_items: Vec<(String, Option<i32>, String)> = results
-            .iter()
-            .filter(|u| u.uid_number.is_some())
-            .map(|u| (u.id.clone(), u.uid_number, u.display_name.clone().unwrap_or_default()))
-            .collect();
-        self.cache_put_search(&cache_key, true, &cache_items);
-        // uid cache puts removed (resolver dedup); search cache retained for UI recents.
-        results
+            })
+            .await?;
+        let rows = Self::build_full_rows(raw);
+        self.store_full_list(is_user, &rows);
+        Some(rows)
     }
 
-    pub async fn list_groups(&self, filter: Option<&str>) -> Vec<Group> {
-        let (q_orig, q_lower, cache_key) = Self::normalize_list_query(filter);
-
-        let mut results: Vec<Group> = Vec::new();
-        let mut seen_ids: HashSet<String> = HashSet::new();
-
-        if !q_orig.is_empty() {
-            // group cache iter removed (dedup); proceeds to resolver search_list_groups below.
-        }
-
-        let search_cached = self.cache_get_search(&cache_key, false);
-        if let Some(cached) = search_cached.clone() {
-            for (id, gid, display) in cached {
-                Self::try_push_group(
-                    &mut results,
-                    &mut seen_ids,
-                    &q_lower,
-                    Group {
-                        id,
-                        display_name: Some(display),
-                        gid_number: gid,
-                    },
-                );
-            }
-        }
-
-        let needs_ldap = if q_orig.is_empty() {
-            search_cached.as_ref().is_none_or(|c| c.is_empty())
-        } else {
-            results.is_empty()
-                && (search_cached.is_none()
-                    || !q_lower.is_empty()
-                    || search_cached.as_ref().is_some_and(|c| c.is_empty()))
-        };
-        if needs_ldap {
-            let q = q_orig.clone();
-            let limit = LIST_RESULT_LIMIT;
-            if let Some(rows) = self
-                .with_identity(move |resolver, bind_dn, bind_pw| {
-                    Some(resolver.search_list_groups(&q, bind_dn, bind_pw, limit))
+    /// Autocomplete rows for the permission editor. Queries are matched locally
+    /// (case-insensitive name substring + numeric substring) against the cached
+    /// full list. `None` = LDAP unavailable; `Some(vec![])` = no match.
+    pub async fn list_users(&self, filter: Option<&str>) -> Option<Vec<User>> {
+        let q = Self::normalize_editor_search_query(filter).unwrap_or_default();
+        let rows = self.full_list_rows(true).await?;
+        Some(
+            Self::filter_list_rows(&rows, &q, LIST_RESULT_LIMIT)
+                .into_iter()
+                .map(|(id, uid, display)| User {
+                    id,
+                    display_name: Some(display),
+                    uid_number: uid,
                 })
-                .await
-            {
-                for (id, gid, display, _dn) in rows {
-                    Self::try_push_group(
-                        &mut results,
-                        &mut seen_ids,
-                        &q_lower,
-                        Group {
-                            id,
-                            display_name: Some(display),
-                            gid_number: gid,
-                        },
-                    );
-                    if results.len() >= LIST_RESULT_LIMIT {
-                        break;
-                    }
-                }
-            }
-        }
+                .collect(),
+        )
+    }
 
-        Self::sort_groups_for_list(&mut results);
-        results.truncate(LIST_RESULT_LIMIT);
-
-        let cache_items: Vec<(String, Option<i32>, String)> = results
-            .iter()
-            .filter(|g| g.gid_number.is_some())
-            .map(|g| (g.id.clone(), g.gid_number, g.display_name.clone().unwrap_or_default()))
-            .collect();
-        self.cache_put_search(&cache_key, false, &cache_items);
-        // group cache puts removed.
-        results
+    pub async fn list_groups(&self, filter: Option<&str>) -> Option<Vec<Group>> {
+        let q = Self::normalize_editor_search_query(filter).unwrap_or_default();
+        let rows = self.full_list_rows(false).await?;
+        Some(
+            Self::filter_list_rows(&rows, &q, LIST_RESULT_LIMIT)
+                .into_iter()
+                .map(|(id, gid, display)| Group {
+                    id,
+                    display_name: Some(display),
+                    gid_number: gid,
+                })
+                .collect(),
+        )
     }
 
     pub async fn verify_user_credentials(
@@ -760,32 +640,87 @@ mod list_search_tests {
     }
 
     #[test]
-    fn try_push_user_skips_entries_without_uid() {
-        let mut results = Vec::new();
-        let mut seen = HashSet::new();
-        LdapClient::try_push_user(
-            &mut results,
-            &mut seen,
-            "",
-            User {
-                id: "noid".into(),
-                display_name: None,
-                uid_number: None,
-            },
+    fn normalize_editor_search_query_handles_mid_edit_fragments() {
+        // Backspace-edits of the "Name (id)" prefill leave an unclosed paren;
+        // they must normalize the same way as the closed form.
+        assert_eq!(
+            LdapClient::normalize_editor_search_query(Some("Testuser1 (300")),
+            Some("300".into())
         );
-        assert!(results.is_empty());
+        assert_eq!(
+            LdapClient::normalize_editor_search_query(Some("Test User 2 (UID 30")),
+            Some("30".into())
+        );
+        assert_eq!(
+            LdapClient::normalize_editor_search_query(Some("admins (GID 3")),
+            Some("3".into())
+        );
+        assert_eq!(
+            LdapClient::normalize_editor_search_query(Some("Testuser1 (")),
+            Some("Testuser1".into())
+        );
+        assert_eq!(
+            LdapClient::normalize_editor_search_query(Some("Testuser1 (UID ")),
+            Some("Testuser1".into())
+        );
+        // Non-id paren content without a closing paren stays conservative.
+        assert_eq!(
+            LdapClient::normalize_editor_search_query(Some("foo (bar")),
+            Some("foo (bar".into())
+        );
+    }
 
-        LdapClient::try_push_user(
-            &mut results,
-            &mut seen,
-            "bob",
-            User {
-                id: "bob".into(),
-                display_name: Some("Bob".into()),
-                uid_number: Some(1000),
-            },
-        );
-        assert_eq!(results.len(), 1);
+    fn fixture_rows() -> Vec<ListRow> {
+        vec![
+            ("testuser1".into(), Some(3002), "Testuser1".into()),
+            ("testuser2".into(), Some(3003), "Test User 2".into()),
+        ]
+    }
+
+    #[test]
+    fn filter_list_rows_matches_names_and_numeric_substrings() {
+        let rows = fixture_rows();
+        assert_eq!(LdapClient::filter_list_rows(&rows, "test", 25).len(), 2);
+        assert_eq!(LdapClient::filter_list_rows(&rows, "TEST", 25).len(), 2);
+        assert_eq!(LdapClient::filter_list_rows(&rows, "300", 25).len(), 2);
+        let exact = LdapClient::filter_list_rows(&rows, "3002", 25);
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].0, "testuser1");
+        assert_eq!(LdapClient::filter_list_rows(&rows, "", 25).len(), 2);
+        assert_eq!(LdapClient::filter_list_rows(&rows, "zzz", 25).len(), 0);
+    }
+
+    #[test]
+    fn filter_list_rows_caps_at_limit() {
+        let rows: Vec<ListRow> = (0..30)
+            .map(|i| (format!("user{i}"), Some(1000 + i), format!("User {i}")))
+            .collect();
+        assert_eq!(LdapClient::filter_list_rows(&rows, "user", 25).len(), 25);
+    }
+
+    #[test]
+    fn build_full_rows_drops_missing_nums_dedups_and_sorts() {
+        let raw = vec![
+            ("zed".into(), Some(3), "Zed".into(), "dn3".into()),
+            ("noid".into(), None, "No Id".into(), "dn0".into()),
+            ("".into(), Some(9), "Empty Id".into(), "dn9".into()),
+            ("alice".into(), Some(1), "".into(), "dn1".into()), // empty display -> id
+            ("zed".into(), Some(3), "Zed Dup".into(), "dn3b".into()),
+        ];
+        let rows = LdapClient::build_full_rows(raw);
+        assert_eq!(rows.len(), 2, "no-num, empty-id and duplicate rows must drop: {rows:?}");
+        assert_eq!(rows[0], ("alice".to_string(), Some(1), "alice".to_string()));
+        assert_eq!(rows[1].0, "zed");
+        assert_eq!(rows[1].2, "Zed");
+    }
+
+    #[test]
+    fn prefill_label_roundtrip_selects_exact_user() {
+        // Focusing the prefilled "Testuser1 (3002)" field must suggest exactly that user.
+        let q = LdapClient::normalize_editor_search_query(Some("Testuser1 (3002)")).unwrap();
+        let hits = LdapClient::filter_list_rows(&fixture_rows(), &q, 25);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, "testuser1");
     }
 }
 

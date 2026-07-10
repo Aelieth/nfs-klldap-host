@@ -214,6 +214,7 @@
                 fetch(url, { credentials: 'include' }).then(r => r.text()).then(html => {
                     sugg.innerHTML = html;
                     sugg.querySelectorAll('.suggestion').forEach(s => {
+                        if (!s.dataset.uid && !s.dataset.gid) return; // note rows aren't pickable
                         s.onclick = (ev) => {
                             ev.stopPropagation();
                             inp.dataset.pickId = s.dataset.uid || s.dataset.gid || '';

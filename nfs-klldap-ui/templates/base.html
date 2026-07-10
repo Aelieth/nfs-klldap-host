@@ -589,7 +589,15 @@
         .acl-del            { font-size:.72em; line-height:1; padding:2px 6px; border:1px solid var(--danger-border);
                               background:transparent; color:var(--danger-text); border-radius:3px; cursor:pointer; }
         .acl-add            { display:flex; gap:6px; align-items:center; margin-top:3px; padding-top:4px;
-                              border-top:1px dashed var(--border-light); }
+                              border-top:1px dashed var(--border-light); position:relative; }
+        .acl-add-name       { flex:1; min-width:0; padding:2px 6px; font-size:.82em;
+                              background:var(--input-bg); color:var(--text);
+                              border:1px solid var(--input-border); border-radius:4px; }
+        .acl-add-perms      { width:42px; padding:2px 5px; font-size:.82em;
+                              font-family:ui-monospace,monospace;
+                              background:var(--input-bg); color:var(--text);
+                              border:1px solid var(--input-border); border-radius:4px; }
+        .acl-sugg           { min-width:160px; }
 
         .perm-locked .dir:not(.selected)      { opacity:.4; cursor:not-allowed; }
         .perm-locked .dir:not(.selected) .dir-caret,

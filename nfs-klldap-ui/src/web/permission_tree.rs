@@ -595,6 +595,22 @@ pub(crate) async fn search_groups(
     Html(html)
 }
 
+/// Inline panel alert for a failed LDAP owner/group resolution, with a Retry
+/// button that reloads the /dir-perms fragment. `kind` is "user" or "group".
+fn ldap_resolve_failure_alert(kind: &str, name: &str, path: &str) -> String {
+    let safe_name = name
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!(
+        r##"<div class="alert alert-danger" style="font-size:0.85em; padding:4px;">
+                            Could not find {kind} <strong>{safe_name}</strong> in LLDAP (or invalid number).
+                            <button type="button" hx-get="/dir-perms?path={path}" hx-target="#perm-panel .perm-body" hx-swap="innerHTML">Retry</button>
+                        </div>"##,
+        path = urlencoding::encode(path)
+    )
+}
+
 pub(crate) async fn apply_permissions(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -628,15 +644,11 @@ pub(crate) async fn apply_permissions(
             match lldap.resolve_user(&form.owner_user).await {
                 Some((uid, _)) => owner_uid = uid as u32,
                 None => {
-                    let html = format!(
-                        r##"<div class="alert alert-danger" style="font-size:0.85em; padding:4px;">
-                            Could not find user <strong>{}</strong> in LLDAP (or invalid number).
-                            <button type="button" hx-get="/dir-perms?path={}" hx-target="#perm-panel .perm-body" hx-swap="innerHTML">Retry</button>
-                        </div>"##,
-                        form.owner_user,
-                        urlencoding::encode(&form.path)
-                    );
-                    return Ok(Html(html));
+                    return Ok(Html(ldap_resolve_failure_alert(
+                        "user",
+                        &form.owner_user,
+                        &form.path,
+                    )));
                 }
             }
         }
@@ -644,15 +656,11 @@ pub(crate) async fn apply_permissions(
             match lldap.resolve_group(&form.owner_group).await {
                 Some((gid, _)) => group_gid = gid as u32,
                 None => {
-                    let html = format!(
-                        r##"<div class="alert alert-danger" style="font-size:0.85em; padding:4px;">
-                            Could not find group <strong>{}</strong> in LLDAP (or invalid number).
-                            <button type="button" hx-get="/dir-perms?path={}" hx-target="#perm-panel .perm-body" hx-swap="innerHTML">Retry</button>
-                        </div>"##,
-                        form.owner_group,
-                        urlencoding::encode(&form.path)
-                    );
-                    return Ok(Html(html));
+                    return Ok(Html(ldap_resolve_failure_alert(
+                        "group",
+                        &form.owner_group,
+                        &form.path,
+                    )));
                 }
             }
         }

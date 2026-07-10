@@ -5,6 +5,35 @@
    uid/gid so name→id translation matches the old inline editor.
    When the directory can't be stat'd, a full-width diagnostic replaces the split editors. #}
 
+{# One ACL section (Users or Groups): collapsible header, per-entry rwx rows with a
+   delete button, and the quick-add row. kind drives data-type for the /acl-apply JS. #}
+{% macro acl_group(kind, letter, title, add_label, entries) %}
+    <div class="acl-grp" data-grp="{{ kind }}">
+      <button type="button" class="acl-grp-head" aria-expanded="true"><span class="acl-caret" aria-hidden="true">&#9662;</span>{{ title }}
+        <span class="acl-count">&middot; {{ entries.len() }}</span>
+      </button>
+      <div class="acl-grp-rows">
+        {% for e in entries %}
+        <div class="acl-row" data-type="{{ kind }}" data-id="{{ e.id }}">
+          <span class="who"><span class="kind {{ kind }}">{{ letter }}</span>{{ e.name }} <span class="id">({{ e.id }})</span></span>
+          <span class="rwx">
+            <label title="read"><input type="checkbox" class="abit" data-ch="r" {% if e.r %}checked{% endif %} disabled>r</label>
+            <label title="write"><input type="checkbox" class="abit" data-ch="w" {% if e.w %}checked{% endif %} disabled>w</label>
+            <label title="execute"><input type="checkbox" class="abit" data-ch="x" {% if e.x %}checked{% endif %} disabled>x</label>
+          </span>
+          <button type="button" class="acl-del" title="Remove entry" aria-label="Remove entry" style="display:none">&#10005;</button>
+        </div>
+        {% endfor %}
+        <div class="acl-add" data-type="{{ kind }}" style="display:none">
+          <input type="text" class="acl-add-name" placeholder="{{ add_label }}" aria-label="{{ add_label }}" autocomplete="off">
+          <input type="text" class="acl-add-perms" value="r-x" size="3" title="rwx" aria-label="Permissions (rwx)">
+          <button type="button" class="acl-add-btn btn">Add</button>
+          <div class="suggestions acl-sugg"></div>
+        </div>
+      </div>
+    </div>
+{% endmacro %}
+
 {% if !meta_available %}
 <div class="panel-alert" role="alert">
   <div class="panel-alert-hd">Permissions unavailable for this directory</div>
@@ -103,61 +132,8 @@
   {% endif %}
 
   <div class="acl-body">
-    {# Users group #}
-    <div class="acl-grp" data-grp="user">
-      <button type="button" class="acl-grp-head" aria-expanded="true"><span class="acl-caret" aria-hidden="true">&#9662;</span>Users
-        <span class="acl-count">&middot; {{ users.len() }}</span>
-      </button>
-      <div class="acl-grp-rows">
-        {% for e in users %}
-        <div class="acl-row" data-type="user" data-id="{{ e.id }}">
-          <span class="who"><span class="kind user">U</span>{{ e.name }} <span class="id">({{ e.id }})</span></span>
-          <span class="rwx">
-            <label title="read"><input type="checkbox" class="abit" data-ch="r" {% if e.r %}checked{% endif %} disabled>r</label>
-            <label title="write"><input type="checkbox" class="abit" data-ch="w" {% if e.w %}checked{% endif %} disabled>w</label>
-            <label title="execute"><input type="checkbox" class="abit" data-ch="x" {% if e.x %}checked{% endif %} disabled>x</label>
-          </span>
-          <button type="button" class="acl-del" title="Remove entry" aria-label="Remove entry" style="display:none">&#10005;</button>
-        </div>
-        {% endfor %}
-        <div class="acl-add" data-type="user" style="display:none;position:relative">
-          <input type="text" class="acl-add-name" placeholder="add user or id" aria-label="Add user or id" autocomplete="off"
-                 style="flex:1;min-width:0;padding:2px 6px;font-size:.82em;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px">
-          <input type="text" class="acl-add-perms" value="r-x" size="3" title="rwx" aria-label="Permissions (rwx)"
-                 style="width:42px;padding:2px 5px;font-size:.82em;font-family:ui-monospace,monospace;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px">
-          <button type="button" class="acl-add-btn btn">Add</button>
-          <div class="suggestions acl-sugg" style="min-width:160px"></div>
-        </div>
-      </div>
-    </div>
-
-    {# Groups group #}
-    <div class="acl-grp" data-grp="group">
-      <button type="button" class="acl-grp-head" aria-expanded="true"><span class="acl-caret" aria-hidden="true">&#9662;</span>Groups
-        <span class="acl-count">&middot; {{ groups.len() }}</span>
-      </button>
-      <div class="acl-grp-rows">
-        {% for e in groups %}
-        <div class="acl-row" data-type="group" data-id="{{ e.id }}">
-          <span class="who"><span class="kind group">G</span>{{ e.name }} <span class="id">({{ e.id }})</span></span>
-          <span class="rwx">
-            <label title="read"><input type="checkbox" class="abit" data-ch="r" {% if e.r %}checked{% endif %} disabled>r</label>
-            <label title="write"><input type="checkbox" class="abit" data-ch="w" {% if e.w %}checked{% endif %} disabled>w</label>
-            <label title="execute"><input type="checkbox" class="abit" data-ch="x" {% if e.x %}checked{% endif %} disabled>x</label>
-          </span>
-          <button type="button" class="acl-del" title="Remove entry" aria-label="Remove entry" style="display:none">&#10005;</button>
-        </div>
-        {% endfor %}
-        <div class="acl-add" data-type="group" style="display:none;position:relative">
-          <input type="text" class="acl-add-name" placeholder="add group or id" aria-label="Add group or id" autocomplete="off"
-                 style="flex:1;min-width:0;padding:2px 6px;font-size:.82em;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px">
-          <input type="text" class="acl-add-perms" value="r-x" size="3" title="rwx" aria-label="Permissions (rwx)"
-                 style="width:42px;padding:2px 5px;font-size:.82em;font-family:ui-monospace,monospace;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:4px">
-          <button type="button" class="acl-add-btn btn">Add</button>
-          <div class="suggestions acl-sugg" style="min-width:160px"></div>
-        </div>
-      </div>
-    </div>
+    {% call acl_group("user", "U", "Users", "add user or id", users) %}
+    {% call acl_group("group", "G", "Groups", "add group or id", groups) %}
   </div>
 </div>
 </div>

@@ -515,6 +515,7 @@ container_path = "{}"
     #[tokio::test]
     async fn web_apply_permissions_zero_owner_and_keep_current() {
         use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::PermissionsExt;
         use std::time::Duration;
         use tokio::time::timeout;
 
@@ -629,6 +630,20 @@ container_path = "{}"
             cmd.contains(&format!("chown {cur_uid}:{cur_gid}")),
             "blank owner fields must keep current {cur_uid}:{cur_gid}, got: {cmd}"
         );
+
+        // 4) Directory modes normalize r-implies-x (an r-without-x dir lists
+        //    as empty over NFS — round-4 users share at 0776): 0776 applies
+        //    as 0777 to directories (files keep 0776), noted in the log.
+        let cmd = post_and_get_cmd(format!(
+            "path={p}&owner_user=&owner_group=&mode=0776&owner_user_uid=&owner_group_gid="
+        ))
+        .await;
+        assert!(
+            cmd.contains("read implies execute") && cmd.contains("777"),
+            "0776 on a dir must note the r-implies-x normalization: {cmd}"
+        );
+        let disk_mode = std::fs::metadata(&real_root).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(disk_mode, 0o777, "the directory itself must be normalized on disk");
 
         // The owner/group live search must offer the synthetic nobody (0)
         // row — including while LLDAP is unavailable (nobody is not an LDAP

@@ -336,9 +336,25 @@
     });
 
     // Live octal readout while toggling the matrix / special bits.
+    // The panel always targets a DIRECTORY, where read implies execute
+    // (Ganesha lists r-without-x directories as EMPTY — readdir attributes
+    // need R+X on the dir). Checking r therefore auto-checks x for the same
+    // audience; the server normalizes directory modes the same way.
     document.addEventListener('change', function (e) {
-        if (e.target.classList && (e.target.classList.contains('pbit') || e.target.classList.contains('sbit')))
+        if (!e.target.classList) return;
+        if (e.target.classList.contains('pbit')) {
+            const cb = e.target;
+            if (cb.checked && +cb.dataset.bit === 4) {
+                const pl = cb.closest('.perm-body, form') || document;
+                pl.querySelectorAll('.pbit').forEach(other => {
+                    if (other.dataset.role === cb.dataset.role && +other.dataset.bit === 1)
+                        other.checked = true;
+                });
+            }
             recomputeMode();
+        } else if (e.target.classList.contains('sbit')) {
+            recomputeMode();
+        }
     });
 
     // Mark unsaved edits. ACL quick-add fields are excluded: those apply immediately

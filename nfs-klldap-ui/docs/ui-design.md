@@ -39,6 +39,15 @@ live search always offers a **synthetic "nobody (UID/GID 0)" row** for queries m
 suggestion-click handler in permissions.js writes `0` into the hidden id fields (its old
 `uid || ''` falsy-check dropped it).
 
+**Read implies execute on directories (round-4, enforced):** Ganesha's readdir returns
+entry attributes only with **R+X on the directory**, so an r-without-x directory lists as
+*empty* over NFS (a `0776` share root is how the users share "returned nothing"). The pair
+is therefore treated as one concept for directories: `/apply` normalizes every **directory**
+mode with `fs::dir_mode_r_implies_x` (x set wherever r is set; **files keep the raw mode**),
+the apply log states the normalized directory mode, and the matrix JS auto-checks x whenever
+r is checked. The full UI collapse (single read/browse bit per audience for directories) is
+tracked as HIGH in TODO.md.
+
 All client behaviour lives in `/assets/permissions.js` behind the **`window.PermUI`** surface
 (`isLocked/flashLock/loadDirPerms/cancelCurrentApply/setShare`); panel state (share, current path,
 applying, dirty) is private JS state — never read back out of DOM text. Edit-mode visibility

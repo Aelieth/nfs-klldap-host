@@ -62,6 +62,16 @@ pub struct ApplyProgress {
     pub last_path: StdMutex<Option<String>>,
 }
 
+/// Directories get x wherever r is granted. Over NFS (Ganesha) a directory
+/// with r but not x lists as EMPTY — readdir returns entry attributes only
+/// with R+X on the directory — so the split pair is meaningless for
+/// directories and directly counter-intuitive (round-4: a 0776 share root
+/// "returned nothing"). Files keep their raw mode (r without x is normal).
+/// The full r/x UI collapse for directories is tracked in TODO.md.
+pub(crate) fn dir_mode_r_implies_x(mode: u32) -> u32 {
+    mode | ((mode & 0o444) >> 2)
+}
+
 #[derive(Clone)]
 pub struct FsManager {
     pub config: crate::config::Config,
@@ -220,6 +230,8 @@ impl FsManager {
     }
 
     /// Applies permissions with progress atomics after progress.total is set.
+    /// Directory modes are normalized r-implies-x per entry (see
+    /// dir_mode_r_implies_x); files receive the mode exactly as given.
     pub fn apply_permissions_with_progress(
         &self,
         path: &Path,
@@ -435,7 +447,13 @@ impl FsManager {
                 continue;
             }
 
-            // Perform the actual privileged operations.
+            // Perform the actual privileged operations. Directories take the
+            // r-implies-x normalized mode; files keep the raw mode.
+            let entry_mode = if entry.file_type().is_dir() {
+                dir_mode_r_implies_x(mode)
+            } else {
+                mode
+            };
             if let Err(e) = crate::privileged::chown(&p, uid, gid) {
                 result.errors.push((p.clone(), format!("chown: {}", e)));
                 progress.error_count.fetch_add(1, Ordering::Relaxed);
@@ -446,7 +464,7 @@ impl FsManager {
                 if !opts.continue_on_error {
                     return Err(e);
                 }
-            } else if let Err(e) = crate::privileged::chmod(&p, mode) {
+            } else if let Err(e) = crate::privileged::chmod(&p, entry_mode) {
                 result.errors.push((p.clone(), format!("chmod: {}", e)));
                 progress.error_count.fetch_add(1, Ordering::Relaxed);
                 if let Ok(mut errs) = progress.recent_errors.lock() {
@@ -845,6 +863,44 @@ mod tests {
         let res = fs.apply_acl_mod(Path::new("/evil"), crate::privileged::AclModification::Remove { kinds: vec![] });
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("outside allowed"));
+    }
+
+    // r-implies-x normalization: directories must never end up readable but
+    // untraversable (they list as EMPTY over NFS); files keep the raw mode.
+    #[test]
+    fn dir_mode_r_implies_x_maps_r_bits_to_x() {
+        assert_eq!(dir_mode_r_implies_x(0o776), 0o777);
+        assert_eq!(dir_mode_r_implies_x(0o644), 0o755);
+        assert_eq!(dir_mode_r_implies_x(0o775), 0o775);
+        assert_eq!(dir_mode_r_implies_x(0o330), 0o330);
+        // Special bits (setgid/sticky) pass through untouched.
+        assert_eq!(dir_mode_r_implies_x(0o2764), 0o2775);
+    }
+
+    #[test]
+    fn apply_normalizes_directory_mode_but_not_files() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("normtree");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("f.txt"), b"data").unwrap();
+        let logical = Path::new("/rootbind");
+        let mut cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
+        cfg.storage.container_root = root.to_string_lossy().into_owned();
+        cfg.shares[0].name.clear();
+        cfg.shares[0].container_path = root.to_string_lossy().into_owned();
+        let fs = FsManager::new(cfg);
+        let (u, g) = (nix::unistd::getuid().as_raw(), nix::unistd::getgid().as_raw());
+        let prog = ApplyProgress::default();
+        prog.total.store(3, Ordering::Relaxed);
+        let res = fs
+            .apply_permissions_with_progress(logical, u, g, 0o776, true, &prog)
+            .expect("apply must run");
+        assert!(res.errors.is_empty(), "chmod/chown as owner must succeed: {:?}", res.errors);
+        use std::os::unix::fs::PermissionsExt;
+        let dmode = std::fs::metadata(root.join("sub")).unwrap().permissions().mode() & 0o7777;
+        let fmode = std::fs::metadata(root.join("f.txt")).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(dmode, 0o777, "directories take the r-implies-x mode");
+        assert_eq!(fmode, 0o776, "files keep the raw mode");
     }
 
     // uid/gid 0 is the designed share-root ownership (nobody over NFS via the

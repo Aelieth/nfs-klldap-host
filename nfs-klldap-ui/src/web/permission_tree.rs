@@ -703,6 +703,15 @@ pub(crate) async fn apply_permissions(
     }
     let (owner_uid, group_gid) = (owner_uid.unwrap(), group_gid.unwrap());
     let mode = u32::from_str_radix(&form.mode, 8).unwrap_or(0o770);
+    // Directories are normalized r-implies-x at apply time (fs.rs) — an
+    // r-without-x directory lists as EMPTY over NFS, so for directories the
+    // two bits are one concept. Surface the normalization in the apply log.
+    let dir_mode = crate::fs::dir_mode_r_implies_x(mode);
+    let mode_warning = (dir_mode != mode).then(|| {
+        format!(
+            "note: directories apply as {dir_mode:o} — read implies execute on directories (r-without-x lists as empty over NFS); files keep {mode:o}"
+        )
+    });
     let cmd = if form.recursive {
         format!(
             "chown {uid}:{gid} -R {path}\nchmod {mode:o} -R {path}",
@@ -719,6 +728,10 @@ pub(crate) async fn apply_permissions(
             path = form.path,
             mode = mode
         )
+    };
+    let cmd = match mode_warning {
+        Some(w) => format!("{cmd}\n{w}"),
+        None => cmd,
     };
     let progress = Arc::new(ApplyProgress::default());
     {

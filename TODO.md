@@ -5,6 +5,20 @@
 - Custom-compiled Ganesha without _MSPAC_SUPPORT to unlock the principal-based uid2grp path (removes the idhelper/nss_wrapper backstop requirement)
 
 ## Known issues / tracking
+- **HIGH — POSIX attribute editor: collapse r/x into one bit for directories.**
+  Ganesha's readdir returns entry attributes only when the caller has **R+X on
+  the directory** (`fsal_helper.c` `access_mask_attr`), so a directory with r
+  but not x lists as **empty** over NFS — split r/x checkboxes for directories
+  are meaningless and directly counter-intuitive to what "read" means for a
+  directory (found round-4 2026-07-11: users share applied 0776 and "returned
+  nothing"). Interim enforcement landed 2026-07-11, not just a warning:
+  server-side normalization `fs::dir_mode_r_implies_x` applied per entry
+  (directories gain x wherever r is set; files keep the raw mode), panel JS
+  auto-checks x when r is checked, and the apply log states the normalized
+  directory mode. Remaining refactor: the dir-perms rwx matrix should present
+  a single read/browse bit per audience for directories (r+x fused, w
+  unchanged; files keep the full triad), with templates/permissions.js/
+  ui-design.md updated together.
 - Track regressions via `cargo test --workspace` and [TESTING.md](TESTING.md) living spec.
 - **0.9.x branch**: branch name carries the release version (currently 0.9.78); Cargo workspace, Dockerfile LABEL, and nfs-klldap-host.yaml image tag are aligned to it.
 - Client connects (2026-07 capture): krb5 auth + NFSv4.1 session succeed server-side, then the client destroys the session before any namespace op — failure is client-side (gssd/mount context). GANESHA_DEBUG now logs RPCSEC_GSS; see docs/client-fedora-immutable.md troubleshooting.

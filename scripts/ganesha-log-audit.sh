@@ -29,12 +29,18 @@ last_ts="$(tail -1 "$LOG" | grep -oE '^[0-9/]+ [0-9:]+' || true)"
 
 echo
 echo "[1] Severity sweep (FATAL/MAJ/CRIT must be zero)..."
-crit=$(count ':(FATAL|MAJ|CRIT) :')
+# On a restart-spanning capture the OLD daemon logs a DBUS CRIT while
+# releasing its bus name — the container's D-Bus connection is already torn
+# down, so the name-release fails. Cosmetic shutdown-ordering, expected on
+# every container stop; excluded here (a real bus-name CRIT at RUNTIME would
+# not carry "Connection is closed").
+CRIT_BENIGN_RE='gsh_dbus_pkgshutdown :DBUS :CRIT :err releasing name .*Connection is closed'
+crit=$(grep -E ':(FATAL|MAJ|CRIT) :' "$LOG" 2>/dev/null | grep -cvE "$CRIT_BENIGN_RE" || true)
 if [ "$crit" -eq 0 ]; then
-    ok "no FATAL/MAJ/CRIT lines"
+    ok "no FATAL/MAJ/CRIT lines (excluding benign DBUS shutdown name-release)"
 else
     bad "$crit FATAL/MAJ/CRIT line(s):"
-    grep -E ':(FATAL|MAJ|CRIT) :' "$LOG" | head -5 | sed 's/^/    /'
+    grep -E ':(FATAL|MAJ|CRIT) :' "$LOG" | grep -vE "$CRIT_BENIGN_RE" | head -5 | sed 's/^/    /'
 fi
 # Known-benign startup notices (unconditional on this stack): DS DomainName
 # precedence info, the "Using idmapped_*_time_validity ... instead of" pair
@@ -43,7 +49,11 @@ fi
 # under the reduced cap set, and the btrfs subvol probe. NOT whitelisted:
 # grace<lease and the unset-branch "Use idmapped_*_time_validity under
 # DIRECTORY_SERVICES" (either reappearing means the generator regressed).
-EXPECTED_WARN_RE='Using domainname from DIRECTORY_SERVICES|Using idmapped_(user|group)_time_validity from DIRECTORY_SERVICES|PR_SET_IO_FLUSHER due to EPERM|btrfs filesystem .* may have unsupported subvols'
+# Also benign: pwentname2id "input name: <n> must contain a domain" — a
+# client SETATTR carrying a numeric owner/group string, which is exactly
+# what Only_Numeric_Owners=true yields on the wire; the mapper warns then
+# resolves it numerically and the op succeeds.
+EXPECTED_WARN_RE='Using domainname from DIRECTORY_SERVICES|Using idmapped_(user|group)_time_validity from DIRECTORY_SERVICES|PR_SET_IO_FLUSHER due to EPERM|btrfs filesystem .* may have unsupported subvols|pwentname2id :ID MAPPER :WARN :The input name: [0-9]+ must contain a domain'
 warns=$(count ':WARN :')
 unexpected=$(grep -E ':WARN :' "$LOG" 2>/dev/null | grep -cvE "$EXPECTED_WARN_RE" || true)
 if [ "$warns" -eq 0 ]; then

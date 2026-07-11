@@ -83,8 +83,16 @@ The path after the colon is the share's **Pseudo Path** (`pseudo_path`, defaults
 `/<share-name>`), not the server filesystem path. For a persistent mount, `/etc/fstab`:
 
 ```
-server.example.com:/media  /var/mnt/media  nfs4  vers=4.2,sec=krb5p,_netdev,noauto,x-systemd.automount  0 0
+server.example.com:/media  /var/mnt/media  nfs4  vers=4.2,sec=krb5p,_netdev,noauto,nofail,x-systemd.automount,x-systemd.idle-timeout=60s  0 0
 ```
+
+The setup script emits a fuller option set (v5.5+): `nofail` so a boot-time
+failure never blocks boot; `x-systemd.idle-timeout=60` so the share
+auto-unmounts after 60 s idle — the mount stays `hard` (data-safe) while in
+use but is never left mounted across sleep/idle to go stale and wedge
+userspace; and, on GNOME only, `x-gvfs-show,x-gvfs-name=<share>` so the share
+appears (click-to-mount) in the Files sidebar. KDE/Dolphin already lists fstab
+mounts, so the gvfs options are GNOME-gated.
 
 ## Troubleshooting
 
@@ -107,8 +115,12 @@ Run the server with `GANESHA_DEBUG=TRUE` while reproducing — the debug LOG set
 - **`mount.nfs4: access denied by server`** — `sec=` doesn't match the export `SecType`
   (default krb5p), or the client's clock is skewed beyond Kerberos tolerance.
 - **Sporadic I/O errors / stale handles on suspend-resume laptops** — lease/grace are
-  server-tuned (lease 60, grace 90 since 0.9.81); remount or `umount -l` after long
-  sleeps.
+  server-tuned (lease 60, grace 90 since 0.9.81). The v5.5 `x-systemd.idle-timeout=60`
+  option largely removes this by auto-unmounting idle shares so nothing is mounted
+  across a suspend to go stale; if you still hit a wedged mount, `sudo umount -f -l
+  /var/mnt/<share>` releases it and the next access remounts fresh. A `hard` mount held
+  open across a server outage still blocks (by design, for write integrity) — that is
+  what the idle-unmount avoids.
 
 Server-side verification: `verify-ganesha.sh` inside the container; end-to-end harness:
 `scripts/fedora-krb5p-client-validate.sh`.

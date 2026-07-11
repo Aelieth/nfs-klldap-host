@@ -802,13 +802,17 @@ mod tests {
         assert!(main.contains("Allow_Set_Io_Flusher_Fail = true"));
         // 1.4 hardening: host/ machine keytabs are NOT root (upstream default all).
         assert!(main.contains("Root_Kerberos_Principal = nfs, root;"));
-        // Global getgroups() trust window (core param; complements Idmapped_*).
-        assert!(main.contains("Manage_Gids_Expiration = 600;"));
+        // 9.13 routes the getgroups() trust window through Idmapped_* below;
+        // emitting the old core param would only draw a startup warning.
+        assert!(!main.contains("Manage_Gids_Expiration"));
         assert!(main.contains("Max_Uid_To_Group_Reqs = 64;"));
         assert!(main.contains("Negative_Cache_Time_Validity = 60;"));
         assert!(main.contains("Getattrs_In_Complete_Read = false;"));
         assert!(main.contains("Enable_malloc_trim = true;"));
         assert!(main.contains("RecoveryRoot = /var/lib/nfs/ganesha;"));
+        // Reclaim correctness: grace must cover the lease (9.13 warns on less).
+        assert!(main.contains("Lease_Lifetime = 60;"));
+        assert!(main.contains("Grace_Period = 90;"));
         assert!(main.contains("NFS_KRB5 {"));
 
         assert!(main.contains("Idmapped_User_Time_Validity = 600;"));

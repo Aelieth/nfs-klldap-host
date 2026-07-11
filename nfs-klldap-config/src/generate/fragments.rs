@@ -70,7 +70,7 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
                 share.name
             );
         }
-        // Manage_Gids_Expiration is core-only; shares seed the main conf.
+        // Deprecated share manage_gids_expiration seeds main-conf Idmapped_*.
         let pseudo_line = export_pseudo_line(&pseudo);
         let client_block = format!(r#"
     CLIENT {{

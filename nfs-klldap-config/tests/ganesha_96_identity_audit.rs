@@ -176,10 +176,16 @@ fn main_conf_hardened_defaults_for_identity_and_runtime() {
         ganesha.contains("Root_Kerberos_Principal = nfs, root;"),
         "hardened default must exclude `host`:\n{ganesha}"
     );
-    // Group management windows declared globally (NFS_CORE_PARAM, not EXPORT).
-    assert!(ganesha.contains("Manage_Gids_Expiration = 600;"), "{ganesha}");
+    // Group-trust window rides DS Idmapped_* on 9.13; the old core param
+    // would only draw a startup warning and must not be emitted.
+    assert!(!ganesha.contains("Manage_Gids_Expiration"), "{ganesha}");
+    assert!(ganesha.contains("Idmapped_User_Time_Validity = 600;"), "{ganesha}");
+    assert!(ganesha.contains("Idmapped_Group_Time_Validity = 600;"), "{ganesha}");
     assert!(ganesha.contains("Max_Uid_To_Group_Reqs = 64;"), "{ganesha}");
     assert!(ganesha.contains("Negative_Cache_Time_Validity = 60;"), "{ganesha}");
+    // Reclaim correctness: grace covers the lease (9.13 warns on 45/60).
+    assert!(ganesha.contains("Lease_Lifetime = 60;"), "{ganesha}");
+    assert!(ganesha.contains("Grace_Period = 90;"), "{ganesha}");
     // Runtime/perf shaping: no ESXi getattr, malloc trim on, readdir declared.
     assert!(ganesha.contains("Getattrs_In_Complete_Read = false;"), "{ganesha}");
     assert!(ganesha.contains("Enable_malloc_trim = true;"), "{ganesha}");
@@ -204,13 +210,23 @@ fn ganesha_tuning_overrides_and_share_seeded_manage_gids_window() {
     );
     let (_tmp, _frag, ganesha) = generate_limited(MOUNTINFO_BTRFS_NOACL, &toml);
     assert!(ganesha.contains("Root_Kerberos_Principal = root;"), "{ganesha}");
-    assert!(ganesha.contains("Manage_Gids_Expiration = 900;"), "{ganesha}");
+    // manage_gids_expiration_secs feeds the DS idmapped validity (9.13).
+    assert!(ganesha.contains("Idmapped_User_Time_Validity = 900;"), "{ganesha}");
+    assert!(ganesha.contains("Idmapped_Group_Time_Validity = 900;"), "{ganesha}");
     assert!(ganesha.contains("Negative_Cache_Time_Validity = 120;"), "{ganesha}");
     assert!(ganesha.contains("Max_Uid_To_Group_Reqs = 16;"), "{ganesha}");
     assert!(ganesha.contains("Readdir_Res_Size = 65536;"), "{ganesha}");
     assert!(ganesha.contains("Readdir_Max_Count = 16384;"), "{ganesha}");
     assert!(ganesha.contains("Getattrs_In_Complete_Read = true;"), "{ganesha}");
     assert!(ganesha.contains("Enable_malloc_trim = false;"), "{ganesha}");
+
+    // Explicit idmapped_validity_secs wins over the manage-gids knob.
+    let toml = format!(
+        "{LIMITED_TOML}\n[ganesha]\nidmapped_validity_secs = 1200\n\
+         manage_gids_expiration_secs = 900\n"
+    );
+    let (_tmp, _frag, ganesha) = generate_limited(MOUNTINFO_BTRFS_NOACL, &toml);
+    assert!(ganesha.contains("Idmapped_User_Time_Validity = 1200;"), "{ganesha}");
 
     // Deprecated share-level manage_gids_expiration seeds the global (min wins)
     // when [ganesha] manage_gids_expiration_secs is unset.
@@ -219,10 +235,11 @@ fn ganesha_tuning_overrides_and_share_seeded_manage_gids_window() {
         "security = \"krb5p\"\nmanage_gids_expiration = 450",
     );
     let (_tmp, frag, ganesha) = generate_limited(MOUNTINFO_BTRFS_NOACL, &toml);
-    assert!(ganesha.contains("Manage_Gids_Expiration = 450;"), "{ganesha}");
+    assert!(ganesha.contains("Idmapped_Group_Time_Validity = 450;"), "{ganesha}");
+    assert!(!ganesha.contains("Manage_Gids_Expiration"), "{ganesha}");
     assert!(
         !frag.contains("Manage_Gids_Expiration"),
-        "must never land in EXPORT (unknown export param in 9.6):\n{frag}"
+        "must never land in EXPORT (unknown export param):\n{frag}"
     );
 }
 

@@ -73,9 +73,9 @@ manage_gids_expiration = 900
     // TOML key is accepted but inert (loud generate-time warning) until the
     // 0.9.9x ACL track replaces it with the POSIX-gate envelope (plan 2.4).
     assert!(!frag.contains("Umask"), "per-export Umask must not be emitted on 9.13: {frag}");
-    // Manage_Gids_Expiration is a global NFS_CORE_PARAM (9.6 and 9.13) — it
-    // must NOT appear inside the EXPORT block (rejected as an unknown export
-    // parameter). The deprecated share value seeds the global in ganesha.conf
+    // Manage_Gids_Expiration must NOT appear inside the EXPORT block (an
+    // unknown export parameter); since the 9.13 routing it appears nowhere —
+    // the deprecated share value seeds DS Idmapped_*_Time_Validity instead
     // (covered in ganesha_96_identity_audit.rs).
     assert!(!frag.contains("Manage_Gids_Expiration"), "{frag}");
 }

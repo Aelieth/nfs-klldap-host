@@ -22,13 +22,12 @@ pub const GANESHA_ROOT_KRB_PRINCIPALS: &str = "nfs, root";
 /// Valid Root_Kerberos_Principal tokens (Ganesha 9.6 nfs_read_conf.c);
 /// `none` in the list overrides every other token.
 pub const GANESHA_ROOT_KRB_PRINCIPAL_TOKENS: &[&str] = &["none", "nfs", "root", "host", "all"];
-/// Ganesha 9.6 DIRECTORY_SERVICES idmapped cache TTL (seconds)
+/// DIRECTORY_SERVICES Idmapped_*_Time_Validity seconds: identity lookups AND
+/// the getgroups() trust window — 9.13 routes the old core param
+/// Manage_Gids_Expiration here (it now warns and is no longer emitted).
 pub const GANESHA_IDMAPPED_VALIDITY_SECS: u32 = 600;
-/// NFS_CORE_PARAM Manage_Gids_Expiration (seconds getgroups() results are
-/// trusted; global, NOT a per-export parameter). Aligned with
-/// GANESHA_IDMAPPED_VALIDITY_SECS so one window governs group propagation.
-pub const GANESHA_MANAGE_GIDS_EXPIRATION_SECS: u64 = 600;
-/// Ganesha caps Manage_Gids_Expiration at 7 days.
+/// Sanity cap for the manage-gids TOML knobs (Ganesha capped the old core
+/// param at 7 days; the values now feed Idmapped_*_Time_Validity).
 pub const GANESHA_MANAGE_GIDS_EXPIRATION_MAX: u64 = 7 * 24 * 60 * 60;
 /// DIRECTORY_SERVICES Negative_Cache_Time_Validity (upstream default 300s):
 /// 60s so users/groups newly added in LDAP stop being negative-cached quickly.

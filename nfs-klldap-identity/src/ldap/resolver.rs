@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::constants::IDENTITY_CACHE_TTL_SECS;
+use crate::constants::IDENTITY_NEGATIVE_TTL_SECS;
 use crate::constants::MACHINE_GID;
 use crate::krb5::{
     classify_principal, machine_short_name, principal_local_part,
@@ -18,6 +19,9 @@ use crate::ldap::posix::{
 };
 
 const IDENTITY_CACHE_TTL: Duration = Duration::from_secs(IDENTITY_CACHE_TTL_SECS);
+/// Misses are remembered briefly so unknown names cannot generate an LDAP
+/// query (with its full connect+bind) on every single lookup.
+const NEGATIVE_TTL: Duration = Duration::from_secs(IDENTITY_NEGATIVE_TTL_SECS);
 
 /// Inputs for constructing an IdLdapResolver without TOML/serde dependencies.
 #[derive(Debug, Clone, Default)]
@@ -45,9 +49,38 @@ pub struct IdLdapResolver {
     group_cache: Mutex<HashMap<String, CachedGroup>>,
     user_by_uid_cache: Mutex<HashMap<i32, CachedUser>>,
     group_by_gid_cache: Mutex<HashMap<i32, CachedGroup>>,
+    /// memberOf group DN -> gid (misses cached too, at NEGATIVE_TTL).
+    group_gid_by_dn_cache: Mutex<HashMap<String, CachedDnGid>>,
+    /// username -> (dn, memberOf list) for the groups-for-principal path.
+    memberof_cache: Mutex<HashMap<String, CachedMemberOf>>,
+    /// Keys of recent authoritative misses (u:/g:/uid:/gid: prefixed).
+    negative_cache: Mutex<HashMap<String, Instant>>,
+    /// One bound connection reused across searches; rebound only when the
+    /// bind DN changes or an operation on it fails.
+    conn_pool: Mutex<Option<PooledConn>>,
 
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
+    bind_count: AtomicU64,
+}
+
+/// A live bound LdapConn plus the DN it authenticated as.
+struct PooledConn {
+    ldap: LdapConn,
+    bound_as: String,
+}
+
+#[derive(Debug, Clone)]
+struct CachedDnGid {
+    gid: Option<i32>,
+    fetched_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct CachedMemberOf {
+    dn: String,
+    memberofs: Vec<String>,
+    fetched_at: Instant,
 }
 
 impl std::fmt::Debug for IdLdapResolver {
@@ -137,9 +170,29 @@ impl IdLdapResolver {
             group_cache: Mutex::new(HashMap::new()),
             user_by_uid_cache: Mutex::new(HashMap::new()),
             group_by_gid_cache: Mutex::new(HashMap::new()),
+            group_gid_by_dn_cache: Mutex::new(HashMap::new()),
+            memberof_cache: Mutex::new(HashMap::new()),
+            negative_cache: Mutex::new(HashMap::new()),
+            conn_pool: Mutex::new(None),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
+            bind_count: AtomicU64::new(0),
         }
+    }
+
+    /// True when `key` was marked as an authoritative miss within NEGATIVE_TTL.
+    fn negative_hit(&self, key: &str) -> bool {
+        self.negative_cache
+            .lock()
+            .unwrap()
+            .get(key)
+            .is_some_and(|t| t.elapsed() < NEGATIVE_TTL)
+    }
+
+    /// Remember an authoritative miss (also shields the KDC-side LDAP during
+    /// outages: repeated failures back off to one query per NEGATIVE_TTL).
+    fn mark_negative(&self, key: String) {
+        self.negative_cache.lock().unwrap().insert(key, Instant::now());
     }
 
     /// TLS decisions delegate to the shared ldap_tls_policy (cacert-aware).
@@ -184,6 +237,9 @@ impl IdLdapResolver {
         self.group_cache.lock().unwrap().clear();
         self.user_by_uid_cache.lock().unwrap().clear();
         self.group_by_gid_cache.lock().unwrap().clear();
+        self.group_gid_by_dn_cache.lock().unwrap().clear();
+        self.memberof_cache.lock().unwrap().clear();
+        self.negative_cache.lock().unwrap().clear();
     }
 
     /// Evict expired (exposed for shared use by UI wrapper). 1 sentence.
@@ -205,6 +261,19 @@ impl IdLdapResolver {
             .lock()
             .unwrap()
             .retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
+        // DN->gid entries: positive results live the full TTL, misses briefly.
+        self.group_gid_by_dn_cache.lock().unwrap().retain(|_, v| {
+            let age = now.duration_since(v.fetched_at);
+            if v.gid.is_some() { age < IDENTITY_CACHE_TTL } else { age < NEGATIVE_TTL }
+        });
+        self.memberof_cache
+            .lock()
+            .unwrap()
+            .retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
+        self.negative_cache
+            .lock()
+            .unwrap()
+            .retain(|_, t| now.duration_since(*t) < NEGATIVE_TTL);
     }
 
     fn build_conn_settings(&self) -> LdapConnSettings {
@@ -276,7 +345,32 @@ impl IdLdapResolver {
         }
     }
 
-    /// Performs sync LDAP in a worker thread with three backoff retries.
+    /// Takes the pooled connection when it is bound as `bind_dn`; a conn
+    /// bound as someone else is discarded so the pool never mixes identities.
+    fn take_pooled_conn(&self, bind_dn: &str) -> Option<LdapConn> {
+        let mut slot = self.conn_pool.lock().unwrap();
+        match slot.take() {
+            Some(p) if p.bound_as == bind_dn => Some(p.ldap),
+            Some(mut stale) => {
+                let _ = stale.ldap.unbind();
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn store_pooled_conn(&self, ldap: LdapConn, bind_dn: &str) {
+        let mut slot = self.conn_pool.lock().unwrap();
+        if let Some(mut old) = slot.take() {
+            let _ = old.ldap.unbind();
+        }
+        *slot = Some(PooledConn { ldap, bound_as: bind_dn.to_string() });
+    }
+
+    /// Performs sync LDAP in a worker thread (callers may sit on an async
+    /// runtime). The bound connection is pooled and reused across searches —
+    /// a bind happens only on first use, DN change, or after an op failure —
+    /// so identity resolution no longer produces one KLLDAP login per query.
     fn service_search(
         &self,
         base: &str,
@@ -294,6 +388,8 @@ impl IdLdapResolver {
         let pw = bind_pw.to_string();
 
         for attempt in 0..3 {
+            let pooled = self.take_pooled_conn(&dn);
+            let reused = pooled.is_some();
             let uri2 = uri.clone();
             let settings2 = settings.clone();
             let base2 = base.clone();
@@ -301,34 +397,57 @@ impl IdLdapResolver {
             let attrs2 = attrs.clone();
             let dn2 = dn.clone();
             let pw2 = pw.clone();
+            let did_bind = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let did_bind2 = std::sync::Arc::clone(&did_bind);
 
             let res = std::thread::spawn(move || {
-                let mut ldap = LdapConn::with_settings(settings2, &uri2)
-                    .map_err(|e| format!("connect: {}", e))?;
+                let mut ldap = match pooled {
+                    Some(c) => c,
+                    None => {
+                        let mut fresh = LdapConn::with_settings(settings2, &uri2)
+                            .map_err(|e| format!("connect: {}", e))?;
+                        did_bind2.store(true, Ordering::Relaxed);
+                        fresh
+                            .simple_bind(&dn2, &pw2)
+                            .map_err(|e| format!("bind: {}", e))?
+                            .success()
+                            .map_err(|e| format!("bind success: {:?}", e))?;
+                        fresh
+                    }
+                };
 
-                let op = (|| -> Result<Vec<SearchEntry>, String> {
-                    ldap.simple_bind(&dn2, &pw2)
-                        .map_err(|e| format!("bind: {}", e))?
-                        .success()
-                        .map_err(|e| format!("bind success: {:?}", e))?;
-
-                    let (rs, _res) = ldap
-                        .search(&base2, Scope::Subtree, &filter2, attrs2)
-                        .map_err(|e| format!("search: {}", e))?
-                        .success()
-                        .map_err(|e| format!("search success: {:?}", e))?;
-
-                    Ok(rs.into_iter().map(SearchEntry::construct).collect())
-                })();
-
-                let _ = ldap.unbind();
-                op
+                match ldap
+                    .search(&base2, Scope::Subtree, &filter2, attrs2)
+                    .map_err(|e| format!("search: {}", e))
+                    .and_then(|r| r.success().map_err(|e| format!("search success: {:?}", e)))
+                {
+                    Ok((rs, _res)) => Ok((
+                        rs.into_iter().map(SearchEntry::construct).collect::<Vec<_>>(),
+                        ldap,
+                    )),
+                    Err(e) => {
+                        // A failed conn is never pooled again.
+                        let _ = ldap.unbind();
+                        Err(e)
+                    }
+                }
             })
             .join();
 
+            if did_bind.load(Ordering::Relaxed) {
+                self.bind_count.fetch_add(1, Ordering::Relaxed);
+            }
             match res {
-                Ok(Ok(entries)) => return Ok(entries),
+                Ok(Ok((entries, ldap))) => {
+                    self.store_pooled_conn(ldap, &dn);
+                    return Ok(entries);
+                }
                 Ok(Err(e)) => {
+                    // A reused conn may simply be stale (server restart):
+                    // retry immediately on a fresh bind before backing off.
+                    if reused {
+                        continue;
+                    }
                     if attempt == 2 {
                         return Err(e);
                     }
@@ -363,6 +482,10 @@ impl IdLdapResolver {
         // test-support: seeded snapshot is authoritative; cache miss = LDAP miss.
         #[cfg(feature = "test-support")]
         if std::env::var("TEST_REBULK_POPULATE").is_ok() {
+            return None;
+        }
+
+        if self.negative_hit(&format!("u:{name}")) {
             return None;
         }
 
@@ -468,6 +591,7 @@ impl IdLdapResolver {
                 }
             }
         }
+        self.mark_negative(format!("u:{name}"));
         None
     }
 
@@ -478,6 +602,9 @@ impl IdLdapResolver {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Some((gid, hit.display_name.clone()));
             }
+        }
+        if self.negative_hit(&format!("g:{name}")) {
+            return None;
         }
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
@@ -498,9 +625,16 @@ impl IdLdapResolver {
             "displayName".into(),
         ];
 
-        let entries = self
-            .service_search(&self.group_base, &filter, attrs, bind_dn, bind_pw)
-            .ok()?;
+        // Errors mark the key too: during an LDAP outage lookups back off to
+        // one attempt per NEGATIVE_TTL instead of hammering the server.
+        let entries = match self.service_search(&self.group_base, &filter, attrs, bind_dn, bind_pw)
+        {
+            Ok(e) => e,
+            Err(_) => {
+                self.mark_negative(format!("g:{name}"));
+                return None;
+            }
+        };
 
         for se in entries {
             let display = Self::extract_display_name(&se, &name_attr, name);
@@ -528,6 +662,7 @@ impl IdLdapResolver {
                 }
             }
         }
+        self.mark_negative(format!("g:{name}"));
         None
     }
 
@@ -543,6 +678,9 @@ impl IdLdapResolver {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Some((hit.id.clone(), hit.display_name.clone()));
             }
+        }
+        if self.negative_hit(&format!("uid:{uid}")) {
+            return None;
         }
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
@@ -562,9 +700,14 @@ impl IdLdapResolver {
             full_attr.clone(),
         ];
 
-        let entries = self
-            .service_search(&self.user_base, &filter, attrs, bind_dn, bind_pw)
-            .ok()?;
+        let entries = match self.service_search(&self.user_base, &filter, attrs, bind_dn, bind_pw)
+        {
+            Ok(e) => e,
+            Err(_) => {
+                self.mark_negative(format!("uid:{uid}"));
+                return None;
+            }
+        };
 
         for se in entries {
             let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_else(|| uid.to_string());
@@ -587,6 +730,7 @@ impl IdLdapResolver {
                 }
             }
         }
+        self.mark_negative(format!("uid:{uid}"));
         None
     }
 
@@ -617,6 +761,10 @@ impl IdLdapResolver {
             }
         }
 
+        if self.negative_hit(&format!("gid:{gid}")) {
+            return None;
+        }
+
         let gid_attr = self.posix_attributes.group_gid_number.clone();
         let name_attr = self.posix_attributes.group_name.clone();
         let obj = self.posix_attributes.group_object_class.clone();
@@ -629,9 +777,14 @@ impl IdLdapResolver {
             "displayName".into(),
         ];
 
-        let entries = self
-            .service_search(&self.group_base, &filter, attrs, bind_dn, bind_pw)
-            .ok()?;
+        let entries = match self.service_search(&self.group_base, &filter, attrs, bind_dn, bind_pw)
+        {
+            Ok(e) => e,
+            Err(_) => {
+                self.mark_negative(format!("gid:{gid}"));
+                return None;
+            }
+        };
 
         for se in entries {
             let id = Self::extract_first_attr(&se, &name_attr).unwrap_or_else(|| gid.to_string());
@@ -657,6 +810,7 @@ impl IdLdapResolver {
                 }
             }
         }
+        self.mark_negative(format!("gid:{gid}"));
         None
     }
 
@@ -672,16 +826,58 @@ impl IdLdapResolver {
             }
             return Some(1001);
         }
+        // The group is usually already cached (bulk load / prior resolve):
+        // answer from the DN's RDN value without touching LDAP.
+        if let Some(rdn) = group_dn
+            .split(',')
+            .next()
+            .and_then(|r| r.split('=').nth(1))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let groups = self.group_cache.lock().unwrap();
+            if let Some(g) = groups.get(rdn).and_then(|c| c.gid_number) {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                return Some(g);
+            }
+            if let Some(g) = groups
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(rdn))
+                .and_then(|(_, c)| c.gid_number)
+            {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                return Some(g);
+            }
+        }
+        // Whole-DN cache (positive full TTL, misses at NEGATIVE_TTL).
+        if let Some(hit) = self.group_gid_by_dn_cache.lock().unwrap().get(group_dn) {
+            let ttl = if hit.gid.is_some() { IDENTITY_CACHE_TTL } else { NEGATIVE_TTL };
+            if hit.fetched_at.elapsed() < ttl {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                return hit.gid;
+            }
+        }
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
         let gid_attr = self.posix_attributes.group_gid_number.clone();
-        let entries = self.service_search(group_dn, "(objectClass=*)", vec![gid_attr.clone()], bind_dn, bind_pw).ok()?;
-        for se in entries {
-            if let Some(gs) = Self::extract_first_attr(&se, &gid_attr) {
-                if let Ok(g) = gs.trim().parse::<i32>() {
-                    return Some(g);
+        // Errors cache as a short-TTL miss too (outage back-off, see above).
+        let mut found = None;
+        if let Ok(entries) =
+            self.service_search(group_dn, "(objectClass=*)", vec![gid_attr.clone()], bind_dn, bind_pw)
+        {
+            for se in entries {
+                if let Some(gs) = Self::extract_first_attr(&se, &gid_attr) {
+                    if let Ok(g) = gs.trim().parse::<i32>() {
+                        found = Some(g);
+                        break;
+                    }
                 }
             }
         }
-        None
+        self.group_gid_by_dn_cache.lock().unwrap().insert(
+            group_dn.to_string(),
+            CachedDnGid { gid: found, fetched_at: Instant::now() },
+        );
+        found
     }
 
     /// Resolve gids for principal (primary + supp) via memberOf + member/gidNumber after RESOLVE uid.
@@ -835,24 +1031,49 @@ impl IdLdapResolver {
         if std::env::var("TEST_REBULK_POPULATE").is_ok() {
             return Some(("uid=test,ou=people".into(), vec!["cn=staff,ou=groups".into()]));
         }
+        if let Some(hit) = self.memberof_cache.lock().unwrap().get(username) {
+            if hit.fetched_at.elapsed() < IDENTITY_CACHE_TTL {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                return Some((hit.dn.clone(), hit.memberofs.clone()));
+            }
+        }
+        if self.negative_hit(&format!("mo:{username}")) {
+            return None;
+        }
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
         let filter = self.user_filter_by_name(username);
         let name_attr = self.posix_attributes.user_name.clone();
-        let entries = self
-            .service_search(
-                &self.user_base,
-                &filter,
-                vec![name_attr, "memberOf".into()],
-                bind_dn,
-                bind_pw,
-            )
-            .ok()?;
-        let se = entries.into_iter().next()?;
+        let entries = match self.service_search(
+            &self.user_base,
+            &filter,
+            vec![name_attr, "memberOf".into()],
+            bind_dn,
+            bind_pw,
+        ) {
+            Ok(e) => e,
+            Err(_) => {
+                self.mark_negative(format!("mo:{username}"));
+                return None;
+            }
+        };
+        let Some(se) = entries.into_iter().next() else {
+            self.mark_negative(format!("mo:{username}"));
+            return None;
+        };
         let memberofs = se
             .attrs
             .get("memberOf")
             .or_else(|| se.attrs.get("memberof"))
             .cloned()
             .unwrap_or_default();
+        self.memberof_cache.lock().unwrap().insert(
+            username.to_string(),
+            CachedMemberOf {
+                dn: se.dn.clone(),
+                memberofs: memberofs.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
         Some((se.dn, memberofs))
     }
 
@@ -911,6 +1132,11 @@ impl IdLdapResolver {
             self.cache_hits.load(Ordering::Relaxed),
             self.cache_misses.load(Ordering::Relaxed),
         )
+    }
+
+    /// Total LDAP binds performed since start (each is a KLLDAP "login").
+    pub fn bind_stats(&self) -> u64 {
+        self.bind_count.load(Ordering::Relaxed)
     }
 
     /// (user, group) cache entry counts for UI stats display.
@@ -1174,6 +1400,64 @@ pub fn extract_first_attr_value(se: &SearchEntry, name: &str) -> Option<String> 
 mod tests {
     use super::*;
     use crate::constants::{FALLBACK_NOBODY_GID, MACHINE_GID};
+
+    #[test]
+    fn group_gid_from_dn_answers_from_group_cache_without_ldap() {
+        // Unreachable URI: any accidental LDAP path would return None fast.
+        let r = IdLdapResolver::new(
+            "ldaps://127.0.0.1:1",
+            "ou=people,dc=t",
+            "ou=groups,dc=t",
+            resolve_posix_attribute_mapping(&PosixMappingInput::default()),
+            true,
+            false,
+            None,
+        );
+        r.group_cache.lock().unwrap().insert(
+            "media".into(),
+            CachedGroup {
+                id: "media".into(),
+                gid_number: Some(3005),
+                display_name: "media".into(),
+                members: vec![],
+                fetched_at: Instant::now(),
+            },
+        );
+        assert_eq!(
+            r.group_gid_from_dn("cn=media,ou=groups,dc=t", "dn", "pw"),
+            Some(3005),
+            "RDN short-circuit must resolve from the loaded group cache"
+        );
+        assert_eq!(
+            r.group_gid_from_dn("cn=MEDIA,ou=groups,dc=t", "dn", "pw"),
+            Some(3005),
+            "case-insensitive RDN match must also short-circuit"
+        );
+    }
+
+    #[test]
+    fn negative_cache_blocks_repeat_ldap_misses_briefly() {
+        let r = IdLdapResolver::new(
+            "ldaps://127.0.0.1:1",
+            "ou=people,dc=t",
+            "ou=groups,dc=t",
+            resolve_posix_attribute_mapping(&PosixMappingInput::default()),
+            true,
+            false,
+            None,
+        );
+        // First miss walks the (refused) LDAP path and marks the key.
+        assert!(r.resolve_group("nosuch", "dn", "pw").is_none());
+        assert!(r.negative_hit("g:nosuch"), "miss must be remembered");
+        let (_, misses_after_first) = r.cache_stats();
+        // Second call must be answered by the negative cache, not LDAP.
+        assert!(r.resolve_group("nosuch", "dn", "pw").is_none());
+        let (_, misses_after_second) = r.cache_stats();
+        assert_eq!(
+            misses_after_first, misses_after_second,
+            "negative hit must not re-enter the LDAP miss path"
+        );
+    }
 
     #[test]
     fn resolver_constructs_from_minimal_inputs() {

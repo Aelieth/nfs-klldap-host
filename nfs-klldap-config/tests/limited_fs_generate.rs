@@ -92,15 +92,16 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
         let _ = fs::write(&dest, &frag);
     }
     for forbidden in [
-        // Global NFS_CORE_PARAM only — 9.6 rejects it inside EXPORT blocks.
+        // Superseded on 9.13 by DS Idmapped_*; must appear nowhere.
         "Manage_Gids_Expiration =",
         "IdmapConf =",
     ] {
         assert!(!frag.contains(forbidden), "forbidden {forbidden} in fragment");
     }
     assert!(!ganesha.contains("IdmapConf ="), "forbidden IdmapConf in ganesha.conf");
-    // Deliberate global group-trust window lives in the main conf (plan 1.4).
-    assert!(ganesha.contains("Manage_Gids_Expiration = 600;"));
+    // Group-trust window rides the DS idmapped validity (9.13 routing).
+    assert!(!ganesha.contains("Manage_Gids_Expiration"));
+    assert!(ganesha.contains("Idmapped_Group_Time_Validity = 600;"));
     // Hardened default excludes host/ so machine keytabs are never root.
     assert!(ganesha.contains("Root_Kerberos_Principal = nfs, root;"));
     assert!(ganesha.contains("Pwnam_Implementation = nsswitch"));

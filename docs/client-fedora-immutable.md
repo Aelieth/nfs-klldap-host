@@ -107,7 +107,8 @@ Run the server with `GANESHA_DEBUG=TRUE` while reproducing — the debug LOG set
 - **`mount.nfs4: access denied by server`** — `sec=` doesn't match the export `SecType`
   (default krb5p), or the client's clock is skewed beyond Kerberos tolerance.
 - **Sporadic I/O errors / stale handles on suspend-resume laptops** — lease/grace are
-  server-tuned (60/45); remount or `umount -l` after long sleeps.
+  server-tuned (lease 60, grace 90 since 0.9.81); remount or `umount -l` after long
+  sleeps.
 
 Server-side verification: `verify-ganesha.sh` inside the container; end-to-end harness:
 `scripts/fedora-krb5p-client-validate.sh`.

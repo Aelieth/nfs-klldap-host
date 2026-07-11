@@ -357,11 +357,14 @@ container_path = "/data"
         let paths = nfs_klldap_config::GenerationPaths { sssd_conf: gen_dir.join("s.conf"), krb5_conf: gen_dir.join("k.conf"), ganesha_conf: gen_dir.join("g.conf"), exports_dir: exd.clone(), idmap_conf: gen_dir.join("i.conf"), nfs_conf: gen_dir.join("n.conf") };
         nfs_klldap_config::generate_all(&cfg_for_gen, &paths).ok();
         let frag = std::fs::read_dir(&exd).ok().and_then(|it| it.filter_map(|e| e.ok()).find(|e| e.path().extension().is_some_and(|x| x == "conf")).and_then(|e| std::fs::read_to_string(e.path()).ok())).unwrap_or_default();
-        // MGE is a global NFS_CORE_PARAM in Ganesha 9.6: the deprecated share
-        // value seeds the main conf and must never land in the EXPORT fragment.
+        // The group-trust window is global: the deprecated share value seeds
+        // DS Idmapped_*_Time_Validity in the main conf (9.13 routing — the
+        // old core param is no longer emitted anywhere) and must never land
+        // in the EXPORT fragment.
         assert!(!frag.contains("Manage_Gids_Expiration"), "MGE must not be in fragment: {frag}");
         let gmain = std::fs::read_to_string(gen_dir.join("g.conf")).unwrap_or_default();
-        assert!(gmain.contains("Manage_Gids_Expiration = 900;"), "share MGE seeds global: {gmain}");
+        assert!(gmain.contains("Idmapped_Group_Time_Validity = 900;"), "share MGE seeds global idmapped validity: {gmain}");
+        assert!(!gmain.contains("Manage_Gids_Expiration"), "old core param must not be emitted: {gmain}");
 
         // drive shipped structured save for default_security (POST exercises the /settings/save handler, Form binding for ganesha_default_security/override, and apply path)
         let body_defsec = "ganesha_default_security=nfs&override_ganesha_default_security=on";

@@ -23,3 +23,8 @@ pub const MACHINE_UID: u32 = 0;
 pub const MACHINE_GID: u32 = 0;
 
 pub const IDENTITY_CACHE_TTL_SECS: u64 = 10 * 60;
+
+/// How long an authoritative LDAP miss is remembered before re-querying.
+/// Mirrors the Ganesha-side Negative_Cache_Time_Validity (60 s) so unknown
+/// principals cannot drive one bind+search per lookup against KLLDAP.
+pub const IDENTITY_NEGATIVE_TTL_SECS: u64 = 60;

@@ -54,7 +54,9 @@ pub fn ldap_conn_settings(
     start_tls: bool,
     tls_cacert: Option<&str>,
 ) -> LdapConnSettings {
-    let mut s = LdapConnSettings::new();
+    // Bounded connect so a dead/filtered LDAP host cannot hang a resolver
+    // worker thread (pooled-connection path has no other watchdog).
+    let mut s = LdapConnSettings::new().set_conn_timeout(std::time::Duration::from_secs(10));
     if start_tls {
         s = s.set_starttls(true);
     }

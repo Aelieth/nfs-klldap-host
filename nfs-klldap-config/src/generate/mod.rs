@@ -458,16 +458,17 @@ fn write_ganesha_main(
     } else {
         "    enable_rpc_cred_fallback = false;  # fail closed on uid2grp miss (idhelper authoritative).\n"
     };
+    // Manage-gids knobs feed Idmapped_*; idmapped_validity_secs wins (9.13).
     let idmap_validity = cfg
         .ganesha
         .idmapped_validity_secs
+        .or_else(|| {
+            cfg.ganesha
+                .manage_gids_expiration_secs
+                .or_else(|| cfg.shares.iter().filter_map(|s| s.manage_gids_expiration).min())
+                .map(|v| u32::try_from(v).unwrap_or(u32::MAX))
+        })
         .unwrap_or(constants::GANESHA_IDMAPPED_VALIDITY_SECS);
-    // Global (deprecated per-share values seed it — smallest wins).
-    let manage_gids_expiration = cfg
-        .ganesha
-        .manage_gids_expiration_secs
-        .or_else(|| cfg.shares.iter().filter_map(|s| s.manage_gids_expiration).min())
-        .unwrap_or(constants::GANESHA_MANAGE_GIDS_EXPIRATION_SECS);
     let negative_cache = cfg
         .ganesha
         .negative_cache_validity_secs
@@ -506,10 +507,7 @@ fn write_ganesha_main(
     Enable_RQUOTA = false;
     Enable_NLM = false;
     Allow_Set_Io_Flusher_Fail = true;
-{rpc_cred_line}    # Seconds getgroups() results stay trusted under Manage_Gids (global param).
-    # Group-change propagation window = SSSD entry_cache_timeout + this value.
-    Manage_Gids_Expiration = {mge};
-    # Bound concurrent uid->groups resolutions hitting SSSD/LLDAP (0 = unlimited).
+{rpc_cred_line}    # Bound concurrent uid->groups resolutions hitting SSSD/LLDAP (0 = unlimited).
     Max_Uid_To_Group_Reqs = {uid2grp_reqs};
     Readdir_Res_Size = {readdir_res};
 {readdir_max_count_line}    # Extra getattr-per-READ is an ESXi EOF workaround; fleet is Fedora immutable.
@@ -526,7 +524,10 @@ DIRECTORY_SERVICES {{
     # Principal service-name parts granted root. Deliberately excludes `host`
     # so enrolled client machine keytabs cannot act as root on exports.
     Root_Kerberos_Principal = {root_krb};
-    # Idmapped_* negative cache TTL (seconds); lower reduces miss stickiness, increases NSS load.
+    # Seconds identity lookups AND getgroups() results under Manage_Gids stay
+    # trusted — the single group-trust window on 9.13 (the old core-param
+    # spelling warns and is no longer emitted). Group-change propagation =
+    # SSSD entry_cache_timeout + this value.
     Idmapped_User_Time_Validity = {idmap_validity};
     Idmapped_Group_Time_Validity = {idmap_validity};
     # Failed-lookup memory: new LDAP users/groups become visible within this window.
@@ -548,7 +549,9 @@ NFSV4 {{
     # through grace after a container recreate, not just a process restart.
     RecoveryRoot = {recovery_root};
     Lease_Lifetime = 60;
-    Grace_Period = 45;
+    # Grace must be >= lease or a restarting server can refuse reclaims
+    # (9.13 warns on 45/60); 90/60 is the upstream pairing.
+    Grace_Period = 90;
 }}
 
 EXPORT_DEFAULTS {{
@@ -563,7 +566,6 @@ EXPORT_DEFAULTS {{
         root_krb = root_krb,
         idmap_validity = idmap_validity,
         rpc_cred_line = rpc_cred_line,
-        mge = manage_gids_expiration,
         uid2grp_reqs = max_uid_to_group_reqs,
         readdir_res = readdir_res_size,
         readdir_max_count_line = readdir_max_count_line,

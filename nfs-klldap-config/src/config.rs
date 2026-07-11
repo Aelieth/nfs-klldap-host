@@ -196,16 +196,18 @@ pub struct GaneshaSection {
     pub warm_principals: Vec<String>,
     /// When false, omit enable_rpc_cred_fallback in ganesha.conf (fail closed on uid2grp miss).
     pub enable_rpc_cred_fallback: Option<bool>,
-    /// Override Idmapped_*_Time_Validity seconds (default 600).
+    /// Override Idmapped_*_Time_Validity seconds (default 600). On 9.13 this
+    /// is also the getgroups() trust window; wins over the manage-gids knobs.
     pub idmapped_validity_secs: Option<u32>,
     /// Kerberos principal service-name parts granted root privilege
     /// (DIRECTORY_SERVICES Root_Kerberos_Principal). Comma-separated tokens
     /// from none|nfs|root|host|all. Default "nfs, root" — `host` is excluded
     /// so enrolled client machine keytabs cannot act as root on exports.
     pub root_kerberos_principals: Option<String>,
-    /// Seconds Ganesha trusts getgroups() results under Manage_Gids
-    /// (NFS_CORE_PARAM Manage_Gids_Expiration — global, not per-export).
-    /// Default 600, max 604800.
+    /// Seconds Ganesha trusts getgroups() results under Manage_Gids. 9.13
+    /// dropped the core Manage_Gids_Expiration param for the DS
+    /// Idmapped_*_Time_Validity, so this feeds that value now (unless
+    /// idmapped_validity_secs is set). Default 600, max 604800.
     pub manage_gids_expiration_secs: Option<u64>,
     /// DIRECTORY_SERVICES Negative_Cache_Time_Validity seconds (default 60):
     /// how long a failed user/group lookup is remembered.

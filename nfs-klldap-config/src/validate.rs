@@ -494,10 +494,10 @@ impl NfsKlldapConfig {
             if share.manage_gids_expiration.is_some() {
                 eprintln!(
                     "WARN [nfs-klldap-config] share '{}': manage_gids_expiration is \
-                     deprecated here — Manage_Gids_Expiration is a global NFS_CORE_PARAM \
-                     in Ganesha 9.6, not a per-export directive. Move it to [ganesha] \
-                     manage_gids_expiration_secs; until then the smallest share value \
-                     seeds the global.",
+                     deprecated here — the group-trust window is global (Ganesha 9.13 \
+                     routes it through DIRECTORY_SERVICES Idmapped_*_Time_Validity). \
+                     Move it to [ganesha] manage_gids_expiration_secs; until then the \
+                     smallest share value seeds the global.",
                     share.name
                 );
             }

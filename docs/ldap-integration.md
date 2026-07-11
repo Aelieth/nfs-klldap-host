@@ -4,6 +4,8 @@ SSSD (LDAP provider) supplies `uidNumber`/`gidNumber` from LLDAP/KLLDAP to Ganes
 
 Shared LDAP resolution (`IdLdapResolver`, POSIX attribute mapping, principal classification) lives in the **`nfs-klldap-identity`** crate (`nfs-klldap-identity/src/ldap/resolver.rs`). The config crate, idhelper, and WebUI `LdapClient` all use it for consistent behavior and caching.
 
+**KLLDAP load contract (0.9.81):** the resolver holds **one pooled bound connection** — a bind (a KLLDAP "login") happens only on first use, bind-DN change, or after an op failure, never per search. Positive results cache for 10 min (`IDENTITY_CACHE_TTL_SECS`), authoritative misses *and* search errors for 60 s (`IDENTITY_NEGATIVE_TTL_SECS` — outage back-off), memberOf group DNs resolve from the already-loaded group cache before any LDAP round trip, and each idhelper rebulk logs `ldap_binds=+N` so login pressure on the KLLDAP server stays observable. Pre-0.9.81 behavior — a fresh TCP+TLS+bind per search with per-user × per-group fan-out during rebulk — is what slammed the KLLDAP server with multiple login attempts per second (round-1 finding, 2026-07-10).
+
 ## LLDAP Requirements
 
 Users (`ou=people`): `posixAccount` + `uid`, `uidNumber`, `gidNumber`, `homeDirectory`, `loginShell`.

@@ -213,22 +213,25 @@ pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usiz
     }
 
     let (r, dn, pw) = get_or_init_resolver()?;
+    // Bind delta makes KLLDAP login pressure visible per rebulk cycle.
+    let binds_before = r.bind_stats();
     let loaded = r.load_full_identities(dn, pw);
     let pre = r.snapshot();
     warm_rebulk_group_cache(r, realm, &pre, dn, pw);
     let snap = r.snapshot();
     let fp_before = cache.content_fingerprint();
+    let binds = r.bind_stats().saturating_sub(binds_before);
     match rebulk_apply_sync(cache, realm, &snap, &RebulkPaths::production()) {
         Ok(o) => {
             if o.materialized {
                 eprintln!(
-                    "[idhelper] rebulk: ldap_loaded={} users_synced={} (nss_passwd refreshed, fp 0x{:x}->0x{:x})",
-                    loaded, o.synced, fp_before, cache.content_fingerprint()
+                    "[idhelper] rebulk: ldap_loaded={} users_synced={} ldap_binds=+{} (nss_passwd refreshed, fp 0x{:x}->0x{:x})",
+                    loaded, o.synced, binds, fp_before, cache.content_fingerprint()
                 );
             } else {
                 eprintln!(
-                    "[idhelper] rebulk: ldap_loaded={} users_synced={} (nss unchanged, fp=0x{:x})",
-                    loaded, o.synced, fp_before
+                    "[idhelper] rebulk: ldap_loaded={} users_synced={} ldap_binds=+{} (nss unchanged, fp=0x{:x})",
+                    loaded, o.synced, binds, fp_before
                 );
             }
             Some(o.synced)

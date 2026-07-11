@@ -36,12 +36,20 @@ else
     bad "$crit FATAL/MAJ/CRIT line(s):"
     grep -E ':(FATAL|MAJ|CRIT) :' "$LOG" | head -5 | sed 's/^/    /'
 fi
+# Known-benign startup notices (unconditional on this stack): DS DomainName
+# precedence info, IO_FLUSHER under the reduced cap set, btrfs subvol probe.
+# Config-defect warns (grace<lease, manage_gids_expiration routing) are NOT
+# whitelisted — fixed in 0.9.81, they must fail loudly if they reappear.
+EXPECTED_WARN_RE='Using domainname from DIRECTORY_SERVICES|PR_SET_IO_FLUSHER due to EPERM|btrfs filesystem .* may have unsupported subvols'
 warns=$(count ':WARN :')
+unexpected=$(grep -E ':WARN :' "$LOG" 2>/dev/null | grep -cvE "$EXPECTED_WARN_RE" || true)
 if [ "$warns" -eq 0 ]; then
     ok "no WARN lines"
+elif [ "$unexpected" -eq 0 ]; then
+    ok "$warns WARN line(s), all expected startup notices"
 else
-    note "$warns WARN line(s) (review below):"
-    grep -E ':WARN :' "$LOG" | head -5 | sed 's/^/    /'
+    note "$unexpected unexpected WARN line(s) (of $warns total):"
+    grep -E ':WARN :' "$LOG" | grep -vE "$EXPECTED_WARN_RE" | head -5 | sed 's/^/    /'
 fi
 
 echo

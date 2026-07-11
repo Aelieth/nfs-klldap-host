@@ -1,7 +1,21 @@
 diff -Naur a/debian/changelog b/debian/changelog
 --- a/debian/changelog	2026-06-25 11:47:11.000000000 -0500
-+++ b/debian/changelog	2026-07-10 14:46:08.750601655 -0500
-@@ -1,3 +1,25 @@
++++ b/debian/changelog	2026-07-10 23:23:05.568100519 -0500
+@@ -1,3 +1,39 @@
++nfs-ganesha (9.13-1+klldap2) unstable; urgency=medium
++
++  * Add klldap-nsswitch-getgrouplist-return.patch: normalize the libc
++    getgrouplist(3) return value (group count on success) to the pwnam
++    wrapper contract (0 on success) that my_getgrouplist_alloc() checks.
++    Without it, Pwnam_Implementation = nsswitch treats every user with a
++    non-empty group list as a lookup failure and drops ALL supplementary
++    groups ("getgrouplist for user:X failed, ngroups: N, errno: N" with
++    per-request managed-gids fallbacks under RPCSEC_GSS). Found in the
++    plan 2.2 regression gate with a 17-group user; candidate for
++    upstream submission.
++
++ -- Aelieth <shaiaelieth@gmail.com>  Fri, 10 Jul 2026 23:30:00 +0000
++
 +nfs-ganesha (9.13-1+klldap1) unstable; urgency=medium
 +
 +  * nfs-klldap-host Phase 2 uplift build; 9.13 source, flag-only delta
@@ -29,7 +43,7 @@ diff -Naur a/debian/changelog b/debian/changelog
    * New upstream version 9.13
 diff -Naur a/debian/control b/debian/control
 --- a/debian/control	2026-05-03 09:05:46.000000000 -0500
-+++ b/debian/control	2026-07-10 14:44:22.932066228 -0500
++++ b/debian/control	2026-07-10 23:22:08.585432677 -0500
 @@ -14,19 +14,14 @@
   libattr1-dev,
   libblkid-dev,
@@ -202,9 +216,68 @@ diff -Naur a/debian/control b/debian/control
  Package: nfs-ganesha-vfs
  Architecture: any
  Section: libs
+diff -Naur a/debian/patches/klldap-nsswitch-getgrouplist-return.patch b/debian/patches/klldap-nsswitch-getgrouplist-return.patch
+--- a/debian/patches/klldap-nsswitch-getgrouplist-return.patch	1969-12-31 18:00:00.000000000 -0600
++++ b/debian/patches/klldap-nsswitch-getgrouplist-return.patch	2026-07-10 23:23:05.567668436 -0500
+@@ -0,0 +1,47 @@
++Description: normalize libc getgrouplist(3) return to the wrapper contract
++ libc getgrouplist() returns the number of groups on success and -1 on
++ failure, while the pwnam wrapper contract (shared with the SSSD
++ implementation via sss_nss_getgrouplist_timeout) is 0 on success.
++ my_getgrouplist_alloc() checks `ret != 0`, so with
++ Pwnam_Implementation = nsswitch every user belonging to at least one
++ group is treated as a lookup failure and uid2grp drops all
++ supplementary groups (observed: 17-group user, successful return 17
++ logged as "getgrouplist for user:X failed, ngroups: 17, errno: 17",
++ followed by per-request managed-gids fallbacks under RPCSEC_GSS).
++Author: Aelieth <shaiaelieth@gmail.com>
++Forwarded: no (candidate for upstream submission)
++Last-Update: 2026-07-10
++--- a/src/idmapper/pwnam_wrappers.c
+++++ b/src/idmapper/pwnam_wrappers.c
++@@ -35,8 +35,21 @@
++ #include "sss_nss_idmap.h"
++ #include "log.h"
++ 
+++/* libc getgrouplist(3) returns the group count on success and -1 on
+++ * failure; the wrapper contract shared with the SSSD implementation
+++ * (sss_nss_getgrouplist_timeout) is 0 on success / non-zero on failure.
+++ * Normalize so callers keep a single convention (my_getgrouplist_alloc
+++ * checks ret != 0 and would otherwise treat every user with a non-empty
+++ * group list as a lookup failure, dropping all supplementary groups).
+++ */
+++static int nsswitch_getgrouplist(const char *user, __gid_t group,
+++				 __gid_t *groups, int *ngroups)
+++{
+++	return getgrouplist(user, group, groups, ngroups) == -1 ? -1 : 0;
+++}
+++
++ int (*getgrouplist_func)(const char *, __gid_t, __gid_t *,
++-			 int *) = getgrouplist;
+++			 int *) = nsswitch_getgrouplist;
++ 
++ int (*getpwnam_r_func)(const char *, struct passwd *, char *, size_t,
++ 		       struct passwd **) = getpwnam_r;
++@@ -54,7 +67,7 @@
++ {
++ 	switch (implementation) {
++ 	case PWNAM_IMPLEMENTATION__NSSWITCH:
++-		getgrouplist_func = getgrouplist;
+++		getgrouplist_func = nsswitch_getgrouplist;
++ 		getpwnam_r_func = getpwnam_r;
++ 		getpwuid_r_func = getpwuid_r;
++ 		getgrnam_r_func = getgrnam_r;
+diff -Naur a/debian/patches/series b/debian/patches/series
+--- a/debian/patches/series	2026-06-25 08:10:07.000000000 -0500
++++ b/debian/patches/series	2026-07-10 23:23:05.567751562 -0500
+@@ -7,3 +7,4 @@
+ #0004-vfs-referral-ioerror.patch
+ 0004-RREADDIR-handle-error-conditions-and-fslocations-better.patch
+ 0008-Fix-ganesha-top-installation.patch
++klldap-nsswitch-getgrouplist-return.patch
 diff -Naur a/debian/rules b/debian/rules
 --- a/debian/rules	2026-06-25 08:10:07.000000000 -0500
-+++ b/debian/rules	2026-07-10 14:45:43.896527341 -0500
++++ b/debian/rules	2026-07-10 23:22:08.585455330 -0500
 @@ -1,6 +1,20 @@
  #!/usr/bin/make -f
  # -*- makefile -*-

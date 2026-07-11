@@ -70,12 +70,16 @@ if [ "$ggl" -eq 0 ]; then
 else
     bad "$ggl my_getgrouplist_alloc failure line(s)"
 fi
-unmapped=$(count 'Could not map principal')
-if [ "$unmapped" -eq 0 ]; then
-    ok "no unmapped principals"
+# Client machine creds (host/...) mapping to anonymous is the DESIGNED
+# root-squash path (Root_Kerberos_Principal excludes host since 1.4);
+# only unmapped USER principals are identity failures.
+unmapped_user=$(grep -E 'Could not map principal' "$LOG" 2>/dev/null | grep -cvE 'principal (host|nfs|root)/' || true)
+unmapped_machine=$(grep -E 'Could not map principal' "$LOG" 2>/dev/null | grep -cE 'principal (host|nfs|root)/' || true)
+if [ "$unmapped_user" -eq 0 ]; then
+    ok "no unmapped user principals ($unmapped_machine machine-principal lines = expected anonymous squash)"
 else
-    bad "$unmapped 'Could not map principal' line(s):"
-    grep -E 'Could not map principal' "$LOG" | head -3 | sed 's/^/    /'
+    bad "$unmapped_user unmapped USER principal line(s):"
+    grep -E 'Could not map principal' "$LOG" | grep -vE 'principal (host|nfs|root)/' | head -3 | sed 's/^/    /'
 fi
 mspac=$(count 'Unsupported code path for principal')
 if [ "$mspac" -eq 0 ]; then

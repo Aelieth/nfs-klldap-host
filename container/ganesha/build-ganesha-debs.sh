@@ -7,7 +7,7 @@
 set -eu
 
 GANESHA_DEBVER="${GANESHA_DEBVER:-9.13-1}"
-KLLDAP_DEBVER="${KLLDAP_DEBVER:-9.13-1+klldap1}"
+KLLDAP_DEBVER="${KLLDAP_DEBVER:-9.13-1+klldap2}"
 GANESHA_UPSTREAM="${GANESHA_UPSTREAM:-9.13}"
 POOL="https://deb.debian.org/debian/pool/main/n/nfs-ganesha"
 PATCH="/ganesha-build/klldap-packaging.patch"

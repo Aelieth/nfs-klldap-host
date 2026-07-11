@@ -104,10 +104,11 @@ RUN chmod +x /ganesha-build/build-ganesha-debs.sh && /ganesha-build/build-ganesh
 # Build remains on Fedora for rustup/cargo-chef reliability.
 FROM debian:13-slim
 
-# Custom package version (stock 9.13-1 + klldap flag delta; see
-# container/ganesha/README.md). Rollback: the tagged 9.6+klldap1 image
-# (Phase 1 anchor), or stock nfs-ganesha=9.6-1~bpo13+1 from trixie-backports.
-ARG GANESHA_VERSION=9.13-1+klldap1
+# Custom package version (stock 9.13-1 + klldap flag delta + the nsswitch
+# getgrouplist return fix; see container/ganesha/README.md). Rollback: the
+# tagged 9.6+klldap1 image (Phase 1 anchor), or stock
+# nfs-ganesha=9.6-1~bpo13+1 from trixie-backports.
+ARG GANESHA_VERSION=9.13-1+klldap2
 
 LABEL maintainer="Aelieth" \
       version="0.9.80"

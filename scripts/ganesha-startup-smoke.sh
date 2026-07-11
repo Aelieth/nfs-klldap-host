@@ -21,7 +21,7 @@
 set -u
 
 # Expected custom package version; override when gating a different uplift.
-EXPECT_VERSION="${EXPECT_VERSION:-9.13-1+klldap1}"
+EXPECT_VERSION="${EXPECT_VERSION:-9.13-1+klldap2}"
 
 pass=0; fail=0
 ok()  { echo "PASS: $*"; pass=$((pass+1)); }

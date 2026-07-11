@@ -1,6 +1,6 @@
 # Ganesha Architecture & Bind-Mount Contract
 
-Ganesha 9.13-1+klldap1 (custom build; 9.6→9.13 uplift 2026-07-10, one ACL-capable binary, NOACL per-export): DIRECTORY_SERVICES + idhelper (proactive+reactive, cache) authoritative for uid0+supp groups in nss/extrausers; UseGetpwnam + nss_wrapper getgrouplist.
+Ganesha 9.13-1+klldap2 (custom build; 9.6→9.13 uplift 2026-07-10, one ACL-capable binary, NOACL per-export, plus the klldap2 nsswitch-getgrouplist return fix — upstream 9.13 dropped all supplementary groups for every ≥1-group user under `Pwnam_Implementation = nsswitch`, see container/ganesha/README.md): DIRECTORY_SERVICES + idhelper (proactive+reactive, cache) authoritative for uid0+supp groups in nss/extrausers; UseGetpwnam + nss_wrapper getgrouplist.
 
 Single TOML (nfs-klldap.conf) is source of truth. nfs-klldap-config validates+derives+generates sssd/krb5/ganesha fragments. nfs-klldap-startup supervise (pid1) + watcher (SIGHUP) + ganesha-ctl handle reloads/bounces. nfs-klldap-ui (9630 HTTPS) edits TOML + direct chown/chmod (root, on allowed host_path trees). Ganesha VFS + SSSD (from LLDAP POSIX) serve NFSv4 krb5. No host kernel NFS.
 

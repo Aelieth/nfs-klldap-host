@@ -50,7 +50,16 @@ pub const GANESHA_MALLOC_TRIM_MIN_MB: u32 = 1024;
 /// through grace/reclaim across container recreation (see nfs-klldap-host.yaml).
 pub const GANESHA_RECOVERY_ROOT: &str = "/var/lib/nfs/ganesha";
 pub const GANESHA_DEFAULT_SECTYPE: &str = "krb5p";
-pub const GANESHA_DEFAULT_SQUASH: &str = "no_root_squash";
+/// root_squash by default (0.9.81): the plan-1.4 threat model is "client
+/// machine keytabs must never be root on an export". Root_Kerberos_Principal
+/// gates which principals may present AS root, but the 2026-07-11 stress test
+/// proved a `host/<client>` machine credential could still write to a
+/// no_root_squash export — so squash is the load-bearing control, not just a
+/// belt. No client needs uid 0 on these exports (the WebUI does privileged
+/// chown/chmod container-side on the bind mount, never over NFS), so
+/// squashing root costs nothing and closes the hole. Opt out per share via
+/// the UI checkbox (emits an explicit no_root_squash).
+pub const GANESHA_DEFAULT_SQUASH: &str = "root_squash";
 pub const GANESHA_ALLOWED_SECTYPES: &[&str] = &["krb5p", "krb5i", "krb5"];
 pub const GANESHA_ALLOWED_SQUASH: &[&str] = &[
     "no_root_squash",

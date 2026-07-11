@@ -90,6 +90,20 @@ if [ "$mspac" -eq 0 ]; then
 else
     bad "$mspac 'Unsupported code path' line(s) — stock _MSPAC_SUPPORT binary is serving"
 fi
+# Export squash: no_root_squash lets a machine keytab write as a privileged
+# identity (2026-07-11 stress test). Default is root_squash since 0.9.81;
+# any no_root_squash export in the startup config is a finding unless it was
+# a deliberate per-share opt-out.
+if grep -qE 'export_commit_common.*created' "$LOG"; then
+    nrs=$(grep -E 'export_commit_common.*created' "$LOG" | grep -c 'no_root_squash' || true)
+    if [ "$nrs" -eq 0 ]; then
+        ok "all exports created with root_squash"
+    else
+        bad "$nrs export(s) created with no_root_squash — a machine keytab can write as root there:"
+        grep -E 'export_commit_common.*created' "$LOG" | grep 'no_root_squash' \
+            | grep -oE 'pseudo \(/[^)]*\)' | sort -u | sed 's/^/    /'
+    fi
+fi
 
 echo
 echo "[3] Capture diagnosability (components present in this capture)..."

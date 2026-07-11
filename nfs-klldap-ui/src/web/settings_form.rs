@@ -49,7 +49,7 @@ pub(crate) struct ShareTemplateRow {
 
 impl ShareTemplateRow {
     /// Blank row for the "+ Add share" card, matching the pre-server-render JS defaults
-    /// (RW, unchecked root_squash, auto/NOACL selects, editable pseudo path).
+    /// (RW, root_squash ON by default, auto/NOACL selects, editable pseudo path).
     pub(crate) fn blank(idx: usize) -> Self {
         Self {
             idx,
@@ -61,7 +61,7 @@ impl ShareTemplateRow {
             container_path: String::new(),
             security: String::new(),
             rw: true,
-            root_squash: false,
+            root_squash: true,
             cache_profile: "Default".to_string(),
             enable_acl: "auto".to_string(),
             effective_acl_capable: false,
@@ -177,6 +177,9 @@ pub(crate) fn collect_shares_from_structured_form(
         container_path: r.container_path,
         source_path: r.source_path,
         umask: r.umask,
-        squash: if r.root_squash { Some("root_squash".to_string()) } else { None },
+        // Explicit both ways: the default is root_squash, so an unchecked box
+        // must emit no_root_squash to actually turn squashing off (None would
+        // fall through to the safe default and the checkbox would be inert).
+        squash: if r.root_squash { Some("root_squash".to_string()) } else { Some("no_root_squash".to_string()) },
     }).collect()
 }

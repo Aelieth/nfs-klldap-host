@@ -316,7 +316,7 @@ impl Default for Share {
             pseudo_path: None,
             security: None,
             rw: Some(true),
-            squash: Some("no_root_squash".to_string()),
+            squash: Some("root_squash".to_string()),
             cache_profile: Some("Default".to_string()),
             pref_read: None,
             pref_write: None,

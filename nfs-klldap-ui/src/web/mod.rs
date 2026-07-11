@@ -684,6 +684,9 @@ container_path = "{}"
         );
         assert!(html.contains("Path on the host that backs this share."), "field tooltips must be present on new cards");
         assert!(!html.contains("share-card-ed open"), "server sends the card closed; the JS opens it after insert");
+        // New shares default to root_squash ON (0.9.81 hardening) — the box ships checked.
+        let sq = html.find("share_root_squash_3").expect("root_squash checkbox present");
+        assert!(html[sq..sq + 80].contains("checked"), "blank card must default root_squash checked");
     }
 
     // GET / must carry the single-sourced Apply Log shell the poller's oob swaps replace.

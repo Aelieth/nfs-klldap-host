@@ -72,6 +72,11 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
 
     assert!(frag.contains("Disable_ACL = true;"), "fragment:\n{frag}");
     assert!(frag.contains("Manage_Gids = true;"), "fragment:\n{frag}");
+    // Default squash is root_squash (0.9.81): a share with no explicit squash
+    // must never ship no_root_squash — the 2026-07-11 stress test proved a
+    // machine keytab could write to a no_root_squash export.
+    assert!(frag.contains("Squash = root_squash;"), "default must be root_squash:\n{frag}");
+    assert!(!frag.contains("no_root_squash"), "unset squash must not emit no_root_squash:\n{frag}");
     assert!(frag.contains("Path = /export/users;"), "noacl must still contain Path for location by ganesha-ctl etc:\n{frag}");
     assert!(frag.contains("    Pseudo = /users;"), "noacl must emit 0.9.40-style Pseudo line:\n{frag}");
     let disable_pos = frag.find("Disable_ACL = true;").expect("Disable_ACL");

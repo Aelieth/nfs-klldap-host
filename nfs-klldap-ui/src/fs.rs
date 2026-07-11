@@ -234,9 +234,10 @@ impl FsManager {
             return Err("Path is outside allowed managed roots".into());
         }
 
-        if owner_uid == 0 || group_gid == 0 {
-            return Err("Refusing to set UID or GID 0".into());
-        }
+        // uid/gid 0 is deliberately allowed: root-owned share roots are the
+        // designed pattern (clients see the anonymous/nobody squash identity),
+        // and since the handler resolves owners Option-based a 0 can only
+        // arrive here explicitly — never as an unresolved-sentinel leak.
         // setgid (2000) + sticky (1000) are valid, meaningful bits on directory shares and are
         // editable in the UI; only setuid (4000) is refused on a shared tree.
         if mode & 0o4000 != 0 {
@@ -844,6 +845,41 @@ mod tests {
         let res = fs.apply_acl_mod(Path::new("/evil"), crate::privileged::AclModification::Remove { kinds: vec![] });
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("outside allowed"));
+    }
+
+    // uid/gid 0 is the designed share-root ownership (nobody over NFS via the
+    // anonymous squash); the old pre-walk guard refused it outright. Non-root
+    // test runs surface per-entry chown EPERM instead — the refusal must
+    // never come back.
+    #[test]
+    fn apply_permissions_accepts_uid_gid_zero() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerotree");
+        std::fs::create_dir_all(&root).unwrap();
+        let logical = Path::new("/rootbind");
+        let mut cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
+        cfg.storage.container_root = root.to_string_lossy().into_owned();
+        cfg.shares[0].name.clear();
+        cfg.shares[0].container_path = root.to_string_lossy().into_owned();
+        let fs = FsManager::new(cfg);
+        let prog = ApplyProgress::default();
+        prog.total.store(1, Ordering::Relaxed);
+        let res = fs
+            .apply_permissions_with_progress(logical, 0, 0, 0o776, false, &prog)
+            .expect("uid/gid 0 must not be refused before the walk");
+        let errstr: String = res
+            .errors
+            .iter()
+            .map(|(_, e)| e.clone())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(!errstr.contains("Refusing"), "refusal is gone: {errstr}");
+        if !errstr.is_empty() {
+            assert!(
+                errstr.contains("chown") || errstr.contains("EPERM"),
+                "only real chown errors are acceptable: {errstr}"
+            );
+        }
     }
 
     // Live progress test: depth>=2 tree; count_applicable_with_live mutates atomics visibly

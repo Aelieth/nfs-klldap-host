@@ -22,6 +22,23 @@ through the `acl_group` Askama macro). POSIX Apply POSTs the existing `/apply` (
 setgid/sticky — only setuid is refused); ACL add/remove POST `/acl-apply` (names resolved via LDAP,
 same as POSIX; unresolvable principals answer **422** so the client reports the rejection).
 
+**Owner/group resolution contract (`/apply`, since 0.9.81):** uid/gid **0 is a first-class
+owner** — on-disk root is the nobody/anonymous identity NFS clients see under root-squash, so it
+renders as **"nobody (0)"** and hand-typed `nobody` or `root` resolve to 0 without LDAP. The
+hidden numeric fields always carry the panel's current ids (0 included) and win when untouched;
+hand-editing the visible field clears them (permissions.js) so typed names/ids take over. Fields
+left blank keep the directory's **current** ownership. There is no default-uid fallback — the old
+0-as-unset sentinel silently rewrote 0:0 (and any untouched form) to a hardcoded `1000:1000`,
+which is how a share root got flipped to uid 1000 in the 2026-07-11 round-3 test.
+
+The 0-owner contract runs the full depth of the stack (each layer had its own 0-hostility,
+found across two round-3 fix passes): `FsManager::apply_permissions_with_progress` no longer
+refuses uid/gid 0 pre-walk (setuid refusal stays); the `/users/search` + `/groups/search`
+live search always offers a **synthetic "nobody (UID/GID 0)" row** for queries matching
+`nobody`/`root`/`0`/empty — LDAP-independent, shown even while LLDAP is unreachable; and the
+suggestion-click handler in permissions.js writes `0` into the hidden id fields (its old
+`uid || ''` falsy-check dropped it).
+
 All client behaviour lives in `/assets/permissions.js` behind the **`window.PermUI`** surface
 (`isLocked/flashLock/loadDirPerms/cancelCurrentApply/setShare`); panel state (share, current path,
 applying, dirty) is private JS state — never read back out of DOM text. Edit-mode visibility

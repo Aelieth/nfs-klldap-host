@@ -97,10 +97,12 @@ pub(crate) struct AclEntryView {
     x: bool,
 }
 /// Friendly label for permission editor / meta row.
-/// Shows `display (uid)` when LDAP resolves.
+/// Shows `display (uid)` when LDAP resolves. uid/gid 0 is a first-class
+/// owner on shares (root on disk = the anonymous/nobody identity NFS
+/// clients see under root-squash) and is labeled "nobody (0)".
 async fn friendly_user_label(lldap: &Ldap, uid: u32) -> String {
     if uid == 0 {
-        return "0".to_string();
+        return "nobody (0)".to_string();
     }
     if let Some((id, display)) = lldap.resolve_user_by_uid(uid as i32).await {
         let label = if !display.is_empty() && display != id {
@@ -114,7 +116,7 @@ async fn friendly_user_label(lldap: &Ldap, uid: u32) -> String {
 }
 async fn friendly_group_label(lldap: &Ldap, gid: u32) -> String {
     if gid == 0 {
-        return "0".to_string();
+        return "nobody (0)".to_string();
     }
     if let Some((id, display)) = lldap.resolve_group_by_gid(gid as i32).await {
         let label = if !display.is_empty() && display != id {
@@ -434,8 +436,10 @@ pub(crate) async fn dir_perms(
         owner_display = friendly_user_label(&l, owner).await;
         group_display = friendly_group_label(&l, group).await;
         drop(l);
-        owner_uid_hidden = if owner > 0 { owner.to_string() } else { String::new() };
-        owner_gid_hidden = if group > 0 { group.to_string() } else { String::new() };
+        // Always carry the numeric ids — 0 included — so a root/nobody-owned
+        // directory round-trips as 0:0 instead of decaying to "unset".
+        owner_uid_hidden = owner.to_string();
+        owner_gid_hidden = group.to_string();
         mode_octal = format!("{:04o}", mode & 0o7777);
         u_r = mode & 0o400 != 0; u_w = mode & 0o200 != 0; u_x = mode & 0o100 != 0;
         g_r = mode & 0o040 != 0; g_w = mode & 0o020 != 0; g_x = mode & 0o010 != 0;
@@ -503,6 +507,25 @@ pub(crate) async fn dir_perms(
     };
     Ok(Html(tpl.render().unwrap()))
 }
+/// True when the owner/group query should offer the synthetic "nobody (0)"
+/// row. uid/gid 0 is not an LDAP entity but is a first-class share owner
+/// (root on disk = the anonymous squash identity NFS clients see), so the
+/// search must be able to surface it — including while LLDAP is down.
+fn nobody_suggestion_matches(raw_query: Option<&str>) -> bool {
+    let q = crate::ldap::LdapClient::normalize_editor_search_query(raw_query)
+        .unwrap_or_default()
+        .to_lowercase();
+    q.is_empty() || "nobody".contains(&q) || "root".contains(&q) || q == "0"
+}
+
+fn nobody_user_suggestion() -> &'static str {
+    r#"<div class="suggestion" data-user-id="nobody" data-uid="0">nobody (UID 0)</div>"#
+}
+
+fn nobody_group_suggestion() -> &'static str {
+    r#"<div class="suggestion" data-group-id="nobody" data-gid="0">nobody (GID 0)</div>"#
+}
+
 pub(crate) async fn search_users(
     State(state): State<AppState>,
     Query(params): Query<SearchParams>,
@@ -512,12 +535,16 @@ pub(crate) async fn search_users(
         return Html("<div class=\"suggestion\">Unauthorized</div>".to_string());
     }
 
+    let mut html = String::new();
+    if nobody_suggestion_matches(params.user_query_raw()) {
+        html.push_str(nobody_user_suggestion());
+    }
     let lldap = state.lldap.lock().await;
     // None = LDAP unavailable (unreachable / no service creds); Some(vec![]) = no match.
     let Some(users) = lldap.list_users(params.user_query_raw()).await else {
-        return Html(r#"<div class="suggestion sugg-note">LLDAP search unavailable (server unreachable or service credentials not configured)</div>"#.to_string());
+        html.push_str(r#"<div class="suggestion sugg-note">LLDAP search unavailable (server unreachable or service credentials not configured)</div>"#);
+        return Html(html);
     };
-    let mut html = String::new();
     for user in users.into_iter().filter(|u| u.uid_number.is_some()) {
         let uid = user.uid_number.unwrap_or(0);
         let name = user.display_name.unwrap_or(user.id.clone());
@@ -543,12 +570,16 @@ pub(crate) async fn search_groups(
     if require_auth(&state, &headers).await.is_err() {
         return Html("<div class=\"suggestion\">Unauthorized</div>".to_string());
     }
+    let mut html = String::new();
+    if nobody_suggestion_matches(params.group_query_raw()) {
+        html.push_str(nobody_group_suggestion());
+    }
     let lldap = state.lldap.lock().await;
     let Some(groups) = lldap.list_groups(params.group_query_raw()).await else {
-        return Html(r#"<div class="suggestion sugg-note">LLDAP search unavailable (server unreachable or service credentials not configured)</div>"#.to_string());
+        html.push_str(r#"<div class="suggestion sugg-note">LLDAP search unavailable (server unreachable or service credentials not configured)</div>"#);
+        return Html(html);
     };
 
-    let mut html = String::new();
     for group in groups.into_iter().filter(|g| g.gid_number.is_some()) {
         let gid = group.gid_number.unwrap_or(0);
         let name = group.display_name.unwrap_or(group.id.clone());
@@ -588,32 +619,47 @@ pub(crate) async fn apply_permissions(
     Form(form): Form<ApplyForm>,
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
-    let mut owner_uid: u32 = 0;
-    let mut group_gid: u32 = 0;
+    // Option-based resolution — uid/gid 0 (root on disk, the nobody/anonymous
+    // identity NFS clients see under root-squash) is a first-class owner.
+    // None = the field was left untouched, which keeps the current owner;
+    // there is deliberately no default-uid fallback (a 0-sentinel here used
+    // to silently rewrite 0:0 and unresolved names to 1000:1000).
+    let mut owner_uid: Option<u32> = None;
+    let mut group_gid: Option<u32> = None;
+    // Typed values may arrive as "Display (3002)" / "nobody (0)" fragments;
+    // normalize to the numeric part (or bare name) before interpreting.
+    let typed_user = crate::ldap::LdapClient::normalize_editor_search_query(Some(&form.owner_user));
+    let typed_group = crate::ldap::LdapClient::normalize_editor_search_query(Some(&form.owner_group));
+    let name_is_zero = |s: &str| s.eq_ignore_ascii_case("nobody") || s.eq_ignore_ascii_case("root");
+
     let mut needs_lock = false;
     if let Ok(n) = form.owner_user_uid.trim().parse::<u32>() {
-        if n > 0 {
-            owner_uid = n;
+        owner_uid = Some(n);
+    } else if let Some(t) = typed_user.as_deref() {
+        if let Ok(n) = t.parse::<u32>() {
+            owner_uid = Some(n);
+        } else if name_is_zero(t) {
+            owner_uid = Some(0);
+        } else {
+            needs_lock = true;
         }
-    } else if let Ok(n) = form.owner_user.trim().parse::<u32>() {
-        owner_uid = n;
-    } else if !form.owner_user.trim().is_empty() {
-        needs_lock = true;
     }
     if let Ok(n) = form.owner_group_gid.trim().parse::<u32>() {
-        if n > 0 {
-            group_gid = n;
+        group_gid = Some(n);
+    } else if let Some(t) = typed_group.as_deref() {
+        if let Ok(n) = t.parse::<u32>() {
+            group_gid = Some(n);
+        } else if name_is_zero(t) {
+            group_gid = Some(0);
+        } else {
+            needs_lock = true;
         }
-    } else if let Ok(n) = form.owner_group.trim().parse::<u32>() {
-        group_gid = n;
-    } else if !form.owner_group.trim().is_empty() {
-        needs_lock = true;
     }
     if needs_lock {
         let lldap = state.lldap.lock().await;
-        if owner_uid == 0 && !form.owner_user.trim().is_empty() {
+        if owner_uid.is_none() && typed_user.is_some() {
             match lldap.resolve_user(&form.owner_user).await {
-                Some((uid, _)) => owner_uid = uid as u32,
+                Some((uid, _)) => owner_uid = Some(uid as u32),
                 None => {
                     return Ok(Html(ldap_resolve_failure_alert(
                         "user",
@@ -623,9 +669,9 @@ pub(crate) async fn apply_permissions(
                 }
             }
         }
-        if group_gid == 0 && !form.owner_group.trim().is_empty() {
+        if group_gid.is_none() && typed_group.is_some() {
             match lldap.resolve_group(&form.owner_group).await {
-                Some((gid, _)) => group_gid = gid as u32,
+                Some((gid, _)) => group_gid = Some(gid as u32),
                 None => {
                     return Ok(Html(ldap_resolve_failure_alert(
                         "group",
@@ -636,8 +682,26 @@ pub(crate) async fn apply_permissions(
             }
         }
     }
-    if owner_uid == 0 { owner_uid = 1000; }
-    if group_gid == 0 { group_gid = 1000; }
+    // Untouched fields keep the directory's current ownership.
+    if owner_uid.is_none() || group_gid.is_none() {
+        let meta = {
+            let fs = state.fs.read().expect("fs lock poisoned");
+            fs.get_dir_meta(std::path::Path::new(&form.path))
+        };
+        match meta {
+            Some((cur_uid, cur_gid, _)) => {
+                owner_uid = owner_uid.or(Some(cur_uid));
+                group_gid = group_gid.or(Some(cur_gid));
+            }
+            None => {
+                return Ok(Html(
+                    r#"<div class="note-danger">Owner/group left blank and the directory's current ownership could not be read — nothing was changed.</div>"#
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    let (owner_uid, group_gid) = (owner_uid.unwrap(), group_gid.unwrap());
     let mode = u32::from_str_radix(&form.mode, 8).unwrap_or(0o770);
     let cmd = if form.recursive {
         format!(

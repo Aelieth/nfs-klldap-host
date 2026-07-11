@@ -73,19 +73,6 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                                 || (line.to_ascii_lowercase().contains("my_getgrouplist_alloc")
                                     && (line.to_ascii_lowercase().contains("failed")
                                         || line.to_ascii_lowercase().contains("warn")));
-                            if failure_line {
-                                if let Some(candidate) =
-                                    extract_candidate_principal(line, realm)
-                                {
-                                    heal_principal_immediately(
-                                        &candidate,
-                                        &cache,
-                                        realm,
-                                        variants,
-                                        line.contains("Could not map principal "),
-                                    );
-                                }
-                            }
                             if let Some(candidate) = extract_candidate_principal(line, realm) {
                                 let now = std::time::Instant::now();
                                 let window = if failure_line {
@@ -103,6 +90,17 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                                     // Keeps the rate-limit map small.
                                     if recently.len() > 2048 {
                                         recently.retain(|_, t| now.duration_since(*t) < dedup_window);
+                                    }
+
+                                    // Heal shares the dedup gate (was one SIGHUP per log line).
+                                    let unmapped = line.contains("Could not map principal ");
+                                    if failure_line
+                                        && (!unmapped
+                                            || unmapped_principal_needs_heal(&candidate, realm, variants))
+                                    {
+                                        heal_principal_immediately(
+                                            &candidate, &cache, realm, variants, unmapped,
+                                        );
                                     }
 
                                     eprintln!("[idhelper] observed from ganesha log: {}", candidate);
@@ -268,6 +266,26 @@ fn maybe_warn_bridge_server_addr(
 /// Detect my_getgrouplist_alloc failure from ganesha.log line (AC5 E).
 /// On match: log the *exact* result+errno *seen by ganesha process* (not idhelper view),
 /// trigger REBULK + nss re-materialize + cache refresh + socket-grps recheck.
+/// True when an unmapped principal is heal-worthy: user principals, or the
+/// server's OWN machine principals (host|nfs/<server-variant>). Client
+/// machine principals map to anonymous BY DESIGN (Root_Kerberos_Principal
+/// excludes host since plan 1.4) — healing them is a no-op that used to
+/// resolve + SIGHUP ganesha once per "Could not map principal" log line
+/// (42 SIGHUPs in the 5-minute round-3 capture).
+fn unmapped_principal_needs_heal(candidate: &str, realm: &str, variants: &[String]) -> bool {
+    let (is_machine, _) = nfs_klldap_config::classify_principal(candidate, realm, variants);
+    if !is_machine {
+        return true;
+    }
+    let local = principal_local_part(candidate);
+    match local.split_once('/') {
+        Some((_, service_host)) => variants
+            .iter()
+            .any(|v| v.eq_ignore_ascii_case(service_host.trim())),
+        None => false,
+    }
+}
+
 /// Self-healing + exposes ganesha view.
 fn heal_principal_immediately(
     candidate: &str,
@@ -823,6 +841,39 @@ manage_gids = false
         .unwrap();
         std::env::set_var("NFS_CONFIG", &conf);
         conf
+    }
+
+    #[test]
+    fn unmapped_heal_skips_client_machine_principals() {
+        let variants = vec!["zima-nas".to_string(), "zima-nas.satomlin.com".to_string()];
+        // User principals must always heal.
+        assert!(unmapped_principal_needs_heal(
+            "testuser1@SATOMLIN.COM",
+            "SATOMLIN.COM",
+            &variants
+        ));
+        // Client machine principals are the designed anonymous squash: no heal.
+        assert!(!unmapped_principal_needs_heal(
+            "host/blue-lt.satomlin.com@SATOMLIN.COM",
+            "SATOMLIN.COM",
+            &variants
+        ));
+        assert!(!unmapped_principal_needs_heal(
+            "host/red-lt@SATOMLIN.COM",
+            "SATOMLIN.COM",
+            &variants
+        ));
+        // The server's OWN machine principals stay heal-worthy.
+        assert!(unmapped_principal_needs_heal(
+            "nfs/zima-nas.satomlin.com@SATOMLIN.COM",
+            "SATOMLIN.COM",
+            &variants
+        ));
+        assert!(unmapped_principal_needs_heal(
+            "host/zima-nas@SATOMLIN.COM",
+            "SATOMLIN.COM",
+            &variants
+        ));
     }
 
     #[test]

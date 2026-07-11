@@ -37,10 +37,13 @@ else
     grep -E ':(FATAL|MAJ|CRIT) :' "$LOG" | head -5 | sed 's/^/    /'
 fi
 # Known-benign startup notices (unconditional on this stack): DS DomainName
-# precedence info, IO_FLUSHER under the reduced cap set, btrfs subvol probe.
-# Config-defect warns (grace<lease, manage_gids_expiration routing) are NOT
-# whitelisted — fixed in 0.9.81, they must fail loudly if they reappear.
-EXPECTED_WARN_RE='Using domainname from DIRECTORY_SERVICES|PR_SET_IO_FLUSHER due to EPERM|btrfs filesystem .* may have unsupported subvols'
+# precedence info, the "Using idmapped_*_time_validity ... instead of" pair
+# (9.13 nfs_init.c warns on BOTH the set and unset branch of these params —
+# TODO-marked transitional notices; no config is warning-free), IO_FLUSHER
+# under the reduced cap set, and the btrfs subvol probe. NOT whitelisted:
+# grace<lease and the unset-branch "Use idmapped_*_time_validity under
+# DIRECTORY_SERVICES" (either reappearing means the generator regressed).
+EXPECTED_WARN_RE='Using domainname from DIRECTORY_SERVICES|Using idmapped_(user|group)_time_validity from DIRECTORY_SERVICES|PR_SET_IO_FLUSHER due to EPERM|btrfs filesystem .* may have unsupported subvols'
 warns=$(count ':WARN :')
 unexpected=$(grep -E ':WARN :' "$LOG" 2>/dev/null | grep -cvE "$EXPECTED_WARN_RE" || true)
 if [ "$warns" -eq 0 ]; then

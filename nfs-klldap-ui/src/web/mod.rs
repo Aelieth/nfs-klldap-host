@@ -508,6 +508,148 @@ container_path = "{}"
         assert!(has, "after POST /acl-apply + wait, shipped fs.get_dir_acl on logical path must show the entry");
     }
 
+    // POSIX apply owner resolution: uid/gid 0 is a first-class owner (root on
+    // disk = the nobody identity clients see under root-squash). The old code
+    // used 0 as an "unset" sentinel and silently rewrote 0:0 — and any
+    // untouched form — to a hardcoded 1000:1000.
+    #[tokio::test]
+    async fn web_apply_permissions_zero_owner_and_keep_current() {
+        use std::os::unix::fs::MetadataExt;
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_root = tmp.path().join("permroot");
+        std::fs::create_dir_all(&real_root).unwrap();
+        let logical = std::path::Path::new("/permsdata");
+
+        let cp = tmp.path().join("c");
+        let min_cfg = format!(
+            r#"ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "{}"
+[sssd]
+ldap_default_bind_dn = "uid=admin"
+ldap_default_authtok = "s"
+[[shares]]
+name = "permsdata"
+host_path = "{}"
+container_path = "{}"
+"#,
+            real_root.display(),
+            logical.display(),
+            real_root.display()
+        );
+        std::fs::write(&cp, min_cfg).unwrap();
+        let cfg_val = nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("load");
+        let cfg = Arc::new(RwLock::new(cfg_val.clone()));
+        let fs = Arc::new(RwLock::new(FsManager::new(cfg_val)));
+
+        let l = Arc::new(Mutex::new(crate::create_test_lldap()));
+        let a = Arc::new(AuthManager::new(&cp, None));
+        let sm = tmp.path().join(".s");
+        std::fs::write(&sm, "ok\n").ok();
+        let st = AppState {
+            fs,
+            lldap: l,
+            config: cfg,
+            auth: a,
+            config_path: cp.clone(),
+            keytab_hostname: "h".into(),
+            keytab_realm: "R".into(),
+            keytab_alert: Arc::new(StdMutex::new(None)),
+            apply_progress: Arc::new(Mutex::new(None)),
+            restart_requested: Arc::new(Mutex::new(false)),
+            direct_tls: true,
+            setup_marker_override: Some(sm),
+            setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
+            host_nfs_mode: false,
+            fs_probe_mountinfo_path: None,
+        };
+        let progress_slot = st.apply_progress.clone();
+        let token = st.auth.create_privileged_session("permtest");
+        let app = router(st);
+
+        let post_and_get_cmd = |body: String| {
+            let app = app.clone();
+            let token = token.clone();
+            let progress_slot = progress_slot.clone();
+            async move {
+                let req = Request::builder()
+                    .method("POST")
+                    .uri("/apply")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(body))
+                    .unwrap();
+                let req = add_session_cookie(req, &token);
+                let resp = app.oneshot(req).await.unwrap();
+                assert_eq!(resp.status(), StatusCode::OK);
+                // cmd is recorded synchronously before the spawn; wait for
+                // finish so successive posts don't race the walker.
+                timeout(Duration::from_secs(2), async {
+                    loop {
+                        if let Some(prog) = progress_slot.lock().await.as_ref() {
+                            if prog.finished.load(std::sync::atomic::Ordering::Relaxed) {
+                                return prog.cmd.lock().expect("poison").clone().unwrap_or_default();
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("apply must finish")
+            }
+        };
+
+        let p = urlencoding::encode(logical.to_str().unwrap());
+
+        // 1) Hidden numeric ids carry 0 (panel round-trip of a 0:0 directory).
+        let cmd = post_and_get_cmd(format!(
+            "path={p}&owner_user=nobody+(0)&owner_group=nobody+(0)&mode=0755&owner_user_uid=0&owner_group_gid=0"
+        ))
+        .await;
+        assert!(cmd.contains("chown 0:0"), "hidden 0 ids must chown 0:0, got: {cmd}");
+
+        // 2) Hand-typed names: nobody/root resolve to 0 without LDAP.
+        let cmd = post_and_get_cmd(format!(
+            "path={p}&owner_user=nobody&owner_group=root&mode=0755&owner_user_uid=&owner_group_gid="
+        ))
+        .await;
+        assert!(cmd.contains("chown 0:0"), "typed nobody/root must chown 0:0, got: {cmd}");
+
+        // 3) Untouched owner fields keep the directory's current ownership
+        //    (never a hardcoded default).
+        let md = std::fs::metadata(&real_root).unwrap();
+        let (cur_uid, cur_gid) = (md.uid(), md.gid());
+        let cmd = post_and_get_cmd(format!(
+            "path={p}&owner_user=&owner_group=&mode=0770&owner_user_uid=&owner_group_gid="
+        ))
+        .await;
+        assert!(
+            cmd.contains(&format!("chown {cur_uid}:{cur_gid}")),
+            "blank owner fields must keep current {cur_uid}:{cur_gid}, got: {cmd}"
+        );
+
+        // The owner/group live search must offer the synthetic nobody (0)
+        // row — including while LLDAP is unavailable (nobody is not an LDAP
+        // entity), which is what this test's lldap stub simulates.
+        for (uri, marker) in [
+            ("/users/search?owner_user=nobody", r#"data-uid="0""#),
+            ("/users/search?owner_user=0", r#"data-uid="0""#),
+            ("/groups/search?owner_group=nobody", r#"data-gid="0""#),
+        ] {
+            let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+            let req = add_session_cookie(req, &token);
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+            let html = String::from_utf8_lossy(&body);
+            assert!(
+                html.contains(marker) && html.contains("nobody"),
+                "{uri} must offer the synthetic nobody(0) row: {html}"
+            );
+        }
+    }
+
     // GET /settings/share-card must render a blank card with the field tooltips the JS copy had lost.
     #[tokio::test]
     async fn share_card_fragment_renders_blank_card_with_tooltips() {

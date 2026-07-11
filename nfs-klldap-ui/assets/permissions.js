@@ -366,7 +366,8 @@
             const nameInput = container.querySelector('input[name="owner_user"]');
             const uidInput  = container.querySelector('input[name="owner_user_uid"]');
             if (nameInput) nameInput.value = label || userId;
-            if (uidInput)  uidInput.value = String(uid || '');
+            // uid 0 (nobody) is a real id — `uid || ''` would drop it.
+            if (uidInput)  uidInput.value = Number.isFinite(uid) ? String(uid) : '';
             if (suggBox) suggBox.innerHTML = '';
             return;
         }
@@ -377,7 +378,8 @@
             const nameInput = container.querySelector('input[name="owner_group"]');
             const gidInput  = container.querySelector('input[name="owner_group_gid"]');
             if (nameInput) nameInput.value = label || groupId;
-            if (gidInput)  gidInput.value = String(gid || '');
+            // gid 0 (nobody) is a real id — `gid || ''` would drop it.
+            if (gidInput)  gidInput.value = Number.isFinite(gid) ? String(gid) : '';
             if (suggBox) suggBox.innerHTML = '';
         }
     });

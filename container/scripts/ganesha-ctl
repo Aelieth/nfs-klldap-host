@@ -44,6 +44,7 @@ Usage:
   remove-export <name>       # delete matching fragment + signal supervisor reload
   show-fragments             # list on-disk exports.d fragments (not live D-Bus state)
   reload                     # signal supervisor (regenerate + full service recycle)
+  refresh-identity [user]    # flush SSSD + idhelper + Ganesha uid2grp caches so an LLDAP group change lands now
   id-resolve <principal>     # resolve full user@REALM (exercises uid2grp/getent group); surfaces ID MAPPER
   id-uid <uid>               # replicate Ganesha uid2grp for a numeric uid under the LIVE daemon environ
   id-check                   # quick health of the idhelper translator + ID MAPPER greps
@@ -159,6 +160,52 @@ case "$CMD" in
     reload)
         log "Requesting supervisor reload (regenerate + recycle SSSD/idhelper/Ganesha/WebUI)..."
         signal_supervisor_reload
+        ;;
+
+    refresh-identity)
+        # Flush the three server-side identity cache layers so an LLDAP
+        # group/membership change takes effect immediately (instead of within
+        # the ~3-min natural windows). Order: SSSD -> idhelper re-materialize ->
+        # Ganesha uid2grp. Each step degrades to a warning if unavailable.
+        USER_ARG="${1:-}"
+        log "refresh-identity: flushing identity caches${USER_ARG:+ for ${USER_ARG}}..."
+
+        # 1) SSSD (needs sssd-tools). -u for one user, -E for everything.
+        if command -v sss_cache >/dev/null 2>&1; then
+            if [ -n "$USER_ARG" ]; then
+                sss_cache -u "$USER_ARG" 2>/dev/null && log "  sss_cache -u ${USER_ARG}: ok" \
+                    || log "  WARN: sss_cache -u ${USER_ARG} failed"
+            else
+                sss_cache -E 2>/dev/null && log "  sss_cache -E: ok" \
+                    || log "  WARN: sss_cache -E failed"
+            fi
+        else
+            log "  WARN: sss_cache not found (install sssd-tools) — skipping SSSD flush"
+        fi
+
+        # 2) idhelper: re-read LDAP fresh + re-materialize nss_wrapper/extrausers.
+        SOCK="${NFS_KLLDAP_IDHELPER_SOCKET:-/var/run/nfs-klldap/idhelper.sock}"
+        if [ -S "$SOCK" ]; then
+            RESP="$(printf 'REBULK\n' | nc -U "$SOCK" 2>/dev/null || true)"
+            log "  idhelper REBULK: ${RESP:-<no response>}"
+        else
+            log "  WARN: idhelper socket ${SOCK} missing — skipping rebulk"
+        fi
+
+        # 3) Ganesha uid2grp cache (the getgrouplist result cache).
+        if dbus-send --system --print-reply --dest=org.ganesha.nfsd \
+            /org/ganesha/nfsd/admin org.ganesha.nfsd.admin.purge_gids >/dev/null 2>&1; then
+            log "  Ganesha purge_gids: ok"
+        else
+            log "  WARN: purge_gids D-Bus call failed (is ganesha.nfsd up on the bus?)"
+        fi
+
+        # 4) Verify: print the user's freshly-resolved groups.
+        if [ -n "$USER_ARG" ]; then
+            IDHELPER="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
+            [ -x "$IDHELPER" ] && log "  groups now: $("$IDHELPER" grps "$USER_ARG" 2>/dev/null || echo '?')"
+        fi
+        log "refresh-identity: done"
         ;;
 
     id-resolve)

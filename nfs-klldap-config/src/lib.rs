@@ -815,8 +815,8 @@ mod tests {
         assert!(main.contains("Grace_Period = 90;"));
         assert!(main.contains("NFS_KRB5 {"));
 
-        assert!(main.contains("Idmapped_User_Time_Validity = 600;"));
-        assert!(main.contains("Idmapped_Group_Time_Validity = 600;"));
+        assert!(main.contains("Idmapped_User_Time_Validity = 180;"));
+        assert!(main.contains("Idmapped_Group_Time_Validity = 180;"));
         assert!(main.contains("EXPORT_DEFAULTS {\n    SecType = krb5p;\n    Protocols = 4;"));
         // Ganesha 9.6 trixie-backports: only these blocks are emitted.
         assert!(!main.contains("Transports"));

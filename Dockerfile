@@ -111,7 +111,7 @@ FROM debian:13-slim
 ARG GANESHA_VERSION=9.13-1+klldap2
 
 LABEL maintainer="Aelieth" \
-      version="0.9.80"
+      version="0.9.84"
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 
@@ -147,7 +147,7 @@ RUN set -eux; \
     test "$(dpkg-query -W -f='${Version}' nfs-ganesha)" = "${GANESHA_VERSION}"; \
     rm -rf /tmp/ganesha-debs; \
     apt-get install -y --no-install-recommends \
-        sssd sssd-ldap libnss-sss \
+        sssd sssd-ldap sssd-tools libnss-sss \
         krb5-user \
         dbus rpcbind \
         inotify-tools procps iproute2 netcat-openbsd \

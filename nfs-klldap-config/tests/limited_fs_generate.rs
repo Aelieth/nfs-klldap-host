@@ -106,7 +106,7 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
     assert!(!ganesha.contains("IdmapConf ="), "forbidden IdmapConf in ganesha.conf");
     // Group-trust window rides the DS idmapped validity (9.13 routing).
     assert!(!ganesha.contains("Manage_Gids_Expiration"));
-    assert!(ganesha.contains("Idmapped_Group_Time_Validity = 600;"));
+    assert!(ganesha.contains("Idmapped_Group_Time_Validity = 180;"));
     // Hardened default excludes host/ so machine keytabs are never root.
     assert!(ganesha.contains("Root_Kerberos_Principal = nfs, root;"));
     assert!(ganesha.contains("Pwnam_Implementation = nsswitch"));

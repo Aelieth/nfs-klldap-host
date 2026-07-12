@@ -103,7 +103,7 @@ entry_negative_timeout = {entry_negative_timeout}
         search_base = search_base,
         bind_dn = cfg.sssd.ldap_default_bind_dn,
         bind_pw = cfg.sssd.ldap_default_authtok,
-        entry_cache_timeout = cfg.sssd.entry_cache_timeout.unwrap_or(3600),
+        entry_cache_timeout = cfg.sssd.entry_cache_timeout.unwrap_or(180),
         entry_negative_timeout = cfg.sssd.entry_negative_timeout.unwrap_or(60),
     ));
 

@@ -1149,11 +1149,11 @@ impl IdLdapResolver {
 
     /// Preloads posix users and groups and indexes UPN aliases in caches.
     pub fn load_full_identities(&self, bind_dn: &str, bind_pw: &str) -> usize {
-        // Clear so removed groups/users are absent from snapshot (prune before reseed, like IdCache).
-        self.user_cache.lock().unwrap().clear();
-        self.user_by_uid_cache.lock().unwrap().clear();
-        self.group_cache.lock().unwrap().clear();
-        self.group_by_gid_cache.lock().unwrap().clear();
+        // Clear ALL caches (incl. memberOf / DN->gid / negative) so a rebulk is
+        // fully fresh — a group-membership change must not be masked by a stale
+        // memberof_cache entry (10-min TTL). This is the load-bearing prune for
+        // propagation: partial clears here let a rebulk serve old membership.
+        self.clear_caches();
 
         // test-support: drive rebulk + primary loop without live LDAP.
         #[cfg(feature = "test-support")]
@@ -1457,6 +1457,46 @@ mod tests {
             misses_after_first, misses_after_second,
             "negative hit must not re-enter the LDAP miss path"
         );
+    }
+
+    #[test]
+    fn rebulk_clears_membership_and_related_caches() {
+        // Regression: load_full_identities must clear the memberOf / DN->gid /
+        // negative caches (not just user/group), or a group-membership change
+        // stays masked for the 10-min TTL even after a rebulk — the 2026-07-11
+        // propagation failure. clear() runs before the (refused) LDAP attempt.
+        let r = IdLdapResolver::new(
+            "ldaps://127.0.0.1:1",
+            "ou=people,dc=t",
+            "ou=groups,dc=t",
+            resolve_posix_attribute_mapping(&PosixMappingInput::default()),
+            true,
+            false,
+            None,
+        );
+        r.memberof_cache.lock().unwrap().insert(
+            "testuser1".into(),
+            CachedMemberOf {
+                dn: "uid=testuser1,ou=people,dc=t".into(),
+                memberofs: vec!["cn=oldgroup,ou=groups,dc=t".into()],
+                fetched_at: Instant::now(),
+            },
+        );
+        r.group_gid_by_dn_cache.lock().unwrap().insert(
+            "cn=oldgroup,ou=groups,dc=t".into(),
+            CachedDnGid { gid: Some(500), fetched_at: Instant::now() },
+        );
+        r.mark_negative("g:ghost".into());
+        assert!(!r.memberof_cache.lock().unwrap().is_empty());
+
+        let _ = r.load_full_identities("dn", "pw");
+
+        assert!(r.memberof_cache.lock().unwrap().is_empty(), "rebulk must drop stale memberOf");
+        assert!(
+            r.group_gid_by_dn_cache.lock().unwrap().is_empty(),
+            "rebulk must drop stale DN->gid entries"
+        );
+        assert!(!r.negative_hit("g:ghost"), "rebulk must drop negative-cache entries");
     }
 
     #[test]

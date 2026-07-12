@@ -179,8 +179,8 @@ fn main_conf_hardened_defaults_for_identity_and_runtime() {
     // Group-trust window rides DS Idmapped_* on 9.13; the old core param
     // would only draw a startup warning and must not be emitted.
     assert!(!ganesha.contains("Manage_Gids_Expiration"), "{ganesha}");
-    assert!(ganesha.contains("Idmapped_User_Time_Validity = 600;"), "{ganesha}");
-    assert!(ganesha.contains("Idmapped_Group_Time_Validity = 600;"), "{ganesha}");
+    assert!(ganesha.contains("Idmapped_User_Time_Validity = 180;"), "{ganesha}");
+    assert!(ganesha.contains("Idmapped_Group_Time_Validity = 180;"), "{ganesha}");
     assert!(ganesha.contains("Max_Uid_To_Group_Reqs = 64;"), "{ganesha}");
     assert!(ganesha.contains("Negative_Cache_Time_Validity = 60;"), "{ganesha}");
     // Reclaim correctness: grace covers the lease (9.13 warns on 45/60).

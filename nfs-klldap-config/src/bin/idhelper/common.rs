@@ -37,8 +37,11 @@ pub(crate) const NSS_GROUP_PATH: &str = "/var/lib/nfs-klldap/nss_group";
 pub(crate) const EXTRAUSERS_PASSWD: &str = "/var/lib/extrausers/passwd";
 pub(crate) const EXTRAUSERS_GROUP: &str = "/var/lib/extrausers/group";
 
-/// The default LDAP sync interval matches the IdLdapResolver ten-minute TTL.
-pub(crate) const DEFAULT_REBULK_INTERVAL_SECS: u64 = 10 * 60;
+/// Default LDAP sync interval. 180s (0.9.84, was 600) so unattended group
+/// changes re-materialize within ~3 min; override via
+/// NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS (0 = off). Cheap under the pooled
+/// resolver (~1 bind per interval).
+pub(crate) const DEFAULT_REBULK_INTERVAL_SECS: u64 = 180;
 
 /// Debug logging enabled via KLLDAP_IDHELPER_DEBUG=true (or 1/yes/on).
 static DEBUG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

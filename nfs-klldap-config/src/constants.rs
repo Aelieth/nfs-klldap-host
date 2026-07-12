@@ -25,7 +25,10 @@ pub const GANESHA_ROOT_KRB_PRINCIPAL_TOKENS: &[&str] = &["none", "nfs", "root", 
 /// DIRECTORY_SERVICES Idmapped_*_Time_Validity seconds: identity lookups AND
 /// the getgroups() trust window — 9.13 routes the old core param
 /// Manage_Gids_Expiration here (it now warns and is no longer emitted).
-pub const GANESHA_IDMAPPED_VALIDITY_SECS: u32 = 600;
+/// 180s (0.9.84, was 600): a group-membership change lands in ~3 min without
+/// intervention; the pooled resolver keeps the extra refreshes cheap. Instant
+/// via `ganesha-ctl refresh-identity`. Override with idmapped_validity_secs.
+pub const GANESHA_IDMAPPED_VALIDITY_SECS: u32 = 180;
 /// Sanity cap for the manage-gids TOML knobs (Ganesha capped the old core
 /// param at 7 days; the values now feed Idmapped_*_Time_Validity).
 pub const GANESHA_MANAGE_GIDS_EXPIRATION_MAX: u64 = 7 * 24 * 60 * 60;

@@ -44,7 +44,7 @@ fn assert_ganesha_96_compliant(g: &str, i: &str) {
     // 1.4: Root_Kerberos_Principal excludes host/ (machine keytabs never root);
     // the getgroups() trust window rides Idmapped_* (9.13 routing), and grace
     // must cover the lease so restarts honor reclaims.
-    for k in ["Pwnam_Implementation = nsswitch", "Root_Kerberos_Principal = nfs, root;", "Only_Numeric_Owners = true", "NFS_KRB5", "UseGetpwnam = true", "Idmapped_Group_Time_Validity = 600;", "Grace_Period = 90;", "RecoveryRoot = /var/lib/nfs/ganesha;"] { assert!(g.contains(k), "missing {k}"); }
+    for k in ["Pwnam_Implementation = nsswitch", "Root_Kerberos_Principal = nfs, root;", "Only_Numeric_Owners = true", "NFS_KRB5", "UseGetpwnam = true", "Idmapped_Group_Time_Validity = 180;", "Grace_Period = 90;", "RecoveryRoot = /var/lib/nfs/ganesha;"] { assert!(g.contains(k), "missing {k}"); }
     for f in ["Read_Access_Check_Policy =", "IdmapConf =", "Transports =", "Manage_Gids_Expiration"] { assert!(!g.contains(f), "forbidden {f}"); }
     assert!(i.contains("Domain = TEST") && i.contains("Method = nsswitch"));
 }

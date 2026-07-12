@@ -94,6 +94,14 @@ userspace; and, on GNOME only, `x-gvfs-show,x-gvfs-name=<share>` so the share
 appears (click-to-mount) in the Files sidebar. KDE/Dolphin already lists fstab
 mounts, so the gvfs options are GNOME-gated.
 
+Since v5.6 the mounts also carry **`lookupcache=all`** (the kernel default),
+set by the `LOOKUPCACHE` knob at the top of the script. Earlier versions forced
+`lookupcache=none` to work around Ganesha 9.6 answering GET_DIR_DELEGATION with
+OP_ILLEGAL and poisoning the dentry cache (`d??????????`, errno 121). Ganesha
+9.13 returns `NFS4ERR_NOTSUPP` cleanly and runs with delegations off, so caching
+is safe and much faster (no per-lookup server round trip). If `d??????????` ever
+reappears on a share, set `LOOKUPCACHE=none` and re-run `--fstab`.
+
 ## Troubleshooting
 
 Run the server with `GANESHA_DEBUG=TRUE` while reproducing — the debug LOG set includes

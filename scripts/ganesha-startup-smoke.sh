@@ -69,7 +69,14 @@ else
 fi
 
 echo "== [3] daemon start + VFS FSAL load =="
-mkdir -p /srv/smoke /var/lib/nfs/ganesha /run/dbus /run/rpcbind
+mkdir -p /srv/smoke /srv/smoke-acl /var/lib/nfs/ganesha /run/dbus /run/rpcbind
+# ACL-variant export: seed one named entry so the POSIX-ACL backend has a
+# real extended ACL to fetch on the first attribute refresh (WI-9).
+if setfacl -m u:12001:r-x /srv/smoke-acl 2>/dev/null; then
+    echo "    seeded /srv/smoke-acl with u:12001:r-x"
+else
+    echo "    WARN: could not seed ACL on /srv/smoke-acl (filesystem must store POSIX ACLs for [4b])"
+fi
 dbus-daemon --system --fork 2>/dev/null || echo "    (dbus start failed; non-fatal for smoke)"
 rpcbind 2>/dev/null || echo "    (rpcbind start failed; non-fatal for v4-only)"
 # Local keytab so gss_principal_init can acquire accept creds for the nfs/
@@ -109,6 +116,17 @@ EXPORT {
     Disable_ACL = true;
     FSAL { Name = VFS; }
 }
+EXPORT {
+    Export_Id = 2;
+    Path = /srv/smoke-acl;
+    Pseudo = /smoke-acl;
+    Access_Type = RW;
+    Squash = None;
+    SecType = sys;
+    Protocols = 4;
+    Disable_ACL = false;
+    FSAL { Name = VFS; }
+}
 EOF
 ganesha.nfsd -F -f /tmp/smoke.conf -L /tmp/ganesha-smoke.log -N NIV_INFO &
 GPID=$!
@@ -137,13 +155,23 @@ if grep -qiE ':CRIT :|:FATAL :|:MAJ :' /tmp/ganesha-smoke.log; then
 else
     ok "no CRIT/FATAL/MAJ in startup log"
 fi
-# Allowed: the daemon-core NFSv4 ACL *cache* init + its log-level line —
-# core plumbing that exists in every build; not FSAL ACL capability.
-if grep -i 'acl' /tmp/ganesha-smoke.log | grep -qvE 'COMPONENT_NFS_V4_ACL|NFSv4 ACL cache successfully initialized'; then
-    echo "    NOTE: unexpected ACL lines (review):"
-    grep -i 'acl' /tmp/ganesha-smoke.log | grep -vE 'COMPONENT_NFS_V4_ACL|NFSv4 ACL cache successfully initialized' | head -4
+# Since the WI-9 ACL variant (0.9.90) the conf carries one NOACL and one ACL
+# export on the same binary. Startup itself should still log only the
+# daemon-core ACL cache init; FSAL POSIX-ACL lines appear once a client
+# exercises the ACL export (proven in the 2.6 gate, not at boot). What is a
+# hard failure on this build is the NOTSUPP signature: the POSIX-ACL backend
+# failing to serve ACLs from the export's filesystem.
+if grep -qiE 'Permission check for ACL.*(not supported|NOTSUPP)' /tmp/ganesha-smoke.log; then
+    bad "[4b] POSIX-ACL backend cannot serve the ACL export's filesystem:"
+    grep -iE 'Permission check for ACL' /tmp/ganesha-smoke.log | head -3
 else
-    ok "no ACL activity beyond core cache init"
+    ok "[4b] no ACL-NOTSUPP failures with the ACL export loaded"
+fi
+if grep -i 'acl' /tmp/ganesha-smoke.log | grep -qvE 'COMPONENT_NFS_V4_ACL|NFSv4 ACL cache successfully initialized|Disable_ACL|smoke-acl'; then
+    echo "    NOTE: unexpected ACL lines (review):"
+    grep -i 'acl' /tmp/ganesha-smoke.log | grep -vE 'COMPONENT_NFS_V4_ACL|NFSv4 ACL cache successfully initialized|Disable_ACL|smoke-acl' | head -4
+else
+    ok "no ACL activity beyond core cache init and the declared ACL export"
 fi
 if grep -q 'gss_principal_init' /tmp/ganesha-smoke.log && grep -qi 'Cannot acquire credentials' /tmp/ganesha-smoke.log; then
     bad "GSS could not acquire nfs/ service credentials from keytab"

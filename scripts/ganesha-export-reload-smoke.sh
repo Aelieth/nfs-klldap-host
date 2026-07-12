@@ -65,7 +65,7 @@ EOF
     } > "$CONF"
 }
 
-write_fragment() { # args: basename export_id path pseudo
+write_fragment() { # args: basename export_id path pseudo [disable_acl=true|false]
     cat > "$EXPORTS_D/$1" <<EOF
 EXPORT {
     Export_Id = $2;
@@ -75,7 +75,7 @@ EXPORT {
     Squash = None;
     SecType = sys;
     Protocols = 4;
-    Disable_ACL = true;
+    Disable_ACL = ${5:-true};
     FSAL { Name = VFS; }
 }
 EOF
@@ -118,8 +118,12 @@ else
     bad "ShowExports missing /srv/smoke/alpha:"; echo "$exports_now" | head -20
 fi
 
-echo "== [2] ADD export 2 via SIGHUP (no restart) =="
-write_fragment 20-bravo.conf 2 /srv/smoke/bravo /bravo
+echo "== [2] ADD export 2 via SIGHUP (no restart) — ACL share class (WI-9) =="
+# The added export is the ACL class: Disable_ACL=false with a seeded named
+# entry, proving live add/update/remove work identically for ACL exports.
+setfacl -m u:12001:r-x /srv/smoke/bravo 2>/dev/null \
+    || echo "    WARN: could not seed ACL on /srv/smoke/bravo (POSIX-ACL filesystem required)"
+write_fragment 20-bravo.conf 2 /srv/smoke/bravo /bravo false
 write_main_conf 10-alpha.conf 20-bravo.conf
 kill -HUP "$GPID"
 if wait_for_reread 1; then ok "reread_exports ran after SIGHUP"; else bad "no 'Reread exports complete' after add"; fi
@@ -131,7 +135,7 @@ else
 fi
 
 echo "== [3] UPDATE export 2 Pseudo /bravo → /bravo2 via SIGHUP =="
-write_fragment 20-bravo.conf 2 /srv/smoke/bravo /bravo2
+write_fragment 20-bravo.conf 2 /srv/smoke/bravo /bravo2 false
 kill -HUP "$GPID"
 if wait_for_reread 2; then ok "second reread complete"; else bad "no second reread after update"; fi
 exports_now="$(show_exports)"
@@ -170,6 +174,12 @@ if grep -qiE ':CRIT :|:FATAL :' "$LOG"; then
     grep -iE ':CRIT :|:FATAL :' "$LOG" | head -8
 else
     ok "no CRIT/FATAL across add/update/remove"
+fi
+if grep -qiE 'Permission check for ACL.*(not supported|NOTSUPP)' "$LOG"; then
+    bad "ACL export hit the POSIX-ACL NOTSUPP signature during reloads:"
+    grep -iE 'Permission check for ACL' "$LOG" | head -3
+else
+    ok "no ACL-NOTSUPP failures across the ACL export's lifecycle"
 fi
 
 kill "$GPID" 2>/dev/null; wait "$GPID" 2>/dev/null

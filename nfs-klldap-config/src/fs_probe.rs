@@ -21,8 +21,19 @@ pub struct EffectiveShareFlags {
     pub manage_gids: bool,
     /// True when probe (not explicit TOML) drove the safe defaults.
     pub auto_applied: bool,
-    /// Resolved umask (e.g. "0022"); inert since 9.13 (no per-export Umask).
-    pub umask: Option<String>,
+    /// True when auto mode (enable_acl unset) turned ACL on via a proven probe.
+    pub auto_enabled: bool,
+}
+
+/// Verdict of the layered ACL-capability probe for a serve path.
+/// Only the write round-trip can prove Capable; the mountinfo denylist or a
+/// failed round-trip prove Incapable; everything else stays Inconclusive so
+/// generate keeps warning instead of hard-failing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AclProbeVerdict {
+    Capable,
+    Incapable,
+    Inconclusive,
 }
 
 #[derive(Debug, Clone)]
@@ -35,8 +46,9 @@ struct MountEntry {
 
 /// Probes path against live mountinfo.
 /// On failure it assumes NOT ACL-capable so generate never emits a broken ACL
-/// export (fail-safe). ACL is opt-in via `enable_acl = true` (see
-/// `compute_effective_flags`), so a conservative probe never suppresses a share.
+/// export (fail-safe). Auto ACL (enable_acl unset) additionally needs the
+/// write round-trip to pass, so a conservative probe never suppresses a share
+/// and never promotes one on guesswork.
 pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
     let mountinfo_path = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH")
         .unwrap_or_else(|_| "/proc/self/mountinfo".to_string());
@@ -77,12 +89,12 @@ pub enum ReadAccessPolicyEmit {
     Post,
 }
 
-/// Read policy emit (pre on NOACL, omit on ACL auto)
+/// Read policy emit (pre on NOACL, omit on ACL auto). Takes the already
+/// resolved flags so auto-ACL shares get the ACL-path emission.
 pub fn compute_read_access_policy_emit(
     share: &Share,
-    caps: &FsCapabilities,
+    eff: &EffectiveShareFlags,
 ) -> ReadAccessPolicyEmit {
-    let eff = compute_effective_flags(share, caps);
     if let Some(ref raw) = share.read_access_policy {
         let policy = raw.trim().to_ascii_lowercase();
         if policy == "post" {
@@ -104,30 +116,45 @@ pub fn compute_read_access_policy_emit(
     }
 }
 
-pub(crate) fn is_valid_umask(s: &str) -> bool {
-    let t = s.trim();
-    t.len() == 4 && t.starts_with('0') && t[1..].chars().all(|c| matches!(c, '0'..='7'))
+/// Static verdict from mountinfo capabilities alone (no disk access).
+/// The denylist is a definitive negative; anything else stays unproven.
+pub fn verdict_from_caps(caps: &FsCapabilities) -> AclProbeVerdict {
+    if caps.acl_capable {
+        AclProbeVerdict::Inconclusive
+    } else {
+        AclProbeVerdict::Incapable
+    }
 }
 
+/// Static flags: auto mode resolves to NOACL without a real probe verdict.
+/// Warnings, validate, and settings use this fail-safe view; generate and the
+/// permissions panel use `compute_effective_flags_probed` with a live verdict.
 pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> EffectiveShareFlags {
-    let probe_limited = !caps.acl_capable;
-    // ACL is opt-in (per-share operator choice). Unset or false => NOACL. This removes
-    // the old fail-open where a "capable" probe silently emitted an ACL export that the
-    // packaged Ganesha 9.6 VFS FSAL cannot service (NFS4ERR_NOTSUPP). enable_acl = true
-    // is separately capability-verified (loud warning) before the ACL path is taken.
-    let enable_acl = share.enable_acl == Some(true);
+    compute_effective_flags_probed(share, caps, verdict_from_caps(caps))
+}
+
+/// Flags with a real probe verdict (0.9.90 auto-ACL semantics).
+/// Explicit true/false always wins; unset = AUTO, which turns ACL on only when
+/// the write round-trip proved the filesystem stores POSIX ACLs.
+/// Auto never fails generation: unproven degrades to NOACL, the historic rock.
+pub fn compute_effective_flags_probed(
+    share: &Share,
+    caps: &FsCapabilities,
+    verdict: AclProbeVerdict,
+) -> EffectiveShareFlags {
+    let enable_acl = match share.enable_acl {
+        Some(v) => v,
+        None => verdict == AclProbeVerdict::Capable,
+    };
     let manage_gids = share.manage_gids.unwrap_or(true);
-    // Auto-detect comment is informational only: it fires when the operator did not opt
-    // into ACL and the probe found a genuinely limited FS (vfat/ntfs/noacl mount).
-    let auto_applied = probe_limited && share.enable_acl.is_none();
-    let umask = share.umask.as_deref().filter(|u| is_valid_umask(u)).map(|u| u.to_string()).or_else(|| {
-        if enable_acl { Some("0022".to_string()) } else { None }
-    });
+    // Auto-detect comment fires when auto lands on a genuinely limited FS.
+    let auto_applied = !caps.acl_capable && share.enable_acl.is_none();
+    let auto_enabled = enable_acl && share.enable_acl.is_none();
     EffectiveShareFlags {
         enable_acl,
         manage_gids,
         auto_applied,
-        umask,
+        auto_enabled,
     }
 }
 
@@ -215,11 +242,87 @@ pub fn serve_path_posix_acl_supported(path: &Path) -> Option<bool> {
     if out.status.success() {
         return Some(true);
     }
-    let stderr = String::from_utf8_lossy(&out.stderr).to_ascii_lowercase();
-    if stderr.contains("not supported") {
+    if stderr_says_not_supported(&String::from_utf8_lossy(&out.stderr)) {
         Some(false)
     } else {
         None
+    }
+}
+
+/// Shared interpretation of acl-tool failures: the kernel's EOPNOTSUPP
+/// surfaces as "Operation not supported" from both getfacl and setfacl.
+pub(crate) fn stderr_says_not_supported(stderr: &str) -> bool {
+    stderr.to_ascii_lowercase().contains("not supported")
+}
+
+/// Definitive write round-trip: prove the serve path's filesystem can STORE
+/// POSIX ACLs. The read sniff above is a weak predictor — getfacl happily
+/// synthesizes base entries from mode bits on some paths — so only a named
+/// entry that survives a setfacl→getfacl round trip counts as proof.
+///
+/// Creates a transient dot-named probe file under `dir`, sets `u:0:rwx` on it
+/// via setfacl, reads it back via getfacl, and always removes the file.
+/// `Some(true)` = entry stored and read back; `Some(false)` = the filesystem
+/// refused ACL storage; `None` = inconclusive (probe file or tools
+/// unavailable) — callers keep the warning path rather than hard-failing.
+pub fn serve_path_posix_acl_write_probe(dir: &Path) -> Option<bool> {
+    let probe = dir.join(format!(".nfs-klldap-aclprobe-{}", std::process::id()));
+    if std::fs::File::create(&probe).is_err() {
+        return None;
+    }
+    let verdict = write_probe_round_trip(&probe);
+    let _ = std::fs::remove_file(&probe);
+    verdict
+}
+
+fn write_probe_round_trip(probe: &Path) -> Option<bool> {
+    let set = std::process::Command::new("setfacl")
+        .arg("-m")
+        .arg("u:0:rwx")
+        .arg("--")
+        .arg(probe)
+        .output()
+        .ok()?;
+    if !set.status.success() {
+        return if stderr_says_not_supported(&String::from_utf8_lossy(&set.stderr)) {
+            Some(false)
+        } else {
+            None
+        };
+    }
+    let get = std::process::Command::new("getfacl")
+        .args(["-c", "-n", "--absolute-names", "--"])
+        .arg(probe)
+        .output()
+        .ok()?;
+    if !get.status.success() {
+        return None;
+    }
+    let stored = String::from_utf8_lossy(&get.stdout)
+        .lines()
+        .any(|l| l.trim() == "user:0:rwx");
+    if stored {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// Layered capability decision for an `enable_acl = true` serve path:
+/// mountinfo denylist (fast definitive negative) → write round-trip
+/// (definitive both ways) → read sniff (definitive negative only) →
+/// Inconclusive. Generate hard-fails on Incapable and warns on Inconclusive.
+pub fn acl_probe_verdict(caps: &FsCapabilities, serve_path: &Path) -> AclProbeVerdict {
+    if !caps.acl_capable {
+        return AclProbeVerdict::Incapable;
+    }
+    match serve_path_posix_acl_write_probe(serve_path) {
+        Some(true) => AclProbeVerdict::Capable,
+        Some(false) => AclProbeVerdict::Incapable,
+        None => match serve_path_posix_acl_supported(serve_path) {
+            Some(false) => AclProbeVerdict::Incapable,
+            _ => AclProbeVerdict::Inconclusive,
+        },
     }
 }
 
@@ -242,13 +345,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_valid_umask_accepts_4_digit_octal_with_leading_zero_only() {
-        for ok in ["0022", "0027", "0777", " 0002 "] {
-            assert!(is_valid_umask(ok), "{ok}");
-        }
-        for bad in ["022", "999", "0088", "22", "", "00222", "umask"] {
-            assert!(!is_valid_umask(bad), "{bad}");
-        }
+    fn stderr_not_supported_detection_is_case_insensitive() {
+        assert!(stderr_says_not_supported(
+            "getfacl: /x: Operation not supported"
+        ));
+        assert!(stderr_says_not_supported("setfacl: /x: OPERATION NOT SUPPORTED"));
+        assert!(!stderr_says_not_supported("setfacl: /x: Permission denied"));
+        assert!(!stderr_says_not_supported(""));
+    }
+
+    #[test]
+    fn write_probe_round_trips_on_acl_capable_tempdir() {
+        // tmpfs and the usual dev filesystems store POSIX ACLs, so the round
+        // trip proves the happy path end to end with the shipped tools; the
+        // probe file must be gone afterwards either way.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let verdict = serve_path_posix_acl_write_probe(tmp.path());
+        assert_eq!(verdict, Some(true), "tempdir should store POSIX ACLs");
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .expect("read_dir")
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(leftovers.is_empty(), "probe file must be cleaned up");
+    }
+
+    #[test]
+    fn write_probe_missing_dir_is_inconclusive() {
+        let verdict =
+            serve_path_posix_acl_write_probe(Path::new("/nonexistent-nfs-klldap-probe-dir"));
+        assert_eq!(verdict, None);
+    }
+
+    #[test]
+    fn verdict_denylist_is_definitive_negative_without_touching_disk() {
+        let caps = FsCapabilities {
+            fstype: "vfat".into(),
+            mount_options: vec![],
+            acl_capable: false,
+        };
+        // Path deliberately nonexistent: the denylist must decide first.
+        let verdict = acl_probe_verdict(&caps, Path::new("/nonexistent-probe-target"));
+        assert_eq!(verdict, AclProbeVerdict::Incapable);
+    }
+
+    #[test]
+    fn verdict_capable_requires_write_round_trip() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let caps = FsCapabilities {
+            fstype: "ext4".into(),
+            mount_options: vec![],
+            acl_capable: true,
+        };
+        assert_eq!(acl_probe_verdict(&caps, tmp.path()), AclProbeVerdict::Capable);
+    }
+
+    #[test]
+    fn verdict_unwritable_path_is_inconclusive_not_incapable() {
+        let caps = FsCapabilities {
+            fstype: "ext4".into(),
+            mount_options: vec![],
+            acl_capable: true,
+        };
+        // Missing dir: probe file creation fails (None) and the read sniff
+        // also fails without a "not supported" signature -> Inconclusive.
+        let verdict = acl_probe_verdict(&caps, Path::new("/nonexistent-probe-target"));
+        assert_eq!(verdict, AclProbeVerdict::Inconclusive);
     }
 
     const FIXTURE: &str = r#"
@@ -319,7 +480,7 @@ mod tests {
             acl_capable: false,
         };
         assert_eq!(
-            compute_read_access_policy_emit(&share, &caps),
+            compute_read_access_policy_emit(&share, &compute_effective_flags(&share, &caps)),
             ReadAccessPolicyEmit::Pre
         );
     }
@@ -336,7 +497,7 @@ mod tests {
             acl_capable: true,
         };
         assert_eq!(
-            compute_read_access_policy_emit(&share, &caps),
+            compute_read_access_policy_emit(&share, &compute_effective_flags(&share, &caps)),
             ReadAccessPolicyEmit::Omit
         );
     }
@@ -353,7 +514,7 @@ mod tests {
             acl_capable: true,
         };
         assert_eq!(
-            compute_read_access_policy_emit(&share, &caps),
+            compute_read_access_policy_emit(&share, &compute_effective_flags(&share, &caps)),
             ReadAccessPolicyEmit::Post
         );
     }
@@ -371,7 +532,7 @@ mod tests {
             acl_capable: true,
         };
         assert_eq!(
-            compute_read_access_policy_emit(&share, &caps),
+            compute_read_access_policy_emit(&share, &compute_effective_flags(&share, &caps)),
             ReadAccessPolicyEmit::Pre
         );
     }
@@ -379,7 +540,8 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn enable_acl_is_opt_in_only() {
-        // Unset enable_acl => NOACL even on an ACL-capable FS (no fail-open).
+        // STATIC view: unset enable_acl => NOACL without a proven write probe
+        // (mountinfo capability alone is never promotion-worthy).
         let unset = Share::default();
         let caps = FsCapabilities {
             fstype: "ext4".into(),
@@ -395,6 +557,31 @@ mod tests {
         let mut on = Share::default();
         on.enable_acl = Some(true);
         assert!(compute_effective_flags(&on, &caps).enable_acl);
+    }
+
+    #[test]
+    fn auto_acl_turns_on_only_with_proven_probe() {
+        let caps = FsCapabilities {
+            fstype: "btrfs".into(),
+            mount_options: vec![],
+            acl_capable: true,
+        };
+        let unset = Share::default();
+        // Proven write probe => auto turns ACL on and marks the promotion.
+        let eff = compute_effective_flags_probed(&unset, &caps, AclProbeVerdict::Capable);
+        assert!(eff.enable_acl && eff.auto_enabled && !eff.auto_applied);
+        // Unproven stays NOACL: auto never promotes on guesswork.
+        let eff = compute_effective_flags_probed(&unset, &caps, AclProbeVerdict::Inconclusive);
+        assert!(!eff.enable_acl && !eff.auto_enabled);
+        let eff = compute_effective_flags_probed(&unset, &caps, AclProbeVerdict::Incapable);
+        assert!(!eff.enable_acl && !eff.auto_enabled);
+        // Explicit false beats a Capable probe; explicit true is never "auto".
+        let off = Share { enable_acl: Some(false), ..Share::default() };
+        let eff = compute_effective_flags_probed(&off, &caps, AclProbeVerdict::Capable);
+        assert!(!eff.enable_acl);
+        let on = Share { enable_acl: Some(true), ..Share::default() };
+        let eff = compute_effective_flags_probed(&on, &caps, AclProbeVerdict::Capable);
+        assert!(eff.enable_acl && !eff.auto_enabled);
     }
 
     #[test]

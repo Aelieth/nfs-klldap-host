@@ -28,7 +28,7 @@ impl PosixOnlyPolicy {
         let staging_recommended = !ganesha_96_has_mode_only_access_knob();
         let opts = mount_opts_suffix(caps);
         let fs_warning = format!(
-            "share \"{share_name}\": {fstype}{opts} limited filesystem — NOACL mode (enable_acl=false, manage_gids={mg}); ACL-dependent NFSv4 ops disabled for compatibility",
+            "share \"{share_name}\": {fstype}{opts} limited filesystem — NOACL mode (enable_acl=false, manage_gids={mg}); cannot store POSIX ACLs, and the 9.13 VFS backend is expected to fail attribute fetches on such filesystems — stage onto an ACL-capable serve tree",
             share_name = share_name,
             fstype = caps.fstype,
             opts = opts,

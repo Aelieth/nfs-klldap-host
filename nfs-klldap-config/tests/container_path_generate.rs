@@ -65,7 +65,6 @@ name = "movies"
 host_path = "/media/movies"
 container_path = "/export/staging/movies"
 enable_acl = true
-umask = "0027"
 manage_gids_expiration = 900
 "#;
     let frag = generate_with_mountinfo(MOUNTINFO_MIXED, toml);
@@ -100,4 +99,41 @@ container_path = "/export/staging/movies"
     assert!(frag.contains("Path = /export/staging/movies;"));
     assert!(frag.contains("Disable_ACL = true;"), "default (no enable_acl) is NOACL");
     assert!(frag.contains("Read_Access_Check_Policy = pre;"));
+}
+/// 2.4 stage 2: the retired umask key is a hard generate error naming the
+/// default-ACL (Inherit tab) replacement, so stale configs fail loudly with
+/// the migration path instead of carrying an inert key forever.
+#[test]
+fn umask_key_is_a_hard_deprecation_error() {
+    let toml = r#"
+ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "/export"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "movies"
+host_path = "/media/movies"
+container_path = "/export/movies"
+umask = "0027"
+"#;
+    let tmp = tempfile::tempdir().unwrap();
+    let cp = tmp.path().join("c.toml");
+    std::fs::write(&cp, toml).unwrap();
+    let out = tmp.path().join("out");
+    std::fs::create_dir_all(out.join("exports.d")).unwrap();
+    let cfg = NfsKlldapConfig::load(&cp).expect("load still accepts the key");
+    let ps = GenerationPaths {
+        sssd_conf: out.join("s"),
+        krb5_conf: out.join("k"),
+        ganesha_conf: out.join("g"),
+        exports_dir: out.join("e.d"),
+        idmap_conf: out.join("i"),
+        nfs_conf: out.join("n"),
+    };
+    let err = generate_all(&cfg, &ps).expect_err("umask must refuse to generate");
+    let msg = err.to_string();
+    assert!(msg.contains("umask"), "names the key: {msg}");
+    assert!(msg.contains("Inherit"), "names the replacement: {msg}");
 }

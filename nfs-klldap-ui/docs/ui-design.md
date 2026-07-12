@@ -39,6 +39,33 @@ readout while a recursive scope is selected) and, beside it, the **named ACL/xat
 through the `acl_group` Askama macro). POSIX Apply POSTs the existing `/apply` (chown/chmod, incl.
 setgid/sticky — only setuid is refused); ACL add/remove POST `/acl-apply` (names resolved via LDAP,
 same as POSIX; unresolvable principals answer **422** so the client reports the rejection).
+
+**Full POSIX ACL model, tabbed layout (0.9.90):** the section header is just **"ACL"** plus a
+pill — `on` (explicit), `auto` (unset `enable_acl`, promoted because the serve path passed the
+write probe), or `off` (one short reason line whose hover carries the detail; everything longer
+lives in tooltips per the compaction contract). Two **tabs** switch layers: **Current** (the
+access ACL) and, on directories, **Inherit** (the default ACL — server refuses default ops on
+files with 422). Each pane is a **columnar list** aligned with the POSIX matrix: an R/W/X header,
+then Users and Groups categories (collapsible headers, simple divider between them) and the
+**mask** as a distinguished last row; the whole list scrolls (~8–10 rows visible). A ✓ marks the
+entry as granted; a **dimmed ✓** marks bits the mask withholds (row hover names the effective
+triad). Once the access ACL is extended, the POSIX **Group row grows a `mask-star`** with hover
+prose — the 2.4 mask-envelope made visible. Editing matches the POSIX side
+(2026-07-12 round 4): row checkboxes under **Read/Write/Exec** headers **toggle directly in edit
+mode** (op=set on change; the mask row posts op=mask; node-only), clicking a row's name selects it
+for **[Remove]**, and **[Add User] / [Add Group]** enter an **add mode**: a POSIX-style
+LDAP-searching principal field, R/W/E boxes (labels above), and — on directories — the same
+Apply-scope radios as POSIX; everything else in the panel goes inert, the state chip reads
+`EDITING - ADDING ACL USER|GROUP`, and the panel's **Apply** (armed only once a principal is typed
+and ≥1 permission is checked) or **Cancel** finish the flow. The `/acl-apply` endpoint itself
+refuses NOACL/incapable paths with 422 (capability decision enforced server-side, probed against
+the SELECTED node's own mount — submounts included), and a settings save rejects `enable_acl =
+true` on a known-incapable serve path. The panel reloads from getfacl truth after every op — never
+optimistic state. All ops carry `layer`; `-b` is never emitted (entry-merge + targeted remove
+only). Recursive grants use capital `X` so files gain execute only where something already
+executes, and Inherit-tab recursion touches directories only. Tree
+rows on ACL-active shares carry a **`+` marker** (one batched getfacl per fragment; hover explains)
+wherever an entry's ACL goes beyond the base permissions.
 Behavior change with `list_dir`: an unreadable or missing container directory now renders the
 tree diagnostic alert (`list_dir` returns None) instead of a silently empty level.
 

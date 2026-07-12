@@ -57,6 +57,9 @@ pub(crate) struct EntryView {
     pub kind_label: &'static str,
     /// "YYYY-MM-DD HH:MM" UTC for files; empty for directories.
     pub mtime: String,
+    /// True when the entry carries ACLs beyond the base permissions — the
+    /// `+` in `ls -l` terms. Only populated on ACL-active shares.
+    pub acl_plus: bool,
 }
 
 impl EntryView {
@@ -72,6 +75,7 @@ impl EntryView {
             emoji,
             kind_label,
             mtime: e.mtime.map(format_mtime_utc).unwrap_or_default(),
+            acl_plus: false,
             name: e.name,
             is_dir,
         }
@@ -267,16 +271,44 @@ pub(crate) struct DirPermsTemplate {
     /// Serve (container) path shown in the diagnostic; empty when it could not be resolved.
     serve_path_display: String,
     acl_supported: bool,
+    /// Pill label: "on" (explicit), "auto" (probe-promoted), "off".
+    acl_pill: String,
     acl_reason: String,
+    /// Tooltip detail behind the short reason.
+    acl_reason_long: String,
     users: Vec<AclEntryView>,
     groups: Vec<AclEntryView>,
+    /// Access-layer mask row; None when the ACL carries no extended entries.
+    mask: Option<AclMaskView>,
+    /// Default (inheritance) layer — directories only; empty when no default ACL.
+    default_users: Vec<AclEntryView>,
+    default_groups: Vec<AclEntryView>,
+    default_mask: Option<AclMaskView>,
+    /// True when the access ACL is extended — the POSIX Group row then edits
+    /// the mask, and the template says so.
+    acl_extended: bool,
 }
 
 /// One named ACL row for the panel (friendly name already LDAP-resolved).
+/// `eff_*` are the mask-capped effective permissions; `capped` marks rows
+/// where the mask withholds something the entry grants (dimmed in the UI).
 #[derive(Clone)]
 pub(crate) struct AclEntryView {
     name: String,
     id: u32,
+    r: bool,
+    w: bool,
+    x: bool,
+    eff_r: bool,
+    eff_w: bool,
+    eff_x: bool,
+    capped: bool,
+}
+
+/// The mask row of one ACL layer (group-class cap; chmod's group bits edit
+/// the same object on the access layer).
+#[derive(Clone)]
+pub(crate) struct AclMaskView {
     r: bool,
     w: bool,
     x: bool,
@@ -328,13 +360,16 @@ async fn friendly_group_name(lldap: &Ldap, gid: u32) -> String {
         gid.to_string()
     }
 }
-/// (acl_supported, reason) for a host_path. ACLs are supported only when the owning share opted in
-/// (enable_acl = true) AND its serve-path filesystem can honor them; otherwise a reason explains the
-/// limited case (including enable_acl=true on a filesystem that cannot support it → treated Non-ACL).
-/// Prefers the most specific (longest host_path) matching share so nested shares stay independent.
-fn acl_capability_for_path(state: &AppState, host_path: &std::path::Path) -> (bool, String) {
+/// ACL capability of a host_path: (supported, pill, short reason, long reason).
+/// Auto semantics (0.9.90): explicit true/false wins; unset turns ACL on only
+/// when the serve path passes the write round-trip probe — the same decision
+/// generate makes, so the panel mirrors the export. Prefers the most specific
+/// (longest host_path) matching share so nested shares stay independent.
+fn acl_capability_for_path(
+    state: &AppState,
+    host_path: &std::path::Path,
+) -> (bool, String, String, String) {
     let cfg = state.config.read().expect("config lock poisoned");
-    let mountinfo = state.fs_probe_mountinfo_path.as_deref();
     let best = cfg
         .shares
         .iter()
@@ -342,34 +377,99 @@ fn acl_capability_for_path(state: &AppState, host_path: &std::path::Path) -> (bo
         .max_by_key(|s| s.host_path.as_os_str().len());
 
     let Some(s) = best else {
-        return (false, "Path is not under a configured share.".to_string());
+        return (
+            false,
+            "off".to_string(),
+            "Not under a configured share.".to_string(),
+            String::new(),
+        );
     };
-    let fs_limited = nfs_klldap_config::share_fs_acl_limited_with_mountinfo(&cfg, s, mountinfo);
+    let unknown_caps = || nfs_klldap_config::FsCapabilities {
+        fstype: "unknown".into(),
+        mount_options: vec![],
+        acl_capable: false,
+    };
+    // Probe the SELECTED node's real path, not just the share serve root: a
+    // share tree can cross mounts (vfat/ntfs submounts), and the panel + the
+    // /acl-apply gate must reflect the mount actually holding the node. The
+    // write probe needs a directory, so file targets probe their parent.
+    let node_real = {
+        let fs = state.fs.read().expect("fs lock poisoned");
+        fs.host_path_to_container_path(host_path).ok()
+    };
+    let serve = cfg.serve_path_for(s);
+    let probe_path = node_real.unwrap_or_else(|| std::path::PathBuf::from(&serve));
+    let probe_dir = if probe_path.is_dir() {
+        probe_path.clone()
+    } else {
+        probe_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from(&serve))
+    };
+    let caps = match state.fs_probe_mountinfo_path.as_deref() {
+        Some(p) => std::fs::read_to_string(p)
+            .map(|c| nfs_klldap_config::probe_from_mountinfo(&c, &probe_path))
+            .unwrap_or_else(|_| unknown_caps()),
+        None => nfs_klldap_config::probe_fs_capabilities(&probe_path)
+            .unwrap_or_else(|_| unknown_caps()),
+    };
+    // Explicit-off shares skip the write probe (nothing to prove).
+    let verdict = if s.enable_acl == Some(false) {
+        nfs_klldap_config::verdict_from_caps(&caps)
+    } else {
+        nfs_klldap_config::acl_probe_verdict(&caps, &probe_dir)
+    };
+    let mountinfo = state.fs_probe_mountinfo_path.as_deref();
     let warn = nfs_klldap_config::share_fs_warning_message_with_mountinfo(&cfg, s, mountinfo)
         .unwrap_or_default();
-    acl_capability_decision(s.enable_acl, fs_limited, &warn)
+    acl_capability_decision(s.enable_acl, verdict, &warn)
 }
-/// Pure ACL-support decision: supported only when opted-in AND fs-capable; the reason
-/// distinguishes explicit enable_acl=false, the NOACL default (unset), and enabled-but-limited-FS.
-fn acl_capability_decision(enable_acl: Option<bool>, fs_limited: bool, warn: &str) -> (bool, String) {
-    let with_warn = |mut msg: String| {
-        if fs_limited && !warn.is_empty() {
-            msg.push(' ');
-            msg.push_str(warn);
+/// Pure ACL-support decision → (supported, pill, short reason, long reason).
+/// The short reason is one panel line; detail lives in the long tooltip.
+fn acl_capability_decision(
+    enable_acl: Option<bool>,
+    verdict: nfs_klldap_config::AclProbeVerdict,
+    warn: &str,
+) -> (bool, String, String, String) {
+    use nfs_klldap_config::AclProbeVerdict as V;
+    let off_help = "Extended ACLs already on disk still enforce kernel-side on the 9.13 build; \
+                    turn ACLs on for this share to manage them here.";
+    let join = |base: String| {
+        let mut long = base;
+        if !warn.is_empty() {
+            long.push(' ');
+            long.push_str(warn);
         }
-        (false, msg)
+        long
     };
-    match (enable_acl, fs_limited) {
-        (Some(true), false) => (true, String::new()),
-        (Some(true), true) => (
+    match (enable_acl, verdict) {
+        (Some(true), V::Capable) => (true, "on".into(), String::new(), String::new()),
+        (None, V::Capable) => (true, "auto".into(), String::new(), String::new()),
+        (Some(false), _) => (
             false,
-            format!("enable_acl = true, but the serve-path filesystem is not ACL-capable — treated as Non-ACL. {}", warn),
+            "off".into(),
+            "ACL is off for this share.".into(),
+            join(format!("enable_acl = false in the share config. {off_help}")),
         ),
-        (Some(false), _) => with_warn(
-            "This share is exported without ACL support (enable_acl = false); ACL entries here are not honored by the NFS export.".to_string(),
+        (Some(true), _) => (
+            false,
+            "off".into(),
+            "ACL is on in config, but this filesystem can't store ACLs.".into(),
+            join(
+                "The serve path failed the POSIX ACL probe, so the export cannot serve ACLs. \
+                 Stage onto an ACL-capable tree (source_path) or set enable_acl = false."
+                    .to_string(),
+            ),
         ),
-        (None, _) => with_warn(
-            "This share uses the NOACL default (ACL not opted in); ACL entries here are not honored by the NFS export.".to_string(),
+        (None, _) => (
+            false,
+            "off".into(),
+            "ACL auto: off — filesystem support unproven.".into(),
+            join(format!(
+                "enable_acl is unset (auto): ACL turns on automatically once the serve path \
+                 passes the write probe. {off_help}"
+            )),
         ),
     }
 }
@@ -440,6 +540,15 @@ pub(crate) struct AclApplyForm {
     perms: String,
     #[serde(default)]
     selected: String,
+    /// ACL layer: "access" (default) or "default" — default entries are what
+    /// new children inherit and exist on directories only (server-refused on
+    /// files).
+    #[serde(default)]
+    layer: String,
+    /// Apply reach for directory targets: "none" | "single" | "all" — same
+    /// semantics as the POSIX apply scopes. File targets are braced to none.
+    #[serde(default)]
+    scope: String,
 }
 
 pub(crate) async fn index(
@@ -535,7 +644,16 @@ pub(crate) async fn tree_fragment(
     let path = std::path::Path::new(&params.path);
     let fs = state.fs.read().expect("fs lock poisoned");
     if let Some(entries) = fs.list_dir(path) {
-        let children: Vec<EntryView> = entries.into_iter().map(EntryView::from_fs_entry).collect();
+        let mut children: Vec<EntryView> = entries.into_iter().map(EntryView::from_fs_entry).collect();
+        // The "+" marker runs one batched getfacl per fragment and only on
+        // ACL-active shares — NOACL trees pay nothing.
+        if acl_capability_for_path(&state, path).0 {
+            let names: Vec<String> = children.iter().map(|c| c.name.clone()).collect();
+            let extended = fs.extended_acl_names(path, &names);
+            for c in &mut children {
+                c.acl_plus = extended.contains(&c.name);
+            }
+        }
         let is_root_request = params.root.is_some();
         if is_root_request {
             let normalized = nfs_klldap_config::normalize_path(&params.path);
@@ -656,28 +774,60 @@ pub(crate) async fn dir_perms(
         };
     }
 
-    let (acl_supported, acl_reason) = acl_capability_for_path(&state, host);
+    let (acl_supported, acl_pill, acl_reason, acl_reason_long) =
+        acl_capability_for_path(&state, host);
 
-    // Named ACL entries are always listed (resolved to friendly names); the section greys when unsupported.
-    let entries = {
+    // The full ACL table is always listed (resolved to friendly names); the
+    // section greys when unsupported. Effective perms come from the layer's
+    // mask so the rows show what actually applies, not just what's granted.
+    let table = {
         let fs = state.fs.read().expect("fs lock poisoned");
-        fs.get_dir_acl(host).unwrap_or_default()
+        fs.get_acl_table(host).unwrap_or_default()
     };
     let mut users: Vec<AclEntryView> = Vec::new();
     let mut groups: Vec<AclEntryView> = Vec::new();
+    let mut default_users: Vec<AclEntryView> = Vec::new();
+    let mut default_groups: Vec<AclEntryView> = Vec::new();
     {
         let l = state.lldap.lock().await;
-        for e in entries {
-            match e.kind {
-                crate::privileged::AclEntryKind::User(uid) => users.push(AclEntryView {
-                    name: friendly_user_name(&l, uid).await, id: uid, r: e.perms.r, w: e.perms.w, x: e.perms.x,
-                }),
-                crate::privileged::AclEntryKind::Group(gid) => groups.push(AclEntryView {
-                    name: friendly_group_name(&l, gid).await, id: gid, r: e.perms.r, w: e.perms.w, x: e.perms.x,
-                }),
+        for (default, line) in table
+            .access
+            .iter()
+            .map(|e| (false, e))
+            .chain(table.default.iter().map(|e| (true, e)))
+        {
+            let eff = table.effective_perms(line, default);
+            let capped = eff != line.perms;
+            match line.tag {
+                crate::privileged::AclTag::NamedUser(uid) => {
+                    let view = AclEntryView {
+                        name: friendly_user_name(&l, uid).await,
+                        id: uid,
+                        r: line.perms.r, w: line.perms.w, x: line.perms.x,
+                        eff_r: eff.r, eff_w: eff.w, eff_x: eff.x,
+                        capped,
+                    };
+                    if default { default_users.push(view) } else { users.push(view) }
+                }
+                crate::privileged::AclTag::NamedGroup(gid) => {
+                    let view = AclEntryView {
+                        name: friendly_group_name(&l, gid).await,
+                        id: gid,
+                        r: line.perms.r, w: line.perms.w, x: line.perms.x,
+                        eff_r: eff.r, eff_w: eff.w, eff_x: eff.x,
+                        capped,
+                    };
+                    if default { default_groups.push(view) } else { groups.push(view) }
+                }
+                // Base entries stay in the POSIX matrix above; the mask rows
+                // are pulled out below.
+                _ => {}
             }
         }
     }
+    let mask = table.mask_of(false).map(|m| AclMaskView { r: m.r, w: m.w, x: m.x });
+    let default_mask = table.mask_of(true).map(|m| AclMaskView { r: m.r, w: m.w, x: m.x });
+    let acl_extended = table.is_extended();
 
     let tpl = DirPermsTemplate {
         path,
@@ -698,9 +848,16 @@ pub(crate) async fn dir_perms(
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| diag.serve_path.clone()),
         acl_supported,
+        acl_pill,
         acl_reason,
+        acl_reason_long,
         users,
         groups,
+        mask,
+        default_users,
+        default_groups,
+        default_mask,
+        acl_extended,
     };
     Ok(Html(tpl.render().unwrap()))
 }
@@ -1196,6 +1353,47 @@ pub(crate) async fn acl_apply(
     let op = form.op.trim().to_lowercase();
     let typ = form.typ.trim().to_lowercase();
     let is_user = typ == "user" || typ == "u";
+    // The capability decision gates the endpoint itself, not just the UI:
+    // NOACL/incapable paths refuse ACL mutations outright (matches the
+    // default-on-file 422 pattern), so a stale panel or hand-built POST can
+    // never write ACLs the export model does not carry.
+    let (acl_ok, _pill, acl_short, _long) =
+        acl_capability_for_path(&state, std::path::Path::new(&form.path));
+    if !acl_ok {
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Html(format!(
+                r#"<div class="note-danger">ACL editing is not available here: {}</div>"#,
+                acl_short.replace('<', "&lt;").replace('>', "&gt;")
+            )),
+        )
+            .into_response());
+    }
+    let default_layer = form.layer.trim().eq_ignore_ascii_case("default");
+    let node_is_dir = {
+        let fs = state.fs.read().expect("fs lock poisoned");
+        fs.get_node_meta(std::path::Path::new(&form.path))
+            .map(|m| m.is_dir)
+    };
+    if default_layer && node_is_dir != Some(true) {
+        // POSIX has no default ACL for files: refuse rather than let setfacl
+        // fail with a raw tool error.
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Html(r#"<div class="note-danger">Default (inheritance) ACL entries apply to directories only.</div>"#.to_string()),
+        )
+            .into_response());
+    }
+    // Scope mirrors the POSIX apply semantics; file targets stay single-node.
+    let scope = if node_is_dir == Some(true) {
+        match form.scope.trim() {
+            "all" => crate::fs::ApplyScope::All,
+            "single" => crate::fs::ApplyScope::ImmediateFiles,
+            _ => crate::fs::ApplyScope::DirOnly,
+        }
+    } else {
+        crate::fs::ApplyScope::DirOnly
+    };
 
     let mut id: u32 = form.id.trim().parse().or_else(|_| {
         if let Some(first) = form.selected.split(',').next() {
@@ -1206,7 +1404,8 @@ pub(crate) async fn acl_apply(
         Ok(0u32)
     }).unwrap_or(0);
     // No numeric id but a typed principal name: resolve it via LDAP (same name translation as POSIX).
-    if id == 0 && op != "delete" && !form.name.trim().is_empty() {
+    // The mask op has no principal at all.
+    if id == 0 && op != "delete" && op != "mask" && !form.name.trim().is_empty() {
         if let Some(stripped) = crate::ldap::LdapClient::normalize_editor_search_query(Some(&form.name)) {
             let lldap = state.lldap.lock().await;
             if let Ok(n) = stripped.parse::<u32>() {
@@ -1218,7 +1417,7 @@ pub(crate) async fn acl_apply(
             }
         }
     }
-    if id == 0 && op != "delete" {
+    if id == 0 && op != "delete" && op != "mask" {
         // 422 so the client's fetch treats this as a rejection and surfaces it inline
         // (a 200 here used to read as success and silently reload the panel).
         return Ok((
@@ -1233,11 +1432,17 @@ pub(crate) async fn acl_apply(
         crate::privileged::AclEntryKind::Group(id)
     };
 
-    let (modification, cmd) = if op == "add" || op == "edit" || op == "set" {
+    let dflag = if default_layer { "-d " } else { "" };
+    let (modification, cmd) = if op == "mask" {
         let pstr = if form.perms.trim().is_empty() { "r--".to_string() } else { form.perms.trim().to_string() };
         let perms = crate::privileged::AclPerms::from_str(&pstr);
-        let c = format!("setfacl -m {}:{}:{} {}", if is_user {"u"} else {"g"}, id, perms.to_str(), form.path);
-        (crate::privileged::AclModification::Set { kind, perms }, c)
+        let c = format!("setfacl {}-m m::{} {}", dflag, perms.to_str(), form.path);
+        (crate::privileged::AclModification::SetMask { perms, default: default_layer }, c)
+    } else if op == "add" || op == "edit" || op == "set" {
+        let pstr = if form.perms.trim().is_empty() { "r--".to_string() } else { form.perms.trim().to_string() };
+        let perms = crate::privileged::AclPerms::from_str(&pstr);
+        let c = format!("setfacl {}-m {}:{}:{} {}", dflag, if is_user {"u"} else {"g"}, id, perms.to_str(), form.path);
+        (crate::privileged::AclModification::Set { kind, perms, default: default_layer }, c)
     } else if op == "delete" || op == "del" {
         let mut ks: Vec<crate::privileged::AclEntryKind> = vec![];
         if !form.selected.trim().is_empty() {
@@ -1258,21 +1463,26 @@ pub(crate) async fn acl_apply(
             ks.push(kind);
         }
         let c = if ks.is_empty() {
-            format!("setfacl -x (no-op) {}", form.path)
+            format!("setfacl {}-x (no-op) {}", dflag, form.path)
         } else {
             let specs: Vec<String> = ks.iter().map(|k| match k {
                 crate::privileged::AclEntryKind::User(u) => format!("u:{}", u),
                 crate::privileged::AclEntryKind::Group(g) => format!("g:{}", g),
             }).collect();
-            format!("setfacl -x {} {}", specs.join(","), form.path)
+            format!("setfacl {}-x {} {}", dflag, specs.join(","), form.path)
         };
-        (crate::privileged::AclModification::Remove { kinds: ks }, c)
+        (crate::privileged::AclModification::Remove { kinds: ks, default: default_layer }, c)
     } else {
         return Ok((
             StatusCode::UNPROCESSABLE_ENTITY,
             Html(r#"<div class="note-danger">Unknown ACL op</div>"#.to_string()),
         )
             .into_response());
+    };
+    let cmd = if scope == crate::fs::ApplyScope::DirOnly {
+        cmd
+    } else {
+        format!("{} [scope: {}]", cmd, form.scope.trim())
     };
     let progress = Arc::new(ApplyProgress::default());
     {
@@ -1293,29 +1503,89 @@ pub(crate) async fn acl_apply(
     let modf = modification;
     let op_for_log = op.clone();
     tokio::spawn(async move {
-        prog.processed.store(1, Ordering::Relaxed);
-        let res = fs.apply_acl_mod(std::path::Path::new(&pth), modf);
-        let (ok, msg) = match res {
-            Ok(m) => (true, m),
-            Err(e) => (false, e),
-        };
-        let rtext = if ok {
-            format!("ACL {} OK: {}", op_for_log, msg)
-        } else {
-            format!("ACL {} failed: {}", op_for_log, msg)
-        };
-        if !ok {
-            prog.error_count.fetch_add(1, Ordering::Relaxed);
-            if let Ok(mut errs) = prog.recent_errors.lock() {
-                errs.push((PathBuf::from(&pth), msg.clone()));
+        if scope == crate::fs::ApplyScope::DirOnly {
+            prog.processed.store(1, Ordering::Relaxed);
+            let res = fs.apply_acl_mod(std::path::Path::new(&pth), modf);
+            let (ok, msg) = match res {
+                Ok(m) => (true, m),
+                Err(e) => (false, e),
+            };
+            let rtext = if ok {
+                format!("ACL {} OK: {}", op_for_log, msg)
+            } else {
+                format!("ACL {} failed: {}", op_for_log, msg)
+            };
+            if !ok {
+                prog.error_count.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut errs) = prog.recent_errors.lock() {
+                    errs.push((PathBuf::from(&pth), msg.clone()));
+                }
             }
+            prog.changed.fetch_add(1, Ordering::Relaxed);
+            {
+                let mut ft = prog.final_result_text.lock().expect("progress mutex poisoned");
+                *ft = Some(rtext);
+            }
+            prog.finished.store(true, Ordering::Relaxed);
+            return;
         }
-        prog.changed.fetch_add(1, Ordering::Relaxed);
-        {
-            let mut ft = prog.final_result_text.lock().expect("progress mutex poisoned");
-            *ft = Some(rtext);
-        }
-        prog.finished.store(true, Ordering::Relaxed);
+
+        // Scoped apply: scan for the total first, then chunked setfacl —
+        // the same two-phase shape as the POSIX recursive apply.
+        *prog.phase.lock().expect("progress mutex poisoned") = "scanning".to_string();
+        let scan = {
+            let fs = fs.clone();
+            let pth = pth.clone();
+            let modf = modf.clone();
+            let prog = prog.clone();
+            tokio::task::spawn_blocking(move || {
+                fs.count_acl_applicable_with_live(std::path::Path::new(&pth), &modf, scope, &prog)
+            })
+            .await
+        };
+        let total = match scan {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => {
+                finish_acl_progress(&prog, format!("ACL {} failed during scan: {}", op_for_log, e));
+                return;
+            }
+            Err(e) => {
+                finish_acl_progress(&prog, format!("ACL {} scan task failed: {}", op_for_log, e));
+                return;
+            }
+        };
+        prog.total.store(total, Ordering::Relaxed);
+        prog.processed.store(0, Ordering::Relaxed);
+        *prog.phase.lock().expect("progress mutex poisoned") = "applying".to_string();
+        let applied = {
+            let fs = fs.clone();
+            let pth = pth.clone();
+            let modf = modf.clone();
+            let prog2 = prog.clone();
+            tokio::task::spawn_blocking(move || {
+                fs.apply_acl_with_progress(std::path::Path::new(&pth), &modf, scope, &prog2)
+            })
+            .await
+        };
+        let rtext = match applied {
+            Ok(Ok(res)) => {
+                let cancelled = prog.cancelled.load(Ordering::Relaxed);
+                let mut t = format!(
+                    "ACL {} {}: {} changed, {} skipped",
+                    op_for_log,
+                    if cancelled { "CANCELLED (partial)" } else if res.errors.is_empty() { "OK" } else { "finished with errors" },
+                    res.changed,
+                    res.skipped
+                );
+                if !res.errors.is_empty() {
+                    t.push_str(&format!(", {} errors (first: {})", res.errors.len(), res.errors[0].1));
+                }
+                t
+            }
+            Ok(Err(e)) => format!("ACL {} failed: {}", op_for_log, e),
+            Err(e) => format!("ACL {} apply task failed: {}", op_for_log, e),
+        };
+        finish_acl_progress(&prog, rtext);
     });
 
     let fb = format!(
@@ -1326,44 +1596,74 @@ pub(crate) async fn acl_apply(
     Ok(Html(format!("{}\n{}", fb, oob)).into_response())
 }
 
+/// Stamps the final Apply-Log text and flips the finished gate for an ACL
+/// apply task (both the error shortcuts and the success path use it).
+fn finish_acl_progress(prog: &ApplyProgress, text: String) {
+    {
+        let mut ft = prog
+            .final_result_text
+            .lock()
+            .expect("progress mutex poisoned");
+        *ft = Some(text);
+    }
+    prog.finished.store(true, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod acl_capability_tests {
     use super::acl_capability_decision;
+    use nfs_klldap_config::AclProbeVerdict as V;
 
     #[test]
-    fn supported_only_when_enabled_and_fs_capable() {
-        let (ok, reason) = acl_capability_decision(Some(true), false, "");
-        assert!(ok && reason.is_empty(), "enable_acl + capable FS must be supported with no reason");
+    fn explicit_on_with_proven_probe_is_supported() {
+        let (ok, pill, short, long) = acl_capability_decision(Some(true), V::Capable, "");
+        assert!(ok && short.is_empty() && long.is_empty());
+        assert_eq!(pill, "on");
     }
 
     #[test]
-    fn enabled_but_limited_fs_reverts_to_non_acl_with_reason() {
-        let (ok, reason) = acl_capability_decision(Some(true), true, "share \"x\": vfat limited filesystem");
-        assert!(!ok, "enable_acl on a limited FS must NOT be supported");
-        assert!(reason.contains("treated as Non-ACL"), "must explain the fallback: {reason}");
-        assert!(reason.contains("limited filesystem"), "must surface the fs warning: {reason}");
+    fn auto_with_proven_probe_is_supported_as_auto() {
+        let (ok, pill, short, _) = acl_capability_decision(None, V::Capable, "");
+        assert!(ok && short.is_empty(), "auto + proven probe must enable the editor");
+        assert_eq!(pill, "auto");
     }
 
     #[test]
-    fn disabled_reports_enable_acl_false() {
-        let (ok, reason) = acl_capability_decision(Some(false), false, "");
+    fn enabled_but_incapable_fs_reverts_to_non_acl_with_reason() {
+        let (ok, pill, short, long) =
+            acl_capability_decision(Some(true), V::Incapable, "share \"x\": vfat limited filesystem");
+        assert!(!ok, "enable_acl on an incapable FS must NOT be supported");
+        assert_eq!(pill, "off");
+        assert!(short.contains("can't store ACLs"), "short names the cause: {short}");
+        assert!(long.contains("limited filesystem"), "long carries the fs warning: {long}");
+        assert!(long.contains("source_path"), "long names the staging escape: {long}");
+    }
+
+    #[test]
+    fn disabled_reports_enable_acl_false_in_long() {
+        let (ok, pill, short, long) = acl_capability_decision(Some(false), V::Capable, "");
         assert!(!ok);
-        assert!(reason.contains("enable_acl = false"), "reason must name enable_acl=false: {reason}");
+        assert_eq!(pill, "off");
+        assert!(short.len() < 60, "short reason stays one compact line: {short}");
+        assert!(long.contains("enable_acl = false"), "long names the setting: {long}");
     }
 
     #[test]
-    fn unset_reports_noacl_default_not_false() {
-        let (ok, reason) = acl_capability_decision(None, false, "");
+    fn auto_unproven_reports_auto_off_not_false() {
+        let (ok, pill, short, long) = acl_capability_decision(None, V::Inconclusive, "");
         assert!(!ok);
-        assert!(reason.contains("NOACL default"), "auto must not claim enable_acl=false: {reason}");
-        assert!(!reason.contains("enable_acl = false"));
+        assert_eq!(pill, "off");
+        assert!(short.contains("auto"), "short names auto mode: {short}");
+        assert!(!short.contains("enable_acl = false"));
+        assert!(long.contains("write probe"), "long explains the promotion rule: {long}");
     }
 
     #[test]
-    fn disabled_and_limited_appends_fs_warning() {
-        let (ok, reason) = acl_capability_decision(Some(false), true, "share \"x\": ntfs limited filesystem");
+    fn disabled_and_limited_appends_fs_warning_to_long() {
+        let (ok, _pill, _short, long) =
+            acl_capability_decision(Some(false), V::Incapable, "share \"x\": ntfs limited filesystem");
         assert!(!ok);
-        assert!(reason.contains("limited filesystem"), "reason must cite the FS warning: {reason}");
+        assert!(long.contains("limited filesystem"), "long cites the FS warning: {long}");
     }
 }
 

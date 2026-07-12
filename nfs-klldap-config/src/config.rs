@@ -60,6 +60,7 @@ pub const SHARE_KNOWN_KEYS: &[&str] = &[
     "container_path",
     "source_path",
     "umask",
+    "attr_expiration_secs",
 ];
 
 /// Warning for unrecognized keys in a `[[shares]]` table (config still loads).
@@ -227,6 +228,11 @@ pub struct GaneshaSection {
     /// Malloc_trim_MinThreshold in MB (default 1024; upstream 15360 never
     /// fires under the 4 GB container memory limit).
     pub malloc_trim_min_threshold_mb: Option<u32>,
+    /// EXPORT_DEFAULTS Attr_Expiration_Time seconds (default 60 — Ganesha's
+    /// default made deliberate). Bounds how stale served attributes/ACLs can
+    /// be after out-of-band chown/chmod/setfacl (WebUI edits). 0 disables
+    /// attribute caching entirely: always fresh, one getattr per op.
+    pub attr_expiration_secs: Option<i32>,
 }
 
 fn default_security() -> String {
@@ -291,6 +297,9 @@ pub struct Share {
     /// real data lands elsewhere (see docs/ganesha-architecture.md staging pattern). Unset
     /// means source == serve (no staging).
     pub source_path: Option<String>,
+    /// Per-share Attr_Expiration_Time override (seconds; 0 = attribute
+    /// caching off for this export — always fresh at a getattr-per-op cost).
+    pub attr_expiration_secs: Option<i32>,
     /// Umask (octal e.g. "0022"), accepted but currently inert: Ganesha 9.13
     /// dropped per-export FSAL Umask (module-global only), so generate warns
     /// and emits nothing. The 0.9.9x ACL track replaces it (plan 2.4 gate).
@@ -327,6 +336,7 @@ impl Default for Share {
             container_path: String::new(),
             source_path: None,
             umask: None,
+            attr_expiration_secs: None,
         }
     }
 }

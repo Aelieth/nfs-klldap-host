@@ -91,7 +91,7 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
     assert!(!frag.contains("POSIX_ONLY_EXPORT"), "no legacy posix marker in 0.9.40-style:\n{frag}");
     assert!(!frag.contains("Enable_NLM"), "NOACL omits per-export Enable_NLM:\n{frag}");
     assert!(!frag.contains("Enable_RQUOTA"), "NOACL omits per-export Enable_RQUOTA:\n{frag}");
-    assert!(frag.contains("ACL-dependent NFSv4 ops disabled for compatibility"), "0.9.40-style comment:\n{frag}");
+    assert!(frag.contains("cannot store POSIX ACLs"), "limited-FS auto comment:\n{frag}");
     if let Ok(scratch) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {
         let dest = std::path::PathBuf::from(scratch).join("10-users-limited.conf");
         let _ = fs::write(&dest, &frag);
@@ -187,4 +187,140 @@ fn generate_all_limited_btrfs_twice_is_deterministic() {
         let sec = frag.find("SecType =").unwrap();
         assert!(disable < sec);
     }
+}
+/// WI-2 hard-fail policy: an opted-in ACL share on a filesystem that cannot
+/// store POSIX ACLs must refuse to generate (no fail-open), naming the
+/// staging pattern as the escape. On the 9.13 VFS backend such an export
+/// would break client attribute fetches, not merely ACL ops.
+#[test]
+fn generate_all_refuses_enable_acl_on_incapable_fs() {
+    const ACL_ON_VFAT_TOML: &str = r#"
+ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "/export"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "usb"
+host_path = "/media/usb"
+container_path = "/export/usb"
+enable_acl = true
+"#;
+    const MOUNTINFO_VFAT: &str = r#"
+36 35 0:59 / /export rw,relatime - vfat /dev/sdd1 rw,fmask=0022,dmask=0022
+"#;
+    let _lock = MOUNTINFO_ENV_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mi = tmp.path().join("mi");
+    fs::write(&mi, MOUNTINFO_VFAT).unwrap();
+    let cp = tmp.path().join("c.toml");
+    fs::write(&cp, ACL_ON_VFAT_TOML).unwrap();
+    let out = tmp.path().join("out");
+    fs::create_dir_all(out.join("exports.d")).unwrap();
+    let prev = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok();
+    std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mi);
+    let cfg = NfsKlldapConfig::load(&cp).expect("load");
+    let result = generate_all(&cfg, &generation_paths(&out));
+    if let Some(p) = prev {
+        std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", p);
+    } else {
+        std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");
+    }
+    let err = result.expect_err("enable_acl on vfat must refuse to generate");
+    let msg = err.to_string();
+    assert!(msg.contains("cannot store POSIX ACLs"), "error names the cause: {msg}");
+    assert!(msg.contains("source_path"), "error names the staging escape: {msg}");
+    assert!(msg.contains("enable_acl = false"), "error names the opt-out: {msg}");
+}
+
+/// Auto ACL (0.9.90): an unset enable_acl share whose serve path passes the
+/// write round-trip probe is promoted to the ACL path with an Auto-enabled
+/// comment; the mountinfo fixture marks the tree capable and the tempdir
+/// serve path provides the real proof.
+#[test]
+fn generate_all_auto_enables_acl_on_proven_serve_path() {
+    let _lock = MOUNTINFO_ENV_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let serve = tmp.path().join("export").join("auto");
+    fs::create_dir_all(&serve).unwrap();
+    let toml = format!(
+        r#"
+ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "{root}"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "auto"
+host_path = "/media/auto"
+container_path = "{serve}"
+"#,
+        root = tmp.path().join("export").display(),
+        serve = serve.display()
+    );
+    let mountinfo = format!("36 35 0:59 / {} rw,relatime - btrfs /dev/sda1 rw\n", tmp.path().display());
+    let mi = tmp.path().join("mi");
+    fs::write(&mi, mountinfo).unwrap();
+    let cp = tmp.path().join("c.toml");
+    fs::write(&cp, toml).unwrap();
+    let out = tmp.path().join("out");
+    fs::create_dir_all(out.join("exports.d")).unwrap();
+    let prev = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok();
+    std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mi);
+    let cfg = NfsKlldapConfig::load(&cp).expect("load");
+    let res = generate_all(&cfg, &generation_paths(&out));
+    if let Some(p) = prev {
+        std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", p);
+    } else {
+        std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");
+    }
+    res.expect("gen");
+    let frag = read_single_fragment(&out.join("exports.d"));
+    assert!(frag.contains("Disable_ACL = false;"), "auto must promote to ACL:\n{frag}");
+    assert!(frag.contains("Auto-enabled"), "fragment names the auto promotion:\n{frag}");
+    assert!(!frag.contains("Read_Access_Check_Policy = pre;"), "ACL path omits pre:\n{frag}");
+}
+
+/// WI-8 coherency knobs: EXPORT_DEFAULTS carries an explicit
+/// Attr_Expiration_Time (deliberate default 60), and a per-share
+/// attr_expiration_secs override lands inside that share's EXPORT block
+/// (0 = attribute caching off for coherency-critical shares).
+#[test]
+fn generate_all_emits_attr_expiration_default_and_share_override() {
+    let (_tmp, frag, ganesha) = generate_with_mountinfo(MOUNTINFO_BTRFS_NOACL, LIMITED_TOML);
+    assert!(
+        ganesha.contains("Attr_Expiration_Time = 60;"),
+        "EXPORT_DEFAULTS must declare the 60s attribute-cache window:\n{ganesha}"
+    );
+    assert!(
+        !frag.contains("Attr_Expiration_Time"),
+        "no per-share line without an override:\n{frag}"
+    );
+
+    const OVERRIDE_TOML: &str = r#"
+ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "/export"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[ganesha]
+attr_expiration_secs = 120
+[[shares]]
+name = "users"
+host_path = "/media/users"
+container_path = "/export/users"
+attr_expiration_secs = 0
+"#;
+    let (_tmp2, frag2, ganesha2) = generate_with_mountinfo(MOUNTINFO_BTRFS_NOACL, OVERRIDE_TOML);
+    assert!(
+        ganesha2.contains("Attr_Expiration_Time = 120;"),
+        "[ganesha] knob must drive EXPORT_DEFAULTS:\n{ganesha2}"
+    );
+    assert!(
+        frag2.contains("    Attr_Expiration_Time = 0;"),
+        "share override must land in the EXPORT block:\n{frag2}"
+    );
 }

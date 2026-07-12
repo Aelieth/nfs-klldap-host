@@ -40,35 +40,59 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
 
         let pref_read_line = pref_r.map(|v| format!("    PrefRead = {};\n", v)).unwrap_or_default();
         let pref_write_line = pref_w.map(|v| format!("    PrefWrite = {};\n", v)).unwrap_or_default();
+        // Per-share attribute-cache override; 0 = always fresh on this export.
+        let attr_expiry_line = share
+            .attr_expiration_secs
+            .map(|v| format!("    Attr_Expiration_Time = {};\n", v))
+            .unwrap_or_default();
 
         let caps = if let Some(ref c) = mountinfo_once { crate::probe_from_mountinfo(c, Path::new(&path)) } else { crate::probe_fs_capabilities(Path::new(&path)).unwrap_or_else(|_| FsCapabilities{fstype:"unknown".into(),mount_options:vec![],acl_capable:false}) };
-        let (disable_acl_line, manage_gids_line, umask_line, auto_comment) = export_fs_directives(share, &caps);
-        let read_access_line = export_read_access_line(share, &caps);
-        let eff = crate::compute_effective_flags(share, &caps);
-        if eff.enable_acl {
-            // Warn loudly when opted-in ACL hits a non-capable serve path.
-            let posix_acl = crate::serve_path_posix_acl_supported(Path::new(&path));
-            if !caps.acl_capable || posix_acl == Some(false) {
-                eprintln!(
-                    "WARN [nfs-klldap-config] share '{}': enable_acl = true but serve path '{}' \
-                     (fstype={}{}) does not look ACL-capable — the Ganesha VFS POSIX-ACL \
-                     backend will return NFS4ERR_NOTSUPP for NFSv4 ACL ops there. Stage onto \
-                     an ACL-capable tree via source_path. Verify with verify-ganesha.sh \
-                     (docs/ganesha-architecture.md).",
-                    share.name,
-                    path,
-                    caps.fstype,
-                    if posix_acl == Some(false) { ", no POSIX ACL" } else { "" }
-                );
+        // Explicit-off shares skip the write probe (nothing to prove).
+        let verdict = if share.enable_acl == Some(false) {
+            crate::verdict_from_caps(&caps)
+        } else {
+            crate::acl_probe_verdict(&caps, Path::new(&path))
+        };
+        let eff = crate::compute_effective_flags_probed(share, &caps, verdict);
+        let (disable_acl_line, manage_gids_line, umask_line, auto_comment) = export_fs_directives(share, &caps, &eff);
+        let read_access_line = export_read_access_line(share, &eff);
+        if share.enable_acl == Some(true) {
+            // Negative probe refuses; inconclusive warns; auto skips this.
+            match verdict {
+                crate::AclProbeVerdict::Capable => {}
+                crate::AclProbeVerdict::Incapable => {
+                    return Err(crate::ConfigError::Generation(format!(
+                        "share '{}': enable_acl = true but serve path '{}' (fstype={}) \
+                         cannot store POSIX ACLs. Refusing to emit a broken ACL export. \
+                         Escape: use the staging pattern — set source_path to the data \
+                         tree and container_path to an ACL-capable serve tree, with the \
+                         post-generate sync hook (examples/post-generate-staging-sync.sh, \
+                         docs/ganesha-architecture.md#acl-and-filesystem-compatibility) — \
+                         or set enable_acl = false.",
+                        share.name, path, caps.fstype
+                    )));
+                }
+                crate::AclProbeVerdict::Inconclusive => {
+                    eprintln!(
+                        "WARN [nfs-klldap-config] share '{}': enable_acl = true but the \
+                         ACL write probe on serve path '{}' (fstype={}) was inconclusive — \
+                         if the filesystem cannot store POSIX ACLs, client attribute \
+                         fetches will fail there. Verify with verify-ganesha.sh \
+                         (docs/ganesha-architecture.md).",
+                        share.name, path, caps.fstype
+                    );
+                }
             }
         }
         if share.umask.is_some() {
-            eprintln!(
-                "WARN [nfs-klldap-config] share '{}': umask is not emitted — Ganesha 9.13 \
-                 dropped per-export FSAL Umask (module-global only). The key is inert until \
-                 the ACL track (plan 2.4 POSIX gate) replaces it.",
+            return Err(crate::ConfigError::Generation(format!(
+                "share '{}': the umask key is retired — Ganesha 9.13 dropped per-export \
+                 FSAL Umask, and creation-mode enveloping now lives in default (inheritance) \
+                 ACL entries plus setgid (the permission panel's Inherit tab; \
+                 docs/ganesha-architecture.md#nfs-create-inheritance-umask-and-acl-default-entries). \
+                 Remove `umask` from this share to generate.",
                 share.name
-            );
+            )));
         }
         // Deprecated share manage_gids_expiration seeds main-conf Idmapped_*.
         let pseudo_line = export_pseudo_line(&pseudo);
@@ -87,11 +111,11 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
     Path = {};
 {pseudo_line}{disable_acl_line}    SecType = {};
     Squash = {};
-{manage_gids_line}{read_access_line}{pref_read_line}{pref_write_line}{client_block}    FSAL {{
+{manage_gids_line}{read_access_line}{pref_read_line}{pref_write_line}{attr_expiry_line}{client_block}    FSAL {{
         Name = VFS;
 {umask_line}    }}
 }}
-"#, share.name, export_id, path, sec, squash, auto_comment=auto_comment, pseudo_line=pseudo_line, disable_acl_line=disable_acl_line, manage_gids_line=manage_gids_line, read_access_line=read_access_line, pref_read_line=pref_read_line, pref_write_line=pref_write_line, client_block=client_block, umask_line=umask_line);
+"#, share.name, export_id, path, sec, squash, auto_comment=auto_comment, pseudo_line=pseudo_line, disable_acl_line=disable_acl_line, manage_gids_line=manage_gids_line, read_access_line=read_access_line, pref_read_line=pref_read_line, pref_write_line=pref_write_line, attr_expiry_line=attr_expiry_line, client_block=client_block, umask_line=umask_line);
 
         let filename = fragment_basename(i, &share.name);
         fs::write(exports_dir.join(filename), block.as_bytes())?;

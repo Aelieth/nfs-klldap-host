@@ -45,7 +45,7 @@ fn cli_generate_limited_btrfs_twice_is_identical() {
     assert_eq!(f1, f2);
     assert!(f1.contains("Disable_ACL = true;") && f1.contains("Manage_Gids = true;") && f1.contains("Path = /export/users;") && f1.contains("Pseudo = /users;") && f1.contains("Read_Access_Check_Policy = pre;"));
     assert!(!f1.contains("post;") && !f1.contains("POSIX_ONLY") && !f1.contains("Enable_NLM"));
-    assert!(f1.contains("ACL-dependent NFSv4 ops disabled for compatibility"));
+    assert!(f1.contains("cannot store POSIX ACLs"));
     assert!(!ganesha_96_has_mode_only_access_knob());
 }
 

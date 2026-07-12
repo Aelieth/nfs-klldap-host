@@ -620,45 +620,64 @@
                               border-radius:5px; padding:1px 9px; }
         .symbolic           { font-size:.9em; color:var(--text-muted); white-space:nowrap; }
 
-        .acl-note           { font-size:.68em; color:var(--text-light); margin-bottom:6px; }
-        .acl-reason         { font-size:.74em; color:var(--text-muted); background:var(--bg-alt);
-                              border:1px solid var(--border-light); border-left:3px solid var(--text-light);
-                              border-radius:4px; padding:6px 9px; margin-bottom:8px; }
-        .acl-sec.disabled .acl-body { opacity:.5; pointer-events:none; filter:grayscale(.3); }
-        .acl-grp            { margin-bottom:8px; }
-        /* Collapse toggle is a real <button>: neutralize the global button chrome. */
-        .acl-grp-head       { display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none;
-                              font-size:.72em; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
-                              color:var(--text-muted); padding:2px 0; width:100%;
-                              background:none; border:none; border-radius:2px; }
-        .acl-grp-head:hover { background:var(--dir-hover); border:none; }
-        .acl-grp-head:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
-        .acl-count          { font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-light); }
-        .acl-caret          { display:inline-block; width:10px; transition:transform .12s; }
-        .acl-grp.collapsed .acl-caret { transform:rotate(-90deg); }
-        .acl-grp.collapsed .acl-grp-rows { display:none; }
-        .acl-row            { display:flex; align-items:center; gap:8px; padding:3px 4px; border-radius:4px; }
-        .acl-row .who       { flex:1; min-width:0; font-size:.82em; overflow:hidden;
+        .acl-reason         { font-size:.72em; color:var(--text-muted); margin-bottom:5px;
+                              cursor:help; text-decoration:underline dotted; text-underline-offset:2px; }
+        .acl-sec.disabled .acl-pane { opacity:.5; pointer-events:none; filter:grayscale(.3); }
+        /* Layer tabs: Current (access ACL) vs Inherit (default ACL). */
+        .acl-tabs           { display:flex; gap:2px; margin-bottom:5px; border-bottom:1px solid var(--border-light); }
+        .acl-tab            { font-size:.72em; font-weight:600; padding:2px 10px; cursor:pointer;
+                              background:none; border:none; border-bottom:2px solid transparent;
+                              color:var(--text-light); border-radius:3px 3px 0 0; }
+        .acl-tab:hover      { background:var(--dir-hover); }
+        .acl-tab.active     { color:var(--text); border-bottom-color:var(--accent); }
+        /* Action buttons live above the list; edit-mode only. */
+        .acl-actions        { display:none; gap:5px; margin-bottom:4px; }
+        .perm-panel.editing .acl-sec:not(.disabled) .acl-actions { display:flex; }
+        .acl-act            { font-size:.72em; padding:2px 9px; }
+        .acl-act[data-act="remove"] { border-color:var(--danger-border); color:var(--danger-text); }
+        /* Columnar grid: name + Read/Write/Exec cells, header aligned with rows. */
+        .acl-cols, .acl-row { display:grid; grid-template-columns:minmax(0,1fr) 38px 38px 38px;
+                              align-items:center; column-gap:4px; }
+        .acl-cols           { font-size:.68em; font-weight:700; color:var(--text-muted);
+                              padding:0 4px 2px; }
+        .acl-cols span:not(.acl-name) { text-align:center; cursor:help; }
+        /* ~8-10 rows visible; the whole list scrolls beyond that. */
+        .acl-list           { max-height:236px; overflow-y:auto; }
+        .acl-row            { padding:2px 4px; border-radius:4px; }
+        .perm-panel.editing .acl-sec:not(.disabled) .acl-row { cursor:pointer; }
+        .perm-panel.editing .acl-sec:not(.disabled) .acl-row:hover { background:var(--dir-hover); }
+        .acl-row.selected   { background:var(--dir-hover); outline:1px solid var(--accent); }
+        .acl-row .acl-name  { min-width:0; font-size:.8em; overflow:hidden;
                               text-overflow:ellipsis; white-space:nowrap; }
-        .acl-row .kind      { font-size:.78em; font-weight:700; margin-right:5px; }
-        .acl-row .kind.user { color:var(--accent); }
-        .acl-row .kind.group{ color:var(--text-light); }
         .acl-row .id        { color:var(--text-light); font-size:.85em; }
-        .acl-row .rwx       { display:flex; gap:9px; }
-        .acl-row .rwx label { display:flex; align-items:center; gap:2px; font-size:.9em; }
-        .acl-del            { display:none; font-size:.72em; line-height:1; padding:2px 6px;
-                              border:1px solid var(--danger-border);
-                              background:transparent; color:var(--danger-text); border-radius:3px; cursor:pointer; }
-        .acl-add            { display:none; gap:6px; align-items:center; margin-top:3px; padding-top:4px;
-                              border-top:1px dashed var(--border-light); position:relative; }
-        /* Non-ACL directories keep their ACL controls hidden even in edit mode. */
-        .perm-panel.editing .acl-sec:not(.disabled) .acl-del { display:inline-block; }
-        .perm-panel.editing .acl-sec:not(.disabled) .acl-add { display:flex; }
-        .acl-add-name       { flex:1; min-width:0; padding:2px 6px; font-size:.82em;
-                              background:var(--input-bg); color:var(--text);
-                              border:1px solid var(--input-border); border-radius:4px; }
-        .acl-add-perms      { width:42px; padding:2px 5px; font-size:.82em;
-                              font-family:var(--font-mono);
+        .acl-cell           { text-align:center; font-size:.8em; line-height:1.3; }
+        /* A granted-but-mask-capped bit dims; the row hover names the effective triad. */
+        .acl-cell.capped    { opacity:.35; }
+        /* Add mode: only the add form + panel Apply/Cancel stay live. */
+        .perm-panel.acl-adding .posix-sec,
+        .perm-panel.acl-adding .acl-list,
+        .perm-panel.acl-adding .acl-actions,
+        .perm-panel.acl-adding .acl-tabs { opacity:.45; pointer-events:none; }
+        .acl-addform        { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;
+                              margin-top:5px; padding-top:6px; border-top:1px dashed var(--border-light); }
+        .acl-addform .acl-ename-wrap { flex:1; min-width:130px; }
+        .acl-add-bits       { display:flex; flex-direction:column; align-items:center; gap:1px; }
+        .acl-add-hd         { display:grid; grid-template-columns:repeat(3,38px); text-align:center;
+                              font-size:.68em; font-weight:700; color:var(--text-muted); }
+        .acl-add-boxes      { display:grid; grid-template-columns:repeat(3,38px); justify-items:center; }
+        .acl-rec-scope      { flex-basis:100%; }
+        .acl-mask-row .acl-name { color:var(--warn-text, #b58900); font-weight:600; }
+        .acl-cat            { display:flex; align-items:center; gap:5px; cursor:pointer; user-select:none;
+                              font-size:.68em; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
+                              color:var(--text-muted); padding:2px 4px; border-radius:2px; }
+        .acl-cat:hover      { background:var(--dir-hover); }
+        .acl-caret          { display:inline-block; width:10px; transition:transform .12s; }
+        .acl-cat.collapsed .acl-caret { transform:rotate(-90deg); }
+        .acl-sep            { border-top:1px solid var(--border-light); margin:3px 0; }
+        .mask-star          { color:var(--warn-text, #b58900); margin-left:1px; }
+        .acl-plus           { color:var(--accent); font-weight:700; margin-left:2px; cursor:help; }
+        .acl-ename-wrap     { position:relative; }
+        .acl-ename          { width:100%; padding:2px 6px; font-size:.8em;
                               background:var(--input-bg); color:var(--text);
                               border:1px solid var(--input-border); border-radius:4px; }
         .acl-sugg           { min-width:160px; }

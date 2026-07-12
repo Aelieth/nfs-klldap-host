@@ -497,6 +497,8 @@ fn write_ganesha_main(
         .root_kerberos_principals
         .as_deref()
         .unwrap_or(constants::GANESHA_ROOT_KRB_PRINCIPALS);
+    // Deliberate 60 default: the out-of-band-change staleness bound.
+    let attr_expiry = cfg.ganesha.attr_expiration_secs.unwrap_or(60);
 
     let mut content = format!(
         r#"NFS_CORE_PARAM {{
@@ -557,10 +559,13 @@ NFSV4 {{
 EXPORT_DEFAULTS {{
     SecType = {sec};
     Protocols = {proto};
+    # Attribute/ACL cache window; 0 = always fresh (getattr per op).
+    Attr_Expiration_Time = {attr_expiry};
 }}
 "#,
         realm = realm,
         sec = sec,
+        attr_expiry = attr_expiry,
         proto = constants::GANESHA_PROTOCOLS,
         pwnam = constants::GANESHA_PWNAM_IMPL,
         root_krb = root_krb,

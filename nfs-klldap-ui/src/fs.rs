@@ -242,18 +242,15 @@ impl FsManager {
         self.get_node_meta(path).map(|m| (m.uid, m.gid, m.mode))
     }
 
-    /// Returns *named* (non-base) ACL user/group entries for an allowed directory using the
-    /// shipped get_acl. Empty list valid (no named). None if outside allowed roots.
-    pub fn get_dir_acl(&self, path: &Path) -> Option<Vec<crate::privileged::AclEntry>> {
+    /// Full POSIX ACL table (base + named + mask, access + default layers)
+    /// for an allowed path. None if outside allowed roots or unreadable.
+    pub fn get_acl_table(&self, path: &Path) -> Option<crate::privileged::AclTable> {
         let normalized = self.normalize_for_matching(path);
         if !self.is_allowed(&normalized) {
             return None;
         }
-        let real = match self.host_path_to_container_path(&normalized) {
-            Ok(p) => p,
-            Err(_) => return None,
-        };
-        Some(crate::privileged::get_acl(&real).unwrap_or_default())
+        let real = self.host_path_to_container_path(&normalized).ok()?;
+        crate::privileged::get_acl_table(&real).ok()
     }
 
     /// Applies a single ACL modification (Set one entry or Remove one-or-more) to a real FS path
@@ -270,7 +267,187 @@ impl FsManager {
             .map_err(|e| format!("ACL apply failed: {}", e))
     }
 
-    /// No-op hook for post-apply cache invalidation.
+    /// Whether an ACL walk entry takes the modification: symlinks never;
+    /// default-layer entries exist on directories only; otherwise the POSIX
+    /// scope rules apply unchanged.
+    fn acl_entry_applies(entry: &DirEntry, opts: &ApplyOptions, default_layer: bool) -> bool {
+        if default_layer && !entry.file_type().is_dir() {
+            return false;
+        }
+        Self::should_apply_entry(entry, opts)
+    }
+
+    /// Scan phase for a scoped ACL apply: counts applicable entries with live
+    /// progress + cancel, mirroring count_applicable_with_live.
+    pub fn count_acl_applicable_with_live(
+        &self,
+        path: &Path,
+        modification: &crate::privileged::AclModification,
+        scope: ApplyScope,
+        progress: &ApplyProgress,
+    ) -> Result<usize, String> {
+        let normalized = self.normalize_for_matching(path);
+        if !self.is_allowed(&normalized) {
+            return Err("Path is outside allowed managed roots".into());
+        }
+        let real = self.host_path_to_container_path(&normalized)?;
+        let default_layer = matches!(
+            modification,
+            crate::privileged::AclModification::Set { default: true, .. }
+                | crate::privileged::AclModification::Remove { default: true, .. }
+                | crate::privileged::AclModification::SetMask { default: true, .. }
+        );
+        let opts = ApplyOptions { scope, ..Default::default() };
+        let mut count = 0usize;
+        for entry_res in WalkDir::new(&real)
+            .follow_links(false)
+            .max_depth(scope.max_depth())
+            .into_iter()
+        {
+            if progress.cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            let entry: DirEntry = match entry_res {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if Self::acl_entry_applies(&entry, &opts, default_layer) {
+                count += 1;
+                progress.processed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Ok(count)
+    }
+
+    /// Scoped ACL apply riding the same walk/progress/cancel machinery as the
+    /// POSIX apply. Entry-merge and targeted-remove only (never -b); recursive
+    /// grants use capital X so files never gain execute from a directory-wide
+    /// grant; default-layer modifications touch directories only. Paths batch
+    /// into chunked setfacl invocations to keep subprocess cost off the
+    /// per-entry path.
+    pub fn apply_acl_with_progress(
+        &self,
+        path: &Path,
+        modification: &crate::privileged::AclModification,
+        scope: ApplyScope,
+        progress: &ApplyProgress,
+    ) -> Result<ApplyResult, String> {
+        const CHUNK: usize = 64;
+        let normalized = self.normalize_for_matching(path);
+        if !self.is_allowed(&normalized) {
+            return Err("Path is outside allowed managed roots".into());
+        }
+        let real = self.host_path_to_container_path(&normalized)?;
+        let default_layer = matches!(
+            modification,
+            crate::privileged::AclModification::Set { default: true, .. }
+                | crate::privileged::AclModification::Remove { default: true, .. }
+                | crate::privileged::AclModification::SetMask { default: true, .. }
+        );
+        // Exact perms on the selected node; capital-X only when reaching out.
+        let upper_x = scope != ApplyScope::DirOnly;
+        let opts = ApplyOptions { scope, continue_on_error: true, ..Default::default() };
+
+        let mut result = ApplyResult::default();
+        let mut chunk: Vec<PathBuf> = Vec::with_capacity(CHUNK);
+        let flush = |chunk: &mut Vec<PathBuf>, result: &mut ApplyResult| {
+            if chunk.is_empty() {
+                return;
+            }
+            match crate::privileged::apply_acl_many(chunk, modification, upper_x) {
+                Ok(()) => {
+                    result.changed += chunk.len();
+                    progress.changed.fetch_add(chunk.len(), Ordering::Relaxed);
+                }
+                Err(e) => {
+                    let first = chunk.first().cloned().unwrap_or_default();
+                    let msg = format!("setfacl on {} paths: {}", chunk.len(), e);
+                    result.errors.push((first.clone(), msg.clone()));
+                    progress.error_count.fetch_add(1, Ordering::Relaxed);
+                    if let Ok(mut errs) = progress.recent_errors.lock() {
+                        errs.push((first, msg));
+                        if errs.len() > 10 {
+                            errs.remove(0);
+                        }
+                    }
+                }
+            }
+            progress.processed.fetch_add(chunk.len(), Ordering::Relaxed);
+            chunk.clear();
+        };
+
+        for entry_res in WalkDir::new(&real)
+            .follow_links(false)
+            .max_depth(scope.max_depth())
+            .into_iter()
+        {
+            if progress.cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            let entry: DirEntry = match entry_res {
+                Ok(e) => e,
+                Err(e) => {
+                    let p = e
+                        .path()
+                        .map(|pp| pp.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("<unknown>"));
+                    result.errors.push((p, e.to_string()));
+                    progress.error_count.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            };
+            if entry.file_type().is_symlink() {
+                result.skipped += 1;
+                progress.skipped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            if !Self::acl_entry_applies(&entry, &opts, default_layer) {
+                result.skipped += 1;
+                progress.skipped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            *progress.last_path.lock().expect("last_path mutex poisoned") =
+                Some(entry.path().display().to_string());
+            chunk.push(entry.path().to_path_buf());
+            if chunk.len() >= CHUNK {
+                flush(&mut chunk, &mut result);
+            }
+        }
+        flush(&mut chunk, &mut result);
+        Ok(result)
+    }
+
+    /// Names of entries under an allowed directory whose access ACL is
+    /// extended (named entries, mask, or a default ACL) — the `+` in `ls -l`
+    /// terms. ONE batched getfacl per chunk of children keeps the cost off
+    /// the per-entry path; call it only for ACL-active shares.
+    pub fn extended_acl_names(&self, dir: &Path, names: &[String]) -> std::collections::HashSet<String> {
+        const CHUNK: usize = 128;
+        let mut extended = std::collections::HashSet::new();
+        let normalized = self.normalize_for_matching(dir);
+        if !self.is_allowed(&normalized) {
+            return extended;
+        }
+        let Ok(real_dir) = self.host_path_to_container_path(&normalized) else {
+            return extended;
+        };
+        for chunk in names.chunks(CHUNK) {
+            let paths: Vec<PathBuf> = chunk.iter().map(|n| real_dir.join(n)).collect();
+            for abs in crate::privileged::extended_acl_paths(&paths) {
+                if let Some(name) = abs.file_name().map(|n| n.to_string_lossy().into_owned()) {
+                    extended.insert(name);
+                }
+            }
+        }
+        extended
+    }
+
+    /// Deliberate no-op: Ganesha 9.13 exposes no DBus attribute/ACL purge
+    /// (2.3 audit A5), so out-of-band chown/chmod/setfacl visibility rides
+    /// the per-export Attr_Expiration_Time window (default 60 s) plus the
+    /// client's attribute cache — the documented change-visibility contract
+    /// in docs/ganesha-architecture.md. Shares needing instant coherency set
+    /// attr_expiration_secs = 0.
     pub fn invalidate_path(&self, _path: &Path) {}
 
     /// Count variant that increments progress.processed as scanned so far.
@@ -841,8 +1018,8 @@ mod tests {
         let cfg = make_test_acl_config_for(&root, logical.to_str().unwrap());
         let fs = FsManager::new(cfg);
 
-        let entries = fs.get_dir_acl(logical).expect("allowed");
-        assert!(entries.is_empty(), "fresh dir has only base ACLs, named list must be empty");
+        let table = fs.get_acl_table(logical).expect("allowed");
+        assert!(!table.is_extended(), "fresh dir has only base ACLs, no named/mask/default entries");
     }
 
     #[test]
@@ -858,10 +1035,12 @@ mod tests {
         let mod_u = crate::privileged::AclModification::Set {
             kind: crate::privileged::AclEntryKind::User(12345),
             perms: crate::privileged::AclPerms::from_str("r-x"),
+            default: false,
         };
         let mod_g = crate::privileged::AclModification::Set {
             kind: crate::privileged::AclEntryKind::Group(6789),
             perms: crate::privileged::AclPerms::from_str("rw-"),
+            default: false,
         };
         let real = fs.host_path_to_container_path(logical).unwrap();
         // before
@@ -873,17 +1052,23 @@ mod tests {
         fs.apply_acl_mod(logical, mod_u).expect("set user acl");
         fs.apply_acl_mod(logical, mod_g).expect("set group acl");
 
-        let entries = fs.get_dir_acl(logical).expect("list after set");
-        assert_eq!(entries.len(), 2, "after two named Sets we must see exactly the named entries");
-        let has_u = entries.iter().any(|e| matches!(e.kind, crate::privileged::AclEntryKind::User(12345)) && e.perms.r && e.perms.x && !e.perms.w);
-        let has_g = entries.iter().any(|e| matches!(e.kind, crate::privileged::AclEntryKind::Group(6789)) && e.perms.r && e.perms.w && !e.perms.x);
-        assert!(has_u, "user 12345 r-x must be present via shipped get_dir_acl after apply");
-        assert!(has_g, "group 6789 rw- must be present via shipped get_dir_acl after apply");
+        let table = fs.get_acl_table(logical).expect("table after set");
+        let named: Vec<_> = table.access.iter().filter(|l| matches!(l.tag,
+            crate::privileged::AclTag::NamedUser(_) | crate::privileged::AclTag::NamedGroup(_))).collect();
+        assert_eq!(named.len(), 2, "after two named Sets we must see exactly the named entries");
+        let has_u = table.access.iter().any(|l| l.tag == crate::privileged::AclTag::NamedUser(12345) && l.perms.r && l.perms.x && !l.perms.w);
+        let has_g = table.access.iter().any(|l| l.tag == crate::privileged::AclTag::NamedGroup(6789) && l.perms.r && l.perms.w && !l.perms.x);
+        assert!(has_u, "user 12345 r-x must be present via shipped get_acl_table after apply");
+        assert!(has_g, "group 6789 rw- must be present via shipped get_acl_table after apply");
+        // Base entries + auto-recalculated mask ride along in the full table.
+        assert!(table.access.iter().any(|l| l.tag == crate::privileged::AclTag::Owner));
+        assert!(table.mask_of(false).is_some(), "named entries force a mask");
+        assert!(table.is_extended(), "named entries make the ACL extended");
 
-        // Verify via public shipped get_acl (exercises the getfacl path post apply).
-        let direct = crate::privileged::get_acl(&real).expect("direct get_acl");
-        assert!(direct.iter().any(|e| matches!(e.kind, crate::privileged::AclEntryKind::User(12345))));
-        assert!(direct.iter().any(|e| matches!(e.kind, crate::privileged::AclEntryKind::Group(6789))));
+        // Verify via the shipped privileged table reader (getfacl path post apply).
+        let direct = crate::privileged::get_acl_table(&real).expect("direct get_acl_table");
+        assert!(direct.access.iter().any(|l| l.tag == crate::privileged::AclTag::NamedUser(12345)));
+        assert!(direct.access.iter().any(|l| l.tag == crate::privileged::AclTag::NamedGroup(6789)));
 
         // Emit fresh getfacl output for transcript evidence (mechanical --nocapture capture)
         #[cfg(unix)]
@@ -903,21 +1088,22 @@ mod tests {
 
         // Seed two
         fs.apply_acl_mod(logical, crate::privileged::AclModification::Set {
-            kind: crate::privileged::AclEntryKind::User(2001), perms: crate::privileged::AclPerms::from_str("rwx"),
+            kind: crate::privileged::AclEntryKind::User(2001), perms: crate::privileged::AclPerms::from_str("rwx"), default: false,
         }).expect("seed1");
         fs.apply_acl_mod(logical, crate::privileged::AclModification::Set {
-            kind: crate::privileged::AclEntryKind::Group(3001), perms: crate::privileged::AclPerms::from_str("r-x"),
+            kind: crate::privileged::AclEntryKind::Group(3001), perms: crate::privileged::AclPerms::from_str("r-x"), default: false,
         }).expect("seed2");
 
         // Edit the user to r--
         let edit = crate::privileged::AclModification::Set {
             kind: crate::privileged::AclEntryKind::User(2001),
             perms: crate::privileged::AclPerms::from_str("r--"),
+            default: false,
         };
         fs.apply_acl_mod(logical, edit).expect("edit via pure");
 
-        let after_edit = fs.get_dir_acl(logical).expect("");
-        let u = after_edit.iter().find(|e| matches!(e.kind, crate::privileged::AclEntryKind::User(2001))).unwrap();
+        let after_edit = fs.get_acl_table(logical).expect("");
+        let u = after_edit.access.iter().find(|l| l.tag == crate::privileged::AclTag::NamedUser(2001)).unwrap();
         assert!(u.perms.r && !u.perms.w && !u.perms.x, "edit must have updated perms on disk");
 
         // Batch delete both
@@ -926,11 +1112,142 @@ mod tests {
                 crate::privileged::AclEntryKind::User(2001),
                 crate::privileged::AclEntryKind::Group(3001),
             ],
+            default: false,
         };
         fs.apply_acl_mod(logical, del).expect("batch delete via pure");
 
-        let after_del = fs.get_dir_acl(logical).expect("list post del");
-        assert!(after_del.is_empty(), "named entries must be gone after delete");
+        let after_del = fs.get_acl_table(logical).expect("list post del");
+        assert!(!after_del.access.iter().any(|l| matches!(l.tag,
+            crate::privileged::AclTag::NamedUser(_) | crate::privileged::AclTag::NamedGroup(_))),
+            "named entries must be gone after delete");
+    }
+
+    // Recursive ACL semantics: capital-X grants on files only where something
+    // already executes; default-layer recursion touches directories only;
+    // targeted remove sweeps the whole scope (absent entries tolerated).
+    #[test]
+    fn acl_recursive_apply_capital_x_and_default_dir_only() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("aclrec");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("plain.txt"), b"d").unwrap();
+        std::fs::write(root.join("sub").join("run.sh"), b"#!/bin/sh\n").unwrap();
+        crate::privileged::chmod(&root.join("sub").join("run.sh"), 0o755).unwrap();
+        crate::privileged::chmod(&root.join("plain.txt"), 0o644).unwrap();
+        let logical = Path::new("/aclrec");
+        let cfg = make_test_acl_config_for(&root, logical.to_str().unwrap());
+        let fs = FsManager::new(cfg);
+        let prog = ApplyProgress::default();
+
+        // Access-layer subtree grant with x: dirs get x, plain files don't.
+        let m = crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(4242),
+            perms: crate::privileged::AclPerms::from_str("rwx"),
+            default: false,
+        };
+        let total = fs
+            .count_acl_applicable_with_live(logical, &m, ApplyScope::All, &prog)
+            .expect("count");
+        assert_eq!(total, 4, "root + sub + 2 files");
+        let res = fs
+            .apply_acl_with_progress(logical, &m, ApplyScope::All, &prog)
+            .expect("apply");
+        assert_eq!(res.changed, 4, "all entries changed: {:?}", res.errors);
+        assert!(res.errors.is_empty(), "{:?}", res.errors);
+
+        let entry_perms = |p: &str| -> crate::privileged::AclPerms {
+            let t = crate::privileged::get_acl_table(&root.join(p)).expect("table");
+            t.access
+                .iter()
+                .find(|l| l.tag == crate::privileged::AclTag::NamedUser(4242))
+                .map(|l| l.perms.clone())
+                .expect("entry present")
+        };
+        assert!(entry_perms("sub").x, "directories always gain x");
+        assert!(!entry_perms("plain.txt").x, "capital X must not hand a plain file execute");
+        assert!(entry_perms("plain.txt").r && entry_perms("plain.txt").w);
+        assert!(entry_perms("sub/run.sh").x, "already-executable file keeps x in the grant");
+
+        // Default-layer subtree grant: directories only.
+        let md = crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::Group(7373),
+            perms: crate::privileged::AclPerms::from_str("r-x"),
+            default: true,
+        };
+        let prog2 = ApplyProgress::default();
+        let total_d = fs
+            .count_acl_applicable_with_live(logical, &md, ApplyScope::All, &prog2)
+            .expect("count default");
+        assert_eq!(total_d, 2, "default-layer scope covers the two directories only");
+        let res_d = fs
+            .apply_acl_with_progress(logical, &md, ApplyScope::All, &prog2)
+            .expect("apply default");
+        assert_eq!(res_d.changed, 2);
+        let sub_table = crate::privileged::get_acl_table(&root.join("sub")).expect("t");
+        assert!(sub_table
+            .default
+            .iter()
+            .any(|l| l.tag == crate::privileged::AclTag::NamedGroup(7373)));
+        let file_table = crate::privileged::get_acl_table(&root.join("plain.txt")).expect("t");
+        assert!(file_table.default.is_empty(), "files never receive default entries");
+
+        // Subtree remove sweeps everything, tolerating already-absent entries.
+        let _ = crate::privileged::apply_acl(
+            &root.join("plain.txt"),
+            crate::privileged::AclModification::Remove {
+                kinds: vec![crate::privileged::AclEntryKind::User(4242)],
+                default: false,
+            },
+        );
+        let mr = crate::privileged::AclModification::Remove {
+            kinds: vec![crate::privileged::AclEntryKind::User(4242)],
+            default: false,
+        };
+        let prog3 = ApplyProgress::default();
+        let res_r = fs
+            .apply_acl_with_progress(logical, &mr, ApplyScope::All, &prog3)
+            .expect("remove");
+        assert!(res_r.errors.is_empty(), "absent entries must not error: {:?}", res_r.errors);
+        for p in ["sub", "plain.txt", "sub/run.sh"] {
+            let t = crate::privileged::get_acl_table(&root.join(p)).expect("t");
+            assert!(
+                !t.access.iter().any(|l| l.tag == crate::privileged::AclTag::NamedUser(4242)),
+                "{p} still carries the entry"
+            );
+        }
+    }
+
+    // ImmediateFiles scope: the directory and its direct files, subdirs spared.
+    #[test]
+    fn acl_recursive_single_scope_spares_subdirs() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("aclsingle");
+        std::fs::create_dir_all(root.join("deep")).unwrap();
+        std::fs::write(root.join("here.txt"), b"d").unwrap();
+        std::fs::write(root.join("deep").join("far.txt"), b"d").unwrap();
+        let logical = Path::new("/aclsingle");
+        let cfg = make_test_acl_config_for(&root, logical.to_str().unwrap());
+        let fs = FsManager::new(cfg);
+        let m = crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(5252),
+            perms: crate::privileged::AclPerms::from_str("r--"),
+            default: false,
+        };
+        let prog = ApplyProgress::default();
+        let res = fs
+            .apply_acl_with_progress(logical, &m, ApplyScope::ImmediateFiles, &prog)
+            .expect("apply");
+        assert_eq!(res.changed, 2, "root dir + direct file only: {:?}", res.errors);
+        let has = |p: &str| {
+            crate::privileged::get_acl_table(&root.join(p))
+                .expect("t")
+                .access
+                .iter()
+                .any(|l| l.tag == crate::privileged::AclTag::NamedUser(5252))
+        };
+        assert!(has("here.txt"));
+        assert!(!has("deep"), "subdirectory spared at single scope");
+        assert!(!has("deep/far.txt"), "nested file spared at single scope");
     }
 
     #[test]
@@ -941,8 +1258,8 @@ mod tests {
         let cfg = make_test_acl_config_for(&root, "/allowed");
         let fs = FsManager::new(cfg);
 
-        assert!(fs.get_dir_acl(Path::new("/evil")).is_none());
-        let res = fs.apply_acl_mod(Path::new("/evil"), crate::privileged::AclModification::Remove { kinds: vec![] });
+        assert!(fs.get_acl_table(Path::new("/evil")).is_none());
+        let res = fs.apply_acl_mod(Path::new("/evil"), crate::privileged::AclModification::Remove { kinds: vec![], default: false });
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("outside allowed"));
     }

@@ -287,6 +287,23 @@ impl NfsKlldapConfig {
                     )));
                 }
             }
+            if let Some(v) = share.attr_expiration_secs {
+                if v < 0 {
+                    return Err(ConfigError::Validation(format!(
+                        "share '{}' attr_expiration_secs must be >= 0 (0 = attribute caching off), got {}",
+                        share.name, v
+                    )));
+                }
+                if v == 0 {
+                    eprintln!(
+                        "WARN [nfs-klldap-config] share '{}': attr_expiration_secs = 0 disables \
+                         attribute caching on this export — every operation stats (and on ACL \
+                         paths getfacls) the backing filesystem. Deliberate for coherency-critical \
+                         shares; measurable cost elsewhere.",
+                        share.name
+                    );
+                }
+            }
         }
 
         let container_root = self.storage.container_root.trim_end_matches('/').to_string();
@@ -451,6 +468,14 @@ impl NfsKlldapConfig {
             }
             // Canonical comma-space form for the emitted directive.
             self.ganesha.root_kerberos_principals = Some(tokens.join(", "));
+        }
+        if let Some(v) = self.ganesha.attr_expiration_secs {
+            if v < 0 {
+                return Err(ConfigError::Validation(format!(
+                    "ganesha.attr_expiration_secs must be >= 0 (0 = attribute caching off), got {}",
+                    v
+                )));
+            }
         }
         if let Some(v) = self.ganesha.manage_gids_expiration_secs {
             if v > crate::constants::GANESHA_MANAGE_GIDS_EXPIRATION_MAX {

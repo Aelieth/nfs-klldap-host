@@ -401,7 +401,7 @@ container_path = "/data"
         assert!(ghd.contains("share_container_path_0") && ghd.contains("/export/data"), "settings render must show container_path input");
     }
 
-    // Dedicated integration test for ACL apply path: POST /acl-apply, wait on shipped ApplyProgress, hard assert via shipped fs.get_dir_acl only.
+    // Dedicated integration test for ACL apply path: POST /acl-apply, wait on shipped ApplyProgress, hard assert via shipped fs.get_acl_table only.
     #[tokio::test]
     async fn web_acl_apply_post_waits_then_get_dir_acl() {
         use std::time::Duration;
@@ -413,6 +413,14 @@ container_path = "/data"
         std::fs::create_dir_all(&real_root).unwrap();
         let logical = std::path::Path::new("/acldata");
 
+        // Hermetic capable-FS fixture: the /acl-apply gate probes the node's
+        // mount, and parallel tests decoy the env-global mountinfo path.
+        let mi = tmp.path().join("mi");
+        std::fs::write(
+            &mi,
+            format!("36 35 0:59 / {} rw,relatime - btrfs /dev/sda1 rw\n", tmp.path().display()),
+        )
+        .unwrap();
         // Build minimal NfsKlldapConfig so the logical path is allowed and maps to our real dir for setfacl/getfacl.
         let cp = tmp.path().join("c");
         let min_cfg = format!(
@@ -457,7 +465,7 @@ container_path = "{}"
             setup_marker_override: Some(sm),
             setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
             host_nfs_mode: false,
-            fs_probe_mountinfo_path: None,
+            fs_probe_mountinfo_path: Some(mi),
         };
         // Keep handle to progress slot before moving state into router so we can wait on it.
         let progress_slot = st.apply_progress.clone();
@@ -497,15 +505,349 @@ container_path = "{}"
         assert!(wait_res.is_ok(), "should have observed progress finish");
 
         // Hard assert ONLY via the shipped fs wrapper on the exact logical path the POST targeted.
-        let entries = fs_for_assert
+        let table = fs_for_assert
             .read()
             .expect("fs lock")
-            .get_dir_acl(logical)
+            .get_acl_table(logical)
             .expect("path must be allowed under share");
-        let has = entries.iter().any(|e| {
-            matches!(&e.kind, crate::privileged::AclEntryKind::User(4242)) && e.perms.to_str() == "r-x"
+        let has = table.access.iter().any(|l| {
+            l.tag == crate::privileged::AclTag::NamedUser(4242) && l.perms.to_str() == "r-x"
         });
-        assert!(has, "after POST /acl-apply + wait, shipped fs.get_dir_acl on logical path must show the entry");
+        assert!(has, "after POST /acl-apply + wait, shipped fs.get_acl_table on logical path must show the entry");
+    }
+
+    // Shared scaffold for the ACL layer tests: TempDir-backed share (logical
+    // /acldata -> real tempdir), privileged session, router, progress handle.
+    async fn acl_test_scaffold(
+        tmp: &tempfile::TempDir,
+    ) -> (
+        Arc<RwLock<FsManager>>,
+        Arc<Mutex<Option<Arc<crate::fs::ApplyProgress>>>>,
+        String,
+        axum::Router,
+    ) {
+        let real_root = tmp.path().join("aclroot");
+        std::fs::create_dir_all(&real_root).unwrap();
+        // Hermetic mountinfo fixture marking the tempdir capable, so the auto
+        // probe never reads the env-global mountinfo path other tests decoy.
+        let mi = tmp.path().join("mi");
+        std::fs::write(
+            &mi,
+            format!("36 35 0:59 / {} rw,relatime - btrfs /dev/sda1 rw\n", tmp.path().display()),
+        )
+        .unwrap();
+        let cp = tmp.path().join("c");
+        let min_cfg = format!(
+            r#"ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "{}"
+[sssd]
+ldap_default_bind_dn = "uid=admin"
+ldap_default_authtok = "s"
+[[shares]]
+name = "acldata"
+host_path = "/acldata"
+container_path = "{}"
+"#,
+            real_root.display(),
+            real_root.display()
+        );
+        std::fs::write(&cp, min_cfg).unwrap();
+        let cfg_val = nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("load");
+        let cfg = Arc::new(RwLock::new(cfg_val.clone()));
+        let fs = Arc::new(RwLock::new(FsManager::new(cfg_val)));
+        let l = Arc::new(Mutex::new(crate::create_test_lldap()));
+        let a = Arc::new(AuthManager::new(&cp, None));
+        let sm = tmp.path().join(".s");
+        std::fs::write(&sm, "ok\n").ok();
+        let fs_for_assert = fs.clone();
+        let st = AppState {
+            fs,
+            lldap: l,
+            config: cfg,
+            auth: a,
+            config_path: cp.clone(),
+            keytab_hostname: "h".into(),
+            keytab_realm: "R".into(),
+            keytab_alert: Arc::new(StdMutex::new(None)),
+            apply_progress: Arc::new(Mutex::new(None)),
+            restart_requested: Arc::new(Mutex::new(false)),
+            direct_tls: true,
+            setup_marker_override: Some(sm),
+            setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
+            host_nfs_mode: false,
+            fs_probe_mountinfo_path: Some(mi),
+        };
+        let progress_slot = st.apply_progress.clone();
+        let token = st.auth.create_privileged_session("acltest");
+        (fs_for_assert, progress_slot, token, router(st))
+    }
+
+    async fn wait_acl_progress(
+        progress_slot: &Arc<Mutex<Option<Arc<crate::fs::ApplyProgress>>>>,
+    ) {
+        use std::time::Duration;
+        use tokio::time::timeout;
+        let ok = timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(prog) = progress_slot.lock().await.as_ref() {
+                    if prog.finished.load(std::sync::atomic::Ordering::Relaxed) {
+                        return true;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(ok.is_ok(), "acl apply progress must finish");
+    }
+
+    // Default (inheritance) layer: op targets the default ACL only; the
+    // access layer stays untouched.
+    #[tokio::test]
+    async fn web_acl_apply_default_layer_writes_default_acl_only() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (fs, progress, token, app) = acl_test_scaffold(&tmp).await;
+        let body = "path=%2Facldata&op=add&typ=user&id=5151&perms=rwx&layer=default";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/acl-apply")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        wait_acl_progress(&progress).await;
+        let table = fs
+            .read()
+            .expect("fs lock")
+            .get_acl_table(std::path::Path::new("/acldata"))
+            .expect("allowed");
+        assert!(
+            table.default.iter().any(|l| l.tag == crate::privileged::AclTag::NamedUser(5151)),
+            "default layer must carry the new entry"
+        );
+        assert!(
+            !table.access.iter().any(|l| matches!(l.tag, crate::privileged::AclTag::NamedUser(_))),
+            "access layer must stay untouched by a default-layer add"
+        );
+    }
+
+    // POSIX has no default ACL for files: the handler refuses with 422 before
+    // any setfacl runs (raw tool errors never reach the panel).
+    #[tokio::test]
+    async fn web_acl_apply_default_layer_on_file_rejected_422() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (_fs, _progress, token, app) = acl_test_scaffold(&tmp).await;
+        std::fs::write(tmp.path().join("aclroot").join("f.txt"), b"x").unwrap();
+        let body = "path=%2Facldata%2Ff.txt&op=add&typ=user&id=5151&perms=rwx&layer=default";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/acl-apply")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        assert!(text.contains("directories only"), "422 body names the rule: {text}");
+    }
+
+    // op=mask needs no principal; it rewrites the layer's group-class cap.
+    #[tokio::test]
+    async fn web_acl_apply_mask_op_caps_named_entries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (fs, progress, token, app) = acl_test_scaffold(&tmp).await;
+        // Seed a named entry directly on disk so a mask exists to rewrite.
+        let real = tmp.path().join("aclroot");
+        crate::privileged::apply_acl(
+            &real,
+            crate::privileged::AclModification::Set {
+                kind: crate::privileged::AclEntryKind::User(6161),
+                perms: crate::privileged::AclPerms::from_str("rwx"),
+                default: false,
+            },
+        )
+        .expect("seed");
+        let body = "path=%2Facldata&op=mask&perms=r--&layer=access";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/acl-apply")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        wait_acl_progress(&progress).await;
+        let table = fs
+            .read()
+            .expect("fs lock")
+            .get_acl_table(std::path::Path::new("/acldata"))
+            .expect("allowed");
+        let mask = table.mask_of(false).expect("mask present");
+        assert!(mask.r && !mask.w && !mask.x, "mask must be r-- after op=mask");
+        let entry = table
+            .access
+            .iter()
+            .find(|l| l.tag == crate::privileged::AclTag::NamedUser(6161))
+            .expect("named entry kept");
+        let eff = table.effective_perms(entry, false);
+        assert!(eff.r && !eff.w && !eff.x, "named entry effective perms capped to r--");
+    }
+
+    // The /acl-apply endpoint itself refuses paths whose mount cannot store
+    // POSIX ACLs — a stale panel or hand-built POST never lands on disk.
+    #[tokio::test]
+    async fn web_acl_apply_refused_on_incapable_mount_422() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (_fs, _progress, token, app) = acl_test_scaffold(&tmp).await;
+        // Flip the scaffold's mountinfo fixture to a denylisted filesystem:
+        // the per-path capability gate must now refuse the mutation.
+        std::fs::write(
+            tmp.path().join("mi"),
+            format!("36 35 0:59 / {} rw,relatime - vfat /dev/sdd1 rw\n", tmp.path().display()),
+        )
+        .unwrap();
+        let body = "path=%2Facldata&op=add&typ=user&id=5151&perms=rwx&layer=access";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/acl-apply")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        assert!(text.contains("not available"), "422 names the refusal: {text}");
+    }
+
+    // Scoped ACL applies ride the walker: scope=all sweeps the subtree with
+    // capital-X semantics (plain files never gain execute from the grant).
+    #[tokio::test]
+    async fn web_acl_apply_scope_all_sweeps_subtree() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (fs, progress, token, app) = acl_test_scaffold(&tmp).await;
+        let real = tmp.path().join("aclroot");
+        std::fs::create_dir_all(real.join("sub")).unwrap();
+        std::fs::write(real.join("sub").join("f.txt"), b"x").unwrap();
+        let body = "path=%2Facldata&op=add&typ=user&id=8181&perms=rwx&layer=access&scope=all";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/acl-apply")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        wait_acl_progress(&progress).await;
+        let table = fs
+            .read()
+            .expect("fs lock")
+            .get_acl_table(std::path::Path::new("/acldata/sub/f.txt"))
+            .expect("allowed");
+        let entry = table
+            .access
+            .iter()
+            .find(|l| l.tag == crate::privileged::AclTag::NamedUser(8181))
+            .expect("nested file must carry the swept entry");
+        assert!(entry.perms.r && entry.perms.w && !entry.perms.x,
+            "capital X must not hand the plain file execute");
+        let sub = fs
+            .read()
+            .expect("fs lock")
+            .get_acl_table(std::path::Path::new("/acldata/sub"))
+            .expect("allowed");
+        assert!(sub
+            .access
+            .iter()
+            .any(|l| l.tag == crate::privileged::AclTag::NamedUser(8181) && l.perms.x),
+            "directories in scope gain x");
+    }
+
+    // Tree rows on ACL-active shares carry the "+" marker exactly where the
+    // ACL is extended (one batched getfacl per fragment).
+    #[tokio::test]
+    async fn tree_fragment_marks_extended_acl_rows() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (_fs, _progress, token, app) = acl_test_scaffold(&tmp).await;
+        let real = tmp.path().join("aclroot");
+        std::fs::create_dir_all(real.join("plain")).unwrap();
+        std::fs::create_dir_all(real.join("marked")).unwrap();
+        crate::privileged::apply_acl(
+            &real.join("marked"),
+            crate::privileged::AclModification::Set {
+                kind: crate::privileged::AclEntryKind::User(9191),
+                perms: crate::privileged::AclPerms::from_str("r-x"),
+                default: false,
+            },
+        )
+        .expect("seed");
+        let req = Request::builder()
+            .method("GET")
+            .uri("/tree?path=%2Facldata")
+            .body(Body::empty())
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 512 * 1024).await.unwrap();
+        let html = String::from_utf8_lossy(&bytes).to_string();
+        assert!(html.contains("marked<span class=\"acl-plus\""),
+            "ACL'd row label carries the + marker: {html}");
+        assert!(!html.contains("plain<span class=\"acl-plus\""),
+            "plain row must not carry the marker: {html}");
+    }
+
+    // The panel surfaces the full model: mask row, default section, effective
+    // badge on capped rows, and the Group-row mask hint once extended.
+    #[tokio::test]
+    async fn dir_perms_renders_mask_default_and_effective_sections() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (_fs, _progress, token, app) = acl_test_scaffold(&tmp).await;
+        let real = tmp.path().join("aclroot");
+        for m in [
+            crate::privileged::AclModification::Set {
+                kind: crate::privileged::AclEntryKind::User(6161),
+                perms: crate::privileged::AclPerms::from_str("rwx"),
+                default: false,
+            },
+            crate::privileged::AclModification::SetMask {
+                perms: crate::privileged::AclPerms::from_str("r--"),
+                default: false,
+            },
+            crate::privileged::AclModification::Set {
+                kind: crate::privileged::AclEntryKind::Group(7171),
+                perms: crate::privileged::AclPerms::from_str("r-x"),
+                default: true,
+            },
+        ] {
+            crate::privileged::apply_acl(&real, m).expect("seed acl");
+        }
+        let req = Request::builder()
+            .method("GET")
+            .uri("/dir-perms?path=%2Facldata")
+            .body(Body::empty())
+            .unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 512 * 1024).await.unwrap();
+        let html = String::from_utf8_lossy(&bytes).to_string();
+        assert!(html.contains("acl-mask-row"), "mask row rendered");
+        assert!(html.contains(r#"data-layer="default""#), "Inherit pane rendered");
+        assert!(html.contains("acl-tab"), "layer tabs rendered");
+        assert!(html.contains(">Inherit</button>"), "Inherit tab labeled");
+        assert!(html.contains("acl-cell capped"), "mask-capped bit renders dimmed");
+        assert!(html.contains("Mask caps this entry"), "capped row carries the effective tooltip");
+        assert!(html.contains("mask-star"), "Group row carries the mask hint when extended");
+        assert!(html.contains("acl-act"), "unified Add/Remove/Modify actions rendered");
     }
 
     // POSIX apply owner resolution: uid/gid 0 is a first-class owner (root on
@@ -749,6 +1091,13 @@ container_path = "{}"
         let real_root = tmp.path().join("permroot");
         std::fs::create_dir_all(&real_root).unwrap();
         let logical = std::path::Path::new("/permdata");
+        // Hermetic capable-FS fixture (see acl_test_scaffold for rationale).
+        let mi = tmp.path().join("mi");
+        std::fs::write(
+            &mi,
+            format!("36 35 0:59 / {} rw,relatime - btrfs /dev/sda1 rw\n", tmp.path().display()),
+        )
+        .unwrap();
 
         let cp = tmp.path().join("c");
         let min_cfg = format!(
@@ -779,7 +1128,7 @@ container_path = "{}"
             keytab_alert: Arc::new(StdMutex::new(None)), apply_progress: Arc::new(Mutex::new(None)),
             restart_requested: Arc::new(Mutex::new(false)), direct_tls: true,
             setup_marker_override: Some(sm), setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
-            host_nfs_mode: false, fs_probe_mountinfo_path: None,
+            host_nfs_mode: false, fs_probe_mountinfo_path: Some(mi),
         };
         let token = st.auth.create_privileged_session("permtest");
         let app = router(st);
@@ -795,9 +1144,10 @@ container_path = "{}"
         assert!(html.contains(r#"name="owner_user_uid""#), "must render hidden uid field for name translation");
         assert!(html.contains(r#"name="mode""#), "must render the mode field /apply expects");
         assert!(html.contains("class=\"octal\""), "must render the octal readout");
-        // enable_acl unset => Non-ACL: the ACL section must be greyed and labelled.
-        assert!(html.contains("acl-sec disabled"), "NOACL default must grey the ACL section");
-        assert!(html.contains("non-ACL limited"), "NOACL default must show the non-ACL pill");
+        // enable_acl unset on an ACL-proven serve path (tempdir) => AUTO turns
+        // ACL on: the section is active and the pill says so (0.9.90).
+        assert!(!html.contains("acl-sec disabled"), "auto + proven probe must not grey the ACL section");
+        assert!(html.contains(">auto</span>"), "auto promotion must show the auto pill");
     }
 
     // /apply-progress must answer HTTP 286 (htmx "stop polling") once the apply is finished —

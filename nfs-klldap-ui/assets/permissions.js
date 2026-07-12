@@ -105,7 +105,12 @@
         pl.querySelector('.perm-state').textContent = editing ? 'editing' : 'viewing';
         const aclInert = !!pl.querySelector('.acl-sec.disabled');
         pl.querySelectorAll('.p-owner,.p-group,.pbit,.sbit,.fbit,.rec-radio').forEach(el => el.disabled = !editing);
-        pl.querySelectorAll('.abit').forEach(el => el.disabled = !editing || aclInert);
+        pl.querySelectorAll('.acl-ename,.ebit,.abit,.mbit,.acl-rec-radio').forEach(el => el.disabled = !editing || aclInert);
+        if (!editing) {
+            pl.querySelectorAll('.acl-row.selected').forEach(r => r.classList.remove('selected'));
+            exitAclAdd();
+        }
+        pl.querySelectorAll('.acl-pane').forEach(syncAclActions);
         setTreeLock(editing);
     }
 
@@ -216,18 +221,73 @@
                 loadDirPerms(state.currentPath);
             })
             .catch(err => {
-                pl.querySelectorAll('.acl-del:disabled,.acl-add-btn:disabled')
-                    .forEach(b => b.disabled = false);
+                pl.querySelectorAll('.acl-pane').forEach(syncAclActions);
                 showPermPanelError(err && err.message === '422'
                     ? 'ACL apply rejected — could not resolve that user/group in LLDAP.'
                     : 'ACL apply failed — the server rejected the request. See server logs.');
             });
     }
 
-    // Live LDAP suggestions for the ACL "add user/group" field (parallels the owner/group search).
+    // Selection-aware enable state: the Add buttons are always available in
+    // edit mode; Remove needs a named selection (the mask can't be removed).
+    function syncAclActions(pane) {
+        const sel = pane.querySelector('.acl-row.selected');
+        pane.querySelectorAll('.acl-act').forEach(b => {
+            if (b.dataset.act === 'remove') b.disabled = !sel || sel.dataset.type === 'mask';
+            else b.disabled = false;
+        });
+    }
+    function rowPerms(row) {
+        return Array.from(row.querySelectorAll('.abit,.mbit'))
+            .map(cb => cb.checked ? cb.dataset.ch : '-').join('');
+    }
+    function addFormPerms(form) {
+        return Array.from(form.querySelectorAll('.ebit'))
+            .map(cb => cb.checked ? cb.dataset.ch : '-').join('');
+    }
+
+    // ===== ACL add mode: Add User / Add Group flow finished by the panel's
+    // Apply/Cancel. Everything else in the panel is inert while adding. =====
+    function activeAclAddForm() {
+        const pl = panel();
+        return pl && pl.querySelector('.acl-addform:not([hidden])');
+    }
+    function syncAclAddApply() {
+        const pl = panel(); if (!pl) return;
+        const form = activeAclAddForm(); if (!form) return;
+        const name = form.querySelector('.acl-ename').value.trim();
+        const armed = !!name && addFormPerms(form) !== '---';
+        pl.querySelectorAll('.btn-apply').forEach(b => b.disabled = !armed);
+    }
+    function enterAclAdd(pane, typ) {
+        const pl = panel(); if (!pl) return;
+        exitAclAdd();
+        const form = pane.querySelector('.acl-addform'); if (!form) return;
+        form.dataset.typ = typ;
+        form.hidden = false;
+        const inp = form.querySelector('.acl-ename');
+        inp.placeholder = typ === 'group' ? 'group or id' : 'user or id';
+        inp.value = ''; delete inp.dataset.pickId;
+        pl.classList.add('acl-adding');
+        pl.querySelector('.perm-state').textContent =
+            typ === 'group' ? 'EDITING - ADDING ACL GROUP' : 'EDITING - ADDING ACL USER';
+        wireAclAddSearch(form);
+        syncAclAddApply();
+        inp.focus();
+    }
+    function exitAclAdd() {
+        const pl = panel(); if (!pl) return;
+        pl.classList.remove('acl-adding');
+        pl.querySelectorAll('.acl-addform').forEach(f => { f.hidden = true; });
+        pl.querySelectorAll('.btn-apply').forEach(b => b.disabled = false);
+        const st = pl.querySelector('.perm-state');
+        if (st && pl.classList.contains('editing')) st.textContent = 'editing';
+    }
+
+    // Live LDAP suggestions for the ACL editor's name field (parallels the
+    // owner/group search; the type comes from the pane's User/Group select).
     function wireAclAddSearch(box) {
-        const type = box.dataset.type;
-        const inp = box.querySelector('.acl-add-name');
+        const inp = box.querySelector('.acl-ename');
         const sugg = box.querySelector('.acl-sugg');
         if (!inp || !sugg || inp.dataset.wired) return;
         inp.dataset.wired = '1';
@@ -235,9 +295,11 @@
         inp.addEventListener('input', () => {
             delete inp.dataset.pickId;
             clearTimeout(tmr);
+            syncAclAddApply();
             const q = inp.value.trim();
             if (!q) { sugg.innerHTML = ''; return; }
             tmr = setTimeout(() => {
+                const type = box.dataset.typ || 'user';
                 const url = type === 'user'
                     ? '/users/search?owner_user=' + encodeURIComponent(q)
                     : '/groups/search?owner_group=' + encodeURIComponent(q);
@@ -307,17 +369,38 @@
         if (e.target.closest('.btn-edit')) {
             state.dirty = false;
             setPanelMode(true);
-            pl.querySelectorAll('.acl-add').forEach(wireAclAddSearch);
+            pl.querySelectorAll('.acl-addform').forEach(wireAclAddSearch);
             attachEditorInputListeners(pbody());
             return;
         }
         if (e.target.closest('.btn-cancel')) {
+            if (pl.classList.contains('acl-adding')) { exitAclAdd(); return; }
             if (state.dirty && !confirm('Discard unsaved permission changes?')) return;
             state.dirty = false;
             if (state.currentPath) loadDirPerms(state.currentPath);
             return;
         }
         if (e.target.closest('.btn-apply')) {
+            if (pl.classList.contains('acl-adding')) {
+                const form = activeAclAddForm(); if (!form) return;
+                const pane = form.closest('.acl-pane');
+                const inp = form.querySelector('.acl-ename');
+                const name = inp.value.trim();
+                if (!name || addFormPerms(form) === '---') return;
+                const scopeSel = form.querySelector('.acl-rec-radio:checked');
+                const scope = scopeSel ? scopeSel.value : 'none';
+                if (scope === 'all'
+                    && !confirm('Add this ACL entry to EVERYTHING under\n' + state.currentPath + ' (all subdirectories and files)?')) return;
+                if (scope === 'single'
+                    && !confirm('Add this ACL entry to ' + state.currentPath + ' and every file directly inside it?')) return;
+                const idm = name.match(/(\d+)/);
+                aclApply({ op: 'add', typ: form.dataset.typ || 'user',
+                           layer: pane.dataset.layer, scope: scope,
+                           id: inp.dataset.pickId || (idm ? idm[1] : ''), name: name,
+                           perms: addFormPerms(form) });
+                exitAclAdd();
+                return;
+            }
             const form = pl.querySelector('form.posix-sec');
             if (!form) return;
             // Scope radios live inside the form (dir panels only) and submit
@@ -339,35 +422,73 @@
             setTreeLock(true);
             return;
         }
-        const head = e.target.closest('.acl-grp-head');
-        if (head) {
-            const grp = head.closest('.acl-grp');
-            grp.classList.toggle('collapsed');
-            head.setAttribute('aria-expanded', grp.classList.contains('collapsed') ? 'false' : 'true');
+        // ACL tab: swap the visible layer pane (Current vs Inherit).
+        const tab = e.target.closest('.acl-tab');
+        if (tab) {
+            const sec = tab.closest('.acl-sec');
+            sec.querySelectorAll('.acl-tab').forEach(t => t.classList.toggle('active', t === tab));
+            sec.querySelectorAll('.acl-pane').forEach(p => p.hidden = p.dataset.layer !== tab.dataset.layer);
             return;
         }
 
-        const del = e.target.closest('.acl-del');
-        if (del) {
-            const row = del.closest('.acl-row');
-            del.disabled = true; // re-enabled by aclApply's error path; success replaces the DOM
-            aclApply({ op: 'delete', typ: row.dataset.type,
-                       selected: (row.dataset.type === 'group' ? 'g:' : 'u:') + row.dataset.id });
+        // Category header: collapse/expand its row block (list keeps scrolling).
+        const cat = e.target.closest('.acl-cat');
+        if (cat) {
+            cat.classList.toggle('collapsed');
+            const rows = cat.nextElementSibling;
+            if (rows && rows.classList.contains('acl-cat-rows')) rows.hidden = cat.classList.contains('collapsed');
             return;
         }
 
-        const add = e.target.closest('.acl-add-btn');
-        if (add) {
-            const box = add.closest('.acl-add');
-            const nameInp = box.querySelector('.acl-add-name');
-            const name = nameInp.value.trim();
-            const perms = box.querySelector('.acl-add-perms').value.trim() || 'r--';
-            if (!name) return;
-            const idm = name.match(/(\d+)/);
-            add.disabled = true; // re-enabled by aclApply's error path; success replaces the DOM
-            aclApply({ op: 'add', typ: box.dataset.type,
-                       id: nameInp.dataset.pickId || (idm ? idm[1] : ''), name: name, perms: perms });
+        // Action buttons: the Add pair enters add mode (finished by the
+        // panel's Apply/Cancel); Remove deletes the selected entry.
+        const act = e.target.closest('.acl-act');
+        if (act && !act.disabled && !panel().classList.contains('acl-adding')) {
+            const pane = act.closest('.acl-pane');
+            const layer = pane.dataset.layer;
+            if (act.dataset.act === 'add-user') { enterAclAdd(pane, 'user'); return; }
+            if (act.dataset.act === 'add-group') { enterAclAdd(pane, 'group'); return; }
+            const sel = pane.querySelector('.acl-row.selected');
+            if (act.dataset.act === 'remove' && sel) {
+                act.disabled = true;
+                aclApply({ op: 'delete', typ: sel.dataset.type, layer: layer,
+                           selected: (sel.dataset.type === 'group' ? 'g:' : 'u:') + sel.dataset.id });
+            }
             return;
+        }
+
+        // Row click (edit mode) selects for Remove; checkbox clicks toggle
+        // permissions instead (handled by the change listener below).
+        const arow = e.target.closest('.acl-row');
+        if (arow && isEditing() && !arow.closest('.acl-sec.disabled')
+            && !e.target.closest('input') && !panel().classList.contains('acl-adding')) {
+            const pane = arow.closest('.acl-pane');
+            const was = arow.classList.contains('selected');
+            pane.querySelectorAll('.acl-row.selected').forEach(r => r.classList.remove('selected'));
+            if (!was) arow.classList.add('selected');
+            syncAclActions(pane);
+            return;
+        }
+    });
+
+    // POSIX-style direct toggles: a row checkbox change applies immediately
+    // to that node (op=set; the mask row posts op=mask) and the panel reloads
+    // from getfacl truth. Add-form checkboxes only re-arm the Apply button.
+    document.addEventListener('change', (e) => {
+        const bit = e.target.closest('.abit,.mbit,.ebit,.acl-rec-radio');
+        if (!bit || bit.disabled) return;
+        if (bit.classList.contains('ebit') || bit.classList.contains('acl-rec-radio')) {
+            syncAclAddApply();
+            return;
+        }
+        const row = bit.closest('.acl-row');
+        if (!row || panel().classList.contains('acl-adding')) return;
+        const layer = row.dataset.layer || 'access';
+        if (bit.classList.contains('mbit')) {
+            aclApply({ op: 'mask', layer: layer, perms: rowPerms(row) });
+        } else {
+            aclApply({ op: 'set', typ: row.dataset.type, layer: layer,
+                       id: row.dataset.id, perms: rowPerms(row) });
         }
     });
 
@@ -414,7 +535,7 @@
     function markDirtyIfEditing(e) {
         const t = e.target;
         if (!isEditing() || !t || !t.closest) return;
-        if (!t.closest('#perm-panel') || t.closest('.acl-add')) return;
+        if (!t.closest('#perm-panel') || t.closest('.acl-addform')) return;
         state.dirty = true;
     }
     document.addEventListener('input', markDirtyIfEditing);
@@ -454,15 +575,15 @@
     document.addEventListener('click', function (evt) {
         const t = evt.target;
         if (t.closest('.suggestions') ||
-            t.closest('input[name="owner_user"], input[name="owner_group"], .acl-add-name')) return;
+            t.closest('input[name="owner_user"], input[name="owner_group"], .acl-ename')) return;
         document.querySelectorAll('.suggestions').forEach(el => { if (el.innerHTML.trim()) el.innerHTML = ''; });
     }, true);
     document.addEventListener('focusout', function (evt) {
         const input = evt.target;
-        if (!input || !input.matches || !input.matches('input[name="owner_user"], input[name="owner_group"], .acl-add-name')) return;
+        if (!input || !input.matches || !input.matches('input[name="owner_user"], input[name="owner_group"], .acl-ename')) return;
         setTimeout(() => {
             const active = document.activeElement;
-            const wrap = input.closest('label, .acl-add');
+            const wrap = input.closest('label, .acl-addform');
             const box = wrap ? wrap.querySelector('.suggestions') : null;
             if (box && (!active || (active !== input && !box.contains(active)))) box.innerHTML = '';
         }, 120);

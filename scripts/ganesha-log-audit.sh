@@ -144,6 +144,21 @@ else
 fi
 
 echo
+echo "[4b] ACL serving health (0.9.90 ACL line)..."
+# With ACL/auto shares live, the POSIX-ACL backend failing to serve an ACL
+# from the backing filesystem is a real defect (share misconfigured onto a
+# non-ACL filesystem, or the staging pattern missing) — the generate-time
+# write probe should have caught it, so a capture hit means probe and
+# reality disagree.
+acl_notsupp=$(count 'Permission check for ACL.*(not supported|NOTSUPP)')
+if [ "$acl_notsupp" -eq 0 ]; then
+    ok "no POSIX-ACL NOTSUPP serving failures"
+else
+    bad "$acl_notsupp ACL-NOTSUPP line(s) — an ACL export cannot serve its filesystem:"
+    grep -iE 'Permission check for ACL' "$LOG" | head -3 | sed 's/^/    /'
+fi
+
+echo
 echo "[5] Client/session summary..."
 clients="$(grep -oE 'Linux NFSv4\.[0-9]+ [A-Za-z0-9._-]+' "$LOG" | sort -u || true)"
 if [ -n "$clients" ]; then

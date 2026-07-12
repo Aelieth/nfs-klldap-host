@@ -447,15 +447,6 @@ pub(crate) async fn settings_save_shares(
                 new_share.pseudo_path = old.pseudo_path.clone();
             }
         }
-        if new_share.umask.is_none() {
-            let old = old_cfg
-                .shares
-                .get(idx)
-                .or_else(|| old_cfg.shares.iter().find(|s| s.name == new_share.name));
-            if let Some(old) = old {
-                new_share.umask = old.umask.clone();
-            }
-        }
         // source_path (ACL staging source) has no structured-form control yet; preserve any
         // value set via raw TOML so a structured save does not silently drop staging.
         if new_share.source_path.is_none() {
@@ -467,9 +458,51 @@ pub(crate) async fn settings_save_shares(
                 new_share.source_path = old.source_path.clone();
             }
         }
+        // attr_expiration_secs likewise rides raw TOML only for now.
+        if new_share.attr_expiration_secs.is_none() {
+            let old = old_cfg
+                .shares
+                .get(idx)
+                .or_else(|| old_cfg.shares.iter().find(|s| s.name == new_share.name));
+            if let Some(old) = old {
+                new_share.attr_expiration_secs = old.attr_expiration_secs;
+            }
+        }
     }
     let mut cfg = old_cfg;
     cfg.shares = new_shares.clone();
+    // Flagging ACL on a share whose serve path provably cannot store POSIX
+    // ACLs would only fail later at generate (blocking every export): refuse
+    // the save here so the GUI gets immediate feedback.
+    for share in &cfg.shares {
+        if share.enable_acl != Some(true) {
+            continue;
+        }
+        let serve = std::path::PathBuf::from(cfg.serve_path_for(share));
+        let caps = share_caps_for_settings(&cfg, share, state.fs_probe_mountinfo_path.as_deref());
+        // Only a KNOWN mount may reject the save: pre-deploy configs point at
+        // paths that do not exist yet, and generate remains the hard gate.
+        if caps.fstype != "unknown"
+            && nfs_klldap_config::acl_probe_verdict(&caps, &serve)
+                == nfs_klldap_config::AclProbeVerdict::Incapable
+        {
+            let msg = format!(
+                "share '{}': enable_acl = true but serve path '{}' (fstype={}) cannot store                  POSIX ACLs — use the staging pattern (source_path) or leave ACL off/auto.",
+                share.name,
+                serve.display(),
+                caps.fstype
+            );
+            let tpl = make_settings_error_template(
+                Some(user.0.clone()),
+                &state.config_path,
+                msg,
+                state.keytab_display(),
+                state.host_nfs_mode,
+                state.fs_probe_mountinfo_path.as_deref(),
+            );
+            return Ok(Html(tpl.render().unwrap()));
+        }
+    }
     if let Err(e) = cfg.validate_and_derive() {
         let msg = format!("Validation error: {}", e);
         let tpl = make_settings_error_template(

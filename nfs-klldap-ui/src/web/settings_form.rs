@@ -19,7 +19,6 @@ pub(crate) struct ShareFormRow {
     pub manage_gids_expiration: Option<u64>,
     pub container_path: String,
     pub source_path: Option<String>,
-    pub umask: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -155,7 +154,6 @@ pub(crate) fn collect_shares_from_structured_form(
                     manage_gids_expiration: extra.get(&format!("share_manage_gids_expiration_{}", idx)).and_then(|vv| vv.trim().parse().ok()),
                     container_path: cp,
                     source_path: extra.get(&format!("share_source_path_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
-                    umask: extra.get(&format!("share_umask_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
                 });
             }
         }
@@ -176,7 +174,12 @@ pub(crate) fn collect_shares_from_structured_form(
         manage_gids_expiration: r.manage_gids_expiration,
         container_path: r.container_path,
         source_path: r.source_path,
-        umask: r.umask,
+        // umask is retired (2.4): structured saves drop the key so old configs
+        // migrate on their next save instead of tripping the generate error.
+        umask: None,
+        // No structured control yet; raw-TOML values are preserved by the
+        // same passthrough that guards source_path.
+        attr_expiration_secs: None,
         // Explicit both ways: the default is root_squash, so an unchecked box
         // must emit no_root_squash to actually turn squashing off (None would
         // fall through to the safe default and the checkbox would be inert).

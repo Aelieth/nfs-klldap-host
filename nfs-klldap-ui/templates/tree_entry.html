@@ -6,14 +6,14 @@
   <span class="dir" data-path="{{ child.path }}">
     <button type="button" class="dir-caret" aria-expanded="false"
             aria-label="{{ child.name }} subdirectories">&#9654;</button>
-    <button type="button" class="dir-label"><span class="row-ico" aria-hidden="true" title="directory">📁</span>{{ child.name }}</button>
+    <button type="button" class="dir-label"><span class="row-ico" aria-hidden="true" title="directory">📁</span>{{ child.name }}{% if child.acl_plus %}<span class="acl-plus" title="Has ACL entries beyond the base permissions.">+</span>{% endif %}</button>
   </span>
   {# Stable placeholder for JS/HTMX expand (no sibling races). #}
   <div class="children"></div>
   {% else %}
   <span class="file" data-path="{{ child.path }}">
     <span class="row-ico" aria-hidden="true" title="{{ child.kind_label }}">{{ child.emoji }}</span>
-    <button type="button" class="file-label">{{ child.name }}</button>
+    <button type="button" class="file-label">{{ child.name }}{% if child.acl_plus %}<span class="acl-plus" title="Has ACL entries beyond the base permissions.">+</span>{% endif %}</button>
     <span class="file-mtime" title="modified (UTC)">{{ child.mtime }}</span>
   </span>
   {% endif %}

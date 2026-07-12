@@ -10,7 +10,7 @@
     <span class="dir root-dir" data-path="{{ root.path }}">
       <button type="button" class="dir-caret" aria-expanded="true"
               aria-label="{{ root.name }} subdirectories">&#9660;</button>
-      <button type="button" class="dir-label"><span class="row-ico" aria-hidden="true">📁</span>{{ root.name }}</button>
+      <button type="button" class="dir-label"><span class="row-ico" aria-hidden="true" title="directory">📁</span>{{ root.name }}</button>
     </span>
     <div class="children" data-loaded="true">
       {# Direct children of the root (pre-rendered for the initial view).

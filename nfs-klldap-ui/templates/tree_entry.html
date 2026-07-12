@@ -6,13 +6,13 @@
   <span class="dir" data-path="{{ child.path }}">
     <button type="button" class="dir-caret" aria-expanded="false"
             aria-label="{{ child.name }} subdirectories">&#9654;</button>
-    <button type="button" class="dir-label"><span class="row-ico" aria-hidden="true">📁</span>{{ child.name }}</button>
+    <button type="button" class="dir-label"><span class="row-ico" aria-hidden="true" title="directory">📁</span>{{ child.name }}</button>
   </span>
   {# Stable placeholder for JS/HTMX expand (no sibling races). #}
   <div class="children"></div>
   {% else %}
   <span class="file" data-path="{{ child.path }}">
-    <span class="row-ico" aria-hidden="true">{{ child.emoji }}</span>
+    <span class="row-ico" aria-hidden="true" title="{{ child.kind_label }}">{{ child.emoji }}</span>
     <button type="button" class="file-label">{{ child.name }}</button>
     <span class="file-mtime" title="modified (UTC)">{{ child.mtime }}</span>
   </span>

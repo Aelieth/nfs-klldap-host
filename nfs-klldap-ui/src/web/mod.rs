@@ -975,6 +975,8 @@ container_path = "{}"
         std::fs::write(real_root.join("zeta.txt"), b"z").unwrap();
         std::fs::write(real_root.join("Movie.MKV"), b"m").unwrap();
         std::fs::write(real_root.join(".hidden"), b"h").unwrap();
+        std::fs::write(real_root.join("script.sh"), b"#!/bin/sh").unwrap();
+        std::fs::write(real_root.join("game.exe"), b"MZ").unwrap();
         let st = make_share_backed_state(&real_root, "/treedata", &tmp);
         let token = st.auth.create_privileged_session("treetest");
         let app = router(st);
@@ -984,6 +986,9 @@ container_path = "{}"
         assert!(html.contains("📁"), "dir rows carry the folder emoji");
         assert!(html.contains("🎬"), ".MKV categorizes case-insensitively as movie");
         assert!(html.contains("❔"), "extension-less .hidden is unknown");
+        assert!(html.contains("📜"), ".sh categorizes as script/code");
+        assert!(html.contains(r#"title="script / code""#), "row icons carry hover labels");
+        assert!(html.contains("🪟"), ".exe categorizes as Windows/WINE");
         assert!(html.contains(r#"data-path="/treedata/Alpha""#), "logical child paths");
         // Files carry a right-aligned modified stamp (format proven by the
         // format_mtime_utc unit test; here just its presence + this century).
@@ -1037,10 +1042,19 @@ container_path = "{}"
             "no execute column on the condensed dir matrix"
         );
         assert!(html.contains(r#"class="sbit""#), "setgid/sticky stay available on dirs");
-        assert!(html.contains("Read includes browse"), "fuse hint renders");
+        // Compaction contract: helper prose lives in title hovers, not body text.
         assert!(
-            html.contains("execute-only (traverse)"),
-            "0711 must surface the traverse-only warning: {html}"
+            html.contains(r#"title="Read includes browse"#),
+            "fuse hint lives in the Read column's hover title"
+        );
+        assert!(
+            html.contains("cleared on Apply"),
+            "0711 must surface the (compact) traverse-only warning: {html}"
+        );
+        assert!(
+            !html.contains("(inherit group)") && !html.contains("(restrict delete)")
+                && !html.contains("(this directory only)") && !html.contains(">Permission bits<"),
+            "parenthetical subtitles and the redundant matrix heading are gone"
         );
         // Apply-scope radios + the file-bits editor (hidden until a recursive
         // scope is chosen; read/write seed from the dir matrix, exec unchecked).

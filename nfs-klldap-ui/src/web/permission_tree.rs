@@ -51,8 +51,10 @@ pub(crate) struct EntryView {
     pub path: String,
     pub name: String,
     pub is_dir: bool,
-    /// 📁 for directories, extension-category emoji for files.
+    /// 📁 for directories, category emoji for files (file_kind).
     pub emoji: &'static str,
+    /// Hover label naming the category ("directory", "audio", …).
+    pub kind_label: &'static str,
     /// "YYYY-MM-DD HH:MM" UTC for files; empty for directories.
     pub mtime: String,
 }
@@ -60,9 +62,15 @@ pub(crate) struct EntryView {
 impl EntryView {
     fn from_fs_entry(e: crate::fs::FsEntry) -> Self {
         let is_dir = matches!(e.kind, crate::fs::FsEntryKind::Dir);
+        let (emoji, kind_label) = if is_dir {
+            ("📁", "directory")
+        } else {
+            file_kind(&e.name)
+        };
         Self {
             path: e.path.to_string_lossy().into_owned(),
-            emoji: if is_dir { "📁" } else { file_kind_emoji(&e.name) },
+            emoji,
+            kind_label,
             mtime: e.mtime.map(format_mtime_utc).unwrap_or_default(),
             name: e.name,
             is_dir,
@@ -70,32 +78,134 @@ impl EntryView {
     }
 }
 
-/// Extension→emoji category for file rows. ASCII-case-insensitive; names
-/// without an extension (including ".bashrc"-style dotfiles) are unknown.
-pub(crate) fn file_kind_emoji(name: &str) -> &'static str {
-    let ext = name
+/// Category (emoji, hover label) for a file row. ASCII-case-insensitive over
+/// the whole name: well-known extensionless names (READMEs, build files,
+/// shell dotfiles) and a few full-name pins match first, then the extension.
+/// Anything unrecognized is the honest ❔.
+pub(crate) fn file_kind(name: &str) -> (&'static str, &'static str) {
+    const TEXT: (&str, &str) = ("📄", "text / document");
+    const CODE: (&str, &str) = ("📜", "script / code");
+    const IMAGE: (&str, &str) = ("🖼️", "image");
+    const AUDIO: (&str, &str) = ("🎵", "audio");
+    const VIDEO: (&str, &str) = ("🎬", "video");
+    const DISC: (&str, &str) = ("💿", "disk image");
+    const SOFT: (&str, &str) = ("📦", "software / binary");
+    const WIN: (&str, &str) = ("🪟", "Windows / WINE");
+    const DOS: (&str, &str) = ("💾", "DOS");
+    const FONT: (&str, &str) = ("🔤", "font");
+    const DATA: (&str, &str) = ("🗄️", "data / archive");
+    const UNKNOWN: (&str, &str) = ("❔", "unknown type");
+
+    let lower = name.to_ascii_lowercase();
+    // Full-name pins: extensionless well-knowns, plus names whose extension
+    // would mislead (config.sys is DOS, not a Windows driver; go.mod is Go
+    // source, not tracker music).
+    match lower.as_str() {
+        "readme" | "license" | "licence" | "copying" | "changelog" | "changes" | "install"
+        | "authors" | "contributors" | "news" | "todo" | "notice" | "version" | ".gitignore"
+        | ".gitattributes" | ".gitconfig" | ".gitmodules" | ".editorconfig" | ".dockerignore"
+        | ".env" | ".npmrc" => return TEXT,
+        "makefile" | "gnumakefile" | "dockerfile" | "containerfile" | "vagrantfile"
+        | "jenkinsfile" | "justfile" | "rakefile" | "gemfile" | "kconfig" | ".bashrc"
+        | ".zshrc" | ".profile" | ".bash_profile" | ".bash_aliases" | ".vimrc" | "go.mod"
+        | "go.sum" => return CODE,
+        "config.sys" => return DOS,
+        _ => {}
+    }
+    let ext = lower
         .rsplit_once('.')
         .filter(|(stem, _)| !stem.is_empty())
-        .map(|(_, e)| e.to_ascii_lowercase());
-    match ext.as_deref() {
-        Some(
-            "txt" | "md" | "log" | "rtf" | "pdf" | "doc" | "docx" | "odt" | "conf" | "cfg"
-            | "ini" | "toml" | "yaml" | "yml" | "json" | "xml" | "csv",
-        ) => "📄",
-        Some(
-            "jpg" | "jpeg" | "png" | "gif" | "webp" | "svg" | "bmp" | "tif" | "tiff" | "heic"
-            | "avif" | "ico",
-        ) => "🖼️",
-        Some("iso" | "img" | "qcow2" | "vmdk" | "vdi" | "dmg") => "💿",
-        Some(
-            "mp4" | "mkv" | "avi" | "mov" | "webm" | "wmv" | "m4v" | "mpg" | "mpeg" | "ts"
-            | "flv",
-        ) => "🎬",
-        Some(
-            "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "7z" | "rar" | "db" | "sqlite"
-            | "sqlite3" | "sql" | "bak" | "bin" | "dat" | "parquet",
-        ) => "🗄️",
-        _ => "❔",
+        .map(|(_, e)| e);
+    let Some(ext) = ext else { return UNKNOWN };
+    match ext {
+        // Plain text, documents, office, and structured-config formats.
+        "txt" | "text" | "md" | "markdown" | "mdown" | "rst" | "adoc" | "asciidoc" | "org"
+        | "tex" | "log" | "rtf" | "pdf" | "doc" | "docx" | "odt" | "odp" | "ods" | "xls"
+        | "xlsx" | "ppt" | "pptx" | "epub" | "mobi" | "csv" | "tsv" | "conf" | "cfg" | "cnf"
+        | "ini" | "toml" | "yaml" | "yml" | "json" | "json5" | "jsonl" | "ndjson" | "xml"
+        | "xsl" | "xslt" | "man" | "po" | "pot" | "ics" | "vcf"
+        // Subtitles are editable text, not video.
+        | "srt" | "sub" | "vtt" | "ass" | "ssa" | "idx" | "nfo"
+        // PEM/armored key material is text on disk.
+        | "pem" | "crt" | "cer" | "csr" | "key" | "pub" | "asc"
+        // systemd/udev/packaging config lives on Linux shares as plain text.
+        | "desktop" | "service" | "timer" | "socket" | "mount" | "automount" | "target"
+        | "path" | "netdev" | "network" | "link" | "swap" | "rules" | "repo" | "list"
+        | "spec" | "properties" | "env" => TEXT,
+
+        // Shell + scripting languages (pwsh is cross-platform, so ps1 lives
+        // here rather than under Windows).
+        "sh" | "bash" | "zsh" | "ksh" | "csh" | "tcsh" | "fish" | "ps1" | "psm1" | "py"
+        | "pyw" | "pyi" | "ipynb" | "rb" | "erb" | "pl" | "pm" | "php" | "phtml" | "lua"
+        | "tcl" | "awk"
+        // Compiled-language sources and headers.
+        | "c" | "h" | "i" | "cpp" | "cxx" | "cc" | "hpp" | "hxx" | "hh" | "m" | "mm" | "cs"
+        | "java" | "jsp" | "kt" | "kts" | "scala" | "groovy" | "go" | "rs" | "swift" | "dart"
+        | "zig" | "nim" | "vala" | "d" | "jl" | "r" | "rmd" | "hs" | "lhs" | "ml" | "mli"
+        | "erl" | "hrl" | "ex" | "exs" | "clj" | "cljs" | "edn" | "lisp" | "el" | "scm"
+        | "rkt" | "f" | "f77" | "f90" | "f95" | "for" | "asm" | "s" | "pas" | "ada" | "adb"
+        | "ads" | "cob" | "cbl"
+        // Web sources: markup/styles are source files, not prose (tsx is
+        // TypeScript; bare .ts stays video — MPEG-TS wins on media shares).
+        | "js" | "mjs" | "cjs" | "jsx" | "tsx" | "vue" | "svelte" | "html" | "htm" | "xhtml"
+        | "css" | "scss" | "sass" | "less"
+        // Build/query/infra languages and patches.
+        | "sql" | "psql" | "cmake" | "mk" | "mak" | "m4" | "gradle" | "sbt" | "bzl" | "nix"
+        | "tf" | "tfvars" | "proto" | "thrift" | "graphql" | "gql" | "patch" | "diff"
+        | "vim" => CODE,
+
+        "jpg" | "jpeg" | "jpe" | "jfif" | "png" | "apng" | "gif" | "webp" | "svg" | "svgz"
+        | "bmp" | "dib" | "tif" | "tiff" | "heic" | "heif" | "avif" | "jxl" | "ico" | "icns"
+        | "eps" | "psd" | "xcf" | "tga" | "exr" | "hdr" | "qoi" | "jp2" | "j2k" | "xpm"
+        | "xbm" | "pbm" | "pgm" | "ppm" | "pnm" | "emf" | "wmf"
+        // Camera raw formats (vendor extensions; bare .raw is a disk image).
+        | "cr2" | "cr3" | "nef" | "arw" | "orf" | "rw2" | "raf" | "dng" | "pef" => IMAGE,
+
+        // dts here is DTS surround audio (devicetree sources are a kernel-dev
+        // niche); .mod is tracker music — go.mod is pinned by name above.
+        "mp3" | "flac" | "ogg" | "oga" | "opus" | "wav" | "aac" | "m4a" | "m4b" | "aiff"
+        | "aif" | "aifc" | "ape" | "wv" | "wma" | "mid" | "midi" | "kar" | "mka" | "amr"
+        | "ra" | "ram" | "au" | "snd" | "dsf" | "dff" | "spx" | "caf" | "ac3" | "dts" | "mpa"
+        | "gsm" | "mpc" | "tta"
+        // Tracker/chiptune formats + playlists live with the music.
+        | "mod" | "xm" | "it" | "s3m" | "sid" | "m3u" | "m3u8" | "pls" => AUDIO,
+
+        "mp4" | "mkv" | "avi" | "mov" | "webm" | "wmv" | "m4v" | "mpg" | "mpeg" | "mpe"
+        | "m1v" | "m2v" | "ts" | "m2ts" | "mts" | "vob" | "ogv" | "ogm" | "3gp" | "3g2"
+        | "asf" | "rm" | "rmvb" | "divx" | "f4v" | "flv" | "mxf" | "dv" | "y4m" => VIDEO,
+
+        // Optical/VM/filesystem images (mdf/cue/raw read as disc artifacts
+        // here, not SQL-Server files or camera raws).
+        "iso" | "img" | "raw" | "qcow" | "qcow2" | "qed" | "vdi" | "vhd" | "vhdx" | "vmdk"
+        | "dmg" | "wim" | "nrg" | "mdf" | "mds" | "cue" | "ccd" | "toast" | "squashfs"
+        | "sqsh" | "sfs" | "erofs" | "sif" | "ova" | "ovf" | "box" | "ima" | "vfd" => DISC,
+
+        // Linux/cross-platform packages, libraries, and runnable artifacts
+        // (Windows installers/binaries have their own category below).
+        "deb" | "rpm" | "appimage" | "flatpak" | "flatpakref" | "snap" | "apk" | "ipa"
+        | "pkg" | "so" | "ko" | "o" | "a" | "run" | "efi" | "rom" | "fw" | "jar" | "war"
+        | "ear" | "whl" | "egg" | "gem" | "class" | "pyc" | "crx" | "xpi" | "vsix" => SOFT,
+
+        // Windows/WINE artifacts. cmd/vbs/wsf are NT-era scripting; bat is
+        // DOS below. sys is a Windows driver unless the name is config.sys.
+        "exe" | "dll" | "msi" | "msix" | "msp" | "msu" | "lnk" | "reg" | "cpl" | "ocx"
+        | "scr" | "sys" | "drv" | "inf" | "cat" | "chm" | "hlp" | "cur" | "ani" | "theme"
+        | "appx" | "cab" | "cmd" | "vbs" | "wsf" => WIN,
+
+        "com" | "bat" | "pif" => DOS,
+
+        "ttf" | "otf" | "ttc" | "woff" | "woff2" | "eot" | "pfb" | "pfa" | "fnt" => FONT,
+
+        // Archives, databases, and datasets (.bin stays here — too generic
+        // to claim for disk images or binaries).
+        "zip" | "zipx" | "tar" | "gz" | "tgz" | "bz2" | "tbz" | "tbz2" | "xz" | "txz" | "lz"
+        | "lzma" | "lzo" | "lz4" | "zst" | "tzst" | "br" | "7z" | "rar" | "cpio" | "lha"
+        | "lzh" | "pak" | "db" | "db3" | "sqlite" | "sqlite3" | "mdb" | "accdb" | "dbf"
+        | "bak" | "dump" | "dat" | "bin" | "parquet" | "orc" | "avro" | "arrow" | "feather"
+        | "h5" | "hdf5" | "nc" | "npy" | "npz" | "pkl" | "pickle" | "rds" | "rdata" | "gguf"
+        | "safetensors" | "onnx" | "pt" | "pth" | "ckpt" | "torrent" => DATA,
+
+        _ => UNKNOWN,
     }
 }
 
@@ -1293,17 +1403,57 @@ mod tree_row_tests {
     use super::*;
 
     #[test]
-    fn file_kind_emoji_maps_categories_case_insensitively() {
-        assert_eq!(file_kind_emoji("a.TXT"), "📄");
-        assert_eq!(file_kind_emoji("b.Jpeg"), "🖼️");
-        assert_eq!(file_kind_emoji("c.iso"), "💿");
-        assert_eq!(file_kind_emoji("d.img"), "💿");
-        assert_eq!(file_kind_emoji("e.MKV"), "🎬");
-        assert_eq!(file_kind_emoji("f.tar.gz"), "🗄️");
-        // No extension (or dot-leading names) → unknown.
-        assert_eq!(file_kind_emoji("README"), "❔");
-        assert_eq!(file_kind_emoji(".bashrc"), "❔");
-        assert_eq!(file_kind_emoji("trailingdot."), "❔");
+    fn file_kind_maps_categories_case_insensitively() {
+        let e = |n: &str| file_kind(n).0;
+        // Original five categories still hold.
+        assert_eq!(e("a.TXT"), "📄");
+        assert_eq!(e("b.Jpeg"), "🖼️");
+        assert_eq!(e("c.iso"), "💿");
+        assert_eq!(e("d.img"), "💿");
+        assert_eq!(e("e.MKV"), "🎬");
+        assert_eq!(e("f.tar.gz"), "🗄️");
+        // New categories.
+        assert_eq!(e("x.sh"), "📜");
+        assert_eq!(e("X.SH"), "📜");
+        assert_eq!(e("a.py"), "📜");
+        assert_eq!(e("song.MP3"), "🎵");
+        assert_eq!(e("track.flac"), "🎵");
+        assert_eq!(e("pkg.deb"), "📦");
+        assert_eq!(e("lib.so"), "📦");
+        assert_eq!(e("f.ttf"), "🔤");
+        assert_eq!(e("u.service"), "📄");
+        // WINE / DOS split.
+        assert_eq!(e("Game.EXE"), "🪟");
+        assert_eq!(e("setup.msi"), "🪟");
+        assert_eq!(e("driver.sys"), "🪟");
+        assert_eq!(e("s.cmd"), "🪟");
+        assert_eq!(e("runme.bat"), "💾");
+        assert_eq!(e("player.COM"), "💾");
+        assert_eq!(e("CONFIG.SYS"), "💾"); // name pin beats the .sys driver rule
+        // Ambiguity pins.
+        assert_eq!(e("v.ts"), "🎬");
+        assert_eq!(e("w.tsx"), "📜");
+        assert_eq!(e("z.mdf"), "💿");
+        assert_eq!(e("go.mod"), "📜"); // name pin beats tracker-music .mod
+        assert_eq!(e("music.mod"), "🎵");
+        // Extensionless well-known names (previously ❔).
+        assert_eq!(e("README"), "📄");
+        assert_eq!(e("Makefile"), "📜");
+        assert_eq!(e(".bashrc"), "📜");
+        // Still honestly unknown.
+        assert_eq!(e(".hidden"), "❔");
+        assert_eq!(e("trailingdot."), "❔");
+        assert_eq!(e("blob.xyz"), "❔");
+    }
+
+    #[test]
+    fn file_kind_labels_name_the_category() {
+        assert_eq!(file_kind("a.sh").1, "script / code");
+        assert_eq!(file_kind("a.exe").1, "Windows / WINE");
+        assert_eq!(file_kind("a.bat").1, "DOS");
+        assert_eq!(file_kind("a.mp3").1, "audio");
+        assert_eq!(file_kind("a.ttf").1, "font");
+        assert_eq!(file_kind("a.xyz").1, "unknown type");
     }
 
     #[test]

@@ -17,9 +17,11 @@
   special bits refused on files). Files selected individually keep the full
   rwx triad, no special bits, no scope. Server-side
   `fs::dir_mode_r_implies_x` per entry is unchanged (see ui-design.md "Read
-  implies execute" + "Apply scope"). Follow-ups: mirror the UX on the 0.9.9x
-  ACL line; audio file category (currently ❔); ARIA tree pattern still
-  deferred (ui-design.md).
+  implies execute" + "Apply scope"). File-type icons expanded to 13
+  categories (audio/scripts/software/fonts/Windows/DOS + Linux-heavy
+  extension coverage + hover labels) — see ui-design.md. Follow-ups: mirror
+  the UX on the 0.9.9x ACL line; ARIA tree pattern still deferred
+  (ui-design.md).
 - Track regressions via `cargo test --workspace` and [TESTING.md](TESTING.md) living spec.
 - **0.9.x branch**: branch name carries the release version (currently 0.9.85); Cargo workspace, Dockerfile LABEL, and nfs-klldap-host.yaml image tag are aligned to it.
 - Client connects (2026-07 capture): krb5 auth + NFSv4.1 session succeed server-side, then the client destroys the session before any namespace op — failure is client-side (gssd/mount context). GANESHA_DEBUG now logs RPCSEC_GSS; see docs/client-fedora-immutable.md troubleshooting.

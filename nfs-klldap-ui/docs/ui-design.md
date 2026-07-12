@@ -18,18 +18,23 @@ dotfiles are visible, and an empty directory shows a muted `(empty)` row. Rows s
 `templates/tree_entry.html`: directory rows are **two real buttons** — `.dir-caret` only
 expands/collapses (lazy 1-level fetch via `/tree`, `aria-expanded` tracks state) and `.dir-label`
 (📁 + name) only selects — while file rows (`.file`, slightly smaller font) carry a category emoji
-(📄 txt · 🖼️ img · 💿 iso · 🎬 movies · 🗄️ data · ❔ unknown; extension-mapped server-side in
-`file_kind_emoji`), a `.file-label` select button, and a right-aligned UTC modified stamp
-(`.file-mtime`). Selecting either kind loads `GET /dir-perms?path=…` into the panel body
+(13 kinds: 📄 text/document · 📜 script/code · 🖼️ image · 🎵 audio · 🎬 video · 💿 disk image ·
+📦 software/binary · 🪟 Windows/WINE · 💾 DOS · 🔤 font · 🗄️ data/archive · ❔ unknown · 📁
+directory; mapped server-side in `file_kind`, which also names the category in the icon's hover
+`title`), a `.file-label` select button, and a right-aligned UTC modified stamp (`.file-mtime`).
+`file_kind` matches well-known extensionless names before the extension (README-family and config
+dotfiles → 📄, Makefile/Dockerfile/shell-rc → 📜) and pins the ambiguous cases in code comments
+(`.ts` = MPEG-TS 🎬 not TypeScript, `config.sys` 💾 beats the `.sys` 🪟 driver rule, `go.mod` 📜
+beats tracker-music `.mod`, `.bin` stays 🗄️). Selecting either kind loads `GET /dir-perms?path=…` into the panel body
 (`templates/dir_perms.html`) — this single endpoint replaced the retired `/dir-meta`,
 `/dir-editor`, and `/dir-acl` trio and now serves **both node kinds** (the form carries
 `data-kind="dir|file"` as the JS contract). Share cards are keyboard-activatable
 (`role="button"`, `tabindex`, `aria-pressed`, Enter/Space). The panel shows **POSIX** (owner/group
 with live LLDAP search + hidden numeric uid/gid for name→id translation; **directories** get the
-condensed 2-column Read/Write matrix, **setgid/sticky** toggles, the **Apply-scope radios**
-(None / single directory / all directories) and, for recursive scopes, the **File permission
-bits** editor; **files** get the full 3×3 rwx matrix with no special bits and no scope radios;
-per-checkbox `aria-label`s and a live octal + symbolic readout — plus a second `Files NNN`
+condensed 2-column Read/Write matrix, **setgid/sticky** toggles (one row), the **Apply-scope
+radios** (None / single directory / all directories) and, for recursive scopes, the **File
+permission bits** editor; **files** get the full 3×3 rwx matrix with no special bits and no scope
+radios; per-checkbox `aria-label`s and a live octal + symbolic readout — plus a second `Files NNN`
 readout while a recursive scope is selected) and, beside it, the **named ACL/xattr** list (both sections render
 through the `acl_group` Askama macro). POSIX Apply POSTs the existing `/apply` (chown/chmod, incl.
 setgid/sticky — only setuid is refused); ACL add/remove POST `/acl-apply` (names resolved via LDAP,
@@ -83,8 +88,19 @@ refused). So file execute is always an explicit grant — asserted end-to-end by
 `web_apply_scope_all_grants_file_execute_only_when_chosen`. Both recursive scopes require a
 `confirm()`; the fragment reload after an apply resets the scope to None on purpose.
 
-A directory whose current mode grants x-without-r (traverse-only) shows an amber `.perm-note.warn`
-— that state isn't representable in the condensed matrix and is stripped on Apply.
+A directory whose current mode grants x-without-r (traverse-only) shows a compact amber
+`.perm-note.warn` — that state isn't representable in the condensed matrix and is stripped on
+Apply.
+
+**Compaction contract (0.9.85):** the editor carries no helper prose — descriptions live in
+`title` hovers (the Read column header carries the read-implies-execute explanation; the
+Apply-scope label carries the files-get-file-bits rule; setgid/sticky/radio labels are bare
+single terms with their explanations on hover). There is no "Permission bits" heading (the matrix
+column headers are the label), setgid + sticky share one row, and the groups are separated by
+thin dashed top-borders (`.rec-scope`, `.file-opts`, `.perm-readout`) instead of text. The
+readout row wraps whole items (`flex-wrap` + `white-space:nowrap` on `.symbolic`) so `Files`
+drops to its own line rather than breaking the symbolic string. When adding new controls to the
+panel: hover for help, dividers for grouping, no inline explanation lines.
 
 All client behaviour lives in `/assets/permissions.js` behind the **`window.PermUI`** surface
 (`isLocked/flashLock/loadDirPerms/cancelCurrentApply/setShare`); panel state (share, current path,

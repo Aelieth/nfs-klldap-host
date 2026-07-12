@@ -28,20 +28,90 @@ struct IndexTemplate {
 #[derive(Template)]
 #[template(path = "tree_fragment.html")]
 struct TreeFragmentTemplate {
-    children: Vec<DirNode>,
+    children: Vec<EntryView>,
 }
 /// Share root as top tree row with direct children (includes root perms).
 #[derive(Template)]
 #[template(path = "tree_root.html")]
 struct TreeRootTemplate {
     root: DirNode,
-    children: Vec<DirNode>,
+    children: Vec<EntryView>,
 }
 
+/// The share-root row of the tree (always a directory).
 #[derive(Debug, Clone)]
 pub(crate) struct DirNode {
     pub path: String,
     pub name: String,
+}
+
+/// One row in the tree listing — a subdirectory or a file (tree_entry.html).
+#[derive(Debug, Clone)]
+pub(crate) struct EntryView {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+    /// 📁 for directories, extension-category emoji for files.
+    pub emoji: &'static str,
+    /// "YYYY-MM-DD HH:MM" UTC for files; empty for directories.
+    pub mtime: String,
+}
+
+impl EntryView {
+    fn from_fs_entry(e: crate::fs::FsEntry) -> Self {
+        let is_dir = matches!(e.kind, crate::fs::FsEntryKind::Dir);
+        Self {
+            path: e.path.to_string_lossy().into_owned(),
+            emoji: if is_dir { "📁" } else { file_kind_emoji(&e.name) },
+            mtime: e.mtime.map(format_mtime_utc).unwrap_or_default(),
+            name: e.name,
+            is_dir,
+        }
+    }
+}
+
+/// Extension→emoji category for file rows. ASCII-case-insensitive; names
+/// without an extension (including ".bashrc"-style dotfiles) are unknown.
+pub(crate) fn file_kind_emoji(name: &str) -> &'static str {
+    let ext = name
+        .rsplit_once('.')
+        .filter(|(stem, _)| !stem.is_empty())
+        .map(|(_, e)| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some(
+            "txt" | "md" | "log" | "rtf" | "pdf" | "doc" | "docx" | "odt" | "conf" | "cfg"
+            | "ini" | "toml" | "yaml" | "yml" | "json" | "xml" | "csv",
+        ) => "📄",
+        Some(
+            "jpg" | "jpeg" | "png" | "gif" | "webp" | "svg" | "bmp" | "tif" | "tiff" | "heic"
+            | "avif" | "ico",
+        ) => "🖼️",
+        Some("iso" | "img" | "qcow2" | "vmdk" | "vdi" | "dmg") => "💿",
+        Some(
+            "mp4" | "mkv" | "avi" | "mov" | "webm" | "wmv" | "m4v" | "mpg" | "mpeg" | "ts"
+            | "flv",
+        ) => "🎬",
+        Some(
+            "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "7z" | "rar" | "db" | "sqlite"
+            | "sqlite3" | "sql" | "bak" | "bin" | "dat" | "parquet",
+        ) => "🗄️",
+        _ => "❔",
+    }
+}
+
+/// "YYYY-MM-DD HH:MM" in UTC. Component accessors only (no `formatting`
+/// feature); UTC on purpose — the time crate's local-offset lookup is
+/// environment-dependent and the row tooltip discloses the zone.
+pub(crate) fn format_mtime_utc(t: std::time::SystemTime) -> String {
+    let odt = time::OffsetDateTime::from(t);
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        odt.year(),
+        u8::from(odt.month()),
+        odt.day(),
+        odt.hour(),
+        odt.minute()
+    )
 }
 /// Share card row with client NFS path and RW/squash/cache labels.
 #[derive(Debug, Clone)]
@@ -75,6 +145,11 @@ pub(crate) struct DirPermsTemplate {
     g_r: bool, g_w: bool, g_x: bool,
     o_r: bool, o_w: bool, o_x: bool,
     setgid: bool, sticky: bool,
+    /// False for a regular file: full rwx triad, no special bits, no recursive apply.
+    is_dir: bool,
+    /// Directory grants x-without-r for some audience — the condensed matrix
+    /// can't express traverse-only access and Apply strips it; warn.
+    traverse_only_note: bool,
     /// False when the directory could not be stat'd; the template shows a full-width diagnostic
     /// (meta_hint + the paths below) instead of the POSIX/ACL editors.
     meta_available: bool,
@@ -227,8 +302,13 @@ pub(crate) struct ApplyForm {
     owner_user: String,
     owner_group: String,
     mode: String,
+    /// Apply reach for directory targets: "none" | "single" | "all".
+    /// File targets carry no radios; anything else means the node only.
     #[serde(default)]
-    recursive: bool,
+    recursive_scope: String,
+    /// Explicit rwx octal for files in scope (recursive scopes only).
+    #[serde(default)]
+    file_mode: String,
     #[serde(default)]
     owner_user_uid: String,
     #[serde(default)]
@@ -334,7 +414,8 @@ pub(crate) async fn index(
 
     Ok(Html(tpl.render().unwrap()))
 }
-/// Lazy-loads children of a directory (HTMX partial).
+/// Lazy-loads one level of a directory (HTMX partial): subdirectories first,
+/// then files with a type emoji and modified date.
 pub(crate) async fn tree_fragment(
     State(state): State<AppState>,
     Query(params): Query<TreeParams>,
@@ -343,21 +424,16 @@ pub(crate) async fn tree_fragment(
     let _user = require_auth(&state, &headers).await?;
     let path = std::path::Path::new(&params.path);
     let fs = state.fs.read().expect("fs lock poisoned");
-    if let Some(node) = fs.build_tree(path) {
-        let children: Vec<DirNode> = node
-            .children
-            .into_iter()
-            .map(|c| DirNode {
-                path: c.path.to_string_lossy().to_string(),
-                name: c.name,
-            })
-            .collect();
+    if let Some(entries) = fs.list_dir(path) {
+        let children: Vec<EntryView> = entries.into_iter().map(EntryView::from_fs_entry).collect();
         let is_root_request = params.root.is_some();
         if is_root_request {
-            let root = DirNode {
-                path: node.path.to_string_lossy().to_string(),
-                name: node.name,
-            };
+            let normalized = nfs_klldap_config::normalize_path(&params.path);
+            let name = std::path::Path::new(&normalized)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| normalized.clone());
+            let root = DirNode { path: normalized, name };
             let tpl = TreeRootTemplate { root, children };
             return Ok(Html(tpl.render().unwrap()));
         } else {
@@ -416,7 +492,7 @@ pub(crate) async fn dir_perms(
     let host = std::path::Path::new(&path);
     let (meta, diag) = {
         let fs = state.fs.read().expect("fs lock poisoned");
-        (fs.get_dir_meta(host), fs.diagnose_path(host))
+        (fs.get_node_meta(host), fs.diagnose_path(host))
     };
 
     let mut owner_display = "(unavailable)".to_string();
@@ -430,8 +506,17 @@ pub(crate) async fn dir_perms(
     let (mut setgid, mut sticky) = (false, false);
     let mut meta_available = false;
     let mut meta_hint = String::new();
+    // Directory is the default: when meta is unavailable the diagnostic branch
+    // renders instead, so the flag only matters for a node that was stat'd.
+    let mut is_dir = true;
+    let mut traverse_only_note = false;
 
-    if let Some((owner, group, mode)) = meta {
+    if let Some(m) = meta {
+        let (owner, group, mode) = (m.uid, m.gid, m.mode);
+        is_dir = m.is_dir;
+        // x granted where r is not (per audience): traverse-only access the
+        // condensed dir matrix can't express — Apply strips it, so warn.
+        traverse_only_note = is_dir && ((mode & 0o111) & !((mode & 0o444) >> 2)) != 0;
         let l = state.lldap.lock().await;
         owner_display = friendly_user_label(&l, owner).await;
         group_display = friendly_group_label(&l, group).await;
@@ -493,6 +578,8 @@ pub(crate) async fn dir_perms(
         mode_octal,
         u_r, u_w, u_x, g_r, g_w, g_x, o_r, o_w, o_x,
         setgid, sticky,
+        is_dir,
+        traverse_only_note,
         meta_available,
         meta_hint,
         serve_path_display: diag
@@ -703,31 +790,82 @@ pub(crate) async fn apply_permissions(
     }
     let (owner_uid, group_gid) = (owner_uid.unwrap(), group_gid.unwrap());
     let mode = u32::from_str_radix(&form.mode, 8).unwrap_or(0o770);
+    // A file target never recurses and never gets the fused-directory advisory.
+    // The file panel exposes no scope radios; this is the server-side belt for
+    // hand-crafted POSTs.
+    let target_is_file = {
+        let fs = state.fs.read().expect("fs lock poisoned");
+        fs.get_node_meta(std::path::Path::new(&form.path))
+            .map(|m| !m.is_dir)
+            .unwrap_or(false)
+    };
+    let scope = if target_is_file {
+        crate::fs::ApplyScope::DirOnly
+    } else {
+        match form.recursive_scope.as_str() {
+            "all" => crate::fs::ApplyScope::All,
+            "single" => crate::fs::ApplyScope::ImmediateFiles,
+            _ => crate::fs::ApplyScope::DirOnly,
+        }
+    };
+    // Files in a recursive scope get the explicit File-options bits; a missing
+    // or malformed value falls back to the directory's r/w without execute
+    // (the safe default). Special bits never belong on files.
+    let file_mode = if scope != crate::fs::ApplyScope::DirOnly {
+        let fm = u32::from_str_radix(&form.file_mode, 8).unwrap_or(mode & 0o666);
+        if fm & !0o777 != 0 {
+            return Ok(Html(
+                r#"<div class="note-danger">File mode may only contain read/write/execute bits — special bits (setuid/setgid/sticky) are not allowed on files; nothing was changed.</div>"#
+                    .to_string(),
+            ));
+        }
+        Some(fm)
+    } else {
+        None
+    };
     // Directories are normalized r-implies-x at apply time (fs.rs) — an
     // r-without-x directory lists as EMPTY over NFS, so for directories the
     // two bits are one concept. Surface the normalization in the apply log.
     let dir_mode = crate::fs::dir_mode_r_implies_x(mode);
-    let mode_warning = (dir_mode != mode).then(|| {
+    let mode_warning = (!target_is_file && dir_mode != mode).then(|| {
         format!(
-            "note: directories apply as {dir_mode:o} — read implies execute on directories (r-without-x lists as empty over NFS); files keep {mode:o}"
+            "note: the directory mode applies as {dir_mode:o} — read implies execute on directories (r-without-x lists as empty over NFS)"
         )
     });
-    let cmd = if form.recursive {
+    let cmd = if target_is_file {
         format!(
-            "chown {uid}:{gid} -R {path}\nchmod {mode:o} -R {path}",
+            "chown {uid}:{gid} {path}\nchmod {mode:o} {path}",
             uid = owner_uid,
             gid = group_gid,
             path = form.path,
             mode = mode
         )
     } else {
-        format!(
-            "chown {uid}:{gid} {path} (+ immediate files in directory)\nchmod {mode:o} {path} (+ immediate files in directory)",
-            uid = owner_uid,
-            gid = group_gid,
-            path = form.path,
-            mode = mode
-        )
+        match scope {
+            crate::fs::ApplyScope::All => format!(
+                "chown {uid}:{gid} -R {path}\nchmod -R dirs={mode:o} files={fm:o} {path}",
+                uid = owner_uid,
+                gid = group_gid,
+                path = form.path,
+                mode = mode,
+                fm = file_mode.unwrap_or(mode & 0o666)
+            ),
+            crate::fs::ApplyScope::ImmediateFiles => format!(
+                "chown {uid}:{gid} {path} (+ files directly inside)\nchmod dirs={mode:o} files={fm:o} {path} (single directory)",
+                uid = owner_uid,
+                gid = group_gid,
+                path = form.path,
+                mode = mode,
+                fm = file_mode.unwrap_or(mode & 0o666)
+            ),
+            crate::fs::ApplyScope::DirOnly => format!(
+                "chown {uid}:{gid} {path}\nchmod {mode:o} {path} (directory only)",
+                uid = owner_uid,
+                gid = group_gid,
+                path = form.path,
+                mode = mode
+            ),
+        }
     };
     let cmd = match mode_warning {
         Some(w) => format!("{cmd}\n{w}"),
@@ -746,8 +884,8 @@ pub(crate) async fn apply_permissions(
     let pth = form.path.clone();
     let uid = owner_uid;
     let gid = group_gid;
-    let md = mode;
-    let rec = form.recursive;
+    let sc = scope;
+    let spec = crate::fs::ApplySpec { mode, scope, file_mode };
     let prog = progress.clone();
     tokio::spawn(async move {
         *prog.phase.lock().unwrap() = "scanning".to_string();
@@ -755,7 +893,7 @@ pub(crate) async fn apply_permissions(
         let fs1 = fs.clone();
         let prog1 = prog.clone();
         let count_res = tokio::task::spawn_blocking(move || {
-            fs1.count_applicable_with_live(std::path::Path::new(&pth1), rec, &prog1)
+            fs1.count_applicable_with_live(std::path::Path::new(&pth1), sc, &prog1)
         }).await;
         match count_res {
             Ok(Ok(_)) | Ok(Err(_)) => { /* count fn itself pushes errors to progress on problems */ }
@@ -773,9 +911,7 @@ pub(crate) async fn apply_permissions(
         let fs2 = fs.clone();
         let prog2 = prog.clone();
         let apply_res = match tokio::task::spawn_blocking(move || {
-            fs2.apply_permissions_with_progress(
-                std::path::Path::new(&pth2), uid, gid, md, rec, &prog2,
-            )
+            fs2.apply_permissions_with_progress(std::path::Path::new(&pth2), uid, gid, spec, &prog2)
         }).await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
@@ -1149,5 +1285,34 @@ mod search_params_tests {
             owner_group: Some("admins".into()),
         };
         assert_eq!(p.group_query_raw(), Some("admins"));
+    }
+}
+
+#[cfg(test)]
+mod tree_row_tests {
+    use super::*;
+
+    #[test]
+    fn file_kind_emoji_maps_categories_case_insensitively() {
+        assert_eq!(file_kind_emoji("a.TXT"), "📄");
+        assert_eq!(file_kind_emoji("b.Jpeg"), "🖼️");
+        assert_eq!(file_kind_emoji("c.iso"), "💿");
+        assert_eq!(file_kind_emoji("d.img"), "💿");
+        assert_eq!(file_kind_emoji("e.MKV"), "🎬");
+        assert_eq!(file_kind_emoji("f.tar.gz"), "🗄️");
+        // No extension (or dot-leading names) → unknown.
+        assert_eq!(file_kind_emoji("README"), "❔");
+        assert_eq!(file_kind_emoji(".bashrc"), "❔");
+        assert_eq!(file_kind_emoji("trailingdot."), "❔");
+    }
+
+    #[test]
+    fn format_mtime_utc_formats_known_instants() {
+        use std::time::{Duration, UNIX_EPOCH};
+        assert_eq!(format_mtime_utc(UNIX_EPOCH), "1970-01-01 00:00");
+        assert_eq!(
+            format_mtime_utc(UNIX_EPOCH + Duration::from_secs(86_460)),
+            "1970-01-02 00:01"
+        );
     }
 }

@@ -1,13 +1,8 @@
 <ul class="tree">
+{% if children.is_empty() %}
+    <li class="tree-empty">(empty)</li>
+{% endif %}
 {% for child in children %}
-    <li>
-        <span class="dir" data-path="{{ child.path }}">
-            <button type="button" class="dir-caret" aria-expanded="false"
-                    aria-label="{{ child.name }} subdirectories">&#9654;</button>
-            <button type="button" class="dir-label">{{ child.name }}</button>
-        </span>
-        {# Stable placeholder for JS/HTMX expand (no sibling races). #}
-        <div class="children"></div>
-    </li>
+    {% include "tree_entry.html" %}
 {% endfor %}
 </ul>

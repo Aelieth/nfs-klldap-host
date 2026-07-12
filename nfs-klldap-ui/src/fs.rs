@@ -12,19 +12,77 @@ use std::sync::Mutex as StdMutex;
 
 use walkdir::{DirEntry, WalkDir};
 
-#[derive(Debug, Clone)]
-pub struct DirectoryNode {
-    pub path: PathBuf,
-    pub name: String,
-    pub children: Vec<DirectoryNode>,
+/// Kind of a listed child: directory (expandable, condensed perms editor) or regular file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FsEntryKind {
+    Dir,
+    File,
 }
 
-/// Options for apply (recursive policy, continue, dry).
+/// One direct child of a listed directory (single level — no recursion).
+#[derive(Debug, Clone)]
+pub struct FsEntry {
+    /// Logical host path (share namespace) used as the tree row's data-path.
+    pub path: PathBuf,
+    pub name: String,
+    pub kind: FsEntryKind,
+    /// Modification time, fetched for files only (None for dirs or stat errors).
+    pub mtime: Option<std::time::SystemTime>,
+}
+
+/// Stat-only metadata for one node — works for directories and files alike.
+#[derive(Debug, Clone, Copy)]
+pub struct NodeMeta {
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u32,
+    pub is_dir: bool,
+}
+
+/// How far an apply reaches from the selected node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApplyScope {
+    /// The selected node only — a directory's own inode, or a file target.
+    /// Files inside a directory are never touched at this scope.
+    #[default]
+    DirOnly,
+    /// The selected directory plus the files directly inside it
+    /// (subdirectories and their contents stay untouched).
+    ImmediateFiles,
+    /// The selected directory and every subdirectory and file beneath it.
+    All,
+}
+
+impl ApplyScope {
+    /// WalkDir depth budget for the scope (0 = the root entry only).
+    fn max_depth(self) -> usize {
+        match self {
+            ApplyScope::DirOnly => 0,
+            ApplyScope::ImmediateFiles => 1,
+            ApplyScope::All => usize::MAX,
+        }
+    }
+}
+
+/// What an apply writes: the main mode (directories fuse it r-implies-x per
+/// entry; file targets take it raw), how far it reaches, and the explicit
+/// file bits for recursive scopes (avoids clippy::too_many_arguments on the
+/// apply entry point).
+#[derive(Debug, Clone, Copy)]
+pub struct ApplySpec {
+    pub mode: u32,
+    pub scope: ApplyScope,
+    pub file_mode: Option<u32>,
+}
+
+/// Options for apply (reach, file mode, continue, dry).
 #[derive(Debug, Clone, Default)]
 pub struct ApplyOptions {
-    pub recursive: bool,
-    pub apply_to_dirs: bool,
-    pub apply_to_files: bool,
+    pub scope: ApplyScope,
+    /// Mode for file entries when the scope includes files. None = files get
+    /// the main mode as-is (used by file targets, where the main mode IS the
+    /// file mode). Directories always take the r-implies-x normalized mode.
+    pub file_mode: Option<u32>,
     pub continue_on_error: bool,
     pub dry_run: bool,
 }
@@ -119,47 +177,50 @@ impl FsManager {
         }
     }
 
-    pub fn build_tree(&self, root: &Path) -> Option<DirectoryNode> {
-        // Normalize early so trailing slashes don't break matching or child.
+    /// Lists the direct children of an allowed directory: subdirectories first,
+    /// then regular files, case-insensitive alphabetical within each group.
+    /// Symlinks and special files are excluded (same policy as the apply walk);
+    /// dotfiles are listed. None when the path is outside the allow-list, can't
+    /// be mapped to a container path, or the mapped directory can't be read —
+    /// the tree handler renders the diagnose_path alert for those.
+    pub fn list_dir(&self, root: &Path) -> Option<Vec<FsEntry>> {
+        // Normalize early so trailing slashes don't break matching or child paths.
         let normalized = self.normalize_for_matching(root);
-
         if !self.is_allowed(&normalized) {
             return None;
         }
+        let real_root = self.host_path_to_container_path(&normalized).ok()?;
 
-        let real_root = match self.host_path_to_container_path(&normalized) {
-            Ok(p) => p,
-            Err(_) => return None,
-        };
-
-        let mut node = DirectoryNode {
-            path: normalized.clone(),
-            name: normalized
-                .file_name()
-                .unwrap_or_else(|| normalized.as_os_str())
-                .to_string_lossy()
-                .into_owned(),
-            children: vec![],
-        };
-
-        // Builds child directories recursively by reading the container path.
-        if let Ok(entries) = fs::read_dir(&real_root) {
-            for entry in entries.flatten() {
-                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                    let child_name = entry.file_name();
-                    let logical_child = normalized.join(&child_name);
-                    if let Some(child) = self.build_tree(&logical_child) {
-                        node.children.push(child);
-                    }
-                }
-            }
+        let mut entries: Vec<FsEntry> = Vec::new();
+        for entry in fs::read_dir(&real_root).ok()?.flatten() {
+            // read_dir's file_type does not follow symlinks, so symlinked
+            // dirs/files stay excluded — matching the apply walk's skip policy.
+            let Ok(ft) = entry.file_type() else { continue };
+            let kind = if ft.is_dir() {
+                FsEntryKind::Dir
+            } else if ft.is_file() {
+                FsEntryKind::File
+            } else {
+                continue;
+            };
+            let mtime = match kind {
+                // Only file rows show a modified date; skip the extra stat for dirs.
+                FsEntryKind::File => entry.metadata().ok().and_then(|m| m.modified().ok()),
+                FsEntryKind::Dir => None,
+            };
+            entries.push(FsEntry {
+                path: normalized.join(entry.file_name()),
+                name: entry.file_name().to_string_lossy().into_owned(),
+                kind,
+                mtime,
+            });
         }
-
-        Some(node)
+        entries.sort_by_cached_key(|e| (matches!(e.kind, FsEntryKind::File), e.name.to_lowercase()));
+        Some(entries)
     }
 
-    /// Stat-only lookup for one directory (lazy, no subtree walk).
-    pub fn get_dir_meta(&self, path: &Path) -> Option<(u32, u32, u32)> {
+    /// Stat-only lookup for one node — file or directory (lazy, no walk).
+    pub fn get_node_meta(&self, path: &Path) -> Option<NodeMeta> {
         let normalized = self.normalize_for_matching(path);
         if !self.is_allowed(&normalized) {
             return None;
@@ -167,8 +228,18 @@ impl FsManager {
 
         let real = self.host_path_to_container_path(&normalized).ok()?;
         let meta = fs::metadata(&real).ok()?;
-        let mode = meta.permissions().mode() & 0o7777;
-        Some((meta.uid(), meta.gid(), mode))
+        Some(NodeMeta {
+            uid: meta.uid(),
+            gid: meta.gid(),
+            mode: meta.permissions().mode() & 0o7777,
+            is_dir: meta.is_dir(),
+        })
+    }
+
+    /// Stat-only (uid, gid, mode) for one node; kept for the call sites that
+    /// don't care about the dir/file kind.
+    pub fn get_dir_meta(&self, path: &Path) -> Option<(u32, u32, u32)> {
+        self.get_node_meta(path).map(|m| (m.uid, m.gid, m.mode))
     }
 
     /// Returns *named* (non-base) ACL user/group entries for an allowed directory using the
@@ -207,7 +278,7 @@ impl FsManager {
     pub fn count_applicable_with_live(
         &self,
         path: &Path,
-        recursive: bool,
+        scope: ApplyScope,
         progress: &ApplyProgress,
     ) -> Result<usize, String> {
         let normalized = self.normalize_for_matching(path);
@@ -218,9 +289,8 @@ impl FsManager {
         let target_path = self.host_path_to_container_path(&normalized)?;
 
         let opts = ApplyOptions {
-            recursive,
-            apply_to_dirs: true,
-            apply_to_files: true,
+            scope,
+            file_mode: None,
             continue_on_error: true,
             dry_run: false,
         };
@@ -231,14 +301,15 @@ impl FsManager {
 
     /// Applies permissions with progress atomics after progress.total is set.
     /// Directory modes are normalized r-implies-x per entry (see
-    /// dir_mode_r_implies_x); files receive the mode exactly as given.
+    /// dir_mode_r_implies_x); file entries receive `file_mode` when given
+    /// (the explicit File-options bits for recursive scopes), otherwise the
+    /// main mode exactly as given (file targets).
     pub fn apply_permissions_with_progress(
         &self,
         path: &Path,
         owner_uid: u32,
         group_gid: u32,
-        mode: u32,
-        recursive: bool,
+        spec: ApplySpec,
         progress: &ApplyProgress,
     ) -> Result<ApplyResult, String> {
         let normalized = self.normalize_for_matching(path);
@@ -252,21 +323,27 @@ impl FsManager {
         // arrive here explicitly — never as an unresolved-sentinel leak.
         // setgid (2000) + sticky (1000) are valid, meaningful bits on directory shares and are
         // editable in the UI; only setuid (4000) is refused on a shared tree.
-        if mode & 0o4000 != 0 {
+        if spec.mode & 0o4000 != 0 {
             return Err("Refusing setuid bit on a share path".into());
+        }
+        // The explicit file mode carries plain rwx only — special bits are
+        // directory concepts in this UI and setuid on files is never allowed.
+        if let Some(fm) = spec.file_mode {
+            if fm & !0o777 != 0 {
+                return Err("Refusing special bits (setuid/setgid/sticky) in the file mode".into());
+            }
         }
 
         let target_path = self.host_path_to_container_path(&normalized)?;
 
         let opts = ApplyOptions {
-            recursive,
-            apply_to_dirs: true,
-            apply_to_files: true,
+            scope: spec.scope,
+            file_mode: spec.file_mode,
             continue_on_error: true,
             dry_run: false,
         };
 
-        self.apply_direct_with_progress(&target_path, owner_uid, group_gid, mode, &opts, progress)
+        self.apply_direct_with_progress(&target_path, owner_uid, group_gid, spec.mode, &opts, progress)
             .map_err(|e| format!("apply failed: {}", e))
     }
 
@@ -329,13 +406,17 @@ impl FsManager {
         }
         let is_dir = ft.is_dir();
         let is_file = ft.is_file();
-        if opts.recursive {
-            return (is_dir && opts.apply_to_dirs) || (is_file && opts.apply_to_files);
-        }
-        // Non-recursive mode updates the target dir and immediate files only.
         let depth = entry.depth();
-        (is_dir && opts.apply_to_dirs && depth == 0)
-            || (is_file && opts.apply_to_files && depth == 1)
+        match opts.scope {
+            // The selected node only. A file at depth 0 happens only when the
+            // walk root itself is a file (the file-target panel flow).
+            ApplyScope::DirOnly => (is_dir || is_file) && depth == 0,
+            // The selected directory plus the files directly inside it.
+            ApplyScope::ImmediateFiles => {
+                (is_dir && depth == 0) || (is_file && depth <= 1)
+            }
+            ApplyScope::All => is_dir || is_file,
+        }
     }
 
     /// Count-only walk that updates progress.processed and honors cancel. Used for scanning phase before apply.
@@ -346,7 +427,7 @@ impl FsManager {
         progress: &ApplyProgress,
     ) -> std::io::Result<usize> {
         // Walk body is sync; always invoked from spawn_blocking in web handler for async safety.
-        let max_d = if opts.recursive { usize::MAX } else { 1 };
+        let max_d = opts.scope.max_depth();
 
         let walker = WalkDir::new(root)
             .follow_links(false)
@@ -388,7 +469,7 @@ impl FsManager {
         // Sync walk + direct privileged calls. Progress atomics (processed/changed/phase) mutated here for live UI feedback.
         let mut result = ApplyResult::default();
 
-        let max_d = if opts.recursive { usize::MAX } else { 1 };
+        let max_d = opts.scope.max_depth();
 
         let walker = WalkDir::new(root)
             .follow_links(false)
@@ -448,11 +529,12 @@ impl FsManager {
             }
 
             // Perform the actual privileged operations. Directories take the
-            // r-implies-x normalized mode; files keep the raw mode.
+            // r-implies-x normalized mode; files take the explicit file mode
+            // when one was chosen (recursive scopes), else the raw main mode.
             let entry_mode = if entry.file_type().is_dir() {
                 dir_mode_r_implies_x(mode)
             } else {
-                mode
+                opts.file_mode.unwrap_or(mode)
             };
             if let Err(e) = crate::privileged::chown(&p, uid, gid) {
                 result.errors.push((p.clone(), format!("chown: {}", e)));
@@ -893,7 +975,11 @@ mod tests {
         let prog = ApplyProgress::default();
         prog.total.store(3, Ordering::Relaxed);
         let res = fs
-            .apply_permissions_with_progress(logical, u, g, 0o776, true, &prog)
+            .apply_permissions_with_progress(
+                logical, u, g,
+                ApplySpec { mode: 0o776, scope: ApplyScope::All, file_mode: None },
+                &prog,
+            )
             .expect("apply must run");
         assert!(res.errors.is_empty(), "chmod/chown as owner must succeed: {:?}", res.errors);
         use std::os::unix::fs::PermissionsExt;
@@ -901,6 +987,240 @@ mod tests {
         let fmode = std::fs::metadata(root.join("f.txt")).unwrap().permissions().mode() & 0o7777;
         assert_eq!(dmode, 0o777, "directories take the r-implies-x mode");
         assert_eq!(fmode, 0o776, "files keep the raw mode");
+    }
+
+    // The tree browser lists one level: dirs first, then files, both sorted
+    // case-insensitively; files carry an mtime for the modified column.
+    #[test]
+    fn list_dir_sorts_dirs_first_then_files_case_insensitive() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("listing");
+        std::fs::create_dir_all(root.join("beta")).unwrap();
+        std::fs::create_dir_all(root.join("Alpha")).unwrap();
+        std::fs::write(root.join("zeta.txt"), b"z").unwrap();
+        std::fs::write(root.join("Apple.txt"), b"a").unwrap();
+        let logical = Path::new("/rootbind");
+        let mut cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
+        cfg.storage.container_root = root.to_string_lossy().into_owned();
+        cfg.shares[0].name.clear();
+        cfg.shares[0].container_path = root.to_string_lossy().into_owned();
+        let fs = FsManager::new(cfg);
+
+        let entries = fs.list_dir(logical).expect("readable dir must list");
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Alpha", "beta", "Apple.txt", "zeta.txt"]);
+        assert_eq!(entries[0].kind, FsEntryKind::Dir);
+        assert_eq!(entries[1].kind, FsEntryKind::Dir);
+        assert_eq!(entries[2].kind, FsEntryKind::File);
+        assert_eq!(entries[3].kind, FsEntryKind::File);
+        assert!(entries[2].mtime.is_some() && entries[3].mtime.is_some());
+        assert!(entries[0].mtime.is_none(), "dirs skip the extra mtime stat");
+        // Child paths stay in the logical host namespace, not the container's.
+        assert_eq!(entries[0].path, PathBuf::from("/rootbind/Alpha"));
+    }
+
+    #[test]
+    fn list_dir_excludes_symlinks_and_keeps_dotfiles() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("symtree");
+        std::fs::create_dir_all(root.join("realdir")).unwrap();
+        std::fs::write(root.join(".hidden"), b"h").unwrap();
+        std::os::unix::fs::symlink(root.join("realdir"), root.join("dirlink")).unwrap();
+        std::os::unix::fs::symlink(root.join(".hidden"), root.join("filelink")).unwrap();
+        let logical = Path::new("/rootbind");
+        let mut cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
+        cfg.storage.container_root = root.to_string_lossy().into_owned();
+        cfg.shares[0].name.clear();
+        cfg.shares[0].container_path = root.to_string_lossy().into_owned();
+        let fs = FsManager::new(cfg);
+
+        let entries = fs.list_dir(logical).expect("must list");
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["realdir", ".hidden"],
+            "symlinks (to dirs and files) are excluded; dotfiles are visible"
+        );
+    }
+
+    #[test]
+    fn list_dir_empty_is_some_and_denied_or_missing_is_none() {
+        // Empty-but-readable → Some(vec![]) so the UI shows "(empty)"; outside
+        // the allow-list or an unreadable/missing container dir → None so the
+        // handler renders the diagnostic alert instead of a silent empty tree.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("emptyroot");
+        std::fs::create_dir_all(&root).unwrap();
+        let logical = Path::new("/rootbind");
+        let mut cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
+        cfg.storage.container_root = root.to_string_lossy().into_owned();
+        cfg.shares[0].name.clear();
+        cfg.shares[0].container_path = root.to_string_lossy().into_owned();
+        let fs = FsManager::new(cfg);
+
+        assert_eq!(fs.list_dir(logical).expect("empty dir lists").len(), 0);
+        assert!(fs.list_dir(Path::new("/outside")).is_none(), "allow-list still gates");
+        assert!(
+            fs.list_dir(Path::new("/rootbind/missing-child")).is_none(),
+            "unreadable/missing container dir must be None (diagnostic), not empty"
+        );
+    }
+
+    // A file target applies exactly once with the raw (unfused) mode — the
+    // depth-0 file arm of should_apply_entry. Nothing else is walked.
+    #[test]
+    fn apply_file_target_non_recursive_touches_exactly_that_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("filetree");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("f1.txt"), b"1").unwrap();
+        std::fs::write(root.join("sub/f2.txt"), b"2").unwrap();
+        std::fs::set_permissions(root.join("sub/f2.txt"), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        let logical = Path::new("/rootbind");
+        let mut cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
+        cfg.storage.container_root = root.to_string_lossy().into_owned();
+        cfg.shares[0].name.clear();
+        cfg.shares[0].container_path = root.to_string_lossy().into_owned();
+        let fs = FsManager::new(cfg);
+        let (u, g) = (nix::unistd::getuid().as_raw(), nix::unistd::getgid().as_raw());
+
+        let count_prog = ApplyProgress::default();
+        let counted = fs
+            .count_applicable_with_live(Path::new("/rootbind/f1.txt"), ApplyScope::DirOnly, &count_prog)
+            .expect("count on a file target");
+        assert_eq!(counted, 1, "a file target counts exactly itself");
+
+        let prog = ApplyProgress::default();
+        prog.total.store(1, Ordering::Relaxed);
+        let res = fs
+            .apply_permissions_with_progress(
+                Path::new("/rootbind/f1.txt"), u, g,
+                ApplySpec { mode: 0o640, scope: ApplyScope::DirOnly, file_mode: None },
+                &prog,
+            )
+            .expect("apply on a file target");
+        assert!(res.errors.is_empty(), "chmod/chown as owner must succeed: {:?}", res.errors);
+        assert_eq!(res.changed, 1);
+        assert_eq!(prog.processed.load(Ordering::Relaxed), 1);
+        let f1 = std::fs::metadata(root.join("f1.txt")).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(f1, 0o640, "file gets the raw mode — no r-implies-x fuse");
+        let f2 = std::fs::metadata(root.join("sub/f2.txt")).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(f2, 0o600, "nested file untouched by a file-target apply");
+    }
+
+    // Shared fixture for the scope tests:
+    // root { f1.txt 0600, sub/ 0755, sub/f2.txt 0600 } mapped at /rootbind.
+    fn make_scope_tree() -> (TempDir, std::path::PathBuf, FsManager) {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("scopetree");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("f1.txt"), b"1").unwrap();
+        std::fs::write(root.join("sub/f2.txt"), b"2").unwrap();
+        std::fs::set_permissions(root.join("f1.txt"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(root.join("sub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(root.join("sub/f2.txt"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        let logical = Path::new("/rootbind");
+        let mut cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
+        cfg.storage.container_root = root.to_string_lossy().into_owned();
+        cfg.shares[0].name.clear();
+        cfg.shares[0].container_path = root.to_string_lossy().into_owned();
+        (tmp, root, FsManager::new(cfg))
+    }
+
+    fn mode_of(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[test]
+    fn apply_scope_dironly_touches_directory_inode_only() {
+        let (_tmp, root, fs) = make_scope_tree();
+        let logical = Path::new("/rootbind");
+        let (u, g) = (nix::unistd::getuid().as_raw(), nix::unistd::getgid().as_raw());
+        let counted = fs
+            .count_applicable_with_live(logical, ApplyScope::DirOnly, &ApplyProgress::default())
+            .expect("count");
+        assert_eq!(counted, 1, "DirOnly counts the directory inode alone");
+        let prog = ApplyProgress::default();
+        prog.total.store(1, Ordering::Relaxed);
+        let res = fs
+            .apply_permissions_with_progress(
+                logical, u, g,
+                ApplySpec { mode: 0o660, scope: ApplyScope::DirOnly, file_mode: None },
+                &prog,
+            )
+            .expect("apply");
+        assert!(res.errors.is_empty(), "{:?}", res.errors);
+        assert_eq!(mode_of(&root), 0o770, "the directory itself fuses r→x");
+        assert_eq!(mode_of(&root.join("f1.txt")), 0o600, "immediate files untouched at DirOnly");
+        assert_eq!(mode_of(&root.join("sub")), 0o755, "subdirs untouched at DirOnly");
+        assert_eq!(mode_of(&root.join("sub/f2.txt")), 0o600);
+    }
+
+    #[test]
+    fn apply_scope_single_spares_subdirectories() {
+        let (_tmp, root, fs) = make_scope_tree();
+        let logical = Path::new("/rootbind");
+        let (u, g) = (nix::unistd::getuid().as_raw(), nix::unistd::getgid().as_raw());
+        let counted = fs
+            .count_applicable_with_live(logical, ApplyScope::ImmediateFiles, &ApplyProgress::default())
+            .expect("count");
+        assert_eq!(counted, 2, "single scope counts the dir + its direct files");
+        let prog = ApplyProgress::default();
+        prog.total.store(2, Ordering::Relaxed);
+        let res = fs
+            .apply_permissions_with_progress(
+                logical, u, g,
+                ApplySpec { mode: 0o660, scope: ApplyScope::ImmediateFiles, file_mode: Some(0o640) },
+                &prog,
+            )
+            .expect("apply");
+        assert!(res.errors.is_empty(), "{:?}", res.errors);
+        assert_eq!(mode_of(&root), 0o770, "dir fused");
+        assert_eq!(mode_of(&root.join("f1.txt")), 0o640, "immediate file gets the explicit file mode");
+        assert_eq!(mode_of(&root.join("sub")), 0o755, "subdir spared by single scope");
+        assert_eq!(mode_of(&root.join("sub/f2.txt")), 0o600, "nested file spared by single scope");
+    }
+
+    #[test]
+    fn apply_scope_all_applies_explicit_file_mode_including_execute() {
+        let (_tmp, root, fs) = make_scope_tree();
+        let logical = Path::new("/rootbind");
+        let (u, g) = (nix::unistd::getuid().as_raw(), nix::unistd::getgid().as_raw());
+        let prog = ApplyProgress::default();
+        prog.total.store(4, Ordering::Relaxed);
+        let res = fs
+            .apply_permissions_with_progress(
+                logical, u, g,
+                ApplySpec { mode: 0o660, scope: ApplyScope::All, file_mode: Some(0o754) },
+                &prog,
+            )
+            .expect("apply");
+        assert!(res.errors.is_empty(), "{:?}", res.errors);
+        assert_eq!(mode_of(&root), 0o770);
+        assert_eq!(mode_of(&root.join("sub")), 0o770, "all dirs fused from the x-less dir mode");
+        assert_eq!(mode_of(&root.join("f1.txt")), 0o754, "file execute is an explicit grant");
+        assert_eq!(mode_of(&root.join("sub/f2.txt")), 0o754, "nested files get the same file mode");
+    }
+
+    #[test]
+    fn apply_refuses_special_bits_in_file_mode() {
+        let (_tmp, root, fs) = make_scope_tree();
+        let logical = Path::new("/rootbind");
+        let (u, g) = (nix::unistd::getuid().as_raw(), nix::unistd::getgid().as_raw());
+        let prog = ApplyProgress::default();
+        let err = fs
+            .apply_permissions_with_progress(
+                logical, u, g,
+                ApplySpec { mode: 0o660, scope: ApplyScope::All, file_mode: Some(0o2660) },
+                &prog,
+            )
+            .expect_err("special bits in the file mode must be refused");
+        assert!(err.contains("special bits"), "{err}");
+        assert_eq!(mode_of(&root.join("f1.txt")), 0o600, "refusal happens before the walk");
     }
 
     // uid/gid 0 is the designed share-root ownership (nobody over NFS via the
@@ -921,7 +1241,11 @@ mod tests {
         let prog = ApplyProgress::default();
         prog.total.store(1, Ordering::Relaxed);
         let res = fs
-            .apply_permissions_with_progress(logical, 0, 0, 0o776, false, &prog)
+            .apply_permissions_with_progress(
+                logical, 0, 0,
+                ApplySpec { mode: 0o776, scope: ApplyScope::ImmediateFiles, file_mode: None },
+                &prog,
+            )
             .expect("uid/gid 0 must not be refused before the walk");
         let errstr: String = res
             .errors
@@ -975,7 +1299,11 @@ mod tests {
         *prog.phase.lock().unwrap() = "applying".to_string();
         prog.total.store(3, Ordering::Relaxed); // root + sub + f (approx)
         let res = fs
-            .apply_permissions_with_progress(logical, target_uid, target_gid, target_mode, true, &prog)
+            .apply_permissions_with_progress(
+                logical, target_uid, target_gid,
+                ApplySpec { mode: target_mode, scope: ApplyScope::All, file_mode: None },
+                &prog,
+            )
             .expect("real non-dry apply call must not panic");
 
         // The !dry path was exercised (either success or chown EPERM from nix path in restricted env).
@@ -1050,7 +1378,11 @@ mod tests {
             cfg2.shares[0].name.clear();
             cfg2.shares[0].container_path = container2;
             let fs2 = FsManager::new(cfg2);
-            fs2.apply_permissions_with_progress(&pth, target_uid, target_gid, target_mode, true, &prog_clone)
+            fs2.apply_permissions_with_progress(
+                &pth, target_uid, target_gid,
+                ApplySpec { mode: target_mode, scope: ApplyScope::All, file_mode: None },
+                &prog_clone,
+            )
         }).await.expect("join ok");
 
         let _res = join.expect("apply inside block ok");

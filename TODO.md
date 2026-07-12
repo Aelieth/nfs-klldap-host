@@ -5,22 +5,23 @@
 - Custom-compiled Ganesha without _MSPAC_SUPPORT to unlock the principal-based uid2grp path (removes the idhelper/nss_wrapper backstop requirement)
 
 ## Known issues / tracking
-- **HIGH — POSIX attribute editor: collapse r/x into one bit for directories.**
-  Ganesha's readdir returns entry attributes only when the caller has **R+X on
-  the directory** (`fsal_helper.c` `access_mask_attr`), so a directory with r
-  but not x lists as **empty** over NFS — split r/x checkboxes for directories
-  are meaningless and directly counter-intuitive to what "read" means for a
-  directory (found round-4 2026-07-11: users share applied 0776 and "returned
-  nothing"). Interim enforcement landed 2026-07-11, not just a warning:
-  server-side normalization `fs::dir_mode_r_implies_x` applied per entry
-  (directories gain x wherever r is set; files keep the raw mode), panel JS
-  auto-checks x when r is checked, and the apply log states the normalized
-  directory mode. Remaining refactor: the dir-perms rwx matrix should present
-  a single read/browse bit per audience for directories (r+x fused, w
-  unchanged; files keep the full triad), with templates/permissions.js/
-  ui-design.md updated together.
+- **RESOLVED 0.9.85 — dir-perms r/x collapse + files in the browser.** The tree
+  now lists files (dirs-first sort, type emoji, UTC mtime; single-level
+  `FsManager::list_dir` replaced the whole-subtree `build_tree` recursion).
+  Directories present a condensed Read/Write matrix (Write⇒Read; the client
+  submits the **x-less** mode and only the readout previews the fused dir
+  mode) plus a three-way **Apply scope** (none = the directory inode only /
+  single directory = + files directly inside / all directories = whole
+  subtree) with an explicit **file-bits editor** for the recursive scopes —
+  every file in scope gets exactly those bits (execute is an opt-in grant;
+  special bits refused on files). Files selected individually keep the full
+  rwx triad, no special bits, no scope. Server-side
+  `fs::dir_mode_r_implies_x` per entry is unchanged (see ui-design.md "Read
+  implies execute" + "Apply scope"). Follow-ups: mirror the UX on the 0.9.9x
+  ACL line; audio file category (currently ❔); ARIA tree pattern still
+  deferred (ui-design.md).
 - Track regressions via `cargo test --workspace` and [TESTING.md](TESTING.md) living spec.
-- **0.9.x branch**: branch name carries the release version (currently 0.9.78); Cargo workspace, Dockerfile LABEL, and nfs-klldap-host.yaml image tag are aligned to it.
+- **0.9.x branch**: branch name carries the release version (currently 0.9.85); Cargo workspace, Dockerfile LABEL, and nfs-klldap-host.yaml image tag are aligned to it.
 - Client connects (2026-07 capture): krb5 auth + NFSv4.1 session succeed server-side, then the client destroys the session before any namespace op — failure is client-side (gssd/mount context). GANESHA_DEBUG now logs RPCSEC_GSS; see docs/client-fedora-immutable.md troubleshooting.
 
 ## Kerberos user principal idmap

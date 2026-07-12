@@ -183,16 +183,17 @@ See [docs/run/README.md](docs/run/README.md) for the full env var table, reverse
 
 - `/setup/1` … `/setup/3` — First-run wizard (volume, ldap_uri, bind creds); each step has a **Test Log** with probe output and fix suggestions; steps 2–3 use **Test Settings** then **Save and Continue**.
 - `/login` — localhost password (first run) or LLDAP admin login.
-- `/` — Live FS tree browser (under shares) + KLLDAP user/group search + direct recursive chown/chmod.
+- `/` — Live FS browser (directories **and** files, under shares) + KLLDAP user/group search + direct chown/chmod: condensed Read/Write editor for directories (read implies browse/execute), full rwx editor per file, and a three-way apply scope on directories (none / + files directly inside / whole subtree) with explicit file permission bits for the recursive scopes.
 - `/settings` — Raw + structured TOML editor + current LLDAP bind identity + "Reload NFS client" + "Clear identity cache" (10 min user/group + 2 min search cache; stats shown).
 
 Auth: "localhost" (sidecar `webui-password` file next to config, SHA-256 hash) or any LLDAP user in `webui_admin_group` (default `lldap_admin`).
 
-### Security Contracts for Directory Permission Changes
+### Security Contracts for Share Permission Changes
 
-All owner/group/mode changes performed by the WebUI go through `FsManager` + `privileged` (inside the container as root) on bind-mounted `host_path` trees.
+All owner/group/mode changes performed by the WebUI go through `FsManager` + `privileged` (inside the container as root) on bind-mounted `host_path` trees — directory targets (optionally recursive) and, since 0.9.85, individual file targets.
 
-- **Symlink policy**: The recursive engine (WalkDir) **never recurses into symlinks** (`follow_links(false)` + `filter_entry`). `chown`/`chmod` calls follow symlinks for the entries that are mutated (standard std behavior, matching historical `chown(2)`). Symlink inodes themselves are skipped by default. This prevents accidental escape from the declared `host_path` trees (a previous risk with the old `Path::is_dir()` recursion).
+- **Symlink policy**: The recursive engine (WalkDir) **never recurses into symlinks** (`follow_links(false)` plus explicit `is_symlink()` skips per entry). `chown`/`chmod` calls follow symlinks for the entries that are mutated (standard std behavior, matching historical `chown(2)`). Symlink inodes themselves are skipped by default, and the tree browser doesn't list them at all. This prevents accidental escape from the declared `host_path` trees (a previous risk with the old `Path::is_dir()` recursion).
+- **x-less directory modes + explicit file bits**: The directory editor submits modes **without execute bits**; the server fuses r→x per **directory** entry during the walk (`fs::dir_mode_r_implies_x`). Files in a recursive apply never receive the directory mode — they get exactly the **file permission bits** chosen in the panel (special bits refused on files), so file execute is always an explicit grant, whether per file or per recursive scope.
 - **Direct Rust ops + background walks**: chown uses nix::unistd::chown; chmod uses std::os::unix::fs. Recursive permission walks for large trees are executed via tokio::task::spawn_blocking (async handler stays responsive); progress (total/processed/phase) is updated atomically and visible live in the Apply Log via polling (render_apply_status_oob). ACL ops remain fast-path.
 - **UID/GID are numeric only on disk**: The engine and WebUI always write raw `u32` values (sourced from LLDAP `uidNumber`/`gidNumber` or direct numeric entry in the editor). Friendly names are resolved only for display.
 - **Bind-mount UID namespace assumption**: The container must run as real root with the data directories bind-mounted such that the numeric UIDs written *inside* the container are exactly the IDs visible on the Docker host filesystem. `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts will cause the on-disk owners to be wrong from the host/NFS client perspective.

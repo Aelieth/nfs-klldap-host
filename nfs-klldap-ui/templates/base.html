@@ -190,6 +190,25 @@
             outline: 2px solid var(--accent); outline-offset: 1px;
         }
         .dir.root-dir .dir-label { font-weight: 600; }
+        /* File rows: no caret; type emoji + name + right-aligned muted mtime.
+           Smaller than dir rows so directories read slightly larger; the rem-based
+           indent keeps file icons aligned under dir icons despite the em drop. */
+        .file { display: flex; align-items: center; user-select: none; font-size: 0.85em;
+                padding: 1px 3px 1px 1.35rem; border-radius: 2px; cursor: pointer; min-width: 0; }
+        .file:hover { background: var(--dir-hover); }
+        /* Fixed icon box absorbs emoji width variance (e.g. U+FE0F variants). */
+        .row-ico { display: inline-block; width: 1.35em; text-align: center; flex: none; margin-right: 2px; }
+        .file-label {
+            background: none; border: none; margin: 0; padding: 1px 3px;
+            font: inherit; color: inherit; cursor: pointer; border-radius: 2px; text-align: left;
+            min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .file-label:hover { background: var(--selected-bg); border: none; }
+        .file-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+        .file-mtime { margin-left: auto; flex: none; color: var(--text-muted);
+                      font-family: var(--font-mono); font-size: 0.85em; padding-left: 8px; }
+        .tree-empty { list-style: none; color: var(--text-light); font-style: italic;
+                      font-size: 0.78em; padding: 1px 3px 1px 1.35rem; }
 
         input, select, textarea {
             background: var(--input-bg);
@@ -318,7 +337,8 @@
         /* === New tree meta + edit mode styles (inline permissions refactor) === */
         /* Highlighted selection for the "active" directory (the one with Edit button).
            Multiple meta rows can stay visible for viewing, but only one dir is highlighted. */
-        .dir.selected {
+        .dir.selected,
+        .file.selected {
             font-weight: 600;
             background: var(--selected-bg);
             border-left: 3px solid var(--selected-border);
@@ -513,13 +533,12 @@
         .perm-head-main     { min-width:0; }
         .perm-title-row     { display:flex; align-items:center; gap:8px; }
 
-        /* Edit-mode visibility is CSS-driven by .perm-panel.editing — the JS only toggles the class. */
-        .perm-recursive     { display:none; font-size:.75em; white-space:nowrap; align-items:center; gap:4px; }
-        .rec-box            { transform:scale(1.1); }
+        /* Edit-mode visibility is CSS-driven by .perm-panel.editing — the JS only toggles
+           the class. Apply reach lives in the fragment's .rec-scope radios (dir panels),
+           not the header — the old header "recursive" checkbox is retired. */
         .btn-edit           { border-color:var(--accent); background:var(--accent-light); font-weight:600; }
         .perm-actions .btn-cancel,
         .perm-actions .btn-apply { display:none; }
-        .perm-panel.editing .perm-recursive { display:flex; }
         .perm-panel.editing .btn-edit       { display:none; }
         .perm-panel.editing .perm-actions .btn-cancel,
         .perm-panel.editing .perm-actions .btn-apply { display:inline-block; }
@@ -564,6 +583,20 @@
         .perm-matrix .rowhd { font-size:.8em; font-weight:600; }
         .perm-matrix .cell  { text-align:center; }
         .perm-matrix input  { transform:scale(1.25); }
+        /* Condensed directory matrix: Read/Write columns only (r+x fused server-side). */
+        .perm-matrix.perm-matrix-dir { grid-template-columns:64px repeat(2,1fr); max-width:210px; }
+        .perm-note          { font-size:.72em; color:var(--text-muted); margin-top:6px; }
+        .perm-note.warn     { color:var(--warning-amber-text); }
+        /* Apply-scope radios + file-bits editor (dir panels; see dir_perms.html). */
+        .rec-scope          { margin-top:12px; display:flex; flex-direction:column; gap:3px; }
+        .rec-scope label    { display:flex; align-items:center; gap:6px; font-size:.78em; }
+        .rec-scope input    { transform:scale(1.1); }
+        .file-opts          { margin-top:10px; padding-top:8px; border-top:1px dashed var(--border-light); }
+        .file-mode-readout  { display:inline-flex; align-items:baseline; gap:6px; }
+        .file-mode-readout[hidden] { display:none; } /* author display beats the UA [hidden] rule */
+        .file-octal         { font-family:var(--font-mono); font-size:1.05em; font-weight:700;
+                              color:var(--text-muted); background:var(--bg-alt);
+                              border:1px solid var(--border); border-radius:5px; padding:1px 7px; }
         .perm-special       { display:flex; gap:16px; margin-top:10px; flex-wrap:wrap; }
         .perm-special label { display:flex; align-items:center; gap:5px; font-size:.78em; }
         .perm-special input { transform:scale(1.15); }
@@ -619,9 +652,11 @@
                               border:1px solid var(--input-border); border-radius:4px; }
         .acl-sugg           { min-width:160px; }
 
-        .perm-locked .dir:not(.selected)      { opacity:.4; cursor:not-allowed; }
+        .perm-locked .dir:not(.selected),
+        .perm-locked .file:not(.selected)     { opacity:.4; cursor:not-allowed; }
         .perm-locked .dir:not(.selected) .dir-caret,
-        .perm-locked .dir:not(.selected) .dir-label { cursor:not-allowed; }
+        .perm-locked .dir:not(.selected) .dir-label,
+        .perm-locked .file:not(.selected) .file-label { cursor:not-allowed; }
         .perm-locked .share-card:not(.active) { opacity:.4; cursor:not-allowed; }
         .edit-lock-banner   { font-size:.72em; padding:4px 9px; margin:0 0 8px; border-radius:4px;
                               background:var(--warning-amber-bg); color:var(--warning-amber-text);

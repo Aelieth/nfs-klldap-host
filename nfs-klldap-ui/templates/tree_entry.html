@@ -1,0 +1,20 @@
+{# One tree row: a subdirectory (caret + 📁 + label, expandable) or a file
+   (type emoji + label + modified date, select-only). Included by
+   tree_root.html and tree_fragment.html with `child` as the loop variable. #}
+<li>
+  {% if child.is_dir %}
+  <span class="dir" data-path="{{ child.path }}">
+    <button type="button" class="dir-caret" aria-expanded="false"
+            aria-label="{{ child.name }} subdirectories">&#9654;</button>
+    <button type="button" class="dir-label"><span class="row-ico" aria-hidden="true">📁</span>{{ child.name }}</button>
+  </span>
+  {# Stable placeholder for JS/HTMX expand (no sibling races). #}
+  <div class="children"></div>
+  {% else %}
+  <span class="file" data-path="{{ child.path }}">
+    <span class="row-ico" aria-hidden="true">{{ child.emoji }}</span>
+    <button type="button" class="file-label">{{ child.name }}</button>
+    <span class="file-mtime" title="modified (UTC)">{{ child.mtime }}</span>
+  </span>
+  {% endif %}
+</li>

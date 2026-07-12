@@ -33,7 +33,7 @@
             banner = document.createElement('div');
             banner.id = 'edit-lock-banner';
             banner.className = 'edit-lock-banner';
-            banner.textContent = 'Editing — directory selection is locked. Cancel or Apply to change directory.';
+            banner.textContent = 'Editing — directory/file selection is locked. Cancel or Apply to change selection.';
             const title = document.getElementById('current-share-title');
             if (title && title.parentNode) title.parentNode.insertBefore(banner, title);
         } else if (!on && banner) { banner.remove(); }
@@ -89,6 +89,7 @@
                 pl.querySelector('.perm-path').textContent = path;
                 setPanelLoading(false);
                 setPanelMode(false);
+                syncScopeUI();
                 recomputeMode();
                 attachEditorInputListeners(pbody());
                 syncApplyLogHeight();
@@ -103,23 +104,52 @@
         pl.classList.toggle('editing', editing);
         pl.querySelector('.perm-state').textContent = editing ? 'editing' : 'viewing';
         const aclInert = !!pl.querySelector('.acl-sec.disabled');
-        pl.querySelectorAll('.p-owner,.p-group,.pbit,.sbit').forEach(el => el.disabled = !editing);
+        pl.querySelectorAll('.p-owner,.p-group,.pbit,.sbit,.fbit,.rec-radio').forEach(el => el.disabled = !editing);
         pl.querySelectorAll('.abit').forEach(el => el.disabled = !editing || aclInert);
         setTreeLock(editing);
     }
 
-    // rwx matrix + setgid/sticky -> live octal + symbolic; keeps the hidden name="mode" field in sync.
+    // Matrix + setgid/sticky -> live octal + symbolic; keeps the hidden name="mode" field in sync.
+    // The SUBMITTED mode is always the raw checkbox sum — x-less on the condensed
+    // directory matrix, so recursive applies can never hand files execute. The
+    // octal/symbolic READOUT previews the r→x fusion the server performs on the
+    // directory itself (fs::dir_mode_r_implies_x, per entry, dirs only).
     function recomputeMode() {
         const pl = panel(); if (!pl) return;
         const oct = pl.querySelector('.octal'); if (!oct) return;
+        const form = pl.querySelector('form.posix-sec');
+        const isDir = !form || form.dataset.kind !== 'file';
         const sum = { u: 0, g: 0, o: 0 };
         pl.querySelectorAll('.pbit').forEach(cb => { if (cb.checked) sum[cb.dataset.role] += +cb.dataset.bit; });
         let s = 0;
         pl.querySelectorAll('.sbit').forEach(cb => { if (cb.checked) s += +cb.dataset.special; });
-        const octal = '' + s + sum.u + sum.g + sum.o;
-        oct.textContent = octal;
-        const field = pl.querySelector('.mode-field'); if (field) field.value = octal;
-        const sym = pl.querySelector('.symbolic'); if (sym) sym.textContent = symbolicMode(s, sum.u, sum.g, sum.o);
+        const field = pl.querySelector('.mode-field');
+        if (field) field.value = '' + s + sum.u + sum.g + sum.o;
+        const fuse = b => b | ((b & 4) >> 2);
+        const d = isDir ? { u: fuse(sum.u), g: fuse(sum.g), o: fuse(sum.o) } : sum;
+        oct.textContent = '' + s + d.u + d.g + d.o;
+        const sym = pl.querySelector('.symbolic'); if (sym) sym.textContent = symbolicMode(s, d.u, d.g, d.o);
+        // File-options bits (dir panels, recursive scopes): the explicit file
+        // mode composes independently of the directory matrix — no fusing.
+        const fsum = { u: 0, g: 0, o: 0 };
+        pl.querySelectorAll('.fbit').forEach(cb => { if (cb.checked) fsum[cb.dataset.role] += +cb.dataset.bit; });
+        const ffield = pl.querySelector('.file-mode-field');
+        if (ffield) ffield.value = '0' + fsum.u + fsum.g + fsum.o;
+        const foct = pl.querySelector('.file-octal');
+        if (foct) foct.textContent = '0' + fsum.u + fsum.g + fsum.o;
+    }
+
+    // Reveal the file-bits editor and its readout only when the chosen apply
+    // scope actually touches files ("single" or "all").
+    function syncScopeUI() {
+        const pl = panel(); if (!pl) return;
+        const form = pl.querySelector('form.posix-sec'); if (!form) return;
+        const checked = form.querySelector('.rec-radio:checked');
+        const scopeNone = !checked || checked.value === 'none';
+        const opts = form.querySelector('.file-opts');
+        if (opts) opts.hidden = scopeNone;
+        const fr = pl.querySelector('.file-mode-readout');
+        if (fr) fr.hidden = scopeNone;
     }
     function symbolicMode(s, u, g, o) {
         const trip = (b, kind) => {
@@ -259,14 +289,16 @@
             }
             return;
         }
-        // Label (or row): select the directory and load its permissions — never toggles expansion.
-        const dir = e.target.closest('#tree-root .dir');
-        if (dir && dir.dataset.path) {
+        // Label (or row): select the directory or file and load its permissions —
+        // never toggles expansion (file rows have no caret at all).
+        const row = e.target.closest('#tree-root .dir, #tree-root .file');
+        if (row && row.dataset.path) {
             if (isLocked()) { flashLock(); e.stopPropagation(); return; }
-            if (!dir.classList.contains('selected')) {
-                document.querySelectorAll('#tree-root .dir.selected').forEach(d => d.classList.remove('selected'));
-                dir.classList.add('selected');
-                loadDirPerms(dir.dataset.path);
+            if (!row.classList.contains('selected')) {
+                document.querySelectorAll('#tree-root .dir.selected, #tree-root .file.selected')
+                    .forEach(d => d.classList.remove('selected'));
+                row.classList.add('selected');
+                loadDirPerms(row.dataset.path);
             }
             return;
         }
@@ -288,11 +320,15 @@
         if (e.target.closest('.btn-apply')) {
             const form = pl.querySelector('form.posix-sec');
             if (!form) return;
-            const rec = pl.querySelector('.rec-box');
-            const recField = form.querySelector('.rec-field');
-            if (recField) recField.value = (rec && rec.checked) ? 'true' : 'false';
-            if (rec && rec.checked
-                && !confirm('Recursively apply owner and mode to EVERYTHING under\n' + state.currentPath + ' ?')) return;
+            // Scope radios live inside the form (dir panels only) and submit
+            // natively; file panels have none, so their scope is always none —
+            // the server braces file targets independently.
+            const checkedScope = form.querySelector('.rec-radio:checked');
+            const scope = checkedScope ? checkedScope.value : 'none';
+            if (scope === 'all'
+                && !confirm('Recursively apply to EVERYTHING under\n' + state.currentPath + ' (all subdirectories and files)?')) return;
+            if (scope === 'single'
+                && !confirm('Apply to ' + state.currentPath + ' and every file directly inside it?')) return;
             state.dirty = false;
             state.applying = true;
             htmx.trigger(form, 'submit');
@@ -336,23 +372,39 @@
     });
 
     // Live octal readout while toggling the matrix / special bits.
-    // The panel always targets a DIRECTORY, where read implies execute
-    // (Ganesha lists r-without-x directories as EMPTY — readdir attributes
-    // need R+X on the dir). Checking r therefore auto-checks x for the same
-    // audience; the server normalizes directory modes the same way.
+    // Directory panels use the condensed Read/Write matrix where each audience
+    // is none / read-only / read-write: checking Write auto-checks Read, and
+    // un-checking Read drops Write (a w-without-r directory can't even be
+    // entered over NFS). File panels keep the full independent triad —
+    // r without x is normal for a file, so no auto-check at all.
     document.addEventListener('change', function (e) {
         if (!e.target.classList) return;
         if (e.target.classList.contains('pbit')) {
             const cb = e.target;
-            if (cb.checked && +cb.dataset.bit === 4) {
-                const pl = cb.closest('.perm-body, form') || document;
-                pl.querySelectorAll('.pbit').forEach(other => {
-                    if (other.dataset.role === cb.dataset.role && +other.dataset.bit === 1)
-                        other.checked = true;
-                });
+            const form = cb.closest('form.posix-sec');
+            const isDir = !form || form.dataset.kind !== 'file';
+            if (isDir) {
+                const scope = cb.closest('.perm-body, form') || document;
+                const peers = scope.querySelectorAll('.pbit');
+                if (cb.checked && +cb.dataset.bit === 2) {
+                    peers.forEach(other => {
+                        if (other.dataset.role === cb.dataset.role && +other.dataset.bit === 4)
+                            other.checked = true;
+                    });
+                }
+                if (!cb.checked && +cb.dataset.bit === 4) {
+                    peers.forEach(other => {
+                        if (other.dataset.role === cb.dataset.role && +other.dataset.bit === 2)
+                            other.checked = false;
+                    });
+                }
             }
             recomputeMode();
-        } else if (e.target.classList.contains('sbit')) {
+        } else if (e.target.classList.contains('sbit') || e.target.classList.contains('fbit')) {
+            // File bits are fully independent — no auto-check between them.
+            recomputeMode();
+        } else if (e.target.classList.contains('rec-radio')) {
+            syncScopeUI();
             recomputeMode();
         }
     });
@@ -420,6 +472,7 @@
     document.addEventListener('htmx:afterSwap', function (evt) {
         const t = evt.detail && evt.detail.target;
         if (!t || !t.closest || !t.closest('#perm-panel .perm-body')) return;
+        syncScopeUI();
         recomputeMode();
         if (t.querySelector('[data-applying]')) {
             state.applying = true;

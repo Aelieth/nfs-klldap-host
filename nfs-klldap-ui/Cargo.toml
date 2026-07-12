@@ -45,7 +45,7 @@ sha2 = { workspace = true }
 subtle = { workspace = true }
 
 thiserror = { workspace = true }
-time = { workspace = true }  # only for rcgen::CertificateParams not_before/after (OffsetDateTime) in cert generation
+time = { workspace = true }  # rcgen::CertificateParams not_before/after (cert generation) + tree file-mtime display
 
 # --- LDAP client for KLLDAP --------------------------------------------------
 ldap3 = { workspace = true, features = ["sync", "tls-rustls-ring"] }

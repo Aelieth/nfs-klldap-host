@@ -36,7 +36,7 @@
 
 {% if !meta_available %}
 <div class="panel-alert" role="alert">
-  <div class="panel-alert-hd">Permissions unavailable for this directory</div>
+  <div class="panel-alert-hd">Permissions unavailable for this path</div>
   <p class="panel-alert-msg">{{ meta_hint }}</p>
   <dl class="panel-alert-paths">
     <dt>Host path</dt><dd><code>{{ path }}</code></dd>
@@ -47,13 +47,10 @@
 </div>
 {% else %}
 <div class="perm-split">
-<form class="posix-sec" hx-post="/apply" hx-target="#perm-panel .perm-body" hx-swap="innerHTML">
+<form class="posix-sec" data-kind="{% if is_dir %}dir{% else %}file{% endif %}" hx-post="/apply" hx-target="#perm-panel .perm-body" hx-swap="innerHTML">
   <input type="hidden" name="path" value="{{ path }}">
   <input type="hidden" name="owner_user_uid" value="{{ owner_uid_hidden }}">
   <input type="hidden" name="owner_group_gid" value="{{ owner_gid_hidden }}">
-  {# the base.html permissions script copies the header "recursive" checkbox into this before submit. #}
-  <input type="hidden" name="recursive" class="rec-field" value="false">
-
   <div class="sec-title">POSIX permissions</div>
 
   <div class="perm-owner-row">
@@ -76,6 +73,93 @@
   </div>
 
   <div class="perm-bits-lbl">Permission bits</div>
+  {% if is_dir %}
+  {# Directories: condensed Read/Write per audience. Read stands for r+x (the
+     server fuses r→x per directory entry at apply time); the submitted mode
+     stays x-less so files under a recursive apply never gain execute. #}
+  <div class="perm-matrix perm-matrix-dir">
+    <div></div>
+    <div class="colhd">Read</div><div class="colhd">Write</div>
+
+    <div class="rowhd">Owner</div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="4" aria-label="Owner read" {% if u_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="2" aria-label="Owner write" {% if u_w %}checked{% endif %} disabled></div>
+
+    <div class="rowhd">Group</div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="4" aria-label="Group read" {% if g_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="2" aria-label="Group write" {% if g_w %}checked{% endif %} disabled></div>
+
+    <div class="rowhd">Other</div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="4" aria-label="Other read" {% if o_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="2" aria-label="Other write" {% if o_w %}checked{% endif %} disabled></div>
+  </div>
+  <div class="perm-note">Read includes browse (execute) on directories. Files are changed only by a recursive apply scope — and they receive the file permission bits, never the directory's.</div>
+  {% if traverse_only_note %}
+  <div class="perm-note warn">This directory currently grants execute-only (traverse) access for at least one audience; that isn't representable here and will be removed on Apply.</div>
+  {% endif %}
+
+  {# setgid + sticky are the only special bits meaningful on directory shares (setuid is omitted). #}
+  <div class="perm-special">
+    <label title="setgid: new files & subdirectories inherit this directory's group. Recommended for shared team shares.">
+      <input type="checkbox" class="sbit" data-special="2" {% if setgid %}checked{% endif %} disabled>
+      <span>setgid <span class="subtle">(inherit group)</span></span>
+    </label>
+    <label title="sticky bit: only the file owner (or root) may delete or rename entries. Useful for common drop / upload directories.">
+      <input type="checkbox" class="sbit" data-special="1" {% if sticky %}checked{% endif %} disabled>
+      <span>sticky <span class="subtle">(restrict delete)</span></span>
+    </label>
+  </div>
+
+  {# Apply scope: how far Apply reaches from this directory. The file bits
+     below appear only for a recursive scope — files are never touched by
+     "None". Radios submit as recursive_scope; the fragment reload after an
+     apply resets the choice to None on purpose. #}
+  <div class="rec-scope">
+    <div class="perm-bits-lbl">Apply scope</div>
+    <label title="chown/chmod this directory's own inode only — no files, no subdirectories.">
+      <input type="radio" class="rec-radio" name="recursive_scope" value="none" checked disabled>
+      <span>None <span class="subtle">(this directory only)</span></span>
+    </label>
+    <label title="This directory plus the files directly inside it. Subdirectories and their contents stay untouched.">
+      <input type="radio" class="rec-radio" name="recursive_scope" value="single" disabled>
+      <span>Recursive — single directory <span class="subtle">(+ files directly inside)</span></span>
+    </label>
+    <label title="This directory and every subdirectory and file beneath it.">
+      <input type="radio" class="rec-radio" name="recursive_scope" value="all" disabled>
+      <span>Recursive — all directories <span class="subtle">(+ every subdirectory and file)</span></span>
+    </label>
+  </div>
+
+  {# File permission bits for recursive scopes: every file in scope gets
+     exactly these bits (execute is an explicit grant, seeded unchecked;
+     read/write seed from the directory matrix). #}
+  <div class="file-opts" hidden>
+    <div class="perm-bits-lbl">File permission bits <span class="subtle">(every file in scope)</span></div>
+    <div class="perm-matrix file-matrix">
+      <div></div>
+      <div class="colhd">Read</div><div class="colhd">Write</div><div class="colhd">Exec</div>
+
+      <div class="rowhd">Owner</div>
+      <div class="cell"><input type="checkbox" class="fbit" data-role="u" data-bit="4" aria-label="Files: owner read" {% if u_r %}checked{% endif %} disabled></div>
+      <div class="cell"><input type="checkbox" class="fbit" data-role="u" data-bit="2" aria-label="Files: owner write" {% if u_w %}checked{% endif %} disabled></div>
+      <div class="cell"><input type="checkbox" class="fbit" data-role="u" data-bit="1" aria-label="Files: owner execute" disabled></div>
+
+      <div class="rowhd">Group</div>
+      <div class="cell"><input type="checkbox" class="fbit" data-role="g" data-bit="4" aria-label="Files: group read" {% if g_r %}checked{% endif %} disabled></div>
+      <div class="cell"><input type="checkbox" class="fbit" data-role="g" data-bit="2" aria-label="Files: group write" {% if g_w %}checked{% endif %} disabled></div>
+      <div class="cell"><input type="checkbox" class="fbit" data-role="g" data-bit="1" aria-label="Files: group execute" disabled></div>
+
+      <div class="rowhd">Other</div>
+      <div class="cell"><input type="checkbox" class="fbit" data-role="o" data-bit="4" aria-label="Files: other read" {% if o_r %}checked{% endif %} disabled></div>
+      <div class="cell"><input type="checkbox" class="fbit" data-role="o" data-bit="2" aria-label="Files: other write" {% if o_w %}checked{% endif %} disabled></div>
+      <div class="cell"><input type="checkbox" class="fbit" data-role="o" data-bit="1" aria-label="Files: other execute" disabled></div>
+    </div>
+    <input type="hidden" name="file_mode" class="file-mode-field" value="">
+  </div>
+  {% else %}
+  {# Files: the full independent triad — r without x is normal for a file, so
+     nothing is fused and no special bits are offered (setuid is refused
+     server-side; setgid/sticky are directory concepts here). #}
   <div class="perm-matrix">
     <div></div>
     <div class="colhd">Read</div><div class="colhd">Write</div><div class="colhd">Exec</div>
@@ -95,18 +179,7 @@
     <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="2" aria-label="Other write" {% if o_w %}checked{% endif %} disabled></div>
     <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="1" aria-label="Other execute" {% if o_x %}checked{% endif %} disabled></div>
   </div>
-
-  {# setgid + sticky are the only special bits meaningful on directory shares (setuid is omitted). #}
-  <div class="perm-special">
-    <label title="setgid: new files & subdirectories inherit this directory's group. Recommended for shared team shares.">
-      <input type="checkbox" class="sbit" data-special="2" {% if setgid %}checked{% endif %} disabled>
-      <span>setgid <span class="subtle">(inherit group)</span></span>
-    </label>
-    <label title="sticky bit: only the file owner (or root) may delete or rename entries. Useful for common drop / upload directories.">
-      <input type="checkbox" class="sbit" data-special="1" {% if sticky %}checked{% endif %} disabled>
-      <span>sticky <span class="subtle">(restrict delete)</span></span>
-    </label>
-  </div>
+  {% endif %}
 
   {# name="mode" is what /apply expects; the base.html permissions script keeps it in sync with the checkboxes. #}
   <input type="hidden" name="mode" class="mode-field" value="{{ mode_octal }}">
@@ -114,6 +187,7 @@
     <span class="lbl">Mode</span>
     <span class="octal">{{ mode_octal }}</span>
     <code class="symbolic"></code>{# filled by the base.html permissions script from the octal #}
+    <span class="file-mode-readout" hidden><span class="lbl">Files</span> <span class="file-octal"></span></span>
   </div>
 </form>
 

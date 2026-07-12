@@ -872,4 +872,440 @@ container_path = "{}"
         let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("Unauthorized"));
     }
+
+    // ===== 0.9.85: files in the tree + per-kind permission editors =====
+
+    // Share-backed state over a real tempdir, for tree / dir-perms / apply
+    // tests that need actual filesystem entries behind the share.
+    fn make_share_backed_state(
+        real_root: &std::path::Path,
+        logical: &str,
+        tmp: &tempfile::TempDir,
+    ) -> AppState {
+        let cp = tmp.path().join("share-cfg");
+        let min_cfg = format!(
+            r#"ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "{}"
+[sssd]
+ldap_default_bind_dn = "uid=admin"
+ldap_default_authtok = "s"
+[[shares]]
+name = "share"
+host_path = "{}"
+container_path = "{}"
+"#,
+            real_root.display(),
+            logical,
+            real_root.display()
+        );
+        std::fs::write(&cp, min_cfg).unwrap();
+        let cfg_val = nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("load");
+        let cfg = Arc::new(RwLock::new(cfg_val.clone()));
+        let fs = Arc::new(RwLock::new(FsManager::new(cfg_val)));
+        let l = Arc::new(Mutex::new(crate::create_test_lldap()));
+        let a = Arc::new(AuthManager::new(&cp, None));
+        let sm = tmp.path().join(".share-s");
+        std::fs::write(&sm, "ok\n").ok();
+        AppState {
+            fs,
+            lldap: l,
+            config: cfg,
+            auth: a,
+            config_path: cp,
+            keytab_hostname: "h".into(),
+            keytab_realm: "R".into(),
+            keytab_alert: Arc::new(StdMutex::new(None)),
+            apply_progress: Arc::new(Mutex::new(None)),
+            restart_requested: Arc::new(Mutex::new(false)),
+            direct_tls: true,
+            setup_marker_override: Some(sm),
+            setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
+            host_nfs_mode: false,
+            fs_probe_mountinfo_path: None,
+        }
+    }
+
+    async fn get_html(app: &axum::Router, token: &str, uri: &str) -> String {
+        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let req = add_session_cookie(req, token);
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{uri} must render");
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        String::from_utf8_lossy(&body).into_owned()
+    }
+
+    async fn post_form(app: &axum::Router, token: &str, uri: &str, body: String) -> StatusCode {
+        let req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let req = add_session_cookie(req, token);
+        app.clone().oneshot(req).await.unwrap().status()
+    }
+
+    // Waits for the async scan+apply task to finish and returns the recorded cmd.
+    async fn wait_apply_finished(
+        progress_slot: &Arc<Mutex<Option<Arc<crate::fs::ApplyProgress>>>>,
+    ) -> String {
+        use std::time::Duration;
+        use tokio::time::timeout;
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(prog) = progress_slot.lock().await.as_ref() {
+                    if prog.finished.load(std::sync::atomic::Ordering::Relaxed) {
+                        return prog.cmd.lock().expect("poison").clone().unwrap_or_default();
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("apply must finish")
+    }
+
+    #[tokio::test]
+    async fn tree_lists_files_after_dirs_with_icons_and_mtime() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_root = tmp.path().join("treeroot");
+        std::fs::create_dir_all(real_root.join("beta")).unwrap();
+        std::fs::create_dir_all(real_root.join("Alpha")).unwrap();
+        std::fs::write(real_root.join("zeta.txt"), b"z").unwrap();
+        std::fs::write(real_root.join("Movie.MKV"), b"m").unwrap();
+        std::fs::write(real_root.join(".hidden"), b"h").unwrap();
+        let st = make_share_backed_state(&real_root, "/treedata", &tmp);
+        let token = st.auth.create_privileged_session("treetest");
+        let app = router(st);
+
+        let html = get_html(&app, &token, "/tree?path=%2Ftreedata&root=true").await;
+        assert!(html.contains(r#"class="dir root-dir""#), "root row present");
+        assert!(html.contains("📁"), "dir rows carry the folder emoji");
+        assert!(html.contains("🎬"), ".MKV categorizes case-insensitively as movie");
+        assert!(html.contains("❔"), "extension-less .hidden is unknown");
+        assert!(html.contains(r#"data-path="/treedata/Alpha""#), "logical child paths");
+        // Files carry a right-aligned modified stamp (format proven by the
+        // format_mtime_utc unit test; here just its presence + this century).
+        assert!(html.contains(r#"title="modified (UTC)">2"#), "file rows show mtime: {html}");
+        // Ordering: dirs first (case-insensitive), then files (case-insensitive).
+        let pos = |needle: &str| html.find(needle).unwrap_or_else(|| panic!("missing {needle}"));
+        assert!(pos("Alpha</button>") < pos("beta</button>"), "dirs sort case-insensitively");
+        assert!(pos("beta</button>") < pos(">.hidden</button>"), "dirs list before files");
+        assert!(pos(">.hidden</button>") < pos("Movie.MKV</button>"));
+        assert!(pos("Movie.MKV</button>") < pos("zeta.txt</button>"));
+        // File rows are select-only: no caret button inside .file spans.
+        assert!(html.contains(r#"class="file""#) && html.contains("file-label"));
+    }
+
+    #[tokio::test]
+    async fn tree_child_fragment_renders_empty_row_for_empty_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_root = tmp.path().join("treeroot");
+        std::fs::create_dir_all(real_root.join("empty")).unwrap();
+        let st = make_share_backed_state(&real_root, "/treedata", &tmp);
+        let token = st.auth.create_privileged_session("treetest");
+        let app = router(st);
+
+        let html = get_html(&app, &token, "/tree?path=%2Ftreedata%2Fempty").await;
+        assert!(html.contains("tree-empty") && html.contains("(empty)"), "{html}");
+        assert!(!html.contains(r#"class="dir""#) && !html.contains(r#"class="file""#));
+    }
+
+    #[tokio::test]
+    async fn dir_perms_dir_renders_condensed_matrix_with_specials_and_traverse_note() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_root = tmp.path().join("permroot");
+        std::fs::create_dir_all(real_root.join("Alpha")).unwrap();
+        // 0711: group/other are execute-only — traverse-only access the
+        // condensed matrix can't express, so the amber note must render.
+        std::fs::set_permissions(
+            real_root.join("Alpha"),
+            std::fs::Permissions::from_mode(0o711),
+        )
+        .unwrap();
+        let st = make_share_backed_state(&real_root, "/permsdata", &tmp);
+        let token = st.auth.create_privileged_session("permtest");
+        let app = router(st);
+
+        let html = get_html(&app, &token, "/dir-perms?path=%2Fpermsdata%2FAlpha").await;
+        assert!(html.contains(r#"data-kind="dir""#), "dir panels are marked for the JS");
+        assert!(html.contains("perm-matrix-dir"), "condensed matrix renders for dirs");
+        assert!(
+            !html.contains(r#"aria-label="Owner execute""#),
+            "no execute column on the condensed dir matrix"
+        );
+        assert!(html.contains(r#"class="sbit""#), "setgid/sticky stay available on dirs");
+        assert!(html.contains("Read includes browse"), "fuse hint renders");
+        assert!(
+            html.contains("execute-only (traverse)"),
+            "0711 must surface the traverse-only warning: {html}"
+        );
+        // Apply-scope radios + the file-bits editor (hidden until a recursive
+        // scope is chosen; read/write seed from the dir matrix, exec unchecked).
+        assert_eq!(
+            html.matches(r#"name="recursive_scope""#).count(),
+            3,
+            "three scope radios (none/single/all)"
+        );
+        assert!(html.contains(r#"value="single""#) && html.contains(r#"value="all""#));
+        assert!(
+            html.contains(r#"class="file-opts" hidden"#),
+            "file bits stay hidden until a recursive scope: {html}"
+        );
+        assert_eq!(html.matches(r#"class="fbit""#).count(), 9, "full file triad");
+        assert!(html.contains(r#"name="file_mode""#));
+    }
+
+    #[tokio::test]
+    async fn dir_perms_file_renders_full_matrix_without_specials() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_root = tmp.path().join("permroot");
+        std::fs::create_dir_all(&real_root).unwrap();
+        std::fs::write(real_root.join("zeta.txt"), b"z").unwrap();
+        let st = make_share_backed_state(&real_root, "/permsdata", &tmp);
+        let token = st.auth.create_privileged_session("permtest");
+        let app = router(st);
+
+        let html = get_html(&app, &token, "/dir-perms?path=%2Fpermsdata%2Fzeta.txt").await;
+        assert!(html.contains(r#"data-kind="file""#), "file panels are marked for the JS");
+        assert!(
+            html.contains(r#"aria-label="Owner execute""#),
+            "files keep the full independent triad"
+        );
+        assert!(!html.contains(r#"class="sbit""#), "no special bits for files");
+        assert!(!html.contains("perm-matrix-dir"), "no condensed matrix for files");
+        assert!(!html.contains("Read includes browse"), "no fuse hint for files");
+        assert!(!html.contains(r#"name="recursive_scope""#), "no scope radios on file panels");
+        assert!(!html.contains(r#"class="fbit""#), "no file-bits editor on file panels");
+        assert!(
+            html.contains(r#"name="owner_user_uid""#) && html.contains(r#"name="mode""#),
+            "owner + mode plumbing unchanged for files"
+        );
+    }
+
+    // HTTP-layer extension of fs::apply_normalizes_directory_mode_but_not_files:
+    // the condensed dir editor submits an x-less mode; the server fuses r→x on
+    // every directory it walks while files receive exactly the explicit
+    // File-options bits (here x-less, so they never gain execute).
+    #[tokio::test]
+    async fn web_recursive_apply_xless_mode_fuses_dirs_not_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_root = tmp.path().join("xlessroot");
+        std::fs::create_dir_all(real_root.join("sub")).unwrap();
+        std::fs::write(real_root.join("f.txt"), b"data").unwrap();
+        let st = make_share_backed_state(&real_root, "/xlessdata", &tmp);
+        let slot = st.apply_progress.clone();
+        let token = st.auth.create_privileged_session("xlesstest");
+        let app = router(st);
+
+        // Blank owners keep the current uid/gid so unprivileged chown succeeds.
+        let status = post_form(
+            &app,
+            &token,
+            "/apply",
+            "path=%2Fxlessdata&owner_user=&owner_group=&mode=0660&recursive_scope=all&file_mode=0660&owner_user_uid=&owner_group_gid="
+                .to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let cmd = wait_apply_finished(&slot).await;
+        assert!(
+            cmd.contains("read implies execute"),
+            "dir applies surface the fuse note: {cmd}"
+        );
+        assert!(cmd.contains("files=660"), "cmd names the explicit file mode: {cmd}");
+        let mode_of = |p: &std::path::Path| {
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
+        };
+        assert_eq!(mode_of(&real_root), 0o770, "share root fused r→x");
+        assert_eq!(mode_of(&real_root.join("sub")), 0o770, "subdir fused r→x");
+        assert_eq!(
+            mode_of(&real_root.join("f.txt")),
+            0o660,
+            "file gets the x-less file bits — no implicit execute"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_apply_on_file_target_is_single_node_and_unfused() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_root = tmp.path().join("filetgt");
+        std::fs::create_dir_all(real_root.join("sub")).unwrap();
+        std::fs::write(real_root.join("f1.txt"), b"1").unwrap();
+        std::fs::write(real_root.join("sub/f2.txt"), b"2").unwrap();
+        std::fs::set_permissions(
+            real_root.join("sub/f2.txt"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let st = make_share_backed_state(&real_root, "/filedata", &tmp);
+        let slot = st.apply_progress.clone();
+        let token = st.auth.create_privileged_session("filetest");
+        let app = router(st);
+
+        // recursive_scope=all on purpose: the server must brace file targets
+        // to the node itself no matter what scope a hand-crafted POST claims.
+        let status = post_form(
+            &app,
+            &token,
+            "/apply",
+            format!(
+                "path={}&owner_user=&owner_group=&mode=0640&recursive_scope=all&file_mode=0777&owner_user_uid=&owner_group_gid=",
+                urlencoding::encode("/filedata/f1.txt")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let cmd = wait_apply_finished(&slot).await;
+        assert!(
+            !cmd.contains("-R") && !cmd.contains("read implies execute")
+                && !cmd.contains("dirs=") && !cmd.contains("directly inside"),
+            "file target renders a plain single-node cmd: {cmd}"
+        );
+        let mode_of = |p: &std::path::Path| {
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
+        };
+        assert_eq!(mode_of(&real_root.join("f1.txt")), 0o640, "exact raw mode, no fuse");
+        assert_eq!(
+            mode_of(&real_root.join("sub/f2.txt")),
+            0o600,
+            "a claimed recursive scope on a file must not walk anywhere else"
+        );
+    }
+
+    async fn post_form_html(app: &axum::Router, token: &str, uri: &str, body: String) -> String {
+        let req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let req = add_session_cookie(req, token);
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let b = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        String::from_utf8_lossy(&b).into_owned()
+    }
+
+    // Seeds root 0755 { f1.txt 0600, sub/ 0755, sub/f2.txt 0600 } under the tempdir.
+    fn seed_scope_tree(real_root: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(real_root.join("sub")).unwrap();
+        std::fs::set_permissions(real_root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(real_root.join("f1.txt"), b"1").unwrap();
+        std::fs::write(real_root.join("sub/f2.txt"), b"2").unwrap();
+        std::fs::set_permissions(real_root.join("f1.txt"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(real_root.join("sub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(real_root.join("sub/f2.txt"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fn disk_mode(p: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[tokio::test]
+    async fn web_apply_scope_none_touches_directory_inode_only() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_root = tmp.path().join("scopenone");
+        seed_scope_tree(&real_root);
+        let st = make_share_backed_state(&real_root, "/scopedata", &tmp);
+        let slot = st.apply_progress.clone();
+        let token = st.auth.create_privileged_session("scopetest");
+        let app = router(st);
+
+        let status = post_form(
+            &app, &token, "/apply",
+            "path=%2Fscopedata&owner_user=&owner_group=&mode=0660&recursive_scope=none&owner_user_uid=&owner_group_gid="
+                .to_string(),
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        let cmd = wait_apply_finished(&slot).await;
+        assert!(cmd.contains("(directory only)"), "None scope is labeled in the log: {cmd}");
+        assert_eq!(disk_mode(&real_root), 0o770, "the directory inode fuses");
+        assert_eq!(disk_mode(&real_root.join("f1.txt")), 0o600, "immediate files untouched at None");
+        assert_eq!(disk_mode(&real_root.join("sub")), 0o755);
+        assert_eq!(disk_mode(&real_root.join("sub/f2.txt")), 0o600);
+    }
+
+    #[tokio::test]
+    async fn web_apply_scope_single_spares_subdirectories() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_root = tmp.path().join("scopesingle");
+        seed_scope_tree(&real_root);
+        let st = make_share_backed_state(&real_root, "/scopedata", &tmp);
+        let slot = st.apply_progress.clone();
+        let token = st.auth.create_privileged_session("scopetest");
+        let app = router(st);
+
+        let status = post_form(
+            &app, &token, "/apply",
+            "path=%2Fscopedata&owner_user=&owner_group=&mode=0660&recursive_scope=single&file_mode=0640&owner_user_uid=&owner_group_gid="
+                .to_string(),
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        let cmd = wait_apply_finished(&slot).await;
+        assert!(
+            cmd.contains("single directory") && cmd.contains("files=640"),
+            "single scope + file mode named in the log: {cmd}"
+        );
+        assert_eq!(disk_mode(&real_root), 0o770, "dir fused");
+        assert_eq!(disk_mode(&real_root.join("f1.txt")), 0o640, "direct file gets the file bits");
+        assert_eq!(disk_mode(&real_root.join("sub")), 0o755, "subdir spared");
+        assert_eq!(disk_mode(&real_root.join("sub/f2.txt")), 0o600, "nested file spared");
+    }
+
+    #[tokio::test]
+    async fn web_apply_scope_all_grants_file_execute_only_when_chosen() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_root = tmp.path().join("scopeall");
+        seed_scope_tree(&real_root);
+        let st = make_share_backed_state(&real_root, "/scopedata", &tmp);
+        let slot = st.apply_progress.clone();
+        let token = st.auth.create_privileged_session("scopetest");
+        let app = router(st);
+
+        let status = post_form(
+            &app, &token, "/apply",
+            "path=%2Fscopedata&owner_user=&owner_group=&mode=0660&recursive_scope=all&file_mode=0754&owner_user_uid=&owner_group_gid="
+                .to_string(),
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        let cmd = wait_apply_finished(&slot).await;
+        assert!(cmd.contains("files=754"), "explicit file mode in the log: {cmd}");
+        assert_eq!(disk_mode(&real_root), 0o770);
+        assert_eq!(disk_mode(&real_root.join("sub")), 0o770, "all dirs fused");
+        assert_eq!(
+            disk_mode(&real_root.join("f1.txt")),
+            0o754,
+            "file execute lands only because it was explicitly chosen"
+        );
+        assert_eq!(disk_mode(&real_root.join("sub/f2.txt")), 0o754);
+    }
+
+    #[tokio::test]
+    async fn web_apply_rejects_special_bits_in_file_mode() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_root = tmp.path().join("scopebad");
+        seed_scope_tree(&real_root);
+        let st = make_share_backed_state(&real_root, "/scopedata", &tmp);
+        let token = st.auth.create_privileged_session("scopetest");
+        let app = router(st);
+
+        let html = post_form_html(
+            &app, &token, "/apply",
+            "path=%2Fscopedata&owner_user=&owner_group=&mode=0660&recursive_scope=all&file_mode=2660&owner_user_uid=&owner_group_gid="
+                .to_string(),
+        ).await;
+        assert!(
+            html.contains("special bits") && html.contains("nothing was changed"),
+            "setgid in file_mode must be rejected up front: {html}"
+        );
+        assert_eq!(disk_mode(&real_root), 0o755, "rejection happens before any chmod");
+        assert_eq!(disk_mode(&real_root.join("f1.txt")), 0o600);
+    }
 }

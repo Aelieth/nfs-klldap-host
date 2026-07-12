@@ -10,17 +10,32 @@ Apply is always async with live count-then-apply progress, cancel, oob log.
 
 ## Share Permissions page (`/`)
 Permissions editing is a **detached panel** (`#perm-panel`) beside the directory tree, not inline
-under each row. Tree rows are **two real buttons**: `.dir-caret` only expands/collapses (lazy
-1-level fetch via `/tree`, `aria-expanded` tracks state) and `.dir-label` only selects the
-directory and loads `GET /dir-perms?path=…` into the panel body (`templates/dir_perms.html`) —
-this single endpoint replaced the retired `/dir-meta`, `/dir-editor`, and `/dir-acl` trio. Share
-cards are keyboard-activatable (`role="button"`, `tabindex`, `aria-pressed`, Enter/Space). The
-panel shows **POSIX** (owner/group with live LLDAP search + hidden numeric uid/gid for name→id
-translation, a 3×3 rwx matrix with per-checkbox `aria-label`s, **setgid/sticky** toggles, and a
-live octal + symbolic readout) and, beside it, the **named ACL/xattr** list (both sections render
+under each row. The tree lists **directories and files** (since 0.9.85): each `/tree` fetch renders
+exactly one level via `FsManager::list_dir` (the old whole-subtree `build_tree` recursion is gone) —
+subdirectories first, then files, each group case-insensitively sorted. **All entries render** (the
+`#tree-root` panel scrollbar handles volume — no pagination by design), symlinks are excluded,
+dotfiles are visible, and an empty directory shows a muted `(empty)` row. Rows share
+`templates/tree_entry.html`: directory rows are **two real buttons** — `.dir-caret` only
+expands/collapses (lazy 1-level fetch via `/tree`, `aria-expanded` tracks state) and `.dir-label`
+(📁 + name) only selects — while file rows (`.file`, slightly smaller font) carry a category emoji
+(📄 txt · 🖼️ img · 💿 iso · 🎬 movies · 🗄️ data · ❔ unknown; extension-mapped server-side in
+`file_kind_emoji`), a `.file-label` select button, and a right-aligned UTC modified stamp
+(`.file-mtime`). Selecting either kind loads `GET /dir-perms?path=…` into the panel body
+(`templates/dir_perms.html`) — this single endpoint replaced the retired `/dir-meta`,
+`/dir-editor`, and `/dir-acl` trio and now serves **both node kinds** (the form carries
+`data-kind="dir|file"` as the JS contract). Share cards are keyboard-activatable
+(`role="button"`, `tabindex`, `aria-pressed`, Enter/Space). The panel shows **POSIX** (owner/group
+with live LLDAP search + hidden numeric uid/gid for name→id translation; **directories** get the
+condensed 2-column Read/Write matrix, **setgid/sticky** toggles, the **Apply-scope radios**
+(None / single directory / all directories) and, for recursive scopes, the **File permission
+bits** editor; **files** get the full 3×3 rwx matrix with no special bits and no scope radios;
+per-checkbox `aria-label`s and a live octal + symbolic readout — plus a second `Files NNN`
+readout while a recursive scope is selected) and, beside it, the **named ACL/xattr** list (both sections render
 through the `acl_group` Askama macro). POSIX Apply POSTs the existing `/apply` (chown/chmod, incl.
 setgid/sticky — only setuid is refused); ACL add/remove POST `/acl-apply` (names resolved via LDAP,
 same as POSIX; unresolvable principals answer **422** so the client reports the rejection).
+Behavior change with `list_dir`: an unreadable or missing container directory now renders the
+tree diagnostic alert (`list_dir` returns None) instead of a silently empty level.
 
 **Owner/group resolution contract (`/apply`, since 0.9.81):** uid/gid **0 is a first-class
 owner** — on-disk root is the nobody/anonymous identity NFS clients see under root-squash, so it
@@ -39,22 +54,46 @@ live search always offers a **synthetic "nobody (UID/GID 0)" row** for queries m
 suggestion-click handler in permissions.js writes `0` into the hidden id fields (its old
 `uid || ''` falsy-check dropped it).
 
-**Read implies execute on directories (round-4, enforced):** Ganesha's readdir returns
-entry attributes only with **R+X on the directory**, so an r-without-x directory lists as
-*empty* over NFS (a `0776` share root is how the users share "returned nothing"). The pair
-is therefore treated as one concept for directories: `/apply` normalizes every **directory**
-mode with `fs::dir_mode_r_implies_x` (x set wherever r is set; **files keep the raw mode**),
-the apply log states the normalized directory mode, and the matrix JS auto-checks x whenever
-r is checked. The full UI collapse (single read/browse bit per audience for directories) is
-tracked as HIGH in TODO.md.
+**Read implies execute on directories (round-4; UI collapse landed 0.9.85):** Ganesha's readdir
+returns entry attributes only with **R+X on the directory**, so an r-without-x directory lists as
+*empty* over NFS (a `0776` share root is how the users share "returned nothing"). The pair is one
+concept for directories, coordinated across three layers:
+
+- **Condensed directory matrix** — Read/Write per audience (`.perm-matrix-dir`, `.pbit`s with
+  data-bit 4/2 only). Write auto-checks Read; un-checking Read drops Write, so each audience is
+  none / read-only / read-write.
+- **x-less submit, fused display** (the load-bearing contract) — `.mode-field` always gets the raw
+  checkbox sum (e.g. `0660`), while the octal/symbolic readout previews the fused directory mode
+  (`0770`). The server fuses r→x per **directory** entry via `fs::dir_mode_r_implies_x` exactly as
+  before; files never receive the directory mode at all (see Apply scope below).
+- **Files get the full triad** — a file selected in the tree edits its own 3×3 matrix with
+  independent x (r-without-x is normal for a file), no special bits, no scope radios; a
+  hand-crafted POST claiming a recursive scope on a file target is braced server-side
+  (`target_is_file` forces `ApplyScope::DirOnly`).
+
+**Apply scope + file bits (dir panels):** the fragment's `.rec-scope` radios
+(`recursive_scope` = `none|single|all`) choose how far Apply reaches — **None** chowns/chmods the
+directory's own inode only; **Recursive — single directory** adds the files directly inside it;
+**Recursive — all directories** descends the whole subtree. Choosing a recursive scope reveals the
+**File permission bits** editor (`.file-opts`, nine independent `.fbit`s; read/write seed from the
+directory matrix, execute seeds unchecked) whose value submits as `file_mode` — every file in
+scope gets exactly those bits (`ApplyScope`/`ApplySpec` in fs.rs; special bits in `file_mode` are
+refused). So file execute is always an explicit grant — asserted end-to-end by
+`web_recursive_apply_xless_mode_fuses_dirs_not_files` (x-less file bits stay x-less) and
+`web_apply_scope_all_grants_file_execute_only_when_chosen`. Both recursive scopes require a
+`confirm()`; the fragment reload after an apply resets the scope to None on purpose.
+
+A directory whose current mode grants x-without-r (traverse-only) shows an amber `.perm-note.warn`
+— that state isn't representable in the condensed matrix and is stripped on Apply.
 
 All client behaviour lives in `/assets/permissions.js` behind the **`window.PermUI`** surface
 (`isLocked/flashLock/loadDirPerms/cancelCurrentApply/setShare`); panel state (share, current path,
 applying, dirty) is private JS state — never read back out of DOM text. Edit-mode visibility
-(Edit/Cancel/Apply, recursive box, ACL add/del) is CSS-driven off `.perm-panel.editing`; on a
+(Edit/Cancel/Apply, ACL add/del) is CSS-driven off `.perm-panel.editing`; the scope radios and
+file bits live inside the fragment form and are enable/disable-toggled with the other inputs. On a
 **Non-ACL** directory (`.acl-sec.disabled`) the ACL entries stay inert even in edit mode. Edit mode
 locks tree/share selection until Cancel/Apply; Cancel asks for confirmation only when edits are
-dirty; recursive applies require a `confirm()`. Fragment loads show foreground feedback (panel
+dirty; both recursive scopes require a `confirm()`. Fragment loads show foreground feedback (panel
 `.loading` dim + spinner + aria-live state chip, tree placeholder, busy caret on expand). The Apply
 Log is in-flow below the panel, driven by `/apply-progress` polling + oob swaps — the endpoint
 answers **HTTP 286** once finished (or with no progress slot) because htmx 1.9 only stops an
@@ -134,8 +173,8 @@ Semantics: localStorage key `theme` ∈ `auto|dark|light`; explicit values set
 | POST | `/setup/1/verify`, `/setup/2/test`, `/setup/2/continue`, `/setup/3/test`, `/setup/3/continue` | wizard actions | none (pre-setup only) |
 | GET | `/setup/3/status` | saved bind-cred probe | none (pre-setup only) |
 | GET | `/` | Share Permissions page | session |
-| GET | `/tree` | tree root (`root=true`) / lazy children fragment | session |
-| GET | `/dir-perms` | detached panel body | session |
+| GET | `/tree` | one-level dir+file listing: root row (`root=true`) or children fragment | session |
+| GET | `/dir-perms` | detached panel body (directory or file) | session |
 | GET | `/users/search`, `/groups/search` | LLDAP suggestion fragments | session |
 | POST | `/apply`, `/acl-apply`, `/cancel-apply` | POSIX / ACL apply + cancel | session |
 | GET | `/apply-progress` | oob Apply Log poller (286 when finished = htmx stop-polling) | session |

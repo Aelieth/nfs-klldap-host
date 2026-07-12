@@ -10,21 +10,17 @@
     <span class="dir root-dir" data-path="{{ root.path }}">
       <button type="button" class="dir-caret" aria-expanded="true"
               aria-label="{{ root.name }} subdirectories">&#9660;</button>
-      <button type="button" class="dir-label">{{ root.name }}</button>
+      <button type="button" class="dir-label"><span class="row-ico" aria-hidden="true">📁</span>{{ root.name }}</button>
     </span>
     <div class="children" data-loaded="true">
       {# Direct children of the root (pre-rendered for the initial view).
          data-loaded avoids redundant fetch on expand. #}
       <ul class="tree">
+      {% if children.is_empty() %}
+        <li class="tree-empty">(empty)</li>
+      {% endif %}
       {% for child in children %}
-        <li>
-          <span class="dir" data-path="{{ child.path }}">
-            <button type="button" class="dir-caret" aria-expanded="false"
-                    aria-label="{{ child.name }} subdirectories">&#9654;</button>
-            <button type="button" class="dir-label">{{ child.name }}</button>
-          </span>
-          <div class="children"></div>
-        </li>
+        {% include "tree_entry.html" %}
       {% endfor %}
       </ul>
     </div>

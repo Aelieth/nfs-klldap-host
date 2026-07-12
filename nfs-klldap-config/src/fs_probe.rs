@@ -203,7 +203,7 @@ pub fn normalize_path(path: &str) -> String {
 /// empirical check). It reliably catches filesystems that cannot do ACLs at all.
 ///
 /// Implemented via `getfacl` (from the already-installed `acl` package) to keep this crate
-/// `unsafe`-free. Returns `Some(false)` when the filesystem reports ACLs unsupported,
+/// free of raw syscalls. Returns `Some(false)` when the filesystem reports ACLs unsupported,
 /// `Some(true)` when ACLs are readable, and `None` when inconclusive (tool or path missing).
 pub fn serve_path_posix_acl_supported(path: &Path) -> Option<bool> {
     let out = std::process::Command::new("getfacl")

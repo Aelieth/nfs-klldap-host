@@ -75,16 +75,13 @@
           </div>
         </div>
         <div class="perm-actions">
-          <label class="perm-recursive">
-            <input type="checkbox" class="rec-box"> recursive
-          </label>
           <button type="button" class="btn btn-edit">Edit</button>
           <button type="button" class="btn btn-cancel">Cancel</button>
           <button type="button" class="btn btn-primary btn-apply">Apply</button>
         </div>
       </div>
       {# Fragment body from /dir-perms is injected here; it owns its own split/diagnostic layout. #}
-      <div class="perm-body"><em class="placeholder-note">Select a directory to view its permissions.</em></div>
+      <div class="perm-body"><em class="placeholder-note">Select a directory or file to view its permissions.</em></div>
     </div>
 
     {# Apply Log — in-flow below the panel; rendered by apply_log_shell (permission_tree.rs) so the

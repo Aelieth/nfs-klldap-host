@@ -8,4 +8,4 @@ Typical production runs use **host networking** (`network_mode: host` / `--netwo
 
 The container must still be started as real root (for 0600 sssd.conf, privileged port 2049, and arbitrary numeric UID/GID mutations). The in-container root model is the supported path. Running the binary on the host is not recommended.
 
-All mutations are still gated by the allow-list from configured shares + the WalkDir safety policy (no symlink descent for mutation, no set*id, refuse uid/gid 0). See `fs.rs` and `privileged.rs`.
+All mutations are still gated by the allow-list from configured shares + the WalkDir safety policy: no symlink descent for mutation, only **setuid** refused (setgid/sticky are editable directory bits), uid/gid 0 accepted as a first-class owner (root on disk is the anonymous/nobody identity clients see under root-squash), and directory modes fused r→x per entry while files receive only the explicit file bits chosen in the panel (never the directory mode; special bits refused in the file mode; apply reach limited by `ApplyScope`). See `fs.rs` and `privileged.rs`.

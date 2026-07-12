@@ -19,9 +19,11 @@
   `fs::dir_mode_r_implies_x` per entry is unchanged (see ui-design.md "Read
   implies execute" + "Apply scope"). File-type icons expanded to 13
   categories (audio/scripts/software/fonts/Windows/DOS + Linux-heavy
-  extension coverage + hover labels) — see ui-design.md. Follow-ups: mirror
-  the UX on the 0.9.9x ACL line; ARIA tree pattern still deferred
-  (ui-design.md).
+  extension coverage + hover labels) — see ui-design.md. Follow-ups: the
+  0.9.9x ACL line builds on this UX per the filesystem-ACL pivot (refactor
+  plan, Realignment 2026-07-12 + rewritten 2.5: full POSIX ACL model —
+  mask/defaults/effective badges, recursive ACL applies riding the same
+  scopes); ARIA tree pattern still deferred (ui-design.md).
 - Track regressions via `cargo test --workspace` and [TESTING.md](TESTING.md) living spec.
 - **0.9.x branch**: branch name carries the release version (currently 0.9.85); Cargo workspace, Dockerfile LABEL, and nfs-klldap-host.yaml image tag are aligned to it.
 - Client connects (2026-07 capture): krb5 auth + NFSv4.1 session succeed server-side, then the client destroys the session before any namespace op — failure is client-side (gssd/mount context). GANESHA_DEBUG now logs RPCSEC_GSS; see docs/client-fedora-immutable.md troubleshooting.

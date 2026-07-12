@@ -111,7 +111,7 @@ FROM debian:13-slim
 ARG GANESHA_VERSION=9.13-1+klldap2
 
 LABEL maintainer="Aelieth" \
-      version="0.9.85"
+      version="0.9.90"
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 

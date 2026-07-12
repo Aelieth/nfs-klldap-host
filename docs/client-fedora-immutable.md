@@ -83,16 +83,40 @@ The path after the colon is the share's **Pseudo Path** (`pseudo_path`, defaults
 `/<share-name>`), not the server filesystem path. For a persistent mount, `/etc/fstab`:
 
 ```
-server.example.com:/media  /var/mnt/media  nfs4  vers=4.2,sec=krb5p,_netdev,noauto,nofail,x-systemd.automount,x-systemd.idle-timeout=60s  0 0
+server.example.com:/media  /var/mnt/media  nfs4  users,exec,vers=4.2,sec=krb5p,_netdev,noauto,nofail,x-systemd.automount,x-gvfs-show,x-gvfs-name=media,x-gvfs-symbolic-icon=folder-remote-symbolic  0 0
 ```
 
-The setup script emits a fuller option set (v5.5+): `nofail` so a boot-time
-failure never blocks boot; `x-systemd.idle-timeout=60` so the share
-auto-unmounts after 60 s idle — the mount stays `hard` (data-safe) while in
-use but is never left mounted across sleep/idle to go stale and wedge
-userspace; and, on GNOME only, `x-gvfs-show,x-gvfs-name=<share>` so the share
-appears (click-to-mount) in the Files sidebar. KDE/Dolphin already lists fstab
-mounts, so the gvfs options are GNOME-gated.
+The setup script emits a fuller option set. The pieces that matter:
+
+- **`users,exec`** — a file-manager click (GNOME Files / KDE Dolphin) presents an
+  `x-gvfs-show`/Solid entry as a mountable volume and runs `mount.nfs4` **in the
+  user session**; a non-root `mount.nfs4` returns EPERM (`failed to prepare mount:
+  Operation not permitted`). `users` routes the click through setuid `/bin/mount`
+  so the mount runs **as root** (using the primed machine credential), while
+  per-user file I/O still runs as the logged-in user via the per-uid `rpc.gssd`
+  context. `exec` overrides the `noexec` that `users` implies (so home dirs on
+  `/mnt/users` can execute scripts); `nosuid,nodev` stay implied (safe on a
+  network mount). Any local user can then mount/unmount, but mounting grants no
+  file access without a valid Kerberos TGT.
+- **`nofail`** so a boot-time failure never blocks boot; **`x-systemd.automount`**
+  so the share mounts on first access (as root) and CLI access works.
+- **GNOME only:** `x-gvfs-show,x-gvfs-name=<share>,x-gvfs-symbolic-icon=folder-remote-symbolic`
+  so the share appears in the Files sidebar as a **network resource** (network
+  icon, click-to-mount), persisting regardless of mount state. A plain folder
+  bookmark was rejected: Nautilus sidebar bookmark icons are not customizable, so
+  a bookmark could only ever show a folder icon. KDE/Dolphin needs no gvfs options
+  — see below.
+
+**Suspend/resume (v5.7):** the mount is left up during normal use — it comes
+up on first access and stays mounted. `x-systemd.idle-timeout` is **off by
+default** (the `IDLE_TIMEOUT` knob): auto-unmounting an idle share made the
+root-context automount *remount* fail with an NFS "not authorized to mount"
+error once the machine Kerberos credential in `/tmp/krb5cc_0` had lapsed since
+boot (the mount runs as root; the user's own fresh TGT is not what authorizes
+it). Stale-across-sleep is instead handled by `satomlin-nfs-sleep.service` (a
+unit ordered around `sleep.target`): it force-unmounts the `/var/mnt` krb5
+shares before suspend and re-primes the machine ticket on resume, so nothing
+goes stale and the first post-resume remount authenticates cleanly.
 
 Since v5.6 the mounts also carry **`lookupcache=all`** (the kernel default),
 set by the `LOOKUPCACHE` knob at the top of the script. Earlier versions forced
@@ -101,6 +125,17 @@ OP_ILLEGAL and poisoning the dentry cache (`d??????????`, errno 121). Ganesha
 9.13 returns `NFS4ERR_NOTSUPP` cleanly and runs with delegations off, so caching
 is safe and much faster (no per-lookup server round trip). If `d??????????` ever
 reappears on a share, set `LOOKUPCACHE=none` and re-run `--fstab`.
+
+## KDE / Dolphin
+
+The gvfs options above are GNOME-specific; KDE needs none of them. Our entries
+carry `_netdev`, so KDE's **Solid** storage layer classifies them as network
+shares and lists them in Dolphin's *Remote* group automatically — navigating into
+one triggers the same `x-systemd.automount` root mount. Dolphin shares GNOME's
+trap: clicking its auto-listed *device* entry while the share is cold can run the
+mount in the user session and fail `Operation not permitted`. The **`users`**
+option (above) now covers that path too, so a cold click mounts as root. No
+per-user setup or Places seeding is required.
 
 ## Troubleshooting
 
@@ -120,15 +155,28 @@ Run the server with `GANESHA_DEBUG=TRUE` while reproducing — the debug LOG set
   id_resolver helper (step 6). After changing it: `sudo nfsidmap -c` to clear the keyring.
 - **Everything owned by `nobody`** — idmapd `Domain` mismatch with the server realm,
   `Method=nsswitch` missing, or the user lacks POSIX attributes in KLLDAP.
-- **`mount.nfs4: access denied by server`** — `sec=` doesn't match the export `SecType`
-  (default krb5p), or the client's clock is skewed beyond Kerberos tolerance.
+- **Clicking the share in Files/Dolphin fails `mount.nfs4: failed to prepare mount:
+  Operation not permitted` (EPERM)** — the file manager tried to mount the
+  `x-gvfs-show`/Solid entry **in your user session**, and a non-root `mount.nfs4` is
+  always EPERM. The fix is the **`users`** fstab option (setup script ≥ v5.8): it
+  routes the click through setuid `/bin/mount` so the mount runs as root. Confirm
+  the line carries it — `grep /var/mnt/<share> /etc/fstab` should show `users,exec,…`
+  — and if not, re-run `sudo ./satomlin-ldap-setup-v5.sh -f` then reboot. This is
+  distinct from *access denied by server* below, which is an authorization/credential
+  failure rather than a local privilege one.
+- **`mount.nfs4: access denied by server` / "not authorized to mount" on an automount
+  remount** — `sec=` doesn't match the export `SecType` (default krb5p), or the client's
+  clock is skewed, or (the common case for a *remount* that used to work) the root-context
+  mount had no fresh machine credential: `sudo klist -c /tmp/krb5cc_0` — if empty/expired,
+  `sudo systemctl start satomlin-nfs-machine-creds.service` to re-prime, then retry. v5.7
+  turns `x-systemd.idle-timeout` off by default precisely to stop these arbitrary remounts
+  during normal use.
 - **Sporadic I/O errors / stale handles on suspend-resume laptops** — lease/grace are
-  server-tuned (lease 60, grace 90 since 0.9.81). The v5.5 `x-systemd.idle-timeout=60`
-  option largely removes this by auto-unmounting idle shares so nothing is mounted
-  across a suspend to go stale; if you still hit a wedged mount, `sudo umount -f -l
+  server-tuned (lease 60, grace 90 since 0.9.81). v5.7's `satomlin-nfs-sleep.service`
+  unmounts the krb5 shares before suspend and re-primes the machine cred on resume, so
+  nothing is left stale across sleep; if you still hit a wedged mount, `sudo umount -f -l
   /var/mnt/<share>` releases it and the next access remounts fresh. A `hard` mount held
-  open across a server outage still blocks (by design, for write integrity) — that is
-  what the idle-unmount avoids.
+  open across a server outage still blocks (by design, for write integrity).
 
 Server-side verification: `verify-ganesha.sh` inside the container; end-to-end harness:
 `scripts/fedora-krb5p-client-validate.sh`.

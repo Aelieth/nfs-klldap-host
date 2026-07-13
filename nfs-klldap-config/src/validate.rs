@@ -23,10 +23,14 @@ pub(crate) fn is_kerberos_placeholder_realm(r: &str) -> bool {
 
 /// Scan raw TOML for unrecognized keys in `[[shares]]` tables.
 pub fn detect_share_unknown_keys(contents: &str) -> Vec<ShareFieldWarning> {
-    let root: toml::Value = match toml::from_str(contents) {
-        Ok(v) => v,
-        Err(_) => return vec![],
-    };
+    match toml::from_str::<toml::Value>(contents) {
+        Ok(root) => detect_share_unknown_keys_value(&root),
+        Err(_) => vec![],
+    }
+}
+
+/// Same scan over an already-parsed document (single-parse load path).
+fn detect_share_unknown_keys_value(root: &toml::Value) -> Vec<ShareFieldWarning> {
     let Some(shares) = root.get("shares").and_then(|s| s.as_array()) else {
         return vec![];
     };
@@ -81,13 +85,26 @@ impl NfsKlldapConfig {
     /// For first-run WebUI before realm/bind are set.
     pub fn load_unchecked(path: &std::path::Path) -> Result<Self, ConfigError> {
         let contents = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
+        Self::parse_str(&path.display().to_string(), &contents)
+    }
 
-        let mut cfg: Self = toml::from_str(&contents).map_err(|e| ConfigError::Parse {
-            path: path.display().to_string(),
+    /// Parse config text without validation (no file read): one string parse
+    /// serves both the struct and the unknown-key scan. A failed tree
+    /// deserialize re-parses the string only to keep the span-rich message.
+    pub fn parse_str(path_label: &str, contents: &str) -> Result<Self, ConfigError> {
+        let root: toml::Value = toml::from_str(contents).map_err(|e| ConfigError::Parse {
+            path: path_label.to_string(),
             msg: e.to_string(),
         })?;
-
-        cfg.share_warnings = detect_share_unknown_keys(&contents);
+        let share_warnings = detect_share_unknown_keys_value(&root);
+        let mut cfg: Self = match root.try_into() {
+            Ok(c) => c,
+            Err(_) => toml::from_str(contents).map_err(|e| ConfigError::Parse {
+                path: path_label.to_string(),
+                msg: e.to_string(),
+            })?,
+        };
+        cfg.share_warnings = share_warnings;
         Ok(cfg)
     }
 

@@ -257,7 +257,9 @@ pub(crate) fn build_settings_template(
     let raw_toml = std::fs::read_to_string(p)
         .unwrap_or_else(|_| "# Could not read config file".to_string());
     let doc: toml_edit::DocumentMut = raw_toml.parse().unwrap_or_default();
-    let cfg = nfs_klldap_config::NfsKlldapConfig::load(p).unwrap_or_default();
+    let cfg = nfs_klldap_config::NfsKlldapConfig::parse_str(&p.display().to_string(), &raw_toml)
+        .and_then(|mut c| c.validate_and_derive().map(|_| c))
+        .unwrap_or_default();
     let current_shares: Vec<ShareTemplateRow> = cfg
         .shares
         .iter()
@@ -421,7 +423,13 @@ pub(crate) async fn settings_save_structured(
     Form(form): Form<StructuredSettingsForm>,
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
-    let mut cfg = nfs_klldap_config::NfsKlldapConfig::load(&state.config_path).unwrap_or_default();
+    let original_text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+    let mut cfg = nfs_klldap_config::NfsKlldapConfig::parse_str(
+        &state.config_path.display().to_string(),
+        &original_text,
+    )
+    .and_then(|mut c| c.validate_and_derive().map(|_| c))
+    .unwrap_or_default();
     apply_structured_form_to_config(&form, &mut cfg);
     if let Err(e) = cfg.validate_and_derive() {
         let msg = format!("Validation error: {}", e);
@@ -432,7 +440,6 @@ pub(crate) async fn settings_save_structured(
         );
         return Ok(Html(tpl.render().unwrap()));
     }
-    let original_text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
     let mut doc = original_text
         .parse::<toml_edit::DocumentMut>()
         .unwrap_or_default();

@@ -28,60 +28,42 @@ use nfs_klldap_config::{
     resolve_keytab_path, startup_step_hint, StartupStep, NfsKlldapConfig,
 };
 
+/// Probe subcommands: each sets its env flags, then runs the supervisor.
+const PROBE_CMDS: &[(&str, &[&str])] = &[
+    ("supervise-probe", &["NFS_KLLDAP_SUPERVISE_PROBE"]),
+    (
+        "supervise-probe-wizard",
+        &["NFS_KLLDAP_SUPERVISE_PROBE", "NFS_KLLDAP_SUPERVISE_WIZARD_PROBE"],
+    ),
+    ("supervise-recycle-probe", &["NFS_KLLDAP_SUPERVISE_RECYCLE_PROBE"]),
+    ("supervise-sighup-hook-probe", &["NFS_KLLDAP_SUPERVISE_SIGHUP_HOOK_PROBE"]),
+    (
+        "supervise-identity-recycle-probe",
+        &["NFS_KLLDAP_SUPERVISE_IDENTITY_RECYCLE_PROBE"],
+    ),
+    ("supervise-readiness-probe", &["NFS_KLLDAP_SUPERVISE_READINESS_PROBE"]),
+];
+
+fn supervise_or_exit(config_path: &Path) {
+    if let Err(e) = supervisor::run_supervisor(config_path) {
+        eprintln!("FATAL: {e}");
+        exit(2);
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let config_path = default_config_path();
     let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("supervise");
 
     match cmd {
-        "supervise" | "run" | "startup" => {
-            if let Err(e) = supervisor::run_supervisor(&config_path) {
-                eprintln!("FATAL: {e}");
-                exit(2);
+        "supervise" | "run" | "startup" => supervise_or_exit(&config_path),
+        probe if PROBE_CMDS.iter().any(|(c, _)| *c == probe) => {
+            let (_, vars) = PROBE_CMDS.iter().find(|(c, _)| *c == probe).unwrap();
+            for v in *vars {
+                std::env::set_var(v, "1");
             }
-        }
-        "supervise-probe" => {
-            std::env::set_var("NFS_KLLDAP_SUPERVISE_PROBE", "1");
-            if let Err(e) = supervisor::run_supervisor(&config_path) {
-                eprintln!("FATAL: {e}");
-                exit(2);
-            }
-        }
-        "supervise-probe-wizard" => {
-            std::env::set_var("NFS_KLLDAP_SUPERVISE_PROBE", "1");
-            std::env::set_var("NFS_KLLDAP_SUPERVISE_WIZARD_PROBE", "1");
-            if let Err(e) = supervisor::run_supervisor(&config_path) {
-                eprintln!("FATAL: {e}");
-                exit(2);
-            }
-        }
-        "supervise-recycle-probe" => {
-            std::env::set_var("NFS_KLLDAP_SUPERVISE_RECYCLE_PROBE", "1");
-            if let Err(e) = supervisor::run_supervisor(&config_path) {
-                eprintln!("FATAL: {e}");
-                exit(2);
-            }
-        }
-        "supervise-sighup-hook-probe" => {
-            std::env::set_var("NFS_KLLDAP_SUPERVISE_SIGHUP_HOOK_PROBE", "1");
-            if let Err(e) = supervisor::run_supervisor(&config_path) {
-                eprintln!("FATAL: {e}");
-                exit(2);
-            }
-        }
-        "supervise-identity-recycle-probe" => {
-            std::env::set_var("NFS_KLLDAP_SUPERVISE_IDENTITY_RECYCLE_PROBE", "1");
-            if let Err(e) = supervisor::run_supervisor(&config_path) {
-                eprintln!("FATAL: {e}");
-                exit(2);
-            }
-        }
-        "supervise-readiness-probe" => {
-            std::env::set_var("NFS_KLLDAP_SUPERVISE_READINESS_PROBE", "1");
-            if let Err(e) = supervisor::run_supervisor(&config_path) {
-                eprintln!("FATAL: {e}");
-                exit(2);
-            }
+            supervise_or_exit(&config_path);
         }
         "check" => {
             if let Err(e) = run_one_shot_diagnostics(&config_path) {

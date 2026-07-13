@@ -1,7 +1,6 @@
 //! Runs pid-1 supervision with preflight, ordering, and SIGHUP recycle.
 
 mod env;
-mod pids;
 mod services;
 
 use std::fs::{self, OpenOptions};
@@ -34,9 +33,19 @@ use nfs_klldap_config::{
     ServiceRecyclePlan, SupervisorLoopAction,
 };
 
+#[derive(Default)]
+struct ChildPids {
+    pub watcher: Option<u32>,
+    pub sssd: Option<u32>,
+    pub ganesha: Option<u32>,
+    pub webui: Option<u32>,
+    pub dbus: Option<u32>,
+    pub idhelper: Option<u32>,
+}
+
 struct Supervisor {
     env: env::SupervisorEnv,
-    pids: pids::ChildPids,
+    pids: ChildPids,
     services_started: bool,
     /// True after start_ganesha until stop_ganesha completes.
     /// Enables daemon pid adoption.
@@ -51,7 +60,7 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
     let env = env::SupervisorEnv::from_env(config_path);
     let mut sup = Supervisor {
         env,
-        pids: pids::ChildPids::default(),
+        pids: ChildPids::default(),
         services_started: false,
         ganesha_managed: false,
         last_shares_fingerprint: 0,

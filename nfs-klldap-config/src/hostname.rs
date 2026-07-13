@@ -9,6 +9,11 @@ pub use nfs_klldap_identity::{
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Trimmed /proc/sys/kernel/hostname contents.
+fn read_kernel_hostname() -> std::io::Result<String> {
+    std::fs::read_to_string("/proc/sys/kernel/hostname").map(|s| s.trim().to_string())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HostnameSource {
     Command,
@@ -183,8 +188,8 @@ pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsist
         }
     };
 
-    let secondary = match std::fs::read_to_string("/proc/sys/kernel/hostname") {
-        Ok(s) => s.trim().to_string(),
+    let secondary = match read_kernel_hostname() {
+        Ok(s) => s,
         Err(e) => {
             return Err(HostnameInconsistency {
                 primary: Some(HostnameObservation {
@@ -243,9 +248,8 @@ pub(crate) mod internal {
         if let Ok(h) = std::env::var("HOSTNAME") {
             return Ok(h.into());
         }
-        let p = "/proc/sys/kernel/hostname";
-        if let Ok(s) = std::fs::read_to_string(p) {
-            return Ok(s.trim().to_string().into());
+        if let Ok(s) = super::read_kernel_hostname() {
+            return Ok(s.into());
         }
         Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -395,8 +399,7 @@ pub fn runtime_hostname(cfg: Option<&NfsKlldapConfig>) -> String {
             return h.trim().to_string();
         }
     }
-    if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
-        let h = h.trim().to_string();
+    if let Ok(h) = read_kernel_hostname() {
         if !h.is_empty() {
             return h;
         }

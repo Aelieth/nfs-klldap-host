@@ -12,7 +12,6 @@ mod recycle_plan;
 
 mod fs_probe;
 pub mod ganesha_log_contract;
-mod posix_only_policy;
 mod fs_warnings;
 mod ganesha_identity_pipeline;
 mod ganesha_nss_contract;
@@ -69,7 +68,6 @@ pub use ganesha_log_contract::{
     log_shows_identity_failure, log_shows_identity_path_notsupp, log_shows_posix_ok_getattr,
     validate_acl_notsupp_fixture, NotsuppFailurePath, GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
 };
-pub use posix_only_policy::PosixOnlyPolicy;
 pub use ganesha_identity_pipeline::{
     identity_principals_for_check, probe_client_host, probe_user_principal,
     run_identity_pipeline, warm_principals_for_startup,
@@ -101,7 +99,7 @@ pub use fs_warnings::{
     any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warning,
     limited_fs_warning_settings_ui, limited_fs_warnings_only, share_fs_acl_limited,
     share_fs_acl_limited_with_mountinfo, share_fs_warning_message,
-    share_fs_warning_message_with_mountinfo, FsShareWarning,
+    share_fs_warning_message_with_mountinfo, FsShareWarning, PosixOnlyPolicy,
 };
 pub use hook::{effective_post_generate_hook, run_post_generate_hooks};
 pub use generate::generate_all;

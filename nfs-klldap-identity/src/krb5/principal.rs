@@ -1,6 +1,6 @@
 //! Kerberos principal classification (hybrid user TGT + machine keytab).
 
-use crate::constants::{MACHINE_GID, MACHINE_PRINCIPAL_PREFIXES};
+use crate::constants::MACHINE_PRINCIPAL_PREFIXES;
 
 /// True when the local part is only ASCII digits (uid/gid reverse-map noise).
 pub fn is_numeric_local_principal(p: &str) -> bool {
@@ -66,20 +66,6 @@ pub fn classify_principal(principal: &str, realm: &str, server_variants: &[Strin
     (false, "treated as regular user principal".to_string())
 }
 
-/// Supplemental gids for machine principals (host/, nfs/, root/). Returns None for users.
-pub fn supplemental_gids_for_machine_principal(
-    principal: &str,
-    realm: &str,
-    server_variants: &[String],
-) -> Option<Vec<i32>> {
-    let (is_machine, _) = classify_principal(principal, realm, server_variants);
-    if is_machine {
-        Some(vec![MACHINE_GID as i32])
-    } else {
-        None
-    }
-}
-
 /// True when principal has a non-empty realm after '@'.
 pub fn principal_has_realm(p: &str) -> bool {
     let p = p.trim();
@@ -122,7 +108,7 @@ pub fn normalize_principal(p: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{FALLBACK_NOBODY_GID, MACHINE_UID};
+    use crate::constants::MACHINE_UID;
 
     #[test]
     fn principal_local_part_strips_realm() {
@@ -147,14 +133,6 @@ mod tests {
         let (is_machine, _) = classify_principal("host/client-a@TESTLAB.LOCAL", "TESTLAB.LOCAL", &[]);
         assert!(is_machine);
         assert_eq!(MACHINE_UID, 0);
-    }
-
-    #[test]
-    fn machine_principal_supplemental_gids_are_root_not_nobody() {
-        let gids = supplemental_gids_for_machine_principal("host/client-a@TESTLAB.LOCAL", "TESTLAB.LOCAL", &[])
-            .expect("host/*@REALM must yield machine gids");
-        assert_eq!(gids, vec![MACHINE_GID as i32]);
-        assert!(!gids.contains(&(FALLBACK_NOBODY_GID as i32)));
     }
 
     #[test]

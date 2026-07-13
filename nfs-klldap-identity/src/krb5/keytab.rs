@@ -74,7 +74,7 @@ pub fn read_keytab_nfs_principals(
 }
 
 /// Convenience wrapper using the default container keytab path.
-pub fn read_default_keytab_nfs_principals(include_timestamps: bool) -> Result<Vec<String>, String> {
+pub(crate) fn read_default_keytab_nfs_principals(include_timestamps: bool) -> Result<Vec<String>, String> {
     read_keytab_nfs_principals(Path::new(DEFAULT_KEYTAB_PATH), include_timestamps)
 }
 

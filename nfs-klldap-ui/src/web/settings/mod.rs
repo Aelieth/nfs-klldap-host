@@ -446,35 +446,24 @@ pub(crate) async fn settings_save_shares(
     }
 
     for (idx, new_share) in new_shares.iter_mut().enumerate() {
+        // Raw-TOML-only fields survive a structured save: look the old share
+        // up once (index first, then name so reordered rows still match).
+        let old = old_cfg
+            .shares
+            .get(idx)
+            .or_else(|| old_cfg.shares.iter().find(|s| s.name == new_share.name));
+        let Some(old) = old else { continue };
         if new_share.pseudo_path.is_none() && share_pseudo_path_explicit_in_raw(&doc, idx) {
-            let old = old_cfg
-                .shares
-                .get(idx)
-                .or_else(|| old_cfg.shares.iter().find(|s| s.name == new_share.name));
-            if let Some(old) = old {
-                new_share.pseudo_path = old.pseudo_path.clone();
-            }
+            new_share.pseudo_path = old.pseudo_path.clone();
         }
         // source_path (ACL staging source) has no structured-form control yet; preserve any
         // value set via raw TOML so a structured save does not silently drop staging.
         if new_share.source_path.is_none() {
-            let old = old_cfg
-                .shares
-                .get(idx)
-                .or_else(|| old_cfg.shares.iter().find(|s| s.name == new_share.name));
-            if let Some(old) = old {
-                new_share.source_path = old.source_path.clone();
-            }
+            new_share.source_path = old.source_path.clone();
         }
         // attr_expiration_secs likewise rides raw TOML only for now.
         if new_share.attr_expiration_secs.is_none() {
-            let old = old_cfg
-                .shares
-                .get(idx)
-                .or_else(|| old_cfg.shares.iter().find(|s| s.name == new_share.name));
-            if let Some(old) = old {
-                new_share.attr_expiration_secs = old.attr_expiration_secs;
-            }
+            new_share.attr_expiration_secs = old.attr_expiration_secs;
         }
     }
     let mut cfg = old_cfg;

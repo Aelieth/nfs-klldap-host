@@ -128,6 +128,26 @@ pub(crate) fn parse_tri_bool(v: &str) -> Option<bool> {
     }
 }
 
+/// Indexed share form value: share_<name>_<idx>.
+fn share_field<'a>(
+    extra: &'a std::collections::HashMap<String, String>,
+    name: &str,
+    idx: usize,
+) -> Option<&'a String> {
+    extra.get(&format!("share_{}_{}", name, idx))
+}
+
+/// Same lookup with blank values dropped (the common optional-field shape).
+fn share_field_nonblank(
+    extra: &std::collections::HashMap<String, String>,
+    name: &str,
+    idx: usize,
+) -> Option<String> {
+    share_field(extra, name, idx)
+        .cloned()
+        .filter(|s| !s.trim().is_empty())
+}
+
 pub(crate) fn collect_shares_from_structured_form(
     extra: &std::collections::HashMap<String, String>,
 ) -> Vec<nfs_klldap_config::Share> {
@@ -136,9 +156,12 @@ pub(crate) fn collect_shares_from_structured_form(
         if let Some(suf) = k.strip_prefix("share_name_") {
             if let Ok(idx) = suf.parse::<usize>() {
                 let nm = v.trim().to_string();
-                let ht = extra.get(&format!("share_host_{}", idx)).cloned().unwrap_or_default().trim().to_string();
-                let cp = extra
-                    .get(&format!("share_container_path_{}", idx))
+                let ht = share_field(extra, "host", idx)
+                    .cloned()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let cp = share_field(extra, "container_path", idx)
                     .cloned()
                     .unwrap_or_default()
                     .trim()
@@ -148,19 +171,19 @@ pub(crate) fn collect_shares_from_structured_form(
                     idx,
                     name: nm,
                     host: ht,
-                    pseudo_path: extra.get(&format!("share_pseudo_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
-                    security: extra.get(&format!("share_security_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
-                    rw: extra.get(&format!("share_rw_{}", idx)).map(|vv| vv.trim() == "true").unwrap_or(true),
-                    root_squash: extra.contains_key(&format!("share_root_squash_{}", idx)),
-                    cache_profile: extra.get(&format!("share_cache_profile_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
-                    pref_read: extra.get(&format!("share_pref_read_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
-                    pref_write: extra.get(&format!("share_pref_write_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
-                    enable_acl: extra.get(&format!("share_enable_acl_{}", idx)).and_then(|v| parse_tri_bool(v)),
-                    manage_gids: extra.get(&format!("share_manage_gids_{}", idx)).and_then(|v| parse_tri_bool(v)),
-                    read_access_policy: extra.get(&format!("share_read_access_policy_{}", idx)).and_then(|vv| if vv.trim() == "pre" { Some("pre".into()) } else if vv.trim() == "post" { Some("post".into()) } else { None }),
-                    manage_gids_expiration: extra.get(&format!("share_manage_gids_expiration_{}", idx)).and_then(|vv| vv.trim().parse().ok()),
+                    pseudo_path: share_field_nonblank(extra, "pseudo", idx),
+                    security: share_field_nonblank(extra, "security", idx),
+                    rw: share_field(extra, "rw", idx).map(|vv| vv.trim() == "true").unwrap_or(true),
+                    root_squash: share_field(extra, "root_squash", idx).is_some(),
+                    cache_profile: share_field_nonblank(extra, "cache_profile", idx),
+                    pref_read: share_field_nonblank(extra, "pref_read", idx),
+                    pref_write: share_field_nonblank(extra, "pref_write", idx),
+                    enable_acl: share_field(extra, "enable_acl", idx).and_then(|v| parse_tri_bool(v)),
+                    manage_gids: share_field(extra, "manage_gids", idx).and_then(|v| parse_tri_bool(v)),
+                    read_access_policy: share_field(extra, "read_access_policy", idx).and_then(|vv| if vv.trim() == "pre" { Some("pre".into()) } else if vv.trim() == "post" { Some("post".into()) } else { None }),
+                    manage_gids_expiration: share_field(extra, "manage_gids_expiration", idx).and_then(|vv| vv.trim().parse().ok()),
                     container_path: cp,
-                    source_path: extra.get(&format!("share_source_path_{}", idx)).cloned().filter(|s| !s.trim().is_empty()),
+                    source_path: share_field_nonblank(extra, "source_path", idx),
                 });
             }
         }

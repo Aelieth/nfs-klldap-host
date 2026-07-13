@@ -144,6 +144,7 @@ pub mod idmap;
 pub use idmap::{
     classify_principal, escape_ldap_filter, extract_first_attr_value, from_sssd_section,
     machine_short_name, normalize_principal, parse_getent_group, parse_getent_passwd,
+    parse_group_row, parse_passwd_row,
     posix_mapping_from_sssd, principal_local_part, sssd_resolver_inputs,
     IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry,
 };

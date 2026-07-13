@@ -9,8 +9,8 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use nfs_klldap_config::{
-    from_sssd_section, parse_getent_passwd, IdLdapResolver, IdMapSnapshot, NfsKlldapConfig,
-    FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID, MACHINE_GID,
+    from_sssd_section, parse_getent_passwd, parse_group_row, IdLdapResolver, IdMapSnapshot,
+    NfsKlldapConfig, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID, MACHINE_GID,
 };
 use nfs_klldap_identity::{
     canonicalize_principal, classify_principal, is_numeric_local_principal, machine_short_name,
@@ -470,17 +470,11 @@ fn resolve_getent(name: &str, paths: &NssMaterializePaths<'_>) -> Option<(u32, u
 }
 
 fn lookup_group_in_content(content: &str, gid: u32) -> Option<String> {
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let parts: Vec<&str> = line.splitn(4, ':').collect();
-        if parts.len() >= 3 && parts[2].parse::<u32>().ok() == Some(gid) {
-            return Some(parts[0].to_string());
-        }
-    }
-    None
+    content
+        .lines()
+        .filter_map(parse_group_row)
+        .find(|row| row.gid == gid)
+        .map(|row| row.name)
 }
 
 /// Resolve gid from materialized group file when getent group misses.

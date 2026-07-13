@@ -33,4 +33,4 @@ pub use ldap::{
     PosixAttributeMapping, PosixGroupEntry, PosixMappingInput, PosixUserEntry,
     resolve_posix_attribute_mapping,
 };
-pub use nss::{parse_getent_group, parse_getent_passwd};
+pub use nss::{parse_getent_group, parse_getent_passwd, parse_group_row, parse_passwd_row, GroupRow, PasswdRow};

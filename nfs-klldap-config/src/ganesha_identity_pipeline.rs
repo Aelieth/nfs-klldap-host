@@ -6,6 +6,7 @@ use std::process::Command;
 use crate::ganesha_nss_contract::{evaluate_nss_contract, GaneshaNssEnv};
 use crate::ganesha_readiness::{probe_socket_grps, probe_socket_grouplist};
 use crate::NfsKlldapConfig;
+use nfs_klldap_identity::{parse_group_row, parse_passwd_row};
 
 /// Principals exercised by preflight (user TGT + server host + client machine.
 #[derive(Clone, Debug)]
@@ -125,16 +126,9 @@ fn snapshot_passwd_rows(nss_env: &GaneshaNssEnv) -> Vec<(String, u32, u32)> {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        for line in text.lines() {
-            let f: Vec<&str> = line.split(':').collect();
-            if f.len() < 4 {
-                continue;
-            }
-            let (Ok(uid), Ok(gid)) = (f[2].parse::<u32>(), f[3].parse::<u32>()) else {
-                continue;
-            };
-            if seen.insert(f[0].to_string()) {
-                rows.push((f[0].to_string(), uid, gid));
+        for row in text.lines().filter_map(parse_passwd_row) {
+            if seen.insert(row.name.clone()) {
+                rows.push((row.name, row.uid, row.gid));
             }
         }
     }
@@ -153,16 +147,9 @@ fn snapshot_gid_count(nss_env: &GaneshaNssEnv, names: &[&str], primary_gid: u32)
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        for line in text.lines() {
-            let f: Vec<&str> = line.split(':').collect();
-            if f.len() < 4 {
-                continue;
-            }
-            let Ok(gid) = f[2].parse::<u32>() else {
-                continue;
-            };
-            if f[3].split(',').any(|m| names.contains(&m.trim())) {
-                gids.insert(gid);
+        for row in text.lines().filter_map(parse_group_row) {
+            if row.members.iter().any(|m| names.contains(&m.as_str())) {
+                gids.insert(row.gid);
             }
         }
     }

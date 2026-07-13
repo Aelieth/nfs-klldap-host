@@ -19,6 +19,11 @@
 #}
 
 {% block content %}
+{% if let Some(acl_msg) = acl_alert %}
+<div class="acl-alert" role="alert" style="background: var(--warning-amber-bg); border:1px solid var(--warning-amber-border); padding:6px 12px; margin-bottom:0.75rem; border-radius:4px; font-size:0.9em; color: var(--warning-amber-text);">
+    <strong>ACL capability changed:</strong> {{ acl_msg }}
+</div>
+{% endif %}
 <style>
   /* ---- shell / rail / panes ---- */
   #settings-app{color:var(--text);font-size:13px;line-height:1.45}
@@ -572,19 +577,35 @@
     }
     markDirty();
   });
+  // Mirrors the server-side share_acl_state_label / effective_acl_capable so the
+  // card matches what generate emits. The write-probe verdict is a property of
+  // the filesystem (data-acl-probed), independent of the enable_acl selection.
+  function aclStateLabel(enableVal, probed) {
+    if (enableVal === 'false') return 'off';
+    if (enableVal === 'true') {
+      if (probed === 'capable') return 'on';
+      if (probed === 'incapable') return 'on (unsupported)';
+      return 'on (unverified)';
+    }
+    return probed === 'capable' ? 'auto (on)' : 'auto (off)';
+  }
+  function aclServes(enableVal, probed) {
+    if (enableVal === 'false') return false;
+    if (enableVal === 'true') return probed !== 'incapable';
+    return probed === 'capable';
+  }
   function syncAclStatus(card, enableVal) {
-    // Match Share Permissions / Ganesha: ACL only when opted-in AND FS not limited.
-    const fsLimited = card.dataset.fsLimited === '1';
-    const capable = enableVal === 'true' && !fsLimited;
-    const label = enableVal === 'true' ? 'on' : (enableVal === 'false' ? 'off' : 'auto');
+    const probed = card.dataset.aclProbed || 'unverified';
+    const serves = aclServes(enableVal, probed);
+    const label = aclStateLabel(enableVal, probed);
     const dot = card.querySelector('.share-dot');
     if (dot) {
-      dot.className = 'share-dot ' + (capable ? 'acl' : 'noacl');
-      dot.title = capable ? 'ACL supported' : 'Non-ACL limited';
+      dot.className = 'share-dot ' + (serves ? 'acl' : 'noacl');
+      dot.title = serves ? 'ACL supported' : 'Non-ACL limited';
     }
     const chip = card.querySelector('[data-acl-chip]');
     if (chip) {
-      chip.className = 'sc-chip' + (capable ? '' : ' noacl');
+      chip.className = 'sc-chip' + (serves ? '' : ' noacl');
       chip.textContent = 'acl ' + label;
     }
   }

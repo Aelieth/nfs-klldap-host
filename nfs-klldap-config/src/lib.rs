@@ -57,7 +57,8 @@ pub use constants::PROC_COMM_NAME_MAX;
 
 pub use fs_probe::{
     acl_probe_verdict, compute_effective_flags, compute_effective_flags_probed,
-    compute_read_access_policy_emit, normalize_path, probe_from_mountinfo, probe_fs_capabilities,
+    compute_read_access_policy_emit, normalize_path, probe_from_mountinfo,
+    probe_from_mountinfo_with_root, probe_fs_capabilities, probe_fs_capabilities_with_root,
     serve_path_posix_acl_supported, serve_path_posix_acl_write_probe, verdict_from_caps,
     AclProbeVerdict, EffectiveShareFlags, ReadAccessPolicyEmit, FsCapabilities,
 };

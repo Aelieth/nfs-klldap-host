@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::Deserialize;
 use super::setup::{run_bind_probe_blocking, validate_ldap_uri, BindForm, LdapUriForm, SetupTestResponse};
-use super::{get_keytab_info, AppState, KeytabDisplayContext, require_auth};
+use super::{get_keytab_info, AppState, require_auth};
 
 mod apply;
 
@@ -28,6 +28,9 @@ pub(crate) struct SettingsTemplate {
     /// The Kerberos realm for the NFS service principal.
     effective_realm: String,
     keytab_alert: Option<String>,
+    /// Banner from the ACL re-probe loop: an explicit-ACL share whose backing
+    /// filesystem can no longer store ACLs. None hides it.
+    acl_alert: Option<String>,
     /// NFS principals from keytab (template underline highlight).
     keytab_found_principals: Vec<String>,
     ldap_uri: String,
@@ -103,7 +106,22 @@ fn service_recycle_marker_path() -> std::path::PathBuf {
 pub(crate) fn render_restarting_page() -> Html<String> {
     Html(RestartingTemplate.render().unwrap())
 }
+/// A marker mtime at or after `latch_at` means the supervisor completed a
+/// recycle since we scheduled this one.
+fn recycle_marker_is_fresh(marker: &std::path::Path, latch_at: std::time::SystemTime) -> bool {
+    std::fs::metadata(marker)
+        .and_then(|m| m.modified())
+        .map(|mtime| mtime >= latch_at)
+        .unwrap_or(false)
+}
+
 /// Clear recycle marker and schedule delayed HUP (pid 1 or test override).
+///
+/// The `restart_requested` latch means "one HUP is in flight", not "once per
+/// process": the spawned task releases it once the supervisor touches the
+/// recycle marker (or after a timeout), so a HUP that turns out to be a no-op
+/// generate — which never restarts the WebUI — cannot wedge the latch and
+/// silently swallow every later save.
 pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_context: &str) -> bool {
     {
         let mut flag = state.restart_requested.lock().await;
@@ -112,28 +130,43 @@ pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_co
         }
         *flag = true;
     }
-    let _ = std::fs::remove_file(service_recycle_marker_path());
+    let marker = service_recycle_marker_path();
+    let _ = std::fs::remove_file(&marker);
+    let latch_at = std::time::SystemTime::now();
     let label = log_context.to_string();
     let hup_pid = std::env::var("NFS_KLLDAP_SUPERVISOR_PID").unwrap_or_else(|_| "1".to_string());
     let delay_ms = std::env::var("NFS_KLLDAP_RECYCLE_DELAY_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1400);
+    let unlatch_timeout_ms = std::env::var("NFS_KLLDAP_RECYCLE_UNLATCH_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(90_000u64);
+    let restart_flag = std::sync::Arc::clone(&state.restart_requested);
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-        let pid = match hup_pid.parse::<u32>() {
-            Ok(p) if p > 0 => p,
+        match hup_pid.parse::<u32>() {
+            Ok(pid) if pid > 0 => {
+                eprintln!("INFO: '{label}' — triggering service bounce (HUP to pid {pid})");
+                if let Err(e) = nfs_klldap_config::signal_supervisor_hup(pid) {
+                    eprintln!("WARN: '{label}' — SIGHUP failed: {e}");
+                }
+            }
             _ => {
                 eprintln!(
                     "WARN: '{label}' — invalid NFS_KLLDAP_SUPERVISOR_PID '{hup_pid}', skipping HUP"
                 );
-                return;
             }
-        };
-        eprintln!("INFO: '{label}' — triggering service bounce (HUP to pid {pid})");
-        if let Err(e) = nfs_klldap_config::signal_supervisor_hup(pid) {
-            eprintln!("WARN: '{label}' — SIGHUP failed: {e}");
         }
+        // Release the latch once the recycle completes (marker touched) or the
+        // timeout elapses, on every path above.
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(unlatch_timeout_ms);
+        while !recycle_marker_is_fresh(&marker, latch_at) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+        }
+        *restart_flag.lock().await = false;
     });
     true
 }
@@ -173,24 +206,22 @@ pub(crate) struct StructuredSettingsForm {
     extra: std::collections::HashMap<String, String>,
 }
 
-fn share_caps_for_settings(
-    cfg: &nfs_klldap_config::NfsKlldapConfig,
-    share: &nfs_klldap_config::Share,
-    mountinfo_path: Option<&std::path::Path>,
-) -> nfs_klldap_config::FsCapabilities {
-    use nfs_klldap_config::{probe_from_mountinfo, probe_fs_capabilities, FsCapabilities};
-    let serve = cfg.serve_path_for(share);
-    let path = std::path::Path::new(&serve);
-    if let Some(mp) = mountinfo_path {
-        if let Ok(content) = std::fs::read_to_string(mp) {
-            return probe_from_mountinfo(&content, path);
-        }
+/// Human label for the share card chip and status dot, matching what generate
+/// emits: explicit on/off, auto promoted or held, and the unverified states.
+fn share_acl_state_label(
+    enable_acl: Option<bool>,
+    verdict: nfs_klldap_config::AclProbeVerdict,
+) -> String {
+    use nfs_klldap_config::AclProbeVerdict as V;
+    match (enable_acl, verdict) {
+        (Some(false), _) => "off",
+        (Some(true), V::Capable) => "on",
+        (Some(true), V::Inconclusive) => "on (unverified)",
+        (Some(true), V::Incapable) => "on (unsupported)",
+        (None, V::Capable) => "auto (on)",
+        (None, _) => "auto (off)",
     }
-    probe_fs_capabilities(path).unwrap_or(FsCapabilities {
-        fstype: "unknown".into(),
-        mount_options: vec![],
-        acl_capable: true,
-    })
+    .to_string()
 }
 
 // Form items from modular settings_form
@@ -206,14 +237,15 @@ use super::settings_form::{ShareTemplateRow, collect_shares_from_structured_form
 /// Build SettingsTemplate from on-disk config.
 /// Used on page load and post-save re-render.
 pub(crate) fn build_settings_template(
+    state: &AppState,
     current_user: Option<String>,
-    config_path: impl AsRef<std::path::Path>,
     message: Option<String>,
-    keytab: KeytabDisplayContext,
-    host_nfs_mode: bool,
-    fs_probe_mountinfo_path: Option<&std::path::Path>,
 ) -> SettingsTemplate {
-    let p = config_path.as_ref();
+    let p = state.config_path.as_path();
+    let keytab = state.keytab_display();
+    let host_nfs_mode = state.host_nfs_mode;
+    let fs_probe_mountinfo_path = state.fs_probe_mountinfo_path.as_deref();
+    let acl_alert = state.acl_alert.lock().unwrap().clone();
     let raw_toml = std::fs::read_to_string(p)
         .unwrap_or_else(|_| "# Could not read config file".to_string());
     let doc: toml_edit::DocumentMut = raw_toml.parse().unwrap_or_default();
@@ -223,8 +255,21 @@ pub(crate) fn build_settings_template(
         .iter()
         .enumerate()
         .map(|(idx, s)| {
-            let caps = share_caps_for_settings(&cfg, s, fs_probe_mountinfo_path);
-            let eff = nfs_klldap_config::compute_effective_flags(s, &caps);
+            let outcome = state.acl_caps.verdict_for(
+                fs_probe_mountinfo_path,
+                std::path::Path::new(&cfg.serve_path_for(s)),
+                std::path::Path::new(&cfg.serve_path_for(s)),
+                s.enable_acl == Some(false),
+                false,
+            );
+            let caps = &outcome.caps;
+            let eff = nfs_klldap_config::compute_effective_flags_probed(s, caps, outcome.verdict);
+            let acl_probed = match outcome.verdict {
+                nfs_klldap_config::AclProbeVerdict::Capable => "capable",
+                nfs_klldap_config::AclProbeVerdict::Incapable => "incapable",
+                nfs_klldap_config::AclProbeVerdict::Inconclusive => "unverified",
+            };
+            let acl_state_label = share_acl_state_label(s.enable_acl, outcome.verdict);
             ShareTemplateRow {
             idx,
             name: s.name.clone(),
@@ -253,8 +298,13 @@ pub(crate) fn build_settings_template(
                 Some(false) => "false".to_string(),
                 None => "auto".to_string(),
             },
-            // Same rule as Share Permissions / Ganesha: ACL only when opted-in and FS-capable.
+            // Same rule as Share Permissions / Ganesha, now driven by the live
+            // probe: the export serves ACLs when the resolved mode is on and the
+            // filesystem is not on the denylist.
             effective_acl_capable: eff.enable_acl && caps.acl_capable,
+            // Probe verdict + human label for the card chip and the JS status dot.
+            acl_probed: acl_probed.to_string(),
+            acl_state_label,
             manage_gids: match s.manage_gids {
                 Some(true) => "true".to_string(),
                 Some(false) => "false".to_string(),
@@ -289,6 +339,7 @@ pub(crate) fn build_settings_template(
         effective_hostname: keytab.hostname.clone(),
         effective_realm: keytab.realm.clone(),
         keytab_alert: keytab.alert.clone(),
+        acl_alert,
         keytab_found_principals: get_keytab_info(&keytab.hostname, &keytab.realm)
             .found_nfs_principals,
         ldap_uri: cfg.ldap_uri,
@@ -326,14 +377,7 @@ pub(crate) async fn settings_page(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
-    let tpl = build_settings_template(
-        Some(user.0),
-        &state.config_path,
-        None,
-        state.keytab_display(),
-        state.host_nfs_mode,
-        state.fs_probe_mountinfo_path.as_deref(),
-    );
+    let tpl = build_settings_template(&state, Some(user.0), None);
     Ok(Html(tpl.render().unwrap()))
 }
 pub(crate) async fn settings_save_raw(
@@ -357,12 +401,9 @@ pub(crate) async fn settings_save_raw(
         return Ok(Html(format!("<p class='alert alert-danger'>{}</p>", msg)));
     }
     let tpl = make_settings_success_template(
+        &state,
         Some(user.0),
-        &state.config_path,
         "Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into(),
-        state.keytab_display(),
-        state.host_nfs_mode,
-        state.fs_probe_mountinfo_path.as_deref(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -377,12 +418,9 @@ pub(crate) async fn settings_save_structured(
     if let Err(e) = cfg.validate_and_derive() {
         let msg = format!("Validation error: {}", e);
         let tpl = make_settings_error_template(
+            &state,
             Some(user.0.clone()),
-            &state.config_path,
             msg,
-            state.keytab_display(),
-            state.host_nfs_mode,
-            state.fs_probe_mountinfo_path.as_deref(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -394,22 +432,16 @@ pub(crate) async fn settings_save_structured(
     let text = doc.to_string();
     if let Err(msg) = atomic_write_config(&state.config_path, &text) {
         let tpl = make_settings_error_template(
+            &state,
             Some(user.0.clone()),
-            &state.config_path,
             msg,
-            state.keytab_display(),
-            state.host_nfs_mode,
-            state.fs_probe_mountinfo_path.as_deref(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
     let tpl = make_settings_success_template(
+        &state,
         Some(user.0),
-        &state.config_path,
         "Structured settings saved (shares left untouched in TOML). Container will regenerate configs shortly.".into(),
-        state.keytab_display(),
-        state.host_nfs_mode,
-        state.fs_probe_mountinfo_path.as_deref(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -479,39 +511,35 @@ pub(crate) async fn settings_save_shares(
             continue;
         }
         let serve = std::path::PathBuf::from(cfg.serve_path_for(share));
-        let caps = share_caps_for_settings(&cfg, share, state.fs_probe_mountinfo_path.as_deref());
+        // A save decision must not ride a stale verdict, so force a fresh probe.
+        let outcome = state.acl_caps.verdict_for(
+            state.fs_probe_mountinfo_path.as_deref(),
+            &serve,
+            &serve,
+            false,
+            true,
+        );
         // Only a KNOWN mount may reject the save: pre-deploy configs point at
         // paths that do not exist yet, and generate remains the hard gate.
-        if caps.fstype != "unknown"
-            && nfs_klldap_config::acl_probe_verdict(&caps, &serve)
-                == nfs_klldap_config::AclProbeVerdict::Incapable
+        if outcome.caps.fstype != "unknown"
+            && outcome.verdict == nfs_klldap_config::AclProbeVerdict::Incapable
         {
             let msg = format!(
                 "share '{}': enable_acl = true but serve path '{}' (fstype={}) cannot store                  POSIX ACLs — use the staging pattern (source_path) or leave ACL off/auto.",
                 share.name,
                 serve.display(),
-                caps.fstype
+                outcome.caps.fstype
             );
-            let tpl = make_settings_error_template(
-                Some(user.0.clone()),
-                &state.config_path,
-                msg,
-                state.keytab_display(),
-                state.host_nfs_mode,
-                state.fs_probe_mountinfo_path.as_deref(),
-            );
+            let tpl = make_settings_error_template(&state, Some(user.0.clone()), msg);
             return Ok(Html(tpl.render().unwrap()));
         }
     }
     if let Err(e) = cfg.validate_and_derive() {
         let msg = format!("Validation error: {}", e);
         let tpl = make_settings_error_template(
+            &state,
             Some(user.0.clone()),
-            &state.config_path,
             msg,
-            state.keytab_display(),
-            state.host_nfs_mode,
-            state.fs_probe_mountinfo_path.as_deref(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -520,12 +548,9 @@ pub(crate) async fn settings_save_shares(
     let text = doc.to_string();
     if let Err(msg) = atomic_write_config(&state.config_path, &text) {
         let tpl = make_settings_error_template(
+            &state,
             Some(user.0.clone()),
-            &state.config_path,
             msg,
-            state.keytab_display(),
-            state.host_nfs_mode,
-            state.fs_probe_mountinfo_path.as_deref(),
         );
         return Ok(Html(tpl.render().unwrap()));
     }
@@ -539,14 +564,11 @@ pub(crate) async fn settings_save_shares(
     )
     .await;
     let tpl = make_settings_success_template(
+        &state,
         Some(user.0),
-        &state.config_path,
         format!(
             "Shares saved (SSSD and other sections left untouched in TOML).{reload_msg} Service recycle scheduled so Ganesha + WebUI pick up the new paths."
         ),
-        state.keytab_display(),
-        state.host_nfs_mode,
-        state.fs_probe_mountinfo_path.as_deref(),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -613,9 +635,10 @@ pub(crate) async fn lldap_status(State(state): State<AppState>, headers: HeaderM
         (stats.hits as f64 * 100.0 / (stats.hits + stats.misses) as f64) as u32
     } else { 0 };
     let last_cleared = stats.last_cleared_ago_secs.map(|s| format!(" • last cleared {}s ago", s)).unwrap_or_default();
+    let pool = if stats.pool_warm { "warm" } else { "cold" };
     html.push_str(&format!(
-        r#"<div style='font-size:0.75em;color:var(--text-light);margin-top:6px;'>Cache: {} users, {} groups, {} searches • {}% hit ({} hits / {} misses) • clears: {}{}</div>"#,
-        stats.user_entries, stats.group_entries, stats.recent_search_entries, hit_rate, stats.hits, stats.misses, stats.clears, last_cleared
+        r#"<div style='font-size:0.75em;color:var(--text-light);margin-top:6px;'>Cache: {} users, {} groups, {} searches • {}% hit ({} hits / {} misses) • clears: {} • {} LDAP binds since start • pool {}{}</div>"#,
+        stats.user_entries, stats.group_entries, stats.recent_search_entries, hit_rate, stats.hits, stats.misses, stats.clears, stats.binds, pool, last_cleared
     ));
     html.push_str("</div>");
     Html(html)
@@ -825,4 +848,26 @@ pub(crate) async fn settings_test_bind(
         error,
         log: Some(log),
     }))
+}
+
+#[cfg(test)]
+mod recycle_tests {
+    use super::recycle_marker_is_fresh;
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn marker_is_fresh_only_when_touched_after_the_latch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("recycle-marker");
+        let latch_at = SystemTime::now();
+        // No marker yet: a pending recycle has not completed.
+        assert!(!recycle_marker_is_fresh(&marker, latch_at));
+        // Supervisor touches it after we latched: fresh.
+        std::thread::sleep(Duration::from_millis(5));
+        std::fs::write(&marker, "recycled\n").unwrap();
+        assert!(recycle_marker_is_fresh(&marker, latch_at));
+        // A marker left over from an older recycle (before this latch) is stale.
+        let newer_latch = SystemTime::now() + Duration::from_secs(3600);
+        assert!(!recycle_marker_is_fresh(&marker, newer_latch));
+    }
 }

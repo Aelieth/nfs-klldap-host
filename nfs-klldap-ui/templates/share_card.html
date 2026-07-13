@@ -1,6 +1,6 @@
 {# Single source for the Shares-pane card: settings.html includes it per row and
    GET /settings/share-card renders a blank one for "+ Add share". #}
-<div class="share-card-ed" data-idx="{{ row.idx }}" data-fs-limited="{% if row.fs_warning.is_some() %}1{% else %}0{% endif %}">
+<div class="share-card-ed" data-idx="{{ row.idx }}" data-fs-limited="{% if row.fs_warning.is_some() %}1{% else %}0{% endif %}" data-acl-probed="{{ row.acl_probed }}">
                     <div class="sc-hd">
                       <button type="button" class="sc-caret">&#9656;</button>
                       <span class="share-dot {% if row.effective_acl_capable %}acl{% else %}noacl{% endif %}"
@@ -8,7 +8,7 @@
                       <input class="sc-name" data-f="name" name="share_name_{{ row.idx }}" value="{{ row.name }}" placeholder="name" required>
                       <span class="sc-sum">
                         <span class="sc-chip">{% if row.rw %}RW{% else %}RO{% endif %}</span>
-                        <span class="sc-chip {% if !row.effective_acl_capable %}noacl{% endif %}" data-acl-chip>acl {% if row.enable_acl == "true" %}on{% else if row.enable_acl == "false" %}off{% else %}auto{% endif %}</span>
+                        <span class="sc-chip {% if !row.effective_acl_capable %}noacl{% endif %}" data-acl-chip>acl {{ row.acl_state_label }}</span>
                         {% if row.security != "" %}<span class="sc-chip">{{ row.security }}</span>{% endif %}
                       </span>
                       <button type="button" class="sc-del" title="Remove share">&#10005;</button>
@@ -66,9 +66,9 @@
                             </select>
                           </div>
                           <div class="scf">
-                            <label class="fld-lab" title="on = ACL path (native NFSv4 ACL); auto/unset = NOACL default (Disable_ACL); off = explicit NOACL.&#10;&rarr; enable_acl">enable_acl <span class="ico">i</span></label>
+                            <label class="fld-lab" title="on = ACL path (native NFSv4 ACL); auto/unset = detect via a live write probe and turn ACLs on only when the filesystem stores POSIX ACLs; off = explicit NOACL.&#10;&rarr; enable_acl">enable_acl <span class="ico">i</span></label>
                             <select data-f="enable_acl" name="share_enable_acl_{{ row.idx }}">
-                              <option value="auto" {% if row.enable_acl == "auto" %}selected{% endif %}>auto (NOACL)</option>
+                              <option value="auto" {% if row.enable_acl == "auto" %}selected{% endif %}>auto (detect)</option>
                               <option value="true" {% if row.enable_acl == "true" %}selected{% endif %}>on</option>
                               <option value="false" {% if row.enable_acl == "false" %}selected{% endif %}>off</option>
                             </select>

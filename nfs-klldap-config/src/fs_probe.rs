@@ -50,33 +50,56 @@ struct MountEntry {
 /// write round-trip to pass, so a conservative probe never suppresses a share
 /// and never promotes one on guesswork.
 pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
+    probe_fs_capabilities_with_root(path).map(|(caps, _)| caps)
+}
+
+/// Live-mountinfo probe that also names the matched mount point, so callers
+/// can key per-mount state (the UI capability cache) off it.
+pub fn probe_fs_capabilities_with_root(
+    path: &Path,
+) -> io::Result<(FsCapabilities, Option<String>)> {
     let mountinfo_path = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH")
         .unwrap_or_else(|_| "/proc/self/mountinfo".to_string());
     let content = std::fs::read_to_string(mountinfo_path)?;
-    Ok(probe_from_mountinfo(&content, path))
+    Ok(probe_from_mountinfo_with_root(&content, path))
 }
 
 /// Probes path against fixture or live mountinfo (tests)
 pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
+    probe_from_mountinfo_with_root(content, path).0
+}
+
+/// Caps plus the matched mount point. None means the path resolved to no
+/// mount, which pairs with the fail-safe "unknown" capabilities.
+pub fn probe_from_mountinfo_with_root(
+    content: &str,
+    path: &Path,
+) -> (FsCapabilities, Option<String>) {
     let entries = parse_mountinfo(content);
     let path_str = path.to_string_lossy();
     match resolve_mount_for_path(&entries, path_str.as_ref()) {
         Some(entry) => {
             let acl_capable = acl_capable_from_mount(&entry.fstype, &entry.super_options, &entry.mount_source);
-            FsCapabilities {
-                fstype: entry.fstype.clone(),
-                mount_options: entry.super_options.clone(),
-                acl_capable,
-            }
+            (
+                FsCapabilities {
+                    fstype: entry.fstype.clone(),
+                    mount_options: entry.super_options.clone(),
+                    acl_capable,
+                },
+                Some(entry.mount_point.clone()),
+            )
         }
         // Unresolved path: fail safe. ACL is opt-in and separately verified, so a
         // conservative "not capable" here only affects the auto-detect comment, never
         // whether a share is served.
-        None => FsCapabilities {
-            fstype: "unknown".into(),
-            mount_options: vec![],
-            acl_capable: false,
-        },
+        None => (
+            FsCapabilities {
+                fstype: "unknown".into(),
+                mount_options: vec![],
+                acl_capable: false,
+            },
+            None,
+        ),
     }
 }
 
@@ -462,6 +485,32 @@ mod tests {
         let caps = probe_from_mountinfo(fixture, Path::new("/export/users"));
         assert_eq!(caps.fstype, "btrfs");
         assert!(!caps.acl_capable);
+    }
+
+    #[test]
+    fn mount_root_longest_prefix_wins() {
+        // A path under a submount reports the submount, not /export.
+        let (caps, root) =
+            probe_from_mountinfo_with_root(FIXTURE, Path::new("/export/movies/sub"));
+        assert_eq!(caps.fstype, "ext4");
+        assert_eq!(root.as_deref(), Some("/export/movies"));
+        let (_, top) = probe_from_mountinfo_with_root(FIXTURE, Path::new("/export/users"));
+        assert_eq!(top.as_deref(), Some("/export"));
+    }
+
+    #[test]
+    fn mount_root_falls_back_to_root_mount() {
+        let fixture = "1 0 0:1 / / rw - btrfs /dev/sda1 rw,noacl\n";
+        let (_, root) = probe_from_mountinfo_with_root(fixture, Path::new("/export/users"));
+        assert_eq!(root.as_deref(), Some("/"));
+    }
+
+    #[test]
+    fn mount_root_unresolved_is_none_and_unknown() {
+        let (caps, root) = probe_from_mountinfo_with_root(FIXTURE, Path::new("/other/new"));
+        assert_eq!(caps.fstype, "unknown");
+        assert!(!caps.acl_capable);
+        assert!(root.is_none());
     }
 
     #[test]

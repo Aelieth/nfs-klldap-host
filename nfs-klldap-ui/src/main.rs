@@ -11,6 +11,49 @@ mod privileged;
 
 mod web;
 
+/// True when a periodic refresh should run now: none yet, or the last one is
+/// older than half the interval (so a recent login-warm is not duplicated).
+fn webui_refresh_tick_due(
+    last: Option<std::time::Instant>,
+    interval: std::time::Duration,
+) -> bool {
+    match last {
+        None => true,
+        Some(t) => t.elapsed() >= interval / 2,
+    }
+}
+
+/// Spawns the WebUI identity refresher: a bulk resolver reload plus autocomplete
+/// list refresh on an interval. `NFS_KLLDAP_WEBUI_LDAP_REFRESH_INTERVAL_SECS = 0`
+/// disables it; default 180s (mirrors the idhelper rebulk cadence). The bulk
+/// reload rides the pooled connection, so it doubles as a keepalive.
+fn spawn_webui_ldap_refresh(lldap: std::sync::Arc<tokio::sync::Mutex<crate::ldap::LdapClient>>) {
+    let secs = std::env::var("NFS_KLLDAP_WEBUI_LDAP_REFRESH_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(180);
+    if secs == 0 {
+        eprintln!("INFO: WebUI LDAP refresh disabled (NFS_KLLDAP_WEBUI_LDAP_REFRESH_INTERVAL_SECS=0)");
+        return;
+    }
+    let interval_dur = std::time::Duration::from_secs(secs);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(interval_dur);
+        interval.tick().await; // skip the immediate first tick
+        loop {
+            interval.tick().await;
+            let last = lldap.lock().await.last_full_refresh();
+            if !webui_refresh_tick_due(last, interval_dur) {
+                continue;
+            }
+            let l = lldap.lock().await;
+            if let Some(n) = l.refresh_identity_data().await {
+                eprintln!("INFO: WebUI LDAP refresh reloaded {n} identities");
+            }
+        }
+    });
+}
+
 /// Resolves the runtime hostname and logs diagnostics when sources disagree.
 fn resolve_runtime_hostname_for_banner() -> String {
     match get_consistent_hostname() {
@@ -162,6 +205,10 @@ async fn main() {
         });
     }
 
+    // Keep identity data fresh without a per-request LDAP burst, and keep the
+    // pooled connection alive between user actions.
+    spawn_webui_ldap_refresh(lldap.clone());
+
     // Hybrid auth manager (localhost simple-pw sidecar + LLDAP + admin group).
     let admin_group = loaded_config.management.webui_admin_group.clone();
     let auth = Arc::new(crate::auth::AuthManager::new(&config_path, admin_group));
@@ -212,7 +259,12 @@ async fn main() {
         setup_test: Arc::new(std::sync::Mutex::new(crate::web::setup::SetupTestState::default())),
         host_nfs_mode,
         fs_probe_mountinfo_path: None,
+        acl_caps: Arc::new(crate::web::acl_capability::AclCapabilityCache::new_from_env()),
+        acl_alert: Arc::new(std::sync::Mutex::new(None)),
     };
+
+    // Reconcile stored ACL/NOACL decisions with live filesystem capability.
+    crate::web::acl_watch::spawn_acl_reprobe_loop(state.clone());
 
     let app = crate::web::router(state);
 
@@ -345,4 +397,28 @@ pub fn create_test_lldap() -> crate::ldap::LdapClient {
         false,
         None,
     )
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::webui_refresh_tick_due;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn tick_due_when_never_refreshed() {
+        assert!(webui_refresh_tick_due(None, Duration::from_secs(180)));
+    }
+
+    #[test]
+    fn tick_skipped_within_half_interval() {
+        // A refresh 10s ago with a 180s interval is well inside the skip window.
+        let recent = Instant::now() - Duration::from_secs(10);
+        assert!(!webui_refresh_tick_due(Some(recent), Duration::from_secs(180)));
+    }
+
+    #[test]
+    fn tick_due_after_half_interval() {
+        let old = Instant::now() - Duration::from_secs(120);
+        assert!(webui_refresh_tick_due(Some(old), Duration::from_secs(180)));
+    }
 }

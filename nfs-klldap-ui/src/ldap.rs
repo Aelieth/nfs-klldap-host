@@ -28,14 +28,11 @@ pub struct LdapClient {
     ldap_uri: String,
     /// Effective search base for users (supports child OUs via Subtree scope).
     user_base: String,
-    /// Holds the group search base and supports child OUs via Subtree scope.
-    group_base: String,
 
     service_conn: Option<LdapConn>,
     username: Option<String>,
     password: Option<String>,
     last_auth_time: Option<Instant>,
-    posix_attributes: PosixAttributeMapping,
     no_tls_verify: bool,
     start_tls: bool,
     tls_cacert: Option<String>,
@@ -49,6 +46,9 @@ pub struct LdapClient {
     cache_misses: AtomicU64,
     cache_clears: AtomicU64,
     last_cache_clear: Mutex<Option<Instant>>,
+    /// When the periodic refresher last did a full bulk reload; skips a tick
+    /// that would duplicate a very recent login-warm or manual refresh.
+    last_full_refresh: Mutex<Option<Instant>>,
 
     /// Shared IdLdapResolver (caches + resolve). Deduped from prior UI mirrors.
     identity_resolver: Arc<Mutex<IdLdapResolver>>,
@@ -69,6 +69,10 @@ pub struct Group {
 }
 
 // UI-only full-list cache TTL. Main identity caches live in IdLdapResolver.
+// Kept short (independent of the periodic-refresh cadence): binds are the
+// scarce resource, and a TTL-expiry fetch between refresh ticks rides the
+// pooled connection (one search, zero binds), so there is no reason to stretch
+// it to match the refresh interval.
 const SEARCH_CACHE_TTL: Duration = Duration::from_secs(2 * 60);
 /// Max rows fetched from LDAP for the full autocomplete list. Client-side memory
 /// bound only — the resolver sends no server-side size limit.
@@ -90,6 +94,11 @@ pub struct LdapCacheStats {
     pub misses: u64,
     pub clears: u64,
     pub last_cleared_ago_secs: Option<u64>,
+    /// LDAP binds since start — the KLLDAP-login pressure gauge. Low is good:
+    /// the pooled connection means steady state is near zero.
+    pub binds: u64,
+    /// True when a bound connection is currently pooled.
+    pub pool_warm: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -113,7 +122,7 @@ impl LdapClient {
             ldap_uri,
             user_base,
             group_base,
-            posix_attributes.clone(),
+            posix_attributes,
             no_tls_verify,
             start_tls,
             tls_cacert.clone(),
@@ -121,12 +130,10 @@ impl LdapClient {
         Self {
             ldap_uri: ldap_uri.to_string(),
             user_base: user_base.to_string(),
-            group_base: group_base.to_string(),
             service_conn: None,
             username: None,
             password: None,
             last_auth_time: None,
-            posix_attributes,
             no_tls_verify,
             start_tls,
             tls_cacert,
@@ -137,20 +144,9 @@ impl LdapClient {
             cache_misses: AtomicU64::new(0),
             cache_clears: AtomicU64::new(0),
             last_cache_clear: Mutex::new(None),
+            last_full_refresh: Mutex::new(None),
             identity_resolver,
         }
-    }
-
-    fn build_identity_resolver(&self) -> IdLdapResolver {
-        IdLdapResolver::new(
-            &self.ldap_uri,
-            &self.user_base,
-            &self.group_base,
-            self.posix_attributes.clone(),
-            self.no_tls_verify,
-            self.start_tls,
-            self.tls_cacert.clone(),
-        )
     }
 
     fn service_bind_creds(&self) -> Option<(String, String)> {
@@ -237,12 +233,17 @@ impl LdapClient {
     }
 
     pub fn clear_cache(&self) {
-        // Delegate to shared resolver; rebuild it + clear UI full lists.
+        // Flush cached identities but KEEP the resolver instance: its pooled,
+        // bound connection is the single long-lived LDAP session, and the
+        // resolver's own clear_caches() empties the entry caches without
+        // dropping it. Rebuilding here would throw away the pool (and the
+        // bind/hit counters) on every manual clear. LDAP settings changes build
+        // a whole new LdapClient (reload_nfs_client), so nothing needs the
+        // connection inputs re-read here.
         if let Ok(r) = self.identity_resolver.lock() { r.clear_caches(); }
         *self.full_user_list.lock().unwrap() = None;
         *self.full_group_list.lock().unwrap() = None;
         *self.last_verified_memberofs.lock().unwrap() = None;
-        *self.identity_resolver.lock().unwrap() = self.build_identity_resolver();
         self.cache_clears.fetch_add(1, Ordering::Relaxed);
         *self.last_cache_clear.lock().unwrap() = Some(Instant::now());
     }
@@ -250,14 +251,14 @@ impl LdapClient {
     pub fn cache_stats_summary(&self) -> LdapCacheStats {
         // Report resolver-backed counts + UI search recents only (after dedup). 1 sentence.
         let last_ago = self.last_cache_clear.lock().unwrap().map(|t| Instant::now().duration_since(t).as_secs());
-        let resolver_counts = self
+        let (user_entries, group_entries, binds, pool_warm) = self
             .identity_resolver
             .lock()
-            .map(|r| r.cache_entry_counts())
-            .unwrap_or((0, 0));
+            .map(|r| (r.cache_entry_counts().0, r.cache_entry_counts().1, r.bind_stats(), r.pool_is_warm()))
+            .unwrap_or((0, 0, 0, false));
         LdapCacheStats {
-            user_entries: resolver_counts.0,
-            group_entries: resolver_counts.1,
+            user_entries,
+            group_entries,
             recent_search_entries: [&self.full_user_list, &self.full_group_list]
                 .iter()
                 .filter(|s| s.lock().unwrap().is_some())
@@ -266,6 +267,8 @@ impl LdapClient {
             misses: self.cache_misses.load(Ordering::Relaxed),
             clears: self.cache_clears.load(Ordering::Relaxed),
             last_cleared_ago_secs: last_ago,
+            binds,
+            pool_warm,
         }
     }
 
@@ -283,7 +286,9 @@ impl LdapClient {
     }
 
     async fn get_or_bind_service(&mut self) -> Result<(), LdapError> {
-        // No-op for now (we use fresh connect+bind+op+unbind per call inside.
+        // Only validates + records service creds. The resolver owns the actual
+        // connection: it binds lazily on first use and pools the bound conn, so
+        // there is no connect/bind to do here.
         if self.username.is_none() || self.password.is_none() {
             return Err(LdapError::Auth("no service credentials".into()));
         }
@@ -365,22 +370,31 @@ impl LdapClient {
             .collect()
     }
 
+    /// Strict fail-closed mapping of the blocking-task outcome onto a bind
+    /// verdict: only a task that ran to completion AND proved the bind is a
+    /// success. Anything else (connect failure, bind failure, task panic)
+    /// must authenticate as false — never trust the join result alone.
+    fn bind_verdict<E>(joined: Result<bool, E>) -> bool {
+        joined.unwrap_or(false)
+    }
+
     async fn try_simple_bind(&self, dn: &str, pw: &str) -> bool {
         let uri = self.ldap_uri.clone();
         let settings = self.build_conn_settings();
         let dn = dn.to_string();
         let pw = pw.to_string();
 
-        tokio::task::spawn_blocking(move || {
-            let mut ldap = LdapConn::with_settings(settings, &uri).ok()?;
-
-            // Best-effort clean TLS shutdown via unbind even on bind.
+        let joined = tokio::task::spawn_blocking(move || {
+            let Ok(mut ldap) = LdapConn::with_settings(settings, &uri) else {
+                return false;
+            };
+            // Best-effort clean TLS shutdown via unbind even on bind failure.
             let bind_ok = ldap.simple_bind(&dn, &pw).ok().and_then(|r| r.success().ok()).is_some();
             let _ = ldap.unbind();
-            if bind_ok { Some(()) } else { None }
+            bind_ok
         })
-        .await
-        .is_ok()
+        .await;
+        Self::bind_verdict(joined)
     }
 
     pub async fn authenticate(&mut self, username: &str, password: &str) -> Result<(), LdapError> {
@@ -455,6 +469,13 @@ impl LdapClient {
         if let Some(rows) = self.cached_full_list(is_user) {
             return Some(rows);
         }
+        self.fetch_and_store_full_list(is_user).await
+    }
+
+    /// One presence-filter LDAP fetch (bypassing the cache), stored into the
+    /// short-TTL full list. Shared by the cache-miss path and the periodic
+    /// refresher; a fetch error is logged and returned as `None` uncached.
+    async fn fetch_and_store_full_list(&self, is_user: bool) -> Option<Vec<ListRow>> {
         let raw = self
             .with_identity(move |resolver, bind_dn, bind_pw| {
                 let res = if is_user {
@@ -477,6 +498,28 @@ impl LdapClient {
         let rows = Self::build_full_rows(raw);
         self.store_full_list(is_user, &rows);
         Some(rows)
+    }
+
+    /// Bulk-reload the resolver's identity caches (which keeps the pooled
+    /// connection bound — this doubles as a keepalive) and force-refresh the
+    /// autocomplete full lists. Returns the resolver's loaded identity count,
+    /// or `None` when no service credentials are configured.
+    pub async fn refresh_identity_data(&self) -> Option<usize> {
+        let loaded = self
+            .with_identity(|resolver, bind_dn, bind_pw| {
+                Some(resolver.load_full_identities(bind_dn, bind_pw))
+            })
+            .await?;
+        // Repopulate the autocomplete lists; tolerate an individual failure.
+        let _ = self.fetch_and_store_full_list(true).await;
+        let _ = self.fetch_and_store_full_list(false).await;
+        *self.last_full_refresh.lock().unwrap() = Some(Instant::now());
+        Some(loaded)
+    }
+
+    /// When the last full refresh completed (periodic loop skip-window check).
+    pub fn last_full_refresh(&self) -> Option<Instant> {
+        *self.last_full_refresh.lock().unwrap()
     }
 
     /// Autocomplete rows for the permission editor. Queries are matched locally
@@ -629,6 +672,52 @@ mod list_search_tests {
         );
         assert_eq!(LdapClient::normalize_editor_search_query(Some("")), None);
         assert_eq!(LdapClient::normalize_editor_search_query(None), None);
+    }
+
+    #[tokio::test]
+    async fn refresh_identity_data_bulk_loads_cache_offline() {
+        // test-support stub: one user + one group, no live LDAP.
+        std::env::set_var("TEST_REBULK_POPULATE", "u:testuser1:3002:3000;g:staff:3000");
+        let mut client = crate::create_test_lldap();
+        client.authenticate("uid=admin,dc=test", "pw").await.unwrap();
+        assert_eq!(client.refresh_identity_data().await, Some(1), "one stub user");
+        assert!(client.last_full_refresh().is_some(), "refresh must stamp the time");
+        // The uid now resolves straight from the cache the bulk load filled.
+        let resolved = client.resolve_user_by_uid(3002).await;
+        assert_eq!(resolved.map(|(id, _)| id), Some("testuser1".to_string()));
+        std::env::remove_var("TEST_REBULK_POPULATE");
+    }
+
+    #[test]
+    fn stats_expose_bind_count_and_pool_state() {
+        // A fresh offline client has never bound and holds no pooled connection.
+        let client = crate::create_test_lldap();
+        let stats = client.cache_stats_summary();
+        assert_eq!(stats.binds, 0, "no binds before any LDAP op");
+        assert!(!stats.pool_warm, "no pooled connection before any LDAP op");
+    }
+
+    #[test]
+    fn clear_cache_keeps_resolver_instance_and_counts_clears() {
+        // The pooled connection lives inside the resolver, so clear_cache must
+        // empty the caches WITHOUT swapping the resolver Arc (which would drop
+        // the pool). Compare the Arc pointer to prove the instance is kept.
+        let client = crate::create_test_lldap();
+        let before = Arc::as_ptr(&client.identity_resolver);
+        client.clear_cache();
+        client.clear_cache();
+        let after = Arc::as_ptr(&client.identity_resolver);
+        assert_eq!(before, after, "clear_cache must not rebuild the resolver");
+        assert_eq!(client.cache_stats_summary().clears, 2);
+    }
+
+    #[test]
+    fn bind_verdict_is_fail_closed() {
+        // Regression: `.await.is_ok()` on spawn_blocking once accepted ANY
+        // password because the join result is Ok unless the task panicked.
+        assert!(LdapClient::bind_verdict::<()>(Ok(true)));
+        assert!(!LdapClient::bind_verdict::<()>(Ok(false)));
+        assert!(!LdapClient::bind_verdict(Err(())));
     }
 
     #[test]

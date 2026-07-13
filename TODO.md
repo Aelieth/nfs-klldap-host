@@ -5,6 +5,21 @@
 - Custom-compiled Ganesha without _MSPAC_SUPPORT to unlock the principal-based uid2grp path (removes the idhelper/nss_wrapper backstop requirement)
 
 ## Known issues / tracking
+- **RESOLVED 0.9.90 — ACL auto-detection was incoherent across surfaces; P0 auth
+  bypass.** `auto` shares read NOACL on the System Settings page (static
+  fail-safe `verdict_from_caps`) while generate and the `/dir-perms` panel
+  promoted the same share to the ACL path — three surfaces disagreed — and
+  nothing ever re-probed a mount that gained/lost ACL support. Fixed with a
+  per-mount `AclCapabilityCache`, a probed Settings page, a share-mode ∧
+  node-mount editor gate, and a background re-probe watcher that auto-heals
+  `auto` shares (schedules the recycle) and banners explicit-on shares that go
+  incapable. Also fixed a **P0**: `try_simple_bind` accepted any password
+  (`.await.is_ok()` on a `spawn_blocking` returning `Option`) — now fail-closed.
+  See refactor plan §2.5 WI-10 and [TESTING.md](TESTING.md). Follow-ups: wrap the
+  now-rare probe-bearing async handlers in `spawn_blocking` if p99 latency ever
+  matters; an optional `SEARCH_CACHE_TTL` config knob (kept a constant — binds,
+  not searches, are the scarce resource); live `/verify` + in-image auto-heal
+  rehearsal at the next redeploy.
 - **RESOLVED 0.9.85 — dir-perms r/x collapse + files in the browser.** The tree
   now lists files (dirs-first sort, type emoji, UTC mtime; single-level
   `FsManager::list_dir` replaced the whole-subtree `build_tree` recursion).

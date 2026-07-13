@@ -39,6 +39,11 @@ pub(crate) struct ShareTemplateRow {
     /// True only when the export will actually serve ACLs (enable_acl opted-in AND
     /// serve-path FS is ACL-capable). Drives status-dot / legend alignment with Share Permissions.
     pub effective_acl_capable: bool,
+    /// Live write-probe verdict: "capable" | "incapable" | "unverified".
+    /// Read by the client `syncAclStatus` JS via a data attribute.
+    pub acl_probed: String,
+    /// Human ACL state for the card chip: "on", "auto (on)", "off", etc.
+    pub acl_state_label: String,
     pub manage_gids: String,
     pub read_access_policy: String,
     pub manage_gids_expiration: Option<u64>,
@@ -64,6 +69,8 @@ impl ShareTemplateRow {
             cache_profile: "Default".to_string(),
             enable_acl: "auto".to_string(),
             effective_acl_capable: false,
+            acl_probed: "unverified".to_string(),
+            acl_state_label: "auto (off)".to_string(),
             manage_gids: "auto".to_string(),
             read_access_policy: "auto".to_string(),
             manage_gids_expiration: None,

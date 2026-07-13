@@ -21,6 +21,8 @@ use tower_http::normalize_path::NormalizePathLayer;
 
 use crate::{auth::AuthManager, config::Config, fs::FsManager};
 
+pub mod acl_capability;
+pub mod acl_watch;
 mod auth;
 mod keytab;
 mod permission_tree;
@@ -68,6 +70,11 @@ pub struct AppState {
     pub host_nfs_mode: bool,
     /// Points at a mountinfo fixture that drives fs_warning badges in tests.
     pub fs_probe_mountinfo_path: Option<PathBuf>,
+    /// Per-mount ACL write-probe verdict cache, shared by every UI surface.
+    pub acl_caps: Arc<acl_capability::AclCapabilityCache>,
+    /// Persistent banner set by the ACL re-probe loop when an explicit-ACL
+    /// share lands on a filesystem that can no longer store ACLs.
+    pub acl_alert: Arc<StdMutex<Option<String>>>,
 }
 
 impl AppState {
@@ -101,6 +108,8 @@ impl AppState {
             .fs
             .write()
             .map_err(|e| format!("fs lock poisoned: {e}"))? = fs;
+        // Share paths may now sit on different mounts; drop stale verdicts.
+        self.acl_caps.invalidate_all();
         Ok(())
     }
 }
@@ -241,6 +250,14 @@ mod tests {
         req
     }
 
+    fn test_acl_caps() -> Arc<acl_capability::AclCapabilityCache> {
+        Arc::new(acl_capability::AclCapabilityCache::new_from_env())
+    }
+
+    fn test_acl_alert() -> Arc<StdMutex<Option<String>>> {
+        Arc::new(StdMutex::new(None))
+    }
+
     // Minimal inline make (to avoid external test_support path issues in this build).
     struct Guard(Option<String>);
     impl Drop for Guard {
@@ -275,7 +292,7 @@ container_path = "/data"
         let _dm = nfs_klldap_config::PosixAttributeMapping { user_object_class:"posixAccount".into(), group_object_class:"posixGroup".into(), user_name:"uid".into(), user_uid_number:"uidNumber".into(), user_gid_number:"gidNumber".into(), user_home_directory:"homeDirectory".into(), user_shell:"loginShell".into(), user_full_name:"displayName".into(), group_name:"cn".into(), group_gid_number:"gidNumber".into(), group_member:"member".into(), user_principal_name:"krbPrincipalName".into() };
         let l = Arc::new(Mutex::new(crate::create_test_lldap()));
         let a = Arc::new(AuthManager::new(&cp, None));
-        let st = AppState { fs, lldap: l, config: cfg, auth: a, config_path: cp, keytab_hostname:"h".into(), keytab_realm:"R".into(), keytab_alert: Arc::new(StdMutex::new(None)), apply_progress: Arc::new(Mutex::new(None)), restart_requested: Arc::new(Mutex::new(false)), direct_tls:true, setup_marker_override: Some(sm), setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())), host_nfs_mode:false, fs_probe_mountinfo_path: Some(mp) };
+        let st = AppState { fs, lldap: l, config: cfg, auth: a, config_path: cp, keytab_hostname:"h".into(), keytab_realm:"R".into(), keytab_alert: Arc::new(StdMutex::new(None)), apply_progress: Arc::new(Mutex::new(None)), restart_requested: Arc::new(Mutex::new(false)), direct_tls:true, setup_marker_override: Some(sm), setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())), host_nfs_mode:false, fs_probe_mountinfo_path: Some(mp), acl_caps: test_acl_caps(), acl_alert: test_acl_alert() };
         (st, tmp, guard)
     }
 
@@ -325,8 +342,16 @@ container_path = "/data"
             "settings share with enable_acl=auto must not render an ACL-supported status-dot"
         );
         assert!(
-            ghtml.contains("data-acl-chip") && ghtml.contains("acl auto"),
-            "settings chip must still show acl auto for unset enable_acl"
+            ghtml.contains("data-acl-chip") && ghtml.contains("acl auto (off)"),
+            "auto share on a noacl fs must show the probed 'auto (off)' chip"
+        );
+        assert!(
+            ghtml.contains(r#"data-acl-probed="incapable""#),
+            "noacl mount must expose data-acl-probed=incapable for the status JS"
+        );
+        assert!(
+            ghtml.contains("auto (detect)") && !ghtml.contains("auto (NOACL)"),
+            "the enable_acl dropdown must use the new 'auto (detect)' label"
         );
 
         let body_noacl = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=false&share_manage_gids_0=false&share_read_access_policy_0=pre&share_container_path_0=%2Fexport%2Fstaging%2Fdata&share_root_squash_0=on";
@@ -401,6 +426,221 @@ container_path = "/data"
         assert!(ghd.contains("share_container_path_0") && ghd.contains("/export/data"), "settings render must show container_path input");
     }
 
+    // Settings must reflect the LIVE probe: an auto share whose serve path
+    // proves ACL-capable renders "auto (on)" + an ACL status dot, matching what
+    // generate emits (previously it always showed NOACL via the static path).
+    #[tokio::test]
+    async fn settings_auto_share_on_capable_fs_renders_acl_on() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // aclroot exists and is on a real ACL-capable fs (tmpfs/ext4), the
+        // scaffold's mountinfo marks it capable, and the share is auto (unset).
+        let (_fs, _prog, token, app) = acl_test_scaffold(&tmp).await;
+        let req = Request::builder().uri("/settings").body(Body::empty()).unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let html = String::from_utf8_lossy(&body);
+        assert!(
+            html.contains(r#"data-acl-probed="capable""#),
+            "capable serve path must expose data-acl-probed=capable"
+        );
+        assert!(
+            html.contains("acl auto (on)"),
+            "auto + proven-capable must render the 'auto (on)' chip"
+        );
+        assert!(
+            html.contains(r#"title="ACL supported""#),
+            "auto + capable must render the ACL-supported status dot (title attr)"
+        );
+    }
+
+    // The NFS-client status panel must surface bind count + pool state so the
+    // operator can watch LDAP-login pressure while tuning.
+    #[tokio::test]
+    async fn lldap_status_reports_bind_count_and_pool_state() {
+        let (state, _tmp, _g) = make_test_state_with_limited_fs_mountinfo();
+        let token = state.auth.create_privileged_session("statuser");
+        let app = router(state);
+        let html = get_html(&app, &token, "/settings/lldap-status").await;
+        assert!(html.contains("LDAP binds since start"), "status line must show bind count");
+        assert!(html.contains("pool cold"), "offline client must report a cold pool");
+    }
+
+    // The restart latch must release once the supervisor completes the recycle
+    // (marker touched), so a follow-up save can schedule again — a no-op HUP
+    // must not wedge the latch permanently.
+    #[tokio::test]
+    async fn recycle_latch_releases_after_marker_and_reschedules() {
+        use std::time::Duration;
+        let (state, tmp, _g) = make_test_state_with_limited_fs_mountinfo();
+        let marker = tmp.path().join("recycle-marker");
+        std::env::set_var("NFS_KLLDAP_SUPERVISOR_PID", "0"); // skip a real HUP
+        std::env::set_var("NFS_KLLDAP_RECYCLE_DELAY_MS", "1");
+        std::env::set_var("NFS_KLLDAP_RECYCLE_MARKER", &marker);
+
+        // First schedule latches; an immediate second is refused.
+        assert!(super::settings::try_schedule_service_recycle(&state, "t1").await);
+        assert!(
+            !super::settings::try_schedule_service_recycle(&state, "t2").await,
+            "a second recycle must be refused while one is in flight"
+        );
+
+        // Simulate the supervisor finishing the recycle and wait for the latch
+        // to clear. Re-touch each poll so a parallel test that shares the global
+        // marker env cannot remove it out from under us.
+        let released = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                std::fs::write(&marker, "recycled\n").ok();
+                if !*state.restart_requested.lock().await {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await;
+        assert!(released.is_ok(), "latch must clear after the marker is touched");
+        assert!(
+            super::settings::try_schedule_service_recycle(&state, "t3").await,
+            "a later recycle must schedule once the latch cleared"
+        );
+
+        std::env::remove_var("NFS_KLLDAP_SUPERVISOR_PID");
+        std::env::remove_var("NFS_KLLDAP_RECYCLE_DELAY_MS");
+        std::env::remove_var("NFS_KLLDAP_RECYCLE_MARKER");
+    }
+
+    fn write_watch_mountinfo(path: &std::path::Path, mount: &std::path::Path, capable: bool) {
+        let fstype = if capable { "btrfs" } else { "vfat" };
+        std::fs::write(
+            path,
+            format!("36 35 0:59 / {} rw,relatime - {} /dev/sda1 rw\n", mount.display(), fstype),
+        )
+        .unwrap();
+    }
+
+    // Single-share state with a controllable mountinfo fixture + real serve dir,
+    // so the ACL watcher's verdict can be flipped deterministically in tests.
+    fn acl_watch_state(
+        tmp: &tempfile::TempDir,
+        enable_acl_line: &str,
+        capable: bool,
+    ) -> (AppState, std::path::PathBuf) {
+        let serve = tmp.path().join("serve");
+        std::fs::create_dir_all(&serve).unwrap();
+        let mi = tmp.path().join("mi");
+        write_watch_mountinfo(&mi, tmp.path(), capable);
+        let cp = tmp.path().join("c");
+        let cfg_txt = format!(
+            r#"ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "{root}"
+[sssd]
+ldap_default_bind_dn = "uid=admin"
+ldap_default_authtok = "s"
+[[shares]]
+name = "s1"
+host_path = "/s1"
+container_path = "{serve}"
+{acl}
+"#,
+            root = tmp.path().display(),
+            serve = serve.display(),
+            acl = enable_acl_line
+        );
+        std::fs::write(&cp, cfg_txt).unwrap();
+        let cfg_val = nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("load");
+        let cfg = Arc::new(RwLock::new(cfg_val.clone()));
+        let fs = Arc::new(RwLock::new(FsManager::new(cfg_val)));
+        let l = Arc::new(Mutex::new(crate::create_test_lldap()));
+        let a = Arc::new(AuthManager::new(&cp, None));
+        let sm = tmp.path().join(".s");
+        std::fs::write(&sm, "ok\n").ok();
+        let st = AppState {
+            fs,
+            lldap: l,
+            config: cfg,
+            auth: a,
+            config_path: cp,
+            keytab_hostname: "h".into(),
+            keytab_realm: "R".into(),
+            keytab_alert: Arc::new(StdMutex::new(None)),
+            apply_progress: Arc::new(Mutex::new(None)),
+            restart_requested: Arc::new(Mutex::new(false)),
+            direct_tls: true,
+            setup_marker_override: Some(sm),
+            setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
+            host_nfs_mode: false,
+            fs_probe_mountinfo_path: Some(mi.clone()),
+            acl_caps: test_acl_caps(),
+            acl_alert: test_acl_alert(),
+        };
+        (st, mi)
+    }
+
+    // An auto share whose mount loses ACL support (stable over two ticks) must
+    // schedule the service recycle so generate can flip it to NOACL.
+    #[tokio::test]
+    async fn acl_watch_auto_flip_schedules_recycle() {
+        std::env::set_var("NFS_KLLDAP_SUPERVISOR_PID", "0");
+        std::env::set_var("NFS_KLLDAP_RECYCLE_DELAY_MS", "1");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, mi) = acl_watch_state(&tmp, "", true);
+        let mut tr = super::acl_watch::FlipTracker::default();
+        let o0 = super::acl_watch::acl_reprobe_tick(&state, &mut tr).await;
+        assert!(!o0.hup_scheduled, "capable baseline must not fire");
+        write_watch_mountinfo(&mi, tmp.path(), false);
+        let o1 = super::acl_watch::acl_reprobe_tick(&state, &mut tr).await;
+        assert!(!o1.hup_scheduled, "one divergent tick must not fire (hysteresis)");
+        let o2 = super::acl_watch::acl_reprobe_tick(&state, &mut tr).await;
+        assert!(o2.hup_scheduled, "a stable flip over two ticks must schedule a recycle");
+        assert!(*state.restart_requested.lock().await, "recycle latch must be set");
+        std::env::remove_var("NFS_KLLDAP_SUPERVISOR_PID");
+        std::env::remove_var("NFS_KLLDAP_RECYCLE_DELAY_MS");
+    }
+
+    // An explicit enable_acl=true share that loses ACL support must NEVER
+    // recycle (generate would refuse all exports); it raises a banner that
+    // clears once capability returns.
+    #[tokio::test]
+    async fn acl_watch_explicit_on_incapable_raises_and_clears_banner() {
+        std::env::set_var("NFS_KLLDAP_SUPERVISOR_PID", "0");
+        std::env::set_var("NFS_KLLDAP_RECYCLE_DELAY_MS", "1");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, mi) = acl_watch_state(&tmp, "enable_acl = true", false);
+        let mut tr = super::acl_watch::FlipTracker::default();
+        let o1 = super::acl_watch::acl_reprobe_tick(&state, &mut tr).await;
+        assert!(o1.alert.is_none(), "one incapable tick is below the streak threshold");
+        let o2 = super::acl_watch::acl_reprobe_tick(&state, &mut tr).await;
+        assert!(!o2.hup_scheduled, "explicit-on must never auto-recycle");
+        let msg = o2.alert.expect("two incapable ticks must raise the banner");
+        assert!(msg.contains("refuse to generate"), "banner explains the reload refusal: {msg}");
+        assert!(state.acl_alert.lock().unwrap().is_some());
+        // Heal: capability returns.
+        write_watch_mountinfo(&mi, tmp.path(), true);
+        let o3 = super::acl_watch::acl_reprobe_tick(&state, &mut tr).await;
+        assert!(o3.alert.is_none(), "banner clears once capability returns");
+        assert!(state.acl_alert.lock().unwrap().is_none());
+        std::env::remove_var("NFS_KLLDAP_SUPERVISOR_PID");
+        std::env::remove_var("NFS_KLLDAP_RECYCLE_DELAY_MS");
+    }
+
+    // The acl_alert banner must render on both Share Permissions and Settings.
+    #[tokio::test]
+    async fn acl_alert_banner_renders_on_index_and_settings() {
+        let (state, _tmp, _g) = make_test_state_with_limited_fs_mountinfo();
+        *state.acl_alert.lock().unwrap() = Some("ACL banner probe text".into());
+        let token = state.auth.create_privileged_session("acltester");
+        let app = router(state);
+        for uri in ["/", "/settings"] {
+            let html = get_html(&app, &token, uri).await;
+            assert!(
+                html.contains("ACL banner probe text"),
+                "{uri} must render the acl_alert banner"
+            );
+        }
+    }
+
     // Dedicated integration test for ACL apply path: POST /acl-apply, wait on shipped ApplyProgress, hard assert via shipped fs.get_acl_table only.
     #[tokio::test]
     async fn web_acl_apply_post_waits_then_get_dir_acl() {
@@ -466,6 +706,8 @@ container_path = "{}"
             setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
             host_nfs_mode: false,
             fs_probe_mountinfo_path: Some(mi),
+            acl_caps: test_acl_caps(),
+            acl_alert: test_acl_alert(),
         };
         // Keep handle to progress slot before moving state into router so we can wait on it.
         let progress_slot = st.apply_progress.clone();
@@ -577,6 +819,8 @@ container_path = "{}"
             setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
             host_nfs_mode: false,
             fs_probe_mountinfo_path: Some(mi),
+            acl_caps: test_acl_caps(),
+            acl_alert: test_acl_alert(),
         };
         let progress_slot = st.apply_progress.clone();
         let token = st.auth.create_privileged_session("acltest");
@@ -908,6 +1152,8 @@ container_path = "{}"
             setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
             host_nfs_mode: false,
             fs_probe_mountinfo_path: None,
+            acl_caps: test_acl_caps(),
+            acl_alert: test_acl_alert(),
         };
         let progress_slot = st.apply_progress.clone();
         let token = st.auth.create_privileged_session("permtest");
@@ -1129,6 +1375,8 @@ container_path = "{}"
             restart_requested: Arc::new(Mutex::new(false)), direct_tls: true,
             setup_marker_override: Some(sm), setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
             host_nfs_mode: false, fs_probe_mountinfo_path: Some(mi),
+            acl_caps: test_acl_caps(),
+            acl_alert: test_acl_alert(),
         };
         let token = st.auth.create_privileged_session("permtest");
         let app = router(st);
@@ -1273,6 +1521,8 @@ container_path = "{}"
             setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
             host_nfs_mode: false,
             fs_probe_mountinfo_path: None,
+            acl_caps: test_acl_caps(),
+            acl_alert: test_acl_alert(),
         }
     }
 

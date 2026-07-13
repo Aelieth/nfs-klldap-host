@@ -20,6 +20,9 @@ struct IndexTemplate {
     shares: Vec<ShareInfo>,
     current_user: Option<String>,
     keytab_alert: Option<String>,
+    /// Banner from the ACL re-probe loop: an explicit-ACL share on a filesystem
+    /// that can no longer store ACLs. None hides it.
+    acl_alert: Option<String>,
     /// Mirrors host_nfs_mode so the template adjusts the top Ganesha notice.
     host_nfs_mode: bool,
     /// Initial Apply Log shell rendered by apply_log_shell so oob swaps match it exactly.
@@ -271,8 +274,10 @@ pub(crate) struct DirPermsTemplate {
     /// Serve (container) path shown in the diagnostic; empty when it could not be resolved.
     serve_path_display: String,
     acl_supported: bool,
-    /// Pill label: "on" (explicit), "auto" (probe-promoted), "off".
+    /// Pill label: "on" (explicit), "auto" (probe-promoted), "on (unverified)", "off".
     acl_pill: String,
+    /// Pill colour class: "on" (green), "warn" (amber), "off" (grey).
+    acl_pill_class: &'static str,
     acl_reason: String,
     /// Tooltip detail behind the short reason.
     acl_reason_long: String,
@@ -365,10 +370,18 @@ async fn friendly_group_name(lldap: &Ldap, gid: u32) -> String {
 /// when the serve path passes the write round-trip probe — the same decision
 /// generate makes, so the panel mirrors the export. Prefers the most specific
 /// (longest host_path) matching share so nested shares stay independent.
-fn acl_capability_for_path(
-    state: &AppState,
-    host_path: &std::path::Path,
-) -> (bool, String, String, String) {
+/// Resolved ACL editor gate for one node: whether the editor is live, the pill
+/// label and its colour class, and the short/long reasons the panel shows.
+pub(crate) struct AclGateView {
+    pub editable: bool,
+    pub pill: String,
+    /// "on" (green), "warn" (amber, editable-but-unverified), "off" (grey).
+    pub pill_class: &'static str,
+    pub short: String,
+    pub long: String,
+}
+
+fn acl_capability_for_path(state: &AppState, host_path: &std::path::Path) -> AclGateView {
     let cfg = state.config.read().expect("config lock poisoned");
     let best = cfg
         .shares
@@ -377,64 +390,62 @@ fn acl_capability_for_path(
         .max_by_key(|s| s.host_path.as_os_str().len());
 
     let Some(s) = best else {
-        return (
-            false,
-            "off".to_string(),
-            "Not under a configured share.".to_string(),
-            String::new(),
-        );
+        return AclGateView {
+            editable: false,
+            pill: "off".into(),
+            pill_class: "off",
+            short: "Not under a configured share.".into(),
+            long: String::new(),
+        };
     };
-    let unknown_caps = || nfs_klldap_config::FsCapabilities {
-        fstype: "unknown".into(),
-        mount_options: vec![],
-        acl_capable: false,
-    };
-    // Probe the SELECTED node's real path, not just the share serve root: a
-    // share tree can cross mounts (vfat/ntfs submounts), and the panel + the
-    // /acl-apply gate must reflect the mount actually holding the node. The
-    // write probe needs a directory, so file targets probe their parent.
+    let mountinfo = state.fs_probe_mountinfo_path.as_deref();
+    let skip = s.enable_acl == Some(false);
+
+    // The share's effective ACL mode is decided at its serve ROOT — that is what
+    // generate emits Disable_ACL from. The editor must obey it even when the
+    // selected node sits on a more-capable submount.
+    let serve = std::path::PathBuf::from(cfg.serve_path_for(s));
+    let root = state
+        .acl_caps
+        .verdict_for(mountinfo, &serve, &serve, skip, false);
+
+    // The selected node's own mount then narrows it: a vfat/ntfs child under an
+    // ACL share cannot store ACLs even though the share serves them. The write
+    // probe needs a directory, so file targets probe their parent.
     let node_real = {
         let fs = state.fs.read().expect("fs lock poisoned");
         fs.host_path_to_container_path(host_path).ok()
     };
-    let serve = cfg.serve_path_for(s);
-    let probe_path = node_real.unwrap_or_else(|| std::path::PathBuf::from(&serve));
-    let probe_dir = if probe_path.is_dir() {
-        probe_path.clone()
+    let node_path = node_real.unwrap_or_else(|| serve.clone());
+    let node_dir = if node_path.is_dir() {
+        node_path.clone()
     } else {
-        probe_path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::path::PathBuf::from(&serve))
+        node_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| serve.clone())
     };
-    let caps = match state.fs_probe_mountinfo_path.as_deref() {
-        Some(p) => std::fs::read_to_string(p)
-            .map(|c| nfs_klldap_config::probe_from_mountinfo(&c, &probe_path))
-            .unwrap_or_else(|_| unknown_caps()),
-        None => nfs_klldap_config::probe_fs_capabilities(&probe_path)
-            .unwrap_or_else(|_| unknown_caps()),
-    };
-    // Explicit-off shares skip the write probe (nothing to prove).
-    let verdict = if s.enable_acl == Some(false) {
-        nfs_klldap_config::verdict_from_caps(&caps)
+    let node = state
+        .acl_caps
+        .verdict_for(mountinfo, &node_path, &node_dir, skip, false);
+    // Only a genuinely different mount can override the share decision.
+    let node_verdict = if node.mount_root != root.mount_root {
+        Some(node.verdict)
     } else {
-        nfs_klldap_config::acl_probe_verdict(&caps, &probe_dir)
+        None
     };
-    let mountinfo = state.fs_probe_mountinfo_path.as_deref();
+
     let warn = nfs_klldap_config::share_fs_warning_message_with_mountinfo(&cfg, s, mountinfo)
         .unwrap_or_default();
-    acl_capability_decision(s.enable_acl, verdict, &warn)
+    acl_capability_decision(s.enable_acl, root.verdict, node_verdict, &warn)
 }
-/// Pure ACL-support decision → (supported, pill, short reason, long reason).
-/// The short reason is one panel line; detail lives in the long tooltip.
+
+/// Pure gate decision: share-level ACL mode (from the serve-root verdict), then
+/// a submount override when the selected node is on a less-capable mount.
 fn acl_capability_decision(
     enable_acl: Option<bool>,
-    verdict: nfs_klldap_config::AclProbeVerdict,
+    root_verdict: nfs_klldap_config::AclProbeVerdict,
+    node_verdict: Option<nfs_klldap_config::AclProbeVerdict>,
     warn: &str,
-) -> (bool, String, String, String) {
+) -> AclGateView {
     use nfs_klldap_config::AclProbeVerdict as V;
-    let off_help = "Extended ACLs already on disk still enforce kernel-side on the 9.13 build; \
-                    turn ACLs on for this share to manage them here.";
     let join = |base: String| {
         let mut long = base;
         if !warn.is_empty() {
@@ -443,34 +454,104 @@ fn acl_capability_decision(
         }
         long
     };
-    match (enable_acl, verdict) {
-        (Some(true), V::Capable) => (true, "on".into(), String::new(), String::new()),
-        (None, V::Capable) => (true, "auto".into(), String::new(), String::new()),
-        (Some(false), _) => (
-            false,
-            "off".into(),
-            "ACL is off for this share.".into(),
-            join(format!("enable_acl = false in the share config. {off_help}")),
-        ),
-        (Some(true), _) => (
-            false,
-            "off".into(),
-            "ACL is on in config, but this filesystem can't store ACLs.".into(),
-            join(
-                "The serve path failed the POSIX ACL probe, so the export cannot serve ACLs. \
-                 Stage onto an ACL-capable tree (source_path) or set enable_acl = false."
-                    .to_string(),
+    let base = share_level_decision(enable_acl, root_verdict, &join);
+    // A capable/served share is still blocked on a child that cannot store ACLs.
+    if base.editable {
+        match node_verdict {
+            Some(V::Incapable) => {
+                return AclGateView {
+                    editable: false,
+                    pill: "off".into(),
+                    pill_class: "off",
+                    short: "This folder is on a filesystem that can't store ACLs (submount)."
+                        .into(),
+                    long: join(
+                        "The share serves ACLs, but this subtree is a mount (vfat/ntfs or \
+                         similar) that cannot hold POSIX ACLs. Editing is disabled here."
+                            .into(),
+                    ),
+                };
+            }
+            Some(V::Inconclusive) => {
+                return AclGateView {
+                    editable: false,
+                    pill: "off".into(),
+                    pill_class: "off",
+                    short: "This submount's ACL support is unverified.".into(),
+                    long: join(
+                        "The share serves ACLs, but the POSIX ACL probe on this submount was \
+                         inconclusive, so editing is disabled here until it is verified."
+                            .into(),
+                    ),
+                };
+            }
+            _ => {}
+        }
+    }
+    base
+}
+
+/// Share-level decision from the serve-root verdict alone (no submount view).
+fn share_level_decision(
+    enable_acl: Option<bool>,
+    root_verdict: nfs_klldap_config::AclProbeVerdict,
+    join: &dyn Fn(String) -> String,
+) -> AclGateView {
+    use nfs_klldap_config::AclProbeVerdict as V;
+    let off_help = "Extended ACLs already on disk still enforce kernel-side on the 9.13 build; \
+                    turn ACLs on for this share to manage them here.";
+    let on_view = |pill: &str| AclGateView {
+        editable: true,
+        pill: pill.into(),
+        pill_class: "on",
+        short: String::new(),
+        long: String::new(),
+    };
+    match (enable_acl, root_verdict) {
+        (Some(false), _) => AclGateView {
+            editable: false,
+            pill: "off".into(),
+            pill_class: "off",
+            short: "ACL is off for this share.".into(),
+            long: join(format!("enable_acl = false in the share config. {off_help}")),
+        },
+        (Some(true), V::Capable) => on_view("on"),
+        (None, V::Capable) => on_view("auto"),
+        // Explicit ACL on an unproven mount: generate still emits the ACL export
+        // (with a warning), so respect the operator's choice and let them edit.
+        (Some(true), V::Inconclusive) => AclGateView {
+            editable: true,
+            pill: "on (unverified)".into(),
+            pill_class: "warn",
+            short: "ACL on — filesystem support unverified.".into(),
+            long: join(
+                "The POSIX ACL write probe was inconclusive, but enable_acl = true so the \
+                 export serves ACLs. Verify with verify-ganesha.sh."
+                    .into(),
             ),
-        ),
-        (None, _) => (
-            false,
-            "off".into(),
-            "ACL auto: off — filesystem support unproven.".into(),
-            join(format!(
+        },
+        (Some(true), _) => AclGateView {
+            editable: false,
+            pill: "off".into(),
+            pill_class: "off",
+            short: "ACL is on in config, but this filesystem can't store ACLs.".into(),
+            long: join(
+                "The serve path failed the POSIX ACL probe, so the next config reload will \
+                 refuse to generate exports. Stage onto an ACL-capable tree (source_path) or \
+                 set enable_acl = false."
+                    .into(),
+            ),
+        },
+        (None, _) => AclGateView {
+            editable: false,
+            pill: "off".into(),
+            pill_class: "off",
+            short: "ACL auto: off — filesystem support unproven.".into(),
+            long: join(format!(
                 "enable_acl is unset (auto): ACL turns on automatically once the serve path \
                  passes the write probe. {off_help}"
             )),
-        ),
+        },
     }
 }
 
@@ -622,6 +703,7 @@ pub(crate) async fn index(
         shares: display_shares,
         current_user: Some(user.0),
         keytab_alert: state.keytab_alert.lock().unwrap().clone(),
+        acl_alert: state.acl_alert.lock().unwrap().clone(),
         host_nfs_mode: state.host_nfs_mode,
         apply_log_initial: apply_log_shell(
             r#"<em class="placeholder-note">No permission applies yet.</em>"#,
@@ -647,7 +729,7 @@ pub(crate) async fn tree_fragment(
         let mut children: Vec<EntryView> = entries.into_iter().map(EntryView::from_fs_entry).collect();
         // The "+" marker runs one batched getfacl per fragment and only on
         // ACL-active shares — NOACL trees pay nothing.
-        if acl_capability_for_path(&state, path).0 {
+        if acl_capability_for_path(&state, path).editable {
             let names: Vec<String> = children.iter().map(|c| c.name.clone()).collect();
             let extended = fs.extended_acl_names(path, &names);
             for c in &mut children {
@@ -774,8 +856,12 @@ pub(crate) async fn dir_perms(
         };
     }
 
-    let (acl_supported, acl_pill, acl_reason, acl_reason_long) =
-        acl_capability_for_path(&state, host);
+    let gate = acl_capability_for_path(&state, host);
+    let acl_supported = gate.editable;
+    let acl_pill = gate.pill;
+    let acl_pill_class = gate.pill_class;
+    let acl_reason = gate.short;
+    let acl_reason_long = gate.long;
 
     // The full ACL table is always listed (resolved to friendly names); the
     // section greys when unsupported. Effective perms come from the layer's
@@ -849,6 +935,7 @@ pub(crate) async fn dir_perms(
             .unwrap_or_else(|| diag.serve_path.clone()),
         acl_supported,
         acl_pill,
+        acl_pill_class,
         acl_reason,
         acl_reason_long,
         users,
@@ -1357,8 +1444,8 @@ pub(crate) async fn acl_apply(
     // NOACL/incapable paths refuse ACL mutations outright (matches the
     // default-on-file 422 pattern), so a stale panel or hand-built POST can
     // never write ACLs the export model does not carry.
-    let (acl_ok, _pill, acl_short, _long) =
-        acl_capability_for_path(&state, std::path::Path::new(&form.path));
+    let gate = acl_capability_for_path(&state, std::path::Path::new(&form.path));
+    let (acl_ok, acl_short) = (gate.editable, gate.short);
     if !acl_ok {
         return Ok((
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1616,54 +1703,100 @@ mod acl_capability_tests {
 
     #[test]
     fn explicit_on_with_proven_probe_is_supported() {
-        let (ok, pill, short, long) = acl_capability_decision(Some(true), V::Capable, "");
-        assert!(ok && short.is_empty() && long.is_empty());
-        assert_eq!(pill, "on");
+        let g = acl_capability_decision(Some(true), V::Capable, None, "");
+        assert!(g.editable && g.short.is_empty() && g.long.is_empty());
+        assert_eq!(g.pill, "on");
+        assert_eq!(g.pill_class, "on");
     }
 
     #[test]
     fn auto_with_proven_probe_is_supported_as_auto() {
-        let (ok, pill, short, _) = acl_capability_decision(None, V::Capable, "");
-        assert!(ok && short.is_empty(), "auto + proven probe must enable the editor");
-        assert_eq!(pill, "auto");
+        let g = acl_capability_decision(None, V::Capable, None, "");
+        assert!(g.editable && g.short.is_empty(), "auto + proven probe must enable the editor");
+        assert_eq!(g.pill, "auto");
+        assert_eq!(g.pill_class, "on");
+    }
+
+    #[test]
+    fn explicit_on_inconclusive_is_editable_and_amber() {
+        // Generate still emits the ACL export on an inconclusive probe, so the
+        // editor must respect the operator's choice instead of blocking.
+        let g = acl_capability_decision(Some(true), V::Inconclusive, None, "");
+        assert!(g.editable, "explicit ACL on must stay editable when unproven");
+        assert_eq!(g.pill_class, "warn");
+        assert!(g.pill.contains("unverified"), "pill flags the unverified state: {}", g.pill);
+        assert!(g.long.contains("verify-ganesha.sh"), "long points at verification: {}", g.long);
     }
 
     #[test]
     fn enabled_but_incapable_fs_reverts_to_non_acl_with_reason() {
-        let (ok, pill, short, long) =
-            acl_capability_decision(Some(true), V::Incapable, "share \"x\": vfat limited filesystem");
-        assert!(!ok, "enable_acl on an incapable FS must NOT be supported");
-        assert_eq!(pill, "off");
-        assert!(short.contains("can't store ACLs"), "short names the cause: {short}");
-        assert!(long.contains("limited filesystem"), "long carries the fs warning: {long}");
-        assert!(long.contains("source_path"), "long names the staging escape: {long}");
+        let g = acl_capability_decision(
+            Some(true),
+            V::Incapable,
+            None,
+            "share \"x\": vfat limited filesystem",
+        );
+        assert!(!g.editable, "enable_acl on an incapable FS must NOT be supported");
+        assert_eq!(g.pill, "off");
+        assert!(g.short.contains("can't store ACLs"), "short names the cause: {}", g.short);
+        assert!(g.long.contains("refuse to generate"), "long warns of the reload refusal: {}", g.long);
+        assert!(g.long.contains("limited filesystem"), "long carries the fs warning: {}", g.long);
+        assert!(g.long.contains("source_path"), "long names the staging escape: {}", g.long);
+    }
+
+    #[test]
+    fn capable_share_blocks_incapable_submount() {
+        // Share serves ACLs (root Capable) but the selected node is on a vfat
+        // child mount: editing must be blocked with a submount reason.
+        let g = acl_capability_decision(None, V::Capable, Some(V::Incapable), "");
+        assert!(!g.editable, "an incapable submount must block editing");
+        assert_eq!(g.pill_class, "off");
+        assert!(g.short.contains("submount"), "short names the submount: {}", g.short);
+    }
+
+    #[test]
+    fn capable_share_blocks_unverified_submount() {
+        let g = acl_capability_decision(Some(true), V::Capable, Some(V::Inconclusive), "");
+        assert!(!g.editable);
+        assert!(g.short.contains("unverified"), "short flags the unverified submount: {}", g.short);
+    }
+
+    #[test]
+    fn capable_share_allows_capable_submount() {
+        let g = acl_capability_decision(None, V::Capable, Some(V::Capable), "");
+        assert!(g.editable, "a capable submount must not block editing");
+        assert_eq!(g.pill, "auto");
     }
 
     #[test]
     fn disabled_reports_enable_acl_false_in_long() {
-        let (ok, pill, short, long) = acl_capability_decision(Some(false), V::Capable, "");
-        assert!(!ok);
-        assert_eq!(pill, "off");
-        assert!(short.len() < 60, "short reason stays one compact line: {short}");
-        assert!(long.contains("enable_acl = false"), "long names the setting: {long}");
+        let g = acl_capability_decision(Some(false), V::Capable, None, "");
+        assert!(!g.editable);
+        assert_eq!(g.pill, "off");
+        assert!(g.short.len() < 60, "short reason stays one compact line: {}", g.short);
+        assert!(g.long.contains("enable_acl = false"), "long names the setting: {}", g.long);
     }
 
     #[test]
     fn auto_unproven_reports_auto_off_not_false() {
-        let (ok, pill, short, long) = acl_capability_decision(None, V::Inconclusive, "");
-        assert!(!ok);
-        assert_eq!(pill, "off");
-        assert!(short.contains("auto"), "short names auto mode: {short}");
-        assert!(!short.contains("enable_acl = false"));
-        assert!(long.contains("write probe"), "long explains the promotion rule: {long}");
+        let g = acl_capability_decision(None, V::Inconclusive, None, "");
+        assert!(!g.editable);
+        assert_eq!(g.pill, "off");
+        assert!(g.short.contains("auto"), "short names auto mode: {}", g.short);
+        assert!(!g.short.contains("enable_acl = false"));
+        assert!(g.long.contains("write probe"), "long explains the promotion rule: {}", g.long);
     }
 
     #[test]
     fn disabled_and_limited_appends_fs_warning_to_long() {
-        let (ok, _pill, _short, long) =
-            acl_capability_decision(Some(false), V::Incapable, "share \"x\": ntfs limited filesystem");
-        assert!(!ok);
-        assert!(long.contains("limited filesystem"), "long cites the FS warning: {long}");
+        let g = acl_capability_decision(
+            Some(false),
+            V::Incapable,
+            None,
+            "share \"x\": ntfs limited filesystem",
+        );
+        assert!(!g.editable);
+        assert!(g.long.contains("limited filesystem"), "long cites the FS warning: {}", g.long);
     }
 }
 

@@ -1,6 +1,11 @@
 {% extends "base.html" %}
 
 {% block content %}
+{% if let Some(acl_msg) = acl_alert %}
+<div class="acl-alert" role="alert" style="background: var(--warning-amber-bg); border:1px solid var(--warning-amber-border); padding:6px 12px; margin-bottom:0.75rem; border-radius:4px; font-size:0.9em; color: var(--warning-amber-text);">
+    <strong>ACL capability changed:</strong> {{ acl_msg }}
+</div>
+{% endif %}
 <h2>Share Permissions</h2>
 <p class="page-note">
     Shares list and allowed roots are loaded at WebUI startup.

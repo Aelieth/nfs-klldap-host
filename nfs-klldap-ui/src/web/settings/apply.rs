@@ -2,7 +2,7 @@
 //! Extracted mechanically to keep settings/mod.rs <=1000 LOC.
 //! ACL (enable_acl) and container_path kept explicit in maps and emission.
 
-use super::{build_settings_template, KeytabDisplayContext, SettingsTemplate, StructuredSettingsForm};
+use super::{build_settings_template, SettingsTemplate, StructuredSettingsForm};
 
 pub(crate) fn apply_structured_form_to_config(
     form: &StructuredSettingsForm,
@@ -81,21 +81,11 @@ pub(crate) fn apply_structured_form_to_config(
 }
 
 pub(crate) fn make_settings_error_template(
+    state: &crate::web::AppState,
     current_user: Option<String>,
-    config_path: impl AsRef<std::path::Path>,
     message: String,
-    keytab: KeytabDisplayContext,
-    host_nfs_mode: bool,
-    fs_probe_mountinfo_path: Option<&std::path::Path>,
 ) -> SettingsTemplate {
-    build_settings_template(
-        current_user,
-        config_path,
-        Some(message),
-        keytab,
-        host_nfs_mode,
-        fs_probe_mountinfo_path,
-    )
+    build_settings_template(state, current_user, Some(message))
 }
 
 pub(crate) fn atomic_write_config(path: &std::path::Path, content: &str) -> Result<(), String> {
@@ -111,21 +101,11 @@ pub(crate) fn atomic_write_config(path: &std::path::Path, content: &str) -> Resu
 }
 
 pub(crate) fn make_settings_success_template(
+    state: &crate::web::AppState,
     current_user: Option<String>,
-    config_path: impl AsRef<std::path::Path>,
     message: String,
-    keytab: KeytabDisplayContext,
-    host_nfs_mode: bool,
-    fs_probe_mountinfo_path: Option<&std::path::Path>,
 ) -> SettingsTemplate {
-    build_settings_template(
-        current_user,
-        config_path,
-        Some(message),
-        keytab,
-        host_nfs_mode,
-        fs_probe_mountinfo_path,
-    )
+    build_settings_template(state, current_user, Some(message))
 }
 
 pub(crate) fn apply_structured_form_to_toml_doc(

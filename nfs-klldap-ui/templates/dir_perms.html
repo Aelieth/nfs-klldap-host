@@ -242,10 +242,10 @@
 
 <div class="acl-sec {% if !acl_supported %}disabled{% endif %}" data-path="{{ path }}">
   <div class="sec-title" title="POSIX ACLs on the backing filesystem, served to NFS clients as NFSv4 ACLs. Entries grant within the mask (the Group bits).">ACL
-    <span class="pill {% if acl_supported %}on{% else %}off{% endif %}">{{ acl_pill }}</span>
+    <span class="pill {{ acl_pill_class }}">{{ acl_pill }}</span>
   </div>
 
-  {% if !acl_supported %}
+  {% if !acl_supported || acl_pill_class == "warn" %}
   <div class="acl-reason" title="{{ acl_reason_long }}">{{ acl_reason }}</div>
   {% endif %}
 

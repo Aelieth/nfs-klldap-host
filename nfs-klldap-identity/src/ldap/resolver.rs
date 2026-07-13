@@ -64,10 +64,23 @@ pub struct IdLdapResolver {
     bind_count: AtomicU64,
 }
 
-/// A live bound LdapConn plus the DN it authenticated as.
+/// A live bound LdapConn plus the DN it authenticated as and when it was last
+/// used, so an idle connection can be dropped before the server times it out.
 struct PooledConn {
     ldap: LdapConn,
     bound_as: String,
+    last_used: Instant,
+}
+
+/// Idle ceiling for a pooled connection. Past this a fresh bind is cheaper than
+/// gambling on a connection the server may already have closed; the retry loop
+/// still heals a connection that dies sooner.
+const POOL_IDLE_MAX: Duration = Duration::from_secs(300);
+
+/// True when a pooled connection has sat unused long enough that it should be
+/// rebound rather than reused.
+fn pool_entry_stale(last_used: Instant, now: Instant) -> bool {
+    now.duration_since(last_used) > POOL_IDLE_MAX
 }
 
 #[derive(Debug, Clone)]
@@ -345,14 +358,18 @@ impl IdLdapResolver {
         }
     }
 
-    /// Takes the pooled connection when it is bound as `bind_dn`; a conn
-    /// bound as someone else is discarded so the pool never mixes identities.
+    /// Takes the pooled connection when it is bound as `bind_dn` and has not
+    /// gone idle; a conn bound as someone else, or one that has sat idle past
+    /// POOL_IDLE_MAX, is discarded so the pool never mixes identities or hands
+    /// back a connection the server has likely already closed.
     fn take_pooled_conn(&self, bind_dn: &str) -> Option<LdapConn> {
         let mut slot = self.conn_pool.lock().unwrap();
         match slot.take() {
-            Some(p) if p.bound_as == bind_dn => Some(p.ldap),
-            Some(mut stale) => {
-                let _ = stale.ldap.unbind();
+            Some(p) if p.bound_as == bind_dn && !pool_entry_stale(p.last_used, Instant::now()) => {
+                Some(p.ldap)
+            }
+            Some(mut discard) => {
+                let _ = discard.ldap.unbind();
                 None
             }
             None => None,
@@ -364,7 +381,16 @@ impl IdLdapResolver {
         if let Some(mut old) = slot.take() {
             let _ = old.ldap.unbind();
         }
-        *slot = Some(PooledConn { ldap, bound_as: bind_dn.to_string() });
+        *slot = Some(PooledConn {
+            ldap,
+            bound_as: bind_dn.to_string(),
+            last_used: Instant::now(),
+        });
+    }
+
+    /// True when a bound connection is currently pooled (surfaced in stats).
+    pub fn pool_is_warm(&self) -> bool {
+        self.conn_pool.lock().map(|s| s.is_some()).unwrap_or(false)
     }
 
     /// Performs sync LDAP in a worker thread (callers may sit on an async
@@ -1400,6 +1426,16 @@ pub fn extract_first_attr_value(se: &SearchEntry, name: &str) -> Option<String> 
 mod tests {
     use super::*;
     use crate::constants::{FALLBACK_NOBODY_GID, MACHINE_GID};
+
+    #[test]
+    fn pool_entry_stale_after_idle_max() {
+        let now = Instant::now();
+        // Fresh and just-under-ceiling connections are reused.
+        assert!(!pool_entry_stale(now, now));
+        assert!(!pool_entry_stale(now - (POOL_IDLE_MAX / 2), now));
+        // Past the ceiling it is rebound instead.
+        assert!(pool_entry_stale(now - POOL_IDLE_MAX - Duration::from_secs(1), now));
+    }
 
     #[test]
     fn group_gid_from_dn_answers_from_group_cache_without_ldap() {

@@ -1,130 +1,38 @@
 //! Real OS SIGHUP drives handle_sighup (hook + fingerprint) before ganesha recycle.
 
+mod common;
+
+use common::{complete_toml_with_hook, Supervised, TestDirs, COMPLETE_TOML};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
-use std::process::Command;
-
-const COMPLETE_TOML: &str = r#"
-ldap_uri = "ldaps://klldap.test:6360"
-[ganesha]
-post_generate_hook = "HOOK_PLACEHOLDER"
-[sssd]
-ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
-ldap_default_authtok = "sekret"
-[[shares]]
-name = "data"
-host_path = "/media/data"
-container_path = "/export/data"
-"#;
-
-fn cargo_bin(name: &str) -> PathBuf {
-    let env_key = format!("CARGO_BIN_EXE_{}", name.replace('-', "_"));
-    if let Ok(path) = std::env::var(&env_key) {
-        return PathBuf::from(path);
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/debug")
-        .join(name)
-}
-
-fn write_exe(path: &std::path::Path, body: &str) {
-    fs::write(path, body).unwrap();
-    let mut perms = fs::metadata(path).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(path, perms).unwrap();
-}
 
 #[test]
 fn supervise_sighup_hook_probe_real_os_sighup_runs_hook_before_recycle() {
-    let tmp = tempfile::tempdir().unwrap();
-    let stubs = tmp.path().join("stubs");
-    let out = tmp.path().join("out");
-    fs::create_dir_all(&stubs).unwrap();
-    fs::create_dir_all(out.join("exports.d")).unwrap();
-
-    let hook_log = tmp.path().join("hook.log");
-    let hook = stubs.join("post-hook.sh");
-    write_exe(
-        &hook,
+    let dirs = TestDirs::new(COMPLETE_TOML);
+    let hook_log = dirs.tmp.path().join("hook.log");
+    let hook = dirs.stub_script(
+        "post-hook.sh",
         &format!(
             "#!/bin/sh\necho \"HOOK share=$SHARE_NAME\" >> \"{}\"\n",
             hook_log.display()
         ),
     );
+    fs::write(&dirs.conf, complete_toml_with_hook(&hook)).unwrap();
 
-    let conf = tmp.path().join("nfs-klldap.conf");
-    let stub_log = tmp.path().join("ganesha-stub.log");
-    fs::write(
-        &conf,
-        COMPLETE_TOML.replace("HOOK_PLACEHOLDER", hook.to_str().unwrap()),
-    )
-    .unwrap();
+    let stub_log = dirs.stub_ganesha_trap_log();
 
-    write_exe(
-        &stubs.join("ganesha.nfsd"),
-        &format!(
-            r#"#!/bin/sh
-LOG="{log}"
-echo START >> "$LOG"
-trap 'echo HUP >> "$LOG"' HUP
-trap 'echo TERM >> "$LOG"; exit 0' TERM
-while :; do :; done
-"#,
-            log = stub_log.display()
-        ),
-    );
-
-    let startup_bin = cargo_bin("nfs-klldap-startup");
-    let config_bin = cargo_bin("nfs-klldap-config");
-
-    let child = Command::new(&startup_bin)
-        .arg("supervise-sighup-hook-probe")
-        .env("NFS_CONFIG", &conf)
-        .env("NFS_KLLDAP_TEST_PERSISTENT", "1")
-        .env("USE_NSS_WRAPPER", "0")
-        .env("CONFIG_BIN", &config_bin)
-        .env("NFS_KLLDAP_SUPERVISOR_TICK_MS", "50")
-        .env("NFS_KLLDAP_SUPERVISOR_MAX_TICKS", "200")
-        .env("SSSD_CONF", out.join("sssd.conf"))
-        .env("KRB5_CONF", out.join("krb5.conf"))
-        .env("GANESHA_CONF", out.join("ganesha.conf"))
-        .env("EXPORTS_DIR", out.join("exports.d"))
-        .env("IDMAP_CONF", out.join("idmapd.conf"))
-        .env("NFS_CONF", out.join("nfs.conf"))
-        .env("NSS_PASSWD", out.join("nss_passwd"))
-        .env("NSS_GROUP", out.join("nss_group"))
-        .env(
-            "PATH",
-            format!(
-                "{}:{}",
-                stubs.display(),
-                std::env::var("PATH").unwrap_or_default()
-            ),
-        )
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn supervise-sighup-hook-probe");
+    let mut cmd = dirs.base_cmd("supervise-sighup-hook-probe");
+    dirs.nss_env(&mut cmd);
+    cmd.env("NFS_KLLDAP_SUPERVISOR_TICK_MS", "50")
+        .env("NFS_KLLDAP_SUPERVISOR_MAX_TICKS", "200");
+    let sup = Supervised::spawn(&mut cmd);
 
     std::thread::sleep(std::time::Duration::from_millis(500));
-    assert!(
-        Command::new("kill")
-            .args(["-HUP", &child.id().to_string()])
-            .status()
-            .expect("kill -HUP")
-            .success()
-    );
+    sup.sighup();
 
-    let output = child.wait_with_output().expect("wait supervise-sighup-hook-probe");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let (status, combined) = sup.wait_exit();
 
     assert!(
-        output.status.success(),
+        status.success(),
         "supervise-sighup-hook-probe failed: {combined}"
     );
     assert!(combined.contains("Supervise-sighup-hook-probe mode enabled"));

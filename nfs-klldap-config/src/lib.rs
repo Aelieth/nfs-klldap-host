@@ -42,8 +42,8 @@ pub use exports_fingerprint::{
     fingerprint_exports_dir, fingerprint_identity_artifacts, fingerprint_shares, FNV1A_SEED,
 };
 pub use ganesha_liveness::{
-    discover_ganesha_daemon_pid, ganesha_is_live, pgrep_live_pids, pgrep_pids, process_is_live,
-    reconcile_ganesha_pid,
+    discover_ganesha_daemon_pid, ganesha_is_live, pgrep_live_pids, pgrep_pids, pgrep_running,
+    pkill_binary, pkill_process, process_is_live, reconcile_ganesha_pid,
 };
 pub use recycle_plan::{
     plan_from_changes, ganesha_sighup_failed, GaneshaAction, ServiceRecyclePlan,
@@ -76,7 +76,8 @@ pub use ganesha_identity_pipeline::{
     warm_principals_nss_ready, IdentityPrincipals,
 };
 pub use ganesha_nss_contract::{
-    evaluate_nss_contract, evaluate_short_name_getgrouplist_contract, ld_preload_for_ganesha,
+    evaluate_nss_contract, evaluate_short_name_getgrouplist_contract, find_nss_wrapper_so,
+    ld_preload_for_ganesha,
     nss_lookup_names, probe_nss_groups, probe_nss_groups_exact, probe_nss_passwd,
     probe_nss_passwd_exact, probe_nss_passwd_from_file_exact, short_pw_name_for_principal,
     GaneshaNssEnv,

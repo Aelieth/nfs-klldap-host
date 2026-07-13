@@ -43,6 +43,29 @@ pub fn pgrep_pids(name: &str) -> Vec<u32> {
         .collect()
 }
 
+/// True when a process with `name` is running (any state).
+pub fn pgrep_running(name: &str) -> bool {
+    !pgrep_pids(name).is_empty()
+}
+
+/// Send `signal` (pkill syntax, e.g. "-TERM") to processes by name.
+/// Long names fall back to full-cmdline matching, like pgrep_pids.
+pub fn pkill_process(signal: &str, ident: &str) {
+    let mut cmd = Command::new("pkill");
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    if ident.len() > PROC_COMM_NAME_MAX {
+        cmd.args([signal, "-f", "--", ident]);
+    } else {
+        cmd.args([signal, ident]);
+    }
+    let _ = cmd.status();
+}
+
+/// Pkill by binary path (full-cmdline match for long paths).
+pub fn pkill_binary(signal: &str, bin: &Path) {
+    pkill_process(signal, &bin.to_string_lossy());
+}
+
 /// Pgrep hits filtered to non-zombie processes only.
 pub fn pgrep_live_pids(name: &str) -> Vec<u32> {
     pgrep_pids(name)

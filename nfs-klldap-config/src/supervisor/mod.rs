@@ -21,7 +21,8 @@ use nfs_klldap_config::{
         probe_ganesha_process_groups, probe_id_g_under_env, probe_socket_grps,
         probe_socket_grouplist, GaneshaSpawnEnv,
     },
-    ganesha_sighup_failed, idhelper_socket_path, ldap_bind_configured,
+    find_nss_wrapper_so, ganesha_sighup_failed, idhelper_socket_path, ldap_bind_configured,
+    pgrep_running, pkill_binary, pkill_process,
     probe_client_host, warm_principals_for_startup, warm_principals_nss_ready,
     install_signal_handlers, is_preconfigured_deployment, is_setup_wizard_complete,
     discover_ganesha_daemon_pid, mark_setup_wizard_complete, plan_from_changes, process_is_live,
@@ -30,7 +31,7 @@ use nfs_klldap_config::{
     signal_process_hup, signal_process_term, supervisor_loop_tick,
     take_sighup_requested, webui_setup_url, ConfigError,
     GaneshaAction, NfsKlldapConfig,
-    ServiceRecyclePlan, SupervisorLoopAction, PROC_COMM_NAME_MAX,
+    ServiceRecyclePlan, SupervisorLoopAction,
 };
 
 struct Supervisor {
@@ -1479,58 +1480,8 @@ pub(crate) fn resolve_nss_wrapper_so() -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    if let Ok(out) = Command::new("dpkg-architecture")
-        .args(["-qDEB_HOST_MULTIARCH"])
-        .output()
-    {
-        let arch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !arch.is_empty() {
-            let cand = PathBuf::from(format!("/usr/lib/{arch}/libnss_wrapper.so"));
-            if cand.is_file() {
-                return cand;
-            }
-        }
-    }
-    for cand in [
-        "/usr/lib64/libnss_wrapper.so",
-        "/usr/lib/x86_64-linux-gnu/libnss_wrapper.so",
-        "/usr/lib/aarch64-linux-gnu/libnss_wrapper.so",
-        "/usr/lib/libnss_wrapper.so",
-    ] {
-        let p = PathBuf::from(cand);
-        if p.is_file() {
-            return p;
-        }
-    }
-    PathBuf::from("/usr/lib/x86_64-linux-gnu/libnss_wrapper.so")
-}
-
-fn pkill_process(signal: &str, ident: &str) {
-    let mut cmd = Command::new("pkill");
-    cmd.stdout(Stdio::null()).stderr(Stdio::null());
-    if ident.len() > PROC_COMM_NAME_MAX {
-        cmd.args([signal, "-f", "--", ident]);
-    } else {
-        cmd.args([signal, ident]);
-    }
-    let _ = cmd.status();
-}
-
-fn pkill_binary(signal: &str, bin: &Path) {
-    pkill_process(signal, &bin.to_string_lossy());
-}
-
-fn pgrep_running(name: &str) -> bool {
-    let mut cmd = Command::new("pgrep");
-    cmd.stdout(Stdio::null()).stderr(Stdio::null());
-    if name.len() > PROC_COMM_NAME_MAX {
-        cmd.args(["-f", "--", name]);
-    } else {
-        cmd.arg("-x").arg(name);
-    }
-    cmd.output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    find_nss_wrapper_so()
+        .unwrap_or_else(|| PathBuf::from("/usr/lib/x86_64-linux-gnu/libnss_wrapper.so"))
 }
 
 

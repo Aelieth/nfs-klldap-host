@@ -351,13 +351,9 @@ pub fn ld_preload_for_ganesha(nss_wrapper_so: &Path) -> PathBuf {
     PathBuf::from(parts.join(":"))
 }
 
-fn resolve_nss_wrapper_so() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("NSS_WRAPPER_SO") {
-        let pb = PathBuf::from(p);
-        if pb.is_file() {
-            return Some(pb);
-        }
-    }
+/// Locate libnss_wrapper.so across common multiarch install paths.
+/// Static candidates first; dpkg-architecture only on a full miss.
+pub fn find_nss_wrapper_so() -> Option<PathBuf> {
     let arch = std::env::consts::ARCH;
     let candidates = [
         format!("/usr/lib/{arch}-linux-gnu/libnss_wrapper.so"),
@@ -367,10 +363,32 @@ fn resolve_nss_wrapper_so() -> Option<PathBuf> {
         "/usr/lib/aarch64-linux-gnu/libnss_wrapper.so".into(),
         "/usr/lib/libnss_wrapper.so".into(),
     ];
-    candidates
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|p| p.is_file())
+    if let Some(p) = candidates.iter().map(PathBuf::from).find(|p| p.is_file()) {
+        return Some(p);
+    }
+    if let Ok(out) = Command::new("dpkg-architecture")
+        .args(["-qDEB_HOST_MULTIARCH"])
+        .output()
+    {
+        let a = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !a.is_empty() {
+            let cand = PathBuf::from(format!("/usr/lib/{a}/libnss_wrapper.so"));
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+fn resolve_nss_wrapper_so() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("NSS_WRAPPER_SO") {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    find_nss_wrapper_so()
 }
 
 #[cfg(test)]

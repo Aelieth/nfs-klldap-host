@@ -69,6 +69,44 @@ pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
     probe_from_mountinfo_with_root(content, path).0
 }
 
+/// One mountinfo read shared across a request or reprobe pass.
+/// Read precedence per capture matches the per-call probes: an explicit
+/// fixture path first, then NFS_KLLDAP_MOUNTINFO_PATH, then
+/// /proc/self/mountinfo. `content` stays None when nothing was readable so
+/// callers keep their own fail-safe vs display-lenient fallbacks.
+pub struct MountinfoSnapshot {
+    content: Option<String>,
+}
+
+impl MountinfoSnapshot {
+    pub fn capture(fixture: Option<&Path>) -> Self {
+        if let Some(mp) = fixture {
+            if let Ok(content) = std::fs::read_to_string(mp) {
+                return MountinfoSnapshot {
+                    content: Some(content),
+                };
+            }
+        }
+        let live = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH")
+            .unwrap_or_else(|_| "/proc/self/mountinfo".to_string());
+        MountinfoSnapshot {
+            content: std::fs::read_to_string(live).ok(),
+        }
+    }
+
+    /// Caps plus matched mount point; None when no mountinfo was readable.
+    pub fn probe_with_root(&self, path: &Path) -> Option<(FsCapabilities, Option<String>)> {
+        self.content
+            .as_deref()
+            .map(|content| probe_from_mountinfo_with_root(content, path))
+    }
+
+    /// Caps only; None when no mountinfo was readable.
+    pub fn probe(&self, path: &Path) -> Option<FsCapabilities> {
+        self.probe_with_root(path).map(|(caps, _)| caps)
+    }
+}
+
 /// Caps plus the matched mount point. None means the path resolved to no
 /// mount, which pairs with the fail-safe "unknown" capabilities.
 pub fn probe_from_mountinfo_with_root(

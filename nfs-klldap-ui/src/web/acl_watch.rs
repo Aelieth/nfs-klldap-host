@@ -99,20 +99,17 @@ pub(crate) async fn acl_reprobe_tick(state: &AppState, tracker: &mut FlipTracker
             .map(|s| (s.name.clone(), s.enable_acl, PathBuf::from(cfg.serve_path_for(s))))
             .collect()
     };
-    let mountinfo = state.fs_probe_mountinfo_path.clone();
+    let snap =
+        nfs_klldap_config::MountinfoSnapshot::capture(state.fs_probe_mountinfo_path.as_deref());
 
     let mut auto_flip_share: Option<String> = None;
     let mut failing: Vec<String> = Vec::new();
 
     for (name, enable_acl, serve) in &shares {
         let skip_probe = *enable_acl == Some(false);
-        let outcome = state.acl_caps.verdict_for(
-            mountinfo.as_deref(),
-            serve,
-            serve,
-            skip_probe,
-            true,
-        );
+        let outcome = state
+            .acl_caps
+            .verdict_for_snapshot(&snap, serve, serve, skip_probe, true);
         match enable_acl {
             None => {
                 let capable = outcome.verdict == AclProbeVerdict::Capable;

@@ -251,7 +251,8 @@ pub(crate) fn build_settings_template(
     let p = state.config_path.as_path();
     let keytab = state.keytab_display();
     let host_nfs_mode = state.host_nfs_mode;
-    let fs_probe_mountinfo_path = state.fs_probe_mountinfo_path.as_deref();
+    let snap =
+        nfs_klldap_config::MountinfoSnapshot::capture(state.fs_probe_mountinfo_path.as_deref());
     let acl_alert = state.acl_alert.lock().unwrap().clone();
     let raw_toml = std::fs::read_to_string(p)
         .unwrap_or_else(|_| "# Could not read config file".to_string());
@@ -262,8 +263,8 @@ pub(crate) fn build_settings_template(
         .iter()
         .enumerate()
         .map(|(idx, s)| {
-            let outcome = state.acl_caps.verdict_for(
-                fs_probe_mountinfo_path,
+            let outcome = state.acl_caps.verdict_for_snapshot(
+                &snap,
                 std::path::Path::new(&cfg.serve_path_for(s)),
                 std::path::Path::new(&cfg.serve_path_for(s)),
                 s.enable_acl == Some(false),
@@ -329,11 +330,7 @@ pub(crate) fn build_settings_template(
                 &s.name,
             )
             .map(|w| w.display_message()),
-            fs_warning: nfs_klldap_config::share_fs_warning_message_with_mountinfo(
-                &cfg,
-                s,
-                fs_probe_mountinfo_path,
-            ),
+            fs_warning: nfs_klldap_config::share_fs_warning_message_snapshot(&cfg, s, &snap),
         }
         })
         .collect();
@@ -517,19 +514,17 @@ pub(crate) async fn settings_save_shares(
     // Flagging ACL on a share whose serve path provably cannot store POSIX
     // ACLs would only fail later at generate (blocking every export): refuse
     // the save here so the GUI gets immediate feedback.
+    let save_snap =
+        nfs_klldap_config::MountinfoSnapshot::capture(state.fs_probe_mountinfo_path.as_deref());
     for share in &cfg.shares {
         if share.enable_acl != Some(true) {
             continue;
         }
         let serve = std::path::PathBuf::from(cfg.serve_path_for(share));
         // A save decision must not ride a stale verdict, so force a fresh probe.
-        let outcome = state.acl_caps.verdict_for(
-            state.fs_probe_mountinfo_path.as_deref(),
-            &serve,
-            &serve,
-            false,
-            true,
-        );
+        let outcome = state
+            .acl_caps
+            .verdict_for_snapshot(&save_snap, &serve, &serve, false, true);
         // Only a KNOWN mount may reject the save: pre-deploy configs point at
         // paths that do not exist yet, and generate remains the hard gate.
         if outcome.caps.fstype != "unknown"

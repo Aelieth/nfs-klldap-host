@@ -4,8 +4,8 @@ use std::path::Path;
 
 use crate::ganesha_log_contract::ganesha_96_has_mode_only_access_knob;
 use crate::{
-    compute_effective_flags, probe_from_mountinfo, probe_fs_capabilities, EffectiveShareFlags,
-    FsCapabilities, NfsKlldapConfig, Share,
+    compute_effective_flags, EffectiveShareFlags, FsCapabilities, MountinfoSnapshot,
+    NfsKlldapConfig, Share,
 };
 
 /// One line of fs-warnings output for a share.
@@ -143,31 +143,24 @@ pub fn limited_fs_warning_settings_ui(
         })
 }
 
-fn caps_for_share(cfg: &NfsKlldapConfig, share: &Share) -> FsCapabilities {
-    caps_for_share_with_mountinfo(cfg, share, None)
-}
-
-fn caps_for_share_with_mountinfo(
+/// Serve-path caps from a shared snapshot; unreadable mountinfo stays lenient.
+fn caps_for_share_snapshot(
     cfg: &NfsKlldapConfig,
     share: &Share,
-    mountinfo_path: Option<&Path>,
+    snap: &MountinfoSnapshot,
 ) -> FsCapabilities {
     let serve = cfg.serve_path_for(share);
-    let path = Path::new(&serve);
-    if let Some(mp) = mountinfo_path {
-        if let Ok(content) = std::fs::read_to_string(mp) {
-            return probe_from_mountinfo(&content, path);
-        }
-    }
-    probe_fs_capabilities(path).unwrap_or_else(|_| default_capable_unknown())
+    snap.probe(Path::new(&serve))
+        .unwrap_or_else(default_capable_unknown)
 }
 
 /// Collect per-share filesystem warnings (probe runs against serve_path)
 pub fn collect_fs_warnings(cfg: &NfsKlldapConfig) -> Vec<FsShareWarning> {
+    let snap = MountinfoSnapshot::capture(None);
     cfg.shares
         .iter()
         .map(|share| {
-            let caps = caps_for_share(cfg, share);
+            let caps = caps_for_share_snapshot(cfg, share, &snap);
             let eff = compute_effective_flags(share, &caps);
             let message = if caps.acl_capable {
                 String::new()
@@ -207,7 +200,16 @@ pub fn share_fs_warning_message_with_mountinfo(
     share: &Share,
     mountinfo_path: Option<&Path>,
 ) -> Option<String> {
-    let caps = caps_for_share_with_mountinfo(cfg, share, mountinfo_path);
+    share_fs_warning_message_snapshot(cfg, share, &MountinfoSnapshot::capture(mountinfo_path))
+}
+
+/// System Settings badge text from a shared per-request snapshot.
+pub fn share_fs_warning_message_snapshot(
+    cfg: &NfsKlldapConfig,
+    share: &Share,
+    snap: &MountinfoSnapshot,
+) -> Option<String> {
+    let caps = caps_for_share_snapshot(cfg, share, snap);
     if caps.acl_capable {
         None
     } else {
@@ -227,14 +229,23 @@ pub fn share_fs_acl_limited_with_mountinfo(
     share: &Share,
     mountinfo_path: Option<&Path>,
 ) -> bool {
-    let caps = caps_for_share_with_mountinfo(cfg, share, mountinfo_path);
-    !caps.acl_capable
+    share_fs_acl_limited_snapshot(cfg, share, &MountinfoSnapshot::capture(mountinfo_path))
+}
+
+/// Limited check from a shared per-request snapshot.
+pub fn share_fs_acl_limited_snapshot(
+    cfg: &NfsKlldapConfig,
+    share: &Share,
+    snap: &MountinfoSnapshot,
+) -> bool {
+    !caps_for_share_snapshot(cfg, share, snap).acl_capable
 }
 
 /// True when any share will emit Manage_Gids (explicit or probe default)
 pub fn any_share_manage_gids_enabled(cfg: &NfsKlldapConfig) -> bool {
+    let snap = MountinfoSnapshot::capture(None);
     cfg.shares.iter().any(|share| {
-        let caps = caps_for_share(cfg, share);
+        let caps = caps_for_share_snapshot(cfg, share, &snap);
         compute_effective_flags(share, &caps).manage_gids
     })
 }

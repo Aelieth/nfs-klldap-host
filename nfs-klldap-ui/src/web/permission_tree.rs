@@ -398,7 +398,8 @@ fn acl_capability_for_path(state: &AppState, host_path: &std::path::Path) -> Acl
             long: String::new(),
         };
     };
-    let mountinfo = state.fs_probe_mountinfo_path.as_deref();
+    let snap =
+        nfs_klldap_config::MountinfoSnapshot::capture(state.fs_probe_mountinfo_path.as_deref());
     let skip = s.enable_acl == Some(false);
 
     // The share's effective ACL mode is decided at its serve ROOT — that is what
@@ -407,7 +408,7 @@ fn acl_capability_for_path(state: &AppState, host_path: &std::path::Path) -> Acl
     let serve = std::path::PathBuf::from(cfg.serve_path_for(s));
     let root = state
         .acl_caps
-        .verdict_for(mountinfo, &serve, &serve, skip, false);
+        .verdict_for_snapshot(&snap, &serve, &serve, skip, false);
 
     // The selected node's own mount then narrows it: a vfat/ntfs child under an
     // ACL share cannot store ACLs even though the share serves them. The write
@@ -424,7 +425,7 @@ fn acl_capability_for_path(state: &AppState, host_path: &std::path::Path) -> Acl
     };
     let node = state
         .acl_caps
-        .verdict_for(mountinfo, &node_path, &node_dir, skip, false);
+        .verdict_for_snapshot(&snap, &node_path, &node_dir, skip, false);
     // Only a genuinely different mount can override the share decision.
     let node_verdict = if node.mount_root != root.mount_root {
         Some(node.verdict)
@@ -432,7 +433,7 @@ fn acl_capability_for_path(state: &AppState, host_path: &std::path::Path) -> Acl
         None
     };
 
-    let warn = nfs_klldap_config::share_fs_warning_message_with_mountinfo(&cfg, s, mountinfo)
+    let warn = nfs_klldap_config::share_fs_warning_message_snapshot(&cfg, s, &snap)
         .unwrap_or_default();
     acl_capability_decision(s.enable_acl, root.verdict, node_verdict, &warn)
 }
@@ -639,6 +640,8 @@ pub(crate) async fn index(
     let user = require_auth(&state, &headers).await?;
     let server = &state.keytab_hostname;
     let cfg = state.config.read().expect("config lock poisoned");
+    let snap =
+        nfs_klldap_config::MountinfoSnapshot::capture(state.fs_probe_mountinfo_path.as_deref());
     let display_shares: Vec<ShareInfo> = cfg
         .shares
         .iter()
@@ -680,11 +683,7 @@ pub(crate) async fn index(
                 &s.name,
             )
             .map(|w| w.display_message());
-            let fs_limited = nfs_klldap_config::share_fs_acl_limited_with_mountinfo(
-                &cfg,
-                s,
-                state.fs_probe_mountinfo_path.as_deref(),
-            );
+            let fs_limited = nfs_klldap_config::share_fs_acl_limited_snapshot(&cfg, s, &snap);
             // ACL-capable only when the operator opted in AND the serve-path FS can honor ACLs.
             let acl_capable = s.enable_acl == Some(true) && !fs_limited;
             ShareInfo {

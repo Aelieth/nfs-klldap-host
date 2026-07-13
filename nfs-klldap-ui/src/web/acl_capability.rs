@@ -16,8 +16,7 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use nfs_klldap_config::{
-    acl_probe_verdict, probe_from_mountinfo_with_root, probe_fs_capabilities_with_root,
-    verdict_from_caps, AclProbeVerdict, FsCapabilities,
+    acl_probe_verdict, verdict_from_caps, AclProbeVerdict, FsCapabilities, MountinfoSnapshot,
 };
 
 /// Default lifetime of a proven Capable/Incapable verdict before re-probing.
@@ -78,15 +77,17 @@ impl AclCapabilityCache {
     /// `skip_write_probe` for explicit-off shares and `force_refresh` when a
     /// decision must not ride a stale verdict (a settings save, the re-probe
     /// loop).
-    pub(crate) fn verdict_for(
+    /// Verdict over a caller-captured snapshot, so one request's several
+    /// lookups share a single mountinfo read.
+    pub(crate) fn verdict_for_snapshot(
         &self,
-        mountinfo: Option<&Path>,
+        snap: &MountinfoSnapshot,
         node_path: &Path,
         probe_dir: &Path,
         skip_write_probe: bool,
         force_refresh: bool,
     ) -> ProbeOutcome {
-        let (caps, mount_root) = stage_a(mountinfo, node_path);
+        let (caps, mount_root) = stage_a(snap, node_path);
         let verdict = self.verdict_cached(
             &caps,
             mount_root.as_deref(),
@@ -185,16 +186,11 @@ impl AclCapabilityCache {
     }
 }
 
-/// Runs Stage A: mountinfo classification with the fixture path when set,
-/// falling back to a fail-safe "unknown" on read failure (matches the probe
-/// helpers' conservative default).
-fn stage_a(mountinfo: Option<&Path>, node_path: &Path) -> (FsCapabilities, Option<String>) {
-    if let Some(mp) = mountinfo {
-        if let Ok(content) = std::fs::read_to_string(mp) {
-            return probe_from_mountinfo_with_root(&content, node_path);
-        }
-    }
-    probe_fs_capabilities_with_root(node_path).unwrap_or_else(|_| {
+/// Runs Stage A: mountinfo classification from the shared snapshot, falling
+/// back to a fail-safe "unknown" when no mountinfo was readable (matches the
+/// probe helpers' conservative default).
+fn stage_a(snap: &MountinfoSnapshot, node_path: &Path) -> (FsCapabilities, Option<String>) {
+    snap.probe_with_root(node_path).unwrap_or_else(|| {
         (
             FsCapabilities {
                 fstype: "unknown".into(),

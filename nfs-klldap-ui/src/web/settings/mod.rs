@@ -9,11 +9,13 @@ use super::setup::{run_bind_probe_blocking, validate_ldap_uri, BindForm, LdapUri
 use super::{get_keytab_info, AppState, require_auth};
 
 mod apply;
+mod spec;
 
 pub(crate) use apply::{
-    apply_shares_to_toml_doc, apply_structured_form_to_config, apply_structured_form_to_toml_doc,
-    atomic_write_config, make_settings_error_template, make_settings_success_template,
+    apply_shares_to_toml_doc, atomic_write_config, make_settings_error_template,
+    make_settings_success_template,
 };
+pub(crate) use spec::{apply_structured_form_to_config, apply_structured_form_to_toml_doc};
 
 #[derive(Template)]
 #[template(path = "settings.html")]
@@ -178,39 +180,14 @@ pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_co
 pub(crate) struct RawSaveForm {
     raw_content: String,
 }
+/// Flattened name -> value map of the submitted settings form. The scalar
+/// field surface is interpreted against spec::FIELDS; share rows and the
+/// probe trio read their own keys. Present-vs-absent semantics match the
+/// old per-field Option struct: an unsubmitted input leaves state untouched.
 #[derive(Deserialize, Debug, Default)]
 pub(crate) struct StructuredSettingsForm {
-    ldap_uri: Option<String>,
-    storage_container_root: Option<String>,
-    server_hostname: Option<String>,
-    override_server_hostname: Option<bool>,
-    sssd_bind_dn: Option<String>,
-    sssd_bind_pw: Option<String>,
-    sssd_port: Option<u16>,
-    sssd_search_base: Option<String>,
-    override_sssd_search_base: Option<bool>,
-    sssd_user_base: Option<String>,
-    override_sssd_user_base: Option<bool>,
-    sssd_group_base: Option<String>,
-    override_sssd_group_base: Option<bool>,
-    sssd_ldap_tls_reqcert: Option<String>,
-    override_sssd_ldap_tls_reqcert: Option<bool>,
-    sssd_ldap_tls_cacert: Option<String>,
-    override_sssd_ldap_tls_cacert: Option<bool>,
-    sssd_ldap_id_use_start_tls: Option<bool>,
-    override_sssd_ldap_id_use_start_tls: Option<bool>,
-    sssd_enumerate: Option<bool>,
-    override_sssd_enumerate: Option<bool>,
-    kllldap_ignored_attributes: Option<bool>,
-    kerberos_realm: Option<String>,
-    override_kerberos_realm: Option<bool>,
-    ganesha_default_security: Option<String>,
-    override_ganesha_default_security: Option<bool>,
-    probe_user_principal: Option<String>,
-    probe_client_host: Option<String>,
-    auto_probe_ldap: Option<bool>,
     #[serde(flatten)]
-    extra: std::collections::HashMap<String, String>,
+    pub(crate) fields: std::collections::HashMap<String, String>,
 }
 
 /// Human label for the share card chip and status dot, matching what generate
@@ -470,7 +447,7 @@ pub(crate) async fn settings_save_shares(
     let original_text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
     let doc: toml_edit::DocumentMut = original_text.parse().unwrap_or_default();
     let old_cfg = nfs_klldap_config::NfsKlldapConfig::load(&state.config_path).unwrap_or_default();
-    let mut new_shares = collect_shares_from_structured_form(&form.extra);
+    let mut new_shares = collect_shares_from_structured_form(&form.fields);
 
     // If the pseudo_path submitted matches the auto-derived (/{name}), treat as not-explicit
     // so we don't persist the default value in TOML (keeps it clean/"auto").

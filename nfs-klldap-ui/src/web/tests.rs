@@ -200,7 +200,14 @@ async fn settings_ganesha_roundtrip_cases() {
     let body_defsec = "ganesha_default_security=nfs&override_ganesha_default_security=on";
     let reqsec = Request::builder().method("POST").uri("/settings/save").header("content-type","application/x-www-form-urlencoded").body(Body::from(body_defsec)).unwrap();
     let reqsec = add_session_cookie(reqsec, &token);
-    let _ = app.clone().oneshot(reqsec).await.unwrap();
+    let rsec_save = app.clone().oneshot(reqsec).await.unwrap();
+    // The browser submits checkboxes as "on"; this must bind and save (the
+    // old typed Option<bool> form silently 422ed here).
+    assert_eq!(
+        rsec_save.status(),
+        StatusCode::OK,
+        "structured default_security save must succeed"
+    );
 
     // Ensure the value is on disk for render (drive raw save path too); then GET to exercise default_security + override flag in rendered form
     let cur = std::fs::read_to_string(&cp).unwrap_or_default();

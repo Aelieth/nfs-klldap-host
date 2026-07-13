@@ -1014,7 +1014,7 @@ dependencies = [
 
 [[package]]
 name = "nfs-klldap-config"
-version = "0.9.90"
+version = "0.9.92"
 dependencies = [
  "nfs-klldap-config",
  "nfs-klldap-identity",
@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "nfs-klldap-identity"
-version = "0.9.90"
+version = "0.9.92"
 dependencies = [
  "ldap3",
  "rustls",
@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "nfs-klldap-ui"
-version = "0.9.90"
+version = "0.9.92"
 dependencies = [
  "askama",
  "askama_axum",

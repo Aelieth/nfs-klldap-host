@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.9.90"
+version = "0.9.92"
 edition = "2021"
 authors = ["Aelieth"]
 license = "MIT"
@@ -45,3 +45,11 @@ ldap3 = { version = "0.12", default-features = false }
 cookie = "0.18"
 sha2 = "0.10"
 subtle = "2.6"
+
+# Release binaries: thin LTO + single codegen unit + symbol strip for size and
+# speed. Deliberately NO panic="abort": the pid-1 supervisor and tokio task
+# isolation depend on unwinding for availability.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

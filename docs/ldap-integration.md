@@ -69,9 +69,9 @@ klist -k /etc/krb5.keytab
 - Permission denied with correct IDs → host ownership ≠ LDAP IDs, or SELinux on bind mounts.
 - LDAP/TLS noise → enable KLLDAP ignores; avoid `enumerate=true` with dirsync-style binds.
 
-Client id mapping needs more than `rpc.idmapd`: the server emits `Only_Numeric_Owners`, and Ganesha 9.6 offsets wire ids by +524287, so clients show large numeric owners unless the id_resolver helper is installed — see [client-fedora-immutable.md](client-fedora-immutable.md). The generator also writes `/etc/idmapd.conf` (Domain + Local-Realms from the Kerberos realm, Method + GSS-Methods = nsswitch) directly from the same nfs-klldap.conf + [sssd] info used for sssd.conf and ganesha DomainName. In sssd.conf it now auto-derives krb5_realm/krb5_server/krb5_kpasswd (same host as ldap_uri, same realm) — the "kerberos format" of the ldap auto values — for co-located KDC setups. Ganesha krb5* security (default krb5p) works with default auth_provider=ldap (sufficient); these settings make the domain Kerberos-aware for resolution. The authoritative live mapping + machine-vs-user classification for hybrid Kerberos principals remains the nfs-klldap-idhelper (IdLdapResolver + getent + nss_wrapper/extrausers materialization).
+Client id mapping needs more than `rpc.idmapd`: the server emits `Only_Numeric_Owners`, and Ganesha 9.13 offsets wire ids by +524287, so clients show large numeric owners unless the id_resolver helper is installed — see [client-fedora-immutable.md](client-fedora-immutable.md). The generator also writes `/etc/idmapd.conf` (Domain + Local-Realms from the Kerberos realm, Method + GSS-Methods = nsswitch) directly from the same nfs-klldap.conf + [sssd] info used for sssd.conf and ganesha DomainName. In sssd.conf it now auto-derives krb5_realm/krb5_server/krb5_kpasswd (same host as ldap_uri, same realm) — the "kerberos format" of the ldap auto values — for co-located KDC setups. Ganesha krb5* security (default krb5p) works with default auth_provider=ldap (sufficient); these settings make the domain Kerberos-aware for resolution. The authoritative live mapping + machine-vs-user classification for hybrid Kerberos principals remains the nfs-klldap-idhelper (IdLdapResolver + getent + nss_wrapper/extrausers materialization).
 
-## Ganesha 9.6 id mapping (generated config)
+## Ganesha 9.13 id mapping (generated config)
 
 Emits DIRECTORY_SERVICES (Pwnam_Implementation=nsswitch, Root_Kerberos_Principal=host,nfs,root, Idmapped_*_Validity=600) + NFSV4 (UseGetpwnam=true, Only/Allow_Numeric). Hybrid: machines (host/...) ->0 via classify; users via LDAP+idhelper nss/extrausers. (See generate + resolver.)
 
@@ -83,7 +83,7 @@ When clients use Kerberos host keytabs (e.g. `/etc/krb5.keytab` on Fedora Immuta
 
 If Ganesha maps these inconsistently (or falls back to nobody/65534 for machine names), the client can see credential mixing that causes NFSv4 session teardown or permission failures.
 
-`nfs-klldap-idhelper` is the authoritative source: proactive startup + reactive (observer + resolve/GRPS) + cache ensure every UID (incl uid0 machines) has complete supp groups in nss_wrapper + extrausers for Ganesha 9.6 UseGetpwnam getgrouplist. Pre-resolves hosts, forces root uid0.
+`nfs-klldap-idhelper` is the authoritative source: proactive startup + reactive (observer + resolve/GRPS) + cache ensure every UID (incl uid0 machines) has complete supp groups in nss_wrapper + extrausers for Ganesha 9.13 UseGetpwnam getgrouplist. Pre-resolves hosts, forces root uid0.
 
 - It classifies and normalizes principals via `classify_principal` and `normalize_principal` in `nfs-klldap-identity`.
 - It resolves via NSS/SSSD (users) or forces uid/gid 0 (machines).
@@ -100,7 +100,7 @@ cat /var/lib/nfs-klldap/nss_passwd   # what Ganesha sees for these names
 getent passwd testuser1
 ```
 
-The server must perform the same lookups clients do (`getent passwd testuser1` + principal forms). For ganesha 9.6 on Debian trixie, `principal2uid` calls in-process libnfsidmap (`nfs4_gss_princ_to_ids`), which does `getpwnam` inside ganesha.nfsd under nss_wrapper — so LDAP users and client machine principals (`host/<client>@REALM`) must be present in `/var/lib/nfs-klldap/nss_passwd`. Idhelper ensures complete supps (uid0 getgrouplist reliable) via reactive+startup; rebulk secondary (interval configurable, 0 disables). Observer drives on-demand for new principals from ganesha.log. Machine->0; preflight via GRPS/contract.
+The server must perform the same lookups clients do (`getent passwd testuser1` + principal forms). For ganesha 9.13 on Debian trixie, `principal2uid` calls in-process libnfsidmap (`nfs4_gss_princ_to_ids`), which does `getpwnam` inside ganesha.nfsd under nss_wrapper — so LDAP users and client machine principals (`host/<client>@REALM`) must be present in `/var/lib/nfs-klldap/nss_passwd`. Idhelper ensures complete supps (uid0 getgrouplist reliable) via reactive+startup; rebulk secondary (interval configurable, 0 disables). Observer drives on-demand for new principals from ganesha.log. Machine->0; preflight via GRPS/contract.
 
 `nfs-klldap-idhelper grps` (and resolve) fully supports `user@REALM` (supplemental POSIX groups via LDAP) and `host/hostname@REALM` (root gid 0 for any client/server machine principal). Preflight checks user TGT + server host + client host via GRPS, socket, nfsidmap `-g`, and `ganesha-ctl id-resolve` when available.
 

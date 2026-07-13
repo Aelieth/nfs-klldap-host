@@ -442,14 +442,6 @@ impl FsManager {
         extended
     }
 
-    /// Deliberate no-op: Ganesha 9.13 exposes no DBus attribute/ACL purge
-    /// (2.3 audit A5), so out-of-band chown/chmod/setfacl visibility rides
-    /// the per-export Attr_Expiration_Time window (default 60 s) plus the
-    /// client's attribute cache — the documented change-visibility contract
-    /// in docs/ganesha-architecture.md. Shares needing instant coherency set
-    /// attr_expiration_secs = 0.
-    pub fn invalidate_path(&self, _path: &Path) {}
-
     /// Count variant that increments progress.processed as scanned so far.
     /// Drives live Stand-by / scanned-N spinner feedback and honours cancel.
     pub fn count_applicable_with_live(

@@ -1276,13 +1276,6 @@ pub(crate) async fn apply_permissions(
                 let err_text = format!("Apply error during walk: {}", e);
                 *prog.final_result_text.lock().expect("progress mutex poisoned") = Some(err_text);
                 prog.finished.store(true, Ordering::Relaxed);
-                {
-                    let fs3 = fs.clone();
-                    let p3 = pth.clone();
-                    tokio::spawn(async move {
-                        fs3.invalidate_path(std::path::Path::new(&p3));
-                    });
-                }
                 return;
             }
             Err(_e) => {
@@ -1290,14 +1283,9 @@ pub(crate) async fn apply_permissions(
                 return;
             }
         };
-        {
-            let fs_i = fs.clone();
-            let p_i = pth.clone();
-            tokio::spawn(async move {
-                fs_i.invalidate_path(std::path::Path::new(&p_i));
-            });
-        }
-
+        // No server-side invalidation to trigger post-apply: Ganesha 9.13 has
+        // no DBus attribute purge; change visibility rides the per-export
+        // Attr_Expiration_Time window (docs/ganesha-architecture.md).
         let mut rtext = format!(
             "Result: {} changed, {} skipped, {} errors",
             apply_res.changed, apply_res.skipped, apply_res.errors.len()

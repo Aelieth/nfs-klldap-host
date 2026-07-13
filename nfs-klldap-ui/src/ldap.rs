@@ -29,7 +29,6 @@ pub struct LdapClient {
     /// Effective search base for users (supports child OUs via Subtree scope).
     user_base: String,
 
-    service_conn: Option<LdapConn>,
     username: Option<String>,
     password: Option<String>,
     last_auth_time: Option<Instant>,
@@ -130,7 +129,6 @@ impl LdapClient {
         Self {
             ldap_uri: ldap_uri.to_string(),
             user_base: user_base.to_string(),
-            service_conn: None,
             username: None,
             password: None,
             last_auth_time: None,
@@ -147,6 +145,33 @@ impl LdapClient {
             last_full_refresh: Mutex::new(None),
             identity_resolver,
         }
+    }
+
+    /// Build a client from the central config: resolver-derived bases and
+    /// attributes plus the shared TLS policy. Returns the client and the
+    /// effective no_tls_verify for startup diagnostics.
+    pub fn from_config(cfg: &nfs_klldap_config::NfsKlldapConfig) -> (Self, bool) {
+        let realm = cfg.display_realm();
+        let resolver = nfs_klldap_config::from_sssd_section(&cfg.ldap_uri, &cfg.sssd, &realm);
+        let posix_attrs = resolver.posix_attributes().clone();
+        let user_base = resolver.user_base().to_string();
+        let group_base = resolver.group_base().to_string();
+        let (no_tls_verify, start_tls) = nfs_klldap_config::ldap_tls_policy(
+            &cfg.ldap_uri,
+            cfg.sssd.ldap_tls_reqcert.as_deref(),
+            cfg.sssd.ldap_tls_cacert.as_deref(),
+            cfg.sssd.ldap_id_use_start_tls,
+        );
+        let client = Self::new_with_attributes(
+            &cfg.ldap_uri,
+            &user_base,
+            &group_base,
+            posix_attrs,
+            no_tls_verify,
+            start_tls,
+            cfg.sssd.ldap_tls_cacert.clone(),
+        );
+        (client, no_tls_verify)
     }
 
     fn service_bind_creds(&self) -> Option<(String, String)> {
@@ -400,7 +425,6 @@ impl LdapClient {
     pub async fn authenticate(&mut self, username: &str, password: &str) -> Result<(), LdapError> {
         self.username = Some(username.to_string());
         self.password = Some(password.to_string());
-        self.service_conn = None;
         self.clear_cache();
         self.get_or_bind_service().await?;
         Ok(())

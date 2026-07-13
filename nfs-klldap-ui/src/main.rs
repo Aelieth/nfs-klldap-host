@@ -147,35 +147,12 @@ async fn main() {
         loaded_config.clone(),
     )));
 
-    let realm = loaded_config.display_realm();
-    let resolver =
-        nfs_klldap_config::from_sssd_section(&loaded_config.ldap_uri, &loaded_config.sssd, &realm);
-    let posix_attrs = resolver.posix_attributes().clone();
-    let user_base = resolver.user_base().to_string();
-    let group_base = resolver.group_base().to_string();
-
-    let (no_tls_verify, start_tls) = nfs_klldap_config::ldap_tls_policy(
-        &loaded_config.ldap_uri,
-        loaded_config.sssd.ldap_tls_reqcert.as_deref(),
-        loaded_config.sssd.ldap_tls_cacert.as_deref(),
-        loaded_config.sssd.ldap_id_use_start_tls,
-    );
-
+    let (mut lldap, no_tls_verify) = crate::ldap::LdapClient::from_config(&loaded_config);
     if no_tls_verify {
         println!("Outbound LDAPS/StartTLS: verification DISABLED");
     } else {
         println!("Outbound LDAPS/StartTLS: verification ENABLED");
     }
-
-    let mut lldap = crate::ldap::LdapClient::new_with_attributes(
-        &loaded_config.ldap_uri,
-        &user_base,
-        &group_base,
-        posix_attrs,
-        no_tls_verify,
-        start_tls,
-        loaded_config.sssd.ldap_tls_cacert.clone(),
-    );
 
     // Loads bind credentials from NFS_KLLDAP_LLDAP_* env or [sssd] verbatim.
     let (lldap_user, lldap_pass) = crate::config::ldap_service_creds(&loaded_config);

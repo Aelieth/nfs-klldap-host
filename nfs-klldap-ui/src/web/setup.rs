@@ -17,6 +17,8 @@ use nfs_klldap_config::{
 use serde::Deserialize;
 use std::path::Path;
 
+use super::settings::atomic_write_config;
+
 /// Last successful probe inputs per wizard step.
 /// Not written to disk until continue.
 #[derive(Default)]
@@ -209,6 +211,13 @@ pub(crate) fn step3_test_matches(
         && cached_pw.is_some_and(|c| c == pw)
 }
 
+/// Bind probe + formatted transcript for a loaded config.
+fn bind_probe(cfg: &nfs_klldap_config::NfsKlldapConfig) -> (Result<(), String>, String) {
+    let result = check_ldap_bind(cfg);
+    let log = format_bind_probe(cfg, result.clone());
+    (result, log)
+}
+
 fn run_bind_probe_from_disk(path: &Path) -> Option<(Result<(), String>, String)> {
     let cfg = nfs_klldap_config::NfsKlldapConfig::load(path).ok()?;
     if cfg.ldap_uri.trim().is_empty()
@@ -217,21 +226,7 @@ fn run_bind_probe_from_disk(path: &Path) -> Option<(Result<(), String>, String)>
     {
         return None;
     }
-    let result = check_ldap_bind(&cfg);
-    let log = format_bind_probe(&cfg, result.clone());
-    Some((result, log))
-}
-
-fn atomic_write_config(path: &Path, content: &str) -> Result<(), String> {
-    let tmp = path.with_extension("conf.saving");
-    std::fs::write(&tmp, content.as_bytes()).map_err(|e| format!("Write failed: {e}"))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("Rename failed: {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(())
+    Some(bind_probe(&cfg))
 }
 
 /// GET /setup — jump to the current wizard step.
@@ -621,9 +616,7 @@ pub(crate) fn run_bind_probe_blocking(
     if !pw.is_empty() {
         cfg.sssd.ldap_default_authtok = pw.to_string();
     }
-    let result = check_ldap_bind(&cfg);
-    let log = format_bind_probe(&cfg, result.clone());
-    (result, log)
+    bind_probe(&cfg)
 }
 
 fn render_step2_page(

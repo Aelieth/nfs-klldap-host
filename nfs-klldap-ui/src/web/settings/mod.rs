@@ -684,27 +684,7 @@ pub(crate) async fn reload_nfs_client(
         msg.push_str("</div>");
         return Html(msg);
     }
-    let realm = fresh.effective_realm();
-    let resolver =
-        nfs_klldap_config::from_sssd_section(&fresh.ldap_uri, &fresh.sssd, &realm);
-    let posix_attrs = resolver.posix_attributes().clone();
-    let user_base = resolver.user_base().to_string();
-    let group_base = resolver.group_base().to_string();
-    let (no_tls_verify, start_tls) = nfs_klldap_config::ldap_tls_policy(
-        &fresh.ldap_uri,
-        fresh.sssd.ldap_tls_reqcert.as_deref(),
-        fresh.sssd.ldap_tls_cacert.as_deref(),
-        fresh.sssd.ldap_id_use_start_tls,
-    );
-    let mut new_client = crate::ldap::LdapClient::new_with_attributes(
-        &fresh.ldap_uri,
-        &user_base,
-        &group_base,
-        posix_attrs,
-        no_tls_verify,
-        start_tls,
-        fresh.sssd.ldap_tls_cacert.clone(),
-    );
+    let (mut new_client, _no_tls_verify) = crate::ldap::LdapClient::from_config(&fresh);
     match new_client.authenticate(&user, &pass).await {
         Ok(()) => {
             {

@@ -296,7 +296,7 @@ fn ensure_nss_materialized_for(
 }
 
 /// Resolve groups for principal (primary+supp via resolver). Materializes full (short+@) supp rows to both stores on fresh/force; cache hits fast no I/O.
-pub(crate) fn resolve_groups_for_principal(
+pub(crate) fn resolve_gids_and_materialize(
     principal: &str,
     realm: &str,
     server_variants: &[String],
@@ -383,7 +383,7 @@ pub(crate) fn refresh_supplemental_nss_for_cached_users(
         .map(|r| r.principal.clone())
         .collect();
     for p in principals {
-        let _ = resolve_groups_for_principal(&p, realm, server_variants, cache, paths, true);
+        let _ = resolve_gids_and_materialize(&p, realm, server_variants, cache, paths, true);
     }
 }
 
@@ -1072,7 +1072,7 @@ ldap_default_authtok = "sekret"
         std::fs::write(paths.nss_passwd, "testuser1@EX.COM:x:3001:100:Test:/nonexistent:/usr/sbin/nologin\n").unwrap();
         let mut cache = IdCache::default();
         let r = resolve_principal("testuser1@EX.COM", "EX.COM", &[], &mut cache, &paths);
-        let gs = resolve_groups_for_principal("testuser1@EX.COM", "EX.COM", &[], &mut cache, &paths, false);
+        let gs = resolve_gids_and_materialize("testuser1@EX.COM", "EX.COM", &[], &mut cache, &paths, false);
         if let Some(v) = old_force { std::env::set_var("TEST_FORCE_LDAP_UID_GID", v); }
         if let Some(v) = old_pop { std::env::set_var("TEST_REBULK_POPULATE", v); }
         assert_eq!(r.uid, 3001, "resolve_principal on @ form via file lookup (no shims)");

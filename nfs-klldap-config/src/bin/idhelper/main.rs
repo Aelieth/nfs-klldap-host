@@ -33,7 +33,7 @@ use materialize::{
 #[cfg(test)]
 use observer::{extract_candidate_principal, looks_like_client_hostname};
 use materialize::NssMaterializePaths;
-use resolve::{resolve_groups_for_principal, resolve_principal};
+use resolve::{resolve_gids_and_materialize, resolve_principal};
 
 /// Try to perform RESOLVE via the running daemon's unix socket. Returns.
 /// Some(Resolved) on success (the daemon did the work + materialize). Returns.
@@ -89,6 +89,40 @@ fn socket_reply_ok(request: &str) -> bool {
         .is_some_and(|ln| ln.starts_with("OK "))
 }
 
+/// Effective realm for classify: the principal's own @REALM wins.
+fn effective_realm_for(principal: &str, runtime_realm: &str) -> String {
+    if let Some((_, r)) = principal.rsplit_once('@') {
+        if !r.trim().is_empty() {
+            return r.trim().to_string();
+        }
+    }
+    runtime_realm.to_string()
+}
+
+/// Shared grps/grouplist CLI resolution: local materialize when NSS_PASSWD is
+/// set, then the daemon socket, then direct production resolve.
+fn gids_for_cli(
+    p: &str,
+    eff_realm: &str,
+    server_variants: &[String],
+    via_socket: fn(&str) -> Option<Vec<u32>>,
+) -> Vec<u32> {
+    if grps_use_local_materialize() {
+        let cpath = effective_cache_path();
+        dlog!("grps local: using cache_path={}", cpath.display());
+        let mut cache = IdCache::load_from_file(&cpath);
+        let owned = NssMaterializePaths::materialize_paths_owned();
+        let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);
+        resolve_gids_and_materialize(p, eff_realm, server_variants, &mut cache, &lpaths, false)
+    } else if let Some(gs) = via_socket(p) {
+        gs
+    } else {
+        let mut cache = IdCache::load_from_file(&effective_cache_path());
+        let prod = NssMaterializePaths::production();
+        resolve_gids_and_materialize(p, eff_realm, server_variants, &mut cache, &prod, false)
+    }
+}
+
 fn handle_cli(args: &[String]) {
     let cmd = args.first().map(|s| s.as_str()).unwrap_or("help");
     let realm = get_realm();
@@ -105,9 +139,7 @@ fn handle_cli(args: &[String]) {
             let json_flag = args.iter().any(|a| a == "--json" || a == "-j");
 
             // Prefer the principal's own @REALM for classify (mismatch robustness for host/user@).
-            let eff_realm = if let Some((_, r)) = p.rsplit_once('@') {
-                if !r.trim().is_empty() { r.trim().to_string() } else { realm.clone() }
-            } else { realm.clone() };
+            let eff_realm = effective_realm_for(p, &realm);
 
             // When NSS_PASSWD set (pipeline/verif runs), force direct local materialize path
             // (resolve+mat inside this process) so logs show the /tmp paths used, and avoid
@@ -153,23 +185,8 @@ fn handle_cli(args: &[String]) {
             let json_flag = args.iter().any(|a| a == "--json" || a == "-j");
             // Prefer the principal's own @REALM for classify (supports mismatch cases
             // e.g. host/foo@OTHER when runtime get_realm() is different).
-            let eff_realm = if let Some((_, r)) = p.rsplit_once('@') {
-                if !r.trim().is_empty() { r.trim().to_string() } else { realm.clone() }
-            } else { realm.clone() };
-            let gs = if grps_use_local_materialize() {
-                let cpath = effective_cache_path();
-                dlog!("grps local: using cache_path={}", cpath.display());
-                let mut cache = IdCache::load_from_file(&cpath);
-                let owned = NssMaterializePaths::materialize_paths_owned();
-                let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);
-                resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache, &lpaths, false)
-            } else if let Some(gs) = try_grps_via_socket(p) {
-                gs
-            } else {
-                let mut cache = IdCache::load_from_file(&effective_cache_path());
-                let prod = NssMaterializePaths::production();
-                resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache, &prod, false)
-            };
+            let eff_realm = effective_realm_for(p, &realm);
+            let gs = gids_for_cli(p, &eff_realm, &server_variants, try_grps_via_socket);
             if json_flag {
                 let j = gs.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
                 println!(r#"{{"principal":"{}","gids":[{}]}}"#, p, j);
@@ -189,22 +206,8 @@ fn handle_cli(args: &[String]) {
             }
             dlog!("cli GROUPLIST p=\"{}\"", p);
             let json_flag = args.iter().any(|a| a == "--json" || a == "-j");
-            let eff_realm = if let Some((_, r)) = p.rsplit_once('@') {
-                if !r.trim().is_empty() { r.trim().to_string() } else { realm.clone() }
-            } else { realm.clone() };
-            let gs = if grps_use_local_materialize() {
-                let cpath = effective_cache_path();
-                let mut cache = IdCache::load_from_file(&cpath);
-                let owned = NssMaterializePaths::materialize_paths_owned();
-                let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);
-                resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache, &lpaths, false)
-            } else if let Some(gs) = try_grouplist_via_socket(p) {
-                gs
-            } else {
-                let mut cache = IdCache::load_from_file(&effective_cache_path());
-                let prod = NssMaterializePaths::production();
-                resolve_groups_for_principal(p, &eff_realm, &server_variants, &mut cache, &prod, false)
-            };
+            let eff_realm = effective_realm_for(p, &realm);
+            let gs = gids_for_cli(p, &eff_realm, &server_variants, try_grouplist_via_socket);
             if gs.is_empty() && p.contains('@') {
                 eprintln!("ERR unresolved principal: {p}");
                 std::process::exit(1);
@@ -1061,7 +1064,7 @@ mod tests {
         let mut cache = IdCache::default();
         let realm = "EXAMPLE.COM".to_string();
         let variants: Vec<String> = vec![];
-        let gs = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
+        let gs = resolve_gids_and_materialize("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
         assert!(!gs.is_empty());
         assert!(gs.contains(&3005));
     }
@@ -1174,7 +1177,7 @@ mod tests {
         let r1 = resolve_principal("host/client-a@EXAMPLE.COM", &realm, &variants, &mut cache, &paths);
         assert_eq!(r1.uid, 0); assert_eq!(r1.gid, 0); assert_eq!(r1.kind, PrincipalKind::Machine);
 
-        let gs0 = resolve_groups_for_principal("host/client-a@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
+        let gs0 = resolve_gids_and_materialize("host/client-a@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
         assert_eq!(gs0, vec![0]);
 
         std::fs::write(
@@ -1183,7 +1186,7 @@ mod tests {
         )
         .unwrap();
         let r2 = resolve_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths);
-        let gs_user = resolve_groups_for_principal("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
+        let gs_user = resolve_gids_and_materialize("testuser1@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
         assert!(!gs_user.is_empty());
         assert_eq!(r2.kind, PrincipalKind::User);
         assert_ne!(r2.source, crate::resolve::RESOLVE_FAIL_CLOSED_SOURCE);
@@ -1234,7 +1237,7 @@ mod tests {
         assert!(pw.contains("ondemanduser@TEST.COM:x:4242:4242:") || pw.contains("ondemanduser:x:4242"));
 
         // drive GRPS path (reuses resolve_principal + groups resolver) using local paths
-        let gs = resolve_groups_for_principal("ondemanduser@TEST.COM", &realm, &variants, &mut cache, &paths, false);
+        let gs = resolve_gids_and_materialize("ondemanduser@TEST.COM", &realm, &variants, &mut cache, &paths, false);
         assert!(!gs.is_empty());
         assert!(gs[0] == 4242 || gs.contains(&4242));
     }
@@ -1274,8 +1277,8 @@ mod tests {
         let mut cache = IdCache::default();
         let realm = "TESTLAB.LOCAL".to_string();
         let variants: Vec<String> = vec![];
-        let gs_user = resolve_groups_for_principal("testuser1@TESTLAB.LOCAL", &realm, &variants, &mut cache, &paths, false);
-        let gs_host = resolve_groups_for_principal("host/client-a@TESTLAB.LOCAL", &realm, &variants, &mut cache, &paths, false);
+        let gs_user = resolve_gids_and_materialize("testuser1@TESTLAB.LOCAL", &realm, &variants, &mut cache, &paths, false);
+        let gs_host = resolve_gids_and_materialize("host/client-a@TESTLAB.LOCAL", &realm, &variants, &mut cache, &paths, false);
         assert!(gs_user.contains(&2002), "gs from groups must include supp 2002");
         let np = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
         let ng = std::fs::read_to_string(paths.nss_group).unwrap_or_default();
@@ -1290,7 +1293,7 @@ mod tests {
         let _ = ensure_nss_group_member_login(&paths, 2002, "testuser1@TESTLAB.LOCAL");
         assert!(gs_host.contains(&0), "host must include primary gid 0");
         assert!(gs_host.contains(&3005), "host must inherit root-member supplemental gid: {gs_host:?}");
-        let root_gs = resolve_groups_for_principal("root", &realm, &variants, &mut cache, &paths, false);
+        let root_gs = resolve_gids_and_materialize("root", &realm, &variants, &mut cache, &paths, false);
         assert!(root_gs.contains(&3005), "GROUPLIST root must union machine supplementals: {root_gs:?}");
         if let Some(v) = old_force { std::env::set_var("TEST_FORCE_LDAP_UID_GID", v); } else { std::env::remove_var("TEST_FORCE_LDAP_UID_GID"); }
         if let Some(v) = old_pop { std::env::set_var("TEST_REBULK_POPULATE", v); } else { std::env::remove_var("TEST_REBULK_POPULATE"); }
@@ -1311,7 +1314,7 @@ mod tests {
         // (the CLI paths now extract eff_realm from p; classify early-returns machine for prefix)
         let r_host = resolve_principal("host/client-a@OTHERREALM", "TESTLAB.LOCAL", &[], &mut cache, &paths);
         assert_eq!(r_host.kind, PrincipalKind::Machine, "host/ must classify machine even on realm mismatch");
-        let gs_host = resolve_groups_for_principal("host/client-a@OTHERREALM", "TESTLAB.LOCAL", &[], &mut cache, &paths, false);
+        let gs_host = resolve_gids_and_materialize("host/client-a@OTHERREALM", "TESTLAB.LOCAL", &[], &mut cache, &paths, false);
         assert_eq!(gs_host, vec![0]);
 
         // user@ mismatch should go user path (may fallback)
@@ -1328,7 +1331,7 @@ mod tests {
         let principal = "host/client-a@TEST.COM";
         let r = resolve_principal(principal, realm, &[], &mut cache, &paths);
         assert_eq!(r.kind, PrincipalKind::Machine);
-        let _ = resolve_groups_for_principal(principal, realm, &[], &mut cache, &paths, false);
+        let _ = resolve_gids_and_materialize(principal, realm, &[], &mut cache, &paths, false);
         // groups wrote using paths; explicit mat redundant but keeps test intent
         materialize_nss_wrappers_at(&cache, &paths, None).expect("materialize");
         // Explicitly prove the literal host/ principal@ (with /) was written for the getpwnam path.
@@ -1423,7 +1426,7 @@ mod tests {
 
     #[test]
     fn uid0_machine_root_members_and_contract_from_shipped_resolve_groups_materialize() {
-        // Drives exactly the shipped resolve_principal + resolve_groups_for_principal + build_nss_snapshot
+        // Drives exactly the shipped resolve_principal + resolve_gids_and_materialize + build_nss_snapshot
         // + materialize_nss_wrappers_at + ganesha contract evaluate. No UUT mocks.
         // Asserts: root passwd leading, root group line has non-empty base members (root,daemon,bin),
         // machine host/ form present, contract ok for exact principal (uid/gid 0 + root gid).
@@ -1442,7 +1445,7 @@ mod tests {
         assert_eq!(r.gid, 0);
         assert_eq!(r.kind, PrincipalKind::Machine);
 
-        let gs = resolve_groups_for_principal(machine_p, "T.REALM", &[], &mut cache, &paths, false);
+        let gs = resolve_gids_and_materialize(machine_p, "T.REALM", &[], &mut cache, &paths, false);
         assert!(gs.contains(&0), "machine groups must include 0");
 
         // groups already materialized using paths; explicit for clarity
@@ -1517,7 +1520,7 @@ mod tests {
         // Also user path still works non-fallback
         let mut cache2 = IdCache::default();
         cache2.insert(Resolved { principal: "u1@T.REALM".into(), name: "u1".into(), uid: 2001, gid: 2001, kind: PrincipalKind::User, source: "t".into(), supplemental_gids: vec![] });
-        let _ = resolve_groups_for_principal("u1@T.REALM", "T.REALM", &[], &mut cache2, &paths, false);
+        let _ = resolve_gids_and_materialize("u1@T.REALM", "T.REALM", &[], &mut cache2, &paths, false);
         let (p2, _g2) = build_nss_snapshot(&cache2, None);
         assert!(p2.iter().any(|l| l.starts_with("root:")), "root always");
         assert!(p2.iter().any(|l| l.contains("u1@T.REALM") || l.contains("u1:x:2001")));
@@ -1563,7 +1566,7 @@ mod tests {
         // on-demand (use test's under(p2) paths exclusively, never prod)
         let mut c2 = IdCache::default();
         let _ = resolve_principal("host/pro0@EX", "EX", &[], &mut c2, &p2);
-        let _ = resolve_groups_for_principal("host/pro0@EX", "EX", &[], &mut c2, &p2, false);
+        let _ = resolve_gids_and_materialize("host/pro0@EX", "EX", &[], &mut c2, &p2, false);
         let _ = materialize_nss_wrappers_at(&c2, &p2, None);
 
         let gr1 = std::fs::read_to_string(p1.nss_group).unwrap_or_default();
@@ -1588,7 +1591,7 @@ mod tests {
         let mut cache = IdCache::default();
         let r1 = resolve_principal("testu@T.REALM", "T.REALM", &[], &mut cache, &paths);
         assert!(r1.source != "cache" && r1.uid == 2001 && r1.uid != FALLBACK_NOBODY_UID, "no fallback for pre-seeded encountered principal");
-        let gs1 = resolve_groups_for_principal("testu@T.REALM", "T.REALM", &[], &mut cache, &paths, false);
+        let gs1 = resolve_gids_and_materialize("testu@T.REALM", "T.REALM", &[], &mut cache, &paths, false);
         assert!(gs1.contains(&4242), "groups must return extra supp from resolver stub");
         // Fresh resolve_groups auto materializes the supp row via build (now owns supps) + ensure; assert without post-manual-ensure.
         let np = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
@@ -1620,13 +1623,13 @@ mod tests {
         let mt = std::fs::metadata(paths.nss_group).map(|m| m.modified().unwrap()).ok();
         let r2 = resolve_principal("testu@T.REALM", "T.REALM", &[], &mut cache, &paths);
         assert_eq!(r2.source, "cache");
-        let _ = resolve_groups_for_principal("testu@T.REALM", "T.REALM", &[], &mut cache, &paths, false);
+        let _ = resolve_gids_and_materialize("testu@T.REALM", "T.REALM", &[], &mut cache, &paths, false);
         let mt2 = std::fs::metadata(paths.nss_group).map(|m| m.modified().unwrap()).ok();
         if let (Some(a), Some(b)) = (mt, mt2) { assert_eq!(a, b); }
         // uid0 machine (special path, no shim) also complete root in both
         let mut c0 = IdCache::default();
         let _ = resolve_principal("host/m0@T.REALM", "T.REALM", &[], &mut c0, &paths);
-        let _ = resolve_groups_for_principal("host/m0@T.REALM", "T.REALM", &[], &mut c0, &paths, false);
+        let _ = resolve_gids_and_materialize("host/m0@T.REALM", "T.REALM", &[], &mut c0, &paths, false);
         let eg0 = std::fs::read_to_string(paths.extrausers_group).unwrap_or_default();
         assert!(eg0.contains("root:x:0:") && (eg0.contains("root,") || eg0.contains("daemon") || eg0.contains("m0")));
     }

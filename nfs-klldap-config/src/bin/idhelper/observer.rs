@@ -12,7 +12,7 @@ use nfs_klldap_identity::principal_local_part;
 
 use crate::common::{manage_gids_expected, IdCache};
 use crate::dlog;
-use crate::resolve::{resolve_groups_for_principal, resolve_principal};
+use crate::resolve::{resolve_gids_and_materialize, resolve_principal};
 
 /// Best-effort: tail ganesha.log for early principal hints (feeds resolve).
 pub(crate) fn start_ganesha_observer(
@@ -108,7 +108,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                                         let mut guard = cache.lock().unwrap();
                                         let prod = crate::materialize::NssMaterializePaths::production();
                                         let _ = resolve_principal(&candidate, realm, variants, &mut guard, &prod);
-                                        let _ = resolve_groups_for_principal(
+                                        let _ = resolve_gids_and_materialize(
                                             &candidate, realm, variants, &mut guard, &prod, false,
                                         );
                                     }
@@ -302,7 +302,7 @@ fn heal_principal_immediately(
         let mut guard = cache.lock().unwrap();
         let prod = crate::materialize::NssMaterializePaths::production();
         let _ = resolve_principal(candidate, realm, variants, &mut guard, &prod);
-        let _ = resolve_groups_for_principal(
+        let _ = resolve_gids_and_materialize(
             candidate, realm, variants, &mut guard, &prod, true,
         );
         let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);
@@ -393,8 +393,8 @@ fn detect_my_getgrouplist_failure_and_heal(
         let prod = crate::materialize::NssMaterializePaths::production();
         let _ = crate::resolve::resolve_principal("root", realm, variants, &mut guard, &prod);
         let _ = crate::resolve::resolve_principal(&principal, realm, variants, &mut guard, &prod);
-        let _ = crate::resolve::resolve_groups_for_principal("root", realm, variants, &mut guard, &prod, true);
-        let _ = crate::resolve::resolve_groups_for_principal(
+        let _ = crate::resolve::resolve_gids_and_materialize("root", realm, variants, &mut guard, &prod, true);
+        let _ = crate::resolve::resolve_gids_and_materialize(
             &principal, realm, variants, &mut guard, &prod, true,
         );
         let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);

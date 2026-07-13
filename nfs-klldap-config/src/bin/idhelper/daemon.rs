@@ -21,7 +21,7 @@ use crate::materialize::{
 };
 use crate::observer::start_ganesha_observer;
 use crate::resolve::{
-    get_or_init_resolver, refresh_supplemental_nss_for_cached_users, resolve_groups_for_principal,
+    get_or_init_resolver, refresh_supplemental_nss_for_cached_users, resolve_gids_and_materialize,
     resolve_principal,
 };
 
@@ -459,10 +459,10 @@ fn handle_client(
                 let gs = if std::env::var("NSS_PASSWD").is_ok() {
                     let owned = NssMaterializePaths::materialize_paths_owned();
                     let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);
-                    resolve_groups_for_principal(arg, realm, server_variants, &mut guard, &lpaths, false)
+                    resolve_gids_and_materialize(arg, realm, server_variants, &mut guard, &lpaths, false)
                 } else {
                     let prod = NssMaterializePaths::production();
-                    resolve_groups_for_principal(arg, realm, server_variants, &mut guard, &prod, false)
+                    resolve_gids_and_materialize(arg, realm, server_variants, &mut guard, &prod, false)
                 };
                 if gs.is_empty() && arg.contains('@') {
                     out.push_str(crate::resolve::RESOLVE_ERR_UNRESOLVED);
@@ -481,10 +481,10 @@ fn handle_client(
             let gs = if std::env::var("NSS_PASSWD").is_ok() {
                 let owned = NssMaterializePaths::materialize_paths_owned();
                 let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);
-                resolve_groups_for_principal(q, realm, server_variants, &mut guard, &lpaths, false)
+                resolve_gids_and_materialize(q, realm, server_variants, &mut guard, &lpaths, false)
             } else {
                 let prod = NssMaterializePaths::production();
-                resolve_groups_for_principal(q, realm, server_variants, &mut guard, &prod, false)
+                resolve_gids_and_materialize(q, realm, server_variants, &mut guard, &prod, false)
             };
             if gs.is_empty() && q.contains('@') {
                 out.push_str(crate::resolve::RESOLVE_ERR_UNRESOLVED);
@@ -759,7 +759,7 @@ mod grps_socket_tests {
         std::env::set_var("NSS_EXTRAUSERS_GROUP", &ex_g);
         let upaths = NssMaterializePaths::under(tmpd.path());
         let mut probe_cache = IdCache::default();
-        let gs2 = resolve_groups_for_principal("testuser1@EX.COM", "EX.COM", &[], &mut probe_cache, &upaths, false);
+        let gs2 = resolve_gids_and_materialize("testuser1@EX.COM", "EX.COM", &[], &mut probe_cache, &upaths, false);
         eprintln!("DEBUG grps high-level: {:?}", gs2);
         let (mut client, server) = UnixStream::pair().unwrap();
         let c = IdCache::default();

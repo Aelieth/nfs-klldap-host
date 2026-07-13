@@ -794,7 +794,7 @@ mod root_snapshot_tests {
 
     #[test]
     fn build_nss_snapshot_root_group_has_minimal_members_not_machine_logins() {
-        // Drive shipped resolve_groups_for_principal (not manual cache insert) so supplemental_gids
+        // Drive shipped resolve_gids_and_materialize (not manual cache insert) so supplemental_gids
         // are populated from LDAP snapshot membership for machines + GROUPLIST root backstop.
         let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         crate::resolve::reset_id_resolver_for_test();
@@ -814,7 +814,7 @@ mod root_snapshot_tests {
             &mut cache,
             &paths,
         );
-        let _ = crate::resolve::resolve_groups_for_principal(
+        let _ = crate::resolve::resolve_gids_and_materialize(
             "host/nas-1@TESTLAB.LOCAL",
             realm,
             &[],
@@ -822,7 +822,7 @@ mod root_snapshot_tests {
             &paths,
             false,
         );
-        let root_gs = crate::resolve::resolve_groups_for_principal(
+        let root_gs = crate::resolve::resolve_gids_and_materialize(
             "root",
             realm,
             &[],

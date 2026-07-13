@@ -63,7 +63,7 @@ real immutable host.
    correctly; only the display is off. Install the helper from this repo:
 
    ```sh
-   sudo install -m 0755 scripts/nfsidmap-client-helper /usr/local/bin/
+   sudo install -m 0755 setup-script/nfsidmap-client-helper /usr/local/bin/
    sudo tee /etc/request-key.d/id_resolver.conf <<'EOF'
    create id_resolver * * /usr/local/bin/nfsidmap-client-helper %k %d
    negate id_resolver * * /bin/keyctl negate %k 0 %c

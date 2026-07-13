@@ -286,41 +286,7 @@
                 <input type="password" name="sssd_bind_pw" id="sssd_bind_pw" placeholder="leave blank to keep current" autocomplete="new-password">
               </div>
 
-              <div class="fld" data-ac-field="sssd_search_base">
-                <div class="ac-head">
-                  <label class="fld-lab" title="Base DN for searches. Auto = derived from the realm.&#10;&rarr; sssd.ldap_search_base">sssd.ldap_search_base <span class="ico">i</span></label>
-                  <div class="seg" data-ac-for="sssd_search_base">
-                    <button type="button" data-ac="auto" class="{% if !override_sssd_search_base %}on{% endif %}">Auto</button>
-                    <button type="button" data-ac="custom" class="{% if override_sssd_search_base %}on{% endif %}">Custom</button>
-                  </div>
-                </div>
-                <input type="text" name="sssd_search_base" id="sssd_search_base" value="{{ sssd_search_base }}" placeholder="dc=…,dc=…" {% if !override_sssd_search_base %}disabled{% endif %}>
-                <input type="checkbox" name="override_sssd_search_base" id="override_sssd_search_base" value="true" {% if override_sssd_search_base %}checked{% endif %} hidden>
-              </div>
-
-              <div class="fld" data-ac-field="sssd_user_base">
-                <div class="ac-head">
-                  <label class="fld-lab" title="Where user entries live.&#10;&rarr; sssd.ldap_user_search_base">sssd.ldap_user_search_base <span class="ico">i</span></label>
-                  <div class="seg" data-ac-for="sssd_user_base">
-                    <button type="button" data-ac="auto" class="{% if !override_sssd_user_base %}on{% endif %}">Auto</button>
-                    <button type="button" data-ac="custom" class="{% if override_sssd_user_base %}on{% endif %}">Custom</button>
-                  </div>
-                </div>
-                <input type="text" name="sssd_user_base" id="sssd_user_base" value="{{ sssd_user_base }}" {% if !override_sssd_user_base %}disabled{% endif %}>
-                <input type="checkbox" name="override_sssd_user_base" id="override_sssd_user_base" value="true" {% if override_sssd_user_base %}checked{% endif %} hidden>
-              </div>
-
-              <div class="fld" data-ac-field="sssd_group_base">
-                <div class="ac-head">
-                  <label class="fld-lab" title="Where group entries live.&#10;&rarr; sssd.ldap_group_search_base">sssd.ldap_group_search_base <span class="ico">i</span></label>
-                  <div class="seg" data-ac-for="sssd_group_base">
-                    <button type="button" data-ac="auto" class="{% if !override_sssd_group_base %}on{% endif %}">Auto</button>
-                    <button type="button" data-ac="custom" class="{% if override_sssd_group_base %}on{% endif %}">Custom</button>
-                  </div>
-                </div>
-                <input type="text" name="sssd_group_base" id="sssd_group_base" value="{{ sssd_group_base }}" {% if !override_sssd_group_base %}disabled{% endif %}>
-                <input type="checkbox" name="override_sssd_group_base" id="override_sssd_group_base" value="true" {% if override_sssd_group_base %}checked{% endif %} hidden>
-              </div>
+              {% for f in sssd_ac_fields %}{% include "settings_ac_text.html" %}{% endfor %}
             </div>
 
             <div class="fld" style="margin-top:12px">
@@ -345,54 +311,10 @@
           <section class="set-section" data-pane-content="tls" hidden>
             <div class="sec-hd"><h3>TLS &amp; Security</h3></div>
             <div class="fld-grid">
-              <div class="fld" data-ac-field="sssd_ldap_tls_reqcert">
-                <div class="ac-head">
-                  <label class="fld-lab" title="TLS certificate validation (never / demand).&#10;&rarr; sssd.ldap_tls_reqcert">sssd.ldap_tls_reqcert <span class="ico">i</span></label>
-                  <div class="seg" data-ac-for="sssd_ldap_tls_reqcert">
-                    <button type="button" data-ac="auto" class="{% if !override_sssd_ldap_tls_reqcert %}on{% endif %}">Auto</button>
-                    <button type="button" data-ac="custom" class="{% if override_sssd_ldap_tls_reqcert %}on{% endif %}">Custom</button>
-                  </div>
-                </div>
-                <input type="text" name="sssd_ldap_tls_reqcert" id="sssd_ldap_tls_reqcert" value="{{ sssd_ldap_tls_reqcert }}" placeholder="never" {% if !override_sssd_ldap_tls_reqcert %}disabled{% endif %}>
-                <input type="checkbox" name="override_sssd_ldap_tls_reqcert" id="override_sssd_ldap_tls_reqcert" value="true" {% if override_sssd_ldap_tls_reqcert %}checked{% endif %} hidden>
-              </div>
-
-              <div class="fld" data-ac-field="sssd_ldap_tls_cacert">
-                <div class="ac-head">
-                  <label class="fld-lab" title="Path to a CA certificate.&#10;&rarr; sssd.ldap_tls_cacert">sssd.ldap_tls_cacert <span class="ico">i</span></label>
-                  <div class="seg" data-ac-for="sssd_ldap_tls_cacert">
-                    <button type="button" data-ac="auto" class="{% if !override_sssd_ldap_tls_cacert %}on{% endif %}">Auto</button>
-                    <button type="button" data-ac="custom" class="{% if override_sssd_ldap_tls_cacert %}on{% endif %}">Custom</button>
-                  </div>
-                </div>
-                <input type="text" name="sssd_ldap_tls_cacert" id="sssd_ldap_tls_cacert" value="{{ sssd_ldap_tls_cacert }}" placeholder="/etc/pki/…" {% if !override_sssd_ldap_tls_cacert %}disabled{% endif %}>
-                <input type="checkbox" name="override_sssd_ldap_tls_cacert" id="override_sssd_ldap_tls_cacert" value="true" {% if override_sssd_ldap_tls_cacert %}checked{% endif %} hidden>
-              </div>
+              {% for f in tls_ac_fields %}{% include "settings_ac_text.html" %}{% endfor %}
             </div>
 
-            <div class="fld" data-ac-field="sssd_ldap_id_use_start_tls" style="margin-top:12px">
-              <div class="ac-head">
-                <label class="fld-lab" title="STARTTLS on plain ldap:// only.&#10;&rarr; sssd.ldap_id_use_start_tls">sssd.ldap_id_use_start_tls <span class="ico">i</span></label>
-                <div class="seg" data-ac-for="sssd_ldap_id_use_start_tls">
-                  <button type="button" data-ac="auto" class="{% if !override_sssd_ldap_id_use_start_tls %}on{% endif %}">Auto</button>
-                  <button type="button" data-ac="custom" class="{% if override_sssd_ldap_id_use_start_tls %}on{% endif %}">Custom</button>
-                </div>
-              </div>
-              <label class="chkline"><input type="checkbox" name="sssd_ldap_id_use_start_tls" id="sssd_ldap_id_use_start_tls" value="true" {% if sssd_ldap_id_use_start_tls %}checked{% endif %} {% if !override_sssd_ldap_id_use_start_tls %}disabled{% endif %}> enabled</label>
-              <input type="checkbox" name="override_sssd_ldap_id_use_start_tls" id="override_sssd_ldap_id_use_start_tls" value="true" {% if override_sssd_ldap_id_use_start_tls %}checked{% endif %} hidden>
-            </div>
-
-            <div class="fld" data-ac-field="sssd_enumerate" style="margin-top:12px">
-              <div class="ac-head">
-                <label class="fld-lab" title="Enumerate all users/groups — heavy; avoid on KLLDAP.&#10;&rarr; sssd.enumerate">sssd.enumerate <span class="ico">i</span></label>
-                <div class="seg" data-ac-for="sssd_enumerate">
-                  <button type="button" data-ac="auto" class="{% if !override_sssd_enumerate %}on{% endif %}">Auto</button>
-                  <button type="button" data-ac="custom" class="{% if override_sssd_enumerate %}on{% endif %}">Custom</button>
-                </div>
-              </div>
-              <label class="chkline"><input type="checkbox" name="sssd_enumerate" id="sssd_enumerate" value="true" {% if sssd_enumerate %}checked{% endif %} {% if !override_sssd_enumerate %}disabled{% endif %}> enabled</label>
-              <input type="checkbox" name="override_sssd_enumerate" id="override_sssd_enumerate" value="true" {% if override_sssd_enumerate %}checked{% endif %} hidden>
-            </div>
+            {% for f in tls_ac_bools %}{% include "settings_ac_bool.html" %}{% endfor %}
           </section>
         </form>
 

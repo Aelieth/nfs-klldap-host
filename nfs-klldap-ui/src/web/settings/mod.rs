@@ -39,13 +39,12 @@ pub(crate) struct SettingsTemplate {
     storage_container_root: String,
     server_hostname: String,
     sssd_bind_dn: String,
-    sssd_search_base: String,
-    sssd_user_base: String,
-    sssd_group_base: String,
-    sssd_ldap_tls_reqcert: String,
-    sssd_ldap_tls_cacert: String,
-    sssd_ldap_id_use_start_tls: bool,
-    sssd_enumerate: bool,
+    /// SSSD pane Auto/Custom text fields, spec-driven (render order).
+    sssd_ac_fields: Vec<spec::AcTextView>,
+    /// TLS pane Auto/Custom text fields, spec-driven (render order).
+    tls_ac_fields: Vec<spec::AcTextView>,
+    /// TLS pane Auto/Custom checkboxes, spec-driven (render order).
+    tls_ac_bools: Vec<spec::AcBoolView>,
     kerberos_realm: String,
     ganesha_default_security: String,
     kllldap_ignored_attributes: bool,
@@ -56,13 +55,6 @@ pub(crate) struct SettingsTemplate {
     override_server_hostname: bool,
     override_kerberos_realm: bool,
     override_ganesha_default_security: bool,
-    override_sssd_search_base: bool,
-    override_sssd_user_base: bool,
-    override_sssd_group_base: bool,
-    override_sssd_ldap_tls_reqcert: bool,
-    override_sssd_ldap_tls_cacert: bool,
-    override_sssd_ldap_id_use_start_tls: bool,
-    override_sssd_enumerate: bool,
     /// Server-rendered shares for edit/delete via row removal.
     current_shares: Vec<ShareTemplateRow>,
     /// Holds the next share row index the client JS uses for Add Share rows.
@@ -314,6 +306,9 @@ pub(crate) fn build_settings_template(
         })
         .collect();
     let next_share_idx = current_shares.len();
+    let sssd_ac_fields = spec::sssd_ac_text_views(&cfg, &doc);
+    let tls_ac_fields = spec::tls_ac_text_views(&cfg, &doc);
+    let tls_ac_bools = spec::tls_ac_bool_views(&cfg, &doc);
     SettingsTemplate {
         current_user,
         raw_toml,
@@ -329,13 +324,9 @@ pub(crate) fn build_settings_template(
         storage_container_root: cfg.storage.container_root.clone(),
         server_hostname: cfg.server.hostname.clone().unwrap_or_default(),
         sssd_bind_dn: cfg.sssd.ldap_default_bind_dn.clone(),
-        sssd_search_base: cfg.sssd.ldap_search_base.clone().unwrap_or_default(),
-        sssd_user_base: cfg.sssd.ldap_user_search_base.clone().unwrap_or_default(),
-        sssd_group_base: cfg.sssd.ldap_group_search_base.clone().unwrap_or_default(),
-        sssd_ldap_tls_reqcert: cfg.sssd.ldap_tls_reqcert.clone().unwrap_or_default(),
-        sssd_ldap_tls_cacert: cfg.sssd.ldap_tls_cacert.clone().unwrap_or_default(),
-        sssd_ldap_id_use_start_tls: cfg.sssd.ldap_id_use_start_tls.unwrap_or(false),
-        sssd_enumerate: cfg.sssd.enumerate.unwrap_or(false),
+        sssd_ac_fields,
+        tls_ac_fields,
+        tls_ac_bools,
         kerberos_realm: cfg.kerberos.realm.clone().unwrap_or_default(),
         ganesha_default_security: cfg.ganesha.default_security.clone(),
         kllldap_ignored_attributes: cfg.sssd.kllldap_ignored_attributes.unwrap_or(true),
@@ -347,13 +338,6 @@ pub(crate) fn build_settings_template(
         override_kerberos_realm: has_explicit(&doc, "kerberos", "realm"),
         override_ganesha_default_security: get_explicit_str(&doc, "ganesha", "default_security")
             .is_some_and(|v| v != "krb5p"),
-        override_sssd_search_base: has_explicit(&doc, "sssd", "ldap_search_base"),
-        override_sssd_user_base: has_explicit(&doc, "sssd", "ldap_user_search_base"),
-        override_sssd_group_base: has_explicit(&doc, "sssd", "ldap_group_search_base"),
-        override_sssd_ldap_tls_reqcert: has_explicit(&doc, "sssd", "ldap_tls_reqcert"),
-        override_sssd_ldap_tls_cacert: has_explicit(&doc, "sssd", "ldap_tls_cacert"),
-        override_sssd_ldap_id_use_start_tls: has_explicit(&doc, "sssd", "ldap_id_use_start_tls"),
-        override_sssd_enumerate: has_explicit(&doc, "sssd", "enumerate"),
         current_shares,
         next_share_idx,
         host_nfs_mode,

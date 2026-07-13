@@ -240,6 +240,113 @@ pub(crate) const FIELDS: &[FieldSpec] = &[
     },
 ];
 
+/// Auto/Custom text field view for the settings panes.
+pub(crate) struct AcTextView {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub tooltip: &'static str,
+    pub placeholder: &'static str,
+    pub value: String,
+    pub overridden: bool,
+}
+
+/// Auto/Custom checkbox field view.
+pub(crate) struct AcBoolView {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub tooltip: &'static str,
+    pub checked: bool,
+    pub overridden: bool,
+}
+
+/// Custom is on when the key is explicit in the on-disk TOML; section/key
+/// come from the FIELDS row so they exist in exactly one place.
+fn overridden(doc: &toml_edit::DocumentMut, name: &str) -> bool {
+    let spec = FIELDS.iter().find(|s| s.name == name).expect("known field");
+    crate::web::settings_form::has_explicit(doc, spec.section, spec.key)
+}
+
+/// SSSD pane Auto/Custom text fields, in render order.
+pub(crate) fn sssd_ac_text_views(
+    cfg: &NfsKlldapConfig,
+    doc: &toml_edit::DocumentMut,
+) -> Vec<AcTextView> {
+    vec![
+        AcTextView {
+            name: "sssd_search_base",
+            label: "sssd.ldap_search_base",
+            tooltip: "Base DN for searches. Auto = derived from the realm.\n→ sssd.ldap_search_base",
+            placeholder: "dc=…,dc=…",
+            value: cfg.sssd.ldap_search_base.clone().unwrap_or_default(),
+            overridden: overridden(doc, "sssd_search_base"),
+        },
+        AcTextView {
+            name: "sssd_user_base",
+            label: "sssd.ldap_user_search_base",
+            tooltip: "Where user entries live.\n→ sssd.ldap_user_search_base",
+            placeholder: "",
+            value: cfg.sssd.ldap_user_search_base.clone().unwrap_or_default(),
+            overridden: overridden(doc, "sssd_user_base"),
+        },
+        AcTextView {
+            name: "sssd_group_base",
+            label: "sssd.ldap_group_search_base",
+            tooltip: "Where group entries live.\n→ sssd.ldap_group_search_base",
+            placeholder: "",
+            value: cfg.sssd.ldap_group_search_base.clone().unwrap_or_default(),
+            overridden: overridden(doc, "sssd_group_base"),
+        },
+    ]
+}
+
+/// TLS pane Auto/Custom text fields, in render order.
+pub(crate) fn tls_ac_text_views(
+    cfg: &NfsKlldapConfig,
+    doc: &toml_edit::DocumentMut,
+) -> Vec<AcTextView> {
+    vec![
+        AcTextView {
+            name: "sssd_ldap_tls_reqcert",
+            label: "sssd.ldap_tls_reqcert",
+            tooltip: "TLS certificate validation (never / demand).\n→ sssd.ldap_tls_reqcert",
+            placeholder: "never",
+            value: cfg.sssd.ldap_tls_reqcert.clone().unwrap_or_default(),
+            overridden: overridden(doc, "sssd_ldap_tls_reqcert"),
+        },
+        AcTextView {
+            name: "sssd_ldap_tls_cacert",
+            label: "sssd.ldap_tls_cacert",
+            tooltip: "Path to a CA certificate.\n→ sssd.ldap_tls_cacert",
+            placeholder: "/etc/pki/…",
+            value: cfg.sssd.ldap_tls_cacert.clone().unwrap_or_default(),
+            overridden: overridden(doc, "sssd_ldap_tls_cacert"),
+        },
+    ]
+}
+
+/// TLS pane Auto/Custom checkboxes, in render order.
+pub(crate) fn tls_ac_bool_views(
+    cfg: &NfsKlldapConfig,
+    doc: &toml_edit::DocumentMut,
+) -> Vec<AcBoolView> {
+    vec![
+        AcBoolView {
+            name: "sssd_ldap_id_use_start_tls",
+            label: "sssd.ldap_id_use_start_tls",
+            tooltip: "STARTTLS on plain ldap:// only.\n→ sssd.ldap_id_use_start_tls",
+            checked: cfg.sssd.ldap_id_use_start_tls.unwrap_or(false),
+            overridden: overridden(doc, "sssd_ldap_id_use_start_tls"),
+        },
+        AcBoolView {
+            name: "sssd_enumerate",
+            label: "sssd.enumerate",
+            tooltip: "Enumerate all users/groups — heavy; avoid on KLLDAP.\n→ sssd.enumerate",
+            checked: cfg.sssd.enumerate.unwrap_or(false),
+            overridden: overridden(doc, "sssd_enumerate"),
+        },
+    ]
+}
+
 pub(crate) fn form_str<'a>(form: &'a StructuredSettingsForm, name: &str) -> Option<&'a str> {
     form.fields.get(name).map(String::as_str)
 }

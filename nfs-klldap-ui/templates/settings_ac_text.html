@@ -1,0 +1,11 @@
+<div class="fld" data-ac-field="{{ f.name }}">
+  <div class="ac-head">
+    <label class="fld-lab" title="{{ f.tooltip }}">{{ f.label }} <span class="ico">i</span></label>
+    <div class="seg" data-ac-for="{{ f.name }}">
+      <button type="button" data-ac="auto" class="{% if !f.overridden %}on{% endif %}">Auto</button>
+      <button type="button" data-ac="custom" class="{% if f.overridden %}on{% endif %}">Custom</button>
+    </div>
+  </div>
+  <input type="text" name="{{ f.name }}" id="{{ f.name }}" value="{{ f.value }}"{% if !f.placeholder.is_empty() %} placeholder="{{ f.placeholder }}"{% endif %} {% if !f.overridden %}disabled{% endif %}>
+  <input type="checkbox" name="override_{{ f.name }}" id="override_{{ f.name }}" value="true" {% if f.overridden %}checked{% endif %} hidden>
+</div>

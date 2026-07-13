@@ -11,8 +11,6 @@ mod observer;
 mod resolve;
 
 use std::env;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 
 use common::{
     get_realm, get_server_variants, socket_path, IdCache, PrincipalKind, Resolved, CACHE_PATH,
@@ -40,14 +38,10 @@ use resolve::{resolve_groups_for_principal, resolve_principal};
 /// Try to perform RESOLVE via the running daemon's unix socket. Returns.
 /// Some(Resolved) on success (the daemon did the work + materialize). Returns.
 fn try_resolve_via_socket(principal: &str) -> Option<Resolved> {
-    let mut stream = UnixStream::connect(socket_path()).ok()?;
-    let req = format!("RESOLVE {}\n", principal);
-    stream.write_all(req.as_bytes()).ok()?;
-    let _ = stream.flush();
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).ok()?;
-    let resp = line.trim();
+    let resp = nfs_klldap_config::idhelper_socket_request(
+        &socket_path(),
+        &format!("RESOLVE {}\n", principal),
+    )?;
     if let Some(rest) = resp.strip_prefix("OK ") {
         let parts: Vec<&str> = rest.split('|').collect();
         if parts.len() == 5 {
@@ -79,37 +73,20 @@ fn grps_use_local_materialize() -> bool {
     std::env::var("NSS_PASSWD").is_ok()
 }
 
-/// Try GRPS via socket (pattern from try_resolve_via_socket). Returns gids list or None.
+/// Try GRPS via socket (shared readiness socket client). Returns gids list or None.
 fn try_grps_via_socket(principal: &str) -> Option<Vec<u32>> {
-    try_socket_groups_cmd("GRPS", principal)
+    nfs_klldap_config::probe_socket_grps(principal, &socket_path())
 }
 
 /// Try GROUPLIST/GETGROUPLIST via socket for the explicit getgrouplist endpoint.
 fn try_grouplist_via_socket(principal: &str) -> Option<Vec<u32>> {
-    try_socket_groups_cmd("GROUPLIST", principal)
+    nfs_klldap_config::probe_socket_grouplist(principal, &socket_path())
 }
 
-fn try_socket_groups_cmd(verb: &str, principal: &str) -> Option<Vec<u32>> {
-    let mut stream = UnixStream::connect(socket_path()).ok()?;
-    let req = format!("{} {}\n", verb, principal);
-    stream.write_all(req.as_bytes()).ok()?;
-    let _ = stream.flush();
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).ok()?;
-    let resp = line.trim();
-    if let Some(rest) = resp.strip_prefix("OK ") {
-        let mut gids = vec![];
-        for p in rest.split('|') {
-            if let Ok(g) = p.trim().parse::<u32>() {
-                gids.push(g);
-            }
-        }
-        if !gids.is_empty() {
-            return Some(gids);
-        }
-    }
-    None
+/// True when the daemon socket answers the request with an "OK " reply.
+fn socket_reply_ok(request: &str) -> bool {
+    nfs_klldap_config::idhelper_socket_request(&socket_path(), &format!("{request}\n"))
+        .is_some_and(|ln| ln.starts_with("OK "))
 }
 
 fn handle_cli(args: &[String]) {
@@ -274,14 +251,7 @@ fn handle_cli(args: &[String]) {
                     "self-test: skipped (no probe user configured or materialized; \
                      set [probe] user_principal or NFS_KLLDAP_PROBE_USER_PRINCIPAL)"
                 );
-                let root_gl = {
-                    let mut s = std::os::unix::net::UnixStream::connect(socket_path()).ok();
-                    if let Some(ref mut st) = s {
-                        let _ = st.write_all(b"GROUPLIST root\n"); let _ = st.flush();
-                        let mut rd = std::io::BufReader::new(st); let mut ln=String::new(); let _ = rd.read_line(&mut ln);
-                        ln.trim().starts_with("OK ")
-                    } else { false }
-                };
+                let root_gl = socket_reply_ok("GROUPLIST root");
                 println!("synthetic-getgrouplist: root_ok={} (no probe user)", root_gl);
                 return;
             };
@@ -293,22 +263,8 @@ fn handle_cli(args: &[String]) {
                 r.principal, r.uid, r.gid, r.kind.as_str(), r.source
             );
             // Synthetic Kerberos principal access test for post-start (D): exercise uid2grp path via GROUPLIST socket + root/testuser1, confirm no my_getgrouplist_alloc WARN in ganesha.log
-            let root_gl = {
-                let mut s = std::os::unix::net::UnixStream::connect(socket_path()).ok();
-                if let Some(ref mut st) = s {
-                    let _ = st.write_all(b"GROUPLIST root\n"); let _ = st.flush();
-                    let mut rd = std::io::BufReader::new(st); let mut ln=String::new(); let _ = rd.read_line(&mut ln);
-                    ln.trim().starts_with("OK ")
-                } else { false }
-            };
-            let user_gl = {
-                let mut s = std::os::unix::net::UnixStream::connect(socket_path()).ok();
-                if let Some(ref mut st) = s {
-                    let _ = st.write_all(format!("GROUPLIST {}\n", test_p).as_bytes()); let _ = st.flush();
-                    let mut rd = std::io::BufReader::new(st); let mut ln=String::new(); let _ = rd.read_line(&mut ln);
-                    ln.trim().starts_with("OK ")
-                } else { false }
-            };
+            let root_gl = socket_reply_ok("GROUPLIST root");
+            let user_gl = socket_reply_ok(&format!("GROUPLIST {}", test_p));
             println!("synthetic-getgrouplist: root_ok={} user({}) ok={}", root_gl, test_p, user_gl);
             if let Ok(lc) = std::fs::read_to_string("/var/log/ganesha.log") {
                 let has_warn = lc.lines().any(|ln| {
@@ -323,23 +279,8 @@ fn handle_cli(args: &[String]) {
             }
             // Post-start full report for verification (step 4): query socket for groups and emit the authoritative "idhelper check OK ... 3gids groups-ok" line
             // so that "idhelper check" output (used in post-launch evidence) contains 3gids + groups-ok.
-            {
-                use std::io::{BufRead, BufReader, Write};
-                use std::os::unix::net::UnixStream;
-                if let Ok(mut stream) = UnixStream::connect(socket_path()) {
-                    let _ = writeln!(stream, "GRPS {}", test_p);
-                    let _ = stream.flush();
-                    let mut r = BufReader::new(stream);
-                    let mut line = String::new();
-                    if r.read_line(&mut line).is_ok() {
-                        if let Some(rest) = line.trim().strip_prefix("OK ") {
-                            let gids: Vec<u32> = rest.split('|').filter_map(|s| s.trim().parse().ok()).collect();
-                            if !gids.is_empty() {
-                                println!("idhelper check OK: user({}):{}gids socket-grps:groups-ok:{}:{}gids", test_p, gids.len(), test_p, gids.len());
-                            }
-                        }
-                    }
-                }
+            if let Some(gids) = try_grps_via_socket(&test_p) {
+                println!("idhelper check OK: user({}):{}gids socket-grps:groups-ok:{}:{}gids", test_p, gids.len(), test_p, gids.len());
             }
         }
         "explain" => {

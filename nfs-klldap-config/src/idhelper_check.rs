@@ -5,6 +5,7 @@ use crate::ganesha_readiness;
 use crate::{
     discover_ganesha_daemon_pid, evaluate_nss_contract,
     evaluate_short_name_getgrouplist_contract, identity_principals_for_check,
+    proc_environ_map, proc_pid_environ,
     probe_id_g_under_env, probe_socket_grps, probe_socket_grouplist,
     run_identity_pipeline, GaneshaNssEnv, NfsKlldapConfig,
     FALLBACK_NOBODY_GID, MACHINE_GID,
@@ -199,18 +200,10 @@ fn probe_ganesha_runtime_wiring() -> String {
     };
     let mut tags = vec![format!("ganesha-runtime:live:pid={pid}")];
     let expected = GaneshaNssEnv::from_runtime_defaults();
-    let Ok(raw) = std::fs::read(format!("/proc/{pid}/environ")) else {
+    let Some(proc_env) = proc_environ_map(pid) else {
         tags.push("ganesha-runtime:environ-unreadable".into());
         return tags.join(" ");
     };
-    let proc_env: std::collections::HashMap<String, String> = raw
-        .split(|&b| b == 0)
-        .filter_map(|chunk| {
-            let s = std::str::from_utf8(chunk).ok()?;
-            let (k, v) = s.split_once('=')?;
-            Some((k.to_string(), v.to_string()))
-        })
-        .collect();
     if proc_env.contains_key("NFS_KLLDAP_IDHELPER_SOCKET") {
         tags.push("ganesha-runtime:idhelper-socket-env".into());
     }
@@ -367,19 +360,7 @@ pub fn check_idhelper_sample_resolutions(
     }
     msgs.push(probe_ganesha_runtime_wiring());
     if let Some(pid) = discover_ganesha_daemon_pid() {
-        if let Ok(raw) = std::fs::read(format!("/proc/{pid}/environ")) {
-            let proc_env: std::collections::HashMap<String, String> = raw
-                .split(|&b| b == 0)
-                .filter_map(|chunk| {
-                    let s = std::str::from_utf8(chunk).ok()?;
-                    let (k, v) = s.split_once('=')?;
-                    Some((k.to_string(), v.to_string()))
-                })
-                .collect();
-            let envp: Vec<(std::ffi::OsString, std::ffi::OsString)> = proc_env
-                .iter()
-                .map(|(k, v)| (std::ffi::OsString::from(k), std::ffi::OsString::from(v)))
-                .collect();
+        if let Some(envp) = proc_pid_environ(pid) {
             let root_seen = probe_id_g_under_env("root", &envp);
             if let Some(user_short) = user_short.as_deref() {
                 let user_seen = probe_id_g_under_env(user_short, &envp);

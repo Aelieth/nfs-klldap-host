@@ -85,6 +85,7 @@ pub use ganesha_readiness::{
     build_ganesha_envp, check_ganesha_readiness, check_synthetic_krb_log_clean,
     exercise_ganesha_uid2grp, filter_proc_environ_keys, ganesha_log_has_getgrouplist_warn,
     ganesha_log_has_managed_gids_failure,
+    idhelper_socket_request, proc_environ_map,
     proc_pid_environ, probe_ganesha_process_groups, probe_id_g_under_env, probe_socket_grps,
     probe_socket_grouplist, resolve_nss_sss_so, signal_ganesha_reload_idmap,
     GaneshaReadinessReport, GaneshaSpawnEnv,

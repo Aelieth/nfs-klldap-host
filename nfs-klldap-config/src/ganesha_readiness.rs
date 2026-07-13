@@ -71,6 +71,20 @@ pub fn filter_proc_environ_keys(raw: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// Parse `/proc/<pid>/environ` into a key -> value map.
+pub fn proc_environ_map(pid: u32) -> Option<std::collections::HashMap<String, String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    Some(
+        raw.split(|&b| b == 0)
+            .filter_map(|chunk| {
+                let s = std::str::from_utf8(chunk).ok()?;
+                let (k, v) = s.split_once('=')?;
+                Some((k.to_string(), v.to_string()))
+            })
+            .collect(),
+    )
+}
+
 /// Parse `/proc/<pid>/environ` into envp tuples.
 pub fn proc_pid_environ(pid: u32) -> Option<Vec<(OsString, OsString)>> {
     let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
@@ -323,18 +337,24 @@ pub fn exercise_ganesha_uid2grp(
     (!has_warn, msg)
 }
 
-fn socket_cmd_gids(socket_path: &str, cmd: &str, principal: &str) -> Option<Vec<u32>> {
+/// One-line request/response over the idhelper unix socket.
+/// Returns the trimmed first response line; None when the socket is absent
+/// or the exchange fails.
+pub fn idhelper_socket_request(socket_path: &str, request: &str) -> Option<String> {
     if !Path::new(socket_path).exists() {
         return None;
     }
     let mut stream = UnixStream::connect(socket_path).ok()?;
-    let req = format!("{cmd} {principal}\n");
-    stream.write_all(req.as_bytes()).ok()?;
+    stream.write_all(request.as_bytes()).ok()?;
     stream.flush().ok()?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).ok()?;
-    let resp = line.trim();
+    Some(line.trim().to_string())
+}
+
+fn socket_cmd_gids(socket_path: &str, cmd: &str, principal: &str) -> Option<Vec<u32>> {
+    let resp = idhelper_socket_request(socket_path, &format!("{cmd} {principal}\n"))?;
     let rest = resp.strip_prefix("OK ")?;
     let gids: Vec<u32> = rest
         .split('|')

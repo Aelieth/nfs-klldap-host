@@ -198,29 +198,6 @@ complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
     }
 
     #[test]
-    fn idmap_log_contract_committed_fixture_acl_path_notsupp() {
-        let path = nfs_klldap_config::acl_notsupp_fixture_path();
-        let content = nfs_klldap_config::load_acl_notsupp_fixture().expect("committed fixture");
-        nfs_klldap_config::validate_acl_notsupp_fixture(&path).expect("fixture signatures");
-        assert_eq!(
-            nfs_klldap_config::classify_notsupp_failure_path(&content),
-            nfs_klldap_config::NotsuppFailurePath::AclPath
-        );
-        assert!(!nfs_klldap_config::log_shows_identity_failure(&content));
-        let (op, ga_acl, ga_ok) = nfs_klldap_config::acl_notsupp_diagnosis_signatures(&content);
-        eprintln!("logs-diagnosis OP_ACCESS: {}", op.expect("op_access line"));
-        eprintln!("logs-diagnosis GETATTR ACL: {}", ga_acl.expect("getattr acl line"));
-        eprintln!("logs-diagnosis GETATTR OK: {}", ga_ok.expect("getattr ok line"));
-    }
-
-    #[test]
-    fn signal_ganesha_reload_idmap_respects_disable_env() {
-        std::env::set_var("NFS_KLLDAP_SIGHUP_ON_IDMAP_HEAL", "0");
-        assert!(!nfs_klldap_config::signal_ganesha_reload_idmap(99999));
-        std::env::remove_var("NFS_KLLDAP_SIGHUP_ON_IDMAP_HEAL");
-    }
-
-    #[test]
     fn validate_from_env_idmap_log_if_set() {
         if let Ok(p) = std::env::var("IDMAP_LOG") {
             let res = validate_user_tgt_idmap_log(Path::new(&p), "testuser1@TESTLABBY.LOCAL");

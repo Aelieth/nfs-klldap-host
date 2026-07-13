@@ -813,3 +813,10 @@ fn derive_realm_from_uri_is_public_and_works() {
     );
     assert_eq!(derive_realm_from_uri(""), None);
 }
+
+#[test]
+fn signal_ganesha_reload_idmap_respects_disable_env() {
+    let _env = env_lock();
+    let _g = EnvGuard::set("NFS_KLLDAP_SIGHUP_ON_IDMAP_HEAL", "0");
+    assert!(!signal_ganesha_reload_idmap(99999));
+}

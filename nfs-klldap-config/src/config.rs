@@ -29,6 +29,9 @@ pub struct NfsKlldapConfig {
     pub management: ManagementSection,
 
     #[serde(default)]
+    pub probe: ProbeSection,
+
+    #[serde(default)]
     pub host: HostSection,
 
     #[serde(default)]
@@ -242,6 +245,15 @@ fn default_security() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ManagementSection {
     pub webui_admin_group: Option<String>,
+}
+
+/// Startup identity-probe identities; unset auto-picks from the directory.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProbeSection {
+    /// Sample LDAP user probed at startup (name@REALM or bare name).
+    pub user_principal: Option<String>,
+    /// Enrolled client machine probed as host/<name>@REALM.
+    pub client_host: Option<String>,
 }
 
 /// Host deployment mode runs WebUI and SSSD only when host_nfs is true.

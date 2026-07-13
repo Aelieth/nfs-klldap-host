@@ -248,7 +248,7 @@ uid2grp_allocate_by_principal :ID MAPPER :WARN :Could not map user elsewhere
 "#;
         assert_eq!(classify_notsupp_failure_path(decoy), NotsuppFailurePath::Unknown);
         let real = r#"
-uid2grp_allocate_by_principal :ID MAPPER :WARN :Unsupported code path for principal host/blue-lt@SATOMLIN.COM
+uid2grp_allocate_by_principal :ID MAPPER :WARN :Unsupported code path for principal host/client-a@TESTLAB.LOCAL
 process_one_op :NFS4 :DEBUG :Request 2: opcode 9 is OP_GETATTR
 complete_op :NFS4 :DEBUG :Status of OP_GETATTR in position 2 = NFS4ERR_NOTSUPP
 "#;

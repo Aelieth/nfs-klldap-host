@@ -78,6 +78,17 @@ pub(crate) fn apply_structured_form_to_config(
     } else {
         cfg.ganesha.default_security = "krb5p".to_string();
     }
+    if form.auto_probe_ldap.unwrap_or(false) {
+        cfg.probe.user_principal = None;
+        cfg.probe.client_host = None;
+    } else {
+        if let Some(v) = form.probe_user_principal.clone() {
+            cfg.probe.user_principal = if v.trim().is_empty() { None } else { Some(v) };
+        }
+        if let Some(v) = form.probe_client_host.clone() {
+            cfg.probe.client_host = if v.trim().is_empty() { None } else { Some(v) };
+        }
+    }
 }
 
 pub(crate) fn make_settings_error_template(
@@ -285,6 +296,36 @@ pub(crate) fn apply_structured_form_to_toml_doc(
             tbl["default_security"] = toml_edit::value("krb5p");
         }
     }
+    apply_probe_form_to_toml_doc(form, doc);
+}
+
+/// Auto probe checked removes [probe]; unchecked persists non-empty fields.
+fn apply_probe_form_to_toml_doc(form: &StructuredSettingsForm, doc: &mut toml_edit::DocumentMut) {
+    if form.auto_probe_ldap.unwrap_or(false) {
+        let _ = doc.as_table_mut().remove("probe");
+        return;
+    }
+    for (key, val) in [
+        ("user_principal", &form.probe_user_principal),
+        ("client_host", &form.probe_client_host),
+    ] {
+        let Some(v) = val else { continue };
+        let item = doc.entry("probe").or_insert(toml_edit::table());
+        if let Some(tbl) = item.as_table_mut() {
+            if v.trim().is_empty() {
+                let _ = tbl.remove(key);
+            } else {
+                tbl[key] = toml_edit::value(v.clone());
+            }
+        }
+    }
+    let empty = doc
+        .get("probe")
+        .and_then(|i| i.as_table())
+        .is_some_and(|t| t.is_empty());
+    if empty {
+        let _ = doc.as_table_mut().remove("probe");
+    }
 }
 
 /// Replace only the `[[shares]]` array in the raw TOML doc (shares-save path).
@@ -459,5 +500,79 @@ pub(crate) fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_sha
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod probe_apply_tests {
+    use super::{apply_probe_form_to_toml_doc, StructuredSettingsForm};
+
+    fn doc(text: &str) -> toml_edit::DocumentMut {
+        text.parse().unwrap()
+    }
+
+    const BASE: &str = "# keep this comment\n\
+        ldap_uri = \"ldaps://klldap.example.test:6360\"\n\n\
+        [probe]\n\
+        user_principal = \"alice\"\n\
+        client_host = \"lt-a\"\n";
+
+    #[test]
+    fn auto_checked_removes_probe_table_and_keeps_rest() {
+        let mut d = doc(BASE);
+        let form = StructuredSettingsForm {
+            auto_probe_ldap: Some(true),
+            probe_user_principal: Some("alice".into()),
+            probe_client_host: Some("lt-a".into()),
+            ..Default::default()
+        };
+        apply_probe_form_to_toml_doc(&form, &mut d);
+        let out = d.to_string();
+        assert!(!out.contains("[probe]"), "probe table must be removed: {out}");
+        assert!(out.contains("# keep this comment"));
+        assert!(out.contains("ldap_uri"));
+    }
+
+    #[test]
+    fn unchecked_persists_values_and_empty_clears_per_key() {
+        let mut d = doc("ldap_uri = \"ldaps://klldap.example.test:6360\"\n");
+        let form = StructuredSettingsForm {
+            auto_probe_ldap: None,
+            probe_user_principal: Some("bob".into()),
+            probe_client_host: Some("lt-b".into()),
+            ..Default::default()
+        };
+        apply_probe_form_to_toml_doc(&form, &mut d);
+        let out = d.to_string();
+        assert!(out.contains("user_principal = \"bob\""), "{out}");
+        assert!(out.contains("client_host = \"lt-b\""), "{out}");
+        // Clearing one field removes only that key.
+        let form2 = StructuredSettingsForm {
+            probe_user_principal: Some(String::new()),
+            probe_client_host: Some("lt-b".into()),
+            ..Default::default()
+        };
+        apply_probe_form_to_toml_doc(&form2, &mut d);
+        let out2 = d.to_string();
+        assert!(!out2.contains("user_principal"), "{out2}");
+        assert!(out2.contains("client_host = \"lt-b\""), "{out2}");
+        // Clearing both collapses the table back to auto.
+        let form3 = StructuredSettingsForm {
+            probe_user_principal: Some(String::new()),
+            probe_client_host: Some(String::new()),
+            ..Default::default()
+        };
+        apply_probe_form_to_toml_doc(&form3, &mut d);
+        assert!(!d.to_string().contains("[probe]"));
+    }
+
+    #[test]
+    fn absent_fields_leave_existing_probe_untouched() {
+        let mut d = doc(BASE);
+        let form = StructuredSettingsForm::default();
+        apply_probe_form_to_toml_doc(&form, &mut d);
+        let out = d.to_string();
+        assert!(out.contains("user_principal = \"alice\""), "{out}");
+        assert!(out.contains("client_host = \"lt-a\""), "{out}");
     }
 }

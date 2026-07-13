@@ -14,6 +14,7 @@ Representative full-config generation: `nfs-klldap-config/tests/representative_g
 ## Well-Tested Areas
 
 - Config: `validate_and_derive`, generate output (including sssd.conf header, no duplicate keys), `load_host_paths_only`, two-tier hostname + `nfs_keytab_host_variants` / `nfs_keytab_host_matches`.
+- Probe identities: `[probe]`/env/auto-pick precedence and the no-candidate skip path (`ganesha_identity_pipeline.rs` tests; readiness gate passes `Some(user)`).
 - UI config: `ldap_service_creds` (full DN verbatim, env override).
 - FsManager + web handlers: path mapping, safety refusals, tree building, settings save/apply.
 - Auth sessions and login cookie round-trip (`web/mod.rs`).

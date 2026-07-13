@@ -3,7 +3,15 @@
 # Ganesha 9.x Debian only; drives uid/gid + supp via idhelper path.
 set -euo pipefail
 
+# Site parameters (env-overridable; defaults match the fictional example lab).
+NFS_SERVER="${NFS_SERVER:-aurora.testlabby.local}"
+KRB5_REALM="${KRB5_REALM:-TESTLABBY.LOCAL}"
+PRINC="${PRINC:-nfs/${NFS_SERVER}@${KRB5_REALM}}"
+SHARE1="${SHARE1:-stuff}"
+SHARE2="${SHARE2:-junk}"
+
 echo "=== FEDORA KRB5P VALIDATE START $(date -u) ==="
+echo "server=${NFS_SERVER} realm=${KRB5_REALM} shares=${SHARE1},${SHARE2}"
 
 dnf install -y --quiet nfs-utils krb5-workstation rpcbind keyutils dbus kmod
 
@@ -29,29 +37,28 @@ rpc.gssd -f &
 GSSD_PID=$!
 sleep 2
 
-PRINC="nfs/aurora.testlabby.local@TESTLABBY.LOCAL"
 KRB5CCNAME=/tmp/ccm kinit -k -t /etc/krb5.keytab -c /tmp/ccm "$PRINC" 2>&1
 export KRB5CCNAME=/tmp/ccm
 klist -c "$KRB5CCNAME"
 
-mkdir -p /mnt/stuff /mnt/junk
+mkdir -p /mnt/${SHARE1} /mnt/${SHARE2}
 
 echo "=== ATTEMPTING KRB5P MOUNTS ==="
 set +e
-mount -vvv -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/stuff /mnt/stuff >/tmp/mount-stuff.log 2>&1
+mount -vvv -t nfs4 -o vers=4.2,sec=krb5p ${NFS_SERVER}:/${SHARE1} /mnt/${SHARE1} >/tmp/mount-stuff.log 2>&1
 M1=$?
-mount -vvv -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/junk /mnt/junk >/tmp/mount-junk.log 2>&1
+mount -vvv -t nfs4 -o vers=4.2,sec=krb5p ${NFS_SERVER}:/${SHARE2} /mnt/${SHARE2} >/tmp/mount-junk.log 2>&1
 M2=$?
 set -e
 
 echo "M1=$M1 M2=$M2"
-mount | grep -E '/mnt/(stuff|junk)' || true
+mount | grep -E "/mnt/(${SHARE1}|${SHARE2})" || true
 
 if [ "$M1" != "0" ] || [ "$M2" != "0" ]; then
   echo "MOUNT FAILED (M1=$M1 M2=$M2)"
   # Preserve the client-side abort reason: mount -vvv output + kernel NFS/RPC messages.
-  echo "--- mount -vvv /mnt/stuff ---"; cat /tmp/mount-stuff.log || true
-  echo "--- mount -vvv /mnt/junk ---"; cat /tmp/mount-junk.log || true
+  echo "--- mount -vvv /mnt/${SHARE1} ---"; cat /tmp/mount-stuff.log || true
+  echo "--- mount -vvv /mnt/${SHARE2} ---"; cat /tmp/mount-junk.log || true
   echo "--- dmesg tail (nfs/rpc/gss) ---"; dmesg 2>/dev/null | grep -iE 'nfs|rpc|gss' | tail -40 || true
   kill "$GSSD_PID" 2>/dev/null || true
   exit 32
@@ -61,10 +68,10 @@ echo "=== MOUNTS SUCCEEDED - RUNNING CYCLES ==="
 
 for i in 1 2 3; do
   echo "cycle $i"
-  echo "fedora-krb5p-real-$i" > /mnt/stuff/fed-krb5p-$i.txt
-  cat /mnt/stuff/fed-krb5p-$i.txt
-  echo "fedora-krb5p-real-$i" > /mnt/junk/fed-krb5p-$i.txt
-  cat /mnt/junk/fed-krb5p-$i.txt
+  echo "fedora-krb5p-real-$i" > /mnt/${SHARE1}/fed-krb5p-$i.txt
+  cat /mnt/${SHARE1}/fed-krb5p-$i.txt
+  echo "fedora-krb5p-real-$i" > /mnt/${SHARE2}/fed-krb5p-$i.txt
+  cat /mnt/${SHARE2}/fed-krb5p-$i.txt
 done
 
 sync
@@ -73,18 +80,18 @@ sleep 1
 echo "=== HOST BIND VISIBILITY CHECK (cycle files + marker) ==="
 cycle_ok=true
 for i in 1 2 3; do
-  if ! ls /hostdata/stuff/fed-krb5p-$i.txt >/dev/null 2>&1; then
-    echo "MISSING cycle file on host: stuff/fed-krb5p-$i.txt"
+  if ! ls /hostdata/${SHARE1}/fed-krb5p-$i.txt >/dev/null 2>&1; then
+    echo "MISSING cycle file on host: ${SHARE1}/fed-krb5p-$i.txt"
     cycle_ok=false
   fi
-  if ! ls /hostdata/junk/fed-krb5p-$i.txt >/dev/null 2>&1; then
-    echo "MISSING cycle file on host: junk/fed-krb5p-$i.txt"
+  if ! ls /hostdata/${SHARE2}/fed-krb5p-$i.txt >/dev/null 2>&1; then
+    echo "MISSING cycle file on host: ${SHARE2}/fed-krb5p-$i.txt"
     cycle_ok=false
   fi
 done
-echo "krb5p-success-$$" > /mnt/stuff/krb5p-success-marker.txt
+echo "krb5p-success-$$" > /mnt/${SHARE1}/krb5p-success-marker.txt
 sync
-if ! ls /hostdata/stuff/krb5p-success-marker.txt >/dev/null 2>&1; then
+if ! ls /hostdata/${SHARE1}/krb5p-success-marker.txt >/dev/null 2>&1; then
   echo "MISSING marker on host"
   cycle_ok=false
 fi
@@ -94,30 +101,28 @@ if $cycle_ok; then
   echo "VISIBLE ON HOST BIND - SUCCESS"
 else
   echo "NOT ALL CYCLE FILES VISIBLE ON HOST BIND"
-  ls -l /hostdata/stuff/fed-krb5p-*.txt /hostdata/junk/fed-krb5p-*.txt 2>/dev/null || true
+  ls -l /hostdata/${SHARE1}/fed-krb5p-*.txt /hostdata/${SHARE2}/fed-krb5p-*.txt 2>/dev/null || true
   kill "$GSSD_PID" 2>/dev/null || true
   exit 33
 fi
 
 for i in 1 2 3; do
-  rm -f /mnt/stuff/fed-krb5p-$i.txt /mnt/junk/fed-krb5p-$i.txt
+  rm -f /mnt/${SHARE1}/fed-krb5p-$i.txt /mnt/${SHARE2}/fed-krb5p-$i.txt
 done
-rm -f /mnt/stuff/krb5p-success-marker.txt
+rm -f /mnt/${SHARE1}/krb5p-success-marker.txt
 
-umount /mnt/stuff /mnt/junk 2>/dev/null || true
+umount /mnt/${SHARE1} /mnt/${SHARE2} 2>/dev/null || true
 kill "$GSSD_PID" 2>/dev/null || true
 
 if [ -n "${TEST_USER_PRINC:-}" ] && [ -n "${TEST_USER_PASSWORD:-}" ]; then
   echo "=== USER TGT PHASE (${TEST_USER_PRINC}) ==="
   realm="${TEST_USER_PRINC#*@}"
   short="${TEST_USER_PRINC%%@*}"
-  case "${short}" in
-    testuser1) exp_uid=3001 ;;
-    *) exp_uid=3001 ;;
-  esac
-  exp_gid=3005
+  # Expected server-side ids for the test user (env-overridable per site).
+  exp_uid="${TEST_USER_EXPECTED_UID:-3001}"
+  exp_gid="${TEST_USER_EXPECTED_GID:-3005}"
   # Pre-created marker (dir is 755; user TGT cannot CREATE) — world-writable file for overwrite.
-  MARKER="user-tgt-testuser1-fixed.txt"
+  MARKER="user-tgt-${short}-fixed.txt"
   GANESHA_WIRE_UID_OFFSET=524287
   normalize_wire_id() {
     local id="$1"
@@ -195,12 +200,12 @@ RKCONF
   GSSD_USER_PID=$!
   sleep 2
 
-  touch "/hostdata/stuff/${MARKER}" 2>/dev/null || true
-  chown "${exp_uid}:${exp_gid}" "/hostdata/stuff/${MARKER}" 2>/dev/null || true
-  chmod 666 "/hostdata/stuff/${MARKER}" 2>/dev/null || true
+  touch "/hostdata/${SHARE1}/${MARKER}" 2>/dev/null || true
+  chown "${exp_uid}:${exp_gid}" "/hostdata/${SHARE1}/${MARKER}" 2>/dev/null || true
+  chmod 666 "/hostdata/${SHARE1}/${MARKER}" 2>/dev/null || true
 
   set +e
-  mount -vvv -t nfs4 -o vers=4.2,sec=krb5p aurora.testlabby.local:/stuff /mnt/stuff >/tmp/mount-user.log 2>&1
+  mount -vvv -t nfs4 -o vers=4.2,sec=krb5p ${NFS_SERVER}:/${SHARE1} /mnt/${SHARE1} >/tmp/mount-user.log 2>&1
   MU=$?
   set -e
   if [ "$MU" != "0" ]; then
@@ -211,7 +216,7 @@ RKCONF
     exit 42
   fi
   marker="${MARKER}"
-  out="/mnt/stuff/${marker}"
+  out="/mnt/${SHARE1}/${marker}"
   set +e
   printf '%s\n' "$marker" > "$out" 2>/dev/null
   write_rc=$?
@@ -228,14 +233,14 @@ RKCONF
   echo "user-tgt write_rc=${write_rc}"
   echo "user-tgt client stat uid:gid = ${uid}:${gid}"
   base="${marker}"
-  echo "SERVER_VERIFY=${base}" > /hostdata/stuff/.user-tgt-verify
+  echo "SERVER_VERIFY=${base}" > /hostdata/${SHARE1}/.user-tgt-verify
   srv_uid=""; srv_gid=""
-  if [ -f "/hostdata/stuff/${base}" ]; then
-    srv_uid=$(stat -c %u "/hostdata/stuff/${base}")
-    srv_gid=$(stat -c %g "/hostdata/stuff/${base}")
+  if [ -f "/hostdata/${SHARE1}/${base}" ]; then
+    srv_uid=$(stat -c %u "/hostdata/${SHARE1}/${base}")
+    srv_gid=$(stat -c %g "/hostdata/${SHARE1}/${base}")
     srv_uid=$(normalize_wire_id "$srv_uid")
     srv_gid=$(normalize_wire_id "$srv_gid")
-    host_back="$(cat "/hostdata/stuff/${base}" 2>/dev/null || true)"
+    host_back="$(cat "/hostdata/${SHARE1}/${base}" 2>/dev/null || true)"
     echo "user-tgt hostdata bind stat uid:gid = ${srv_uid}:${srv_gid}"
     if [ "$host_back" != "$marker" ]; then
       echo "hostdata content note (stat is authoritative for uid/gid)"
@@ -250,7 +255,7 @@ RKCONF
   echo "USER TGT HOSTDATA UID MAP OK (${srv_uid}:${srv_gid})"
   echo "USER TGT CLIENT UID MAP OK (${uid}:${gid})"
   echo "USER TGT PHASE OK (kinit + krb5p mount + write + correct uid/gid mapping via idhelper)"
-  umount /mnt/stuff
+  umount /mnt/${SHARE1}
   kill "$GSSD_USER_PID" "$IDMAP_PID" 2>/dev/null || true
 fi
 

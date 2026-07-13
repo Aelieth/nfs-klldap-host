@@ -47,6 +47,10 @@ pub(crate) struct SettingsTemplate {
     kerberos_realm: String,
     ganesha_default_security: String,
     kllldap_ignored_attributes: bool,
+    probe_user_principal: String,
+    probe_client_host: String,
+    /// True when no explicit [probe] key exists (auto-pick from directory).
+    auto_probe_ldap: bool,
     override_server_hostname: bool,
     override_kerberos_realm: bool,
     override_ganesha_default_security: bool,
@@ -202,6 +206,9 @@ pub(crate) struct StructuredSettingsForm {
     override_kerberos_realm: Option<bool>,
     ganesha_default_security: Option<String>,
     override_ganesha_default_security: Option<bool>,
+    probe_user_principal: Option<String>,
+    probe_client_host: Option<String>,
+    auto_probe_ldap: Option<bool>,
     #[serde(flatten)]
     extra: std::collections::HashMap<String, String>,
 }
@@ -356,6 +363,10 @@ pub(crate) fn build_settings_template(
         kerberos_realm: cfg.kerberos.realm.clone().unwrap_or_default(),
         ganesha_default_security: cfg.ganesha.default_security.clone(),
         kllldap_ignored_attributes: cfg.sssd.kllldap_ignored_attributes.unwrap_or(true),
+        probe_user_principal: cfg.probe.user_principal.clone().unwrap_or_default(),
+        probe_client_host: cfg.probe.client_host.clone().unwrap_or_default(),
+        auto_probe_ldap: !(has_explicit(&doc, "probe", "user_principal")
+            || has_explicit(&doc, "probe", "client_host")),
         override_server_hostname: has_explicit(&doc, "server", "hostname"),
         override_kerberos_realm: has_explicit(&doc, "kerberos", "realm"),
         override_ganesha_default_security: get_explicit_str(&doc, "ganesha", "default_security")

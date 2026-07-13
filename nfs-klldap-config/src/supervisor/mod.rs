@@ -22,7 +22,7 @@ use nfs_klldap_config::{
         probe_socket_grouplist, GaneshaSpawnEnv,
     },
     ganesha_sighup_failed, idhelper_socket_path, ldap_bind_configured,
-    warm_principals_for_startup, warm_principals_nss_ready,
+    probe_client_host, warm_principals_for_startup, warm_principals_nss_ready,
     install_signal_handlers, is_preconfigured_deployment, is_setup_wizard_complete,
     discover_ganesha_daemon_pid, mark_setup_wizard_complete, plan_from_changes, process_is_live,
     reap_one_child, resolve_host_nfs_mode, resolve_keytab_path,
@@ -544,15 +544,15 @@ while :; do :; done
         let realm = runtime_realm(cfg.as_ref());
         let host = runtime_hostname(cfg.as_ref());
         let short = host.split('.').next().unwrap_or(&host);
-        let user = format!("testuser1@{realm}");
+        let user = format!("probeuser@{realm}");
         let server_host = format!("host/{short}@{realm}");
-        let client_host = format!("host/blue-lt@{realm}");
+        let client_host = format!("host/probe-client@{realm}");
         let _ = fs::write(
             &self.env.nss_passwd,
             format!(
                 "root:x:0:0:root:/root:/bin/sh\n\
-                 testuser1:x:3788:3002:user:/nonexistent:/usr/sbin/nologin\n\
-                 {user}:x:3788:3002:user:/nonexistent:/usr/sbin/nologin\n\
+                 probeuser:x:20001:20001:user:/nonexistent:/usr/sbin/nologin\n\
+                 {user}:x:20001:20001:user:/nonexistent:/usr/sbin/nologin\n\
                  {server_host}:x:0:0:host:/non:/nologin\n\
                  {client_host}:x:0:0:host:/non:/nologin\n"
             ),
@@ -561,8 +561,8 @@ while :; do :; done
             &self.env.nss_group,
             format!(
                 "root:x:0:root,daemon,bin\n\
-                 staff:x:3002:testuser1,{user}\n\
-                 aux:x:3007:testuser1,{user}\n"
+                 probeuser:x:20001:probeuser,{user}\n\
+                 probe-extra:x:20002:probeuser,{user}\n"
             ),
         );
     }
@@ -1080,9 +1080,15 @@ while :; do :; done
         let short = host.split('.').next().unwrap_or(&host).to_string();
         let sample = warm_principals_for_startup(cfg.as_ref(), &realm, &short)
             .into_iter()
-            .find(|p| p.contains('@') && !p.starts_with("host/"))
-            .unwrap_or_else(|| format!("testuser1@{realm}"));
-        let sample_short = nfs_klldap_identity::principal_local_part(&sample);
+            .find(|p| p.contains('@') && !p.starts_with("host/"));
+        if sample.is_none() {
+            self.log_info(
+                "readiness: no probe user configured — confirming root identity path only ([probe] user_principal enables full user-path confirmation)",
+            );
+        }
+        let sample_short = sample
+            .as_deref()
+            .map(|s| nfs_klldap_identity::principal_local_part(s).to_string());
         let sock = idhelper_socket_path();
         let glog = std::env::var("GANESHA_LOG_PATH").unwrap_or_else(|_| "/var/log/ganesha.log".to_string());
         self.log_info("Post-ganesha-start readiness: exercising getgrouplist-equivalent (id -G under env) + socket-grps/gl for root + sample...");
@@ -1111,7 +1117,7 @@ while :; do :; done
             let report = check_ganesha_readiness(
                 self.pids.ganesha,
                 &envp,
-                &sample,
+                sample.as_deref(),
                 &glog,
                 &sock,
             );
@@ -1125,27 +1131,31 @@ while :; do :; done
                         .join(" ")
                 ));
             }
-            if let Some(sample_g) = probe_id_g_under_env(&sample, &envp) {
-                self.log_info(&format!(
-                    "readiness {} id -G (under daemon env): {}",
-                    sample,
-                    sample_g
-                        .iter()
-                        .map(|g| g.to_string())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ));
+            if let Some(sample) = sample.as_deref() {
+                if let Some(sample_g) = probe_id_g_under_env(sample, &envp) {
+                    self.log_info(&format!(
+                        "readiness {} id -G (under daemon env): {}",
+                        sample,
+                        sample_g
+                            .iter()
+                            .map(|g| g.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ));
+                }
             }
-            if let Some(short_g) = probe_id_g_under_env(sample_short, &envp) {
-                self.log_info(&format!(
-                    "readiness short pw_name {} id -G (under daemon env): {}",
-                    sample_short,
-                    short_g
-                        .iter()
-                        .map(|g| g.to_string())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ));
+            if let Some(sample_short) = sample_short.as_deref() {
+                if let Some(short_g) = probe_id_g_under_env(sample_short, &envp) {
+                    self.log_info(&format!(
+                        "readiness short pw_name {} id -G (under daemon env): {}",
+                        sample_short,
+                        short_g
+                            .iter()
+                            .map(|g| g.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ));
+                }
             }
             if let Some(pid) = self.pids.ganesha {
                 if let Some(root_seen) = probe_ganesha_process_groups(pid, "root") {
@@ -1154,26 +1164,34 @@ while :; do :; done
                         root_seen.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(" ")
                     ));
                 }
-                if let Some(sample_seen) = probe_ganesha_process_groups(pid, &sample)
-                {
-                    self.log_info(&format!(
-                        "readiness ganesha-seen {} id -G (proc/{pid}/environ): {}",
-                        sample,
-                        sample_seen.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(" ")
-                    ));
+                if let Some(sample) = sample.as_deref() {
+                    if let Some(sample_seen) = probe_ganesha_process_groups(pid, sample) {
+                        self.log_info(&format!(
+                            "readiness ganesha-seen {} id -G (proc/{pid}/environ): {}",
+                            sample,
+                            sample_seen.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(" ")
+                        ));
+                    }
                 }
-                if let Some(short_seen) = probe_ganesha_process_groups(pid, sample_short) {
-                    self.log_info(&format!(
-                        "readiness ganesha-seen short pw_name {} id -G (proc/{pid}/environ): {}",
-                        sample_short,
-                        short_seen.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(" ")
-                    ));
+                if let Some(sample_short) = sample_short.as_deref() {
+                    if let Some(short_seen) = probe_ganesha_process_groups(pid, sample_short) {
+                        self.log_info(&format!(
+                            "readiness ganesha-seen short pw_name {} id -G (proc/{pid}/environ): {}",
+                            sample_short,
+                            short_seen.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(" ")
+                        ));
+                    }
                 }
             }
             if report.is_ready() {
-                self.log_info(&format!(
-                    "Ganesha readiness confirmed: root+short({sample_short}) getgrouplist+grps+gl ok, sample({sample}) getgrouplist+grps+gl ok",
-                ));
+                match (sample.as_deref(), sample_short.as_deref()) {
+                    (Some(sample), Some(sample_short)) => self.log_info(&format!(
+                        "Ganesha readiness confirmed: root+short({sample_short}) getgrouplist+grps+gl ok, sample({sample}) getgrouplist+grps+gl ok",
+                    )),
+                    _ => self.log_info(
+                        "Ganesha readiness confirmed: root getgrouplist+grps+gl ok (no probe user)",
+                    ),
+                }
                 self.log_info("synthetic krb principal getpwuid_r/getgrouplist test: no my_getgrouplist_alloc WARN (clean)");
                 return true;
             }
@@ -1182,7 +1200,7 @@ while :; do :; done
         let final_report = check_ganesha_readiness(
             self.pids.ganesha,
             &envp,
-            &sample,
+            sample.as_deref(),
             &glog,
             &sock,
         );
@@ -1282,12 +1300,16 @@ while :; do :; done
         let host = runtime_hostname(cfg.as_ref());
         let realm = runtime_realm(cfg.as_ref());
         let short = host.split('.').next().unwrap_or(&host).to_string();
-        let client_short = std::env::var("NFS_KLLDAP_IDHELPER_CLIENT_HOST")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "blue-lt".to_string());
+        let nss_env = GaneshaNssEnv::from_runtime_defaults();
+        let mut names = vec![host.clone(), short.clone()];
+        match probe_client_host(cfg.as_ref(), &nss_env, &short) {
+            Some(client_short) => names.push(client_short),
+            None => self.log_info(
+                "idhelper-preresolve: no probe client host configured — server principals only",
+            ),
+        }
         let mut pre = std::env::var("NFS_KLLDAP_IDHELPER_PRERESOLVE").unwrap_or_default();
-        for v in [&host, &short, &client_short] {
+        for v in &names {
             let p = if v.contains('@') {
                 v.clone()
             } else if v.contains('/') {

@@ -842,15 +842,15 @@ impl IdLdapResolver {
 
     fn group_gid_from_dn(&self, group_dn: &str, bind_dn: &str, bind_pw: &str) -> Option<i32> {
         // test-support: gid from the TEST spec for the GRPS memberOf path.
+        // Unmatched DNs fall through to the cache-backed path (spec-driven).
         #[cfg(feature = "test-support")]
         if let Ok(spec) = std::env::var("TEST_REBULK_POPULATE") {
             for tok in spec.split(';') {
                 let f: Vec<&str> = tok.split(':').collect();
-                if f.len() >= 3 && f[0] == "g" && (group_dn.contains(f[1]) || f[1] == "staff") {
+                if f.len() >= 3 && f[0] == "g" && group_dn.contains(f[1]) {
                     if let Ok(g) = f[2].parse::<i32>() { return Some(g); }
                 }
             }
-            return Some(1001);
         }
         // The group is usually already cached (bulk load / prior resolve):
         // answer from the DN's RDN value without touching LDAP.
@@ -1198,8 +1198,6 @@ impl IdLdapResolver {
                     if let Ok(g) = f[2].parse::<i32>() {
                         let members: Vec<String> = if f.len() > 3 {
                             f[3].split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect()
-                        } else if f[1] == "staff" {
-                            vec!["testuser1".to_string()]
                         } else {
                             vec![]
                         };
@@ -1567,7 +1565,7 @@ mod tests {
     #[test]
     fn resolve_groups_for_principal_host_blue_lt_returns_root_gid() {
         let r = IdLdapResolver::from_inputs(&LdapResolverInputs::default());
-        let gs = r.resolve_groups_for_principal("host/blue-lt@SATOMLIN.COM", "dn", "pw");
+        let gs = r.resolve_groups_for_principal("host/client-a@TESTLAB.LOCAL", "dn", "pw");
         assert_eq!(gs, vec![MACHINE_GID as i32]);
         assert!(!gs.contains(&(FALLBACK_NOBODY_GID as i32)));
     }
@@ -1588,13 +1586,13 @@ mod tests {
             PosixGroupEntry {
                 gid: 3007,
                 display: "hosts".into(),
-                members: vec!["blue-lt".into()],
+                members: vec!["client-a".into()],
             },
         );
         let supps =
-            machine_supplemental_gids_from_snapshot("host/blue-lt@SATOMLIN.COM", &snap);
+            machine_supplemental_gids_from_snapshot("host/client-a@TESTLAB.LOCAL", &snap);
         assert_eq!(supps, vec![3005, 3007]);
-        let gids = machine_group_gids_for_principal("host/blue-lt@SATOMLIN.COM", &snap);
+        let gids = machine_group_gids_for_principal("host/client-a@TESTLAB.LOCAL", &snap);
         assert_eq!(gids, vec![0, 3005, 3007]);
     }
 

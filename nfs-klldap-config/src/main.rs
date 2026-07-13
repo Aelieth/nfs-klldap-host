@@ -170,7 +170,7 @@ fn handle_generate(path: &Path, dry_run: bool) -> Result<(), ConfigError> {
     let host_short = get_consistent_hostname()
         .map(|h| h.hostname.split('.').next().unwrap_or(&h.hostname).to_string())
         .unwrap_or_else(|_| "localhost".to_string());
-    let (id_ok, id_msg) = check_idhelper_sample_resolutions(&realm, &host_short);
+    let (id_ok, id_msg) = check_idhelper_sample_resolutions(Some(&cfg), &realm, &host_short);
     emit_idhelper_check_log(id_ok, &id_msg);
 
     println!("Generated configs from {}", path.display());
@@ -193,7 +193,7 @@ fn handle_validate(path: &Path) -> Result<(), ConfigError> {
     let host_short = get_consistent_hostname()
         .map(|h| h.hostname.split('.').next().unwrap_or(&h.hostname).to_string())
         .unwrap_or_else(|_| "localhost".to_string());
-    let (id_ok, id_msg) = check_idhelper_sample_resolutions(&realm, &host_short);
+    let (id_ok, id_msg) = check_idhelper_sample_resolutions(Some(&cfg), &realm, &host_short);
     emit_idhelper_check_log(id_ok, &id_msg);
     println!("OK: {} is valid", path.display());
     println!("  ldap_uri : {}", cfg.ldap_uri);

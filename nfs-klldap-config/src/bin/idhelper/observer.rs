@@ -845,33 +845,33 @@ manage_gids = false
 
     #[test]
     fn unmapped_heal_skips_client_machine_principals() {
-        let variants = vec!["zima-nas".to_string(), "zima-nas.satomlin.com".to_string()];
+        let variants = vec!["nas-1".to_string(), "nas-1.testlab.local".to_string()];
         // User principals must always heal.
         assert!(unmapped_principal_needs_heal(
-            "testuser1@SATOMLIN.COM",
-            "SATOMLIN.COM",
+            "testuser1@TESTLAB.LOCAL",
+            "TESTLAB.LOCAL",
             &variants
         ));
         // Client machine principals are the designed anonymous squash: no heal.
         assert!(!unmapped_principal_needs_heal(
-            "host/blue-lt.satomlin.com@SATOMLIN.COM",
-            "SATOMLIN.COM",
+            "host/client-a.testlab.local@TESTLAB.LOCAL",
+            "TESTLAB.LOCAL",
             &variants
         ));
         assert!(!unmapped_principal_needs_heal(
-            "host/red-lt@SATOMLIN.COM",
-            "SATOMLIN.COM",
+            "host/client-b@TESTLAB.LOCAL",
+            "TESTLAB.LOCAL",
             &variants
         ));
         // The server's OWN machine principals stay heal-worthy.
         assert!(unmapped_principal_needs_heal(
-            "nfs/zima-nas.satomlin.com@SATOMLIN.COM",
-            "SATOMLIN.COM",
+            "nfs/nas-1.testlab.local@TESTLAB.LOCAL",
+            "TESTLAB.LOCAL",
             &variants
         ));
         assert!(unmapped_principal_needs_heal(
-            "host/zima-nas@SATOMLIN.COM",
-            "SATOMLIN.COM",
+            "host/nas-1@TESTLAB.LOCAL",
+            "TESTLAB.LOCAL",
             &variants
         ));
     }
@@ -931,10 +931,10 @@ manage_gids = true
     #[test]
     fn extract_unsupported_code_path_machine_principal() {
         // Machine principals still hit allocate_by_principal stub under _MSPAC_SUPPORT; observer warms resolve.
-        let line = "uid2grp_allocate_by_principal :ID MAPPER :WARN :Unsupported code path for principal host/blue-lt@SATOMLIN.COM";
+        let line = "uid2grp_allocate_by_principal :ID MAPPER :WARN :Unsupported code path for principal host/client-a@TESTLAB.LOCAL";
         assert_eq!(
-            extract_candidate_principal(line, "SATOMLIN.COM"),
-            Some("host/blue-lt@SATOMLIN.COM".to_string())
+            extract_candidate_principal(line, "TESTLAB.LOCAL"),
+            Some("host/client-a@TESTLAB.LOCAL".to_string())
         );
     }
 
@@ -1032,15 +1032,15 @@ manage_gids = true
     #[test]
     fn extract_getgrouplist_triggers_machine_principal() {
         // getgrouplist on host segment or qualified host/ form must fire on-demand.
-        let line1 = r#"ganesha : getgrouplist host/blue-lt@REALM"#;
+        let line1 = r#"ganesha : getgrouplist host/client-a@REALM"#;
         assert_eq!(
             extract_candidate_principal(line1, "REALM"),
-            Some("host/blue-lt@REALM".to_string())
+            Some("host/client-a@REALM".to_string())
         );
-        let line2 = r#"getgrouplist(blue-lt) for client cred"#;
+        let line2 = r#"getgrouplist(client-a) for client cred"#;
         assert_eq!(
             extract_candidate_principal(line2, "REALM"),
-            Some("host/blue-lt@REALM".to_string())
+            Some("host/client-a@REALM".to_string())
         );
     }
 

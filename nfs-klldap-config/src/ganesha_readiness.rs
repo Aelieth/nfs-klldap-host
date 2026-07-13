@@ -305,10 +305,8 @@ pub fn exercise_ganesha_uid2grp(
             let _ = cmd.output();
         }
     } else {
-        for who in ["root", "testuser1"] {
-            let _ = probe_id_g_under_env(who, envp);
-        }
         for p in principals {
+            let _ = probe_id_g_under_env(p, envp);
             let short = principal_local_part(p);
             if short != *p {
                 let _ = probe_id_g_under_env(short, envp);
@@ -378,10 +376,13 @@ pub fn signal_ganesha_reload_idmap(pid: u32) -> bool {
 pub fn check_ganesha_readiness(
     pid: Option<u32>,
     envp: &[(OsString, OsString)],
-    sample: &str,
+    sample: Option<&str>,
     ganesha_log_path: &str,
     socket_path: &str,
 ) -> GaneshaReadinessReport {
+    let Some(sample) = sample else {
+        return check_ganesha_readiness_root_only(pid, envp, ganesha_log_path, socket_path);
+    };
     let short_sample = principal_local_part(sample);
     let root_gids = probe_id_g_under_env("root", envp);
     let sample_gids = probe_id_g_under_env(sample, envp);
@@ -451,6 +452,44 @@ pub fn check_ganesha_readiness(
         short_root_ok,
         short_sample_ok,
         socket_ok,
+        ganesha_process_ok,
+        ganesha_uid2grp_clean,
+        synthetic_clean,
+    }
+}
+
+/// Readiness without a probe user: sample gates pass vacuously.
+fn check_ganesha_readiness_root_only(
+    pid: Option<u32>,
+    envp: &[(OsString, OsString)],
+    ganesha_log_path: &str,
+    socket_path: &str,
+) -> GaneshaReadinessReport {
+    let root_gids = probe_id_g_under_env("root", envp);
+    let root_ok = root_gids.as_ref().is_some_and(|g| g.contains(&0));
+    let sock_root_grps = probe_socket_grps("root", socket_path).is_some();
+    let sock_root_gl = probe_socket_grouplist("root", socket_path)
+        .as_ref()
+        .is_some_and(|g| g.contains(&0));
+    let ganesha_process_ok = if let Some(pid) = pid {
+        probe_ganesha_process_groups(pid, "root")
+            .as_ref()
+            .is_some_and(|g| g.contains(&0))
+    } else {
+        false
+    };
+    let proc_envp = pid
+        .and_then(proc_pid_environ)
+        .unwrap_or_else(|| envp.to_vec());
+    let (ganesha_uid2grp_clean, _) =
+        exercise_ganesha_uid2grp(&proc_envp, &["root"], ganesha_log_path);
+    let synthetic_clean = check_synthetic_krb_log_clean(ganesha_log_path);
+    GaneshaReadinessReport {
+        root_ok,
+        sample_ok: true,
+        short_root_ok: root_ok,
+        short_sample_ok: true,
+        socket_ok: sock_root_grps && sock_root_gl,
         ganesha_process_ok,
         ganesha_uid2grp_clean,
         synthetic_clean,
@@ -537,7 +576,7 @@ mod tests {
         let report = check_ganesha_readiness(
             None,
             &envp,
-            "testuser1",
+            Some("testuser1"),
             "/nonexistent/ganesha.log",
             "/nonexistent/idhelper.sock",
         );

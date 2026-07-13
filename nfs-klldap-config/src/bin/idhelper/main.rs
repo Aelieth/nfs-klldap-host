@@ -260,9 +260,32 @@ fn handle_cli(args: &[String]) {
             if !socket_live {
                 println!("idhelper-check:skip:no-live-stack (idhelper socket absent or not accepting connections; synthetic-getgrouplist/socket-grps/ganesha-runtime require live container stack)");
             }
-            // Self-test with a real LDAP user when present.
+            // Self-test with a probe LDAP user when one is configured or
+            // auto-picked from the materialized NSS snapshot.
+            let cfg = nfs_klldap_config::NfsKlldapConfig::load(
+                &nfs_klldap_config::default_config_path(),
+            )
+            .ok();
+            let nss_env = nfs_klldap_config::GaneshaNssEnv::from_runtime_defaults();
+            let test_p = nfs_klldap_config::probe_user_principal(cfg.as_ref(), &nss_env)
+                .map(|u| if u.contains('@') { u } else { format!("{}@{}", u, realm) });
+            let Some(test_p) = test_p else {
+                println!(
+                    "self-test: skipped (no probe user configured or materialized; \
+                     set [probe] user_principal or NFS_KLLDAP_PROBE_USER_PRINCIPAL)"
+                );
+                let root_gl = {
+                    let mut s = std::os::unix::net::UnixStream::connect(socket_path()).ok();
+                    if let Some(ref mut st) = s {
+                        let _ = st.write_all(b"GROUPLIST root\n"); let _ = st.flush();
+                        let mut rd = std::io::BufReader::new(st); let mut ln=String::new(); let _ = rd.read_line(&mut ln);
+                        ln.trim().starts_with("OK ")
+                    } else { false }
+                };
+                println!("synthetic-getgrouplist: root_ok={} (no probe user)", root_gl);
+                return;
+            };
             let mut cache = IdCache::load_from_file(&effective_cache_path());
-            let test_p = format!("testuser1@{}", realm);
             let prod = NssMaterializePaths::production();
             let r = resolve_principal(&test_p, &realm, &server_variants, &mut cache, &prod);
             println!(
@@ -462,17 +485,17 @@ mod tests {
     #[test]
     fn extract_candidate_finds_host_style() {
         let r = extract_candidate_principal(
-            "name=(21:Linux NFSv4.2 blue-lt) client stuff",
+            "name=(21:Linux NFSv4.2 client-a) client stuff",
             "EXAMPLE.COM",
         );
-        assert_eq!(r, Some("host/blue-lt@EXAMPLE.COM".to_string()));
+        assert_eq!(r, Some("host/client-a@EXAMPLE.COM".to_string()));
     }
 
     #[test]
     fn extract_candidate_finds_in_ganesha_client_id_lines() {
-        let line = r#"name=(21:Linux NFSv4.2 blue-lt) conf = 0x... server_addr = 172.17.0.2"#;
+        let line = r#"name=(21:Linux NFSv4.2 client-a) conf = 0x... server_addr = 172.17.0.2"#;
         let r = extract_candidate_principal(line, "EXAMPLE.COM");
-        assert_eq!(r, Some("host/blue-lt@EXAMPLE.COM".to_string()));
+        assert_eq!(r, Some("host/client-a@EXAMPLE.COM".to_string()));
     }
 
     #[test]
@@ -491,11 +514,11 @@ mod tests {
 
     #[test]
     fn extract_rejects_ffff_from_ipv6() {
-        let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)]"#;
+        let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 client-a)]"#;
         let r = extract_candidate_principal(line, "EXAMPLE.COM");
-        // It should find the real "blue-lt", never "ffff".
+        // It should find the real "client-a", never "ffff".
         if let Some(c) = r {
-            assert!(c.contains("blue-lt"), "should still find the real hostname");
+            assert!(c.contains("client-a"), "should still find the real hostname");
             assert!(!c.contains("ffff"), "must not emit host/ffff from IPv6 literal");
         }
     }
@@ -512,9 +535,9 @@ mod tests {
 
     #[test]
     fn extract_still_finds_good_name_even_with_noise() {
-        let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)] clientid=Unique=..."#;
+        let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 client-a)] clientid=Unique=..."#;
         let r = extract_candidate_principal(line, "EXAMPLE.COM");
-        assert_eq!(r, Some("host/blue-lt@EXAMPLE.COM".to_string()));
+        assert_eq!(r, Some("host/client-a@EXAMPLE.COM".to_string()));
     }
 
     #[test]
@@ -710,8 +733,8 @@ mod tests {
         // Override const paths via temp dir is hard. Monkey-patch via env.
         let mut c = IdCache::default();
         let machine = Resolved {
-            principal: "host/blue-lt@EXAMPLE.COM".into(),
-            name: "blue-lt".into(),
+            principal: "host/client-a@EXAMPLE.COM".into(),
+            name: "client-a".into(),
             uid: 0,
             gid: 0,
             kind: PrincipalKind::Machine,
@@ -720,10 +743,10 @@ mod tests {
         };
         c.insert(machine);
         // We can't easily redirect const paths here without changing API.
-        let line = passwd_line_for(c.get("host/blue-lt@EXAMPLE.COM").unwrap());
-        assert!(line.starts_with("blue-lt:x:0:0:"));
-        assert!(line.contains("blue-lt"));
-        let gline = group_line_for(c.get("host/blue-lt@EXAMPLE.COM").unwrap());
+        let line = passwd_line_for(c.get("host/client-a@EXAMPLE.COM").unwrap());
+        assert!(line.starts_with("client-a:x:0:0:"));
+        assert!(line.contains("client-a"));
+        let gline = group_line_for(c.get("host/client-a@EXAMPLE.COM").unwrap());
         assert!(gline.starts_with("root:x:0:"));
     }
 
@@ -850,8 +873,8 @@ mod tests {
         // Pre-populate cache with a machine (as if previously observed on-demand).
         let mut cache = IdCache::default();
         cache.insert(Resolved {
-            principal: "host/blue-lt@EX.COM".into(),
-            name: "blue-lt".into(),
+            principal: "host/client-a@EX.COM".into(),
+            name: "client-a".into(),
             uid: 0,
             gid: 0,
             kind: PrincipalKind::Machine,
@@ -873,24 +896,24 @@ mod tests {
         let egr = std::fs::read_to_string(paths.nss.extrausers_group).unwrap_or_default();
 
         // Machine short and @ forms appear; uid/gid 0
-        assert!(pw.contains("blue-lt:x:0:0:"), "nss passwd must have canonical machine short 'blue-lt'");
+        assert!(pw.contains("client-a:x:0:0:"), "nss passwd must have canonical machine short 'client-a'");
         // The literal principal form with / must be present for Ganesha getpwnam("host/..@REALM")
-        assert!(pw.contains("host/blue-lt@EX.COM:x:0:0:"), "nss must emit raw host/ principal@ for getpwnam");
+        assert!(pw.contains("host/client-a@EX.COM:x:0:0:"), "nss must emit raw host/ principal@ for getpwnam");
         assert!(gr.contains("root:x:0:"), "nss group must have root gid 0");
-        assert!(epw.contains("blue-lt:x:0:0:"), "extrausers passwd machine short");
+        assert!(epw.contains("client-a:x:0:0:"), "extrausers passwd machine short");
         assert!(egr.contains("root:x:0:"), "extrausers group root");
 
         // Now simulate pure on-demand path: fresh cache, resolve machine using under (no prod write), materialize directly.
         let mut cache2 = IdCache::default();
         let t2 = NssMaterializePaths::under(&base.join("ondemand"));
         let _ = std::fs::create_dir_all(base.join("ondemand"));
-        let r = resolve_principal("host/blue-lt@EX.COM", "EX.COM", &[], &mut cache2, &t2);
+        let r = resolve_principal("host/client-a@EX.COM", "EX.COM", &[], &mut cache2, &t2);
         assert_eq!(r.uid, 0); assert_eq!(r.gid, 0); assert_eq!(r.kind, PrincipalKind::Machine);
 
         let _ = materialize_nss_wrappers_at(&cache2, &t2, None);
         let pw2 = std::fs::read_to_string(t2.nss_passwd).unwrap_or_default();
         let gr2 = std::fs::read_to_string(t2.nss_group).unwrap_or_default();
-        assert!(pw2.contains("blue-lt:x:0:0:") || pw2.contains("blue_lt:x:0:0:"));
+        assert!(pw2.contains("client-a:x:0:0:") || pw2.contains("blue_lt:x:0:0:"));
         assert!(gr2.contains("root:x:0:"));
     }
 
@@ -1004,20 +1027,20 @@ mod tests {
     #[test]
     fn extract_rejects_nil_from_conf_group() {
         // Lines often contain conf = (nil) after a good name= group Must.
-        let line = r#"key_locate :CLIENT ID :F_DBG :Locate Client Record seeking Key=... {{... name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} ...}}"#;
+        let line = r#"key_locate :CLIENT ID :F_DBG :Locate Client Record seeking Key=... {{... name=(21:Linux NFSv4.2 client-a) conf = (nil) {NULL} unconf = (nil) {NULL} ...}}"#;
         let r = extract_candidate_principal(line, "EXAMPLE.COM");
         if let Some(c) = r {
-            assert!(c.contains("blue-lt"), "should find real host");
+            assert!(c.contains("client-a"), "should find real host");
             assert!(!c.contains("nil"), "must never emit host/nil");
         }
     }
 
     #[test]
     fn extract_rejects_clientid_token() {
-        let line = r#"nfs4_op_exchange_id ... clientid=Unique=0x6a375213 Counter=0x00000001 name=(21:Linux NFSv4.2 blue-lt)"#;
+        let line = r#"nfs4_op_exchange_id ... clientid=Unique=0x6a375213 Counter=0x00000001 name=(21:Linux NFSv4.2 client-a)"#;
         let r = extract_candidate_principal(line, "EXAMPLE.COM");
         if let Some(c) = r {
-            assert!(c.contains("blue-lt"));
+            assert!(c.contains("client-a"));
             assert!(!c.to_ascii_lowercase().contains("clientid"), "must not emit host/clientid");
         }
     }
@@ -1031,7 +1054,7 @@ mod tests {
         assert!(!looks_like_client_hostname("0x6a375213"));
         assert!(!looks_like_client_hostname("0x7f0c3082f530"));
         assert!(!looks_like_client_hostname("0x10000"));
-        assert!(looks_like_client_hostname("blue-lt"));
+        assert!(looks_like_client_hostname("client-a"));
         assert!(looks_like_client_hostname("my-host.example.com"));
     }
 
@@ -1054,12 +1077,12 @@ mod tests {
     #[test]
     fn extract_only_good_from_full_clid_create_line() {
         // The exact fs_create line from the trace must yield only the real.
-        let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)]"#;
+        let line = r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 client-a)]"#;
         let r = extract_candidate_principal(line, "EXAMPLE.COM");
         if let Some(c) = r {
-            assert!(c.contains("blue-lt"));
+            assert!(c.contains("client-a"));
             assert!(!c.contains("ffff"));
-            assert!(!c.to_ascii_lowercase().contains("client"));
+            assert!(!c.to_ascii_lowercase().contains("clientid"));
         } else {
             // If it returns none that's also acceptable as long as it doesn't.
         }
@@ -1068,10 +1091,10 @@ mod tests {
     #[test]
     fn extract_rejects_conf_nil_groups_even_in_long_client_record() {
         // Full client record blob with multiple (nil) after the good name=.
-        let line = r#"key_locate :CLIENT ID :F_DBG :Locate Client Record seeking Key=0x7f0c3082f530 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=1}}"#;
+        let line = r#"key_locate :CLIENT ID :F_DBG :Locate Client Record seeking Key=0x7f0c3082f530 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 client-a) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=1}}"#;
         let r = extract_candidate_principal(line, "EXAMPLE.COM");
         if let Some(c) = r {
-            assert!(c.contains("blue-lt"));
+            assert!(c.contains("client-a"));
             assert!(!c.contains("nil"), "must not emit host/nil from conf = (nil) groups");
         }
     }
@@ -1081,7 +1104,7 @@ mod tests {
         // Lines that only have unconf / counter noise after nfsv4 mention.
         let line = r#"key_locate :CLIENT ID :F_DBG :Locate Unconfirmed Client ID seeking Key=0x7f0c3082f670 {Unique=0x6a375213 Counter=0x00000001}"#;
         let r = extract_candidate_principal(line, "EXAMPLE.COM");
-        assert!(r.is_none() || r.unwrap().contains("blue-lt") /* only if a good name was also present */);
+        assert!(r.is_none() || r.unwrap().contains("client-a") /* only if a good name was also present */);
     }
 
     #[test]
@@ -1174,12 +1197,12 @@ mod tests {
             r#"clientid=Unique=0x6a375213 Counter=0x00000001"#,
             r#"key_locate :CLIENT ID :F_DBG :Locate Unconfirmed Client ID seeking Key=0x7f0c3082f670 {Unique=0x6a375213 Counter=0x00000001}"#,
             r#"nfs4_op_destroy_clientid :CLIENT ID :DEBUG :DESTROY_CLIENTID clientid=Unique=0x6a375213 Counter=0x00000002"#,
-            r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)]"#,
-            r#"fs_rm_clid_impl :CLIENT ID :DEBUG :position=0 len=45  parent_path=/var/lib/nfs/ganesha/v4recov recov_dir=::ffff:10.10.10.83-(21:Linux NFSv4.2 blue-lt)"#,
-            r#"dec_client_record_ref :CLIENT ID :F_DBG :Free {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=1}}"#,
+            r#"fs_create_clid_name :CLIENT ID :DEBUG :Created client name [::ffff:10.10.10.83-(21:Linux NFSv4.2 client-a)]"#,
+            r#"fs_rm_clid_impl :CLIENT ID :DEBUG :position=0 len=45  parent_path=/var/lib/nfs/ganesha/v4recov recov_dir=::ffff:10.10.10.83-(21:Linux NFSv4.2 client-a)"#,
+            r#"dec_client_record_ref :CLIENT ID :F_DBG :Free {{0x7f0c14001df0 name=(21:Linux NFSv4.2 client-a) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=1}}"#,
             // Long CLIENT ID lines with server_addr on Docker bridge.
-            r#"hashtable_getlatch :CLIENT ID :F_DBG :Get Client Record returning Value=0x7f0c14001df0 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=0}}"#,
-            r#"hashtable_deletelatched :CLIENT ID :F_DBG :Delete Client Record Key=0x7f0c14001df0 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 blue-lt) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=0}} Value=0x7f0c14001df0 ... was removed"#,
+            r#"hashtable_getlatch :CLIENT ID :F_DBG :Get Client Record returning Value=0x7f0c14001df0 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 client-a) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=0}}"#,
+            r#"hashtable_deletelatched :CLIENT ID :F_DBG :Delete Client Record Key=0x7f0c14001df0 {{0x7f0c14001df0 name=(21:Linux NFSv4.2 client-a) conf = (nil) {NULL} unconf = (nil) {NULL} server_addr = 172.17.0.2 pnfs_flags 0x10000 cr_refcount=0}} Value=0x7f0c14001df0 ... was removed"#,
             // A line with nfsv4 early and later (nil) groups. No good Linux.
             r#"some prefix NFSv4 stuff clientid=Unique=0x6a375213 conf = (nil) unconf = (nil) other tokens"#,
         ];
@@ -1205,12 +1228,12 @@ mod tests {
         let _ = std::fs::create_dir_all(tmp.path());
         let mut cache = IdCache::default();
         let realm = "EXAMPLE.COM".to_string();
-        let variants = vec!["zima-nas".to_string()];
+        let variants = vec!["nas-1".to_string()];
 
-        let r1 = resolve_principal("host/blue-lt@EXAMPLE.COM", &realm, &variants, &mut cache, &paths);
+        let r1 = resolve_principal("host/client-a@EXAMPLE.COM", &realm, &variants, &mut cache, &paths);
         assert_eq!(r1.uid, 0); assert_eq!(r1.gid, 0); assert_eq!(r1.kind, PrincipalKind::Machine);
 
-        let gs0 = resolve_groups_for_principal("host/blue-lt@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
+        let gs0 = resolve_groups_for_principal("host/client-a@EXAMPLE.COM", &realm, &variants, &mut cache, &paths, false);
         assert_eq!(gs0, vec![0]);
 
         std::fs::write(
@@ -1306,24 +1329,24 @@ mod tests {
         let tmpf = tempfile::tempdir().unwrap();
         let paths = NssMaterializePaths::under(tmpf.path());
         let _ = std::fs::create_dir_all(tmpf.path());
-        std::fs::write(paths.nss_passwd, "testuser1@SATOMLIN.COM:x:3788:100:Test:/non:/nologin\n").unwrap();
+        std::fs::write(paths.nss_passwd, "testuser1@TESTLAB.LOCAL:x:3788:100:Test:/non:/nologin\n").unwrap();
         let mut cache = IdCache::default();
-        let realm = "SATOMLIN.COM".to_string();
+        let realm = "TESTLAB.LOCAL".to_string();
         let variants: Vec<String> = vec![];
-        let gs_user = resolve_groups_for_principal("testuser1@SATOMLIN.COM", &realm, &variants, &mut cache, &paths, false);
-        let gs_host = resolve_groups_for_principal("host/blue-lt@SATOMLIN.COM", &realm, &variants, &mut cache, &paths, false);
+        let gs_user = resolve_groups_for_principal("testuser1@TESTLAB.LOCAL", &realm, &variants, &mut cache, &paths, false);
+        let gs_host = resolve_groups_for_principal("host/client-a@TESTLAB.LOCAL", &realm, &variants, &mut cache, &paths, false);
         assert!(gs_user.contains(&2002), "gs from groups must include supp 2002");
         let np = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
         let ng = std::fs::read_to_string(paths.nss_group).unwrap_or_default();
         let ep = std::fs::read_to_string(paths.extrausers_passwd).unwrap_or_default();
         let eg = std::fs::read_to_string(paths.extrausers_group).unwrap_or_default();
-        assert!(np.contains("testuser1@SATOMLIN.COM") && (ep.contains("testuser1@SATOMLIN.COM") || ep.contains("testuser1:x:3788")));
+        assert!(np.contains("testuser1@TESTLAB.LOCAL") && (ep.contains("testuser1@TESTLAB.LOCAL") || ep.contains("testuser1:x:3788")));
         // files after groups auto mat (before any manual)
         assert!((ng.contains("staff:x:2002:") || ng.contains("g2002")) && (ng.contains("testuser1") || ng.contains("testuser1@")));
         assert!((eg.contains("staff:x:2002:") || eg.contains("g2002")) && (eg.contains("testuser1") || eg.contains("testuser1@")));
         // also exercise ensure path
         let _ = ensure_nss_group_member_login(&paths, 2002, "testuser1");
-        let _ = ensure_nss_group_member_login(&paths, 2002, "testuser1@SATOMLIN.COM");
+        let _ = ensure_nss_group_member_login(&paths, 2002, "testuser1@TESTLAB.LOCAL");
         assert!(gs_host.contains(&0), "host must include primary gid 0");
         assert!(gs_host.contains(&3005), "host must inherit root-member supplemental gid: {gs_host:?}");
         let root_gs = resolve_groups_for_principal("root", &realm, &variants, &mut cache, &paths, false);
@@ -1345,13 +1368,13 @@ mod tests {
         let mut cache = IdCache::default();
         // Force runtime realm different from principal's
         // (the CLI paths now extract eff_realm from p; classify early-returns machine for prefix)
-        let r_host = resolve_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &[], &mut cache, &paths);
+        let r_host = resolve_principal("host/client-a@OTHERREALM", "TESTLAB.LOCAL", &[], &mut cache, &paths);
         assert_eq!(r_host.kind, PrincipalKind::Machine, "host/ must classify machine even on realm mismatch");
-        let gs_host = resolve_groups_for_principal("host/blue-lt@OTHERREALM", "SATOMLIN.COM", &[], &mut cache, &paths, false);
+        let gs_host = resolve_groups_for_principal("host/client-a@OTHERREALM", "TESTLAB.LOCAL", &[], &mut cache, &paths, false);
         assert_eq!(gs_host, vec![0]);
 
         // user@ mismatch should go user path (may fallback)
-        let r_user = resolve_principal("testuser1@OTHERREALM", "SATOMLIN.COM", &[], &mut cache, &paths);
+        let r_user = resolve_principal("testuser1@OTHERREALM", "TESTLAB.LOCAL", &[], &mut cache, &paths);
         assert!(r_user.kind != PrincipalKind::Machine);
     }
 
@@ -1361,7 +1384,7 @@ mod tests {
         let paths = NssMaterializePaths::under(td.path());
         let mut cache = IdCache::default();
         let realm = "TEST.COM";
-        let principal = "host/blue-lt@TEST.COM";
+        let principal = "host/client-a@TEST.COM";
         let r = resolve_principal(principal, realm, &[], &mut cache, &paths);
         assert_eq!(r.kind, PrincipalKind::Machine);
         let _ = resolve_groups_for_principal(principal, realm, &[], &mut cache, &paths, false);
@@ -1369,12 +1392,12 @@ mod tests {
         materialize_nss_wrappers_at(&cache, &paths, None).expect("materialize");
         // Explicitly prove the literal host/ principal@ (with /) was written for the getpwnam path.
         let pw_content = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
-        assert!(pw_content.lines().any(|l| l.starts_with("host/blue-lt@TEST.COM:") || l.contains("host/blue-lt@TEST.COM:x:0:0:")),
-            "must have written exact 'host/blue-lt@TEST.COM' login for getpwnam: {}", pw_content);
+        assert!(pw_content.lines().any(|l| l.starts_with("host/client-a@TEST.COM:") || l.contains("host/client-a@TEST.COM:x:0:0:")),
+            "must have written exact 'host/client-a@TEST.COM' login for getpwnam: {}", pw_content);
         let env = GaneshaNssEnv::from_paths(paths.nss_passwd, paths.nss_group);
         // Always assert the raw host/ principal form was written by materialize (file evidence).
         let pw = std::fs::read_to_string(paths.nss_passwd).unwrap_or_default();
-        let has_raw = pw.lines().any(|l| l.starts_with("host/blue-lt@TEST.COM:") || l.starts_with("host/blue-lt@TEST.COM:x:0:0:"));
+        let has_raw = pw.lines().any(|l| l.starts_with("host/client-a@TEST.COM:") || l.starts_with("host/client-a@TEST.COM:x:0:0:"));
         println!("nss-contract: raw-form-present={} (exact probe for full principal)", has_raw);
         assert!(has_raw, "raw host/ principal@ form with / must be present from pure materialize: {}", pw);
         if !env.wrapper_available() {
@@ -1398,7 +1421,7 @@ mod tests {
 
         let mut cache = IdCache::default();
         // Machine principal via the shipped resolve_principal (cold, no prior cache). Use test paths.
-        let rm = resolve_principal("host/blue-lt@TESTLAB.LOCAL", "TESTLAB.LOCAL", &[], &mut cache, &paths);
+        let rm = resolve_principal("host/client-a@TESTLAB.LOCAL", "TESTLAB.LOCAL", &[], &mut cache, &paths);
         assert_eq!(rm.uid, 0);
         assert_eq!(rm.gid, 0);
         assert_eq!(rm.kind, PrincipalKind::Machine);
@@ -1416,12 +1439,12 @@ mod tests {
         let egr = std::fs::read_to_string(paths.extrausers_group).unwrap();
 
         // Machine materialized as uid 0 in both stores.
-        assert!(pw.contains("blue-lt:x:0:0:"), "must have canonical short for machine");
-        assert!(epw.contains("blue-lt:x:0:0:"));
+        assert!(pw.contains("client-a:x:0:0:"), "must have canonical short for machine");
+        assert!(epw.contains("client-a:x:0:0:"));
         // Must emit the *exact* "host/NAME@REALM" login (with /) so getpwnam(host/NAME@REALM) succeeds.
-        assert!(pw.contains("host/blue-lt@TESTLAB.LOCAL:x:0:0:") || pw.lines().any(|l| l.starts_with("host/blue-lt@TESTLAB.LOCAL:")),
+        assert!(pw.contains("host/client-a@TESTLAB.LOCAL:x:0:0:") || pw.lines().any(|l| l.starts_with("host/client-a@TESTLAB.LOCAL:")),
             "nss_passwd must contain literal host/ principal@ form with slash: {}", pw);
-        assert!(epw.contains("host/blue-lt@TESTLAB.LOCAL:x:0:0:") || epw.lines().any(|l| l.starts_with("host/blue-lt@TESTLAB.LOCAL:")),
+        assert!(epw.contains("host/client-a@TESTLAB.LOCAL:x:0:0:") || epw.lines().any(|l| l.starts_with("host/client-a@TESTLAB.LOCAL:")),
             "extrausers_passwd must contain literal host/ principal@ form with slash");
         // Sanitized alias is optional but the raw / form is required for Ganesha UseGetpwnam.
 
@@ -1443,16 +1466,16 @@ mod tests {
         // Pure function: for machine+realm we emit the short name + the raw principal@ (no host_@ form).
         let mut cache = IdCache::default();
         cache.insert(Resolved {
-            principal: "host/blue-lt@EX.COM".into(),
-            name: "blue-lt".into(),
+            principal: "host/client-a@EX.COM".into(),
+            name: "client-a".into(),
             uid: 0,
             gid: 0,
             kind: PrincipalKind::Machine,
             source: "t".into(),
             supplemental_gids: vec![],
         });
-        let logins = materialize::nss_passwd_logins_for(cache.get("host/blue-lt@EX.COM").unwrap());
-        let expected: std::collections::BTreeSet<String> = ["blue-lt".to_string(), "host/blue-lt".to_string(), "host/blue-lt@EX.COM".to_string()].into_iter().collect();
+        let logins = materialize::nss_passwd_logins_for(cache.get("host/client-a@EX.COM").unwrap());
+        let expected: std::collections::BTreeSet<String> = ["client-a".to_string(), "host/client-a".to_string(), "host/client-a@EX.COM".to_string()].into_iter().collect();
         assert_eq!(logins, expected);
         assert!(logins.iter().all(|l| !l.contains("host_blue")), "no sanitized local form");
     }
@@ -1692,7 +1715,7 @@ mod tests {
         // First user@ using pre-seeded cache with supps (no TEST env passed to bin subprocess for pure CLI evidence path).
         let outu = ::std::process::Command::new(bin).arg("grps").arg("testu@T.REALM").env("NSS_PASSWD", &np).env("NSS_GROUP", &ng).env("NSS_EXTRAUSERS_PASSWD", &ep).env("NSS_EXTRAUSERS_GROUP", &eg).env("IDHELPER_CACHE_PATH", &cp).output().expect("bin grps user");
         // machine
-        let outm = ::std::process::Command::new(bin).arg("grps").arg("host/blue-lt@T.REALM").env("NSS_PASSWD", &np).env("NSS_GROUP", &ng).env("NSS_EXTRAUSERS_PASSWD", &ep).env("NSS_EXTRAUSERS_GROUP", &eg).env("IDHELPER_CACHE_PATH", &cp).output().expect("bin grps mach");
+        let outm = ::std::process::Command::new(bin).arg("grps").arg("host/client-a@T.REALM").env("NSS_PASSWD", &np).env("NSS_GROUP", &ng).env("NSS_EXTRAUSERS_PASSWD", &ep).env("NSS_EXTRAUSERS_GROUP", &eg).env("IDHELPER_CACHE_PATH", &cp).output().expect("bin grps mach");
         let ngc = std::fs::read_to_string(&ng).unwrap_or_default();
         let egc = std::fs::read_to_string(&eg).unwrap_or_default();
         let npc = std::fs::read_to_string(&np).unwrap_or_default();
@@ -1718,7 +1741,7 @@ mod tests {
         assert!(!ngc.contains("testu:x:65534") && !egc.contains("testu:x:65534"), "no bogus user-named 65534 gid row");
         assert!(ngc.contains(":4242:") && (ngc.contains("testu") || ngc.contains("testu@")), "supp row 4242 in nss_group from bin");
         assert!(egc.contains(":4242:") && (egc.contains("testu") || egc.contains("testu@")), "supp row 4242 in extra_group from bin");
-        assert!(egc.contains("root:x:0:") && (egc.contains("root,") || egc.contains("daemon") || egc.contains("blue-lt")), "uid0 root members from bin mach");
+        assert!(egc.contains("root:x:0:") && (egc.contains("root,") || egc.contains("daemon") || egc.contains("client-a")), "uid0 root members from bin mach");
         // cleanup envs
         for k in ["NSS_PASSWD","NSS_GROUP","NSS_EXTRAUSERS_PASSWD","NSS_EXTRAUSERS_GROUP","IDHELPER_CACHE_PATH"] { std::env::remove_var(k); }
     }

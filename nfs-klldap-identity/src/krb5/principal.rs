@@ -132,26 +132,26 @@ mod tests {
 
     #[test]
     fn machine_short_name_takes_trailing_segment() {
-        assert_eq!(machine_short_name("host/blue-lt@REALM"), "blue-lt");
+        assert_eq!(machine_short_name("host/client-a@REALM"), "client-a");
         assert_eq!(machine_short_name("alice@REALM"), "alice");
     }
 
     #[test]
     fn principal_local_part_and_machine_short_name_trim_input() {
         assert_eq!(principal_local_part(" alice@REALM "), "alice");
-        assert_eq!(machine_short_name(" host/blue-lt@REALM "), "blue-lt");
+        assert_eq!(machine_short_name(" host/client-a@REALM "), "client-a");
     }
 
     #[test]
     fn classify_host_blue_lt_is_machine() {
-        let (is_machine, _) = classify_principal("host/blue-lt@SATOMLIN.COM", "SATOMLIN.COM", &[]);
+        let (is_machine, _) = classify_principal("host/client-a@TESTLAB.LOCAL", "TESTLAB.LOCAL", &[]);
         assert!(is_machine);
         assert_eq!(MACHINE_UID, 0);
     }
 
     #[test]
     fn machine_principal_supplemental_gids_are_root_not_nobody() {
-        let gids = supplemental_gids_for_machine_principal("host/blue-lt@SATOMLIN.COM", "SATOMLIN.COM", &[])
+        let gids = supplemental_gids_for_machine_principal("host/client-a@TESTLAB.LOCAL", "TESTLAB.LOCAL", &[])
             .expect("host/*@REALM must yield machine gids");
         assert_eq!(gids, vec![MACHINE_GID as i32]);
         assert!(!gids.contains(&(FALLBACK_NOBODY_GID as i32)));

@@ -113,7 +113,7 @@ default** (the `IDLE_TIMEOUT` knob): auto-unmounting an idle share made the
 root-context automount *remount* fail with an NFS "not authorized to mount"
 error once the machine Kerberos credential in `/tmp/krb5cc_0` had lapsed since
 boot (the mount runs as root; the user's own fresh TGT is not what authorizes
-it). Stale-across-sleep is instead handled by `satomlin-nfs-sleep.service` (a
+it). Stale-across-sleep is instead handled by `klldap-nfs-sleep.service` (a
 unit ordered around `sleep.target`): it force-unmounts the `/var/mnt` krb5
 shares before suspend and re-primes the machine ticket on resume, so nothing
 goes stale and the first post-resume remount authenticates cleanly.
@@ -161,18 +161,18 @@ Run the server with `GANESHA_DEBUG=TRUE` while reproducing — the debug LOG set
   always EPERM. The fix is the **`users`** fstab option (setup script ≥ v5.8): it
   routes the click through setuid `/bin/mount` so the mount runs as root. Confirm
   the line carries it — `grep /var/mnt/<share> /etc/fstab` should show `users,exec,…`
-  — and if not, re-run `sudo ./satomlin-ldap-setup-v5.sh -f` then reboot. This is
+  — and if not, re-run `sudo ./klldap-client-setup.sh -f` then reboot. This is
   distinct from *access denied by server* below, which is an authorization/credential
   failure rather than a local privilege one.
 - **`mount.nfs4: access denied by server` / "not authorized to mount" on an automount
   remount** — `sec=` doesn't match the export `SecType` (default krb5p), or the client's
   clock is skewed, or (the common case for a *remount* that used to work) the root-context
   mount had no fresh machine credential: `sudo klist -c /tmp/krb5cc_0` — if empty/expired,
-  `sudo systemctl start satomlin-nfs-machine-creds.service` to re-prime, then retry. v5.7
+  `sudo systemctl start klldap-nfs-machine-creds.service` to re-prime, then retry. v5.7
   turns `x-systemd.idle-timeout` off by default precisely to stop these arbitrary remounts
   during normal use.
 - **Sporadic I/O errors / stale handles on suspend-resume laptops** — lease/grace are
-  server-tuned (lease 60, grace 90 since 0.9.81). v5.7's `satomlin-nfs-sleep.service`
+  server-tuned (lease 60, grace 90 since 0.9.81). v5.7's `klldap-nfs-sleep.service`
   unmounts the krb5 shares before suspend and re-primes the machine cred on resume, so
   nothing is left stale across sleep; if you still hit a wedged mount, `sudo umount -f -l
   /var/mnt/<share>` releases it and the next access remounts fresh. A `hard` mount held

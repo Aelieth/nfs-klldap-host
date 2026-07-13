@@ -136,9 +136,9 @@ fn ganesha_96_root_grouplist_and_nss_integration() {
             members: vec!["root".into()],
         },
     );
-    let supps = machine_supplemental_gids_from_snapshot("host/zima-nas@REALM", &snap);
+    let supps = machine_supplemental_gids_from_snapshot("host/nas-1@REALM", &snap);
     assert_eq!(supps, vec![3005], "root-member groups feed uid0 supplementals");
-    let gids = machine_group_gids_for_principal("host/zima-nas@REALM", &snap);
+    let gids = machine_group_gids_for_principal("host/nas-1@REALM", &snap);
     assert_eq!(gids, vec![0, 3005]);
 
     let nss = std::path::Path::new("/usr/lib/x86_64-linux-gnu/libnss_wrapper.so");

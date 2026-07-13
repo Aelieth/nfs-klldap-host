@@ -418,7 +418,7 @@ pub fn compute_startup_step(config_path: &Path) -> StartupStep {
     {
         let realm = cfg.effective_realm();
         let hs = crate::get_consistent_hostname().map(|h| h.hostname.split('.').next().unwrap_or(&h.hostname).to_string()).unwrap_or_else(|_| "localhost".to_string());
-        let (ok, msg) = crate::check_idhelper_sample_resolutions(&realm, &hs);
+        let (ok, msg) = crate::check_idhelper_sample_resolutions(Some(&cfg), &realm, &hs);
         crate::emit_idhelper_check_log(ok, &msg);
     }
 

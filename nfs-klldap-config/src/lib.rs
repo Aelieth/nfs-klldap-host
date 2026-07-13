@@ -71,7 +71,8 @@ pub use ganesha_log_contract::{
 };
 pub use posix_only_policy::PosixOnlyPolicy;
 pub use ganesha_identity_pipeline::{
-    identity_principals_for_check, run_identity_pipeline, warm_principals_for_startup,
+    identity_principals_for_check, probe_client_host, probe_user_principal,
+    run_identity_pipeline, warm_principals_for_startup,
     warm_principals_nss_ready, IdentityPrincipals,
 };
 pub use ganesha_nss_contract::{
@@ -329,7 +330,11 @@ fn probe_ganesha_runtime_wiring() -> String {
 }
 
 /// Preflight: CLI grps + pipeline + runtime nss contract + socket + ganesha-ctl id-
-pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool, String) {
+pub fn check_idhelper_sample_resolutions(
+    cfg: Option<&NfsKlldapConfig>,
+    realm: &str,
+    host_short: &str,
+) -> (bool, String) {
     if std::env::var("NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK").is_ok() {
         return (true, "idhelper-check:skip:NFS_KLLDAP_SKIP_ID_RESOLUTION_CHECK".into());
     }
@@ -343,14 +348,33 @@ pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool
         );
     }
     let idh = resolve_idhelper_bin();
-    let principals = identity_principals_for_check(realm, host_short);
+    let nss_env = GaneshaNssEnv::from_runtime_defaults();
+    let principals = identity_principals_for_check(cfg, realm, host_short, &nss_env);
     let mut msgs = vec![];
     let mut ok = true;
-    for (lab, p, expect_machine) in [
-        ("user", principals.user.as_str(), false),
-        ("host-server", principals.server_host.as_str(), true),
-        ("host-client", principals.client_host.as_str(), true),
-    ] {
+    if principals.user.is_none() {
+        msgs.push(
+            "idhelper-check:partial:no-probe-user (user-path checks skipped; set [probe] \
+             user_principal or NFS_KLLDAP_PROBE_USER_PRINCIPAL)"
+                .to_string(),
+        );
+    }
+    if principals.client_host.is_none() {
+        msgs.push(
+            "idhelper-check:partial:no-probe-client-host (client-path checks skipped; set \
+             [probe] client_host or NFS_KLLDAP_PROBE_CLIENT_HOST)"
+                .to_string(),
+        );
+    }
+    let mut probe_list: Vec<(&str, &str, bool)> = Vec::new();
+    if let Some(u) = principals.user.as_deref() {
+        probe_list.push(("user", u, false));
+    }
+    probe_list.push(("host-server", principals.server_host.as_str(), true));
+    if let Some(c) = principals.client_host.as_deref() {
+        probe_list.push(("host-client", c, true));
+    }
+    for (lab, p, expect_machine) in &probe_list {
         let gids = match probe_grps_via_cli(&idh, p) {
             Ok(g) => g,
             Err(e) => {
@@ -359,7 +383,7 @@ pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool
                 continue;
             }
         };
-        if expect_machine {
+        if *expect_machine {
             if gids != [MACHINE_GID] {
                 ok = false;
                 msgs.push(format!(
@@ -376,24 +400,23 @@ pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool
             msgs.push(format!("{}({}):{}gids", lab, p, gids.len()));
         }
     }
-    let (pipe_ok, pipe_msg) = run_identity_pipeline(realm, host_short, &idh);
+    let (pipe_ok, pipe_msg) = run_identity_pipeline(&principals, &idh);
     if !pipe_ok {
         ok = false;
     }
     msgs.push(pipe_msg);
-    for p in [
-        &principals.user,
-        &principals.server_host,
-        &principals.client_host,
-    ] {
+    for (_, p, _) in &probe_list {
         materialize_via_idhelper_grps(&idh, p);
     }
-    let nss_env = GaneshaNssEnv::from_runtime_defaults();
-    for (p, expect_machine) in [
-        (principals.user.as_str(), false),
-        (principals.client_host.as_str(), true),
-    ] {
-        let tag = probe_socket_grps_tag(p, expect_machine);
+    let mut socket_probe_list: Vec<(&str, bool)> = Vec::new();
+    if let Some(u) = principals.user.as_deref() {
+        socket_probe_list.push((u, false));
+    }
+    if let Some(c) = principals.client_host.as_deref() {
+        socket_probe_list.push((c, true));
+    }
+    for (p, expect_machine) in &socket_probe_list {
+        let tag = probe_socket_grps_tag(p, *expect_machine);
         if tag.contains("incomplete") || tag.contains("connect-fail") {
             ok = false;
         }
@@ -401,29 +424,36 @@ pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool
     }
     let sock = idhelper_socket_path();
     let sock_available = std::path::Path::new(&sock).exists();
-    let user_short = nfs_klldap_identity::principal_local_part(&principals.user);
     let root_gl_ok = probe_grouplist_via_socket("root")
         .as_ref()
         .is_some_and(|g| g.contains(&0));
-    #[allow(clippy::needless_borrow)]
-    let user_gl_ok = probe_grouplist_via_socket(&user_short).is_some();
-    let (short_contract_ok, short_contract_msg) =
-        evaluate_short_name_getgrouplist_contract(&principals.user, &nss_env, 3);
-    msgs.push(format!(
-        "synthetic-getgrouplist: root_ok={root_gl_ok} user({user_short})_ok={user_gl_ok} {short_contract_msg}"
-    ));
-    if sock_available && (!root_gl_ok || !user_gl_ok) {
-        ok = false;
+    let user_short = principals
+        .user
+        .as_deref()
+        .map(|u| nfs_klldap_identity::principal_local_part(u).to_string());
+    if let (Some(user), Some(user_short)) = (principals.user.as_deref(), user_short.as_deref()) {
+        let user_gl_ok = probe_grouplist_via_socket(user_short).is_some();
+        let (short_contract_ok, short_contract_msg) =
+            evaluate_short_name_getgrouplist_contract(user, &nss_env, 3);
+        msgs.push(format!(
+            "synthetic-getgrouplist: root_ok={root_gl_ok} user({user_short})_ok={user_gl_ok} {short_contract_msg}"
+        ));
+        if sock_available && (!root_gl_ok || !user_gl_ok) {
+            ok = false;
+        }
+        if !short_contract_ok {
+            ok = false;
+        }
+    } else {
+        msgs.push(format!(
+            "synthetic-getgrouplist: root_ok={root_gl_ok} (no probe user)"
+        ));
+        if sock_available && !root_gl_ok {
+            ok = false;
+        }
     }
-    if !short_contract_ok {
-        ok = false;
-    }
-    for (lab, p, expect_machine) in [
-        ("user", principals.user.as_str(), false),
-        ("host-server", principals.server_host.as_str(), true),
-        ("host-client", principals.client_host.as_str(), true),
-    ] {
-        let (contract_ok, contract_msg) = evaluate_nss_contract(p, &nss_env, expect_machine);
+    for (lab, p, expect_machine) in &probe_list {
+        let (contract_ok, contract_msg) = evaluate_nss_contract(p, &nss_env, *expect_machine);
         if !contract_ok {
             ok = false;
         }
@@ -445,18 +475,19 @@ pub fn check_idhelper_sample_resolutions(realm: &str, host_short: &str) -> (bool
                 .map(|(k, v)| (std::ffi::OsString::from(k), std::ffi::OsString::from(v)))
                 .collect();
             let root_seen = probe_id_g_under_env("root", &envp);
-            #[allow(clippy::needless_borrow)]
-            let user_seen = probe_id_g_under_env(&user_short, &envp);
-            msgs.push(format!(
-                "ganesha-seen-getgrouplist: root={root_seen:?} user({user_short})={user_seen:?}"
-            ));
+            if let Some(user_short) = user_short.as_deref() {
+                let user_seen = probe_id_g_under_env(user_short, &envp);
+                msgs.push(format!(
+                    "ganesha-seen-getgrouplist: root={root_seen:?} user({user_short})={user_seen:?}"
+                ));
+            } else {
+                msgs.push(format!(
+                    "ganesha-seen-getgrouplist: root={root_seen:?} (no probe user)"
+                ));
+            }
         }
     }
-    for p in [
-        &principals.user,
-        &principals.server_host,
-        &principals.client_host,
-    ] {
+    for (_, p, _) in &probe_list {
         if let Some((ctl_ok, ctl_msg)) = probe_ganesha_id_resolve(p) {
             if !ctl_ok {
                 ok = false;

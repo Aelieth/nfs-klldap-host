@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn extract_server_addr_from_ganesha_line_parses_fixture() {
-        let line = r#"key_locate :CLIENT ID :F_DBG :{{ name=(21:Linux NFSv4.2 blue-lt) server_addr = 172.17.0.2 pnfs_flags 0x10000}}"#;
+        let line = r#"key_locate :CLIENT ID :F_DBG :{{ name=(22:Linux NFSv4.2 client-a) server_addr = 172.17.0.2 pnfs_flags 0x10000}}"#;
         assert_eq!(
             extract_server_addr_from_ganesha_line(line).as_deref(),
             Some("172.17.0.2")

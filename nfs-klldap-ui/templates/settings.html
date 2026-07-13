@@ -246,6 +246,20 @@
                 <input type="checkbox" name="override_ganesha_default_security" id="override_ganesha_default_security" value="true" {% if override_ganesha_default_security %}checked{% endif %} hidden>
                 {% endif %}
               </div>
+
+              {# [probe] identity probe — Auto checkbox gates two optional fields #}
+              <div class="fld" data-probe-card>
+                <div class="ac-head">
+                  <label class="fld-lab" title="Startup identity checks probe a sample directory user and an enrolled client machine.&#10;Auto picks them from the directory; uncheck to pin specific identities.&#10;&rarr; [probe] user_principal / client_host">probe (identity checks) <span class="ico">i</span></label>
+                </div>
+                <label style="display:flex;align-items:center;gap:6px;font-size:.85em;margin:4px 0">
+                  <input type="checkbox" name="auto_probe_ldap" id="auto_probe_ldap" value="true" {% if auto_probe_ldap %}checked{% endif %}>
+                  Auto probe LDAP
+                </label>
+                <input type="text" name="probe_user_principal" id="probe_user_principal" placeholder="sample user (name or name@REALM)" value="{{ probe_user_principal }}" {% if auto_probe_ldap %}disabled{% endif %}>
+                <input type="text" name="probe_client_host" id="probe_client_host" placeholder="client machine short name" value="{{ probe_client_host }}" {% if auto_probe_ldap %}disabled{% endif %} style="margin-top:6px">
+                <div class="derived-note">Auto: startup checks pick a sample user and client from the directory. Uncheck to pin a specific user principal / client host.</div>
+              </div>
             </div>
 
             <div class="diag">
@@ -494,6 +508,18 @@
     if (cb) cb.checked = custom;
     markDirty();
   });
+
+  // ---------- probe card: Auto checkbox gates the two [probe] fields ----------
+  const probeAuto = document.getElementById('auto_probe_ldap');
+  if (probeAuto) {
+    probeAuto.addEventListener('change', () => {
+      ['probe_user_principal', 'probe_client_host'].forEach(id => {
+        const f = document.getElementById(id);
+        if (f) f.disabled = probeAuto.checked;
+      });
+      markDirty();
+    });
+  }
 
   // ---------- shares: collapse / expand / add / remove ----------
   const container = document.getElementById('shares-container');

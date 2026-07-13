@@ -394,22 +394,22 @@ mod tests {
 
     #[test]
     fn nss_lookup_names_covers_principal_short_and_host_segment() {
-        let names = nss_lookup_names("host/blue-lt@TEST.COM");
-        assert!(names.contains(&"host/blue-lt@TEST.COM".to_string()));
-        assert!(names.contains(&"host/blue-lt".to_string()));
-        assert!(names.contains(&"blue-lt".to_string()));
+        let names = nss_lookup_names("host/client-a@TEST.COM");
+        assert!(names.contains(&"host/client-a@TEST.COM".to_string()));
+        assert!(names.contains(&"host/client-a".to_string()));
+        assert!(names.contains(&"client-a".to_string()));
     }
 
     #[test]
     fn evaluate_nss_contract_machine_when_wrapper_and_files_present() {
         let td = tempfile::tempdir().unwrap();
-        write_minimal_nss(td.path(), "blue-lt", 0, 0);
+        write_minimal_nss(td.path(), "client-a", 0, 0);
         let env = GaneshaNssEnv::from_paths(&td.path().join("nss_passwd"), &td.path().join("nss_group"));
         if !env.wrapper_available() {
             eprintln!("skip: libnss_wrapper.so not on host");
             return;
         }
-        let (ok, msg) = evaluate_nss_contract("host/blue-lt@TEST.COM", &env, true);
+        let (ok, msg) = evaluate_nss_contract("host/client-a@TEST.COM", &env, true);
         assert!(ok, "machine nss contract failed: {msg}");
         assert!(msg.starts_with("nss-contract:ok"));
     }

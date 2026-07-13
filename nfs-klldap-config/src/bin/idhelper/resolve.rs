@@ -995,7 +995,7 @@ ldap_default_authtok = "sekret"
         let paths = crate::materialize::NssMaterializePaths::under(tmp.path());
         let mut cache = IdCache::default();
         cache.insert(Resolved {
-            principal: "testuser1@SATOMLIN.COM".into(),
+            principal: "testuser1@TESTLAB.LOCAL".into(),
             name: "testuser1".into(),
             uid: 3788,
             gid: 3002,
@@ -1032,12 +1032,12 @@ ldap_default_authtok = "sekret"
             "evidence build_nss_snapshot: probe_nss_groups_exact(testuser1)={short_gids:?}"
         );
         let (ok, msg) =
-            evaluate_short_name_getgrouplist_contract("testuser1@SATOMLIN.COM", &env, 3);
+            evaluate_short_name_getgrouplist_contract("testuser1@TESTLAB.LOCAL", &env, 3);
         if env.wrapper_available() {
             assert!(ok, "shipped build_nss_snapshot short contract: {msg}");
         } else {
             let (file_ok, file_msg) =
-                evaluate_short_name_getgrouplist_contract("testuser1@SATOMLIN.COM", &env, 1);
+                evaluate_short_name_getgrouplist_contract("testuser1@TESTLAB.LOCAL", &env, 1);
             assert!(file_ok, "file-level contract: {file_msg}");
         }
     }

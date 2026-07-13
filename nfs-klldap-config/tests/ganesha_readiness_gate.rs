@@ -99,7 +99,7 @@ fn check_ganesha_readiness_succeeds_with_mock_socket_and_nss_fixture() {
     let report = check_ganesha_readiness(
         None,
         &envp,
-        "testuser1",
+        Some("testuser1"),
         glog.to_str().unwrap(),
         sock.to_str().unwrap(),
     );

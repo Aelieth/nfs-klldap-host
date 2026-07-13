@@ -91,7 +91,7 @@ fn is_numeric_login(login: &str) -> bool {
 }
 
 /// Passwd login for user@REALM (and host/NAME@REALM) principals.
-/// Keeps '@' and '/' (so getpwnam("host/blue-lt@REALM") under UseGetpwnam=true
+/// Keeps '@' and '/' (so getpwnam("host/client-a@REALM") under UseGetpwnam=true
 /// finds the literal principal name that Ganesha passes). Only replace truly
 /// problematic chars for the nss_wrapper file format.
 pub(crate) fn principal_realm_login_for_nss(principal: &str) -> String {
@@ -124,9 +124,9 @@ pub(crate) fn nss_passwd_logins_for(r: &Resolved) -> std::collections::BTreeSet<
         // Never emit any "host_NAME" (sanitized local) form.
         let local = principal_local_part(&r.principal);
         if local != short {
-            s.insert(local.to_string()); // raw "host/blue-lt"
+            s.insert(local.to_string()); // raw "host/client-a"
         }
-        s.insert(principal_realm_login_for_nss(&r.principal)); // raw "host/blue-lt@REALM"
+        s.insert(principal_realm_login_for_nss(&r.principal)); // raw "host/client-a@REALM"
     } else if principal_has_realm(&r.principal) {
         let at = principal_realm_login_for_nss(&r.principal);
         if at != short {
@@ -801,21 +801,21 @@ mod root_snapshot_tests {
         let old_pop = std::env::var("TEST_REBULK_POPULATE").ok();
         std::env::set_var(
             "TEST_REBULK_POPULATE",
-            "g:admins:3005:root;g:hosts:3007:blue-lt",
+            "g:admins:3005:root;g:hosts:3007:client-a",
         );
         let tmp = tempfile::tempdir().unwrap();
         let paths = NssMaterializePaths::under(tmp.path());
         let mut cache = IdCache::default();
-        let realm = "SATOMLIN.COM";
+        let realm = "TESTLAB.LOCAL";
         let _ = crate::resolve::resolve_principal(
-            "host/zima-nas@SATOMLIN.COM",
+            "host/nas-1@TESTLAB.LOCAL",
             realm,
             &[],
             &mut cache,
             &paths,
         );
         let _ = crate::resolve::resolve_groups_for_principal(
-            "host/zima-nas@SATOMLIN.COM",
+            "host/nas-1@TESTLAB.LOCAL",
             realm,
             &[],
             &mut cache,
@@ -847,7 +847,7 @@ mod root_snapshot_tests {
             gr.iter().any(|l| l.contains(":3005:") && l.contains("root")),
             "root login on supplemental gid 3005: {gr:?}"
         );
-        for bad in ["host/", "zima-nas@", "blue-lt@"] {
+        for bad in ["host/", "nas-1@", "client-a@"] {
             assert!(
                 !root_line.contains(bad),
                 "machine login must not appear on gid 0: {root_line}"
@@ -866,7 +866,7 @@ mod root_snapshot_tests {
         // With a dynamic user, still force exact root first + its group.
         let mut c = IdCache::default();
         c.insert(Resolved {
-            principal: "testuser1@SATOMLIN.COM".into(),
+            principal: "testuser1@TESTLAB.LOCAL".into(),
             name: "testuser1".into(),
             uid: 3788,
             gid: 3002,

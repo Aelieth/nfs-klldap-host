@@ -145,6 +145,19 @@ async fn permissions_js() -> impl IntoResponse {
     )
 }
 
+/// Serves the shared stylesheet (compiled in like the templates).
+/// Unversioned filename with a short public cache: repeat page loads skip
+/// the ~25KB payload while a redeploy wins within the hour.
+async fn style_css() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "text/css"),
+            (CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        include_str!("../../assets/style.css"),
+    )
+}
+
 /// Redirect to the setup wizard when first-run steps are incomplete.
 async fn require_setup_complete(
     State(state): State<AppState>,
@@ -177,6 +190,7 @@ pub fn router(state: AppState) -> Router {
         // Public routes that do not require authentication.
         .route("/assets/htmx-1.9.12.min.js", get(htmx_js))
         .route("/assets/permissions.js", get(permissions_js))
+        .route("/assets/style.css", get(style_css))
         .route("/login", get(login_page).post(login))
         .route("/setup-password", post(setup_password))
         .route("/logout", get(logout).post(logout))

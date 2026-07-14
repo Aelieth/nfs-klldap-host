@@ -266,8 +266,11 @@ fn start_periodic_rebulk(cache: Arc<Mutex<IdCache>>, realm: String) {
         loop {
             thread::sleep(Duration::from_secs(secs));
             let _ = get_or_init_resolver();
-            if let Ok(mut guard) = cache.lock() {
-                let _ = rebulk_ldap_users(&mut guard, &realm);
+            // Recover a poisoned lock instead of silently skipping every future
+            // rebulk; note when a rebulk yields nothing rather than swallowing it.
+            let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+            if rebulk_ldap_users(&mut guard, &realm).is_none() {
+                eprintln!("[idhelper] periodic LDAP rebulk produced no users");
             }
         }
     });
@@ -316,7 +319,7 @@ pub(crate) fn run_daemon() {
     // Eagerly bulk-load the full user+group map into the 10m resolver cache.
     let _ = get_or_init_resolver();
     {
-        let mut guard = cache.lock().unwrap();
+        let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(seeded) = rebulk_ldap_users(&mut guard, &realm) {
             eprintln!(
                 "[idhelper] initial sync: {} LDAP users in nss_wrapper (principal2uid/libnfsidmap path)",
@@ -330,7 +333,7 @@ pub(crate) fn run_daemon() {
     for v in &server_variants {
         for prefix in ["host", "nfs"] {
             let p = format!("{}/{}@{}", prefix, v, realm);
-            let mut guard = cache.lock().unwrap();
+            let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
             let _ = resolve_principal(&p, &realm, &server_variants, &mut guard, &prod_paths);
             eprintln!(
                 "[idhelper] pre-resolved server {} principal at startup: {}",
@@ -340,7 +343,7 @@ pub(crate) fn run_daemon() {
     }
 
     {
-        let guard = cache.lock().unwrap();
+        let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
         if let Some((r, _, _)) = get_or_init_resolver() {
             let snap = r.snapshot();
             let _ = materialize_nss_wrappers_at(&guard, &NssMaterializePaths::production(), Some(&snap.groups));
@@ -349,7 +352,7 @@ pub(crate) fn run_daemon() {
         }
     }
     {
-        let mut guard = cache.lock().unwrap();
+        let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
         let prod_paths = NssMaterializePaths::production();
         refresh_supplemental_nss_for_cached_users(&mut guard, &realm, &server_variants, &prod_paths);
     }
@@ -359,7 +362,7 @@ pub(crate) fn run_daemon() {
         for p in list.split(',') {
             let p = p.trim();
             if !p.is_empty() {
-                let mut guard = cache.lock().unwrap();
+                let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
                 let _ = resolve_principal(p, &realm, &server_variants, &mut guard, &prod_paths);
                 eprintln!("[idhelper] pre-resolved at startup: {}", p);
             }
@@ -429,7 +432,7 @@ fn handle_client(
                 out.push_str("ERR missing principal\n");
             } else {
                 dlog!("socket RESOLVE arg=\"{}\"", arg);
-                let mut guard = cache.lock().unwrap();
+                let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
                 let r = if std::env::var("NSS_PASSWD").is_ok() {
                     let owned = NssMaterializePaths::materialize_paths_owned();
                     let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);
@@ -442,7 +445,7 @@ fn handle_client(
             }
         }
         "REBULK" => {
-            let mut guard = cache.lock().unwrap();
+            let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
             match rebulk_ldap_users(&mut guard, realm) {
                 Some(n) => out.push_str(&format!("OK {}\n", n)),
                 None => out.push_str("ERR rebulk failed\n"),
@@ -453,7 +456,7 @@ fn handle_client(
                 out.push_str("ERR missing principal\n");
             } else {
                 dlog!("socket GRPS arg=\"{}\"", arg);
-                let mut guard = cache.lock().unwrap();
+                let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
                 // GRPS handler supplies ID_MAPPER groups at runtime via (now identity-routed) resolve.
                 // Local path when NSS_* set (for test isolation), prod otherwise.
                 let gs = if std::env::var("NSS_PASSWD").is_ok() {
@@ -477,7 +480,7 @@ fn handle_client(
             // leveraging identity-pipeline + nss-contract data. Synonym to GRPS but explicit for getgrouplist backstop.
             let q = if arg.is_empty() { "root" } else { arg };
             dlog!("socket GROUPLIST/GETGROUPLIST arg=\"{}\"", q);
-            let mut guard = cache.lock().unwrap();
+            let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
             let gs = if std::env::var("NSS_PASSWD").is_ok() {
                 let owned = NssMaterializePaths::materialize_paths_owned();
                 let lpaths = NssMaterializePaths::from_owned(&owned.0, &owned.1, &owned.2, &owned.3);

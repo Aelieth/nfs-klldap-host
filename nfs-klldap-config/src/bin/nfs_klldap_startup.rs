@@ -41,7 +41,6 @@ const PROBE_CMDS: &[(&str, &[&str])] = &[
         "supervise-identity-recycle-probe",
         &["NFS_KLLDAP_SUPERVISE_IDENTITY_RECYCLE_PROBE"],
     ),
-    ("supervise-readiness-probe", &["NFS_KLLDAP_SUPERVISE_READINESS_PROBE"]),
 ];
 
 fn supervise_or_exit(config_path: &Path) {

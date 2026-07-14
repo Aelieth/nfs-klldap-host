@@ -85,9 +85,6 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
     if sup.env.supervise_identity_recycle_probe {
         return sup.run_supervise_identity_recycle_probe();
     }
-    if sup.env.supervise_readiness_probe {
-        sup.log_info("Supervise-readiness-probe mode enabled");
-    }
     sup.preflight_checks()?;
     sup.ensure_config_initialized()?;
 
@@ -115,10 +112,6 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
             sup.log_info("Container is ready (pre-configured path).");
         } else {
             sup.log_warn("Ganesha readiness not confirmed; not declaring 'Container is ready' (expect observer self-heal)");
-        }
-        if sup.env.supervise_readiness_probe {
-            sup.log_info("Supervise readiness probe complete — exiting");
-            return Ok(());
         }
     } else {
         sup.start_webui()?;
@@ -511,18 +504,6 @@ while :; do :; done
             self.log_info("Supervise-probe: derived configs generated; daemon bring-up skipped");
             return Ok(());
         }
-        if self.env.supervise_readiness_probe {
-            self.seed_readiness_probe_runtime_state();
-            if let Some(parent) = Path::new(NSS_PIPE).parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::write(NSS_PIPE, b"probe");
-            self.log_info("Supervise-readiness-probe: lightweight bring-up (mock socket expected)");
-            self.ensure_ganesha_prereqs();
-            self.log_info("Starting NFS-Ganesha...");
-            services::start_ganesha(self);
-            return Ok(());
-        }
         self.restart_sssd_and_wait();
         if !Path::new(NSS_PIPE).exists() {
             // tolerate in test/harness envs without live LLDAP (for clean cargo test)
@@ -543,38 +524,6 @@ while :; do :; done
             self.log_info("HOST_NFS: host NFS server is responsible for 2049; this container provides config, Kerberos material, identity mapping (SSSD), and the WebUI.");
         }
         Ok(())
-    }
-
-    /// NSS seed for readiness-probe (FQDN user@REALM + host/*@REALM + root).
-    fn seed_readiness_probe_runtime_state(&self) {
-        if let Some(parent) = self.env.nss_passwd.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let cfg = NfsKlldapConfig::load(&self.env.nfs_config).ok();
-        let realm = runtime_realm(cfg.as_ref());
-        let host = runtime_hostname(cfg.as_ref());
-        let short = host.split('.').next().unwrap_or(&host);
-        let user = format!("probeuser@{realm}");
-        let server_host = format!("host/{short}@{realm}");
-        let client_host = format!("host/probe-client@{realm}");
-        let _ = fs::write(
-            &self.env.nss_passwd,
-            format!(
-                "root:x:0:0:root:/root:/bin/sh\n\
-                 probeuser:x:20001:20001:user:/nonexistent:/usr/sbin/nologin\n\
-                 {user}:x:20001:20001:user:/nonexistent:/usr/sbin/nologin\n\
-                 {server_host}:x:0:0:host:/non:/nologin\n\
-                 {client_host}:x:0:0:host:/non:/nologin\n"
-            ),
-        );
-        let _ = fs::write(
-            &self.env.nss_group,
-            format!(
-                "root:x:0:root,daemon,bin\n\
-                 probeuser:x:20001:probeuser,{user}\n\
-                 probe-extra:x:20002:probeuser,{user}\n"
-            ),
-        );
     }
 
     /// Touch probe markers so bring-up checks pass without real SSSD/idhelper.

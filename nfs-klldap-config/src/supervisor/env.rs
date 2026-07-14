@@ -66,8 +66,6 @@ pub(crate) struct SupervisorEnv {
     pub supervise_sighup_hook_probe: bool,
     /// Verifies identity-only changes recycle SSSD without ganesha SIGHUP.
     pub supervise_identity_recycle_probe: bool,
-    /// One-shot CI path exercising real wait_for_ganesha_readiness then exit.
-    pub supervise_readiness_probe: bool,
     /// Enables HOST_NFS sidecar mode that generates fragments and skips nfsd.
     pub host_nfs_mode: bool,
     /// Overrides loop sleep ms; zero enables wizard-probe bounded ticks.
@@ -122,8 +120,6 @@ impl SupervisorEnv {
                 "NFS_KLLDAP_SUPERVISE_IDENTITY_RECYCLE_PROBE",
             )
             .is_ok_and(|v| v == "1"),
-            supervise_readiness_probe: std::env::var("NFS_KLLDAP_SUPERVISE_READINESS_PROBE")
-                .is_ok_and(|v| v == "1"),
             host_nfs_mode: nfs_klldap_config::resolve_host_nfs_mode(config_path),
             supervisor_tick_ms: std::env::var("NFS_KLLDAP_SUPERVISOR_TICK_MS")
                 .ok()

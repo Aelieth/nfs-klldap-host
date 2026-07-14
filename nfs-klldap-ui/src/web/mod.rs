@@ -147,7 +147,9 @@ async fn permissions_js() -> impl IntoResponse {
 
 /// Serves the shared stylesheet (compiled in like the templates).
 /// Unversioned filename with a short public cache: repeat page loads skip
-/// the ~25KB payload while a redeploy wins within the hour.
+/// the ~25KB payload while a redeploy wins within the hour. When a deploy
+/// pairs HTML structure changes with CSS, bump the `?v=` query on the
+/// base.html link instead — the route matches the path only.
 async fn style_css() -> impl IntoResponse {
     (
         [

@@ -23,8 +23,6 @@ struct IndexTemplate {
     /// Banner from the ACL re-probe loop: an explicit-ACL share on a filesystem
     /// that can no longer store ACLs. None hides it.
     acl_alert: Option<String>,
-    /// Mirrors host_nfs_mode so the template adjusts the top Ganesha notice.
-    host_nfs_mode: bool,
     /// Initial Apply Log shell rendered by apply_log_shell so oob swaps match it exactly.
     apply_log_initial: String,
 }
@@ -703,7 +701,6 @@ pub(crate) async fn index(
         current_user: Some(user.0),
         keytab_alert: state.keytab_alert.lock().unwrap().clone(),
         acl_alert: state.acl_alert.lock().unwrap().clone(),
-        host_nfs_mode: state.host_nfs_mode,
         apply_log_initial: apply_log_shell(
             r#"<em class="placeholder-note">No permission applies yet.</em>"#,
             false,

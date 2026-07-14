@@ -160,11 +160,12 @@ html, body {
 }
 
 /* Standard page shell: centered, capped at --page-max so nothing scales unbounded on large displays. */
-body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: var(--page-max); padding: 0 1.25rem; }
+body { font-family: system-ui, sans-serif; margin: 1.25rem auto; max-width: var(--page-max); padding: 0 1.25rem; }
 a { color: var(--link); }
+a:hover { color: var(--accent); }
 .content-narrow { max-width: var(--content-narrow); margin-inline: auto; }
 
-.tree { margin-left: 0.5rem; padding-left: 20px; } /* condensed: was margin 1rem + ~40px ul default */
+.tree { margin-left: 0.5rem; padding-left: 20px; list-style: none; } /* condensed: was margin 1rem + ~40px ul default */
 .tree .children { margin-left: 0.75em; }
 /* Tree rows: two real buttons per row — the caret only expands/collapses, the label
    selects the directory and loads its permissions. Both are keyboard-focusable. */
@@ -441,6 +442,7 @@ small { color: var(--text-light); }
     line-height: 1;
     min-width: 18px;
     text-align: center;
+    display: inline-block; /* shields the tray from the global label{display:block} */
 }
 .theme-tray label:hover {
     border-color: var(--accent);
@@ -456,46 +458,61 @@ small { color: var(--text-light); }
     font-size: 0.95em;
 }
 
+/* === Page tab row: nav links styled as tabs (replaces the per-page <h2> headings).
+   Active tab = bold + accent underline sitting on the row's hairline; the row also
+   hosts right-aligned page furniture (the Share Permissions legend), wrapping below
+   the tabs on narrow screens. === */
+.tab-row    { display:flex; justify-content:space-between; align-items:center;
+              gap:8px 16px; flex-wrap:wrap; margin:0 0 14px;
+              border-bottom:1px solid var(--border-light); }
+.page-tabs  { display:flex; gap:2px; }
+.page-tab   { font-size:.92em; font-weight:500; padding:6px 12px; text-decoration:none;
+              color:var(--text-muted); border-bottom:2px solid transparent;
+              border-radius:3px 3px 0 0; }
+.page-tab:hover         { background:var(--dir-hover); color:var(--text); }
+.page-tab:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.page-tab.active        { font-weight:700; color:var(--text);
+                          border-bottom-color:var(--accent); }
+
 /* ===== Detached "Share Permissions" panel (redesign) ===== */
 .perm-layout        { display:flex; gap:18px; align-items:flex-start; flex-wrap:wrap; }
 /* Left column is a flex stack: the tree (main focus) gets vertical priority; the shares list is capped.
    flex-basis:0 so the long (non-wrapping) share paths don't inflate the column and wrap the panel off-row. */
 .perm-side          { flex:1 1 0; min-width:200px; display:flex; flex-direction:column;
                       max-height:min(86vh,900px); }
-.perm-main          { flex:0 0 560px; max-width:560px; }
-/* Shares list: at most 5 cards on screen (--share-card-h * 5), never fewer than 1; scrolls beyond. */
-.shares-host        { --share-card-h:70px; display:flex; flex-direction:column; gap:6px;
+.perm-main          { flex:0 0 600px; max-width:600px; }
+/* Shares list: at most 5 cards on screen, never fewer than 1; scrolls beyond. The calc is the
+   pre-JS fallback — sizeSharesHost() (permissions.js) re-measures real card heights on load/resize. */
+.shares-host        { --share-card-h:44px; display:flex; flex-direction:column; gap:6px;
                       flex:0 1 auto; max-height:calc(var(--share-card-h) * 5);
                       min-height:var(--share-card-h); overflow:auto; margin-bottom:10px;
                       padding-right:4px; }
 #current-share-title { flex:0 0 auto; margin:.4rem 0 6px; font-size:.92em; }
 #tree-root          { flex:1 1 auto; min-height:150px; overflow:auto; padding-right:4px; }
 
-.perm-legend        { display:flex; gap:16px; flex-wrap:wrap; align-items:center;
-                      margin:0 0 14px; padding:7px 11px; background:var(--bg-alt);
-                      border:1px solid var(--border-light); border-radius:6px;
-                      font-size:.72em; color:var(--text-muted); }
+/* Unboxed (it rides the tab row / settings shares toolbar rather than owning a bar). */
+.perm-legend        { display:flex; gap:12px; flex-wrap:wrap; align-items:center;
+                      margin:0; padding:0;
+                      font-size:.66em; color:var(--text-muted); }
 .perm-legend .lbl   { font-weight:700; text-transform:uppercase; letter-spacing:.04em;
                       font-size:.9em; color:var(--text-light); }
 .perm-legend .key   { display:inline-flex; align-items:center; gap:6px; }
-.legend-dot         { width:10px; height:10px; border-radius:50%; flex:none; }
+.legend-dot         { width:8px; height:8px; border-radius:50%; flex:none; }
 .legend-dot.acl     { background:var(--success-border); box-shadow:0 0 0 2px var(--success-bg); }
 .legend-dot.noacl   { background:var(--noacl);          box-shadow:0 0 0 2px var(--noacl-ring); }
 .legend-dot.editing { background:var(--warning-amber-border); box-shadow:0 0 0 2px var(--warning-amber-bg); }
 
-.share-card .share-hd   { display:flex; align-items:center; gap:7px; min-width:0; }
+/* One-row header: dot + name + chips; chips wrap under the name on narrow cards. */
+.share-card .share-hd   { display:flex; align-items:center; gap:7px; min-width:0;
+                          flex-wrap:wrap; row-gap:5px; }
 .share-card .share-hd strong { flex:none; white-space:nowrap; }
 .share-dot              { width:9px; height:9px; border-radius:50%; flex:none; }
 .share-dot.acl          { background:var(--success-border); box-shadow:0 0 0 2px var(--success-bg); }
 .share-dot.noacl        { background:var(--noacl);          box-shadow:0 0 0 2px var(--noacl-ring); }
 .share-card.noacl:not(.active) { background:var(--bg-alt); }
 .share-card.active      { border-color:var(--accent); background:var(--selected-bg); }
-/* Inline host-path info box: takes the remaining header width, ellipsizes (full path in title). */
-.share-pathbox          { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
-                          white-space:nowrap; font-family:var(--font-mono); font-size:.78em;
-                          color:var(--text-light); background:var(--bg); border:1px solid var(--border);
-                          border-radius:3px; padding:1px 7px; }
-.share-chips            { display:flex; gap:5px; flex-wrap:wrap; margin-top:7px; }
+.share-chips            { display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end;
+                          margin-left:auto; flex:0 1 auto; min-width:0; overflow:hidden; }
 .share-chip             { font-size:.82em; padding:1px 8px; border-radius:20px; white-space:nowrap;
                           background:var(--accent-light); color:var(--text);
                           border:1px solid var(--selected-border); max-width:100%;
@@ -504,7 +521,7 @@ small { color: var(--text-light); }
                           border-color:var(--warning-amber-border); }
 
 .perm-panel         { background:var(--card-bg); border:1px solid var(--border);
-                      border-radius:7px; padding:11px 13px 13px; margin-bottom:14px; }
+                      border-radius:7px; padding:13px 16px 16px; margin-bottom:14px; }
 /* Single flex row, never wraps: the action buttons stay pinned to the
    upper right no matter how long the share/path text gets — the main
    column shrinks (min-width:0) and the path wraps inside it instead. */
@@ -525,7 +542,7 @@ small { color: var(--text-light); }
 /* Long paths wrap (slash-less names too, via anywhere) rather than
    ellipsizing — the full path stays readable in place. */
 .perm-path          { font-size:.78em; color:var(--text-muted); min-width:0;
-                      overflow-wrap:anywhere; }
+                      overflow-wrap:anywhere; font-family:var(--font-mono); }
 .perm-actions       { display:flex; align-items:center; gap:8px; flex:none; }
 .perm-head-main     { flex:1 1 auto; min-width:0; }
 .perm-title-row     { display:flex; align-items:center; gap:8px; }
@@ -542,7 +559,7 @@ small { color: var(--text-light); }
 
 .perm-body          { margin-top:12px; }
 /* Split lives on an inner wrapper so a full-width diagnostic (below) isn't dragged into the flex row. */
-.perm-split         { display:flex; gap:16px; align-items:stretch; }
+.perm-split         { display:flex; gap:20px; align-items:stretch; }
 .perm-split .posix-sec { flex:0 0 250px; }
 .perm-split .acl-sec   { flex:1; min-width:0; }
 .perm-split .divider { width:1px; background:var(--border-light); }
@@ -572,7 +589,8 @@ small { color: var(--text-light); }
 .perm-owner-row label { flex:1; min-width:120px; font-size:.74em; color:var(--text-muted); }
 .perm-owner-row input { width:100%; margin-top:2px; padding:3px 6px; font-size:1.05em;
                       background:var(--input-bg); color:var(--text);
-                      border:1px solid var(--input-border); border-radius:4px; }
+                      border:1px solid var(--input-border); border-radius:4px;
+                      box-sizing:border-box; }
 
 .perm-matrix        { display:grid; grid-template-columns:64px repeat(3,1fr); gap:5px 4px;
                       align-items:center; max-width:280px; }
@@ -611,7 +629,8 @@ small { color: var(--text-light); }
 .octal              { font-family:var(--font-mono); font-size:1.35em; font-weight:700;
                       color:var(--accent); background:var(--bg-alt); border:1px solid var(--border);
                       border-radius:5px; padding:1px 9px; }
-.symbolic           { font-size:.9em; color:var(--text-muted); white-space:nowrap; }
+.symbolic           { font-size:.9em; color:var(--text-muted); white-space:nowrap;
+                      font-family:var(--font-mono); }
 
 .acl-reason         { font-size:.72em; color:var(--text-muted); margin-bottom:5px;
                       cursor:help; text-decoration:underline dotted; text-underline-offset:2px; }
@@ -652,7 +671,10 @@ small { color: var(--text-light); }
 .perm-panel.acl-adding .acl-actions,
 .perm-panel.acl-adding .acl-tabs { opacity:.45; pointer-events:none; }
 .acl-addform        { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;
-                      margin-top:5px; padding-top:6px; border-top:1px dashed var(--border-light); }
+                      margin:2px 0 8px; padding-bottom:8px;
+                      border-bottom:1px dashed var(--border-light); }
+.acl-addform[hidden], .acl-pane[hidden],
+.acl-cat-rows[hidden], .file-opts[hidden] { display:none; } /* author display beats the UA [hidden] rule */
 .acl-addform .acl-ename-wrap { flex:1; min-width:130px; }
 .acl-add-bits       { display:flex; flex-direction:column; align-items:center; gap:1px; }
 .acl-add-hd         { display:grid; grid-template-columns:repeat(3,38px); text-align:center;
@@ -670,7 +692,7 @@ small { color: var(--text-light); }
 .mask-star          { color:var(--warn-text, #b58900); margin-left:1px; }
 .acl-plus           { color:var(--accent); font-weight:700; margin-left:2px; cursor:help; }
 .acl-ename-wrap     { position:relative; }
-.acl-ename          { width:100%; padding:2px 6px; font-size:.8em;
+.acl-ename          { width:100%; padding:2px 6px; font-size:.8em; box-sizing:border-box;
                       background:var(--input-bg); color:var(--text);
                       border:1px solid var(--input-border); border-radius:4px; }
 .acl-sugg           { min-width:160px; }
@@ -692,7 +714,6 @@ small { color: var(--text-light); }
 
 /* Small text utilities shared by templates and Rust-built fragments. */
 .subtle             { color:var(--text-light); }
-.page-note          { font-size:.8em; color:var(--text-light); margin-top:-.4em; }
 .placeholder-note   { color:var(--text-light); font-size:.85em; }
 .note-danger        { color:var(--danger-text); font-size:.72em; }
 .note-success       { color:var(--success-text); font-size:.72em; }

@@ -429,6 +429,50 @@ async fn acl_alert_banner_renders_on_index_and_settings() {
     }
 }
 
+// Tab-row nav replaces the page headings: each page marks its own tab active (bold via
+// .active) with aria-current, no <h2>/rail label renders, the legend rides the tab row,
+// and pages that don't override the tabrow block (login/setup) get no tabs at all.
+#[tokio::test]
+async fn nav_tabs_replace_headings_and_mark_active_page() {
+    let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
+    let token = state.auth.create_privileged_session("tabtester");
+    let app = router(state);
+
+    let index = get_html(&app, &token, "/").await;
+    assert!(
+        index.contains(r#"<a href="/" class="page-tab active" aria-current="page">Share Permissions</a>"#),
+        "index must mark the Share Permissions tab active"
+    );
+    assert!(index.contains(r#"<a href="/settings" class="page-tab">System Settings</a>"#));
+    assert!(!index.contains("<h2"), "the Share Permissions heading must be gone");
+    let tabs = index.find("page-tabs").unwrap();
+    let legend = index.find("perm-legend").unwrap();
+    let layout = index.find("perm-layout").unwrap();
+    assert!(tabs < legend && legend < layout, "legend must ride the tab row above the layout");
+
+    let settings = get_html(&app, &token, "/settings").await;
+    assert!(
+        settings.contains(r#"<a href="/settings" class="page-tab active" aria-current="page">System Settings</a>"#),
+        "settings must mark the System Settings tab active"
+    );
+    assert!(settings.contains(r#"<a href="/" class="page-tab">Share Permissions</a>"#));
+    assert!(!settings.contains("<h2"), "the System Settings heading must be gone");
+    assert!(!settings.contains("rl-hd"), "the SETTINGS rail label must be gone");
+    assert!(
+        settings.contains("pane-note"),
+        "the share load/apply lifecycle note must live in the Shares pane now"
+    );
+
+    let req = Request::builder().uri("/login").body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    assert!(
+        !String::from_utf8_lossy(&body).contains("page-tabs"),
+        "unauthenticated pages must not render the tab row"
+    );
+}
+
 // Dedicated integration test for ACL apply path: POST /acl-apply, wait on shipped ApplyProgress, hard assert via shipped fs.get_acl_table only.
 #[tokio::test]
 async fn web_acl_apply_post_waits_then_get_dir_acl() {

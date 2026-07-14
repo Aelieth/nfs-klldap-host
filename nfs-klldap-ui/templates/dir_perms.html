@@ -31,6 +31,31 @@
       <button type="button" class="btn acl-act" data-act="add-group" title="Add a group entry: pick the group, set Read/Write/Exec, choose the reach, then Apply.">Add Group</button>
       <button type="button" class="btn acl-act" data-act="remove" disabled title="Remove the selected entry (click a row's name to select).">Remove</button>
     </div>
+    {# Add-mode form: sits right under the Add buttons that summon it, above the list.
+       Hidden until Add User / Add Group; the panel header's Apply/Cancel finish the
+       flow (Apply arms once a principal is typed and at least one permission is checked). #}
+    <div class="acl-addform" data-typ="user" hidden>
+      <span class="acl-ename-wrap">
+        <input type="text" class="acl-ename" placeholder="user or id" aria-label="Principal" autocomplete="off" disabled>
+        <div class="suggestions acl-sugg"></div>
+      </span>
+      <span class="acl-add-bits">
+        <span class="acl-add-hd" aria-hidden="true"><span>Read</span><span>Write</span><span>Exec</span></span>
+        <span class="acl-add-boxes">
+          <input type="checkbox" class="ebit" data-ch="r" aria-label="read" checked disabled>
+          <input type="checkbox" class="ebit" data-ch="w" aria-label="write" disabled>
+          <input type="checkbox" class="ebit" data-ch="x" aria-label="execute" disabled>
+        </span>
+      </span>
+      {% if is_dir %}
+      <div class="rec-scope acl-rec-scope">
+        <div class="perm-bits-lbl" title="How far the new entry reaches — the POSIX apply scopes. Recursive grants use capital X (files gain execute only where something already executes); on the Inherit tab recursion touches directories only.">Apply scope</div>
+        <label title="This directory's own inode only."><input type="radio" class="acl-rec-radio" name="acl_scope_{{ layer }}" value="none" checked disabled><span>None</span></label>
+        <label title="This directory plus the files directly inside it."><input type="radio" class="acl-rec-radio" name="acl_scope_{{ layer }}" value="single" disabled><span>Recursive &mdash; single directory</span></label>
+        <label title="This directory and everything beneath it."><input type="radio" class="acl-rec-radio" name="acl_scope_{{ layer }}" value="all" disabled><span>Recursive &mdash; all directories</span></label>
+      </div>
+      {% endif %}
+    </div>
     <div class="acl-cols" aria-hidden="true"><span class="acl-name"></span><span class="colhd" title="read">Read</span><span class="colhd" title="write">Write</span><span class="colhd" title="execute — toggles apply to this node; hover a dimmed box: the mask caps it">Exec</span></div>
     <div class="acl-list">
       <div class="acl-cat" data-cat="user" title="Named user entries — per-user grants beyond owner/group/other."><span class="acl-caret" aria-hidden="true">&#9662;</span>Users</div>
@@ -53,31 +78,6 @@
         <span class="acl-cell"><input type="checkbox" class="mbit" data-ch="x" aria-label="mask execute" {% if m.x %}checked{% endif %} disabled></span>
       </div>
       {% when None %}{% endmatch %}
-    </div>
-    {# Add-mode form: hidden until Add User / Add Group; the panel header's
-       Apply/Cancel finish the flow (Apply arms once a principal is typed and
-       at least one permission is checked). #}
-    <div class="acl-addform" data-typ="user" hidden>
-      <span class="acl-ename-wrap">
-        <input type="text" class="acl-ename" placeholder="user or id" aria-label="Principal" autocomplete="off" disabled>
-        <div class="suggestions acl-sugg"></div>
-      </span>
-      <span class="acl-add-bits">
-        <span class="acl-add-hd" aria-hidden="true"><span>Read</span><span>Write</span><span>Exec</span></span>
-        <span class="acl-add-boxes">
-          <input type="checkbox" class="ebit" data-ch="r" aria-label="read" checked disabled>
-          <input type="checkbox" class="ebit" data-ch="w" aria-label="write" disabled>
-          <input type="checkbox" class="ebit" data-ch="x" aria-label="execute" disabled>
-        </span>
-      </span>
-      {% if is_dir %}
-      <div class="rec-scope acl-rec-scope">
-        <div class="perm-bits-lbl" title="How far the new entry reaches — the POSIX apply scopes. Recursive grants use capital X (files gain execute only where something already executes); on the Inherit tab recursion touches directories only.">Apply scope</div>
-        <label title="This directory's own inode only."><input type="radio" class="acl-rec-radio" name="acl_scope_{{ layer }}" value="none" checked disabled><span>None</span></label>
-        <label title="This directory plus the files directly inside it."><input type="radio" class="acl-rec-radio" name="acl_scope_{{ layer }}" value="single" disabled><span>Recursive &mdash; single directory</span></label>
-        <label title="This directory and everything beneath it."><input type="radio" class="acl-rec-radio" name="acl_scope_{{ layer }}" value="all" disabled><span>Recursive &mdash; all directories</span></label>
-      </div>
-      {% endif %}
     </div>
   </div>
 {% endmacro %}

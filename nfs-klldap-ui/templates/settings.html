@@ -18,6 +18,15 @@
   Reuse the probe logic from /setup/2/test and /setup/3/test. A failing test never blocks Save.
 #}
 
+{% block tabrow %}
+<div class="tab-row">
+  <nav class="page-tabs" aria-label="Primary">
+    <a href="/" class="page-tab">Share Permissions</a>
+    <a href="/settings" class="page-tab active" aria-current="page">System Settings</a>
+  </nav>
+</div>
+{% endblock %}
+
 {% block content %}
 {% if let Some(acl_msg) = acl_alert %}
 <div class="acl-alert" role="alert" style="background: var(--warning-amber-bg); border:1px solid var(--warning-amber-border); padding:6px 12px; margin-bottom:0.75rem; border-radius:4px; font-size:0.9em; color: var(--warning-amber-text);">
@@ -29,7 +38,6 @@
   #settings-app{color:var(--text);font-size:13px;line-height:1.45}
   .set-shell{display:flex;min-height:560px;border:1px solid var(--border);border-radius:9px;overflow:hidden;background:var(--bg)}
   .set-rail{flex:0 0 176px;background:var(--bg-alt);border-right:1px solid var(--border-light);padding:12px 9px;display:flex;flex-direction:column;gap:2px}
-  .set-rail .rl-hd{font:700 .62em var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--text-light);padding:2px 10px 8px}
   .rail-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;color:var(--text-muted);font-size:.9em;font-weight:600;border:1px solid transparent;background:transparent;text-align:left;width:100%;font-family:inherit;white-space:nowrap}
   .rail-item:hover{background:var(--dir-hover)}
   .rail-item.active{background:var(--accent-light);color:var(--text);border-color:var(--selected-border)}
@@ -77,7 +85,10 @@
   .toml-side{flex:0 0 clamp(288px, 100% - 656px, 460px);min-width:0;position:sticky;top:8px}
   .side-hd{font:700 .72em var(--font-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--text-light);margin-bottom:6px}
   .shares-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
-  .shares-toolbar .perm-legend{margin:0}
+  /* Global legend runs .66em for the index tab row; inside the 13px settings shell that lands
+     under 9px — bump back to the pane's previous size. */
+  .shares-toolbar .perm-legend{font-size:.72em}
+  .pane-note{font-size:.78em;color:var(--text-light);margin:-6px 0 12px}
   .sh-bulk{display:flex;gap:6px;margin-left:auto}
   .sh-bulk button{border:1px solid var(--border);background:var(--bg);color:var(--text-muted);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:.78em;font-family:inherit}
   .sh-bulk button:hover{border-color:var(--accent);color:var(--text)}
@@ -132,15 +143,12 @@
   @media (max-width:640px){.fld-grid{grid-template-columns:1fr}.sc-access{grid-template-columns:1fr}}
 </style>
 
-<h2 style="margin-bottom:.5rem">System Settings</h2>
-
 {# keytab_alert intentionally not repeated here — base.html already banners it #}
 {% if let Some(msg) = message %}<div class="alert alert-success" style="margin:0 0 12px">{{ msg }}</div>{% endif %}
 
 <div id="settings-app">
   <div class="set-shell">
     <nav class="set-rail">
-      <div class="rl-hd">Settings</div>
       <button type="button" class="rail-item active" data-pane="overview"><span>Overview</span><span class="rail-dot"></span></button>
       <button type="button" class="rail-item" data-pane="core"><span>Core</span><span class="rail-dot"></span></button>
       <button type="button" class="rail-item" data-pane="sssd"><span>SSSD</span><span class="rail-dot"></span></button>
@@ -322,6 +330,19 @@
         <form id="shares-form" method="post" action="/settings/save-shares">
           <section class="set-section" data-pane-content="shares" hidden>
             <div class="sec-hd"><h3>Shares</h3></div>
+            {# Relocated from the Share Permissions page: this pane is where shares change, so the
+               load/apply lifecycle note belongs here. #}
+            <p class="pane-note">
+              Shares and allowed roots load at WebUI startup.
+              {% if host_nfs_mode %}
+              The host NFS server reads the generated fragments — after adding or editing shares, use
+              "Apply to host" (Apply pane) or wait for the watcher.
+              {% else %}
+              Ganesha reads the exports at its startup — after adding or editing shares, use
+              "Restart &amp; apply" (Apply pane) or wait for the config watcher so the permission tree
+              and NFS see them.
+              {% endif %}
+            </p>
             <div class="shares-split">
               <div class="shares-col">
                 <div class="shares-toolbar">

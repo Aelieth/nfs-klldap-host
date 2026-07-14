@@ -1,29 +1,27 @@
 {% extends "base.html" %}
 
+{% block tabrow %}
+<div class="tab-row">
+  <nav class="page-tabs" aria-label="Primary">
+    <a href="/" class="page-tab active" aria-current="page">Share Permissions</a>
+    <a href="/settings" class="page-tab">System Settings</a>
+  </nav>
+  {# Legend: what the share-card / panel status dots mean. #}
+  <div class="perm-legend">
+    <span class="lbl">Legend</span>
+    <span class="key"><span class="legend-dot acl"></span>ACL supported</span>
+    <span class="key"><span class="legend-dot noacl"></span>Non-ACL limited</span>
+    <span class="key"><span class="legend-dot editing"></span>Editing permissions</span>
+  </div>
+</div>
+{% endblock %}
+
 {% block content %}
 {% if let Some(acl_msg) = acl_alert %}
 <div class="acl-alert" role="alert" style="background: var(--warning-amber-bg); border:1px solid var(--warning-amber-border); padding:6px 12px; margin-bottom:0.75rem; border-radius:4px; font-size:0.9em; color: var(--warning-amber-text);">
     <strong>ACL capability changed:</strong> {{ acl_msg }}
 </div>
 {% endif %}
-<h2>Share Permissions</h2>
-<p class="page-note">
-    Shares list and allowed roots are loaded at WebUI startup.
-    {% if host_nfs_mode %}
-    (HOST_NFS mode: the host NFS server reads the generated fragments; use "Apply to host NFS" in System Settings or wait for the watcher.)
-    {% else %}
-    (Ganesha reads the exports at its startup). After adding or editing shares, use "Restart and apply" in System Settings (or wait for the config watcher) so the permission tree and NFS see the new shares.
-    {% endif %}
-</p>
-
-{# Legend: what the share-card / panel status dots mean. #}
-<div class="perm-legend">
-  <span class="lbl">Legend</span>
-  <span class="key"><span class="legend-dot acl"></span>ACL supported</span>
-  <span class="key"><span class="legend-dot noacl"></span>Non-ACL limited</span>
-  <span class="key"><span class="legend-dot editing"></span>Editing permissions</span>
-</div>
-
 <div class="perm-layout">
 
   {# ---- LEFT: shares + directory tree (adapt to viewport width) ---- #}
@@ -31,9 +29,11 @@
     {% if shares.len() > 0 %}
     <div class="shares-host">
       {% for share in shares %}
+      {# One-row card: dot + name + right-aligned chips (wrap on narrow); host path lives in the
+         card tooltip and the panel's Share/path line once selected. #}
       <div class="share-card {% if !share.acl_capable %}noacl{% endif %}"
            role="button" tabindex="0" aria-pressed="false"
-           aria-label="Browse share {{ share.name }}"
+           aria-label="Browse share {{ share.name }}" title="{{ share.host_path }}"
            data-name="{{ share.name }}" data-nfs-path="{{ share.nfs_path }}"
            data-host-path="{{ share.host_path }}" data-acl="{% if share.acl_capable %}1{% else %}0{% endif %}"
            onclick="selectShareFromCard(this)">
@@ -41,16 +41,14 @@
           <span class="share-dot {% if share.acl_capable %}acl{% else %}noacl{% endif %}"
                 title="{% if share.acl_capable %}ACL supported{% else %}Non-ACL limited{% endif %}"></span>
           <strong>{{ share.name }}</strong>
-          {# Host path as an inline info box on the name's line — frees vertical space for more cards. #}
-          <code class="share-pathbox" title="{{ share.host_path }}">{{ share.host_path }}</code>
-        </div>
-        <div class="share-chips">
-          <span class="share-chip">{{ share.access }}</span>
-          <span class="share-chip">{{ share.squash_label }}</span>
-          <span class="share-chip">cache: {{ share.cache_profile }}</span>
-          {% if let Some(warn) = share.warning %}
-          <span class="share-chip warn" title="{{ warn }}">{{ warn }}</span>
-          {% endif %}
+          <div class="share-chips">
+            <span class="share-chip">{{ share.access }}</span>
+            <span class="share-chip">{{ share.squash_label }}</span>
+            <span class="share-chip">cache: {{ share.cache_profile }}</span>
+            {% if let Some(warn) = share.warning %}
+            <span class="share-chip warn" title="{{ warn }}">{{ warn }}</span>
+            {% endif %}
+          </div>
         </div>
       </div>
       {% endfor %}

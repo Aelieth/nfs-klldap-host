@@ -51,6 +51,19 @@
     }
     window.addEventListener('resize', syncApplyLogHeight);
 
+    // Shares list caps at the first 5 rendered cards. Measured, not assumed: chips wrap on
+    // narrow viewports so card height varies; the CSS --share-card-h calc is only the
+    // pre-JS fallback. Cards are server-rendered once, so load + resize cover all changes.
+    function sizeSharesHost() {
+        const host = document.querySelector('.shares-host');
+        if (!host) return; // pages without a shares list (settings, login)
+        const cards = Array.from(host.querySelectorAll('.share-card')).slice(0, 5);
+        if (!cards.length) return;
+        const h = cards.reduce((sum, c) => sum + c.getBoundingClientRect().height, 0);
+        host.style.maxHeight = Math.round(h + 6 * (cards.length - 1) + 2) + 'px';
+    }
+    window.addEventListener('resize', sizeSharesHost);
+
     // Clear the hidden numeric uid/gid when the visible owner/group name is edited by hand, so
     // Apply re-resolves the typed name via LDAP (matches the old inline editor's translation).
     function attachEditorInputListeners(root) {
@@ -644,10 +657,11 @@
     // Each apply-status oob swap replaces .apply-log-content, dropping its inline cap — re-apply it.
     document.addEventListener('htmx:oobAfterSwap', syncApplyLogHeight);
 
+    function initPageLayout() { initApplyLogAutosize(); sizeSharesHost(); }
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initApplyLogAutosize);
+        document.addEventListener('DOMContentLoaded', initPageLayout);
     } else {
-        initApplyLogAutosize();
+        initPageLayout();
     }
 
     // Public surface: index.html's page script and the Apply Log cancel button.

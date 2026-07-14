@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NFS Kerb Manager</title>
     <script src="/assets/htmx-1.9.12.min.js"></script>
-    <link rel="stylesheet" href="/assets/style.css">
+    {# ?v= pairs the cached sheet with HTML structure changes — bump it whenever both must land together. #}
+    <link rel="stylesheet" href="/assets/style.css?v=2">
     <!-- Early theme init (before body paint) to avoid FOUC. Sets data-theme based on localStorage or system. -->
     <script>
         (function() {
@@ -109,12 +110,9 @@
     </div>
     {% endif %}
 
-    {% if let Some(_) = current_user %}
-    <nav style="margin-bottom:1rem; border-bottom:1px solid var(--border); padding-bottom:6px;">
-        <a href="/" style="margin-right:1rem; font-weight:600;">Share Permissions</a>
-        <a href="/settings" style="margin-right:1rem;">System Settings</a>
-    </nav>
-    {% endif %}
+    {# Page tabs: index/settings override this with their tab row (active tab marked there);
+       login/setup don't override, so no tabs render on unauthenticated pages. #}
+    {% block tabrow %}{% endblock %}
 
     {% block content %}{% endblock %}
 </body>

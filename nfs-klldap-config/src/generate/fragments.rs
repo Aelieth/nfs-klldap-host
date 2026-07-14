@@ -35,7 +35,7 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
         let squash = share.squash.as_deref().unwrap_or(constants::GANESHA_DEFAULT_SQUASH);
 
         let (pref_r, pref_w) = if let Some(cp) = &share.cache_profile {
-            if let Some((r, w)) = crate::resolve_cache_profile(cp) { (Some(r), Some(w)) } else { (share.pref_read, share.pref_write) }
+            if let Some((r, w)) = crate::config::resolve_cache_profile(cp) { (Some(r), Some(w)) } else { (share.pref_read, share.pref_write) }
         } else { (share.pref_read, share.pref_write) };
 
         let pref_read_line = pref_r.map(|v| format!("    PrefRead = {};\n", v)).unwrap_or_default();

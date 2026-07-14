@@ -21,15 +21,8 @@ pub(crate) fn is_kerberos_placeholder_realm(r: &str) -> bool {
     t.eq_ignore_ascii_case("EXAMPLE.COM") || t.eq_ignore_ascii_case("EXAMPLE")
 }
 
-/// Scan raw TOML for unrecognized keys in `[[shares]]` tables.
-pub fn detect_share_unknown_keys(contents: &str) -> Vec<ShareFieldWarning> {
-    match toml::from_str::<toml::Value>(contents) {
-        Ok(root) => detect_share_unknown_keys_value(&root),
-        Err(_) => vec![],
-    }
-}
-
-/// Same scan over an already-parsed document (single-parse load path).
+/// Scan a parsed TOML document for unrecognized keys in `[[shares]]` tables
+/// (single-parse load path).
 fn detect_share_unknown_keys_value(root: &toml::Value) -> Vec<ShareFieldWarning> {
     let Some(shares) = root.get("shares").and_then(|s| s.as_array()) else {
         return vec![];
@@ -295,11 +288,11 @@ impl NfsKlldapConfig {
                 }
             }
             if let Some(p) = &share.cache_profile {
-                if crate::resolve_cache_profile(p).is_none() {
+                if crate::config::resolve_cache_profile(p).is_none() {
                     return Err(ConfigError::Validation(format!(
                         "share '{}' cache_profile must be one of: {} (got '{}')",
                         share.name,
-                        crate::CACHE_PROFILES.join(", "),
+                        crate::config::CACHE_PROFILES.join(", "),
                         p
                     )));
                 }

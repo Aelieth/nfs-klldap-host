@@ -421,7 +421,7 @@ fn invalid_cache_profile_rejected_and_valid_profiles_accepted() {
     assert!(c.validate_and_derive().is_err(), "unknown profile must be rejected");
 
     // All 5 official profiles must pass.
-    for prof in crate::CACHE_PROFILES {
+    for prof in crate::config::CACHE_PROFILES {
         let mut c_ok = minimal_cfg();
         c_ok.shares[0].cache_profile = Some((*prof).to_string());
         assert!(
@@ -557,7 +557,7 @@ fn realm_is_required_no_silent_example() {
     let _guards = clean_core_env();
     let mut c = NfsKlldapConfig {
         ldap_uri: "ldaps://klldap.example.com:6360".into(),
-        kerberos: KerberosSection {
+        kerberos: crate::config::KerberosSection {
             realm: Some("EXAMPLE.COM".into()),
         },
         sssd: SssdSection {

@@ -4,9 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::{
-    extract_host_from_uri, host_is_ip, is_persistent_config, posix_mapping_from_sssd, NfsKlldapConfig,
-};
+use crate::idmap::posix_mapping_from_sssd;
+use crate::{extract_host_from_uri, host_is_ip, is_persistent_config, NfsKlldapConfig};
 
 /// Default Kerberos keytab path inside the container image.
 pub const DEFAULT_KEYTAB_PATH: &str = "/etc/krb5.keytab";
@@ -35,12 +34,13 @@ pub fn is_setup_wizard_complete() -> bool {
     setup_wizard_marker_path().is_file()
 }
 
+#[cfg(test)]
 static SETUP_MARKER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Serializes tests that override NFS_KLLDAP_SETUP_MARKER.
 /// Env is shared process-global.
-#[doc(hidden)]
-pub fn lock_setup_marker_for_tests() -> std::sync::MutexGuard<'static, ()> {
+#[cfg(test)]
+fn lock_setup_marker_for_tests() -> std::sync::MutexGuard<'static, ()> {
     SETUP_MARKER_TEST_LOCK
         .lock()
         .expect("setup marker test lock")

@@ -25,23 +25,19 @@ mod template;
 mod validate;
 
 pub use config::{
-    derive_share_pseudo, resolve_cache_profile, ShareFieldWarning, CACHE_PROFILES,
-    GaneshaSection, GenerationPaths, HostSection, KerberosSection, ManagementSection,
-    NfsKlldapConfig, PosixAttributeMapping, ServerSection, Share, SssdSection, StorageSection,
-    WebuiSection, SHARE_KNOWN_KEYS,
+    derive_share_pseudo, GenerationPaths, NfsKlldapConfig, PosixAttributeMapping, Share,
+    ShareFieldWarning, SssdSection, StorageSection,
 };
 pub use network::{
     container_primary_ipv4, extract_server_addr_from_ganesha_line, is_docker_bridge_ipv4,
 };
-pub use validate::detect_share_unknown_keys;
-
 pub mod ignored_attributes;
 pub use error::ConfigError;
 pub use exports_fingerprint::{
     fingerprint_exports_dir, fingerprint_identity_artifacts, fingerprint_shares, FNV1A_SEED,
 };
 pub use ganesha_liveness::{
-    discover_ganesha_daemon_pid, pgrep_live_pids, pgrep_pids, pgrep_running,
+    discover_ganesha_daemon_pid, pgrep_running,
     pkill_binary, pkill_process, process_is_live,
 };
 pub use recycle_plan::{
@@ -52,14 +48,11 @@ pub use signals::{
     signal_process_hup, signal_process_kill, signal_process_term, signal_supervisor_hup,
     take_sighup_requested,
 };
-pub use constants::PROC_COMM_NAME_MAX;
-
 pub use fs_probe::{
     acl_probe_verdict, compute_effective_flags, compute_effective_flags_probed,
     compute_read_access_policy_emit, normalize_path, probe_from_mountinfo,
-    probe_from_mountinfo_with_root, probe_fs_capabilities, probe_fs_capabilities_with_root,
-    serve_path_posix_acl_supported, serve_path_posix_acl_write_probe, verdict_from_caps,
-    AclIncapableMount, AclProbeVerdict, EffectiveShareFlags, MountinfoSnapshot,
+    probe_fs_capabilities, verdict_from_caps,
+    AclProbeVerdict, EffectiveShareFlags, MountinfoSnapshot,
     ReadAccessPolicyEmit, FsCapabilities,
 };
 pub use ganesha_log_contract::{
@@ -68,19 +61,16 @@ pub use ganesha_log_contract::{
 pub use ganesha_identity_pipeline::{
     identity_principals_for_check, probe_client_host, probe_user_principal,
     run_identity_pipeline, warm_principals_for_startup,
-    warm_principals_nss_ready, IdentityPrincipals,
+    warm_principals_nss_ready,
 };
 pub use ganesha_nss_contract::{
     evaluate_nss_contract, evaluate_short_name_getgrouplist_contract, find_nss_wrapper_so,
     ld_preload_for_ganesha,
-    nss_lookup_names, probe_nss_groups, probe_nss_groups_exact, probe_nss_passwd,
-    probe_nss_passwd_exact, probe_nss_passwd_from_file_exact, short_pw_name_for_principal,
+    probe_nss_groups_exact, probe_nss_passwd_exact, probe_nss_passwd_from_file_exact,
     GaneshaNssEnv,
 };
 pub use ganesha_readiness::{
-    build_ganesha_envp, check_ganesha_readiness, check_synthetic_krb_log_clean,
-    exercise_ganesha_uid2grp, filter_proc_environ_keys, ganesha_log_has_getgrouplist_warn,
-    ganesha_log_has_managed_gids_failure,
+    build_ganesha_envp, check_ganesha_readiness, filter_proc_environ_keys,
     idhelper_socket_request, proc_environ_map,
     proc_pid_environ, probe_ganesha_process_groups, probe_id_g_under_env, probe_socket_grps,
     probe_socket_grouplist, resolve_nss_sss_so, signal_ganesha_reload_idmap,
@@ -93,13 +83,12 @@ pub fn ldap_bind_configured(cfg: &NfsKlldapConfig) -> bool {
         && !cfg.sssd.ldap_default_authtok.trim().is_empty()
 }
 pub use fs_warnings::{
-    any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warning,
-    limited_fs_warning_settings_ui, limited_fs_warnings_only, share_divergent_submount_warning_snapshot,
-    share_fs_acl_limited, share_fs_acl_limited_snapshot, share_fs_acl_limited_with_mountinfo,
+    any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warnings_only,
+    share_divergent_submount_warning_snapshot, share_fs_acl_limited_with_mountinfo,
     share_fs_warning_message_snapshot,
     share_fs_warning_message_with_mountinfo, FsShareWarning, PosixOnlyPolicy,
 };
-pub use hook::{effective_post_generate_hook, run_post_generate_hooks};
+pub use hook::run_post_generate_hooks;
 pub use generate::generate_all;
 
 mod idhelper_check;
@@ -110,10 +99,9 @@ pub use idhelper_check::{
 pub use hostname::{
     format_nfs_principal_list, get_consistent_hostname, host_nfs_active, host_nfs_from_env,
     looks_like_docker_default_hostname, nfs_keytab_host_matches, nfs_keytab_host_variants,
-    parse_host_nfs_env_value, resolve_host_nfs_mode, runtime_hostname, runtime_realm,
-    runtime_realm_from_disk, runtime_server_variants, runtime_server_variants_from_disk,
+    resolve_host_nfs_mode, runtime_hostname, runtime_realm,
+    runtime_realm_from_disk, runtime_server_variants_from_disk,
     webui_tls_disabled,
-    ConsistentHostname, HostnameInconsistency, HostnameObservation, HostnameSource,
 };
 pub use persist::is_persistent_config;
 pub use startup::{
@@ -127,8 +115,6 @@ pub use startup::{
     setup_wizard_marker_path,
     webui_setup_url, LdapReachability, StartupStep, DEFAULT_KEYTAB_PATH, SETUP_WIZARD_MARKER,
 };
-#[doc(hidden)]
-pub use startup::lock_setup_marker_for_tests;
 pub use template::{generate_default_template, write_default_config_if_missing};
 pub use nfs_klldap_identity::{derive_realm_from_uri, extract_host_from_uri, host_is_ip};
 pub use nfs_klldap_identity::{get_keytab_info, parse_klist_nfs_hosts, KeytabInfo};
@@ -139,7 +125,7 @@ pub use idmap::{
     classify_principal, from_sssd_section,
     machine_short_name, normalize_principal, parse_getent_passwd,
     parse_group_row, parse_passwd_row,
-    posix_mapping_from_sssd, principal_local_part, sssd_resolver_inputs,
+    principal_local_part, sssd_resolver_inputs,
     IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry,
 };
 

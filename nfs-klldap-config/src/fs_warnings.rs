@@ -221,11 +221,13 @@ pub fn share_fs_warning_message_snapshot(
 }
 
 /// True when the share serve path is on a limited (non-ACL-capable) filesyste.
+/// Live-probe convenience; production paths use the mountinfo variant.
+#[cfg(test)]
 pub fn share_fs_acl_limited(cfg: &NfsKlldapConfig, share: &Share) -> bool {
     share_fs_acl_limited_with_mountinfo(cfg, share, None)
 }
 
-/// Same as [`share_fs_acl_limited`] with an explicit mountinfo fixture (tests.
+/// Same check with an explicit mountinfo fixture (tests.
 pub fn share_fs_acl_limited_with_mountinfo(
     cfg: &NfsKlldapConfig,
     share: &Share,

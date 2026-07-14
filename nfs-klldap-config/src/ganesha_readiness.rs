@@ -214,7 +214,7 @@ pub fn resolve_nss_sss_so() -> Option<PathBuf> {
 }
 
 /// Scan ganesha.log for `my_getgrouplist_alloc` WARN/failed lines (full file.
-pub fn ganesha_log_has_getgrouplist_warn(ganesha_log_path: &str, from_offset: u64) -> bool {
+pub(crate) fn ganesha_log_has_getgrouplist_warn(ganesha_log_path: &str, from_offset: u64) -> bool {
     let Ok(content) = std::fs::read_to_string(ganesha_log_path) else {
         return false;
     };
@@ -232,7 +232,7 @@ pub fn ganesha_log_has_getgrouplist_warn(ganesha_log_path: &str, from_offset: u6
 }
 
 /// Synthetic krb log scan.
-pub fn check_synthetic_krb_log_clean(ganesha_log_path: &str) -> bool {
+pub(crate) fn check_synthetic_krb_log_clean(ganesha_log_path: &str) -> bool {
     !ganesha_log_has_getgrouplist_warn(ganesha_log_path, 0)
 }
 
@@ -240,7 +240,7 @@ pub fn check_synthetic_krb_log_clean(ganesha_log_path: &str) -> bool {
 /// These log under DISP at INFO (not ID MAPPER WARN) when uid2grp fails on a
 /// live RPCSEC_GSS request; under GSS the fallback strips all supplementary
 /// groups, so they are the primary group-resolution failure signature.
-pub fn ganesha_log_has_managed_gids_failure(ganesha_log_path: &str, from_offset: u64) -> bool {
+pub(crate) fn ganesha_log_has_managed_gids_failure(ganesha_log_path: &str, from_offset: u64) -> bool {
     let Ok(content) = std::fs::read_to_string(ganesha_log_path) else {
         return false;
     };
@@ -303,7 +303,7 @@ pub(crate) fn resolve_ganesha_ctl_bin() -> Option<String> {
 }
 
 /// Exercise uid2grp/getgrouplist path via ganesha-ctl id-resolve under ganesh.
-pub fn exercise_ganesha_uid2grp(
+pub(crate) fn exercise_ganesha_uid2grp(
     envp: &[(OsString, OsString)],
     principals: &[&str],
     ganesha_log_path: &str,

@@ -47,7 +47,7 @@ pub fn from_sssd_section(ldap_uri: &str, sssd: &SssdSection, realm: &str) -> IdL
 }
 
 /// Resolved POSIX attribute names from one sssd_resolver_inputs pass.
-pub fn posix_mapping_from_sssd(
+pub(crate) fn posix_mapping_from_sssd(
     ldap_uri: &str,
     sssd: &SssdSection,
     realm: &str,

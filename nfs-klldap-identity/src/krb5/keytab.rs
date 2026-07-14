@@ -60,7 +60,16 @@ pub fn read_keytab_nfs_principals(
     let path_str = keytab_path.to_string_lossy();
     args.push(&path_str);
 
-    let output = Command::new("klist")
+    // Bound klist so a wedged invocation can't hang the caller (belt-and-braces:
+    // it only reads a local keytab, no KDC contact).
+    let mut cmd = if std::path::Path::new("/usr/bin/timeout").exists() {
+        let mut c = Command::new("/usr/bin/timeout");
+        c.arg("8").arg("klist");
+        c
+    } else {
+        Command::new("klist")
+    };
+    let output = cmd
         .args(&args)
         .output()
         .map_err(|e| format!("klist not available: {}", e))?;

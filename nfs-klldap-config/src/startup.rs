@@ -241,7 +241,10 @@ pub fn format_volume_probe(config_path: &Path, ok: bool) -> String {
 pub fn check_ldap_reachability(host: &str, uri: &str) -> LdapReachability {
     let port = ldap_uri_port(uri);
 
-    if let Ok(out) = Command::new("getent").args(["hosts", host]).output() {
+    if let Ok(out) = crate::command_with_timeout(4, "getent")
+        .args(["hosts", host])
+        .output()
+    {
         if !out.status.success() {
             let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
             return LdapReachability::DnsFailure {

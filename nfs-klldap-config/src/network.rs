@@ -3,6 +3,19 @@
 use std::net::Ipv4Addr;
 use std::process::Command;
 
+/// A Command that runs `program` under coreutils `timeout <secs>` when present,
+/// else `program` directly. Callers add their own args and env. Bounds external
+/// tools that can wedge on a hung backend (getent, id, klist, nc).
+pub fn command_with_timeout(secs: u32, program: &str) -> Command {
+    if std::path::Path::new("/usr/bin/timeout").exists() {
+        let mut c = Command::new("/usr/bin/timeout");
+        c.arg(secs.to_string()).arg(program);
+        c
+    } else {
+        Command::new(program)
+    }
+}
+
 /// Returns true when addr is an IPv4 address in Docker's default bridge.
 /// Range is 172.17.0.0/16.
 pub fn is_docker_bridge_ipv4(addr: &str) -> bool {

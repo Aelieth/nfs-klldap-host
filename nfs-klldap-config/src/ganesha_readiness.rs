@@ -263,7 +263,8 @@ fn apply_envp(cmd: &mut Command, envp: &[(OsString, OsString)]) {
 
 /// Id -G under envp for readiness.
 pub fn probe_id_g_under_env(who: &str, envp: &[(OsString, OsString)]) -> Option<Vec<u32>> {
-    let mut cmd = Command::new("id");
+    // Bound `id` so a wedged SSSD/nss backend can't stall the supervisor thread.
+    let mut cmd = crate::command_with_timeout(8, "id");
     cmd.args(["-G", who]);
     apply_envp(&mut cmd, envp);
     let out = cmd.output().ok()?;
@@ -345,6 +346,9 @@ pub fn idhelper_socket_request(socket_path: &str, request: &str) -> Option<Strin
         return None;
     }
     let mut stream = UnixStream::connect(socket_path).ok()?;
+    // Bound the exchange so a wedged idhelper can't block the caller forever.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(8)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(8)));
     stream.write_all(request.as_bytes()).ok()?;
     stream.flush().ok()?;
     let mut reader = BufReader::new(stream);

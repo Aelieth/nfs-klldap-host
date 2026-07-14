@@ -4,7 +4,6 @@
 
 use crate::dlog;
 use std::path::Path;
-use std::process::Command;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -444,7 +443,10 @@ pub(crate) fn lookup_passwd_file(path: &Path, name: &str) -> Option<(u32, u32)> 
 
 fn resolve_getent(name: &str, paths: &NssMaterializePaths<'_>) -> Option<(u32, u32, String)> {
     dlog!("getent passwd \"{}\" called", name);
-    if let Ok(out) = Command::new("getent").args(["passwd", name]).output() {
+    if let Ok(out) = nfs_klldap_config::command_with_timeout(8, "getent")
+        .args(["passwd", name])
+        .output()
+    {
         if out.status.success() {
             let s = String::from_utf8_lossy(&out.stdout);
             let line = s.lines().next().unwrap_or("");
@@ -709,12 +711,13 @@ pub(crate) fn resolve_principal(
         dlog!("  cache_write result={}", if write_res.is_ok() { "ok" } else { "err" });
     }
 
-    // Warm SSSD/getent after a successful user resolve (non-blocking).
+    // Warm SSSD/getent after a successful user resolve. These are blocking
+    // subprocesses; bound them so a wedged SSSD can't stall resolution.
     if resolved.uid != 0 && resolved.uid != FALLBACK_NOBODY_UID {
-        let _ = Command::new("sss_cache")
+        let _ = nfs_klldap_config::command_with_timeout(8, "sss_cache")
             .args(["-u", &resolved.name])
             .output();
-        let _ = Command::new("getent")
+        let _ = nfs_klldap_config::command_with_timeout(8, "getent")
             .args(["passwd", &resolved.name])
             .output();
     }

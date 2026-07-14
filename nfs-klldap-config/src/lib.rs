@@ -29,7 +29,8 @@ pub use config::{
     ShareFieldWarning, SssdSection, StorageSection,
 };
 pub use network::{
-    container_primary_ipv4, extract_server_addr_from_ganesha_line, is_docker_bridge_ipv4,
+    command_with_timeout, container_primary_ipv4, extract_server_addr_from_ganesha_line,
+    is_docker_bridge_ipv4,
 };
 pub mod ignored_attributes;
 pub use error::ConfigError;
@@ -44,7 +45,7 @@ pub use recycle_plan::{
     plan_from_changes, ganesha_sighup_failed, GaneshaAction, ServiceRecyclePlan,
 };
 pub use signals::{
-    install_signal_handlers, reap_one_child, request_sighup, shutdown_requested,
+    install_signal_handlers, reap_children, request_sighup, shutdown_requested,
     signal_process_hup, signal_process_kill, signal_process_term, signal_supervisor_hup,
     take_sighup_requested,
 };

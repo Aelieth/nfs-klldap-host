@@ -39,7 +39,7 @@ Numeric IDs in LDAP must match ownership on host data directories.
 
 - **`ldaps://` without `ldap_tls_reqcert`:** SSSD system/OpenLDAP defaults (not auto-`never`). Self-signed lab: `ldap_tls_reqcert = "never"`.
 - **`ldap://`:** generator emits `ldap_auth_disable_tls_never_use_in_production = true` by default (lab only).
-- **WebUI LDAP client:** `ldap_tls_policy()` — unset ldaps is permissive for probes unless `ldap_tls_reqcert` is set.
+- **WebUI LDAP client:** `ldap_tls_policy()` — for `ldaps://` with no custom CA the client does **not** verify the server certificate (self-signed-friendly default; the WebUI logs a `WARNING` at startup when this is active). To verify against a real CA, set `ldap_tls_cacert` to the CA's PEM file — the client then validates the LDAP server certificate against it (system trust roots plus that CA). `ldap_tls_reqcert = "never"` still overrides to no-verify.
 
 ### Example `[sssd]`
 

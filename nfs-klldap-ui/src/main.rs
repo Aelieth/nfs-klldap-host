@@ -153,7 +153,13 @@ async fn main() {
 
     let (mut lldap, no_tls_verify) = crate::ldap::LdapClient::from_config(&loaded_config);
     if no_tls_verify {
-        println!("Outbound LDAPS/StartTLS: verification DISABLED");
+        eprintln!(
+            "WARNING: outbound LDAPS/StartTLS certificate verification is DISABLED — \
+             the bind and all identity lookups are exposed to man-in-the-middle. This is \
+             the self-signed-friendly default when no CA is configured. To verify, set \
+             [sssd].ldap_tls_cacert to the LDAP server's CA PEM (see \
+             docs/ldap-integration.md#tls)."
+        );
     } else {
         println!("Outbound LDAPS/StartTLS: verification ENABLED");
     }

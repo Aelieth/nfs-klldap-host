@@ -500,7 +500,7 @@ pub(crate) async fn lldap_status(State(state): State<AppState>, headers: HeaderM
             "<div id='nfs-client-status' class='alert alert-danger'>Unauthorized</div>".to_string(),
         );
     }
-    let client = state.lldap.lock().await;
+    let client = state.lldap.read().await.clone();
     let auth_as = client.authenticated_as().unwrap_or("(none)");
     let last_auth = client.last_auth_time();
     let disk_cfg = crate::config::load_config_from(&state.config_path).ok();
@@ -599,8 +599,7 @@ pub(crate) async fn reload_nfs_client(
     match new_client.authenticate(&user, &pass).await {
         Ok(()) => {
             {
-                let mut guard = state.lldap.lock().await;
-                *guard = new_client;
+                *state.lldap.write().await = std::sync::Arc::new(new_client);
             }
             let mut ok = String::from("<div id='nfs-client-status' class='alert alert-success'>");
             ok.push_str("<strong>NFS client reloaded successfully.</strong><br>");
@@ -632,7 +631,7 @@ pub(crate) async fn clear_ldap_cache(
         );
     }
     {
-        let client = state.lldap.lock().await;
+        let client = state.lldap.read().await.clone();
         client.clear_cache();
     }
     let mut ok = String::from("<div id='nfs-client-status' class='alert alert-success'>");

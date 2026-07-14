@@ -89,7 +89,7 @@ pub async fn login(
         }
     } else {
         // LLDAP path — LdapClient::verify_user_is_admin under a single lock.
-        let l = state.lldap.lock().await;
+        let l = state.lldap.read().await.clone();
         match l
             .verify_user_is_admin(username, password, state.auth.admin_group())
             .await
@@ -122,7 +122,7 @@ pub async fn login(
             {
                 let lldap = state.lldap.clone();
                 tokio::spawn(async move {
-                    let l = lldap.lock().await;
+                    let l = lldap.read().await.clone();
                     let _ = l.list_users(None).await;
                     let _ = l.list_groups(None).await;
                 });
@@ -205,7 +205,7 @@ pub async fn setup_password(
             {
                 let lldap = state.lldap.clone();
                 tokio::spawn(async move {
-                    let l = lldap.lock().await;
+                    let l = lldap.read().await.clone();
                     let _ = l.list_users(None).await;
                     let _ = l.list_groups(None).await;
                 });

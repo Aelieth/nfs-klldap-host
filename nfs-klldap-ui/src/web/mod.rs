@@ -46,7 +46,7 @@ pub(crate) use settings::{
 #[derive(Clone)]
 pub struct AppState {
     pub fs: Arc<RwLock<FsManager>>,
-    pub lldap: Arc<Mutex<crate::ldap::LdapClient>>,
+    pub lldap: Arc<tokio::sync::RwLock<Arc<crate::ldap::LdapClient>>>,
     pub config: Arc<RwLock<Config>>,
     pub auth: Arc<AuthManager>,
     pub config_path: PathBuf,

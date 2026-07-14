@@ -14,6 +14,14 @@ use crate::fs::ApplyProgress;
 use super::{AppState, require_auth};
 
 type Ldap = crate::ldap::LdapClient;
+
+/// Fallback HTML when a blocking handler task panics (JoinError) — a graceful
+/// alert instead of a bodyless 500.
+fn render_500(what: &str) -> String {
+    format!(
+        r#"<div class="alert alert-danger"><strong>Internal error rendering the {what}.</strong> Please retry.</div>"#
+    )
+}
 #[derive(Template)]
 #[template(path = "index.html")]
 struct IndexTemplate {
@@ -675,6 +683,15 @@ pub(crate) async fn index(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
+    // Each share's ACL classification can drive a write-probe subprocess; keep
+    // the whole dashboard build off the async runtime.
+    let html = tokio::task::spawn_blocking(move || index_html(&state, user.0))
+        .await
+        .unwrap_or_else(|_| render_500("dashboard"));
+    Ok(Html(html))
+}
+
+fn index_html(state: &AppState, current_user: String) -> String {
     let server = &state.keytab_hostname;
     let cfg = state.config.read().expect("config lock poisoned");
     let snap =
@@ -731,7 +748,7 @@ pub(crate) async fn index(
         .collect();
     let tpl = IndexTemplate {
         shares: display_shares,
-        current_user: Some(user.0),
+        current_user: Some(current_user),
         keytab_alert: state.keytab_alert.lock().unwrap().clone(),
         acl_alert: state.acl_alert.lock().unwrap().clone(),
         apply_log_initial: apply_log_shell(
@@ -742,7 +759,7 @@ pub(crate) async fn index(
         ),
     };
 
-    Ok(Html(tpl.render().unwrap()))
+    tpl.render().unwrap()
 }
 /// Lazy-loads one level of a directory (HTMX partial): subdirectories first,
 /// then files with a type emoji and modified date.
@@ -752,13 +769,24 @@ pub(crate) async fn tree_fragment(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
+    // list_dir stats every entry and the "+" marker shells out to getfacl in
+    // batches; run the whole blocking section off the async runtime.
+    let html = tokio::task::spawn_blocking(move || tree_fragment_html(&state, &params))
+        .await
+        .unwrap_or_else(|_| render_500("directory tree"));
+    Ok(Html(html))
+}
+
+/// Blocking body of `tree_fragment`: filesystem listing, ACL "+" markers, and
+/// the diagnostic fallback. Returns the rendered HTML fragment.
+fn tree_fragment_html(state: &AppState, params: &TreeParams) -> String {
     let path = std::path::Path::new(&params.path);
     let fs = state.fs.read().expect("fs lock poisoned");
     if let Some(entries) = fs.list_dir(path) {
         let mut children: Vec<EntryView> = entries.into_iter().map(EntryView::from_fs_entry).collect();
         // The "+" marker runs one batched getfacl per fragment and only on
         // ACL-active shares — NOACL trees pay nothing.
-        if share_acl_gate(&state, path).editable {
+        if share_acl_gate(state, path).editable {
             let names: Vec<String> = children.iter().map(|c| c.name.clone()).collect();
             let extended = fs.extended_acl_names(path, &names);
             for c in &mut children {
@@ -774,10 +802,10 @@ pub(crate) async fn tree_fragment(
                 .unwrap_or_else(|| normalized.clone());
             let root = DirNode { path: normalized, name };
             let tpl = TreeRootTemplate { root, children };
-            return Ok(Html(tpl.render().unwrap()));
+            return tpl.render().unwrap();
         } else {
             let tpl = TreeFragmentTemplate { children };
-            return Ok(Html(tpl.render().unwrap()));
+            return tpl.render().unwrap();
         }
     }
 
@@ -810,14 +838,13 @@ pub(crate) async fn tree_fragment(
     } else {
         "Directory exists but could not be read (permissions?).".to_string()
     };
-    let msg = format!(
+    format!(
         r#"<div class="alert alert-danger">
             <strong>Cannot display directory tree.</strong><br>
             Logical path: <code>{safe_path}</code><br>
             {hint}
         </div>"#
-    );
-    Ok(Html(msg))
+    )
 }
 // GET /dir-perms?path=... — panel body: POSIX (owner/group + rwx matrix + setgid/sticky) and the
 // named ACL list, both LDAP-resolved. Replaces the retired /dir-meta + /dir-editor + /dir-acl trio.
@@ -828,10 +855,30 @@ pub(crate) async fn dir_perms(
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
     let path = q.path;
-    let host = std::path::Path::new(&path);
-    let (meta, diag) = {
-        let fs = state.fs.read().expect("fs lock poisoned");
-        (fs.get_node_meta(host), fs.diagnose_path(host))
+    // Stat, the mountinfo/ACL gate (which can write-probe), and getfacl are all
+    // blocking; gather them in one hop off the runtime. LDAP name resolution
+    // below stays async (the client offloads its own blocking work).
+    let bundle = {
+        let state = state.clone();
+        let path = path.clone();
+        tokio::task::spawn_blocking(move || {
+            let host = std::path::Path::new(&path);
+            let (meta, diag) = {
+                let fs = state.fs.read().expect("fs lock poisoned");
+                (fs.get_node_meta(host), fs.diagnose_path(host))
+            };
+            let gate = share_acl_gate(&state, host);
+            let table = {
+                let fs = state.fs.read().expect("fs lock poisoned");
+                fs.get_acl_table(host).unwrap_or_default()
+            };
+            (meta, diag, gate, table)
+        })
+        .await
+    };
+    let (meta, diag, gate, table) = match bundle {
+        Ok(b) => b,
+        Err(_) => return Ok(Html(render_500("permissions panel"))),
     };
 
     let mut owner_display = "(unavailable)".to_string();
@@ -856,7 +903,7 @@ pub(crate) async fn dir_perms(
         // x granted where r is not (per audience): traverse-only access the
         // condensed dir matrix can't express — Apply strips it, so warn.
         traverse_only_note = is_dir && ((mode & 0o111) & !((mode & 0o444) >> 2)) != 0;
-        let l = state.lldap.lock().await;
+        let l = state.lldap.read().await.clone();
         owner_display = friendly_user_label(&l, owner).await;
         group_display = friendly_group_label(&l, group).await;
         drop(l);
@@ -887,7 +934,6 @@ pub(crate) async fn dir_perms(
 
     // Panel state is the share-level classification; only /acl-apply re-checks
     // the selected node's own mount (422 backstop on divergent submounts).
-    let gate = share_acl_gate(&state, host);
     let acl_supported = gate.editable;
     let acl_pill = gate.pill;
     let acl_pill_class = gate.pill_class;
@@ -897,16 +943,12 @@ pub(crate) async fn dir_perms(
     // The full ACL table is always listed (resolved to friendly names); the
     // section greys when unsupported. Effective perms come from the layer's
     // mask so the rows show what actually applies, not just what's granted.
-    let table = {
-        let fs = state.fs.read().expect("fs lock poisoned");
-        fs.get_acl_table(host).unwrap_or_default()
-    };
     let mut users: Vec<AclEntryView> = Vec::new();
     let mut groups: Vec<AclEntryView> = Vec::new();
     let mut default_users: Vec<AclEntryView> = Vec::new();
     let mut default_groups: Vec<AclEntryView> = Vec::new();
     {
-        let l = state.lldap.lock().await;
+        let l = state.lldap.read().await.clone();
         for (default, line) in table
             .access
             .iter()
@@ -1011,7 +1053,7 @@ pub(crate) async fn search_users(
     if nobody_suggestion_matches(params.user_query_raw()) {
         html.push_str(nobody_user_suggestion());
     }
-    let lldap = state.lldap.lock().await;
+    let lldap = state.lldap.read().await.clone();
     // None = LDAP unavailable (unreachable / no service creds); Some(vec![]) = no match.
     let Some(users) = lldap.list_users(params.user_query_raw()).await else {
         html.push_str(r#"<div class="suggestion sugg-note">LLDAP search unavailable (server unreachable or service credentials not configured)</div>"#);
@@ -1046,7 +1088,7 @@ pub(crate) async fn search_groups(
     if nobody_suggestion_matches(params.group_query_raw()) {
         html.push_str(nobody_group_suggestion());
     }
-    let lldap = state.lldap.lock().await;
+    let lldap = state.lldap.read().await.clone();
     let Some(groups) = lldap.list_groups(params.group_query_raw()).await else {
         html.push_str(r#"<div class="suggestion sugg-note">LLDAP search unavailable (server unreachable or service credentials not configured)</div>"#);
         return Html(html);
@@ -1128,7 +1170,7 @@ pub(crate) async fn apply_permissions(
         }
     }
     if needs_lock {
-        let lldap = state.lldap.lock().await;
+        let lldap = state.lldap.read().await.clone();
         if owner_uid.is_none() && typed_user.is_some() {
             match lldap.resolve_user(&form.owner_user).await {
                 Some((uid, _)) => owner_uid = Some(uid as u32),
@@ -1514,7 +1556,7 @@ pub(crate) async fn acl_apply(
     // The mask op has no principal at all.
     if id == 0 && op != "delete" && op != "mask" && !form.name.trim().is_empty() {
         if let Some(stripped) = crate::ldap::LdapClient::normalize_editor_search_query(Some(&form.name)) {
-            let lldap = state.lldap.lock().await;
+            let lldap = state.lldap.read().await.clone();
             if let Ok(n) = stripped.parse::<u32>() {
                 id = n;
             } else if is_user {
@@ -1635,7 +1677,17 @@ pub(crate) async fn acl_apply(
     tokio::spawn(async move {
         if scope == crate::fs::ApplyScope::DirOnly {
             prog.processed.store(1, Ordering::Relaxed);
-            let res = fs.apply_acl_mod(std::path::Path::new(&pth), modf);
+            // setfacl is a subprocess; keep it off the async runtime like the
+            // scoped branches below already do.
+            let res = {
+                let fs = fs.clone();
+                let pth = pth.clone();
+                tokio::task::spawn_blocking(move || {
+                    fs.apply_acl_mod(std::path::Path::new(&pth), modf)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("apply task failed: {e}")))
+            };
             let (ok, msg) = match res {
                 Ok(m) => (true, m),
                 Err(e) => (false, e),

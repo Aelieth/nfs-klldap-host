@@ -27,7 +27,9 @@ fn webui_refresh_tick_due(
 /// list refresh on an interval. `NFS_KLLDAP_WEBUI_LDAP_REFRESH_INTERVAL_SECS = 0`
 /// disables it; default 180s (mirrors the idhelper rebulk cadence). The bulk
 /// reload rides the pooled connection, so it doubles as a keepalive.
-fn spawn_webui_ldap_refresh(lldap: std::sync::Arc<tokio::sync::Mutex<crate::ldap::LdapClient>>) {
+fn spawn_webui_ldap_refresh(
+    lldap: std::sync::Arc<tokio::sync::RwLock<std::sync::Arc<crate::ldap::LdapClient>>>,
+) {
     let secs = std::env::var("NFS_KLLDAP_WEBUI_LDAP_REFRESH_INTERVAL_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -42,12 +44,14 @@ fn spawn_webui_ldap_refresh(lldap: std::sync::Arc<tokio::sync::Mutex<crate::ldap
         interval.tick().await; // skip the immediate first tick
         loop {
             interval.tick().await;
-            let last = lldap.lock().await.last_full_refresh();
-            if !webui_refresh_tick_due(last, interval_dur) {
+            // Clone the current client Arc under a brief read lock, then run the
+            // network refresh without holding the lock — the client is interior-
+            // mutable, so live-search and login requests no longer stall behind it.
+            let client = lldap.read().await.clone();
+            if !webui_refresh_tick_due(client.last_full_refresh(), interval_dur) {
                 continue;
             }
-            let l = lldap.lock().await;
-            if let Some(n) = l.refresh_identity_data().await {
+            if let Some(n) = client.refresh_identity_data().await {
                 eprintln!("INFO: WebUI LDAP refresh reloaded {n} identities");
             }
         }
@@ -170,13 +174,13 @@ async fn main() {
         eprintln!("Warning: KLLDAP auth failed at startup: {}", e);
     }
 
-    let lldap = Arc::new(Mutex::new(lldap));
+    let lldap = Arc::new(tokio::sync::RwLock::new(Arc::new(lldap)));
 
     // Warm caches at startup for fast first / edit interactions.
     {
         let lldap_warm = lldap.clone();
         tokio::spawn(async move {
-            let l = lldap_warm.lock().await;
+            let l = lldap_warm.read().await.clone();
             let _ = l.list_users(None).await;
             let _ = l.list_groups(None).await;
         });

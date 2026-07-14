@@ -33,7 +33,7 @@ fn test_app_state(
     let fs = Arc::new(RwLock::new(FsManager::new(cfg_val)));
     AppState {
         fs,
-        lldap: Arc::new(Mutex::new(crate::create_test_lldap())),
+        lldap: Arc::new(tokio::sync::RwLock::new(Arc::new(crate::create_test_lldap()))),
         config: cfg,
         auth: Arc::new(AuthManager::new(cp, None)),
         config_path: cp.to_path_buf(),

@@ -8,7 +8,8 @@
 {# Columnar ACL rows for one category (users or groups) of one layer. A ✓ shows
    the entry as granted; a dimmed ✓ marks bits the mask withholds (row hover
    names the effective triad). Rows are display + selection targets — all
-   mutation goes through the pane's Add/Remove/Modify editor. Directory panels
+   mutation goes through the Add User/Add Group/Remove buttons and the row
+   checkboxes (toggle-apply). Directory panels
    hide the Exec column like the POSIX dir matrix: execute is the traversal
    bit, fused from Read server-side on every dir apply. #}
 {% macro acl_rows(kind, entries, layer) %}
@@ -73,7 +74,7 @@
       <div class="acl-sep"></div>
       <div class="acl-row acl-mask-row" data-type="mask" data-layer="{{ layer }}"
            data-perms="{% if m.r %}r{% else %}-{% endif %}{% if m.w %}w{% else %}-{% endif %}{% if m.x %}x{% else %}-{% endif %}"
-           title="Mask: caps every named entry and the owning group. chmod's Group bits rewrite this same value. Select it and use Modify.">
+           title="Mask: caps every named entry and the owning group. chmod's Group bits rewrite this same value. Toggle its checkboxes in edit mode to change it.">
         <span class="acl-name">mask</span>
         <span class="acl-cell"><input type="checkbox" class="mbit" data-ch="r" aria-label="mask read" {% if m.r %}checked{% endif %} disabled></span>
         <span class="acl-cell"><input type="checkbox" class="mbit" data-ch="w" aria-label="mask write" {% if m.w %}checked{% endif %} disabled></span>

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Ganesha 9.6 uid2grp chain preflight (before Fedora client mount).
+# Ganesha uid2grp chain preflight (before Fedora client mount).
 # Usage: SCRATCH=/path NFS_FULL_LOG=/path ./scripts/ganesha-chain-preflight.sh
 # Prints CHAIN_PREFLIGHT_OK on success; appends transcript to NFS_FULL_LOG.
 set -euo pipefail

@@ -8,7 +8,7 @@ desc="${2:-}"
 [ -n "$key" ] && [ -n "$desc" ] || exit 1
 echo "$(date -u +%FT%TZ) key=$key desc=$desc" >> /tmp/nfsidmap-client-helper.log
 
-# Ganesha 9.6 Only_Numeric_Owners encodes NSS ids as wire_uid = nss_uid + 524287.
+# Ganesha Only_Numeric_Owners encodes NSS ids as wire_uid = nss_uid + 524287.
 GANESHA_WIRE_UID_OFFSET=524287
 
 decode_wire_id() {

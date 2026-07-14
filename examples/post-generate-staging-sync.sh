@@ -1,7 +1,7 @@
 #!/bin/sh
 # Example post-generate hook: stage a share's data onto its ACL-capable serve tree
 # (idempotent rsync). Use when a share sets `enable_acl = true` but its real data lives on
-# a filesystem the packaged Ganesha 9.6 VFS FSAL cannot serve NFSv4 ACLs from.
+# a filesystem that cannot store POSIX ACLs — the packaged Ganesha VFS FSAL cannot serve those.
 #
 # Configure in nfs-klldap.conf:
 #   [ganesha]

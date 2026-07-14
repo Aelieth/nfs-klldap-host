@@ -62,7 +62,7 @@ else
 fi
 
 echo
-echo "[6] Principal mapping + Ganesha 9.6 policy..."
+echo "[6] Principal mapping + Ganesha policy..."
 ganesha-ctl id-map-test testuser1 2>/dev/null || echo "  id-map-test not available or failed (non-fatal)"
 if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
     if grep -q 'Read_Access_Check_Policy' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
@@ -72,7 +72,7 @@ if ls /etc/ganesha/exports.d/*.conf >/dev/null 2>&1; then
             echo "  NOTE: Read_Access_Check_Policy present but not = pre (unquoted) (check for post or unexpected)"
         fi
     else
-        echo "  OK: Read_Access_Check_Policy omitted in fragments (9.6 default pre for ACL-capable)"
+        echo "  OK: Read_Access_Check_Policy omitted in fragments (default pre for ACL-capable)"
     fi
 fi
 if ! grep -qi 'idmapconf\|idmapd.conf\|Idmapping' /etc/ganesha/ganesha.conf 2>/dev/null; then
@@ -147,7 +147,7 @@ if [ -f /var/log/ganesha.log ]; then
 fi
 
 echo
-echo "[7] ACL capability of serve paths (Ganesha 9.6 VFS FSAL)..."
+echo "[7] ACL capability of serve paths (Ganesha VFS FSAL)..."
 # Whether the packaged Ganesha VFS can serve NFSv4 ACLs depends on BOTH the build and the
 # backing filesystem. These are best-effort server-side signals; the authoritative check is
 # a krb5p mount + nfs4_getfacl from a client (see scripts/fedora-krb5p-client-validate.sh).

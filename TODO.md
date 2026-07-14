@@ -29,7 +29,8 @@
   single directory = + files directly inside / all directories = whole
   subtree) with an explicit **file-bits editor** for the recursive scopes —
   every file in scope gets exactly those bits (execute is an opt-in grant;
-  special bits refused on files). Files selected individually keep the full
+  special bits refused on files). (0.9.9x superseded the separate file-bits
+  editor: the matrix Exec column now feeds `file_mode` directly.) Files selected individually keep the full
   rwx triad, no special bits, no scope. Server-side
   `fs::dir_mode_r_implies_x` per entry is unchanged (see ui-design.md "Read
   implies execute" + "Apply scope"). File-type icons expanded to 13
@@ -40,7 +41,7 @@
   mask/defaults/effective badges, recursive ACL applies riding the same
   scopes); ARIA tree pattern still deferred (ui-design.md).
 - Track regressions via `cargo test --workspace` and [TESTING.md](TESTING.md) living spec.
-- **0.9.x branch**: branch name carries the release version (currently 0.9.85); Cargo workspace, Dockerfile LABEL, and nfs-klldap-host.yaml image tag are aligned to it.
+- **0.9.x branch**: the branch name carries the release version; Cargo workspace, Dockerfile LABEL, and nfs-klldap-host.yaml image tag are aligned to it at each redeploy.
 - Client connects (2026-07 capture): krb5 auth + NFSv4.1 session succeed server-side, then the client destroys the session before any namespace op — failure is client-side (gssd/mount context). GANESHA_DEBUG now logs RPCSEC_GSS; see docs/client-fedora-immutable.md troubleshooting.
 
 ## Kerberos user principal idmap

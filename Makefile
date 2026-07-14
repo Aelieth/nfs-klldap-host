@@ -111,7 +111,6 @@ docker:
 			$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(IMAGE_NAME):latest,) \
 			.; \
 	fi
-#		--tag $(IMAGE_NAME):latest \
 
 .PHONY: docker-multi
 docker-multi:

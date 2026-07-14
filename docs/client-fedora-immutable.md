@@ -58,7 +58,7 @@ real immutable host.
    ```
 
 6. **Numeric-owner decoding (recommended).** The server emits `Only_Numeric_Owners`, and
-   Ganesha 9.6 encodes them on the wire as `nss_id + 524287`. Without a decoder `ls -l`
+   Ganesha (`Only_Numeric_Owners`) encodes them on the wire as `nss_id + 524287`. Without a decoder `ls -l`
    shows large numeric owners (e.g. `527288` for uid 3001) — permissions still enforce
    correctly; only the display is off. Install the helper from this repo:
 

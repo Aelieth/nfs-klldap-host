@@ -103,14 +103,15 @@ concept for directories, coordinated across three layers:
   hand-crafted POST claiming a recursive scope on a file target is braced server-side
   (`target_is_file` forces `ApplyScope::DirOnly`).
 
-**Apply scope + file bits (dir panels):** the fragment's `.rec-scope` radios
+**Apply scope + file execute (dir panels):** the fragment's `.rec-scope` radios
 (`recursive_scope` = `none|single|all`) choose how far Apply reaches — **None** chowns/chmods the
 directory's own inode only; **Recursive — single directory** adds the files directly inside it;
-**Recursive — all directories** descends the whole subtree. Choosing a recursive scope reveals the
-**File permission bits** editor (`.file-opts`, nine independent `.fbit`s; read/write seed from the
-directory matrix, execute seeds unchecked) whose value submits as `file_mode` — every file in
-scope gets exactly those bits (`ApplyScope`/`ApplySpec` in fs.rs; special bits in `file_mode` are
-refused). So file execute is always an explicit grant — asserted end-to-end by
+**Recursive — all directories** descends the whole subtree. There is no separate file-bits
+editor: the matrix's **Exec column is the file-execute grant** for recursive scopes — files in
+scope take the matrix Read/Write bits plus execute only where Exec is checked, submitted as
+`file_mode` (`ApplyScope`/`ApplySpec` in fs.rs; special bits in `file_mode` are refused), while
+directories always fuse execute from Read server-side. The Exec boxes disable+clear on scope
+None. So file execute is always an explicit grant — asserted end-to-end by
 `web_recursive_apply_xless_mode_fuses_dirs_not_files` (x-less file bits stay x-less) and
 `web_apply_scope_all_grants_file_execute_only_when_chosen`. Both recursive scopes require a
 `confirm()`; the fragment reload after an apply resets the scope to None on purpose.
@@ -124,7 +125,7 @@ Apply.
 Apply-scope label carries the files-get-file-bits rule; setgid/sticky/radio labels are bare
 single terms with their explanations on hover). There is no "Permission bits" heading (the matrix
 column headers are the label), setgid + sticky share one row, and the groups are separated by
-thin dashed top-borders (`.rec-scope`, `.file-opts`, `.perm-readout`) instead of text. The
+thin dashed top-borders (`.rec-scope`, `.perm-readout`) instead of text. The
 readout row wraps whole items (`flex-wrap` + `white-space:nowrap` on `.symbolic`) so `Files`
 drops to its own line rather than breaking the symbolic string. When adding new controls to the
 panel: hover for help, dividers for grouping, no inline explanation lines.
@@ -133,7 +134,7 @@ All client behaviour lives in `/assets/permissions.js` behind the **`window.Perm
 (`isLocked/flashLock/loadDirPerms/cancelCurrentApply/setShare`); panel state (share, current path,
 applying, dirty) is private JS state — never read back out of DOM text. Edit-mode visibility
 (Edit/Cancel/Apply, ACL add/del) is CSS-driven off `.perm-panel.editing`; the scope radios and
-file bits live inside the fragment form and are enable/disable-toggled with the other inputs. On a
+Exec grants live inside the fragment form and are enable/disable-toggled with the other inputs. On a
 **Non-ACL** directory (`.acl-sec.disabled`) the ACL entries stay inert even in edit mode. Edit mode
 locks tree/share selection until Cancel/Apply; Cancel asks for confirmation only when edits are
 dirty; both recursive scopes require a `confirm()`. Fragment loads show foreground feedback (panel
@@ -148,7 +149,7 @@ cause, the fix, and the host + serve paths — `dir_perms` picks the message per
 
 ACL support is shown only when the share **actually serves ACLs**: `enable_acl = true` AND the
 serve-path filesystem is ACL-capable. If `enable_acl = true` but the filesystem cannot honor ACLs
-(e.g. Ganesha 9.6 VFS FSAL → `NFS4ERR_NOTSUPP`), the section reverts to **Non-ACL** with an explicit
+(e.g. an ACL-incapable filesystem under the VFS FSAL → `NFS4ERR_NOTSUPP`), the section reverts to **Non-ACL** with an explicit
 reason. The share-card status dot follows the same rule (green = ACL supported, blue = Non-ACL).
 
 ## System Settings → Shares

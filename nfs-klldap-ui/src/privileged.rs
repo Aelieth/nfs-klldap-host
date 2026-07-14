@@ -500,7 +500,7 @@ default:other::---
 }
 
 // === Direct real-FS tests for shipped chown (nix) + chmod (std) ===
-// These exercise the privileged fns without going through dry_run. chmod always verifiable;
+// These exercise the privileged fns directly on disk. chmod always verifiable;
 // chown attempt proves the nix call (may EPERM without privs but error path from new impl).
 #[cfg(test)]
 mod direct_privileged_fs_tests {

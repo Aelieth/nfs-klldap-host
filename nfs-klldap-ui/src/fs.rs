@@ -75,7 +75,7 @@ pub struct ApplySpec {
     pub file_mode: Option<u32>,
 }
 
-/// Options for apply (reach, file mode, continue, dry).
+/// Options for apply (reach, file mode, continue).
 #[derive(Debug, Clone, Default)]
 pub struct ApplyOptions {
     pub scope: ApplyScope,
@@ -84,17 +84,16 @@ pub struct ApplyOptions {
     /// file mode). Directories always take the r-implies-x normalized mode.
     pub file_mode: Option<u32>,
     pub continue_on_error: bool,
-    pub dry_run: bool,
 }
 
 /// Structured result from a (possibly partial) apply operation.
 #[derive(Debug, Clone, Default)]
 pub struct ApplyResult {
-    /// Entries chown'd/chmod'd (or counted in dry-run).
+    /// Entries chown'd/chmod'd.
     pub changed: usize,
     /// Collects per-path errors when continue_on_error keeps partial results.
     pub errors: Vec<(PathBuf, String)>,
-    /// Skipped entries (symlinks, filtered types, or dry-run).
+    /// Skipped entries (symlinks, filtered types).
     pub skipped: usize,
 }
 
@@ -474,7 +473,6 @@ impl FsManager {
             scope,
             file_mode: None,
             continue_on_error: true,
-            dry_run: false,
         };
 
         self.count_tree(&target_path, &opts, progress)
@@ -484,7 +482,7 @@ impl FsManager {
     /// Applies permissions with progress atomics after progress.total is set.
     /// Directory modes are normalized r-implies-x per entry (see
     /// dir_mode_r_implies_x); file entries receive `file_mode` when given
-    /// (the explicit File-options bits for recursive scopes), otherwise the
+    /// (the explicit file bits for recursive scopes), otherwise the
     /// main mode exactly as given (file targets).
     pub fn apply_permissions_with_progress(
         &self,
@@ -522,7 +520,6 @@ impl FsManager {
             scope: spec.scope,
             file_mode: spec.file_mode,
             continue_on_error: true,
-            dry_run: false,
         };
 
         self.apply_direct_with_progress(&target_path, owner_uid, group_gid, spec.mode, &opts, progress)
@@ -702,13 +699,6 @@ impl FsManager {
 
             // Record the path we are about to touch (for cancel reporting).
             *progress.last_path.lock().expect("last_path mutex poisoned") = Some(p.display().to_string());
-
-            if opts.dry_run {
-                result.changed += 1;
-                progress.changed.fetch_add(1, Ordering::Relaxed);
-                progress.processed.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
 
             // Perform the actual privileged operations. Directories take the
             // r-implies-x normalized mode; files take the explicit file mode
@@ -1618,9 +1608,8 @@ mod tests {
 
     // Live progress test: depth>=2 tree; count_applicable_with_live mutates atomics visibly
     // (exercises the path used by spawn_blocking + apply log). Direct call on shipped entry.
-    // Real (non-dry) apply test: drives the shipped apply_permissions_with_progress + privileged
+    // Real apply test: drives the shipped apply_permissions_with_progress + privileged
     // chown (nix) + chmod (std) on actual FS entries. Asserts disk uid/gid/mode after.
-    // This exercises the path previously bypassed by all dry_run:true tests.
     #[test]
     fn apply_permissions_real_non_dry_changes_disk_and_updates_progress() {
         let tmp = TempDir::new().unwrap();

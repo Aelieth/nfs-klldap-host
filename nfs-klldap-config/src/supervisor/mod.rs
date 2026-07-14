@@ -25,7 +25,7 @@ use nfs_klldap_config::{
     probe_client_host, warm_principals_for_startup, warm_principals_nss_ready,
     install_signal_handlers, is_preconfigured_deployment, is_setup_wizard_complete,
     discover_ganesha_daemon_pid, mark_setup_wizard_complete, plan_from_changes, process_is_live,
-    reap_one_child, resolve_host_nfs_mode, resolve_keytab_path,
+    reap_children, resolve_host_nfs_mode, resolve_keytab_path,
     request_sighup, run_post_generate_hooks, runtime_hostname, runtime_realm, shutdown_requested,
     signal_process_hup, signal_process_term, supervisor_loop_tick,
     take_sighup_requested, webui_setup_url, ConfigError,
@@ -388,7 +388,7 @@ while :; do :; done
                 self.log_info("Supervise-sighup-hook-probe complete — exiting");
                 return Ok(());
             }
-            reap_one_child();
+            reap_children();
             ticks = ticks.saturating_add(1);
             if ticks >= max_ticks {
                 return Err("sighup-hook probe: timed out waiting for OS SIGHUP".into());
@@ -567,7 +567,12 @@ while :; do :; done
             }
             let sighup_pending = take_sighup_requested();
             let wizard_complete = is_setup_wizard_complete();
-            let step = if self.env.supervise_probe {
+            // The startup step drives BringUp only while services are down; once
+            // up, supervisor_loop_tick ignores it. Skip the expensive probe
+            // (getent + nc + ldapsearch every tick) in the steady state.
+            let step = if self.services_started {
+                nfs_klldap_config::StartupStep::Ready
+            } else if self.env.supervise_probe {
                 compute_wizard_step(&self.env.nfs_config)
             } else {
                 compute_startup_step(&self.env.nfs_config)
@@ -619,7 +624,7 @@ while :; do :; done
                 }
                 SupervisorLoopAction::Idle => {}
             }
-            reap_one_child();
+            reap_children();
             ticks = ticks.saturating_add(1);
             if bounded && ticks >= max_ticks {
                 if !env::recycle_marker_path().is_file() {
@@ -633,7 +638,7 @@ while :; do :; done
     }
 
     fn handle_sighup(&mut self) -> Result<(), String> {
-        reap_one_child();
+        reap_children();
         self.refresh_tracked_ganesha_pid();
         self.log_info("SIGHUP received — reloading configuration...");
         let exports_fp_before = fingerprint_exports_dir(&self.env.exports_dir);

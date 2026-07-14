@@ -38,7 +38,7 @@ pub(crate) fn stop_ganesha(sup: &mut Supervisor) {
             break;
         }
         thread::sleep(Duration::from_millis(100));
-        ::nfs_klldap_config::reap_one_child();
+        ::nfs_klldap_config::reap_children();
     }
     sup.log_warn("stop_ganesha: timeout — escalating to SIGKILL");
     if ::nfs_klldap_config::process_is_live(pid) {
@@ -56,7 +56,7 @@ pub(crate) fn stop_ganesha(sup: &mut Supervisor) {
             break;
         }
         thread::sleep(Duration::from_millis(100));
-        ::nfs_klldap_config::reap_one_child();
+        ::nfs_klldap_config::reap_children();
     }
     sup.pids.ganesha = None;
     sup.ganesha_managed = false;

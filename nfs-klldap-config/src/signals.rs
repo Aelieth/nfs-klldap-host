@@ -55,9 +55,18 @@ pub fn signal_process_kill(pid: u32) {
     let _ = pid;
 }
 
-pub fn reap_one_child() {
+/// Reaps every exited child (pid 1 inherits all reparented orphans). Draining
+/// in a loop prevents zombie build-up when several children exit between ticks;
+/// a single WNOHANG call per tick would leave N-1 zombies until later ticks.
+pub fn reap_children() {
     #[cfg(unix)]
-    let _ = waitpid(Some(Pid::from_raw(-1)), Some(WaitPidFlag::WNOHANG));
+    loop {
+        use nix::sys::wait::WaitStatus;
+        match waitpid(Some(Pid::from_raw(-1)), Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::StillAlive) | Err(_) => break,
+            Ok(_) => continue,
+        }
+    }
 }
 
 pub fn install_signal_handlers() -> Result<(), String> {

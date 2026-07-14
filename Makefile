@@ -133,6 +133,15 @@ test:
 clippy:
 	$(CARGO) +nightly clippy --workspace --all-targets --all-features -- -D warnings
 
+# Full pre-commit gate: safety-dance runs clippy + the unsafe audit, then the
+# comment linter, then the workspace tests. Recipe lines already run under
+# `-eu -o pipefail` (see .SHELLFLAGS), so any failure stops the chain.
+.PHONY: gate
+gate:
+	bash scripts/safety-dance.sh
+	python3 scripts/comment_lint.py
+	$(CARGO) test --workspace
+
 .PHONY: clean
 clean:
 	$(CARGO) clean

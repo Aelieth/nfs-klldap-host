@@ -18,7 +18,9 @@
 # startup log with a Disable_ACL export (the per-export NOACL proof in
 # miniature). The client half of the gate (krb5p mount from an immutable
 # Fedora client) is scripts/fedora-krb5p-client-validate.sh.
-set -u
+# pipefail catches a mid-pipe failure; -e is deliberately omitted because the
+# checks below tally failures and must not abort on expected non-zero.
+set -uo pipefail
 
 # Expected custom package version; override when gating a different uplift.
 EXPECT_VERSION="${EXPECT_VERSION:-9.13-1+klldap2}"

@@ -19,7 +19,9 @@
 #     <image> /smoke.sh
 #
 # Companion of scripts/ganesha-startup-smoke.sh (plan 1.3 startup gate).
-set -u
+# pipefail catches a mid-pipe failure; -e is deliberately omitted because the
+# checks below tally failures via bad() and must not abort on expected non-zero.
+set -uo pipefail
 
 pass=0; fail=0
 ok()  { echo "PASS: $*"; pass=$((pass+1)); }

@@ -1,0 +1,22 @@
+# Runs the same pre-commit gate as `make gate`: clippy (nightly, -D warnings) +
+# the unsafe audit, the comment linter, and the workspace tests. The gate needs
+# no container, network, or secrets — it is pure Rust + a Python linter.
+name: gate
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (stable + nightly clippy)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup toolchain install nightly --profile minimal --component clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: make gate
+        run: make gate

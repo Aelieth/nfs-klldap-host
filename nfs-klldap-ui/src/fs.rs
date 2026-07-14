@@ -525,6 +525,14 @@ impl FsManager {
     /// Maps host_path to the container path for the matching share.
     /// See module docs for the bind-root model.
     pub(crate) fn host_path_to_container_path(&self, host_path: &Path) -> Result<PathBuf, String> {
+        // Belt-and-braces against `..`: the acl gate reaches this without a
+        // prior is_allowed check, and a traversal must never map to a real path.
+        if has_parent_traversal(host_path) {
+            return Err(format!(
+                "Path {} contains a parent-directory traversal",
+                host_path.display()
+            ));
+        }
         let normalized = self.normalize_for_matching(host_path);
 
         // Choose the *most specific* (longest host_path) share that is a prefix of the
@@ -737,6 +745,11 @@ impl FsManager {
     }
 
     pub(crate) fn is_allowed(&self, path: &Path) -> bool {
+        // A `..` component defeats the lexical prefix check below and can escape
+        // the share root once joined onto a serve path; reject it outright.
+        if has_parent_traversal(path) {
+            return false;
+        }
         let normalized = self.normalize_for_matching(path);
         // Allowed = under the host_path of any declared share (central config).
         self.config.host_paths()
@@ -749,6 +762,13 @@ impl FsManager {
     fn normalize_for_matching(&self, p: &Path) -> PathBuf {
         PathBuf::from(nfs_klldap_config::normalize_path(&p.to_string_lossy()))
     }
+}
+
+/// True if any path component is `..`. normalize_path only trims trailing
+/// slashes, so a `..` survives into prefix matching and must be rejected here.
+fn has_parent_traversal(path: &Path) -> bool {
+    path.components()
+        .any(|c| c == std::path::Component::ParentDir)
 }
 
 #[cfg(test)]
@@ -808,6 +828,24 @@ mod tests {
         assert!(fs.is_allowed(Path::new("/mnt/backups")));
         assert!(!fs.is_allowed(Path::new("/media/SSD/other")));
         assert!(!fs.is_allowed(Path::new("/root")));
+    }
+
+    #[test]
+    fn parent_traversal_is_rejected() {
+        let cfg = make_test_config_with_container_mapping(
+            "/hostroot/myshare",
+            "/container/root/myshare",
+            "myshare",
+        );
+        let fs = FsManager::new(cfg);
+
+        // A `..` escaping the share root passes a naive lexical prefix check but
+        // must be denied by both the allow-list and the path mapper.
+        let escape = Path::new("/hostroot/myshare/../../etc");
+        assert!(!fs.is_allowed(escape));
+        assert!(fs.host_path_to_container_path(escape).is_err());
+        // A `..` embedded deeper is caught too.
+        assert!(!fs.is_allowed(Path::new("/hostroot/myshare/sub/../../..")));
     }
 
     #[test]

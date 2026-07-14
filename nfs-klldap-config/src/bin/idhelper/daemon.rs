@@ -663,21 +663,22 @@ host_path = "/tmp/d"
 container_path = "/export/d"
 serve_path = "/export/d"
 "#).unwrap();
-        let old = std::env::var("NFS_CONFIG").ok();
-        std::env::set_var("NFS_CONFIG", cfgp.to_str().unwrap());
-        let _ = get_or_init_resolver();
         let ov = TestRebulkOverride { paths };
         with_test_rebulk_override(ov, || {
+            // NFS_CONFIG mutation lives inside the closure so it runs under ENV_TEST_LOCK.
+            let old = std::env::var("NFS_CONFIG").ok();
+            std::env::set_var("NFS_CONFIG", cfgp.to_str().unwrap());
+            let _ = get_or_init_resolver();
             std::env::set_var("TEST_REBULK_POPULATE", "u:alice:1001:1001"); // group name for primary comes from resolve_group_by_gid in rebulk loop + shim
             let mut cache = IdCache::default();
             let _ = rebulk_ldap_users(&mut cache, "EX.COM");
             std::env::remove_var("TEST_REBULK_POPULATE");
+            if let Some(o) = old { std::env::set_var("NFS_CONFIG", o); } else { std::env::remove_var("NFS_CONFIG"); }
             let g = fs::read_to_string(paths.nss.nss_group).expect("rebulk path must write nss_group");
             eprintln!("wrote nss_group:\n{}", g);
             assert!(g.contains("staff:x:1001:"), "primary gid must use LDAP group name");
             assert!(!g.contains("alice:x:1001:alice"), "must not use user name as private group label");
         });
-        if let Some(o) = old { std::env::set_var("NFS_CONFIG", o); } else { std::env::remove_var("NFS_CONFIG"); }
     }
 
     #[test]

@@ -1166,6 +1166,8 @@ mod tests {
 
     #[test]
     fn machine_principal_short_circuits_to_zero_without_getent() {
+        // Env lock: resolve reads process-global TEST_REBULK_POPULATE/NFS_CONFIG.
+        let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // Use isolated under(tmp) paths for all shipped resolve/groups calls.
         let tmp = tempfile::tempdir().unwrap();
         let paths = NssMaterializePaths::under(tmp.path());

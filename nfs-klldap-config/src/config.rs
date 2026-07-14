@@ -1,5 +1,4 @@
-//! Data model for nfs-klldap.conf.
-//! Validation/derivation/generation in validate.rs + generate.rs.
+//! Data model for nfs-klldap.conf (validate + generate are separate modules).
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -200,18 +199,13 @@ pub struct GaneshaSection {
     pub warm_principals: Vec<String>,
     /// When false, omit enable_rpc_cred_fallback in ganesha.conf (fail closed on uid2grp miss).
     pub enable_rpc_cred_fallback: Option<bool>,
-    /// Override Idmapped_*_Time_Validity seconds (default 600). On 9.13 this
-    /// is also the getgroups() trust window; wins over the manage-gids knobs.
+    /// Override Idmapped_*_Time_Validity (default 180; also getgroups window on 9.13).
+    /// Wins over manage_gids_expiration_secs and per-share manage_gids_expiration.
     pub idmapped_validity_secs: Option<u32>,
-    /// Kerberos principal service-name parts granted root privilege
-    /// (DIRECTORY_SERVICES Root_Kerberos_Principal). Comma-separated tokens
-    /// from none|nfs|root|host|all. Default "nfs, root" — `host` is excluded
-    /// so enrolled client machine keytabs cannot act as root on exports.
+    /// Root_Kerberos_Principal tokens (none|nfs|root|host|all). Default "nfs, root".
     pub root_kerberos_principals: Option<String>,
-    /// Seconds Ganesha trusts getgroups() results under Manage_Gids. 9.13
-    /// dropped the core Manage_Gids_Expiration param for the DS
-    /// Idmapped_*_Time_Validity, so this feeds that value now (unless
-    /// idmapped_validity_secs is set). Default 600, max 604800.
+    /// Seeds Idmapped_* when idmapped_validity_secs is unset (default 180, max 604800).
+    /// Core Manage_Gids_Expiration is not emitted on 9.13.
     pub manage_gids_expiration_secs: Option<u64>,
     /// DIRECTORY_SERVICES Negative_Cache_Time_Validity seconds (default 60):
     /// how long a failed user/group lookup is remembered.
@@ -277,44 +271,33 @@ pub struct WebuiSection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Share {
     pub name: String,
-    /// Host-visible path for allow-list and chown/chmod.
-    /// See docs/ganesha-architecture.md.
+    /// Host-visible path: UI allow-list and ownership (see architecture docs).
     pub host_path: PathBuf,
-    /// Sets the NFSv4 pseudo path (Ganesha `Pseudo = ...;`) and defaults to slash-name when omitted.
-    /// Accepts `export_path` as alias for backward compatibility with older configs.
+    /// Client Pseudo path; default `/{name}`. Alias: `export_path`.
     #[serde(alias = "export_path")]
     pub pseudo_path: Option<String>,
     pub security: Option<String>,
     pub rw: Option<bool>,
     pub squash: Option<String>,
-    /// UI cache profile name → generator maps to Ganesha PrefRead/PrefWrite.
-    /// See CACHE_PROFILES / README.
+    /// UI profile name → PrefRead/PrefWrite (wins over raw pref_*).
     pub cache_profile: Option<String>,
-    /// Sets raw PrefRead bytes but cache_profile wins when both are set.
+    /// Raw PrefRead when cache_profile is absent.
     pub pref_read: Option<u64>,
-    /// Sets raw PrefWrite bytes but cache_profile usually supplies the value.
+    /// Raw PrefWrite when cache_profile is absent.
     pub pref_write: Option<u64>,
-    pub enable_acl: Option<bool>, // ACL primary vs NOACL
+    /// Tri-state ACL class: true / false / unset=auto (probe-proven).
+    pub enable_acl: Option<bool>,
     pub manage_gids: Option<bool>,
     pub read_access_policy: Option<String>,
-    /// DEPRECATED: Manage_Gids_Expiration is a global NFS_CORE_PARAM, not a
-    /// per-export directive. Still accepted; the smallest share value seeds
-    /// the global when [ganesha] manage_gids_expiration_secs is unset.
+    /// Deprecated seed for global Idmapped_* when [ganesha] knobs unset.
     pub manage_gids_expiration: Option<u64>,
-    /// Absolute path inside the container where Ganesha serves this share (EXPORT Path=).
+    /// In-container serve path (Ganesha EXPORT Path=).
     pub container_path: String,
-    /// Optional distinct data-source path inside the container for ACL staging.
-    /// When set (and different from `container_path`), the post-generate hook syncs
-    /// `source_path` → `container_path` so Ganesha can serve an ACL-capable copy while the
-    /// real data lands elsewhere (see docs/ganesha-architecture.md staging pattern). Unset
-    /// means source == serve (no staging).
+    /// Optional staging source; hook syncs source → container_path when set.
     pub source_path: Option<String>,
-    /// Per-share Attr_Expiration_Time override (seconds; 0 = attribute
-    /// caching off for this export — always fresh at a getattr-per-op cost).
+    /// Per-export Attr_Expiration_Time override (0 = always fresh).
     pub attr_expiration_secs: Option<i32>,
-    /// Umask (octal e.g. "0022"), accepted but currently inert: Ganesha 9.13
-    /// dropped per-export FSAL Umask (module-global only), so generate warns
-    /// and emits nothing. The 0.9.9x ACL track replaces it (plan 2.4 gate).
+    /// Retired: hard generate error; use Inherit-tab default ACLs + setgid.
     pub umask: Option<String>,
 }
 

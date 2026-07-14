@@ -4,7 +4,7 @@ Axum + HTMX + server templates extending `base.html`. First-run: `/setup/1` (per
 
 Auth: webui-password sidecar (localhost) or LLDAP in webui_admin_group.
 
-Handlers in web/ (mod orchestrator + auth/permission_tree/settings/keytab). FS policy + progress in fs.rs; LDAP in ldap.rs.
+Handlers in `web/` (`mod`, `auth`, `permission_tree`, `settings`, `setup`, plus ACL helpers). FS policy + progress in `fs.rs`; LDAP in `ldap.rs`. Keytab/hostname checks live under settings/setup surfaces (no separate `keytab.rs`).
 
 Apply is always async with live count-then-apply progress, cancel, oob log.
 
@@ -62,10 +62,10 @@ refuses NOACL/incapable paths with 422 (capability decision enforced server-side
 the SELECTED node's own mount — submounts included), and a settings save rejects `enable_acl =
 true` on a known-incapable serve path. The panel reloads from getfacl truth after every op — never
 optimistic state. All ops carry `layer`; `-b` is never emitted (entry-merge + targeted remove
-only). Recursive grants use capital `X` so files gain execute only where something already
-executes, and Inherit-tab recursion touches directories only. Tree
-rows on ACL-active shares carry a **`+` marker** (one batched getfacl per fragment; hover explains)
-wherever an entry's ACL goes beyond the base permissions.
+only). Recursive ACL grants use **split specs**: directories get fused r→x perms; files get the
+literal triad from the panel Exec checkbox (capital-`X` conditional grant is retired).
+Inherit-tab recursion touches directories only. Tree rows on ACL-active shares carry a
+**`+` marker** (one batched getfacl per fragment) where an entry's ACL exceeds base mode.
 Behavior change with `list_dir`: an unreadable or missing container directory now renders the
 tree diagnostic alert (`list_dir` returns None) instead of a silently empty level.
 

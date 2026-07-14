@@ -1,4 +1,4 @@
-//! Generate sssd, krb5, ganesha and export fragments.
+//! Generate sssd, krb5, idmapd, nfs.conf, ganesha main, and export fragments.
 
 use std::fs;
 use std::path::Path;

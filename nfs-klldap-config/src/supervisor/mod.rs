@@ -1,4 +1,4 @@
-//! Runs pid-1 supervision with preflight, ordering, and SIGHUP recycle.
+//! Pid-1: preflight, ordered service start, SIGHUP recycle via ServiceRecyclePlan.
 
 mod env;
 mod services;
@@ -47,14 +47,13 @@ struct Supervisor {
     env: env::SupervisorEnv,
     pids: ChildPids,
     services_started: bool,
-    /// True after start_ganesha until stop_ganesha completes.
-    /// Enables daemon pid adoption.
+    /// True between start_ganesha and stop_ganesha (pid adoption).
     ganesha_managed: bool,
-    /// Last seen [[shares]] fingerprint (host_path / container_path etc.) for WebUI recycle.
+    /// Last [[shares]] fingerprint for WebUI-only recycle detection.
     last_shares_fingerprint: u64,
 }
 
-/// Entry point for pid-1 supervision (replaces entrypoint.sh main loop).
+/// Pid-1 supervision entry (replaces the old shell main loop).
 pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
     install_signal_handlers()?;
     let env = env::SupervisorEnv::from_env(config_path);

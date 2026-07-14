@@ -1,4 +1,4 @@
-//! Mountinfo probe for POSIX ACL on share paths.
+//! Mountinfo + write-probe for POSIX ACL capability on serve paths.
 
 use std::io;
 use std::path::Path;
@@ -13,22 +13,19 @@ pub struct FsCapabilities {
     pub acl_capable: bool,
 }
 
-/// Effective EXPORT flags after TOML overrides and probe results.
-/// Enable_acl=false means emit Disable_ACL=true (conservative on limited FS)
+/// Effective EXPORT flags after TOML + probe (`enable_acl=false` → Disable_ACL).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveShareFlags {
     pub enable_acl: bool,
     pub manage_gids: bool,
-    /// True when probe (not explicit TOML) drove the safe defaults.
+    /// Probe (not explicit TOML) drove limited-FS safe defaults.
     pub auto_applied: bool,
-    /// True when auto mode (enable_acl unset) turned ACL on via a proven probe.
+    /// Auto mode promoted ACL after a proven write probe.
     pub auto_enabled: bool,
 }
 
-/// Verdict of the layered ACL-capability probe for a serve path.
-/// Only the write round-trip can prove Capable; the mountinfo denylist or a
-/// failed round-trip prove Incapable; everything else stays Inconclusive so
-/// generate keeps warning instead of hard-failing.
+/// Layered ACL probe: only write round-trip proves Capable; denylist/failed RT
+/// prove Incapable; else Inconclusive (warn, no hard-fail).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AclProbeVerdict {
     Capable,
@@ -44,17 +41,13 @@ struct MountEntry {
     super_options: Vec<String>,
 }
 
-/// Probes path against live mountinfo.
-/// On failure it assumes NOT ACL-capable so generate never emits a broken ACL
-/// export (fail-safe). Auto ACL (enable_acl unset) additionally needs the
-/// write round-trip to pass, so a conservative probe never suppresses a share
-/// and never promotes one on guesswork.
+/// Live mountinfo probe. Fail-safe: errors assume not ACL-capable.
+/// Auto ACL still requires write round-trip proof separately.
 pub fn probe_fs_capabilities(path: &Path) -> io::Result<FsCapabilities> {
     probe_fs_capabilities_with_root(path).map(|(caps, _)| caps)
 }
 
-/// Live-mountinfo probe that also names the matched mount point, so callers
-/// can key per-mount state (the UI capability cache) off it.
+/// Mountinfo probe plus matched mount root (for per-mount UI cache keys).
 pub fn probe_fs_capabilities_with_root(
     path: &Path,
 ) -> io::Result<(FsCapabilities, Option<String>)> {

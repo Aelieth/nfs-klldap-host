@@ -29,18 +29,15 @@ pub(crate) fn effective_cache_path() -> std::path::PathBuf {
     std::path::PathBuf::from(CACHE_PATH)
 }
 
-// Nss_wrapper passwd/group for LD_PRELOAD principal→uid mapping in Ganesha.
+// nss_wrapper stores for Ganesha LD_PRELOAD principal→uid mapping.
 pub(crate) const NSS_PASSWD_PATH: &str = "/var/lib/nfs-klldap/nss_passwd";
 pub(crate) const NSS_GROUP_PATH: &str = "/var/lib/nfs-klldap/nss_group";
 
-// Supplemental extrausers entries for machine→root mappings. Written.
+// Supplemental extrausers entries (incl. machine→root).
 pub(crate) const EXTRAUSERS_PASSWD: &str = "/var/lib/extrausers/passwd";
 pub(crate) const EXTRAUSERS_GROUP: &str = "/var/lib/extrausers/group";
 
-/// Default LDAP sync interval. 180s (0.9.84, was 600) so unattended group
-/// changes re-materialize within ~3 min; override via
-/// NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS (0 = off). Cheap under the pooled
-/// resolver (~1 bind per interval).
+/// Default LDAP→nss rebulk interval (secs). Override NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS (0=off).
 pub(crate) const DEFAULT_REBULK_INTERVAL_SECS: u64 = 180;
 
 /// Debug logging enabled via KLLDAP_IDHELPER_DEBUG=true (or 1/yes/on).

@@ -1,8 +1,17 @@
 # Testing
 
-**0.9.x branch.** Gate chain before a commit lands: `make test`, `make clippy` (nightly, `-D warnings`), `scripts/safety-dance.sh` (unsafe-code audit; wraps clippy), and `python3 scripts/comment_lint.py` (comment quality). Workspace crates: `nfs-klldap-identity`, `nfs-klldap-config`, `nfs-klldap-ui`. Operator diagnostic for the host-side uid2grp chain (run before the first client mount): `scripts/ganesha-chain-preflight.sh`.
+**Purpose:** coverage map and patterns for the workspace crates.
 
-Representative full-config generation: `nfs-klldap-config/tests/representative_generate.rs`. Filesystem probe fixtures: unit tests in `nfs-klldap-config/src/fs_probe.rs`. Limited-FS `generate_all` path: `nfs-klldap-config/tests/limited_fs_generate.rs`. Shipped CLI generate gate: `nfs-klldap-config/tests/cli_generate_gate.rs`. `container_path` staging probe + ACL-path Umask/Manage_Gids_Expiration emission: `tests/container_path_generate.rs`. `fs-warnings` CLI: `tests/fs_warnings_cli.rs`. Post-generate hook (SOURCE_PATH/SERVE_PATH env split): unit tests in `src/hook.rs`.
+**0.9.x.** Pre-commit gates: `make test`, `make clippy` (nightly, `-D warnings`), `scripts/safety-dance.sh`, `python3 scripts/comment_lint.py`. Crates: `nfs-klldap-identity`, `nfs-klldap-config`, `nfs-klldap-ui`. Host-side uid2grp preflight: `scripts/ganesha-chain-preflight.sh`.
+
+| Area | Primary tests |
+|------|----------------|
+| Full-config generate | `tests/representative_generate.rs` |
+| FS probe fixtures | `src/fs_probe.rs` |
+| Limited-FS / ACL hard-fail | `tests/limited_fs_generate.rs`, `tests/cli_generate_gate.rs` |
+| Staging / retired umask / Idmapped seeds | `tests/container_path_generate.rs` |
+| `fs-warnings` CLI | `tests/fs_warnings_cli.rs` |
+| Post-generate hook env | `src/hook.rs` |
 
 ## Strategy
 
@@ -64,14 +73,14 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | Tree extended-ACL "+" marker (one batched getfacl per fragment, ACL-active shares only) | `nfs-klldap-ui/src/web/mod.rs` (`tree_fragment_marks_extended_acl_rows`) |
 | Attr_Expiration_Time emission (EXPORT_DEFAULTS default 60, [ganesha] knob, per-share override incl. 0 = always fresh; negatives rejected) | `nfs-klldap-config/tests/limited_fs_generate.rs` (`generate_all_emits_attr_expiration_default_and_share_override`) |
 | umask retirement stage 2 (hard generate error naming the Inherit-tab replacement; structured saves drop the key) | `nfs-klldap-config/tests/container_path_generate.rs` (`umask_key_is_a_hard_deprecation_error`) |
-| EXPORT Disable_ACL / Manage_Gids=true (auto NOACL default) + Pseudo (NOACL 0.9.40-style path); distinct from ACL path; Read_Access pre on NOACL only; no post/Enable/POSIX markers | `nfs-klldap-config/src/posix_only_policy.rs` (warnings), `src/generate/` (two paths), `tests/limited_fs_generate.rs`, `tests/cli_generate_gate.rs`, `tests/container_path_generate.rs`, `tests/ganesha_96_identity_audit.rs` |
+| EXPORT Disable_ACL / Manage_Gids=true (auto NOACL default) + Pseudo; distinct ACL path; Read_Access pre on NOACL only | `nfs-klldap-config/src/generate/` (two paths), `src/fs_probe.rs` / `src/fs_warnings.rs`, `tests/limited_fs_generate.rs`, `tests/cli_generate_gate.rs`, `tests/container_path_generate.rs`, `tests/ganesha_96_identity_audit.rs` |
 | Ganesha NOTSUPP log classification (9.6-era signatures; ACL-path vs identity-path) + clean client-abort-before-namespace signature — committed fixture `tests/fixtures/ganesha-acl-notsupp.log`, never repo-root logs.txt | `nfs-klldap-config/src/ganesha_log_contract.rs`, `src/bin/idhelper/idmap_log_contract.rs` |
 | Post-generate hook env contract (SOURCE_PATH/SERVE_PATH/CONTAINER_PATH/PSEUDO_PATH/EXPORT_PATH) | `nfs-klldap-config/src/hook.rs` |
 | Wizard gates (`validate_ldap_uri`, step2/step3 test-before-continue) + session cookie extraction | `nfs-klldap-ui/src/web/setup.rs`, `web/auth.rs` |
 | LDAP TLS policy (cacert ⇒ verify, reqcert=never override) | `nfs-klldap-identity/src/ldap/tls.rs` |
 | idhelper full principal forms (user@REALM + host/..@REALM) + GRPS groups + resolution check | `nfs-klldap-config/src/bin/idhelper/{resolve,main}.rs` + lib check, limited_fs_generate + new fallback tests |
 | Hostname consistency + keytab variants + docker-id detection | `nfs-klldap-config/src/hostname.rs`, `lib.rs` |
-| Keytab status message / alert | `nfs-klldap-ui/src/web/keytab.rs` |
+| Keytab status message / alert | `nfs-klldap-ui/src/web/settings/` + setup/settings handlers (hostname/keytab checks) |
 | Axum settings/apply/auth + login flows + cookie policy + empty-uid apply | `nfs-klldap-ui/src/web/mod.rs` (and sub) |
 | ApplyOptions (continue, dry, recursive policy, symlink skip) + WalkDir safety | `nfs-klldap-ui/src/fs.rs` |
 | Tree listing (dirs-first case-insensitive sort, files with mtime, symlink exclusion, empty=Some vs unreadable=None) + type-emoji mapping + UTC mtime format | `nfs-klldap-ui/src/fs.rs` (`list_dir_*`), `src/web/permission_tree.rs` (`tree_row_tests`), `src/web/mod.rs` (`tree_lists_files_after_dirs_with_icons_and_mtime`, `tree_child_fragment_renders_empty_row_for_empty_dir`) |

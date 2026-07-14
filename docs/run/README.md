@@ -1,10 +1,10 @@
-# Running
+# Running & Deployment
 
-**0.9.x branch:** first-run setup is the WebUI wizard at `https://<host>:9630/setup/1` … `/setup/3`.
+**Purpose:** compose/run flags, env vars, setup wizard, TLS/proxy, HOST_NFS, keytab, container ops.
 
-All services run as root inside the container. Recommended: `--uts=host`, keytab with NFS service principals matching the host hostname, bind mounts for config + data.
+**0.9.x:** first-run wizard at `https://<host>:9630/setup/1` … `/setup/3`.
 
-See root README for the docker run example.
+All services run as root in the container. Recommended: `--uts=host`, matching NFS keytab principals, bind mounts for config + data. Quick start: root [README.md](../../README.md).
 
 ## docker-compose
 
@@ -135,7 +135,7 @@ These are less commonly needed:
 | `GANESHA_DEBUG`              | *(unset)* | `TRUE`  | When truthy (`true`/`1`/`yes`/`on`, any case), the generator emits a `LOG { Default_Log_Level = DEBUG; }` block with CLIENTID/SESSIONS/IDMAPPER at FULL_DEBUG and NFS4/NFS_V4_ACL/DISPATCH/XPRT at DEBUG (no RPCSEC_GSS component on Ganesha 9.13 — GSS cred flow logs under DISPATCH). For deep Ganesha troubleshooting only. |
 | `WATCHER_DEBOUNCE_SECONDS`   | `2`       | `1`     | Seconds to sleep after detecting a config file change (via inotify) before signaling the supervisor for reload. |
 | `HOST_NFS` (or `NFS_KLLDAP_HOST_NFS`) | `false` | `true` | When truthy, runs the container as a management sidecar only. Ganesha fragments are still generated and written to host-visible paths (mount the host's `/etc/ganesha`); the container does not start or manage the NFS server. See the dedicated "HOST_NFS mode" section below for compose, keytab, UI, and ZimaOS notes. |
-| `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS` | `600` | `0` | Seconds between idhelper LDAP→nss_passwd syncs (`0` disables periodic rebulk). |
+| `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS` | `180` | `0` | Seconds between idhelper LDAP→nss_passwd syncs (`0` disables periodic rebulk). |
 | `NFS_KLLDAP_WEBUI_COOKIE_SECURE` | *(derived)* | `false` | Force non-Secure session cookies regardless of TLS mode or `X-Forwarded-Proto`. |
 
 A small number of path/binary overrides (`SSSD_CONF`, `GANESHA_CONF`, `CONFIG_BIN`, `HEALTHCHECK`, etc.) and `NFS_KLLDAP_CONF` exist primarily for testing, CI, and image development. Typical users set `NFS_CONFIG` (which also drives `NFS_KLLDAP_CONF` for the WebUI) instead.
@@ -201,7 +201,7 @@ Do not set compose `user:` unless you have a specific reason — pid 1 must mana
 
 ## Running Ganesha in Docker against the host filesystem (capabilities, dbus, rpcbind, pitfalls)
 
-This project exports real directories from the Docker *host* via Ganesha VFS inside the container. The WebUI also performs direct recursive `chown`/`chmod` (nix::unistd + std fs; walks via spawn_blocking) on those trees (as root, under an allow-list from `[[shares]].host_path`). Umask for creates is emitted on ACL path only (see ganesha-architecture.md). The following is the distilled guidance after review of Ganesha container patterns, Fedora packaging, Ganesha core config man pages, and practical bind-mount/UID realities.
+This project exports real directories from the Docker *host* via Ganesha VFS inside the container. The WebUI also performs direct recursive `chown`/`chmod` (nix::unistd + std fs; walks via spawn_blocking) on those trees (as root, under an allow-list from `[[shares]].host_path`). Per-export FSAL `Umask` is not used on Ganesha 9.13 — creation modes use default ACL Inherit entries + setgid (see ganesha-architecture.md). The following is distilled operational guidance for caps, dbus, and bind mounts.
 
 ### Core contract (unchanged but worth repeating)
 - `host_path` values in `nfs-klldap.conf` (and the UI) are **absolute paths on the Docker host** (unchanged by this layout).
@@ -248,9 +248,9 @@ ganesha.nfsd ...
 
 ### Generated ganesha.conf and exports
 
-The generator writes a minimal `ganesha.conf` plus one fragment per share under `/etc/ganesha/exports.d/`. Ganesha 9.x emits Protocols=4, UDP=false, DIRECTORY_SERVICES nsswitch, Root_Kerberos, Idmapped_*=600, Only/Allow_Numeric. Omits Manage_Gids_Expiration etc. Live idmap: UseGetpwnam + nss_wrapper; idhelper (reactive+proactive) authoritative for uid0+supp groups in nss+extrausers. idhelper supplies at runtime. See ldap-int.
+The generator writes a minimal `ganesha.conf` plus one fragment per share under `/etc/ganesha/exports.d/`. Defaults include Protocols=4, UDP=false, DIRECTORY_SERVICES nsswitch, `Root_Kerberos_Principal = nfs, root` (excludes `host`), `Idmapped_*_Time_Validity = 180`, Only/Allow_Numeric, UseGetpwnam. Core `Manage_Gids_Expiration` is not emitted (9.13 uses Idmapped_*). Live idmap: nss_wrapper + idhelper for uid0 and supplemental groups. See [ldap-integration.md](../ldap-integration.md).
 
-Each per-share fragment contains an EXPORT with Path (internal), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block for access control, and the VFS FSAL. Additional CLIENT blocks can be appended manually (they will be lost on regeneration).
+Each per-share fragment is an EXPORT with Path (container serve path), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block, and VFS FSAL. Hand-appended CLIENT blocks are lost on regeneration.
 
 ### Host notes and troubleshooting
 SELinux hosts may need `:Z` on bind mounts. Common failures: missing caps or wrong internal Path, UID namespace mismatch on apply, dbus socket timing, `--uts=host`/keytab hostname drift, bridge networking (`172.17.x.x` in CLIENT records — use host network), hybrid Kerberos teardown (ensure idhelper + `ganesha-ctl id-check`). See [docs/ldap-integration.md](../ldap-integration.md) and `scripts/verify-ganesha.sh`.

@@ -1,11 +1,26 @@
 # Security Model
 
-The WebUI runs as root inside the container and performs chown/chmod directly on bind-mounted host_path trees via `src/privileged.rs` (safe std APIs).
+**Purpose:** WebUI mutation boundary and container deployment assumptions.
 
-Typical production runs use **host networking** (`network_mode: host` / `--network=host`) plus `uts: host`, and add `SYS_ADMIN` and `DAC_READ_SEARCH` capabilities (see the main project's `examples/docker-compose.yml` and `docs/run/README.md`). Host networking is required so Ganesha CLIENT records use host-reachable addresses, not Docker bridge `172.17.x.x`. The caps are not required for the `chown(2)`/`chmod(2)` syscalls themselves when running as root on a normal bind mount, but they improve reliability for:
-- Ganesha VFS when serving the exported host trees, and
-- the WebUI's recursive WalkDir scanner when the tree contains directories with restrictive permissions for intermediate owners.
+The WebUI runs as **root in the container** and mutates bind-mounted `host_path` trees via `privileged.rs` (std/nix APIs, no shell).
 
-The container must still be started as real root (for 0600 sssd.conf, privileged port 2049, and arbitrary numeric UID/GID mutations). The in-container root model is the supported path. Running the binary on the host is not recommended.
+## Deployment assumptions
 
-All mutations are still gated by the allow-list from configured shares + the WalkDir safety policy: no symlink descent for mutation, only **setuid** refused (setgid/sticky are editable directory bits), uid/gid 0 accepted as a first-class owner (root on disk is the anonymous/nobody identity clients see under root-squash), and directory modes fused r→x per entry while files receive only the explicit file bits chosen in the panel (never the directory mode; special bits refused in the file mode; apply reach limited by `ApplyScope`). See `fs.rs` and `privileged.rs`.
+- **Host networking** (`network_mode: host`) so Ganesha CLIENT records use host-reachable addresses, not Docker bridge `172.17.x.x`.
+- **`uts: host`** for Kerberos NFS principal hostname match.
+- Caps `SYS_ADMIN` + `DAC_READ_SEARCH` (see `examples/docker-compose.yml`, [docs/run/README.md](../../docs/run/README.md)) — improve Ganesha VFS and WalkDir reliability on restrictive intermediate dirs; not required for root `chown`/`chmod` on a normal bind mount alone.
+- Real root (0600 sssd.conf, port 2049, arbitrary numeric UIDs). Host-side binary run is unsupported. No userns-remap / rootless uid shift (on-disk owners must match LLDAP numbers on the host).
+
+## Mutation gates
+
+| Gate | Rule |
+|------|------|
+| Allow-list | Only paths under configured share roots (`FsManager`) |
+| Symlinks | No WalkDir descent (`follow_links(false)`); symlink inodes skipped |
+| setuid | Refused; setgid/sticky allowed on directories |
+| uid/gid 0 | First-class owner (nobody/anonymous under root_squash) |
+| Directory mode | Server fuses r→x per dir entry; client may submit x-less |
+| File mode | Explicit triad only; special bits refused; never inherits directory mode |
+| Scope | `ApplyScope` bounds recursive reach |
+
+See `fs.rs` and `privileged.rs`.

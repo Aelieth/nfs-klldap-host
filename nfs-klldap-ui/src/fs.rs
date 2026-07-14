@@ -1,6 +1,5 @@
-//! FsManager applies direct chown/chmod (via privileged) on allow-listed share paths.
-//! Host-to-container path translation maps each share's host_path to its required container_path
-//! (Ganesha EXPORT Path=). ACL path vs NOACL kept in config.
+//! FsManager: allow-listed chown/chmod/ACL on share trees.
+//! host_path ↔ container_path at the syscall boundary (Ganesha Path=).
 
 #![deny(clippy::unwrap_used)]
 
@@ -318,12 +317,9 @@ impl FsManager {
         Ok(count)
     }
 
-    /// Scoped ACL apply riding the same walk/progress/cancel machinery as the
-    /// POSIX apply. Entry-merge and targeted-remove only (never -b); recursive
-    /// grants use capital X so files never gain execute from a directory-wide
-    /// grant; default-layer modifications touch directories only. Paths batch
-    /// into chunked setfacl invocations to keep subprocess cost off the
-    /// per-entry path.
+    /// Scoped ACL apply (same walk/progress/cancel as POSIX). Entry-merge and
+    /// targeted-remove only (never -b). Recursive: split specs — dirs fused
+    /// r→x, files literal triad. Default layer: directories only. Chunked setfacl.
     pub fn apply_acl_with_progress(
         &self,
         path: &Path,

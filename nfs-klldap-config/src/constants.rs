@@ -1,4 +1,4 @@
-//! Constants for nfs-klldap-config (Ganesha 9.6 trixie + identi.
+//! Defaults and caps for generated Ganesha / idmapd / identity settings.
 
 pub use nfs_klldap_identity::{
     FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID, MACHINE_GID, MACHINE_PRINCIPAL_PREFIXES, MACHINE_UID,

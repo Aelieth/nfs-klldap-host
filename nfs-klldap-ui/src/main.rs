@@ -1,4 +1,4 @@
-//! In-container WebUI on port 9630 for permissions and nfs-klldap.conf.
+//! In-container WebUI (default 0.0.0.0:9630): setup, permissions, settings.
 
 #![deny(unsafe_code, dead_code)]
 

@@ -66,12 +66,10 @@ default_security = "krb5p"                                      # Security, krb5
 # rw            = true                                           # Optional - default true
 # manage_gids   = true                                           # Optional - default true
 #
-# ACL is opt-in. Omit enable_acl (or set false) for a reliable NOACL export that
-# works over krb5p on any POSIX filesystem. Set enable_acl = true ONLY when the
-# serve path can actually serve POSIX ACLs — verify with scripts/verify-ganesha.sh,
-# since the VFS POSIX-ACL backend returns NFS4ERR_NOTSUPP on non-capable paths.
-# enable_acl    = true                                           # opt-in ACL path (Disable_ACL = false)
-# umask         = "0022"                                         # accepted but inert on Ganesha 9.13 (no per-export Umask)
+# enable_acl tri-state: true | false | omit=auto (auto promotes only if the serve
+# path passes the write-probe). Explicit true hard-fails generate on non-ACL FS.
+# enable_acl    = false                                          # force NOACL; true requires ACL-capable serve path
+# umask is retired (hard generate error) — use Inherit-tab default ACLs + setgid
 #
 # ACL staging: when the real data lives on a filesystem the VFS can't serve ACLs
 # from, set source_path to where it lands and container_path to an ACL-capable tree;

@@ -2,9 +2,9 @@
 
 **Branch 0.9.x** — WebUI setup wizard at `/setup` (HTTPS :9630); first-run configuration is browser-based.
 
-Companion app for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos), this docker container helps to host and manage NFS shares with POSIX attributes sync'ed with real name resolution to users and groups across the LDAP protocol for simple management and visualization. Lightweight, flexible, and agile enough to host multiple shares, be deployable across a small network, and allow easy remote management via secure connections with KLLDAP.
+Companion app for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos). Docker container that hosts and manages NFS shares with POSIX attributes synced via LDAP, plus simple remote management against KLLDAP.
 
-Debian 13-slim runtime (Rust build stages remain on Fedora minimal) providing a complete Kerberized NFSv4 server (NFS-Ganesha) with KLLDAP-backed POSIX UID/GID mapping via SSSD. The multi-stage build keeps the three Rust compilation stages on Fedora for reliable cargo-chef + cross-compilation while the final runtime uses Debian 13-slim (with Ganesha from backports for configuration compatibility) for smaller size and packaging stability.
+Debian 13-slim runtime (Rust build stages on Fedora minimal): Kerberized NFSv4 (NFS-Ganesha) with KLLDAP-backed UID/GID mapping via SSSD. Multi-stage build keeps cargo-chef reliable on Fedora; final image uses Debian 13-slim with a custom Ganesha package from this repo (`container/ganesha/`).
 
 <img
   src="https://raw.githubusercontent.com/Aelieth/nfs-klldap-host/refs/heads/main/screenshot.png"
@@ -14,46 +14,72 @@ Debian 13-slim runtime (Rust build stages remain on Fedora minimal) providing a 
 
 ## Documentation
 
-- [Running & deployment](docs/run/README.md)
-- [Client setup: Fedora Immutable (Bazzite / Silverblue)](docs/client-fedora-immutable.md)
-- [LDAP / SSSD / Kerberos integration](docs/ldap-integration.md)
-- [Ganesha architecture & contracts](docs/ganesha-architecture.md)
-- [WebUI security model](nfs-klldap-ui/docs/security.md)
-- [Testing](TESTING.md)
+| Doc | Purpose |
+|-----|---------|
+| [Running & deployment](docs/run/README.md) | Compose, env vars, TLS/proxy, HOST_NFS, keytab, troubleshooting |
+| [Ganesha architecture & contracts](docs/ganesha-architecture.md) | `host_path` / `container_path` / `pseudo_path`, ACL vs NOACL, identity caches |
+| [LDAP / SSSD / Kerberos](docs/ldap-integration.md) | SSSD generation, TLS, idhelper, verification |
+| [Client: Fedora Immutable](docs/client-fedora-immutable.md) | Bazzite / Silverblue krb5p mount |
+| [WebUI security model](nfs-klldap-ui/docs/security.md) | Root-in-container allow-list, symlink policy |
+| [WebUI design notes](nfs-klldap-ui/docs/ui-design.md) | Tree, permissions panel, ACL tabs |
+| [Testing](TESTING.md) | Coverage map and test patterns |
+| [Container internals](container/README.md) | entrypoint, healthcheck, watcher, ganesha-ctl |
+| [Custom Ganesha packaging](container/ganesha/README.md) | `9.13-1+klldap2` build flags |
+
+Historical / non-product: [`TODO.md`](TODO.md), [`nfs-klldap-host-ganesha-refactor-plan.md`](nfs-klldap-host-ganesha-refactor-plan.md) (not shipped behavior).
 
 ## Architecture
 
-```
-nfs-klldap.conf (TOML, edited by WebUI or hand)
-        │
-        ▼
-nfs-klldap-config (validate + derive + generate)
-        │
-        ├── /etc/sssd/sssd.conf   (root:root 0600)
-        ├── /etc/krb5.conf
-        ├── /etc/idmapd.conf      (Domain + Local-Realms + Method + GSS-Methods derived from nfs-klldap.conf + [sssd])
-        ├── /etc/nfs.conf         (rpc.gssd use-machine-creds=0 for krb5p user creds)
-        └── /etc/ganesha/exports.d/*.conf
-        │
-        ▼ (inotify / SIGHUP)
-entrypoint → nfs-klldap-startup supervise (pid 1) → restart/reload daemons
-        │
-        └── nfs-klldap-ui (9630, HTTPS) ──direct──> chown/chmod on bind-mounted host_path trees
+One TOML (`nfs-klldap.conf`) drives generation of SSSD, Kerberos, idmapd, nfs.conf, and Ganesha exports. The WebUI (9630) edits the TOML and applies direct chown/chmod on bind-mounted trees. Prefer `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN).
+
+```mermaid
+flowchart TD
+  conf["nfs-klldap.conf"] --> gen["nfs-klldap-config generate"]
+  gen --> sssd["/etc/sssd/sssd.conf"]
+  gen --> krb5["/etc/krb5.conf"]
+  gen --> idmap["/etc/idmapd.conf"]
+  gen --> nfsconf["/etc/nfs.conf"]
+  gen --> ganesha["/etc/ganesha/*.conf + exports.d"]
+  watcher["conf-watcher / WebUI apply"] -->|SIGHUP| pid1["nfs-klldap-startup supervise pid 1"]
+  pid1 --> recycle["ServiceRecyclePlan"]
+  recycle --> sssd
+  recycle --> idhelper["nfs-klldap-idhelper"]
+  recycle --> ganesha
+  recycle --> ui["nfs-klldap-ui :9630"]
+  ui -->|chown/chmod ACL| trees["bind-mounted host_path trees"]
 ```
 
-One TOML (`nfs-klldap.conf`) drives generation of sssd.conf, krb5.conf, /etc/idmapd.conf (standardized NFSv4 Domain + Local-Realms + GSS-Methods for idhelper/clients + Kerberos realm handling), and Ganesha exports. The WebUI (9630) edits it and applies direct chown/chmod on bind mounts inside the container. Use `--uts=host` and a keytab with `nfs/<hostname>@REALM` principals matching the container hostname (short + FQDN strongly suggested).
+**Serve-path contract (summary):**
 
-See [docs/ganesha-architecture.md](docs/ganesha-architecture.md) for the `host_path` / `pseudo_path` / bind-mount contract table.
+| Field | Role |
+|-------|------|
+| `host_path` | Host-visible absolute path; WebUI allow-list and ownership |
+| `container_path` | **Required.** In-container serve dir = Ganesha `Path=` + probes + permission tree |
+| `pseudo_path` | Client-visible NFSv4 Pseudo only (default `/<name>`) |
+
+Full table and staging (`source_path`) → [docs/ganesha-architecture.md](docs/ganesha-architecture.md).
+
+### Config reload / recycle
+
+```mermaid
+flowchart LR
+  change["Config or exports change"] --> fp["Fingerprint exports / identity / shares"]
+  fp --> plan["plan_from_changes"]
+  plan -->|exports changed| g["Ganesha: SIGHUP reread_exports\nor StopStart if down"]
+  plan -->|identity changed| id["Restart SSSD + idhelper"]
+  plan -->|any of above or shares| w["Restart WebUI"]
+  plan -->|HOST_NFS| skip["Skip Ganesha manage"]
+```
 
 ## Quick Start
 
-**Recommended:** use [examples/docker-compose.yml](examples/docker-compose.yml) with `network_mode: host` and `uts: host` so NFS and Kerberos see the real host identity. Port mapping in a bridged `docker run` can work for lab use but host networking is the supported production pattern.
+**Recommended:** [examples/docker-compose.yml](examples/docker-compose.yml) with `network_mode: host` and `uts: host`.
 
 ```bash
 docker compose -f examples/docker-compose.yml up -d
 ```
 
-**Alternative** (`docker run` with host networking — required for NFS + Kerberos):
+**Alternative** (`docker run` with host networking):
 
 ```bash
 docker run -d \
@@ -67,112 +93,103 @@ docker run -d \
   ghcr.io/aelieth/nfs-klldap-host:latest
 ```
 
-First run writes a default `nfs-klldap.conf` and starts the WebUI immediately. Open **https://<host>:9630/setup** for the 3-step wizard:
+First run writes a default `nfs-klldap.conf` and starts the WebUI. Open **https://\<host\>:9630/setup** for the 3-step wizard:
 
-1. Persistent `/config` bind mount (writable volume check)
-2. `ldap_uri` — **Test Settings**, then **Save and Continue** (DNS/TCP reachability)
-3. `[sssd]` bind DN + password — **Test Settings**, then **Save and Continue** (`ldapsearch` bind)
+1. Persistent `/config` bind mount  
+2. `ldap_uri` — **Test Settings**, then **Save and Continue**  
+3. `[sssd]` bind DN + password — **Test Settings**, then **Save and Continue**  
 
-Each step shows a **Test Log** with command output and troubleshooting hints when a probe fails.
+Then **Restart and apply** (polls `/restart-status`) → `/login` for the localhost admin password.
 
-After step 3, the same **Restart and apply** flow runs (restarting page polling `/restart-status` until SSSD, Kerberos, and NFS services are up), then redirects to `/login` to set the localhost admin password.
+**Pre-configured deploy:** mount a complete `nfs-klldap.conf` plus `/etc/krb5.keytab` — wizard skipped; go to `/login` (or main UI if `webui-password` exists).
 
-**Pre-configured deploy:** mount a complete `nfs-klldap.conf` plus `/etc/krb5.keytab` at startup — the wizard is skipped and you go straight to `/login` (or the main UI if the password sidecar already exists).
-
-See [docs/run/README.md](docs/run/README.md) for compose examples, env vars, TLS/proxy notes, and troubleshooting.
+Details: [docs/run/README.md](docs/run/README.md).
 
 ## Configuration
 
-Sample generated `nfs-klldap.conf`:
+Sample `nfs-klldap.conf`:
 
 ```toml
-ldap_uri = "ldaps://klldap.example.com:6360"                     # LLDAP default secure port. 3890 for LLDAP unencrypted
+ldap_uri = "ldaps://klldap.example.com:6360"                     # LLDAP default secure port; 3890 unencrypted
 
 [storage]
-container_root = "/export"                                      # Anchor for Ganesha paths + UI container translation.
-# Each share sets container_path explicitly (required; must live under container_root)
-# to the absolute in-container path of its data — no auto-derivation from host_path.
+container_root = "/export"                                      # Anchor for Ganesha + UI path translation
+# Each share requires container_path under container_root (no auto-derivation from host_path).
 # pseudo_path ("Pseudo Path" in the Shares editor) is only the client-visible NFSv4 name.
 
 [management]
-# webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins
+# webui_admin_group = "lldap_admin"
 
 [server]
-# hostname = "myhost.example.com"                               # Default - Optional override for keytab only. Recommended: docker run --uts=host
+# hostname = "myhost.example.com"                               # Optional keytab override; prefer --uts=host
 
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
 ldap_default_authtok = "strong-secret"
-# ldap_user_search_base = "ou=people,dc=example,dc=com"         # Optional - defaults to dc=<realm> (Subtree)
-# ldap_group_search_base = "ou=people,dc=example,dc=com"        # Optional - defaults to dc=<realm> (Subtree)
-kllldap_ignored_attributes = true                               # KLLDAP specific - improves lookup time, prevents attribute spam
+# ldap_user_search_base = "ou=people,dc=example,dc=com"         # Optional; default dc=<realm> Subtree
+# ldap_group_search_base = "ou=people,dc=example,dc=com"
+kllldap_ignored_attributes = true                               # Default; cuts KLLDAP attribute noise
 
 [kerberos]
-# realm = "EXAMPLE.COM"                                         # Default - auto-derived from ldap_uri host, edit to override
+# realm = "EXAMPLE.COM"                                         # Auto-derived from ldap_uri host when unset
 
 [probe]
-# user_principal = "someuser"                                   # Optional - sample LDAP user for startup identity checks; auto-picked from the directory when unset
-# client_host = "laptop-1"                                      # Optional - enrolled client machine (checked as host/<name>@REALM); auto-picked when unset
+# user_principal = "someuser"                                   # Optional identity preflight; auto-picked if unset
+# client_host = "laptop-1"                                      # host/<name>@REALM; auto-picked if unset
 
 [ganesha]
-default_security = "krb5p"                                      # security, krb5p (default) | krb5i | krb5
+default_security = "krb5p"                                      # krb5p | krb5i | krb5
 
 [webui]
-# tls = false                                                   # commented (tls on by default). Set tls=false (or NFS_KLLDAP_WEBUI_TLS=off env) for reverse proxy.
+# tls = false                                                   # TLS on by default; false or NFS_KLLDAP_WEBUI_TLS=off for reverse proxy
 # tls_cert = "/config/webui.crt"
 # tls_key = "/config/webui.key"
 
-# [[shares]]                                                    # shares section sample, shares can be added / edited via system settings
+# [[shares]]
 # name = "movies"
 # host_path = "/home/user/nfs-data/movies"
-# container_path = "/export/movies"                             # required; absolute path inside the container (Ganesha EXPORT Path= + WebUI permission tree). Example: /var/data:/export bind + host_path=/var/data/nvme-raid/users → container_path=/export/nvme-raid/users
-# pseudo_path = "/movies"                                       # optional; the *external* client Pseudo (short/friendly name OK). Derives to /<name> when absent.
-# security = "krb5p"                                            # optional per-share override (krb5p|krb5i|krb5); default from [ganesha]
-# rw = true                                                     # default RW; set false for RO
-# enable_acl = false                                            # optional; NOACL default — omit or false emits Disable_ACL = true; true opts into NFSv4 ACLs (needs ACL-capable FS + Ganesha build)
-# manage_gids = true                                            # optional; default true (including auto on limited FS) for krb5* uid2grp
-# umask = "0002"                                                # optional; emitted inside FSAL{} on ACL path only (default 0022). Addresses umask/ACL-inherit gotcha.
-
+# container_path = "/export/movies"                             # required; Ganesha Path= + WebUI tree
+# pseudo_path = "/movies"                                       # optional client Pseudo; default /<name>
+# security = "krb5p"
+# rw = true
+# enable_acl = false                                            # tri-state: true | false | unset=auto (probe-proven ACL)
+# manage_gids = true                                            # default true
+# cache_profile = "Default"                                     # or raw pref_read / pref_write without profile
+# # umask is retired (hard generate error) — use Inherit-tab default ACLs + setgid
 ```
 
-## [[shares]] sections are optional for first-run.
+`[[shares]]` is optional on first run. The generator writes sssd.conf, krb5.conf, idmapd.conf, nfs.conf, and Ganesha fragments. Unrecognized share keys are ignored with warnings (`ganesha_path` gets a rename hint to `container_path`).
 
-The generator derives ports, search bases, sssd.conf, krb5.conf, /etc/idmapd.conf (following [sssd] + realm), and Ganesha fragments. `kllldap_ignored_attributes = true` (default) emits recommended server-side ignore lists.
+### Share options (generator)
 
-Per-share Ganesha options include required `container_path`, `cache_profile` (recommended), `enable_acl`, `manage_gids`, `umask` (ACL-path FSAL only), and raw `pref_read` / `pref_write`. The generator maintains distinct ACL-capable and NOACL mainline paths (umask emitted only on ACL). It probes each share's **serve path** (`container_path`) and auto-applies 0.9.40-style settings on limited filesystems (btrfs+noacl, vfat, ntfs): `Pseudo = /<name>;` (from `pseudo_path` when set), `Disable_ACL = true; Manage_Gids = true; Read_Access_Check_Policy = pre;` (explicit pre for noacl; no per-export bad extras). The WebUI Share Permissions page marks NOACL shares with a blue "Non-ACL limited" status dot (green = ACL-capable) and greys the detached panel's ACL editor with a reason; classification is strictly **per share** and identical on every surface (Share Permissions cards, System Settings rows, generate): the resolved tri-state `enable_acl` (explicit true/false, or auto promoted by the live write round-trip probe) AND the serve-path filesystem's capability. The same per-share class is published to clients at `GET /client-manifest.json` (clients cannot detect it over NFSv4; see `docs/ganesha-architecture.md`, "Client contract"). `container_path` is the serve directory for Ganesha and WebUI permission tree, dir meta (owner/group/mode), ACLs, and apply. This allows basic disk access for noacl clients. On the current 9.13 build a backing filesystem that cannot store POSIX ACLs (vfat/ntfs, `noacl` mounts) cannot be served by either share class — use `container_path` staging on an ACL-capable tree (see `docs/ganesha-architecture.md`). Capable volumes use full native. Preflight checks user TGT + server host + client machine via CLI GRPS, `identity-pipeline`, runtime `nss-contract:ok`, socket GRPS, and `ganesha-ctl id-resolve`; duplicate OK lines are suppressed on supervisor ticks. The probe identities come from `[probe]` (`user_principal`, `client_host`) or env (`NFS_KLLDAP_PROBE_USER_PRINCIPAL` / `NFS_KLLDAP_PROBE_CLIENT_HOST`); when unset they are auto-picked from the directory's materialized identities, and any leg without a candidate (fresh domain, no enrolled clients) is skipped with an `idhelper-check:partial:*` tag instead of failing — no preset LDAP users are required. Optional `[ganesha] post_generate_hook` (or `NFS_KLLDAP_POST_GENERATE_HOOK`) runs after every generate — see `examples/post-generate-staging-sync.sh`. Use `nfs-klldap-config fs-warnings` or `ganesha-ctl fs-warnings` for limited-FS diagnostics. The WebUI **Cache Profile** dropdown writes e.g. `cache_profile = "Read - Heavy"`; the generator resolves it on every regen. Unrecognized `[[shares]]` keys are ignored and surfaced as warnings (`ganesha_path` is rejected with a rename hint).
+- **Required:** `container_path` under `container_root`.
+- **ACL class (per share):** `enable_acl` tri-state — `true` hard-fails generate if the serve path is definitively non-ACL; `false` = NOACL; unset = **auto** (promote only when the write round-trip probe proves storage). Same class on Share Permissions, System Settings, and `GET /client-manifest.json`.
+- **NOACL emission:** `Disable_ACL = true; Manage_Gids = true; Read_Access_Check_Policy = pre;` (plus Pseudo). Explicit `manage_gids = false` still honored.
+- **ACL emission:** `Disable_ACL = false;` (declared). No per-export FSAL `Umask` on Ganesha 9.13 — creation modes use default ACL Inherit tab + setgid.
+- **Limited / non-ACL-capable FS (vfat, ntfs, btrfs+noacl):** cannot store POSIX ACLs; on 9.13 attribute fetches may fail for both classes — stage via `source_path` → ACL-capable `container_path` and optional `[ganesha] post_generate_hook` (see `examples/post-generate-staging-sync.sh`).
+- **Diagnostics:** `nfs-klldap-config fs-warnings` / `ganesha-ctl fs-warnings`.
 
-### Cache Profiles (Shares tuning)
+### Cache profiles
 
-**System Settings → Shares** uses a **Cache Profile** dropdown (five options). The chosen name is the source of truth for that share's `PrefRead`/`PrefWrite` emission.
+**System Settings → Shares** stores a profile name; every generate rewrites `PrefRead` / `PrefWrite` from it.
 
-On every `generate` (container start, config watcher, "Restart and apply", or explicit HUP) the following are *rewritten* from the profiles in `nfs-klldap.conf`:
+| Profile | pref_read | pref_write | Best for |
+|---------|-----------|------------|----------|
+| Default | 1 MiB | 1 MiB | General / set-and-forget |
+| Read - Basic | 4 MiB | 4 MiB | Light–moderate reads |
+| Read - Heavy | 16 MiB | 8 MiB | Sequential media |
+| Mixed Use | 4 MiB | 4 MiB | Everyday RW |
+| Write - Heavy | 2 MiB | 16 MiB | Backups / uploads |
 
-- Ganesha `EXPORT` blocks (`PrefRead` + `PrefWrite` values for the share's export).
-- Ganesha I/O sizing via the Cache Profile dropdown (see below).
+Legacy numeric `pref_read` / `pref_write` without `cache_profile` are still honored. Structured WebUI save maps numerics to the nearest profile. Host `read_ahead_kb` is outside the container.
 
-| Tuning Profile | Ganesha pref_read | Ganesha pref_write | Best For |
-|----------------|-------------------|--------------------|----------|
-| Default        | 1 MiB (1048576)   | 1 MiB (1048576)    | General purpose, maximum compatibility, set-and-forget |
-| Read - Basic   | 4 MiB (4194304)   | 4 MiB (4194304)    | Light-to-moderate read workloads, file shares |
-| Read - Heavy   | 16 MiB (16777216) | 8 MiB (8388608)    | 4K movies, large ISOs, mostly sequential media |
-| Mixed Use      | 4 MiB (4194304)   | 4 MiB (4194304)    | Everyday shares with both reads and writes |
-| Write - Heavy  | 2 MiB (2097152)   | 16 MiB (16777216)  | Backups, large uploads, write-intensive workloads |
+## Environment variables
 
-Legacy `pref_read = N;` (and `pref_write`) values in raw TOML are still honored by the generator when no `cache_profile` key is present on the share (useful for one-off custom sizes). Saving shares via the WebUI structured editor will convert a legacy numeric to the nearest profile name on next load and will write the `cache_profile` key (cleaning the numeric on save).
+Optional overrides (env always wins). Core: `NFS_KLLDAP_LDAP_URI`, bind DN/password, realm, hostname, storage root, Ganesha security, WebUI admin group, SSSD TLS fields, `[webui]` TLS. Full table: [docs/run/README.md](docs/run/README.md).
 
-Note: to optimize performance for sequential workloads, set read_ahead_kb on the host block devices backing the shares (outside the container).
+`HOST_NFS=true` (or `NFS_KLLDAP_HOST_NFS=true`) runs as a management sidecar: generate + WebUI + SSSD continue; container does **not** start `ganesha.nfsd`.
 
-## Environment Variables
-
-Environment variables are available to those that prefer them, but not necessary to run nfs-klldap-host (use the WebUI setup wizard or a pre-configured nfs-klldap.conf + keytab).
-
-Not every advanced `[sssd]` option is exposed via env. The core options (LDAP URI + binds, realm, hostname, storage root, Ganesha default security, WebUI admin group, KLLDAP ignored attributes, SSSD TLS fields, and `[webui]`) can be supplied or overridden using `NFS_KLLDAP_*` variables (only prefixed forms are available). Environment variables always win and allow omitting the corresponding keys from `nfs-klldap.conf` in many cases.
-
-A new top-level switch `HOST_NFS=true` (or `NFS_KLLDAP_HOST_NFS=true`) runs the container as a management sidecar for a *host* NFS server (Ganesha at `/etc/ganesha`). Shares, Kerberos config, and the WebUI permission tools continue to work normally; the container does not start ganesha.nfsd. See docs/run/README.md for compose volumes, keytab sharing, UI gray-out behavior, and ZimaOS-style appliance notes.
-
-Example in compose:
-
-```
+```yaml
 environment:
   NFS_KLLDAP_LDAP_URI: ldaps://klldap.example.com:6360
   NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN: uid=admin,ou=people,dc=example,dc=com
@@ -181,50 +198,23 @@ environment:
   NFS_KLLDAP_WEBUI_TLS: "off"
 ```
 
-See [docs/run/README.md](docs/run/README.md) for the full env var table, reverse-proxy setup, and compose examples.
-
 ## WebUI (9630)
 
-- `/setup/1` … `/setup/3` — First-run wizard (volume, ldap_uri, bind creds); each step has a **Test Log** with probe output and fix suggestions; steps 2–3 use **Test Settings** then **Save and Continue**.
-- `/login` — localhost password (first run) or LLDAP admin login.
-- `/` — Live FS browser (directories **and** files, under shares) + KLLDAP user/group search + direct chown/chmod: condensed Read/Write editor for directories (read implies browse/execute), full rwx editor per file, and a three-way apply scope on directories (none / + files directly inside / whole subtree) with explicit file permission bits for the recursive scopes.
-- `/settings` — Raw + structured TOML editor + current LLDAP bind identity + "Reload NFS client" + "Clear identity cache" (10 min user/group + 2 min search cache; stats shown).
+| Path | Role |
+|------|------|
+| `/setup/1`…`/setup/3` | First-run wizard + Test Log |
+| `/login` | localhost password or LLDAP admin |
+| `/` | FS browser + chown/chmod + ACL panel |
+| `/settings` | TOML editor, shares, restart/apply, identity cache tools |
+| `/client-manifest.json` | Public share class list (no session) |
 
-Auth: "localhost" (sidecar `webui-password` file next to config, SHA-256 hash) or any LLDAP user in `webui_admin_group` (default `lldap_admin`).
+Auth: localhost sidecar `webui-password` (SHA-256) or members of `webui_admin_group` (default `lldap_admin`).
 
-### Security Contracts for Share Permission Changes
-
-All owner/group/mode changes performed by the WebUI go through `FsManager` + `privileged` (inside the container as root) on bind-mounted `host_path` trees — directory targets (optionally recursive) and, since 0.9.85, individual file targets.
-
-- **Symlink policy**: The recursive engine (WalkDir) **never recurses into symlinks** (`follow_links(false)` plus explicit `is_symlink()` skips per entry). `chown`/`chmod` calls follow symlinks for the entries that are mutated (standard std behavior, matching historical `chown(2)`). Symlink inodes themselves are skipped by default, and the tree browser doesn't list them at all. This prevents accidental escape from the declared `host_path` trees (a previous risk with the old `Path::is_dir()` recursion).
-- **x-less directory modes + explicit file bits**: The directory editor submits modes **without execute bits**; the server fuses r→x per **directory** entry during the walk (`fs::dir_mode_r_implies_x`). Files in a recursive apply never receive the directory mode — they get exactly the **file permission bits** chosen in the panel (special bits refused on files), so file execute is always an explicit grant, whether per file or per recursive scope.
-- **Direct Rust ops + background walks**: chown uses nix::unistd::chown; chmod uses std::os::unix::fs. Recursive permission walks for large trees are executed via tokio::task::spawn_blocking (async handler stays responsive); progress (total/processed/phase) is updated atomically and visible live in the Apply Log via polling (render_apply_status_oob). ACL ops remain fast-path.
-- **UID/GID are numeric only on disk**: The engine and WebUI always write raw `u32` values (sourced from LLDAP `uidNumber`/`gidNumber` or direct numeric entry in the editor). Friendly names are resolved only for display.
-- **Bind-mount UID namespace assumption**: The container must run as real root with the data directories bind-mounted such that the numeric UIDs written *inside* the container are exactly the IDs visible on the Docker host filesystem. `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts will cause the on-disk owners to be wrong from the host/NFS client perspective.
-
-See [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md) for the full security model.
-
-## Prerequisites
-
-- Kerberos time sync.
-- `--uts=host` (recommended) so the container sees the real Docker host hostname (`hostname` must match `/proc/sys/kernel/hostname`).
-- Keytab (0600) with `nfs/<short-hostname>@REALM` and `nfs/<fqdn>@REALM` when they differ.
-- `ldap_uri` host must resolve (DNS, not IP). Forward + reverse DNS required for the NFS principal.
-- Bind-mounted data directories on attached/media storage (numeric uid/gid must match KLLDAP posixAccount/posixGroup).
-
-## Project Layout (workspace)
-
-- `nfs-klldap-identity/` — shared LDAP/Kerberos/NSS primitives (`IdLdapResolver`, POSIX mapping, hostname/keytab helpers)
-- `nfs-klldap-config/` — lib (`startup` step machine + probes) + `nfs-klldap-config` (generate) + `nfs-klldap-startup` (supervise/check) + `nfs-klldap-idhelper` (daemon + CLI)
-- `nfs-klldap-ui/` — Axum WebUI (9630) including `/setup` wizard
-- `entrypoint.sh` — exec wrapper → `nfs-klldap-startup supervise`
-- `container/` — healthcheck, conf-watcher, ganesha-ctl helper scripts
+**Permission apply (short):** root-in-container via `FsManager` + `privileged`; no symlink descent; directory modes fuse r→x; recursive scopes send explicit file bits; numeric UID/GID only on disk. Full model: [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md).
 
 ## Identity & Kerberos (idhelper)
 
-`nfs-klldap-idhelper` classifies machine/user, materializes authoritative nss+extrausers (complete supps + uid0 root) for UseGetpwnam/getgrouplist via proactive startup + reactive on-demand + cache.
-
-Inside the container:
+`nfs-klldap-idhelper` classifies machine vs user principals and materializes nss_wrapper + extrausers (complete supplemental groups, including uid 0 for machines) for Ganesha `UseGetpwnam` / `getgrouplist`.
 
 ```bash
 nfs-klldap-idhelper resolve 'alice@REALM' --json
@@ -233,14 +223,30 @@ ganesha-ctl id-resolve 'user@REALM'
 ganesha-ctl id-check
 ```
 
-See [docs/ldap-integration.md](docs/ldap-integration.md) for SSSD/POSIX requirements, TLS behavior, idhelper architecture, and verification commands.
+- Supported forms: `user@REALM`, `host/hostname@REALM` (machines → uid/gid 0).
+- Ganesha: `Only_Numeric_Owners` + `Allow_Numeric_Owners`; DIRECTORY_SERVICES nsswitch.
+- Periodic rebulk: `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS` (default **180**, `0` = off). Observer covers new principals from logs.
+- Group-change flush: `ganesha-ctl refresh-identity [user]` (SSSD + idhelper rebulk + Ganesha purge_gids).
 
-## Kerberos user principal idmap
-Supported: full `user@REALM` and `host/hostname@REALM` via idhelper GRPS/resolve (POSIX groups for users; machine principals map to uid/gid 0) + nss/extrausers. Numeric reverse rejected for stable getpwuid. Ganesha uses `Only_Numeric_Owners` + `Allow_Numeric_Owners`. Limited FS exports auto-emit `Manage_Gids=true` by default (set `manage_gids=false` to skip AUTH_SYS managed gids); krb5p/krb5i still call `rpcsec_gss_fetch_managed_groups` → observable `getpwuid_r for uid:` + `getgrouplist for uname:` LogInfo under nss_wrapper/idhelper (Debian-packaged Ganesha builds with `_MSPAC_SUPPORT`, stubbing `allocate_by_principal` in uid2grp.c). Principals are warmed in nss_wrapper before Ganesha starts. Use ganesha-ctl id-resolve.
+Deep dive: [docs/ldap-integration.md](docs/ldap-integration.md).
 
-Ganesha omits `Read_Access_Check_Policy` by default (pre) in main/ACL paths (ground-truthed on 9.6, re-checked on the 9.13 uplift). The NOACL path explicitly sets `Read_Access_Check_Policy = pre;` + 0.9.40-style `Disable_ACL=true; Manage_Gids=true;` (basics work; explicit `manage_gids=false` still supported); full ACL features on capable FS. The idhelper ensures complete supp membership (incl uid0/root for machines) in nss+extrausers via proactive+reactive (observer/resolve/GRPS) + cache; periodic rebulk is secondary. Set REBULK_INTERVAL=0 to disable timer; observer handles new principals.
+## Prerequisites
 
-The container image uses a split-stage strategy (build on Fedora minimal for the Rust binaries; runtime on Debian 13-slim) — see the Dockerfile for package choices.
+- Kerberos time sync  
+- `--uts=host` so hostname matches `/proc/sys/kernel/hostname`  
+- Keytab (0600) with `nfs/<short>@REALM` and `nfs/<fqdn>@REALM` when they differ  
+- DNS hostname in `ldap_uri` (no raw IP); forward + reverse for the NFS principal  
+- Bind-mounted data with numeric uid/gid matching KLLDAP POSIX attributes  
+
+## Project layout
+
+| Path | Role |
+|------|------|
+| `nfs-klldap-identity/` | Shared LDAP / Kerberos / NSS primitives |
+| `nfs-klldap-config/` | validate + generate + `nfs-klldap-startup` + `nfs-klldap-idhelper` |
+| `nfs-klldap-ui/` | Axum WebUI |
+| `entrypoint.sh` | exec → `nfs-klldap-startup supervise` |
+| `container/` | healthcheck, conf-watcher, ganesha-ctl |
 
 ## Development & testing
 
@@ -249,7 +255,7 @@ make test
 # or: cargo test --workspace
 ```
 
-See [TESTING.md](TESTING.md) for coverage map and patterns.
+See [TESTING.md](TESTING.md).
 
 ## License
 

@@ -1,6 +1,4 @@
-//! Validate 9.x idmap logs: UseGetpwnam=true krb5 TGT chain via getpwnam_r → getpwuid_r → getgrouplist.
-//! Markers derived from Ganesha V9.6 uid2grp.c / idmapper.c LogInfo strings (not C symbol names).
-//! NOTSUPP classification: ACL-path (OP_ACCESS ACL mask / GETATTR Permission check for ACL) vs identity-path.
+//! Classify Ganesha idmap log markers (UseGetpwnam chain, ACL vs identity NOTSUPP).
 
 use std::fs;
 use std::path::Path;

@@ -1,7 +1,6 @@
 #![deny(unsafe_code, dead_code)]
 
-//! Shared LDAP/Kerberos identity for config, idhelper, and WebUI.
-//! Covers Ganesha 9.6 hybrid user-TGT and machine-keytab principals.
+//! Shared LDAP/Kerberos/NSS primitives for config, idhelper, and WebUI.
 
 pub mod constants;
 pub mod krb5;

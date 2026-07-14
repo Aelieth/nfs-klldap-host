@@ -1,17 +1,17 @@
-//! Decides services to recycle after config.
+//! Recycle plan after config/export/identity fingerprint changes.
 
 /// How Ganesha should be recycled when export fragments change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GaneshaAction {
-    /// Leave running (no reload, no stop/start)
+    /// Leave running.
     Skip,
     /// In-process export reload via SIGHUP.
     Sighup,
-    /// Stop then start when nfsd is down or SIGHUP reload failed.
+    /// Full stop/start when down or after failed SIGHUP.
     StopStart,
 }
 
-/// Service recycle plan derived from export vs identity artifact changes.
+/// Services to bounce given fingerprint deltas (see `plan_from_changes`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServiceRecyclePlan {
     pub ganesha: GaneshaAction,

@@ -1,6 +1,6 @@
 #![deny(unsafe_code, dead_code)]
 
-//! Validates TOML and generates sssd.conf, krb5.conf, and export fragments.
+//! Validate/derive nfs-klldap.conf; generate sssd/krb5/idmapd/nfs/ganesha artifacts.
 
 mod config;
 mod constants;
@@ -129,7 +129,7 @@ pub use idmap::{
     IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry,
 };
 
-// Centralized constants (Ganesha 9.6 trixie + hybrid Principal + POSIX.
+// Public Ganesha / idmapd / identity constants used by generate and callers.
 pub use constants::{
     FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
     GANESHA_ALLOWED_SECTYPES, GANESHA_ALLOWED_SQUASH, GANESHA_DEFAULT_SECTYPE,

@@ -1,4 +1,4 @@
-//! First-run 3-step WebUI setup wizard at /setup/1 … /setup/3.
+//! First-run wizard: /setup/1 volume, /setup/2 ldap_uri, /setup/3 bind creds.
 
 use askama::Template;
 use axum::{

@@ -1,5 +1,4 @@
-//! Router assembly + AppState (shared by handlers) + router integration tests.
-//! Submodules hold the logic: auth, permission_tree, settings.
+//! Axum router + AppState; handlers in auth/permission_tree/settings/setup.
 
 use axum::{
     body::Body,

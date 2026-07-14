@@ -21,7 +21,7 @@ pub(crate) struct LoginTemplate {
     pub keytab_alert: Option<String>,
 }
 
-// Keytab_alert is never passed to LoginTemplate. See keytab.rs.
+// keytab_alert on LoginTemplate stays unused (None); hostname/keytab UI is settings/setup.
 
 /// Shared form for both normal login and first-run setup.
 #[derive(Deserialize)]

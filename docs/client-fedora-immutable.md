@@ -1,9 +1,8 @@
 # Mounting from Fedora Immutable clients (Bazzite / Silverblue)
 
-Goal: a Bazzite or Silverblue machine with a valid machine keytab and a user Kerberos TGT
-mounts a share with `sec=krb5p` and sees correct owners. These are the same steps the CI
-harness (`scripts/fedora-krb5p-client-validate.sh`) automates in a container, written for a
-real immutable host.
+**Purpose:** host-side steps so a Bazzite/Silverblue client with machine keytab + user TGT
+mounts `sec=krb5p` and sees correct owners. Mirrors `scripts/fedora-krb5p-client-validate.sh`
+for a real immutable host.
 
 ## Prerequisites
 
@@ -145,9 +144,10 @@ per-user setup or Places seeding is required.
 
 ## Troubleshooting
 
-Run the server with `GANESHA_DEBUG=TRUE` while reproducing — the debug LOG set includes
-`RPCSEC_GSS` and `NFS_V4_ACL`, so GSS rejects and ACL-path failures are visible in
-`ganesha.log`.
+Run the server with `GANESHA_DEBUG=TRUE` while reproducing — the debug LOG set raises
+IDMAPPER/CLIENTID/SESSIONS and NFS4/NFS_V4_ACL/DISPATCH (Ganesha 9.13 has no
+`RPCSEC_GSS` log component; GSS/cred flow appears under DISPATCH) so rejects and
+ACL-path failures are visible in `ganesha.log`.
 
 - **Mount fails, server log shows EXCHANGE_ID / CREATE_SESSION / RECLAIM_COMPLETE all
   `NFS4_OK` then immediate DESTROY_SESSION / DESTROY_CLIENTID with no PUTROOTFH/LOOKUP.**

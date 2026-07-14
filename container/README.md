@@ -1,23 +1,36 @@
 # Container Internals
 
-Thin shell (entrypoint exec, healthcheck, watcher, ganesha-ctl) + Rust binaries. `entrypoint.sh` only execs `nfs-klldap-startup supervise`; orchestration (preflight, SSSD/idhelper waits, Ganesha recycle, SIGHUP) lives in Rust. Privileged work (0600 derived files, direct chown/chmod on bind-mounted host_paths) happens here only.
+**Purpose:** shell helpers and how they relate to the Rust supervisor.
 
-NSS: files extrausers sss. idhelper (proactive+reactive+cache) materializes complete supps+uid0 root to nss_wrapper + extrausers for UseGetpwnam/getgrouplist reliability. Machine->0. Ganesha after socket, under wrapper. NOACL default: `Disable_ACL = true` + `Read_Access_Check_Policy = pre` (no POSIX marker). Preflight via GRPS/ctl.
+Thin shell layer + Rust binaries. `entrypoint.sh` only execs `nfs-klldap-startup supervise`; preflight, SSSD/idhelper waits, Ganesha recycle, and SIGHUP handling live in Rust. Privileged work (0600 derived files, chown/chmod on bind mounts) runs in-container only.
 
-The container includes dbus-daemon (launched by the supervisor before Ganesha) and rpcbind for Ganesha/runtime compatibility. Export fragments under `/etc/ganesha/exports.d/` plus `/etc/nfs.conf` (`use-machine-creds=0`) are generated from `nfs-klldap.conf` by `nfs-klldap-config`; reload is triggered via SIGHUP to pid 1 (conf-watcher, WebUI apply, or `ganesha-ctl reload`), not D-Bus RPCs to Ganesha. The supervisor spawns `ganesha.nfsd -F` with an explicit envp (LD_PRELOAD, NSS_WRAPPER_*, IDHELPER socket vars) so the foreground daemon pid receives nss/idhelper env directly; pid recovery only runs if the tracked process exits.
+## Process model
 
-When `HOST_NFS=true` the supervisor and healthcheck skip ganesha.nfsd entirely (the host NFS server at `/etc/ganesha` owns the daemon and the 2049 listener); the container remains the source of truth for config generation, keytab material, SSSD identity, and the WebUI permission tools.
+```
+entrypoint.sh
+    └─ nfs-klldap-startup supervise  (pid 1)
+           ├─ dbus-daemon (before Ganesha)
+           ├─ rpcbind (best-effort)
+           ├─ sssd
+           ├─ nfs-klldap-idhelper
+           ├─ ganesha.nfsd -F   (unless HOST_NFS)
+           ├─ nfs-klldap-conf-watcher  → SIGHUP pid 1 on conf change
+           └─ nfs-klldap-ui :9630
+```
+
+- NSS: `files extrausers sss`. Idhelper materializes complete supps + uid0 into nss_wrapper + extrausers for `UseGetpwnam` / `getgrouplist`. Machines → 0.
+- Ganesha starts after idhelper socket readiness, under nss_wrapper env from the supervisor (`LD_PRELOAD`, `NSS_WRAPPER_*`, idhelper socket vars).
+- Reload: SIGHUP to pid 1 (conf-watcher, WebUI apply, or `ganesha-ctl reload`) — not D-Bus RPCs to Ganesha for export management.
+- **HOST_NFS:** skip ganesha.nfsd and 2049 checks; still generate fragments for a host Ganesha at `/etc/ganesha`.
 
 ## Scripts
 
 | Path | Installed as | Role |
 |------|--------------|------|
-| `container/healthcheck.sh` | `/container/healthcheck.sh` | Docker liveness (hard fail on core services) |
-| `container/scripts/check-common.sh` | `/container/scripts/check-common.sh` | Shared advisory checks (sourced by healthcheck + verify) |
-| `container/scripts/nfs-klldap-conf-watcher` | `/usr/local/bin/nfs-klldap-conf-watcher` | inotify on nfs-klldap.conf → SIGHUP pid 1 |
-| `container/scripts/ganesha-ctl` | `/usr/local/bin/ganesha-ctl` | Supervisor reload (SIGHUP) + idhelper diagnostics |
-| `scripts/verify-ganesha.sh` | `/usr/local/bin/verify-ganesha.sh` | Post-deploy diagnostics (runs healthcheck + extended checks) |
+| `container/healthcheck.sh` | `/container/healthcheck.sh` | Docker liveness |
+| `container/scripts/check-common.sh` | `/container/scripts/check-common.sh` | Shared advisory checks |
+| `container/scripts/nfs-klldap-conf-watcher` | `/usr/local/bin/nfs-klldap-conf-watcher` | inotify → SIGHUP pid 1 |
+| `container/scripts/ganesha-ctl` | `/usr/local/bin/ganesha-ctl` | reload + idhelper diagnostics |
+| `scripts/verify-ganesha.sh` | `/usr/local/bin/verify-ganesha.sh` | Post-deploy diagnostics |
 
-**Networking:** run with `network_mode: host` (compose) or `--network=host` (`docker run`) — see [docs/run/README.md](../docs/run/README.md).
-
-See also `verify-ganesha.sh` inside the container for export verification.
+Networking: host network mode — see [docs/run/README.md](../docs/run/README.md). Packaging: [ganesha/README.md](ganesha/README.md).

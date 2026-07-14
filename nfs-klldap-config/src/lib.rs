@@ -103,7 +103,7 @@ pub use hostname::{
     runtime_realm_from_disk, runtime_server_variants_from_disk,
     webui_tls_disabled,
 };
-pub use persist::is_persistent_config;
+pub use persist::{atomic_write, is_persistent_config};
 pub use startup::{
     attempt_realm_from_config, check_ldap_bind, check_ldap_reachability, check_persistent_writable,
     compute_startup_step, compute_wizard_step, config_has_required_startup_fields,

@@ -9,20 +9,9 @@ use crate::{ConfigError, FsCapabilities, NfsKlldapConfig};
 use super::directives::{derive_export_id, export_fs_directives, export_read_access_line, export_pseudo_line, fragment_basename};
 
 pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(), ConfigError> {
-    if exports_dir.exists() {
-        for entry in fs::read_dir(exports_dir)? {
-            let p = entry?.path();
-            if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".conf") && name.len() >= 7 {
-                    let b = name.as_bytes();
-                    if b[0].is_ascii_digit() && b[1].is_ascii_digit() && b[2] == b'-' {
-                        let _ = fs::remove_file(&p);
-                    }
-                }
-            }
-        }
-    }
     fs::create_dir_all(exports_dir)?;
+    // Prune stale fragments after writing, not before, to survive a crash.
+    let mut written: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mountinfo_once: Option<String> = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok().and_then(|p| std::fs::read_to_string(p).ok()).or_else(|| std::fs::read_to_string("/proc/self/mountinfo").ok());
 
     for (i, share) in cfg.shares.iter().enumerate() {
@@ -118,7 +107,23 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
 "#, share.name, export_id, path, sec, squash, auto_comment=auto_comment, pseudo_line=pseudo_line, disable_acl_line=disable_acl_line, manage_gids_line=manage_gids_line, read_access_line=read_access_line, pref_read_line=pref_read_line, pref_write_line=pref_write_line, attr_expiry_line=attr_expiry_line, client_block=client_block, umask_line=umask_line);
 
         let filename = fragment_basename(i, &share.name);
-        fs::write(exports_dir.join(filename), block.as_bytes())?;
+        crate::atomic_write(&exports_dir.join(&filename), block.as_bytes())?;
+        written.insert(filename);
+    }
+    // Prune fragments for shares that no longer exist (same NN- naming rule).
+    for entry in fs::read_dir(exports_dir)? {
+        let p = entry?.path();
+        if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+            if written.contains(name) {
+                continue;
+            }
+            if name.ends_with(".conf") && name.len() >= 7 {
+                let b = name.as_bytes();
+                if b[0].is_ascii_digit() && b[1].is_ascii_digit() && b[2] == b'-' {
+                    let _ = fs::remove_file(&p);
+                }
+            }
+        }
     }
     Ok(())
 }

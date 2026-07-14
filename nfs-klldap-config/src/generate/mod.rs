@@ -115,7 +115,7 @@ entry_negative_timeout = {entry_negative_timeout}
         &mapping,
     ));
 
-    fs::write(out, content.as_bytes())?;
+    crate::atomic_write(out, content.as_bytes())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -355,7 +355,7 @@ fn write_krb5_conf(cfg: &NfsKlldapConfig, out: &Path) -> Result<(), ConfigError>
         kdc_host = kdc_host,
     );
 
-    fs::write(out, content.as_bytes())?;
+    crate::atomic_write(out, content.as_bytes())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -373,7 +373,7 @@ pipefs-directory=/run/rpc_pipefs
 [gssd]
 use-machine-creds=0
 "#;
-    fs::write(out, content.as_bytes())?;
+    crate::atomic_write(out, content.as_bytes())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -411,7 +411,7 @@ GSS-Methods = {gss}
         gss = constants::IDMAPD_GSS_METHODS,
     );
 
-    fs::write(out, content.as_bytes())?;
+    crate::atomic_write(out, content.as_bytes())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -622,6 +622,6 @@ EXPORT_DEFAULTS {{
 
     content.push_str(&includes);
 
-    fs::write(out, content.as_bytes())?;
+    crate::atomic_write(out, content.as_bytes())?;
     Ok(())
 }

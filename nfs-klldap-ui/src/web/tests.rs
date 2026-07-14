@@ -682,6 +682,181 @@ async fn web_acl_apply_default_layer_on_file_rejected_422() {
     assert!(text.contains("directories only"), "422 body names the rule: {text}");
 }
 
+// Scaffold with a divergent submount: capable share root (btrfs fixture over
+// the tempdir) plus a vfat child mount at <real_root>/sub. Per-share model:
+// the panel must stay editable there while /acl-apply refuses the write.
+async fn acl_submount_scaffold(tmp: &tempfile::TempDir) -> (String, axum::Router) {
+    let real_root = tmp.path().join("aclroot");
+    let sub = real_root.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let mi = tmp.path().join("mi");
+    std::fs::write(
+        &mi,
+        format!(
+            "36 35 0:59 / {} rw,relatime - btrfs /dev/sda1 rw\n\
+             37 36 0:60 / {} rw,relatime - vfat /dev/sdb1 rw\n",
+            tmp.path().display(),
+            sub.display()
+        ),
+    )
+    .unwrap();
+    let cp = tmp.path().join("c");
+    let min_cfg = format!(
+        r#"ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "{}"
+[sssd]
+ldap_default_bind_dn = "uid=admin"
+ldap_default_authtok = "s"
+[[shares]]
+name = "acldata"
+host_path = "/acldata"
+container_path = "{}"
+"#,
+        real_root.display(),
+        real_root.display()
+    );
+    std::fs::write(&cp, min_cfg).unwrap();
+    let sm = write_setup_marker(tmp, ".s");
+    let st = test_app_state(&cp, sm, Some(mi));
+    let token = st.auth.create_privileged_session("acltest");
+    (token, router(st))
+}
+
+// Per-share model: the panel classifies at the share serve root, so a node on
+// an incapable submount still renders an editable ACL section (auto pill).
+#[tokio::test]
+async fn dir_perms_editable_on_capable_share_regardless_of_submount() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (token, app) = acl_submount_scaffold(&tmp).await;
+    let req = Request::builder()
+        .uri("/dir-perms?path=%2Facldata%2Fsub")
+        .body(Body::empty())
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let html = String::from_utf8_lossy(&body);
+    assert!(
+        !html.contains("acl-sec disabled"),
+        "share-level gate must keep the ACL section editable on a submount node"
+    );
+    assert!(
+        html.contains(r#"<span class="pill on">auto</span>"#),
+        "pill must show the share-level auto state"
+    );
+}
+
+// The /acl-apply backstop still checks the write target's own mount: an ACL
+// write aimed at the vfat submount must 422 even though the panel is live.
+#[tokio::test]
+async fn acl_apply_422_backstop_on_incapable_submount() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (token, app) = acl_submount_scaffold(&tmp).await;
+    let body = "path=%2Facldata%2Fsub&op=add&typ=user&id=5151&perms=rwx&layer=access";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/acl-apply")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    assert!(text.contains("submount"), "422 body names the submount rule: {text}");
+}
+
+// The manifest is the client's only way to learn a share's ACL class (probing
+// over NFSv4 is structurally impossible), so it must serve without a session
+// and carry only bootstrap fields — never server-internal paths.
+#[tokio::test]
+async fn client_manifest_is_public_and_minimal() {
+    let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
+    let app = router(state);
+    let req = Request::builder()
+        .uri("/client-manifest.json")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "no session cookie may be required");
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(ct.contains("json"), "manifest must be JSON, got {ct}");
+    let cc = resp
+        .headers()
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(cc.contains("no-store"), "live-computed classes must not be cached: {cc}");
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let body = String::from_utf8_lossy(&bytes).to_string();
+    assert!(body.contains(r#""manifest_version":1"#), "{body}");
+    assert!(body.contains(r#""pseudo":"/data""#), "{body}");
+    assert!(body.contains(r#""security":"krb5p""#), "unset security falls to the default: {body}");
+    assert!(body.contains(r#""acl":"noacl""#), "noacl fixture share must classify noacl: {body}");
+    assert!(body.contains(r#""acl_state":"auto (off)""#), "{body}");
+    // Field-name assertions: the fixture's pseudo (/data) textually equals its
+    // container_path, so exclude the internal-path KEYS, not the value.
+    assert!(!body.contains("host_path"), "internal paths must not leak: {body}");
+    assert!(!body.contains("container_path"), "internal paths must not leak: {body}");
+}
+
+// The same auto share the UI promotes to ACL must publish "acl" to clients —
+// one classification for every surface.
+#[tokio::test]
+async fn client_manifest_acl_share_reports_acl() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (_fs, _progress, _token, app) = acl_test_scaffold(&tmp).await;
+    let req = Request::builder()
+        .uri("/client-manifest.json")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let body = String::from_utf8_lossy(&bytes).to_string();
+    assert!(body.contains(r#""pseudo":"/acldata""#), "{body}");
+    assert!(body.contains(r#""acl":"acl""#), "capable auto share must publish acl: {body}");
+    assert!(body.contains(r#""acl_state":"auto (on)""#), "{body}");
+}
+
+// Pre-setup the manifest must answer JSON (the empty/default share set), not
+// redirect a machine client into the HTML wizard.
+#[tokio::test]
+async fn client_manifest_bypasses_setup_gate() {
+    let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
+    let marker = state.setup_marker_override.clone();
+    let app = router(state);
+    if let Some(m) = &marker {
+        std::fs::remove_file(m).ok();
+    }
+    let req = Request::builder()
+        .uri("/client-manifest.json")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "machine endpoint must bypass the wizard redirect"
+    );
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(ct.contains("json"), "pre-setup response must still be JSON, got {ct}");
+}
+
 // op=mask needs no principal; it rewrites the layer's group-class cap.
 #[tokio::test]
 async fn web_acl_apply_mask_op_caps_named_entries() {
@@ -698,6 +873,8 @@ async fn web_acl_apply_mask_op_caps_named_entries() {
         },
     )
     .expect("seed");
+    // The target is a directory, so the x-less submitted mask fuses r→x (the
+    // POSIX dir rule); write still gets capped off the rwx entry.
     let body = "path=%2Facldata&op=mask&perms=r--&layer=access";
     let req = Request::builder()
         .method("POST")
@@ -715,14 +892,144 @@ async fn web_acl_apply_mask_op_caps_named_entries() {
         .get_acl_table(std::path::Path::new("/acldata"))
         .expect("allowed");
     let mask = table.mask_of(false).expect("mask present");
-    assert!(mask.r && !mask.w && !mask.x, "mask must be r-- after op=mask");
+    assert!(
+        mask.r && !mask.w && mask.x,
+        "dir mask must fuse to r-x after op=mask r--"
+    );
     let entry = table
         .access
         .iter()
         .find(|l| l.tag == crate::privileged::AclTag::NamedUser(6161))
         .expect("named entry kept");
     let eff = table.effective_perms(entry, false);
-    assert!(eff.r && !eff.w && !eff.x, "named entry effective perms capped to r--");
+    assert!(eff.r && !eff.w && eff.x, "named entry effective perms capped to r-x");
+}
+
+// Directory ACL applies fuse r→x exactly like the POSIX dir matrix: the dir
+// editor hides Exec and submits x-less perms; execute is the traversal bit,
+// so a Read grant that can't traverse would be useless over NFS.
+#[tokio::test]
+async fn web_acl_apply_dir_add_fuses_execute_from_read() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (fs, progress, token, app) = acl_test_scaffold(&tmp).await;
+    let body = "path=%2Facldata&op=add&typ=user&id=5252&perms=r--&layer=access";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/acl-apply")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    wait_acl_progress(&progress).await;
+    let table = fs
+        .read()
+        .expect("fs lock")
+        .get_acl_table(std::path::Path::new("/acldata"))
+        .expect("allowed");
+    let entry = table
+        .access
+        .iter()
+        .find(|l| l.tag == crate::privileged::AclTag::NamedUser(5252))
+        .expect("entry added");
+    assert_eq!(entry.perms.to_str(), "r-x", "dir add must fuse execute from read");
+}
+
+// Files keep the literal triad — r without x is normal for a file, so the
+// fuse never runs on file targets.
+#[tokio::test]
+async fn web_acl_apply_file_add_keeps_literal_perms() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (fs, progress, token, app) = acl_test_scaffold(&tmp).await;
+    std::fs::write(tmp.path().join("aclroot").join("f.txt"), b"x").unwrap();
+    let body = "path=%2Facldata%2Ff.txt&op=add&typ=user&id=5353&perms=rw-&layer=access";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/acl-apply")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    wait_acl_progress(&progress).await;
+    let table = fs
+        .read()
+        .expect("fs lock")
+        .get_acl_table(std::path::Path::new("/acldata/f.txt"))
+        .expect("allowed");
+    let entry = table
+        .access
+        .iter()
+        .find(|l| l.tag == crate::privileged::AclTag::NamedUser(5353))
+        .expect("entry added");
+    assert_eq!(entry.perms.to_str(), "rw-", "file add must keep the literal perms");
+}
+
+// The ACL grid mirrors the POSIX matrices per node kind: directory panels
+// hide the Exec column entirely (execute fuses from Read), file panels keep
+// the full triad.
+#[tokio::test]
+async fn dir_perms_acl_grid_execute_column_matches_node_kind() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (_fs, _progress, token, app) = acl_test_scaffold(&tmp).await;
+    let real = tmp.path().join("aclroot");
+    // Seed a named entry (creates the mask too) so entry + mask rows render.
+    crate::privileged::apply_acl(
+        &real,
+        crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(6161),
+            perms: crate::privileged::AclPerms::from_str("rwx"),
+            default: false,
+        },
+    )
+    .expect("seed");
+    std::fs::write(real.join("f.txt"), b"x").unwrap();
+
+    let req = Request::builder()
+        .uri("/dir-perms?path=%2Facldata")
+        .body(Body::empty())
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let dir_html = String::from_utf8_lossy(&bytes).to_string();
+    assert!(dir_html.contains(r#"data-kind="dir""#), "dir panel is marked for the 2-col grid");
+    assert!(
+        !dir_html.contains(r#"class="abit" data-ch="x""#),
+        "dir entry rows must not render an Exec checkbox"
+    );
+    assert!(
+        !dir_html.contains(r#"class="mbit" data-ch="x""#),
+        "dir mask row must not render an Exec checkbox"
+    );
+    // Exactly one Exec box on the whole dir panel's ACL side: the ACCESS add
+    // form's file-execute grant (the Inherit form and all rows stay 2-col).
+    assert_eq!(
+        dir_html.matches(r#"class="ebit" data-ch="x""#).count(),
+        1,
+        "dir ACL Exec exists only on the access add form"
+    );
+    assert!(dir_html.contains(r#"aria-label="Files: execute (recursive reach)""#));
+    // The POSIX matrix's Exec column still offers per-file execute.
+    assert!(dir_html.contains("Files: owner execute"));
+
+    let req = Request::builder()
+        .uri("/dir-perms?path=%2Facldata%2Ff.txt")
+        .body(Body::empty())
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let file_html = String::from_utf8_lossy(&bytes).to_string();
+    assert!(file_html.contains(r#"data-kind="file""#), "file panel keeps the 3-col grid");
+    assert!(
+        file_html.contains(r#"class="ebit" data-ch="x""#),
+        "file add form keeps the Exec checkbox"
+    );
 }
 
 // The /acl-apply endpoint itself refuses paths whose mount cannot store
@@ -783,8 +1090,8 @@ async fn web_acl_apply_scope_all_sweeps_subtree() {
         .iter()
         .find(|l| l.tag == crate::privileged::AclTag::NamedUser(8181))
         .expect("nested file must carry the swept entry");
-    assert!(entry.perms.r && entry.perms.w && !entry.perms.x,
-        "capital X must not hand the plain file execute");
+    assert!(entry.perms.r && entry.perms.w && entry.perms.x,
+        "submitted x is the explicit Exec grant — files in scope take it literally");
     let sub = fs
         .read()
         .expect("fs lock")
@@ -795,6 +1102,43 @@ async fn web_acl_apply_scope_all_sweeps_subtree() {
         .iter()
         .any(|l| l.tag == crate::privileged::AclTag::NamedUser(8181) && l.perms.x),
         "directories in scope gain x");
+}
+
+// The flagship flow: Read-only grant with a recursive reach and Exec left
+// unchecked — every directory in scope takes the fused r-x (traversal),
+// every file takes exactly r-- (no execute unless the Exec box grants it).
+#[tokio::test]
+async fn web_acl_apply_recursive_exec_unchecked_files_stay_xless() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (fs, progress, token, app) = acl_test_scaffold(&tmp).await;
+    let real = tmp.path().join("aclroot");
+    std::fs::create_dir_all(real.join("sub")).unwrap();
+    std::fs::write(real.join("sub").join("f.txt"), b"x").unwrap();
+    let body = "path=%2Facldata&op=add&typ=user&id=9191&perms=r--&layer=access&scope=all";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/acl-apply")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    wait_acl_progress(&progress).await;
+    let perms_of = |p: &str| {
+        fs.read()
+            .expect("fs lock")
+            .get_acl_table(std::path::Path::new(p))
+            .expect("allowed")
+            .access
+            .iter()
+            .find(|l| l.tag == crate::privileged::AclTag::NamedUser(9191))
+            .map(|l| l.perms.to_str())
+            .expect("entry present")
+    };
+    assert_eq!(perms_of("/acldata"), "r-x", "target dir takes the fused grant");
+    assert_eq!(perms_of("/acldata/sub"), "r-x", "dirs in scope take the fused grant");
+    assert_eq!(perms_of("/acldata/sub/f.txt"), "r--", "files take the literal x-less grant");
 }
 
 // Tree rows on ACL-active shares carry the "+" marker exactly where the
@@ -1376,8 +1720,8 @@ async fn dir_perms_dir_renders_condensed_matrix_with_specials_and_traverse_note(
             && !html.contains("(this directory only)") && !html.contains(">Permission bits<"),
         "parenthetical subtitles and the redundant matrix heading are gone"
     );
-    // Apply-scope radios + the file-bits editor (hidden until a recursive
-    // scope is chosen; read/write seed from the dir matrix, exec unchecked).
+    // Apply-scope radios + the Exec column (the FILE-execute grant: one fbit
+    // per audience inside the matrix, disabled until a recursive scope).
     assert_eq!(
         html.matches(r#"name="recursive_scope""#).count(),
         3,
@@ -1385,11 +1729,16 @@ async fn dir_perms_dir_renders_condensed_matrix_with_specials_and_traverse_note(
     );
     assert!(html.contains(r#"value="single""#) && html.contains(r#"value="all""#));
     assert!(
-        html.contains(r#"class="file-opts" hidden"#),
-        "file bits stay hidden until a recursive scope: {html}"
+        !html.contains("file-opts"),
+        "the separate file-bits matrix is gone — Exec lives in the main matrix"
     );
-    assert_eq!(html.matches(r#"class="fbit""#).count(), 9, "full file triad");
-    assert!(html.contains(r#"name="file_mode""#));
+    assert_eq!(
+        html.matches(r#"class="fbit""#).count(),
+        3,
+        "one file-execute box per audience"
+    );
+    assert!(html.contains(r#"aria-label="Files: owner execute""#));
+    assert!(html.contains(r#"name="file_mode""#), "hidden file_mode field survives");
 }
 
 #[tokio::test]

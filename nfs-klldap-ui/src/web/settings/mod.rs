@@ -182,24 +182,6 @@ pub(crate) struct StructuredSettingsForm {
     pub(crate) fields: std::collections::HashMap<String, String>,
 }
 
-/// Human label for the share card chip and status dot, matching what generate
-/// emits: explicit on/off, auto promoted or held, and the unverified states.
-fn share_acl_state_label(
-    enable_acl: Option<bool>,
-    verdict: nfs_klldap_config::AclProbeVerdict,
-) -> String {
-    use nfs_klldap_config::AclProbeVerdict as V;
-    match (enable_acl, verdict) {
-        (Some(false), _) => "off",
-        (Some(true), V::Capable) => "on",
-        (Some(true), V::Inconclusive) => "on (unverified)",
-        (Some(true), V::Incapable) => "on (unsupported)",
-        (None, V::Capable) => "auto (on)",
-        (None, _) => "auto (off)",
-    }
-    .to_string()
-}
-
 // Form items from modular settings_form
 use super::settings_form::{ShareTemplateRow, collect_shares_from_structured_form, has_explicit, get_explicit_str, share_pseudo_path_explicit_in_raw, share_pseudo_path_from_raw, infer_profile_from_prefs};
 
@@ -234,21 +216,9 @@ pub(crate) fn build_settings_template(
         .iter()
         .enumerate()
         .map(|(idx, s)| {
-            let outcome = state.acl_caps.verdict_for_snapshot(
-                &snap,
-                std::path::Path::new(&cfg.serve_path_for(s)),
-                std::path::Path::new(&cfg.serve_path_for(s)),
-                s.enable_acl == Some(false),
-                false,
-            );
-            let caps = &outcome.caps;
-            let eff = nfs_klldap_config::compute_effective_flags_probed(s, caps, outcome.verdict);
-            let acl_probed = match outcome.verdict {
-                nfs_klldap_config::AclProbeVerdict::Capable => "capable",
-                nfs_klldap_config::AclProbeVerdict::Incapable => "incapable",
-                nfs_klldap_config::AclProbeVerdict::Inconclusive => "unverified",
-            };
-            let acl_state_label = share_acl_state_label(s.enable_acl, outcome.verdict);
+            // One classification for every surface: the same helper drives the
+            // Share Permissions cards and the client manifest.
+            let status = super::acl_status::share_acl_status(&state.acl_caps, &snap, &cfg, s);
             ShareTemplateRow {
             idx,
             name: s.name.clone(),
@@ -261,7 +231,7 @@ pub(crate) fn build_settings_template(
             } else {
                 nfs_klldap_config::derive_share_pseudo(s)
             },
-            pseudo_editable: eff.enable_acl,
+            pseudo_editable: status.effective_enable_acl,
             effective_pseudo: nfs_klldap_config::derive_share_pseudo(s),
             container_path: s.container_path.clone(),
             security: s.security.clone().unwrap_or_default(),
@@ -277,13 +247,10 @@ pub(crate) fn build_settings_template(
                 Some(false) => "false".to_string(),
                 None => "auto".to_string(),
             },
-            // Same rule as Share Permissions / Ganesha, now driven by the live
-            // probe: the export serves ACLs when the resolved mode is on and the
-            // filesystem is not on the denylist.
-            effective_acl_capable: eff.enable_acl && caps.acl_capable,
+            effective_acl_capable: status.effective_acl_capable,
             // Probe verdict + human label for the card chip and the JS status dot.
-            acl_probed: acl_probed.to_string(),
-            acl_state_label,
+            acl_probed: status.probed.to_string(),
+            acl_state_label: status.state_label,
             manage_gids: match s.manage_gids {
                 Some(true) => "true".to_string(),
                 Some(false) => "false".to_string(),
@@ -301,7 +268,18 @@ pub(crate) fn build_settings_template(
                 &s.name,
             )
             .map(|w| w.display_message()),
-            fs_warning: nfs_klldap_config::share_fs_warning_message_snapshot(&cfg, s, &snap),
+            // Limited serve root first; otherwise flag ACL-incapable submounts
+            // hiding inside an ACL-serving tree (per-share model: a divergent
+            // submount is a config-health warning, not a per-directory state).
+            fs_warning: nfs_klldap_config::share_fs_warning_message_snapshot(&cfg, s, &snap)
+                .or_else(|| {
+                    nfs_klldap_config::share_divergent_submount_warning_snapshot(
+                        &cfg,
+                        s,
+                        &snap,
+                        status.effective_enable_acl,
+                    )
+                }),
         }
         })
         .collect();

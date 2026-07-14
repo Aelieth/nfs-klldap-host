@@ -546,9 +546,10 @@
     }
     markDirty();
   });
-  // Mirrors the server-side share_acl_state_label / effective_acl_capable so the
-  // card matches what generate emits. The write-probe verdict is a property of
-  // the filesystem (data-acl-probed), independent of the enable_acl selection.
+  // Mirrors web/acl_status.rs (share_acl_state_label / effective_acl_capable) —
+  // the single Rust helper behind every surface; keep in lockstep with it. The
+  // write-probe verdict is a property of the filesystem (data-acl-probed),
+  // independent of the enable_acl selection.
   function aclStateLabel(enableVal, probed) {
     if (enableVal === 'false') return 'off';
     if (enableVal === 'true') {

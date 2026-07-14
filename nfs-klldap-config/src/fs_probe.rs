@@ -69,6 +69,13 @@ pub fn probe_from_mountinfo(content: &str, path: &Path) -> FsCapabilities {
     probe_from_mountinfo_with_root(content, path).0
 }
 
+/// One ACL-incapable mount discovered strictly below a share serve root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AclIncapableMount {
+    pub mount_point: String,
+    pub fstype: String,
+}
+
 /// One mountinfo read shared across a request or reprobe pass.
 /// Read precedence per capture matches the per-call probes: an explicit
 /// fixture path first, then NFS_KLLDAP_MOUNTINFO_PATH, then
@@ -104,6 +111,34 @@ impl MountinfoSnapshot {
     /// Caps only; None when no mountinfo was readable.
     pub fn probe(&self, path: &Path) -> Option<FsCapabilities> {
         self.probe_with_root(path).map(|(caps, _)| caps)
+    }
+
+    /// Mounts strictly below `root` whose filesystem cannot store POSIX ACLs.
+    /// The root's own mount never matches (its class IS the share verdict), so
+    /// any hit means the share tree mixes capability classes. Overmounts
+    /// collapse to the last mountinfo entry per mount point (the visible one);
+    /// unreadable mountinfo yields an empty list.
+    pub fn acl_incapable_mounts_under(&self, root: &Path) -> Vec<AclIncapableMount> {
+        let Some(content) = self.content.as_deref() else {
+            return Vec::new();
+        };
+        let root_norm = normalize_path(&root.to_string_lossy());
+        let mut visible: std::collections::BTreeMap<String, MountEntry> = Default::default();
+        for e in parse_mountinfo(content) {
+            visible.insert(normalize_path(&e.mount_point), e);
+        }
+        visible
+            .into_iter()
+            .filter(|(mp, e)| {
+                mp != &root_norm
+                    && path_under_mount(mp, &root_norm)
+                    && !acl_capable_from_mount(&e.fstype, &e.super_options, &e.mount_source)
+            })
+            .map(|(mp, e)| AclIncapableMount {
+                mount_point: mp,
+                fstype: e.fstype,
+            })
+            .collect()
     }
 }
 
@@ -506,6 +541,34 @@ mod tests {
         let ntfs = probe_from_mountinfo(FIXTURE, Path::new("/export/ntfs"));
         assert_eq!(ntfs.fstype, "fuseblk");
         assert!(!ntfs.acl_capable);
+    }
+
+    #[test]
+    fn incapable_submounts_exclude_the_root_mount_itself() {
+        let snap = MountinfoSnapshot {
+            content: Some(FIXTURE.to_string()),
+        };
+        // /export is itself incapable (btrfs+noacl) but is the root, so only
+        // the strictly-below vfat and fuseblk mounts count, sorted by path.
+        let got: Vec<(String, String)> = snap
+            .acl_incapable_mounts_under(Path::new("/export"))
+            .into_iter()
+            .map(|m| (m.mount_point, m.fstype))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("/export/ntfs".to_string(), "fuseblk".to_string()),
+                ("/export/usb".to_string(), "vfat".to_string()),
+            ]
+        );
+        assert!(snap
+            .acl_incapable_mounts_under(Path::new("/export/movies"))
+            .is_empty());
+        let unreadable = MountinfoSnapshot { content: None };
+        assert!(unreadable
+            .acl_incapable_mounts_under(Path::new("/export"))
+            .is_empty());
     }
 
     #[test]

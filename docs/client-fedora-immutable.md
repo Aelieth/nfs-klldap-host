@@ -86,6 +86,12 @@ The path after the colon is the share's **Pseudo Path** (`pseudo_path`, defaults
 server.example.com:/media  /var/mnt/media  nfs4  users,exec,vers=4.2,sec=krb5p,_netdev,noauto,nofail,x-systemd.automount,x-gvfs-show,x-gvfs-name=media,x-gvfs-symbolic-icon=folder-remote-symbolic  0 0
 ```
 
+No ACL-related mount option exists or is needed: ACL and Non-ACL shares mount
+identically on NFSv4.2 (`noacl` is an NFSv3 NFSACL-sideband knob, inert here).
+The share's ACL class is server-declared — the WebUI publishes it at
+`GET /client-manifest.json` and setup-script v5.10 consumes it
+(`--manifest URL|FILE`) for the share list and post-mount guidance.
+
 The setup script emits a fuller option set. The pieces that matter:
 
 - **`users,exec`** — a file-manager click (GNOME Files / KDE Dolphin) presents an

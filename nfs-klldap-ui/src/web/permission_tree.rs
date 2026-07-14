@@ -241,9 +241,14 @@ struct ShareInfo {
     pub squash_label: String,
     pub cache_profile: String,
     pub warning: Option<String>,
-    /// True when the share actually serves ACLs (operator opted in via enable_acl AND the
-    /// serve-path filesystem can honor them). Drives the share-card status dot.
+    /// True when the share actually serves ACLs (resolved enable_acl — explicit or
+    /// auto-promoted by the live write probe — AND a capable filesystem). Same rule as
+    /// the Settings rows and generate; drives the share-card status dot.
     pub acl_capable: bool,
+    /// Probe verdict string ("capable"/"incapable"/"unverified") for data-acl-probed.
+    pub acl_probed: &'static str,
+    /// Chip label ("on", "auto (on)", …) matching the Settings card chip.
+    pub acl_state_label: String,
 }
 
 /// Panel body for the detached Permissions view (POSIX matrix + ACL/xattr), served by /dir-perms.
@@ -363,13 +368,8 @@ async fn friendly_group_name(lldap: &Ldap, gid: u32) -> String {
         gid.to_string()
     }
 }
-/// ACL capability of a host_path: (supported, pill, short reason, long reason).
-/// Auto semantics (0.9.90): explicit true/false wins; unset turns ACL on only
-/// when the serve path passes the write round-trip probe — the same decision
-/// generate makes, so the panel mirrors the export. Prefers the most specific
-/// (longest host_path) matching share so nested shares stay independent.
-/// Resolved ACL editor gate for one node: whether the editor is live, the pill
-/// label and its colour class, and the short/long reasons the panel shows.
+/// Resolved ACL editor gate: whether the editor is live, the pill label and
+/// its colour class, and the short/long reasons the panel shows.
 pub(crate) struct AclGateView {
     pub editable: bool,
     pub pill: String,
@@ -379,30 +379,69 @@ pub(crate) struct AclGateView {
     pub long: String,
 }
 
-fn acl_capability_for_path(state: &AppState, host_path: &std::path::Path) -> AclGateView {
-    let cfg = state.config.read().expect("config lock poisoned");
-    let best = cfg
-        .shares
+/// Prefers the most specific (longest host_path) matching share so nested
+/// shares stay independent.
+fn best_share_for<'a>(
+    cfg: &'a nfs_klldap_config::NfsKlldapConfig,
+    host_path: &std::path::Path,
+) -> Option<&'a nfs_klldap_config::Share> {
+    cfg.shares
         .iter()
         .filter(|s| host_path.starts_with(&s.host_path) || host_path == s.host_path.as_path())
-        .max_by_key(|s| s.host_path.as_os_str().len());
+        .max_by_key(|s| s.host_path.as_os_str().len())
+}
 
-    let Some(s) = best else {
-        return AclGateView {
-            editable: false,
-            pill: "off".into(),
-            pill_class: "off",
-            short: "Not under a configured share.".into(),
-            long: String::new(),
-        };
+fn gate_outside_shares() -> AclGateView {
+    AclGateView {
+        editable: false,
+        pill: "off".into(),
+        pill_class: "off",
+        short: "Not under a configured share.".into(),
+        long: String::new(),
+    }
+}
+
+/// Share-level gate for the UI surfaces (panel, tree "+" markers): classifies
+/// by the share serve-root verdict alone — strictly per share, never per
+/// directory. Auto semantics (0.9.90): explicit true/false wins; unset turns
+/// ACL on only when the serve path passes the write round-trip probe — the
+/// same decision generate makes, so the panel mirrors the export.
+fn share_acl_gate(state: &AppState, host_path: &std::path::Path) -> AclGateView {
+    let cfg = state.config.read().expect("config lock poisoned");
+    let Some(s) = best_share_for(&cfg, host_path) else {
+        return gate_outside_shares();
+    };
+    let snap =
+        nfs_klldap_config::MountinfoSnapshot::capture(state.fs_probe_mountinfo_path.as_deref());
+    let status = super::acl_status::share_acl_status(&state.acl_caps, &snap, &cfg, s);
+    let warn = nfs_klldap_config::share_fs_warning_message_snapshot(&cfg, s, &snap)
+        .unwrap_or_default();
+    let join = |base: String| {
+        let mut long = base;
+        if !warn.is_empty() {
+            long.push(' ');
+            long.push_str(&warn);
+        }
+        long
+    };
+    share_level_decision(s.enable_acl, status.verdict, &join)
+}
+
+/// /acl-apply endpoint gate: the share-level decision narrowed by the SELECTED
+/// node's own mount. The UI classifies strictly per share; this endpoint alone
+/// re-checks the node so an ACL write can never land on a divergent
+/// (ACL-incapable or unverified) submount — the server-side 422 backstop.
+fn acl_apply_gate(state: &AppState, host_path: &std::path::Path) -> AclGateView {
+    let cfg = state.config.read().expect("config lock poisoned");
+    let Some(s) = best_share_for(&cfg, host_path) else {
+        return gate_outside_shares();
     };
     let snap =
         nfs_klldap_config::MountinfoSnapshot::capture(state.fs_probe_mountinfo_path.as_deref());
     let skip = s.enable_acl == Some(false);
 
     // The share's effective ACL mode is decided at its serve ROOT — that is what
-    // generate emits Disable_ACL from. The editor must obey it even when the
-    // selected node sits on a more-capable submount.
+    // generate emits Disable_ACL from.
     let serve = std::path::PathBuf::from(cfg.serve_path_for(s));
     let root = state
         .acl_caps
@@ -645,17 +684,7 @@ pub(crate) async fn index(
         .iter()
         .enumerate()
         .map(|(idx, s)| {
-            let pseudo = s
-                .pseudo_path
-                .as_deref()
-                .map(|p| {
-                    if p.starts_with('/') {
-                        p.to_string()
-                    } else {
-                        format!("/{}", p)
-                    }
-                })
-                .unwrap_or_else(|| format!("/{}", s.name));
+            let pseudo = nfs_klldap_config::derive_share_pseudo(s);
             let nfs_path = format!("{}:{}", server, pseudo);
             let access = if s.rw.unwrap_or(true) {
                 "RW".to_string()
@@ -681,9 +710,11 @@ pub(crate) async fn index(
                 &s.name,
             )
             .map(|w| w.display_message());
-            let fs_limited = nfs_klldap_config::share_fs_acl_limited_snapshot(&cfg, s, &snap);
-            // ACL-capable only when the operator opted in AND the serve-path FS can honor ACLs.
-            let acl_capable = s.enable_acl == Some(true) && !fs_limited;
+            // Same probed classification as the Settings rows: the old inline
+            // `enable_acl == Some(true)` rule could never see auto promotion, so
+            // every default (auto) share rendered Non-ACL here while Settings
+            // showed it as ACL.
+            let status = super::acl_status::share_acl_status(&state.acl_caps, &snap, &cfg, s);
             ShareInfo {
                 name: s.name.clone(),
                 nfs_path,
@@ -692,7 +723,9 @@ pub(crate) async fn index(
                 squash_label,
                 cache_profile,
                 warning,
-                acl_capable,
+                acl_capable: status.effective_acl_capable,
+                acl_probed: status.probed,
+                acl_state_label: status.state_label,
             }
         })
         .collect();
@@ -725,7 +758,7 @@ pub(crate) async fn tree_fragment(
         let mut children: Vec<EntryView> = entries.into_iter().map(EntryView::from_fs_entry).collect();
         // The "+" marker runs one batched getfacl per fragment and only on
         // ACL-active shares — NOACL trees pay nothing.
-        if acl_capability_for_path(&state, path).editable {
+        if share_acl_gate(&state, path).editable {
             let names: Vec<String> = children.iter().map(|c| c.name.clone()).collect();
             let extended = fs.extended_acl_names(path, &names);
             for c in &mut children {
@@ -852,7 +885,9 @@ pub(crate) async fn dir_perms(
         };
     }
 
-    let gate = acl_capability_for_path(&state, host);
+    // Panel state is the share-level classification; only /acl-apply re-checks
+    // the selected node's own mount (422 backstop on divergent submounts).
+    let gate = share_acl_gate(&state, host);
     let acl_supported = gate.editable;
     let acl_pill = gate.pill;
     let acl_pill_class = gate.pill_class;
@@ -1427,8 +1462,9 @@ pub(crate) async fn acl_apply(
     // The capability decision gates the endpoint itself, not just the UI:
     // NOACL/incapable paths refuse ACL mutations outright (matches the
     // default-on-file 422 pattern), so a stale panel or hand-built POST can
-    // never write ACLs the export model does not carry.
-    let gate = acl_capability_for_path(&state, std::path::Path::new(&form.path));
+    // never write ACLs the export model does not carry. This is the one place
+    // that still checks the selected node's mount, not just the share.
+    let gate = acl_apply_gate(&state, std::path::Path::new(&form.path));
     let (acl_ok, acl_short) = (gate.editable, gate.short);
     if !acl_ok {
         return Ok((
@@ -1504,16 +1540,33 @@ pub(crate) async fn acl_apply(
     };
 
     let dflag = if default_layer { "-d " } else { "" };
-    let (modification, cmd) = if op == "mask" {
+    // Directory targets fuse r→x exactly like the POSIX dir matrix: the dir
+    // editor's Exec box is the FILE-execute grant for recursive reaches, so
+    // the selected dir (and dirs in scope) take the fused perms while files
+    // in scope take the literal submitted triad — x only when Exec granted.
+    let fuse_dir = |p: crate::privileged::AclPerms| {
+        if node_is_dir == Some(true) { p.dir_r_implies_x() } else { p }
+    };
+    let (modification, file_modification, cmd) = if op == "mask" {
         let pstr = if form.perms.trim().is_empty() { "r--".to_string() } else { form.perms.trim().to_string() };
-        let perms = crate::privileged::AclPerms::from_str(&pstr);
+        let lit = crate::privileged::AclPerms::from_str(&pstr);
+        let perms = fuse_dir(lit.clone());
         let c = format!("setfacl {}-m m::{} {}", dflag, perms.to_str(), form.path);
-        (crate::privileged::AclModification::SetMask { perms, default: default_layer }, c)
+        (
+            crate::privileged::AclModification::SetMask { perms, default: default_layer },
+            crate::privileged::AclModification::SetMask { perms: lit, default: default_layer },
+            c,
+        )
     } else if op == "add" || op == "edit" || op == "set" {
         let pstr = if form.perms.trim().is_empty() { "r--".to_string() } else { form.perms.trim().to_string() };
-        let perms = crate::privileged::AclPerms::from_str(&pstr);
+        let lit = crate::privileged::AclPerms::from_str(&pstr);
+        let perms = fuse_dir(lit.clone());
         let c = format!("setfacl {}-m {}:{}:{} {}", dflag, if is_user {"u"} else {"g"}, id, perms.to_str(), form.path);
-        (crate::privileged::AclModification::Set { kind, perms, default: default_layer }, c)
+        (
+            crate::privileged::AclModification::Set { kind: kind.clone(), perms, default: default_layer },
+            crate::privileged::AclModification::Set { kind, perms: lit, default: default_layer },
+            c,
+        )
     } else if op == "delete" || op == "del" {
         let mut ks: Vec<crate::privileged::AclEntryKind> = vec![];
         if !form.selected.trim().is_empty() {
@@ -1542,7 +1595,8 @@ pub(crate) async fn acl_apply(
             }).collect();
             format!("setfacl {}-x {} {}", dflag, specs.join(","), form.path)
         };
-        (crate::privileged::AclModification::Remove { kinds: ks, default: default_layer }, c)
+        let rm = crate::privileged::AclModification::Remove { kinds: ks, default: default_layer };
+        (rm.clone(), rm, c)
     } else {
         return Ok((
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1552,6 +1606,10 @@ pub(crate) async fn acl_apply(
     };
     let cmd = if scope == crate::fs::ApplyScope::DirOnly {
         cmd
+    } else if let crate::privileged::AclModification::Set { ref perms, .. } = file_modification {
+        // Name the file-side spec in the Apply Log: dirs take the fused
+        // perms shown in the main spec, files exactly this triad.
+        format!("{} [scope: {}, files: {}]", cmd, form.scope.trim(), perms.to_str())
     } else {
         format!("{} [scope: {}]", cmd, form.scope.trim())
     };
@@ -1572,6 +1630,7 @@ pub(crate) async fn acl_apply(
     let pth = form.path.clone();
     let prog = progress.clone();
     let modf = modification;
+    let file_modf = file_modification;
     let op_for_log = op.clone();
     tokio::spawn(async move {
         if scope == crate::fs::ApplyScope::DirOnly {
@@ -1632,9 +1691,10 @@ pub(crate) async fn acl_apply(
             let fs = fs.clone();
             let pth = pth.clone();
             let modf = modf.clone();
+            let file_modf = file_modf.clone();
             let prog2 = prog.clone();
             tokio::task::spawn_blocking(move || {
-                fs.apply_acl_with_progress(std::path::Path::new(&pth), &modf, scope, &prog2)
+                fs.apply_acl_with_progress(std::path::Path::new(&pth), &modf, &file_modf, scope, &prog2)
             })
             .await
         };
@@ -1728,12 +1788,15 @@ mod acl_capability_tests {
         assert!(g.long.contains("source_path"), "long names the staging escape: {}", g.long);
     }
 
+    // The node-override matrix below is the /acl-apply 422 backstop only: the
+    // panel and tree classify strictly per share (share_acl_gate never passes
+    // a node verdict), so acl_apply_gate is the sole caller that can hit it.
     #[test]
     fn capable_share_blocks_incapable_submount() {
-        // Share serves ACLs (root Capable) but the selected node is on a vfat
-        // child mount: editing must be blocked with a submount reason.
+        // Share serves ACLs (root Capable) but the write target is on a vfat
+        // child mount: the apply gate must refuse with a submount reason.
         let g = acl_capability_decision(None, V::Capable, Some(V::Incapable), "");
-        assert!(!g.editable, "an incapable submount must block editing");
+        assert!(!g.editable, "an incapable submount must block the apply gate");
         assert_eq!(g.pill_class, "off");
         assert!(g.short.contains("submount"), "short names the submount: {}", g.short);
     }
@@ -1748,7 +1811,7 @@ mod acl_capability_tests {
     #[test]
     fn capable_share_allows_capable_submount() {
         let g = acl_capability_decision(None, V::Capable, Some(V::Capable), "");
-        assert!(g.editable, "a capable submount must not block editing");
+        assert!(g.editable, "a capable submount must not block the apply gate");
         assert_eq!(g.pill, "auto");
     }
 

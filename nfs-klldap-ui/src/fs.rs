@@ -328,7 +328,8 @@ impl FsManager {
     pub fn apply_acl_with_progress(
         &self,
         path: &Path,
-        modification: &crate::privileged::AclModification,
+        dir_modification: &crate::privileged::AclModification,
+        file_modification: &crate::privileged::AclModification,
         scope: ApplyScope,
         progress: &ApplyProgress,
     ) -> Result<ApplyResult, String> {
@@ -339,22 +340,26 @@ impl FsManager {
         }
         let real = self.host_path_to_container_path(&normalized)?;
         let default_layer = matches!(
-            modification,
+            dir_modification,
             crate::privileged::AclModification::Set { default: true, .. }
                 | crate::privileged::AclModification::Remove { default: true, .. }
                 | crate::privileged::AclModification::SetMask { default: true, .. }
         );
-        // Exact perms on the selected node; capital-X only when reaching out.
-        let upper_x = scope != ApplyScope::DirOnly;
+        // Directories and files carry their own spec: dirs arrive fused
+        // (r→x is the traversal bit), files carry the panel's explicit Exec
+        // choice — the split replaced the old capital-X conditional grant.
         let opts = ApplyOptions { scope, continue_on_error: true, ..Default::default() };
 
         let mut result = ApplyResult::default();
-        let mut chunk: Vec<PathBuf> = Vec::with_capacity(CHUNK);
-        let flush = |chunk: &mut Vec<PathBuf>, result: &mut ApplyResult| {
+        let mut dir_chunk: Vec<PathBuf> = Vec::with_capacity(CHUNK);
+        let mut file_chunk: Vec<PathBuf> = Vec::with_capacity(CHUNK);
+        let flush = |chunk: &mut Vec<PathBuf>,
+                     m: &crate::privileged::AclModification,
+                     result: &mut ApplyResult| {
             if chunk.is_empty() {
                 return;
             }
-            match crate::privileged::apply_acl_many(chunk, modification, upper_x) {
+            match crate::privileged::apply_acl_many(chunk, m) {
                 Ok(()) => {
                     result.changed += chunk.len();
                     progress.changed.fetch_add(chunk.len(), Ordering::Relaxed);
@@ -408,12 +413,20 @@ impl FsManager {
             }
             *progress.last_path.lock().expect("last_path mutex poisoned") =
                 Some(entry.path().display().to_string());
-            chunk.push(entry.path().to_path_buf());
-            if chunk.len() >= CHUNK {
-                flush(&mut chunk, &mut result);
+            if entry.file_type().is_dir() {
+                dir_chunk.push(entry.path().to_path_buf());
+                if dir_chunk.len() >= CHUNK {
+                    flush(&mut dir_chunk, dir_modification, &mut result);
+                }
+            } else {
+                file_chunk.push(entry.path().to_path_buf());
+                if file_chunk.len() >= CHUNK {
+                    flush(&mut file_chunk, file_modification, &mut result);
+                }
             }
         }
-        flush(&mut chunk, &mut result);
+        flush(&mut dir_chunk, dir_modification, &mut result);
+        flush(&mut file_chunk, file_modification, &mut result);
         Ok(result)
     }
 
@@ -1114,11 +1127,13 @@ mod tests {
             "named entries must be gone after delete");
     }
 
-    // Recursive ACL semantics: capital-X grants on files only where something
-    // already executes; default-layer recursion touches directories only;
-    // targeted remove sweeps the whole scope (absent entries tolerated).
+    // Recursive ACL semantics: dirs and files carry their own spec — dirs
+    // take the fused (r→x) perms, files take the panel's literal Exec choice
+    // (no execute unless granted, even on already-executable files);
+    // default-layer recursion touches directories only; targeted remove
+    // sweeps the whole scope (absent entries tolerated).
     #[test]
-    fn acl_recursive_apply_capital_x_and_default_dir_only() {
+    fn acl_recursive_split_specs_dirs_fused_files_literal() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("aclrec");
         std::fs::create_dir_all(root.join("sub")).unwrap();
@@ -1131,34 +1146,59 @@ mod tests {
         let fs = FsManager::new(cfg);
         let prog = ApplyProgress::default();
 
-        // Access-layer subtree grant with x: dirs get x, plain files don't.
-        let m = crate::privileged::AclModification::Set {
+        // Exec unchecked: dirs get the fused rwx, every file exactly rw-.
+        let dir_m = crate::privileged::AclModification::Set {
             kind: crate::privileged::AclEntryKind::User(4242),
             perms: crate::privileged::AclPerms::from_str("rwx"),
             default: false,
         };
+        let file_m = crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(4242),
+            perms: crate::privileged::AclPerms::from_str("rw-"),
+            default: false,
+        };
         let total = fs
-            .count_acl_applicable_with_live(logical, &m, ApplyScope::All, &prog)
+            .count_acl_applicable_with_live(logical, &dir_m, ApplyScope::All, &prog)
             .expect("count");
         assert_eq!(total, 4, "root + sub + 2 files");
         let res = fs
-            .apply_acl_with_progress(logical, &m, ApplyScope::All, &prog)
+            .apply_acl_with_progress(logical, &dir_m, &file_m, ApplyScope::All, &prog)
             .expect("apply");
         assert_eq!(res.changed, 4, "all entries changed: {:?}", res.errors);
         assert!(res.errors.is_empty(), "{:?}", res.errors);
 
-        let entry_perms = |p: &str| -> crate::privileged::AclPerms {
+        let entry_perms = |p: &str, id: u32| -> crate::privileged::AclPerms {
             let t = crate::privileged::get_acl_table(&root.join(p)).expect("table");
             t.access
                 .iter()
-                .find(|l| l.tag == crate::privileged::AclTag::NamedUser(4242))
+                .find(|l| l.tag == crate::privileged::AclTag::NamedUser(id))
                 .map(|l| l.perms.clone())
                 .expect("entry present")
         };
-        assert!(entry_perms("sub").x, "directories always gain x");
-        assert!(!entry_perms("plain.txt").x, "capital X must not hand a plain file execute");
-        assert!(entry_perms("plain.txt").r && entry_perms("plain.txt").w);
-        assert!(entry_perms("sub/run.sh").x, "already-executable file keeps x in the grant");
+        assert!(entry_perms("sub", 4242).x, "directories always gain x");
+        assert!(!entry_perms("plain.txt", 4242).x, "file spec without Exec grants no execute");
+        assert!(entry_perms("plain.txt", 4242).r && entry_perms("plain.txt", 4242).w);
+        assert!(
+            !entry_perms("sub/run.sh", 4242).x,
+            "even an executable file takes the literal file spec — Exec is an explicit grant"
+        );
+
+        // Exec checked: the file spec carries x, so every file in scope gets it.
+        let dir_m2 = crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(4343),
+            perms: crate::privileged::AclPerms::from_str("r-x"),
+            default: false,
+        };
+        let file_m2 = crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(4343),
+            perms: crate::privileged::AclPerms::from_str("r-x"),
+            default: false,
+        };
+        let prog_x = ApplyProgress::default();
+        fs.apply_acl_with_progress(logical, &dir_m2, &file_m2, ApplyScope::All, &prog_x)
+            .expect("apply with exec");
+        assert!(entry_perms("plain.txt", 4343).x, "Exec granted reaches plain files");
+        assert!(entry_perms("sub/run.sh", 4343).x);
 
         // Default-layer subtree grant: directories only.
         let md = crate::privileged::AclModification::Set {
@@ -1172,7 +1212,7 @@ mod tests {
             .expect("count default");
         assert_eq!(total_d, 2, "default-layer scope covers the two directories only");
         let res_d = fs
-            .apply_acl_with_progress(logical, &md, ApplyScope::All, &prog2)
+            .apply_acl_with_progress(logical, &md, &md, ApplyScope::All, &prog2)
             .expect("apply default");
         assert_eq!(res_d.changed, 2);
         let sub_table = crate::privileged::get_acl_table(&root.join("sub")).expect("t");
@@ -1197,7 +1237,7 @@ mod tests {
         };
         let prog3 = ApplyProgress::default();
         let res_r = fs
-            .apply_acl_with_progress(logical, &mr, ApplyScope::All, &prog3)
+            .apply_acl_with_progress(logical, &mr, &mr, ApplyScope::All, &prog3)
             .expect("remove");
         assert!(res_r.errors.is_empty(), "absent entries must not error: {:?}", res_r.errors);
         for p in ["sub", "plain.txt", "sub/run.sh"] {
@@ -1220,14 +1260,19 @@ mod tests {
         let logical = Path::new("/aclsingle");
         let cfg = make_test_acl_config_for(&root, logical.to_str().unwrap());
         let fs = FsManager::new(cfg);
-        let m = crate::privileged::AclModification::Set {
+        let m_dir = crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(5252),
+            perms: crate::privileged::AclPerms::from_str("r-x"),
+            default: false,
+        };
+        let m_file = crate::privileged::AclModification::Set {
             kind: crate::privileged::AclEntryKind::User(5252),
             perms: crate::privileged::AclPerms::from_str("r--"),
             default: false,
         };
         let prog = ApplyProgress::default();
         let res = fs
-            .apply_acl_with_progress(logical, &m, ApplyScope::ImmediateFiles, &prog)
+            .apply_acl_with_progress(logical, &m_dir, &m_file, ApplyScope::ImmediateFiles, &prog)
             .expect("apply");
         assert_eq!(res.changed, 2, "root dir + direct file only: {:?}", res.errors);
         let has = |p: &str| {

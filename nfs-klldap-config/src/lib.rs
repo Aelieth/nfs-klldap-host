@@ -59,7 +59,8 @@ pub use fs_probe::{
     compute_read_access_policy_emit, normalize_path, probe_from_mountinfo,
     probe_from_mountinfo_with_root, probe_fs_capabilities, probe_fs_capabilities_with_root,
     serve_path_posix_acl_supported, serve_path_posix_acl_write_probe, verdict_from_caps,
-    AclProbeVerdict, EffectiveShareFlags, MountinfoSnapshot, ReadAccessPolicyEmit, FsCapabilities,
+    AclIncapableMount, AclProbeVerdict, EffectiveShareFlags, MountinfoSnapshot,
+    ReadAccessPolicyEmit, FsCapabilities,
 };
 pub use ganesha_log_contract::{
     acl_notsupp_diagnosis_signatures, acl_notsupp_fixture_path, classify_notsupp_failure_path,
@@ -97,8 +98,8 @@ pub fn ldap_bind_configured(cfg: &NfsKlldapConfig) -> bool {
 }
 pub use fs_warnings::{
     any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warning,
-    limited_fs_warning_settings_ui, limited_fs_warnings_only, share_fs_acl_limited,
-    share_fs_acl_limited_snapshot, share_fs_acl_limited_with_mountinfo,
+    limited_fs_warning_settings_ui, limited_fs_warnings_only, share_divergent_submount_warning_snapshot,
+    share_fs_acl_limited, share_fs_acl_limited_snapshot, share_fs_acl_limited_with_mountinfo,
     share_fs_warning_message, share_fs_warning_message_snapshot,
     share_fs_warning_message_with_mountinfo, FsShareWarning, PosixOnlyPolicy,
 };

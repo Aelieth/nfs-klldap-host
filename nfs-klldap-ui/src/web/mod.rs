@@ -22,9 +22,11 @@ use tower_http::normalize_path::NormalizePathLayer;
 use crate::{auth::AuthManager, config::Config, fs::FsManager};
 
 pub mod acl_capability;
+pub(crate) mod acl_status;
 pub mod acl_watch;
 mod auth;
 mod keytab;
+mod manifest;
 mod permission_tree;
 mod settings_form;
 mod settings;
@@ -173,6 +175,9 @@ async fn require_setup_complete(
         || path == "/setup-password"
         || path == "/restart-status"
         || path == "/logout"
+        // Machine endpoint: clients need JSON even pre-setup (it then reports
+        // the empty share set), never a wizard redirect.
+        || path == "/client-manifest.json"
     {
         return next.run(req).await;
     }
@@ -198,6 +203,9 @@ pub fn router(state: AppState) -> Router {
         .route("/logout", get(logout).post(logout))
         // Public status for the post-restart poller (no auth required).
         .route("/restart-status", get(restart_status))
+        // Public per-share ACL/Non-ACL manifest for the client setup script
+        // (clients cannot detect the class over NFSv4; the host declares it).
+        .route("/client-manifest.json", get(manifest::client_manifest))
         // Public first-run setup wizard (replaces the old terminal TUI).
         .route("/setup", get(setup::setup_redirect))
         .route("/setup/1", get(setup::setup_step1))

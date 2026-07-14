@@ -8,7 +8,9 @@
 {# Columnar ACL rows for one category (users or groups) of one layer. A ✓ shows
    the entry as granted; a dimmed ✓ marks bits the mask withholds (row hover
    names the effective triad). Rows are display + selection targets — all
-   mutation goes through the pane's Add/Remove/Modify editor. #}
+   mutation goes through the pane's Add/Remove/Modify editor. Directory panels
+   hide the Exec column like the POSIX dir matrix: execute is the traversal
+   bit, fused from Read server-side on every dir apply. #}
 {% macro acl_rows(kind, entries, layer) %}
         {% for e in entries %}
         <div class="acl-row" data-type="{{ kind }}" data-id="{{ e.id }}" data-layer="{{ layer }}"
@@ -17,7 +19,7 @@
           <span class="acl-name">{{ e.name }} <span class="id">{{ e.id }}</span></span>
           <span class="acl-cell{% if e.r && !e.eff_r %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="r" aria-label="read" {% if e.r %}checked{% endif %} disabled></span>
           <span class="acl-cell{% if e.w && !e.eff_w %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="w" aria-label="write" {% if e.w %}checked{% endif %} disabled></span>
-          <span class="acl-cell{% if e.x && !e.eff_x %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="x" aria-label="execute" {% if e.x %}checked{% endif %} disabled></span>
+          {% if !is_dir %}<span class="acl-cell{% if e.x && !e.eff_x %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="x" aria-label="execute" {% if e.x %}checked{% endif %} disabled></span>{% endif %}
         </div>
         {% endfor %}
 {% endmacro %}
@@ -27,8 +29,8 @@
 {% macro acl_pane(layer, users_list, groups_list, mask_opt, active) %}
   <div class="acl-pane" data-layer="{{ layer }}" {% if !active %}hidden{% endif %}>
     <div class="acl-actions">
-      <button type="button" class="btn acl-act" data-act="add-user" title="Add a user entry: pick the user, set Read/Write/Exec, choose the reach, then Apply.">Add User</button>
-      <button type="button" class="btn acl-act" data-act="add-group" title="Add a group entry: pick the group, set Read/Write/Exec, choose the reach, then Apply.">Add Group</button>
+      <button type="button" class="btn acl-act" data-act="add-user" title="Add a user entry: pick the user, set Read/Write{% if !is_dir %}/Exec{% endif %}, choose the reach, then Apply.">Add User</button>
+      <button type="button" class="btn acl-act" data-act="add-group" title="Add a group entry: pick the group, set Read/Write{% if !is_dir %}/Exec{% endif %}, choose the reach, then Apply.">Add Group</button>
       <button type="button" class="btn acl-act" data-act="remove" disabled title="Remove the selected entry (click a row's name to select).">Remove</button>
     </div>
     {# Add-mode form: sits right under the Add buttons that summon it, above the list.
@@ -40,23 +42,23 @@
         <div class="suggestions acl-sugg"></div>
       </span>
       <span class="acl-add-bits">
-        <span class="acl-add-hd" aria-hidden="true"><span>Read</span><span>Write</span><span>Exec</span></span>
+        <span class="acl-add-hd" aria-hidden="true"><span>Read</span><span>Write</span>{% if !is_dir %}<span>Exec</span>{% else %}{% if layer == "access" %}<span title="Files only — needs a recursive reach.">Exec</span>{% endif %}{% endif %}</span>
         <span class="acl-add-boxes">
           <input type="checkbox" class="ebit" data-ch="r" aria-label="read" checked disabled>
           <input type="checkbox" class="ebit" data-ch="w" aria-label="write" disabled>
-          <input type="checkbox" class="ebit" data-ch="x" aria-label="execute" disabled>
+          {% if !is_dir %}<input type="checkbox" class="ebit" data-ch="x" aria-label="execute" disabled>{% else %}{% if layer == "access" %}<input type="checkbox" class="ebit" data-ch="x" aria-label="Files: execute (recursive reach)" title="Files only: with a recursive reach, files in scope get execute in this entry. The directory's own entry always carries execute with Read." disabled>{% endif %}{% endif %}
         </span>
       </span>
       {% if is_dir %}
       <div class="rec-scope acl-rec-scope">
-        <div class="perm-bits-lbl" title="How far the new entry reaches — the POSIX apply scopes. Recursive grants use capital X (files gain execute only where something already executes); on the Inherit tab recursion touches directories only.">Apply scope</div>
+        <div class="perm-bits-lbl" title="How far the new entry reaches — the POSIX apply scopes. Directories in reach always carry execute; files take the Exec box literally (no execute unless granted). On the Inherit tab recursion touches directories only.">Apply scope</div>
         <label title="This directory's own inode only."><input type="radio" class="acl-rec-radio" name="acl_scope_{{ layer }}" value="none" checked disabled><span>None</span></label>
         <label title="This directory plus the files directly inside it."><input type="radio" class="acl-rec-radio" name="acl_scope_{{ layer }}" value="single" disabled><span>Recursive &mdash; single directory</span></label>
         <label title="This directory and everything beneath it."><input type="radio" class="acl-rec-radio" name="acl_scope_{{ layer }}" value="all" disabled><span>Recursive &mdash; all directories</span></label>
       </div>
       {% endif %}
     </div>
-    <div class="acl-cols" aria-hidden="true"><span class="acl-name"></span><span class="colhd" title="read">Read</span><span class="colhd" title="write">Write</span><span class="colhd" title="execute — toggles apply to this node; hover a dimmed box: the mask caps it">Exec</span></div>
+    <div class="acl-cols" aria-hidden="true"><span class="acl-name"></span><span class="colhd" title="{% if is_dir %}Read includes browse (execute) on directories — an entry without execute can't traverse. Toggles apply to this node; hover a dimmed box: the mask caps it.{% else %}read{% endif %}">Read</span><span class="colhd" title="{% if is_dir %}Write requires Read.{% else %}write{% endif %}">Write</span>{% if !is_dir %}<span class="colhd" title="execute — toggles apply to this node; hover a dimmed box: the mask caps it">Exec</span>{% endif %}</div>
     <div class="acl-list">
       <div class="acl-cat" data-cat="user" title="Named user entries — per-user grants beyond owner/group/other."><span class="acl-caret" aria-hidden="true">&#9662;</span>Users</div>
       <div class="acl-cat-rows">
@@ -75,7 +77,7 @@
         <span class="acl-name">mask</span>
         <span class="acl-cell"><input type="checkbox" class="mbit" data-ch="r" aria-label="mask read" {% if m.r %}checked{% endif %} disabled></span>
         <span class="acl-cell"><input type="checkbox" class="mbit" data-ch="w" aria-label="mask write" {% if m.w %}checked{% endif %} disabled></span>
-        <span class="acl-cell"><input type="checkbox" class="mbit" data-ch="x" aria-label="mask execute" {% if m.x %}checked{% endif %} disabled></span>
+        {% if !is_dir %}<span class="acl-cell"><input type="checkbox" class="mbit" data-ch="x" aria-label="mask execute" {% if m.x %}checked{% endif %} disabled></span>{% endif %}
       </div>
       {% when None %}{% endmatch %}
     </div>
@@ -121,25 +123,29 @@
   </div>
 
   {% if is_dir %}
-  {# Directories: condensed Read/Write per audience. Read stands for r+x (the
-     server fuses r→x per directory entry at apply time); the submitted mode
-     stays x-less so files never inherit the directory's bits. Helper prose
-     lives in title attributes — the panel itself stays compact. #}
+  {# Directories: Read/Write govern the grant (Read stands for r+x on the
+     directory itself — the server fuses r→x per entry at apply time; the
+     submitted mode stays x-less). The Exec column is the FILE-execute grant:
+     it feeds file_mode for recursive scopes only and never touches the
+     directory's own bits. Helper prose lives in title attributes. #}
   <div class="perm-matrix perm-matrix-dir">
     <div></div>
-    <div class="colhd" title="Read includes browse (execute) on directories — an r-without-x directory lists as empty over NFS.">Read</div><div class="colhd" title="Write requires Read; each audience is none, read-only, or read-write.">Write</div>
+    <div class="colhd" title="Read includes browse (execute) on directories — an r-without-x directory lists as empty over NFS.">Read</div><div class="colhd" title="Write requires Read; each audience is none, read-only, or read-write.">Write</div><div class="colhd" title="Files only: with a recursive scope, every file in reach gets execute for this audience. The directory itself always carries execute with Read.">Exec</div>
 
     <div class="rowhd">Owner</div>
     <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="4" aria-label="Owner read" {% if u_r %}checked{% endif %} disabled></div>
     <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="2" aria-label="Owner write" {% if u_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="fbit" data-role="u" data-bit="1" aria-label="Files: owner execute" disabled></div>
 
     {% if acl_extended %}<div class="rowhd" title="Extended ACL entries exist here, so the Group bits act as the ACL mask — they cap every named entry and the owning group.">Group<span class="mask-star" aria-hidden="true">*</span></div>{% else %}<div class="rowhd">Group</div>{% endif %}
     <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="4" aria-label="Group read" {% if g_r %}checked{% endif %} disabled></div>
     <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="2" aria-label="Group write" {% if g_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="fbit" data-role="g" data-bit="1" aria-label="Files: group execute" disabled></div>
 
     <div class="rowhd">Other</div>
     <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="4" aria-label="Other read" {% if o_r %}checked{% endif %} disabled></div>
     <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="2" aria-label="Other write" {% if o_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="fbit" data-role="o" data-bit="1" aria-label="Files: other execute" disabled></div>
   </div>
   {% if traverse_only_note %}
   <div class="perm-note warn" title="Execute-without-read (traverse-only) can't be expressed in the Read/Write matrix; Apply clears those execute bits.">Execute-only (traverse) access exists — cleared on Apply.</div>
@@ -162,7 +168,7 @@
      "None". Radios submit as recursive_scope; the fragment reload after an
      apply resets the choice to None on purpose. #}
   <div class="rec-scope">
-    <div class="perm-bits-lbl" title="How far Apply reaches. Files are changed only by a recursive scope — and they receive the file permission bits, never the directory's.">Apply scope</div>
+    <div class="perm-bits-lbl" title="How far Apply reaches. Files are changed only by a recursive scope — they receive this matrix's Read/Write plus the Exec column's execute, never the directory's fused bits.">Apply scope</div>
     <label title="chown/chmod this directory's own inode only — no files, no subdirectories.">
       <input type="radio" class="rec-radio" name="recursive_scope" value="none" checked disabled>
       <span>None</span>
@@ -177,32 +183,9 @@
     </label>
   </div>
 
-  {# File permission bits for recursive scopes: every file in scope gets
-     exactly these bits (execute is an explicit grant, seeded unchecked;
-     read/write seed from the directory matrix). #}
-  <div class="file-opts" hidden>
-    <div class="perm-bits-lbl" title="Every file in the selected scope receives exactly these bits — execute is never implied by read.">File permission bits</div>
-    <div class="perm-matrix file-matrix">
-      <div></div>
-      <div class="colhd">Read</div><div class="colhd">Write</div><div class="colhd">Exec</div>
-
-      <div class="rowhd">Owner</div>
-      <div class="cell"><input type="checkbox" class="fbit" data-role="u" data-bit="4" aria-label="Files: owner read" {% if u_r %}checked{% endif %} disabled></div>
-      <div class="cell"><input type="checkbox" class="fbit" data-role="u" data-bit="2" aria-label="Files: owner write" {% if u_w %}checked{% endif %} disabled></div>
-      <div class="cell"><input type="checkbox" class="fbit" data-role="u" data-bit="1" aria-label="Files: owner execute" disabled></div>
-
-      {% if acl_extended %}<div class="rowhd" title="Extended ACL entries exist here, so the Group bits act as the ACL mask — they cap every named entry and the owning group.">Group<span class="mask-star" aria-hidden="true">*</span></div>{% else %}<div class="rowhd">Group</div>{% endif %}
-      <div class="cell"><input type="checkbox" class="fbit" data-role="g" data-bit="4" aria-label="Files: group read" {% if g_r %}checked{% endif %} disabled></div>
-      <div class="cell"><input type="checkbox" class="fbit" data-role="g" data-bit="2" aria-label="Files: group write" {% if g_w %}checked{% endif %} disabled></div>
-      <div class="cell"><input type="checkbox" class="fbit" data-role="g" data-bit="1" aria-label="Files: group execute" disabled></div>
-
-      <div class="rowhd">Other</div>
-      <div class="cell"><input type="checkbox" class="fbit" data-role="o" data-bit="4" aria-label="Files: other read" {% if o_r %}checked{% endif %} disabled></div>
-      <div class="cell"><input type="checkbox" class="fbit" data-role="o" data-bit="2" aria-label="Files: other write" {% if o_w %}checked{% endif %} disabled></div>
-      <div class="cell"><input type="checkbox" class="fbit" data-role="o" data-bit="1" aria-label="Files: other execute" disabled></div>
-    </div>
-    <input type="hidden" name="file_mode" class="file-mode-field" value="">
-  </div>
+  {# The hidden file_mode is what /apply reads for recursive scopes: the JS
+     composes it from the matrix Read/Write plus the Exec column. #}
+  <input type="hidden" name="file_mode" class="file-mode-field" value="">
   {% else %}
   {# Files: the full independent triad — r without x is normal for a file, so
      nothing is fused and no special bits are offered (setuid is refused
@@ -240,7 +223,7 @@
 
 <div class="divider"></div>
 
-<div class="acl-sec {% if !acl_supported %}disabled{% endif %}" data-path="{{ path }}">
+<div class="acl-sec {% if !acl_supported %}disabled{% endif %}" data-path="{{ path }}" data-kind="{% if is_dir %}dir{% else %}file{% endif %}">
   <div class="sec-title" title="POSIX ACLs on the backing filesystem, served to NFS clients as NFSv4 ACLs. Entries grant within the mask (the Group bits).">ACL
     <span class="pill {{ acl_pill_class }}">{{ acl_pill }}</span>
   </div>

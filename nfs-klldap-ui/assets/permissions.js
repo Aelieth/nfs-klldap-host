@@ -103,6 +103,7 @@
                 setPanelLoading(false);
                 setPanelMode(false);
                 syncScopeUI();
+                syncAclExecGate();
                 recomputeMode();
                 attachEditorInputListeners(pbody());
                 syncApplyLogHeight();
@@ -124,6 +125,10 @@
             exitAclAdd();
         }
         pl.querySelectorAll('.acl-pane').forEach(syncAclActions);
+        // Scope-gated boxes (POSIX Exec column, ACL add-form Exec) re-derive
+        // their disabled state after the blanket sweeps above.
+        syncScopeUI();
+        syncAclExecGate();
         setTreeLock(editing);
     }
 
@@ -147,27 +152,51 @@
         const d = isDir ? { u: fuse(sum.u), g: fuse(sum.g), o: fuse(sum.o) } : sum;
         oct.textContent = '' + s + d.u + d.g + d.o;
         const sym = pl.querySelector('.symbolic'); if (sym) sym.textContent = symbolicMode(s, d.u, d.g, d.o);
-        // File-options bits (dir panels, recursive scopes): the explicit file
-        // mode composes independently of the directory matrix — no fusing.
+        // File bits (dir panels): r/w ride the directory matrix; the Exec
+        // column adds file execute for recursive scopes. The directory itself
+        // never reads these — its execute is fused from Read server-side.
         const fsum = { u: 0, g: 0, o: 0 };
-        pl.querySelectorAll('.fbit').forEach(cb => { if (cb.checked) fsum[cb.dataset.role] += +cb.dataset.bit; });
+        if (isDir) {
+            fsum.u = sum.u; fsum.g = sum.g; fsum.o = sum.o;
+            pl.querySelectorAll('.fbit').forEach(cb => { if (cb.checked) fsum[cb.dataset.role] += +cb.dataset.bit; });
+        }
         const ffield = pl.querySelector('.file-mode-field');
         if (ffield) ffield.value = '0' + fsum.u + fsum.g + fsum.o;
         const foct = pl.querySelector('.file-octal');
         if (foct) foct.textContent = '0' + fsum.u + fsum.g + fsum.o;
     }
 
-    // Reveal the file-bits editor and its readout only when the chosen apply
-    // scope actually touches files ("single" or "all").
+    // The Exec column is the FILE-execute grant: it participates only when a
+    // recursive scope reaches files, so it stays inert (and cleared) on None.
     function syncScopeUI() {
         const pl = panel(); if (!pl) return;
         const form = pl.querySelector('form.posix-sec'); if (!form) return;
         const checked = form.querySelector('.rec-radio:checked');
         const scopeNone = !checked || checked.value === 'none';
-        const opts = form.querySelector('.file-opts');
-        if (opts) opts.hidden = scopeNone;
+        const editing = pl.classList.contains('editing');
+        form.querySelectorAll('.fbit').forEach(cb => {
+            cb.disabled = !editing || scopeNone;
+            if (scopeNone) cb.checked = false;
+        });
         const fr = pl.querySelector('.file-mode-readout');
         if (fr) fr.hidden = scopeNone;
+    }
+
+    // Dir panels: the ACL add form's Exec is the FILE-execute grant — inert
+    // unless the chosen reach is recursive (the directory's own entry always
+    // fuses execute from Read server-side).
+    function syncAclExecGate() {
+        const pl = panel(); if (!pl) return;
+        const editing = pl.classList.contains('editing');
+        const aclInert = !!pl.querySelector('.acl-sec.disabled');
+        pl.querySelectorAll('.acl-sec[data-kind="dir"] .acl-addform').forEach(form => {
+            const xbit = form.querySelector('.ebit[data-ch="x"]');
+            if (!xbit) return;
+            const sel = form.querySelector('.acl-rec-radio:checked');
+            const scopeNone = !sel || sel.value === 'none';
+            xbit.disabled = !editing || aclInert || scopeNone;
+            if (scopeNone) xbit.checked = false;
+        });
     }
     function symbolicMode(s, u, g, o) {
         const trip = (b, kind) => {
@@ -250,13 +279,20 @@
             else b.disabled = false;
         });
     }
+    // Perms strings stay canonical rwx triads even though directory grids
+    // omit the Exec checkbox (execute fuses from Read server-side, mirroring
+    // the POSIX dir matrix) — an absent box reads as '-'.
     function rowPerms(row) {
-        return Array.from(row.querySelectorAll('.abit,.mbit'))
-            .map(cb => cb.checked ? cb.dataset.ch : '-').join('');
+        return ['r', 'w', 'x'].map(ch => {
+            const cb = row.querySelector('.abit[data-ch="' + ch + '"],.mbit[data-ch="' + ch + '"]');
+            return cb && cb.checked ? ch : '-';
+        }).join('');
     }
     function addFormPerms(form) {
-        return Array.from(form.querySelectorAll('.ebit'))
-            .map(cb => cb.checked ? cb.dataset.ch : '-').join('');
+        return ['r', 'w', 'x'].map(ch => {
+            const cb = form.querySelector('.ebit[data-ch="' + ch + '"]');
+            return cb && cb.checked ? ch : '-';
+        }).join('');
     }
 
     // ===== ACL add mode: Add User / Add Group flow finished by the panel's
@@ -285,6 +321,7 @@
         pl.querySelector('.perm-state').textContent =
             typ === 'group' ? 'EDITING - ADDING ACL GROUP' : 'EDITING - ADDING ACL USER';
         wireAclAddSearch(form);
+        syncAclExecGate();
         syncAclAddApply();
         inp.focus();
     }
@@ -490,7 +527,18 @@
     document.addEventListener('change', (e) => {
         const bit = e.target.closest('.abit,.mbit,.ebit,.acl-rec-radio');
         if (!bit || bit.disabled) return;
+        // Directory ACL grids mirror the POSIX dir matrix coupling: Write
+        // requires Read (execute is fused from Read server-side, never shown).
+        const aclSec = bit.closest('.acl-sec');
+        if (aclSec && aclSec.dataset.kind === 'dir' && bit.dataset.ch) {
+            const scopeEl = bit.classList.contains('ebit')
+                ? bit.closest('.acl-add-boxes') : bit.closest('.acl-row');
+            const peer = ch => scopeEl && scopeEl.querySelector('[data-ch="' + ch + '"]');
+            if (bit.dataset.ch === 'w' && bit.checked) { const r = peer('r'); if (r) r.checked = true; }
+            if (bit.dataset.ch === 'r' && !bit.checked) { const w = peer('w'); if (w) w.checked = false; }
+        }
         if (bit.classList.contains('ebit') || bit.classList.contains('acl-rec-radio')) {
+            if (bit.classList.contains('acl-rec-radio')) syncAclExecGate();
             syncAclAddApply();
             return;
         }

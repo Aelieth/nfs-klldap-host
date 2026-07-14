@@ -241,6 +241,37 @@ pub fn share_fs_acl_limited_snapshot(
     !caps_for_share_snapshot(cfg, share, snap).acl_capable
 }
 
+/// Settings badge when an ACL-serving share holds ACL-incapable submounts.
+/// Callers pass the probed enable_acl resolution — the static
+/// `compute_effective_flags` can never say auto-on, so the flag must come
+/// from a live-verdict path (the UI capability cache or the generate probe).
+pub fn share_divergent_submount_warning_snapshot(
+    cfg: &NfsKlldapConfig,
+    share: &Share,
+    snap: &MountinfoSnapshot,
+    effective_enable_acl: bool,
+) -> Option<String> {
+    if !effective_enable_acl {
+        return None;
+    }
+    let serve = cfg.serve_path_for(share);
+    let hits = snap.acl_incapable_mounts_under(Path::new(&serve));
+    if hits.is_empty() {
+        return None;
+    }
+    let list = hits
+        .iter()
+        .map(|m| format!("{} ({})", m.mount_point, m.fstype))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "share \"{}\": ACL share contains ACL-incapable submount(s): {} — this \
+         build cannot serve such subtrees (attribute fetches fail for both \
+         classes); unmount them or move them out of the share",
+        share.name, list
+    ))
+}
+
 /// True when any share will emit Manage_Gids (explicit or probe default)
 pub fn any_share_manage_gids_enabled(cfg: &NfsKlldapConfig) -> bool {
     let snap = MountinfoSnapshot::capture(None);
@@ -295,6 +326,60 @@ mod tests {
             Some(&mountinfo)
         ));
         assert!(!share_fs_acl_limited(&cfg, &cfg.shares[0]));
+    }
+
+    #[test]
+    fn divergent_submount_warning_fires_only_for_acl_serving_share() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mountinfo = tmp.path().join("mountinfo");
+        std::fs::write(
+            &mountinfo,
+            "36 35 0:59 / /export rw,relatime - ext4 /dev/sda1 rw\n\
+             37 36 0:60 / /export/data/usb rw,relatime - vfat /dev/sdb1 rw\n",
+        )
+        .unwrap();
+        let mut cfg = NfsKlldapConfig {
+            ldap_uri: "ldaps://klldap.test:6360".into(),
+            sssd: SssdSection {
+                ldap_default_bind_dn: "uid=a,ou=people,dc=x,dc=com".into(),
+                ldap_default_authtok: "s".into(),
+                ..Default::default()
+            },
+            shares: vec![Share {
+                name: "data".into(),
+                host_path: "/media/data".into(),
+                container_path: "/export/data".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        cfg.validate_and_derive().expect("valid");
+        let snap = MountinfoSnapshot::capture(Some(&mountinfo));
+        let msg = share_divergent_submount_warning_snapshot(&cfg, &cfg.shares[0], &snap, true)
+            .expect("vfat submount under an ACL share must warn");
+        assert!(msg.contains("/export/data/usb"));
+        assert!(msg.contains("vfat"));
+        // A NOACL-resolved share stays quiet regardless of the tree.
+        assert!(
+            share_divergent_submount_warning_snapshot(&cfg, &cfg.shares[0], &snap, false)
+                .is_none()
+        );
+        // Capable-only submounts never warn.
+        let capable_only = tmp.path().join("mountinfo-capable");
+        std::fs::write(
+            &capable_only,
+            "36 35 0:59 / /export rw,relatime - ext4 /dev/sda1 rw\n\
+             37 36 0:60 / /export/data/fast rw,relatime - btrfs /dev/sdb1 rw\n",
+        )
+        .unwrap();
+        let snap_capable = MountinfoSnapshot::capture(Some(&capable_only));
+        assert!(share_divergent_submount_warning_snapshot(
+            &cfg,
+            &cfg.shares[0],
+            &snap_capable,
+            true
+        )
+        .is_none());
     }
 
     #[test]

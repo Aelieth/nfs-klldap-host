@@ -36,12 +36,14 @@
            aria-label="Browse share {{ share.name }}" title="{{ share.host_path }}"
            data-name="{{ share.name }}" data-nfs-path="{{ share.nfs_path }}"
            data-host-path="{{ share.host_path }}" data-acl="{% if share.acl_capable %}1{% else %}0{% endif %}"
+           data-acl-probed="{{ share.acl_probed }}"
            onclick="selectShareFromCard(this)">
         <div class="share-hd">
           <span class="share-dot {% if share.acl_capable %}acl{% else %}noacl{% endif %}"
                 title="{% if share.acl_capable %}ACL supported{% else %}Non-ACL limited{% endif %}"></span>
           <strong>{{ share.name }}</strong>
           <div class="share-chips">
+            <span class="share-chip {% if !share.acl_capable %}noacl{% endif %}">acl {{ share.acl_state_label }}</span>
             <span class="share-chip">{{ share.access }}</span>
             <span class="share-chip">{{ share.squash_label }}</span>
             <span class="share-chip">cache: {{ share.cache_profile }}</span>

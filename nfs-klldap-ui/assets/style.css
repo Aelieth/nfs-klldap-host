@@ -519,6 +519,7 @@ small { color: var(--text-light); }
                           overflow:hidden; text-overflow:ellipsis; }
 .share-chip.warn        { background:var(--warning-amber-bg); color:var(--warning-amber-text);
                           border-color:var(--warning-amber-border); }
+.share-chip.noacl       { background:var(--noacl-ring); border-color:var(--noacl); }
 
 .perm-panel         { background:var(--card-bg); border:1px solid var(--border);
                       border-radius:7px; padding:13px 16px 16px; margin-bottom:14px; }
@@ -600,7 +601,7 @@ small { color: var(--text-light); }
 .perm-matrix .cell  { text-align:center; }
 .perm-matrix input  { transform:scale(1.25); }
 /* Condensed directory matrix: Read/Write columns only (r+x fused server-side). */
-.perm-matrix.perm-matrix-dir { grid-template-columns:64px repeat(2,1fr); max-width:210px; }
+.perm-matrix.perm-matrix-dir { grid-template-columns:64px repeat(3,1fr); max-width:280px; }
 .perm-note          { font-size:.72em; color:var(--text-muted); margin-top:6px; }
 .perm-note.warn     { color:var(--warning-amber-text); }
 /* Apply-scope radios + file-bits editor (dir panels; see dir_perms.html).
@@ -680,6 +681,16 @@ small { color: var(--text-light); }
 .acl-add-hd         { display:grid; grid-template-columns:repeat(3,38px); text-align:center;
                       font-size:.68em; font-weight:700; color:var(--text-muted); }
 .acl-add-boxes      { display:grid; grid-template-columns:repeat(3,38px); justify-items:center; }
+/* Directory panels drop the Exec column from the entry/mask grid (execute
+   fuses from Read server-side, mirroring the POSIX dir matrix), so those run
+   two 38px cells wide. The ACCESS add form keeps a third box: its Exec is
+   the file-execute grant for recursive reaches. */
+.acl-sec[data-kind="dir"] .acl-cols,
+.acl-sec[data-kind="dir"] .acl-row       { grid-template-columns:minmax(0,1fr) 38px 38px; }
+.acl-sec[data-kind="dir"] .acl-add-hd,
+.acl-sec[data-kind="dir"] .acl-add-boxes { grid-template-columns:repeat(2,38px); }
+.acl-sec[data-kind="dir"] .acl-pane[data-layer="access"] .acl-add-hd,
+.acl-sec[data-kind="dir"] .acl-pane[data-layer="access"] .acl-add-boxes { grid-template-columns:repeat(3,38px); }
 .acl-rec-scope      { flex-basis:100%; }
 .acl-mask-row .acl-name { color:var(--warn-text, #b58900); font-weight:600; }
 .acl-cat            { display:flex; align-items:center; gap:5px; cursor:pointer; user-select:none;

@@ -47,6 +47,14 @@ impl AclPerms {
         out
     }
 
+    /// ACL twin of `fs::dir_mode_r_implies_x`: the directory editor submits
+    /// x-less perms (Read stands for r+x — an r-without-x directory cannot be
+    /// traversed over NFS), so execute fuses from read on directory targets.
+    /// Like the mode fuse it only adds x, never clears an explicit one.
+    pub fn dir_r_implies_x(mut self) -> Self {
+        self.x = self.x || self.r;
+        self
+    }
 }
 
 /// Identifies a named (non-base) ACL principal.
@@ -223,7 +231,7 @@ fn parse_acl_line(rest: &str) -> Option<AclLine> {
 /// the access or the default layer (`-d`). Never emits `-b` or `-n`.
 /// Removing absent entries is a no-op (setfacl semantics, probed).
 pub fn apply_acl(path: &Path, modification: AclModification) -> io::Result<()> {
-    let (default, op, spec) = modification_spec(&modification, false);
+    let (default, op, spec) = modification_spec(&modification);
     run_setfacl(path, default, op, &spec)
 }
 
@@ -256,18 +264,11 @@ fn run_setfacl_many(paths: &[PathBuf], default: bool, op: &str, spec: &str) -> i
 }
 
 /// The (default-layer, op flag, spec) triple a modification compiles to.
-/// `upper_x` swaps granted execute for setfacl's capital X — files then gain
-/// execute only where something already executes (the recursive-grant
-/// analogue of dir_mode_r_implies_x); dirs always land x.
-pub fn modification_spec(m: &AclModification, upper_x: bool) -> (bool, &'static str, String) {
-    let perm_str = |p: &AclPerms| {
-        let s = p.to_str();
-        if upper_x {
-            s.replace('x', "X")
-        } else {
-            s
-        }
-    };
+/// Perms render literally: recursive walks hand directories and files their
+/// own modification (dirs fused r→x, files the panel's explicit Exec choice),
+/// which replaced the old capital-X conditional grant.
+pub fn modification_spec(m: &AclModification) -> (bool, &'static str, String) {
+    let perm_str = |p: &AclPerms| p.to_str();
     match m {
         AclModification::Set {
             kind,
@@ -351,8 +352,8 @@ pub fn extended_acl_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Chunked multi-path apply for recursive walks: one setfacl invocation per
 /// chunk keeps subprocess overhead off the per-entry path.
-pub fn apply_acl_many(paths: &[PathBuf], m: &AclModification, upper_x: bool) -> io::Result<()> {
-    let (default, op, spec) = modification_spec(m, upper_x);
+pub fn apply_acl_many(paths: &[PathBuf], m: &AclModification) -> io::Result<()> {
+    let (default, op, spec) = modification_spec(m);
     run_setfacl_many(paths, default, op, &spec)
 }
 
@@ -362,6 +363,19 @@ pub fn apply_acl_many(paths: &[PathBuf], m: &AclModification, upper_x: bool) -> 
 mod acl_table_tests {
     use super::*;
     use tempfile::TempDir;
+
+    // Mirrors fs::dir_mode_r_implies_x: r fuses x, w-only stays x-less, an
+    // explicit x is never cleared.
+    #[test]
+    fn acl_perms_dir_r_implies_x_matches_the_mode_fuse() {
+        let f = |s: &str| AclPerms::from_str(s).dir_r_implies_x().to_str();
+        assert_eq!(f("r--"), "r-x");
+        assert_eq!(f("rw-"), "rwx");
+        assert_eq!(f("-w-"), "-w-");
+        assert_eq!(f("--x"), "--x");
+        assert_eq!(f("---"), "---");
+        assert_eq!(f("rwx"), "rwx");
+    }
 
     // getfacl -c -n output shape: base + named + mask with an effective
     // comment, plus a default layer (directories).

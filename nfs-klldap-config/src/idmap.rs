@@ -3,7 +3,7 @@
 use crate::SssdSection;
 
 pub use nfs_klldap_identity::{
-    classify_principal, escape_ldap_filter, machine_short_name,
+    classify_principal, machine_short_name,
     normalize_principal, parse_getent_passwd, parse_group_row,
     parse_passwd_row, principal_local_part,
     IdLdapResolver, IdMapSnapshot,

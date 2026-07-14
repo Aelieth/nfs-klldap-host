@@ -131,15 +131,12 @@ pub use startup::{
 pub use startup::lock_setup_marker_for_tests;
 pub use template::{generate_default_template, write_default_config_if_missing};
 pub use nfs_klldap_identity::{derive_realm_from_uri, extract_host_from_uri, host_is_ip};
-pub use nfs_klldap_identity::{
-    get_keytab_info, parse_klist_nfs_hosts, parse_klist_nfs_principals, read_keytab_nfs_principals,
-    KeytabInfo,
-};
+pub use nfs_klldap_identity::{get_keytab_info, parse_klist_nfs_hosts, KeytabInfo};
 
 // Structured LDAP resolution (IdLdapResolver) shared with Nfs-klldap-identity.
 pub mod idmap;
 pub use idmap::{
-    classify_principal, escape_ldap_filter, from_sssd_section,
+    classify_principal, from_sssd_section,
     machine_short_name, normalize_principal, parse_getent_passwd,
     parse_group_row, parse_passwd_row,
     posix_mapping_from_sssd, principal_local_part, sssd_resolver_inputs,
@@ -148,15 +145,11 @@ pub use idmap::{
 
 // Centralized constants (Ganesha 9.6 trixie + hybrid Principal + POSIX.
 pub use constants::{
-    DEFAULT_GROUP_GID_ATTR, DEFAULT_GROUP_NAME_ATTR, DEFAULT_GROUP_OBJECT_CLASS,
-    DEFAULT_USER_FULLNAME_ATTR, DEFAULT_USER_GID_ATTR, DEFAULT_USER_HOME_ATTR,
-    DEFAULT_USER_NAME_ATTR, DEFAULT_USER_OBJECT_CLASS, DEFAULT_USER_PRINCIPAL_ATTR,
-    DEFAULT_USER_SHELL_ATTR, DEFAULT_USER_UID_ATTR, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
+    FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
     GANESHA_ALLOWED_SECTYPES, GANESHA_ALLOWED_SQUASH, GANESHA_DEFAULT_SECTYPE,
     GANESHA_DEFAULT_SQUASH, GANESHA_PROTOCOLS, GANESHA_PWNAM_IMPL, GANESHA_ROOT_KRB_PRINCIPALS,
     IDMAPD_GSS_METHODS, IDMAPD_NOBODY_GROUP, IDMAPD_NOBODY_USER,
     IDMAPD_TRANSLATION_METHOD, LOG_NOISE_TOKENS, MACHINE_GID, MACHINE_PRINCIPAL_PREFIXES, MACHINE_UID,
-    DEFAULT_GROUP_MEMBER_ATTR_KLLDAP, DEFAULT_GROUP_MEMBER_ATTR_LEGACY,
 };
 
 // Single TLS policy source of truth lives in nfs-klldap-identity (cacert-aware).

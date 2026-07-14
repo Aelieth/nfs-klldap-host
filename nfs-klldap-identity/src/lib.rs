@@ -13,7 +13,7 @@ pub use constants::{
     DEFAULT_GROUP_NAME_ATTR, DEFAULT_GROUP_OBJECT_CLASS, DEFAULT_USER_FULLNAME_ATTR,
     DEFAULT_USER_GID_ATTR, DEFAULT_USER_HOME_ATTR, DEFAULT_USER_NAME_ATTR,
     DEFAULT_USER_OBJECT_CLASS, DEFAULT_USER_PRINCIPAL_ATTR, DEFAULT_USER_SHELL_ATTR,
-    DEFAULT_USER_UID_ATTR, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID, IDENTITY_CACHE_TTL_SECS,
+    DEFAULT_USER_UID_ATTR, FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
     MACHINE_GID, MACHINE_PRINCIPAL_PREFIXES, MACHINE_UID,
 };
 pub use krb5::{
@@ -31,4 +31,4 @@ pub use ldap::{
     PosixAttributeMapping, PosixGroupEntry, PosixMappingInput, PosixUserEntry,
     resolve_posix_attribute_mapping,
 };
-pub use nss::{parse_getent_passwd, parse_group_row, parse_passwd_row, GroupRow, PasswdRow};
+pub use nss::{parse_getent_passwd, parse_group_row, parse_passwd_row};

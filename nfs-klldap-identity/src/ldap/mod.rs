@@ -10,7 +10,7 @@ pub use posix::{
     PosixAttributeMapping, PosixMappingInput,
 };
 pub use resolver::{
-    extract_first_attr_value, machine_group_gids_for_principal,
+    machine_group_gids_for_principal,
     machine_supplemental_gids_from_snapshot, IdLdapResolver, IdMapSnapshot, LdapResolverInputs,
     PosixGroupEntry, PosixUserEntry,
 };

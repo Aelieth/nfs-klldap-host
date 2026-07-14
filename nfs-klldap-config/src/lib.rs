@@ -41,8 +41,8 @@ pub use exports_fingerprint::{
     fingerprint_exports_dir, fingerprint_identity_artifacts, fingerprint_shares, FNV1A_SEED,
 };
 pub use ganesha_liveness::{
-    discover_ganesha_daemon_pid, ganesha_is_live, pgrep_live_pids, pgrep_pids, pgrep_running,
-    pkill_binary, pkill_process, process_is_live, reconcile_ganesha_pid,
+    discover_ganesha_daemon_pid, pgrep_live_pids, pgrep_pids, pgrep_running,
+    pkill_binary, pkill_process, process_is_live,
 };
 pub use recycle_plan::{
     plan_from_changes, ganesha_sighup_failed, GaneshaAction, ServiceRecyclePlan,
@@ -143,8 +143,8 @@ pub use nfs_klldap_identity::{
 // Structured LDAP resolution (IdLdapResolver) shared with Nfs-klldap-identity.
 pub mod idmap;
 pub use idmap::{
-    classify_principal, escape_ldap_filter, extract_first_attr_value, from_sssd_section,
-    machine_short_name, normalize_principal, parse_getent_group, parse_getent_passwd,
+    classify_principal, escape_ldap_filter, from_sssd_section,
+    machine_short_name, normalize_principal, parse_getent_passwd,
     parse_group_row, parse_passwd_row,
     posix_mapping_from_sssd, principal_local_part, sssd_resolver_inputs,
     IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry,

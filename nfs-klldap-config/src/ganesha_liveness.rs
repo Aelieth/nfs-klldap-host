@@ -74,16 +74,6 @@ pub fn pgrep_live_pids(name: &str) -> Vec<u32> {
         .collect()
 }
 
-/// Return tracked pid only when it is still live (never pgrep)
-pub fn reconcile_ganesha_pid(tracked: Option<u32>) -> Option<u32> {
-    tracked.filter(|pid| process_is_live(*pid))
-}
-
-/// True when the tracked ganesha.nfsd pid is live.
-pub fn ganesha_is_live(tracked: Option<u32>) -> bool {
-    tracked.is_some_and(process_is_live)
-}
-
 /// Discover live ganesha.nfsd in this pid namespace.
 /// Used for supervisor post-daemonize adoption.
 pub fn discover_ganesha_daemon_pid() -> Option<u32> {
@@ -108,8 +98,6 @@ mod tests {
         let _guard = lock_tests();
         let pid = std::process::id();
         assert!(process_is_live(pid));
-        assert!(ganesha_is_live(Some(pid)));
-        assert_eq!(reconcile_ganesha_pid(Some(pid)), Some(pid));
     }
 
     #[test]
@@ -128,18 +116,6 @@ mod tests {
         let bogus = "ganesha.nfsd-this-test-name-will-not-exist";
         assert!(pgrep_pids(bogus).is_empty());
         assert!(pgrep_live_pids(bogus).is_empty());
-    }
-
-    #[test]
-    fn dead_tracked_pid_does_not_pgrep_fallback() {
-        let _guard = lock_tests();
-        let mut child = Command::new("true").spawn().expect("spawn true");
-        let pid = child.id();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(!process_is_live(pid));
-        assert_eq!(reconcile_ganesha_pid(Some(pid)), None);
-        assert!(!ganesha_is_live(Some(pid)));
-        let _ = child.wait();
     }
 
     #[test]

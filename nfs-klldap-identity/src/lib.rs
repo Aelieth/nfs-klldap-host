@@ -25,10 +25,10 @@ pub use krb5::{
     read_keytab_nfs_principals, KeytabInfo,
 };
 pub use ldap::{
-    effective_ldap_search_bases, escape_ldap_filter, extract_first_attr_value, IdLdapResolver,
+    effective_ldap_search_bases, escape_ldap_filter, IdLdapResolver,
     IdMapSnapshot, ldap_conn_settings, ldap_tls_policy, LdapResolverInputs, LdapSearchBasesInput,
     machine_group_gids_for_principal, machine_supplemental_gids_from_snapshot,
     PosixAttributeMapping, PosixGroupEntry, PosixMappingInput, PosixUserEntry,
     resolve_posix_attribute_mapping,
 };
-pub use nss::{parse_getent_group, parse_getent_passwd, parse_group_row, parse_passwd_row, GroupRow, PasswdRow};
+pub use nss::{parse_getent_passwd, parse_group_row, parse_passwd_row, GroupRow, PasswdRow};

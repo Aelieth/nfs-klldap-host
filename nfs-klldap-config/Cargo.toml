@@ -44,6 +44,5 @@ signal-hook = { workspace = true }
 test-support = ["nfs-klldap-identity/test-support"]
 
 [dev-dependencies]
-tempfile = { workspace = true }
 # Self dev-dep turns test-support on for cargo test builds (lib + spawned bins).
 nfs-klldap-config = { path = ".", features = ["test-support"] }

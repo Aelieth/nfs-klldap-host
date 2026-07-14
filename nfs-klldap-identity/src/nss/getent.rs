@@ -33,7 +33,7 @@ pub fn parse_passwd_row(line: &str) -> Option<PasswdRow> {
     })
 }
 
-/// Parse a group row keeping name and members (same rules as parse_getent_group).
+/// Parse a `getent group` row keeping name, gid, and members.
 pub fn parse_group_row(line: &str) -> Option<GroupRow> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
@@ -63,11 +63,6 @@ pub fn parse_getent_passwd(line: &str) -> Option<(u32, u32)> {
     parse_passwd_row(line).map(|r| (r.uid, r.gid))
 }
 
-/// Parse `getent group` line: name:passwd:gid:memberlist.
-pub fn parse_getent_group(line: &str) -> Option<u32> {
-    parse_group_row(line).map(|r| r.gid)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,12 +83,6 @@ mod tests {
         );
         assert!(parse_getent_passwd("# comment").is_none());
         assert!(parse_getent_passwd("badline").is_none());
-    }
-
-    #[test]
-    fn parse_group_works() {
-        assert_eq!(parse_getent_group("staff:x:100::"), Some(100));
-        assert_eq!(parse_getent_group("users:x:200:alice,bob"), Some(200));
     }
 
     #[test]

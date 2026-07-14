@@ -1415,11 +1415,6 @@ pub fn machine_group_gids_for_principal(principal: &str, snap: &IdMapSnapshot) -
     gids
 }
 
-/// Best-effort first attribute extraction (handles case variants).
-pub fn extract_first_attr_value(se: &SearchEntry, name: &str) -> Option<String> {
-    IdLdapResolver::extract_first_attr(se, name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

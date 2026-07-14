@@ -337,7 +337,7 @@ fn build_clear_session_cookie(state: &super::AppState, req_headers: &HeaderMap) 
 }
 
 /// All non-empty `session=` values from a Cookie header (oldest → newest).
-pub(crate) fn extract_all_session_tokens(cookie_header: &str) -> Vec<String> {
+fn extract_all_session_tokens(cookie_header: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for part in cookie_header.split(';') {
         let kv = part.trim();
@@ -360,7 +360,7 @@ fn extract_all_session_tokens_from_headers(headers: &HeaderMap) -> Vec<String> {
 }
 
 /// Validates session cookies and prefers the most recently set token.
-pub(crate) fn validate_session_in_headers(
+fn validate_session_in_headers(
     state: &super::AppState,
     headers: &HeaderMap,
 ) -> Option<String> {

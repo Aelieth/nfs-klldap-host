@@ -106,7 +106,7 @@ impl AclCapabilityCache {
     /// Cache core, generic over the probe so tests can count invocations
     /// without shelling out. Stage-A shortcuts (unknown, denylist, explicit
     /// off) are never cached — they are recomputed cheaply from `caps`.
-    pub(crate) fn verdict_cached(
+    fn verdict_cached(
         &self,
         caps: &FsCapabilities,
         mount_root: Option<&str>,

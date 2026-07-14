@@ -87,7 +87,7 @@ impl EntryView {
 /// the whole name: well-known extensionless names (READMEs, build files,
 /// shell dotfiles) and a few full-name pins match first, then the extension.
 /// Anything unrecognized is the honest ❔.
-pub(crate) fn file_kind(name: &str) -> (&'static str, &'static str) {
+fn file_kind(name: &str) -> (&'static str, &'static str) {
     const TEXT: (&str, &str) = ("📄", "text / document");
     const CODE: (&str, &str) = ("📜", "script / code");
     const IMAGE: (&str, &str) = ("🖼️", "image");
@@ -217,7 +217,7 @@ pub(crate) fn file_kind(name: &str) -> (&'static str, &'static str) {
 /// "YYYY-MM-DD HH:MM" in UTC. Component accessors only (no `formatting`
 /// feature); UTC on purpose — the time crate's local-offset lookup is
 /// environment-dependent and the row tooltip discloses the zone.
-pub(crate) fn format_mtime_utc(t: std::time::SystemTime) -> String {
+fn format_mtime_utc(t: std::time::SystemTime) -> String {
     let odt = time::OffsetDateTime::from(t);
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}",

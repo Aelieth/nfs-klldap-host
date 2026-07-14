@@ -31,7 +31,7 @@ const FLIP_STREAK: u8 = 2;
 /// (`baseline`), the previous tick's reading, and how long the current reading
 /// has held.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct FlipState {
+struct FlipState {
     baseline: bool,
     last: bool,
     streak: u8,

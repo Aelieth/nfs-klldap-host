@@ -604,14 +604,13 @@ small { color: var(--text-light); }
 .perm-matrix.perm-matrix-dir { grid-template-columns:64px repeat(3,1fr); max-width:280px; }
 .perm-note          { font-size:.72em; color:var(--text-muted); margin-top:6px; }
 .perm-note.warn     { color:var(--warning-amber-text); }
-/* Apply-scope radios + file-bits editor (dir panels; see dir_perms.html).
+/* Apply-scope radios + file-mode readout (dir panels; see dir_perms.html).
    Dashed dividers, not helper text, separate the groups — descriptions
    live in title hovers. */
 .rec-scope          { margin-top:8px; padding-top:8px; border-top:1px dashed var(--border-light);
                       display:flex; flex-direction:column; gap:3px; }
 .rec-scope label    { display:flex; align-items:center; gap:6px; font-size:.78em; }
 .rec-scope input    { transform:scale(1.1); }
-.file-opts          { margin-top:10px; padding-top:8px; border-top:1px dashed var(--border-light); }
 .file-mode-readout  { display:inline-flex; align-items:baseline; gap:6px; }
 .file-mode-readout[hidden] { display:none; } /* author display beats the UA [hidden] rule */
 .file-octal         { font-family:var(--font-mono); font-size:1.05em; font-weight:700;
@@ -675,7 +674,7 @@ small { color: var(--text-light); }
                       margin:2px 0 8px; padding-bottom:8px;
                       border-bottom:1px dashed var(--border-light); }
 .acl-addform[hidden], .acl-pane[hidden],
-.acl-cat-rows[hidden], .file-opts[hidden] { display:none; } /* author display beats the UA [hidden] rule */
+.acl-cat-rows[hidden] { display:none; } /* author display beats the UA [hidden] rule */
 .acl-addform .acl-ename-wrap { flex:1; min-width:130px; }
 .acl-add-bits       { display:flex; flex-direction:column; align-items:center; gap:1px; }
 .acl-add-hd         { display:grid; grid-template-columns:repeat(3,38px); text-align:center;
@@ -692,7 +691,7 @@ small { color: var(--text-light); }
 .acl-sec[data-kind="dir"] .acl-pane[data-layer="access"] .acl-add-hd,
 .acl-sec[data-kind="dir"] .acl-pane[data-layer="access"] .acl-add-boxes { grid-template-columns:repeat(3,38px); }
 .acl-rec-scope      { flex-basis:100%; }
-.acl-mask-row .acl-name { color:var(--warn-text, #b58900); font-weight:600; }
+.acl-mask-row .acl-name { color:var(--warning-amber-text); font-weight:600; }
 .acl-cat            { display:flex; align-items:center; gap:5px; cursor:pointer; user-select:none;
                       font-size:.68em; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
                       color:var(--text-muted); padding:2px 4px; border-radius:2px; }
@@ -700,7 +699,7 @@ small { color: var(--text-light); }
 .acl-caret          { display:inline-block; width:10px; transition:transform .12s; }
 .acl-cat.collapsed .acl-caret { transform:rotate(-90deg); }
 .acl-sep            { border-top:1px solid var(--border-light); margin:3px 0; }
-.mask-star          { color:var(--warn-text, #b58900); margin-left:1px; }
+.mask-star          { color:var(--warning-amber-text); margin-left:1px; }
 .acl-plus           { color:var(--accent); font-weight:700; margin-left:2px; cursor:help; }
 .acl-ename-wrap     { position:relative; }
 .acl-ename          { width:100%; padding:2px 6px; font-size:.8em; box-sizing:border-box;

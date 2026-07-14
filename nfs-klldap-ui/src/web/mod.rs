@@ -1,5 +1,5 @@
 //! Router assembly + AppState (shared by handlers) + router integration tests.
-//! Submodules hold the logic: auth, permission_tree, settings, keytab.
+//! Submodules hold the logic: auth, permission_tree, settings.
 
 use axum::{
     body::Body,
@@ -25,14 +25,11 @@ pub mod acl_capability;
 pub(crate) mod acl_status;
 pub mod acl_watch;
 mod auth;
-mod keytab;
 mod manifest;
 mod permission_tree;
 mod settings_form;
 mod settings;
 pub mod setup;
-
-pub use keytab::{compute_keytab_alert, get_keytab_info};
 
 // Pub(crate) re-exports for router assembly and in-module integration tests.
 pub(crate) use auth::{login, login_page, logout, require_auth, setup_password};

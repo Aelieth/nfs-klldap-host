@@ -742,8 +742,8 @@ impl FsManager {
 
     pub(crate) fn is_allowed(&self, path: &Path) -> bool {
         let normalized = self.normalize_for_matching(path);
-        // New central config is allowed = the host_path of every declared.
-        crate::config::all_managed_roots(&self.config)
+        // Allowed = under the host_path of any declared share (central config).
+        self.config.host_paths()
             .iter()
             .any(|root| normalized.starts_with(self.normalize_for_matching(root)))
     }

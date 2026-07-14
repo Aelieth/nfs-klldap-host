@@ -1,15 +1,5 @@
-//! Share-array persistence and template helpers for the settings handlers.
+//! Share-array persistence helpers for the settings handlers.
 //! The scalar field surface lives in spec.rs (one FieldSpec row per field).
-
-use super::{build_settings_template, SettingsTemplate};
-
-pub(crate) fn make_settings_error_template(
-    state: &crate::web::AppState,
-    current_user: Option<String>,
-    message: String,
-) -> SettingsTemplate {
-    build_settings_template(state, current_user, Some(message))
-}
 
 pub(crate) fn atomic_write_config(path: &std::path::Path, content: &str) -> Result<(), String> {
     let tmp = path.with_extension("conf.saving");
@@ -21,14 +11,6 @@ pub(crate) fn atomic_write_config(path: &std::path::Path, content: &str) -> Resu
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
     Ok(())
-}
-
-pub(crate) fn make_settings_success_template(
-    state: &crate::web::AppState,
-    current_user: Option<String>,
-    message: String,
-) -> SettingsTemplate {
-    build_settings_template(state, current_user, Some(message))
 }
 
 /// Replace only the `[[shares]]` array in the raw TOML doc (shares-save path).

@@ -1,6 +1,6 @@
 //! Thin NfsKlldapConfig adapter with env cred overrides for the WebUI.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub use nfs_klldap_config::NfsKlldapConfig as Config;
 
@@ -33,12 +33,6 @@ pub fn load_config_from(path: &Path) -> Result<Config, String> {
         }
         Err(e) => Err(format!("Failed to load {}: {}", path.display(), e)),
     }
-}
-
-/// Return host_path values the WebUI may manage.
-/// Values come from configured shares (delegates to central impl).
-pub fn all_managed_roots(cfg: &Config) -> Vec<PathBuf> {
-    cfg.host_paths()
 }
 
 /// Returns LDAP bind identity and password from NFS_KLLDAP_LLDAP_* env.

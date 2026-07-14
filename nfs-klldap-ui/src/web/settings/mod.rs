@@ -6,15 +6,12 @@ use axum::{
 };
 use serde::Deserialize;
 use super::setup::{run_bind_probe_blocking, validate_ldap_uri, BindForm, LdapUriForm, SetupTestResponse};
-use super::{get_keytab_info, AppState, require_auth};
+use super::{AppState, require_auth};
 
 mod apply;
 mod spec;
 
-pub(crate) use apply::{
-    apply_shares_to_toml_doc, atomic_write_config, make_settings_error_template,
-    make_settings_success_template,
-};
+pub(crate) use apply::{apply_shares_to_toml_doc, atomic_write_config};
 pub(crate) use spec::{apply_structured_form_to_config, apply_structured_form_to_toml_doc};
 
 #[derive(Template)]
@@ -296,7 +293,7 @@ pub(crate) fn build_settings_template(
         effective_realm: keytab.realm.clone(),
         keytab_alert: keytab.alert.clone(),
         acl_alert,
-        keytab_found_principals: get_keytab_info(&keytab.hostname, &keytab.realm)
+        keytab_found_principals: nfs_klldap_config::get_keytab_info(&keytab.hostname, &keytab.realm)
             .found_nfs_principals,
         ldap_uri: cfg.ldap_uri,
         storage_container_root: cfg.storage.container_root.clone(),
@@ -349,10 +346,10 @@ pub(crate) async fn settings_save_raw(
     if let Err(msg) = atomic_write_config(&state.config_path, &form.raw_content) {
         return Ok(Html(format!("<p class='alert alert-danger'>{}</p>", msg)));
     }
-    let tpl = make_settings_success_template(
+    let tpl = build_settings_template(
         &state,
         Some(user.0),
-        "Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into(),
+        Some("Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into()),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -372,11 +369,7 @@ pub(crate) async fn settings_save_structured(
     apply_structured_form_to_config(&form, &mut cfg);
     if let Err(e) = cfg.validate_and_derive() {
         let msg = format!("Validation error: {}", e);
-        let tpl = make_settings_error_template(
-            &state,
-            Some(user.0.clone()),
-            msg,
-        );
+        let tpl = build_settings_template(&state, Some(user.0.clone()), Some(msg));
         return Ok(Html(tpl.render().unwrap()));
     }
     let mut doc = original_text
@@ -385,17 +378,13 @@ pub(crate) async fn settings_save_structured(
     apply_structured_form_to_toml_doc(&form, &mut doc);
     let text = doc.to_string();
     if let Err(msg) = atomic_write_config(&state.config_path, &text) {
-        let tpl = make_settings_error_template(
-            &state,
-            Some(user.0.clone()),
-            msg,
-        );
+        let tpl = build_settings_template(&state, Some(user.0.clone()), Some(msg));
         return Ok(Html(tpl.render().unwrap()));
     }
-    let tpl = make_settings_success_template(
+    let tpl = build_settings_template(
         &state,
         Some(user.0),
-        "Structured settings saved (shares left untouched in TOML). Container will regenerate configs shortly.".into(),
+        Some("Structured settings saved (shares left untouched in TOML). Container will regenerate configs shortly.".into()),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -471,28 +460,20 @@ pub(crate) async fn settings_save_shares(
                 serve.display(),
                 outcome.caps.fstype
             );
-            let tpl = make_settings_error_template(&state, Some(user.0.clone()), msg);
+            let tpl = build_settings_template(&state, Some(user.0.clone()), Some(msg));
             return Ok(Html(tpl.render().unwrap()));
         }
     }
     if let Err(e) = cfg.validate_and_derive() {
         let msg = format!("Validation error: {}", e);
-        let tpl = make_settings_error_template(
-            &state,
-            Some(user.0.clone()),
-            msg,
-        );
+        let tpl = build_settings_template(&state, Some(user.0.clone()), Some(msg));
         return Ok(Html(tpl.render().unwrap()));
     }
     let mut doc = doc;
     apply_shares_to_toml_doc(&mut doc, &cfg.shares);
     let text = doc.to_string();
     if let Err(msg) = atomic_write_config(&state.config_path, &text) {
-        let tpl = make_settings_error_template(
-            &state,
-            Some(user.0.clone()),
-            msg,
-        );
+        let tpl = build_settings_template(&state, Some(user.0.clone()), Some(msg));
         return Ok(Html(tpl.render().unwrap()));
     }
     let reload_msg = match state.reload_config_and_fs() {
@@ -504,12 +485,12 @@ pub(crate) async fn settings_save_shares(
         &format!("Shares saved by '{}'", user.0),
     )
     .await;
-    let tpl = make_settings_success_template(
+    let tpl = build_settings_template(
         &state,
         Some(user.0),
-        format!(
+        Some(format!(
             "Shares saved (SSSD and other sections left untouched in TOML).{reload_msg} Service recycle scheduled so Ganesha + WebUI pick up the new paths."
-        ),
+        )),
     );
     Ok(Html(tpl.render().unwrap()))
 }

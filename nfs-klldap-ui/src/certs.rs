@@ -33,23 +33,13 @@ pub struct TlsPaths {
     pub key: PathBuf,
 }
 
-/// True when NFS_KLLDAP_WEBUI_TLS=off; reverse proxy serves TLS instead.
-pub fn webui_tls_disabled() -> bool {
-    nfs_klldap_config::webui_tls_disabled()
-}
-
-/// SAN entries used for the self-signed WebUI certificate (for startup banners).
-pub fn cert_sans_for_host(hostname: &str) -> Vec<String> {
-    collect_cert_sans(hostname)
-}
-
 /// Ensures WebUI TLS certs from env paths or generates self-signed ones.
 pub fn ensure_webui_tls_certs(
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,
     hostname: &str,
 ) -> Result<TlsPaths, CertError> {
-    if webui_tls_disabled() {
+    if nfs_klldap_config::webui_tls_disabled() {
         return Err(CertError::TlsDisabled);
     }
 
@@ -106,7 +96,7 @@ fn write_self_signed_material(
     key_path: &Path,
     hostname: &str,
 ) -> Result<TlsPaths, CertError> {
-    let sans = collect_cert_sans(hostname);
+    let sans = cert_sans_for_host(hostname);
     let (cert_pem, key_pem) = generate_self_signed(hostname, &sans)?;
 
     if let Some(parent) = cert_path.parent() {
@@ -164,7 +154,7 @@ fn existing_material_usable(
     }
 
     if let Some(stored) = read_san_metadata(cert_path) {
-        let current = collect_cert_sans(hostname);
+        let current = cert_sans_for_host(hostname);
         return stored == current;
     }
 
@@ -182,7 +172,8 @@ fn hosts_equivalent(left: &str, right: &str) -> bool {
     !l.is_empty() && l == r
 }
 
-fn collect_cert_sans(hostname: &str) -> Vec<String> {
+/// SAN entries for the self-signed WebUI certificate (also the startup banner).
+pub fn cert_sans_for_host(hostname: &str) -> Vec<String> {
     let mut sans = Vec::new();
     let mut add = |value: &str| {
         let t = value.trim().trim_matches('.');

@@ -197,7 +197,7 @@ async fn main() {
         let h = keytab_host.clone();
         let r = keytab_realm.clone();
         tokio::spawn(async move {
-            let alert = crate::web::compute_keytab_alert(&h, &r);
+            let alert = nfs_klldap_config::get_keytab_info(&h, &r).alert;
             if let Some(ref msg) = alert {
                 eprintln!("WARNING: {}", msg);
             }
@@ -210,13 +210,8 @@ async fn main() {
     // NFS_KLLDAP_WEBUI_BIND is used for TLS and plain-http modes. Plain-http.
     let addr = std::env::var("NFS_KLLDAP_WEBUI_BIND").unwrap_or_else(|_| "0.0.0.0:9630".to_string());
     // Enables TLS when NFS_KLLDAP_WEBUI_TLS or [webui].tls requests it.
-    let webui_tls_off = if nfs_klldap_config::webui_tls_disabled() {
-        true
-    } else if let Some(t) = loaded_config.webui.tls {
-        !t
-    } else {
-        crate::certs::webui_tls_disabled()
-    };
+    let webui_tls_off =
+        nfs_klldap_config::webui_tls_disabled() || loaded_config.webui.tls.is_some_and(|t| !t);
 
     let host_nfs_mode = nfs_klldap_config::host_nfs_active(&loaded_config);
 

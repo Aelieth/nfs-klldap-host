@@ -22,6 +22,26 @@ fn render_500(what: &str) -> String {
         r#"<div class="alert alert-danger"><strong>Internal error rendering the {what}.</strong> Please retry.</div>"#
     )
 }
+
+/// Sets `finished` on drop so a panic in a spawned apply task can never leave
+/// the /apply-progress poller waiting forever (it only stops on finished).
+struct FinishOnDrop(Arc<ApplyProgress>);
+impl Drop for FinishOnDrop {
+    fn drop(&mut self) {
+        self.0.finished.store(true, Ordering::Relaxed);
+    }
+}
+
+/// True when an apply is already in flight (its progress slot exists and has not
+/// finished). Used to reject a concurrent apply instead of clobbering the slot.
+async fn apply_in_progress(state: &AppState) -> bool {
+    state
+        .apply_progress
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|p| !p.finished.load(Ordering::Relaxed))
+}
 #[derive(Template)]
 #[template(path = "index.html")]
 struct IndexTemplate {
@@ -1133,6 +1153,14 @@ pub(crate) async fn apply_permissions(
     Form(form): Form<ApplyForm>,
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
+    // One apply at a time: a second concurrent apply would clobber the single
+    // progress slot and orphan the first apply's poller.
+    if apply_in_progress(&state).await {
+        return Ok(Html(
+            r#"<div class="note-danger">Another permission apply is already running — wait for it to finish before starting a new one.</div>"#
+                .to_string(),
+        ));
+    }
     // Option-based resolution — uid/gid 0 (root on disk, the nobody/anonymous
     // identity NFS clients see under root-squash) is a first-class owner.
     // None = the field was left untouched, which keeps the current owner;
@@ -1315,6 +1343,8 @@ pub(crate) async fn apply_permissions(
     let spec = crate::fs::ApplySpec { mode, scope, file_mode };
     let prog = progress.clone();
     tokio::spawn(async move {
+        // Guarantees the poller is released even if the task panics mid-apply.
+        let _finish = FinishOnDrop(prog.clone());
         *prog.phase.lock().unwrap() = "scanning".to_string();
         let pth1 = pth.clone();
         let fs1 = fs.clone();
@@ -1497,6 +1527,18 @@ pub(crate) async fn acl_apply(
     Form(form): Form<AclApplyForm>,
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
+    // One apply at a time: a second concurrent apply would clobber the single
+    // progress slot and orphan the first apply's poller.
+    if apply_in_progress(&state).await {
+        return Ok((
+            StatusCode::CONFLICT,
+            Html(
+                r#"<div class="note-danger">Another permission apply is already running — wait for it to finish before starting a new one.</div>"#
+                    .to_string(),
+            ),
+        )
+            .into_response());
+    }
     let _p = std::path::Path::new(&form.path);
     let op = form.op.trim().to_lowercase();
     let typ = form.typ.trim().to_lowercase();
@@ -1675,6 +1717,8 @@ pub(crate) async fn acl_apply(
     let file_modf = file_modification;
     let op_for_log = op.clone();
     tokio::spawn(async move {
+        // Guarantees the poller is released even if the task panics mid-apply.
+        let _finish = FinishOnDrop(prog.clone());
         if scope == crate::fs::ApplyScope::DirOnly {
             prog.processed.store(1, Ordering::Relaxed);
             // setfacl is a subprocess; keep it off the async runtime like the

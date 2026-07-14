@@ -69,6 +69,25 @@ pub struct AclIncapableMount {
     pub fstype: String,
 }
 
+/// Reads /proc/self/mountinfo through a 2s cache. Mounts change rarely and the
+/// reprobe loop re-reads on its own cadence, so a brief stale window is fine and
+/// spares repeated syscalls when several gates fire in one request.
+fn cached_live_mountinfo() -> Option<String> {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    static CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((at, content)) = guard.as_ref() {
+        if at.elapsed() < Duration::from_secs(2) {
+            return Some(content.clone());
+        }
+    }
+    let content = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    *guard = Some((Instant::now(), content.clone()));
+    Some(content)
+}
+
 /// One mountinfo read shared across a request or reprobe pass.
 /// Read precedence per capture matches the per-call probes: an explicit
 /// fixture path first, then NFS_KLLDAP_MOUNTINFO_PATH, then
@@ -87,10 +106,15 @@ impl MountinfoSnapshot {
                 };
             }
         }
-        let live = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH")
-            .unwrap_or_else(|_| "/proc/self/mountinfo".to_string());
+        if let Ok(path) = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH") {
+            return MountinfoSnapshot {
+                content: std::fs::read_to_string(path).ok(),
+            };
+        }
+        // Pure live path: cache the /proc read for a short window so repeated
+        // gate calls in one request burst don't re-read it each time.
         MountinfoSnapshot {
-            content: std::fs::read_to_string(live).ok(),
+            content: cached_live_mountinfo(),
         }
     }
 

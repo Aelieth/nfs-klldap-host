@@ -9,7 +9,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: nfs-klldap-host:latest
+    image: nfs-klldap-host:0.9.94
     container_name: nfs-klldap-host
 
     # Host networking required: NFS + Kerberos need host-reachable addresses (not 172.17.x.x bridge).

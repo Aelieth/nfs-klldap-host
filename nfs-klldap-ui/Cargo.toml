@@ -28,7 +28,9 @@ nfs-klldap-config = { path = "../nfs-klldap-config" }
 
 # --- Web framework (Axum + HTMX via Askama) ----------------------------------
 axum = { workspace = true, features = ["macros"] }
-axum-server = { version = "0.7", default-features = false, features = ["tls-rustls"] }
+# tls-rustls-no-provider (not tls-rustls) keeps aws-lc-rs out of the graph; the
+# ring CryptoProvider is installed at startup in main.rs.
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 rustls = { workspace = true }
 rustls-pemfile = "2.2"
 rcgen = { version = "0.14", features = ["pem"] }

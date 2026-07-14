@@ -21,7 +21,10 @@ pub fn derive_export_id(name: &str, base: u16) -> u16 {
     for b in name.as_bytes() {
         h = h.wrapping_mul(16777619) ^ (*b as u32);
     }
-    base + (h % 55000) as u16
+    // Fold the id into range with u32 math so a large base can't overflow u16.
+    let floor = base as u32;
+    let span = 55000u32.min((u16::MAX as u32).saturating_sub(floor).max(1));
+    (floor + (h % span)) as u16
 }
 
 pub fn fragment_basename(index: usize, name: &str) -> String {

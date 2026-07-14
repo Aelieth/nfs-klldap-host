@@ -92,8 +92,10 @@ pub(crate) async fn acl_reprobe_tick(state: &AppState, tracker: &mut FlipTracker
     }
 
     // Snapshot the shares so the config lock is not held across the probes.
+    // Recover a poisoned lock instead of panicking — a panic here would kill the
+    // spawned watcher and silently disable auto-heal for the process lifetime.
     let shares: Vec<(String, Option<bool>, PathBuf)> = {
-        let cfg = state.config.read().expect("config lock poisoned");
+        let cfg = state.config.read().unwrap_or_else(|p| p.into_inner());
         cfg.shares
             .iter()
             .map(|s| (s.name.clone(), s.enable_acl, PathBuf::from(cfg.serve_path_for(s))))
@@ -136,7 +138,7 @@ pub(crate) async fn acl_reprobe_tick(state: &AppState, tracker: &mut FlipTracker
 
     // Rebuild the banner from the currently failing shares (clears when healed).
     let alert = build_alert(&failing);
-    *state.acl_alert.lock().unwrap() = alert.clone();
+    *state.acl_alert.lock().unwrap_or_else(|p| p.into_inner()) = alert.clone();
 
     // Schedule at most one recycle per tick; generate re-probes every share.
     let mut hup_scheduled = false;

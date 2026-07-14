@@ -1,6 +1,5 @@
 //! Post-generate hook runs after successful generate.
 
-use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -79,7 +78,7 @@ fn run_hook_for_share(
         share.name
     );
 
-    let mut child = Command::new(hook_path)
+    let child = Command::new(hook_path)
         .env("SHARE_NAME", &share.name)
         .env("HOST_PATH", share.host_path.display().to_string())
         // SOURCE_PATH = where the real data lives inside the container (staging source).
@@ -95,18 +94,15 @@ fn run_hook_for_share(
         .spawn()
         .map_err(|e| ConfigError::Validation(format!("post_generate_hook spawn failed: {e}")))?;
 
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut out) = child.stdout.take() {
-        let _ = out.read_to_string(&mut stdout);
-    }
-    if let Some(mut err) = child.stderr.take() {
-        let _ = err.read_to_string(&mut stderr);
-    }
-
-    let status = child
-        .wait()
+    // wait_with_output drains stdout and stderr concurrently. Reading one to
+    // end then the other can deadlock if the hook fills the second pipe's
+    // ~64KB buffer while the parent is still blocked on the first.
+    let output = child
+        .wait_with_output()
         .map_err(|e| ConfigError::Validation(format!("post_generate_hook wait failed: {e}")))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let status = output.status;
 
     if !stdout.trim().is_empty() {
         eprintln!(

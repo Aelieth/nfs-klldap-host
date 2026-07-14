@@ -581,10 +581,18 @@ while :; do :; done
             match action {
                 SupervisorLoopAction::ProcessSighup => {
                     let need_watcher = self.pids.watcher.is_none();
-                    self.handle_sighup()?;
-                    self.services_started = true;
-                    if need_watcher {
-                        let _ = services::start_watcher(self);
+                    // A failed reload must not unwind out of pid 1: keep the
+                    // running services on the previous configuration instead.
+                    match self.handle_sighup() {
+                        Ok(()) => {
+                            self.services_started = true;
+                            if need_watcher {
+                                let _ = services::start_watcher(self);
+                            }
+                        }
+                        Err(e) => self.log_warn(&format!(
+                            "SIGHUP reload failed ({e}); keeping services on the previous configuration"
+                        )),
                     }
                 }
                 SupervisorLoopAction::BringUpServices => {

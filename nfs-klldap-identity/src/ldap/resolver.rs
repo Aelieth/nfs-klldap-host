@@ -77,6 +77,22 @@ struct PooledConn {
 /// still heals a connection that dies sooner.
 const POOL_IDLE_MAX: Duration = Duration::from_secs(300);
 
+/// Default upper bound on one connect+bind+search attempt. The 10s connect
+/// timeout only covers the TCP/TLS handshake; this catches a server that
+/// answers the handshake then stalls the search, hanging the caller otherwise.
+const LDAP_OP_TIMEOUT_SECS: u64 = 15;
+
+/// Per-attempt operation timeout, overridable via
+/// `NFS_KLLDAP_LDAP_OP_TIMEOUT_SECS` (0 or unset falls back to the default).
+fn ldap_op_timeout() -> Duration {
+    let secs = std::env::var("NFS_KLLDAP_LDAP_OP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(LDAP_OP_TIMEOUT_SECS);
+    Duration::from_secs(secs)
+}
+
 /// True when a pooled connection has sat unused long enough that it should be
 /// rebound rather than reused.
 fn pool_entry_stale(last_used: Instant, now: Instant) -> bool {
@@ -197,7 +213,7 @@ impl IdLdapResolver {
     fn negative_hit(&self, key: &str) -> bool {
         self.negative_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .get(key)
             .is_some_and(|t| t.elapsed() < NEGATIVE_TTL)
     }
@@ -205,7 +221,7 @@ impl IdLdapResolver {
     /// Remember an authoritative miss (also shields the KDC-side LDAP during
     /// outages: repeated failures back off to one query per NEGATIVE_TTL).
     fn mark_negative(&self, key: String) {
-        self.negative_cache.lock().unwrap().insert(key, Instant::now());
+        self.negative_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(key, Instant::now());
     }
 
     /// TLS decisions delegate to the shared ldap_tls_policy (cacert-aware).
@@ -246,13 +262,13 @@ impl IdLdapResolver {
 
     /// Clear all caches (UI + idhelper reuse). 1-2 sentences.
     pub fn clear_caches(&self) {
-        self.user_cache.lock().unwrap().clear();
-        self.group_cache.lock().unwrap().clear();
-        self.user_by_uid_cache.lock().unwrap().clear();
-        self.group_by_gid_cache.lock().unwrap().clear();
-        self.group_gid_by_dn_cache.lock().unwrap().clear();
-        self.memberof_cache.lock().unwrap().clear();
-        self.negative_cache.lock().unwrap().clear();
+        self.user_cache.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.group_cache.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.user_by_uid_cache.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.group_by_gid_cache.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.group_gid_by_dn_cache.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.memberof_cache.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.negative_cache.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
 
     /// Evict expired (exposed for shared use by UI wrapper). 1 sentence.
@@ -260,32 +276,32 @@ impl IdLdapResolver {
         let now = Instant::now();
         self.user_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
         self.group_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
         self.user_by_uid_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
         self.group_by_gid_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
         // DN->gid entries: positive results live the full TTL, misses briefly.
-        self.group_gid_by_dn_cache.lock().unwrap().retain(|_, v| {
+        self.group_gid_by_dn_cache.lock().unwrap_or_else(|p| p.into_inner()).retain(|_, v| {
             let age = now.duration_since(v.fetched_at);
             if v.gid.is_some() { age < IDENTITY_CACHE_TTL } else { age < NEGATIVE_TTL }
         });
         self.memberof_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .retain(|_, v| now.duration_since(v.fetched_at) < IDENTITY_CACHE_TTL);
         self.negative_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .retain(|_, t| now.duration_since(*t) < NEGATIVE_TTL);
     }
 
@@ -363,7 +379,7 @@ impl IdLdapResolver {
     /// POOL_IDLE_MAX, is discarded so the pool never mixes identities or hands
     /// back a connection the server has likely already closed.
     fn take_pooled_conn(&self, bind_dn: &str) -> Option<LdapConn> {
-        let mut slot = self.conn_pool.lock().unwrap();
+        let mut slot = self.conn_pool.lock().unwrap_or_else(|p| p.into_inner());
         match slot.take() {
             Some(p) if p.bound_as == bind_dn && !pool_entry_stale(p.last_used, Instant::now()) => {
                 Some(p.ldap)
@@ -377,7 +393,7 @@ impl IdLdapResolver {
     }
 
     fn store_pooled_conn(&self, ldap: LdapConn, bind_dn: &str) {
-        let mut slot = self.conn_pool.lock().unwrap();
+        let mut slot = self.conn_pool.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(mut old) = slot.take() {
             let _ = old.ldap.unbind();
         }
@@ -412,6 +428,7 @@ impl IdLdapResolver {
         let attrs = attrs.clone();
         let dn = bind_dn.to_string();
         let pw = bind_pw.to_string();
+        let op_timeout = ldap_op_timeout();
 
         for attempt in 0..3 {
             let pooled = self.take_pooled_conn(&dn);
@@ -426,39 +443,47 @@ impl IdLdapResolver {
             let did_bind = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let did_bind2 = std::sync::Arc::clone(&did_bind);
 
-            let res = std::thread::spawn(move || {
-                let mut ldap = match pooled {
-                    Some(c) => c,
-                    None => {
-                        let mut fresh = LdapConn::with_settings(settings2, &uri2)
-                            .map_err(|e| format!("connect: {}", e))?;
-                        did_bind2.store(true, Ordering::Relaxed);
-                        fresh
-                            .simple_bind(&dn2, &pw2)
-                            .map_err(|e| format!("bind: {}", e))?
-                            .success()
-                            .map_err(|e| format!("bind success: {:?}", e))?;
-                        fresh
-                    }
-                };
+            // The worker sends its result over a channel so a post-connect
+            // stall (server accepts, then never answers the search) can't wedge
+            // the caller forever on join(). A timed-out worker is left detached;
+            // it is bounded work and drops its connection when it unblocks.
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = (|| {
+                    let mut ldap = match pooled {
+                        Some(c) => c,
+                        None => {
+                            let mut fresh = LdapConn::with_settings(settings2, &uri2)
+                                .map_err(|e| format!("connect: {}", e))?;
+                            did_bind2.store(true, Ordering::Relaxed);
+                            fresh
+                                .simple_bind(&dn2, &pw2)
+                                .map_err(|e| format!("bind: {}", e))?
+                                .success()
+                                .map_err(|e| format!("bind success: {:?}", e))?;
+                            fresh
+                        }
+                    };
 
-                match ldap
-                    .search(&base2, Scope::Subtree, &filter2, attrs2)
-                    .map_err(|e| format!("search: {}", e))
-                    .and_then(|r| r.success().map_err(|e| format!("search success: {:?}", e)))
-                {
-                    Ok((rs, _res)) => Ok((
-                        rs.into_iter().map(SearchEntry::construct).collect::<Vec<_>>(),
-                        ldap,
-                    )),
-                    Err(e) => {
-                        // A failed conn is never pooled again.
-                        let _ = ldap.unbind();
-                        Err(e)
+                    match ldap
+                        .search(&base2, Scope::Subtree, &filter2, attrs2)
+                        .map_err(|e| format!("search: {}", e))
+                        .and_then(|r| r.success().map_err(|e| format!("search success: {:?}", e)))
+                    {
+                        Ok((rs, _res)) => Ok((
+                            rs.into_iter().map(SearchEntry::construct).collect::<Vec<_>>(),
+                            ldap,
+                        )),
+                        Err(e) => {
+                            // A failed conn is never pooled again.
+                            let _ = ldap.unbind();
+                            Err(e)
+                        }
                     }
-                }
-            })
-            .join();
+                })();
+                let _ = tx.send(result);
+            });
+            let res = rx.recv_timeout(op_timeout);
 
             if did_bind.load(Ordering::Relaxed) {
                 self.bind_count.fetch_add(1, Ordering::Relaxed);
@@ -479,11 +504,13 @@ impl IdLdapResolver {
                     }
                     std::thread::sleep(Duration::from_millis(200 * (attempt + 1) as u64));
                 }
-                Err(e) => {
-                    if attempt == 2 {
-                        return Err(format!("join: {:?}", e));
-                    }
-                    std::thread::sleep(Duration::from_millis(200 * (attempt + 1) as u64));
+                Err(_timeout) => {
+                    // Hung post-connect: don't retry (a wedged socket won't
+                    // recover in 200ms and each retry leaks another worker).
+                    return Err(format!(
+                        "ldap operation timed out after {}s",
+                        op_timeout.as_secs()
+                    ));
                 }
             }
         }
@@ -497,7 +524,7 @@ impl IdLdapResolver {
         bind_pw: &str,
     ) -> Option<(i32, Option<i32>, String)> {
         self.evict_expired();
-        if let Some(hit) = self.user_cache.lock().unwrap().get(name).cloned() {
+        if let Some(hit) = self.user_cache.lock().unwrap_or_else(|p| p.into_inner()).get(name).cloned() {
             if let Some(uid) = hit.uid_number {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Some((uid, hit.primary_gid, hit.display_name.clone()));
@@ -547,38 +574,47 @@ impl IdLdapResolver {
             v
         };
 
+        // Set when a search returns a hard error (server unreachable): all bases
+        // share one connection, so trying the rest — or the UPN pass — only
+        // repeats the same ~10s×3 stall. Skip ahead to the negative cache.
+        let mut unreachable = false;
         for base in &bases {
-            if let Ok(entries) = self.service_search(base, &name_filter, attrs.clone(), bind_dn, bind_pw)
-            {
-                for se in entries {
-                    let display = Self::extract_display_name(&se, &full_attr, name);
-                    if let Some(uid_str) = Self::extract_first_attr(&se, &uid_attr) {
-                        if let Ok(u) = uid_str.parse::<i32>() {
-                            let g = Self::extract_first_attr(&se, &gid_attr)
-                                .and_then(|s| s.trim().parse::<i32>().ok());
-                            let user = CachedUser {
-                                id: name.to_string(),
-                                uid_number: Some(u),
-                                primary_gid: g,
-                                display_name: display.clone(),
-                                fetched_at: Instant::now(),
-                            };
-                            self.user_cache
-                                .lock()
-                                .unwrap()
-                                .insert(name.to_string(), user.clone());
-                            if let Some(uid) = user.uid_number {
-                                self.user_by_uid_cache.lock().unwrap().insert(uid, user);
+            match self.service_search(base, &name_filter, attrs.clone(), bind_dn, bind_pw) {
+                Ok(entries) => {
+                    for se in entries {
+                        let display = Self::extract_display_name(&se, &full_attr, name);
+                        if let Some(uid_str) = Self::extract_first_attr(&se, &uid_attr) {
+                            if let Ok(u) = uid_str.parse::<i32>() {
+                                let g = Self::extract_first_attr(&se, &gid_attr)
+                                    .and_then(|s| s.trim().parse::<i32>().ok());
+                                let user = CachedUser {
+                                    id: name.to_string(),
+                                    uid_number: Some(u),
+                                    primary_gid: g,
+                                    display_name: display.clone(),
+                                    fetched_at: Instant::now(),
+                                };
+                                self.user_cache
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .insert(name.to_string(), user.clone());
+                                if let Some(uid) = user.uid_number {
+                                    self.user_by_uid_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(uid, user);
+                                }
+                                return Some((u, g, display));
                             }
-                            return Some((u, g, display));
                         }
                     }
+                }
+                Err(_) => {
+                    unreachable = true;
+                    break;
                 }
             }
         }
 
         // If username looks like UPN, retry search on krbPrincipalName.
-        if name.contains('@') {
+        if name.contains('@') && !unreachable {
             let p_filter = format!(
                 "(&(objectClass={})({}={}))",
                 obj,
@@ -605,10 +641,10 @@ impl IdLdapResolver {
                                 };
                                 self.user_cache
                                     .lock()
-                                    .unwrap()
+                                    .unwrap_or_else(|p| p.into_inner())
                                     .insert(short.clone(), user.clone());
                                 if let Some(uid) = user.uid_number {
-                                    self.user_by_uid_cache.lock().unwrap().insert(uid, user);
+                                    self.user_by_uid_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(uid, user);
                                 }
                                 return Some((u, g, display));
                             }
@@ -623,7 +659,7 @@ impl IdLdapResolver {
 
     pub fn resolve_group(&self, name: &str, bind_dn: &str, bind_pw: &str) -> Option<(i32, String)> {
         self.evict_expired();
-        if let Some(hit) = self.group_cache.lock().unwrap().get(name).cloned() {
+        if let Some(hit) = self.group_cache.lock().unwrap_or_else(|p| p.into_inner()).get(name).cloned() {
             if let Some(gid) = hit.gid_number {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Some((gid, hit.display_name.clone()));
@@ -679,10 +715,10 @@ impl IdLdapResolver {
                     };
                     self.group_cache
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|p| p.into_inner())
                         .insert(name.to_string(), group.clone());
                     if let Some(gid) = group.gid_number {
-                        self.group_by_gid_cache.lock().unwrap().insert(gid, group);
+                        self.group_by_gid_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(gid, group);
                     }
                     return Some((g, display));
                 }
@@ -699,7 +735,7 @@ impl IdLdapResolver {
         bind_pw: &str,
     ) -> Option<(String, String)> {
         self.evict_expired();
-        if let Some(hit) = self.user_by_uid_cache.lock().unwrap().get(&uid).cloned() {
+        if let Some(hit) = self.user_by_uid_cache.lock().unwrap_or_else(|p| p.into_inner()).get(&uid).cloned() {
             if hit.uid_number.is_some() {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Some((hit.id.clone(), hit.display_name.clone()));
@@ -749,8 +785,8 @@ impl IdLdapResolver {
                             display_name: display.clone(),
                             fetched_at: Instant::now(),
                         };
-                        self.user_cache.lock().unwrap().insert(id.clone(), cu.clone());
-                        self.user_by_uid_cache.lock().unwrap().insert(uid, cu);
+                        self.user_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), cu.clone());
+                        self.user_by_uid_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(uid, cu);
                         return Some((id, display));
                     }
                 }
@@ -767,7 +803,7 @@ impl IdLdapResolver {
         bind_pw: &str,
     ) -> Option<(String, String)> {
         self.evict_expired();
-        if let Some(hit) = self.group_by_gid_cache.lock().unwrap().get(&gid).cloned() {
+        if let Some(hit) = self.group_by_gid_cache.lock().unwrap_or_else(|p| p.into_inner()).get(&gid).cloned() {
             if hit.gid_number.is_some() {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Some((hit.id.clone(), hit.display_name.clone()));
@@ -781,8 +817,8 @@ impl IdLdapResolver {
             let (name, disp) = if gid == 1001 { ("staff", "staff") } else if gid == 600 { ("oldgrp", "oldgrp") } else if gid == 500 { ("devs", "devs") } else { ("g", "g") };
             if name != "g" {
                 let cg = CachedGroup { id: name.to_string(), gid_number: Some(gid), display_name: disp.to_string(), members: vec![], fetched_at: Instant::now() };
-                self.group_cache.lock().unwrap().insert(name.to_string(), cg.clone());
-                self.group_by_gid_cache.lock().unwrap().insert(gid, cg);
+                self.group_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(name.to_string(), cg.clone());
+                self.group_by_gid_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(gid, cg);
                 return Some((name.to_string(), disp.to_string()));
             }
         }
@@ -829,8 +865,8 @@ impl IdLdapResolver {
                             members,
                             fetched_at: Instant::now(),
                         };
-                        self.group_cache.lock().unwrap().insert(id.clone(), cg.clone());
-                        self.group_by_gid_cache.lock().unwrap().insert(gid, cg);
+                        self.group_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), cg.clone());
+                        self.group_by_gid_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(gid, cg);
                         return Some((id, display));
                     }
                 }
@@ -861,7 +897,7 @@ impl IdLdapResolver {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            let groups = self.group_cache.lock().unwrap();
+            let groups = self.group_cache.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(g) = groups.get(rdn).and_then(|c| c.gid_number) {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Some(g);
@@ -876,7 +912,7 @@ impl IdLdapResolver {
             }
         }
         // Whole-DN cache (positive full TTL, misses at NEGATIVE_TTL).
-        if let Some(hit) = self.group_gid_by_dn_cache.lock().unwrap().get(group_dn) {
+        if let Some(hit) = self.group_gid_by_dn_cache.lock().unwrap_or_else(|p| p.into_inner()).get(group_dn) {
             let ttl = if hit.gid.is_some() { IDENTITY_CACHE_TTL } else { NEGATIVE_TTL };
             if hit.fetched_at.elapsed() < ttl {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
@@ -899,7 +935,7 @@ impl IdLdapResolver {
                 }
             }
         }
-        self.group_gid_by_dn_cache.lock().unwrap().insert(
+        self.group_gid_by_dn_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(
             group_dn.to_string(),
             CachedDnGid { gid: found, fetched_at: Instant::now() },
         );
@@ -1057,7 +1093,7 @@ impl IdLdapResolver {
         if std::env::var("TEST_REBULK_POPULATE").is_ok() {
             return Some(("uid=test,ou=people".into(), vec!["cn=staff,ou=groups".into()]));
         }
-        if let Some(hit) = self.memberof_cache.lock().unwrap().get(username) {
+        if let Some(hit) = self.memberof_cache.lock().unwrap_or_else(|p| p.into_inner()).get(username) {
             if hit.fetched_at.elapsed() < IDENTITY_CACHE_TTL {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Some((hit.dn.clone(), hit.memberofs.clone()));
@@ -1092,7 +1128,7 @@ impl IdLdapResolver {
             .or_else(|| se.attrs.get("memberof"))
             .cloned()
             .unwrap_or_default();
-        self.memberof_cache.lock().unwrap().insert(
+        self.memberof_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(
             username.to_string(),
             CachedMemberOf {
                 dn: se.dn.clone(),
@@ -1168,8 +1204,8 @@ impl IdLdapResolver {
     /// (user, group) cache entry counts for UI stats display.
     pub fn cache_entry_counts(&self) -> (usize, usize) {
         (
-            self.user_cache.lock().unwrap().len(),
-            self.group_cache.lock().unwrap().len(),
+            self.user_cache.lock().unwrap_or_else(|p| p.into_inner()).len(),
+            self.group_cache.lock().unwrap_or_else(|p| p.into_inner()).len(),
         )
     }
 
@@ -1190,8 +1226,8 @@ impl IdLdapResolver {
                 if f.len() == 4 && f[0] == "u" {
                     if let (Ok(u), Ok(g)) = (f[2].parse::<i32>(), f[3].parse::<i32>()) {
                         let cu = CachedUser { id: f[1].to_string(), uid_number: Some(u), primary_gid: Some(g), display_name: f[1].to_string(), fetched_at: Instant::now() };
-                        self.user_cache.lock().unwrap().insert(f[1].to_string(), cu.clone());
-                        self.user_by_uid_cache.lock().unwrap().insert(u, cu);
+                        self.user_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(f[1].to_string(), cu.clone());
+                        self.user_by_uid_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(u, cu);
                         cnt += 1;
                     }
                 } else if f.len() >= 3 && f[0] == "g" {
@@ -1202,8 +1238,8 @@ impl IdLdapResolver {
                             vec![]
                         };
                         let cg = CachedGroup { id: f[1].to_string(), gid_number: Some(g), display_name: f[1].to_string(), members, fetched_at: Instant::now() };
-                        self.group_cache.lock().unwrap().insert(f[1].to_string(), cg.clone());
-                        self.group_by_gid_cache.lock().unwrap().insert(g, cg);
+                        self.group_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(f[1].to_string(), cg.clone());
+                        self.group_by_gid_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(g, cg);
                     }
                 }
             }
@@ -1274,8 +1310,8 @@ impl IdLdapResolver {
                                 display_name: display.clone(),
                                 fetched_at: Instant::now(),
                             };
-                            self.user_cache.lock().unwrap().insert(id.clone(), cu.clone());
-                            self.user_by_uid_cache.lock().unwrap().insert(u, cu);
+                            self.user_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), cu.clone());
+                            self.user_by_uid_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(u, cu);
                             loaded += 1;
 
                             if let Some(pval) = Self::extract_first_attr(&se, &principal_attr) {
@@ -1289,7 +1325,7 @@ impl IdLdapResolver {
                                     };
                                     self.user_cache
                                         .lock()
-                                        .unwrap()
+                                        .unwrap_or_else(|p| p.into_inner())
                                         .insert(pval.clone(), cu2);
                                 }
                             }
@@ -1328,8 +1364,8 @@ impl IdLdapResolver {
                                 members,
                                 fetched_at: Instant::now(),
                             };
-                            self.group_cache.lock().unwrap().insert(id.clone(), cg.clone());
-                            self.group_by_gid_cache.lock().unwrap().insert(g, cg);
+                            self.group_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), cg.clone());
+                            self.group_by_gid_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(g, cg);
                         }
                     }
                 }
@@ -1343,7 +1379,7 @@ impl IdLdapResolver {
         self.evict_expired();
         let mut snap = IdMapSnapshot::default();
 
-        for (name, cu) in self.user_cache.lock().unwrap().iter() {
+        for (name, cu) in self.user_cache.lock().unwrap_or_else(|p| p.into_inner()).iter() {
             if let Some(uid) = cu.uid_number {
                 let gid = cu.primary_gid.unwrap_or(uid);
                 snap.users.insert(
@@ -1357,7 +1393,7 @@ impl IdLdapResolver {
                 snap.by_uid.insert(uid, name.clone());
             }
         }
-        for (name, cg) in self.group_cache.lock().unwrap().iter() {
+        for (name, cg) in self.group_cache.lock().unwrap_or_else(|p| p.into_inner()).iter() {
             if let Some(gid) = cg.gid_number {
                 snap.groups.insert(
                     name.clone(),
@@ -1442,7 +1478,7 @@ mod tests {
             false,
             None,
         );
-        r.group_cache.lock().unwrap().insert(
+        r.group_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(
             "media".into(),
             CachedGroup {
                 id: "media".into(),
@@ -1461,6 +1497,42 @@ mod tests {
             r.group_gid_from_dn("cn=MEDIA,ou=groups,dc=t", "dn", "pw"),
             Some(3005),
             "case-insensitive RDN match must also short-circuit"
+        );
+    }
+
+    #[test]
+    fn service_search_times_out_on_a_stalled_server() {
+        // A server that accepts the TCP connection but never answers the bind
+        // must not hang the caller forever: the op timeout bounds it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            // Accept and hold the connection open without ever replying.
+            if let Ok((stream, _)) = listener.accept() {
+                std::thread::sleep(Duration::from_secs(10));
+                drop(stream);
+            }
+        });
+
+        std::env::set_var("NFS_KLLDAP_LDAP_OP_TIMEOUT_SECS", "2");
+        let r = IdLdapResolver::new(
+            &format!("ldap://127.0.0.1:{port}"),
+            "ou=people,dc=t",
+            "ou=groups,dc=t",
+            resolve_posix_attribute_mapping(&PosixMappingInput::default()),
+            false,
+            false,
+            None,
+        );
+        let start = Instant::now();
+        let got = r.resolve_user("stalled", "dn", "pw");
+        let elapsed = start.elapsed();
+        std::env::remove_var("NFS_KLLDAP_LDAP_OP_TIMEOUT_SECS");
+
+        assert!(got.is_none(), "a stalled server yields no result");
+        assert!(
+            elapsed < Duration::from_secs(9),
+            "resolve must be bounded by the op timeout, took {elapsed:?}"
         );
     }
 
@@ -1503,7 +1575,7 @@ mod tests {
             false,
             None,
         );
-        r.memberof_cache.lock().unwrap().insert(
+        r.memberof_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(
             "testuser1".into(),
             CachedMemberOf {
                 dn: "uid=testuser1,ou=people,dc=t".into(),
@@ -1511,18 +1583,18 @@ mod tests {
                 fetched_at: Instant::now(),
             },
         );
-        r.group_gid_by_dn_cache.lock().unwrap().insert(
+        r.group_gid_by_dn_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(
             "cn=oldgroup,ou=groups,dc=t".into(),
             CachedDnGid { gid: Some(500), fetched_at: Instant::now() },
         );
         r.mark_negative("g:ghost".into());
-        assert!(!r.memberof_cache.lock().unwrap().is_empty());
+        assert!(!r.memberof_cache.lock().unwrap_or_else(|p| p.into_inner()).is_empty());
 
         let _ = r.load_full_identities("dn", "pw");
 
-        assert!(r.memberof_cache.lock().unwrap().is_empty(), "rebulk must drop stale memberOf");
+        assert!(r.memberof_cache.lock().unwrap_or_else(|p| p.into_inner()).is_empty(), "rebulk must drop stale memberOf");
         assert!(
-            r.group_gid_by_dn_cache.lock().unwrap().is_empty(),
+            r.group_gid_by_dn_cache.lock().unwrap_or_else(|p| p.into_inner()).is_empty(),
             "rebulk must drop stale DN->gid entries"
         );
         assert!(!r.negative_hit("g:ghost"), "rebulk must drop negative-cache entries");

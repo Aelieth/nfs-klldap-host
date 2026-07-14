@@ -37,6 +37,10 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
     // Per-uid rate limit for nfs_creds managed_gids failure heals.
     let mut healed_uids: std::collections::HashMap<u32, std::time::Instant> =
         std::collections::HashMap::new();
+    // Per-user + global rate limit for the getgrouplist REBULK/SIGHUP heal.
+    let mut healed_getgrouplist: std::collections::HashMap<String, std::time::Instant> =
+        std::collections::HashMap::new();
+    let mut last_getgrouplist_heal: Option<std::time::Instant> = None;
 
     loop {
         match File::open(path) {
@@ -61,7 +65,14 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                                 &mut bridge_warned,
                                 dedup_window,
                             );
-                            detect_my_getgrouplist_failure_and_heal(line, &cache, realm, variants);
+                            detect_my_getgrouplist_failure_and_heal(
+                                line,
+                                &cache,
+                                realm,
+                                variants,
+                                &mut healed_getgrouplist,
+                                &mut last_getgrouplist_heal,
+                            );
                             detect_managed_gids_uid_failure_and_heal(
                                 line,
                                 &cache,
@@ -105,7 +116,7 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
 
                                     eprintln!("[idhelper] observed from ganesha log: {}", candidate);
                                     {
-                                        let mut guard = cache.lock().unwrap();
+                                        let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
                                         let prod = crate::materialize::NssMaterializePaths::production();
                                         let _ = resolve_principal(&candidate, realm, variants, &mut guard, &prod);
                                         let _ = resolve_gids_and_materialize(
@@ -299,7 +310,7 @@ fn heal_principal_immediately(
         candidate
     );
     {
-        let mut guard = cache.lock().unwrap();
+        let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
         let prod = crate::materialize::NssMaterializePaths::production();
         let _ = resolve_principal(candidate, realm, variants, &mut guard, &prod);
         let _ = resolve_gids_and_materialize(
@@ -355,6 +366,8 @@ fn detect_my_getgrouplist_failure_and_heal(
     cache: &std::sync::Arc<std::sync::Mutex<crate::common::IdCache>>,
     realm: &str,
     variants: &[String],
+    healed: &mut std::collections::HashMap<String, std::time::Instant>,
+    last_heal: &mut Option<std::time::Instant>,
 ) {
     let low = line.to_ascii_lowercase();
     if !low.contains("my_getgrouplist_alloc") || !(low.contains("failed") || low.contains("warn")) {
@@ -367,6 +380,24 @@ fn detect_my_getgrouplist_failure_and_heal(
     } else {
         "unknown".to_string()
     };
+    // Each heal is a REBULK + re-materialize + SIGHUP; without a bound a flood
+    // of failure lines becomes a reload storm. Skip a per-user repeat inside 30s
+    // and hold a 5s global floor between cycles (mirrors the managed_gids path).
+    let now = std::time::Instant::now();
+    if healed
+        .get(&user)
+        .is_some_and(|last| now.duration_since(*last) < Duration::from_secs(30))
+    {
+        return;
+    }
+    if last_heal.is_some_and(|last| now.duration_since(last) < Duration::from_secs(5)) {
+        return;
+    }
+    healed.insert(user.clone(), now);
+    if healed.len() > 2048 {
+        healed.retain(|_, t| now.duration_since(*t) < Duration::from_secs(30));
+    }
+    *last_heal = Some(now);
     let errno = extract_errno(line).unwrap_or(0u32);
     let ngroups = extract_ngroups(line).unwrap_or(0u32);
     eprintln!(
@@ -389,7 +420,7 @@ fn detect_my_getgrouplist_failure_and_heal(
     };
     // direct heal using lock — re-seed short pw_name parsed from ganesha log line
     {
-        let mut guard = cache.lock().unwrap();
+        let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
         let prod = crate::materialize::NssMaterializePaths::production();
         let _ = crate::resolve::resolve_principal("root", realm, variants, &mut guard, &prod);
         let _ = crate::resolve::resolve_principal(&principal, realm, variants, &mut guard, &prod);
@@ -473,7 +504,7 @@ fn detect_managed_gids_uid_failure_and_heal(
     let prod = crate::materialize::NssMaterializePaths::production();
     let row_present = nss_passwd_has_uid(prod.nss_passwd, uid);
     let cached_principal: Option<String> = {
-        let guard = cache.lock().unwrap();
+        let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
         guard
             .entries
             .values()
@@ -501,7 +532,7 @@ fn detect_managed_gids_uid_failure_and_heal(
         }
     }
     {
-        let guard = cache.lock().unwrap();
+        let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
         let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);
     }
     if let Some(pid) = resolve_live_ganesha_pid() {
@@ -963,7 +994,17 @@ manage_gids = true
         std::env::set_var("NFS_KLLDAP_GANESHA_PID", "0");
         let line = "my_getgrouplist_alloc :ID MAPPER :WARN :getgrouplist for user:testuser1 failed, ngroups: 3, errno: 3";
         let cache = std::sync::Arc::new(std::sync::Mutex::new(crate::common::IdCache::default()));
-        detect_my_getgrouplist_failure_and_heal(line, &cache, "TEST.COM", &[]);
+        let mut healed = std::collections::HashMap::new();
+        let mut last_heal = None;
+        detect_my_getgrouplist_failure_and_heal(
+            line, &cache, "TEST.COM", &[], &mut healed, &mut last_heal,
+        );
+        // A second identical line inside the 30s window must be rate-limited out.
+        let before = last_heal;
+        detect_my_getgrouplist_failure_and_heal(
+            line, &cache, "TEST.COM", &[], &mut healed, &mut last_heal,
+        );
+        assert_eq!(before, last_heal, "repeat within window must be skipped");
         if let Some(v) = old {
             std::env::set_var("NFS_KLLDAP_GANESHA_PID", v);
         } else {

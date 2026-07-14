@@ -1,7 +1,10 @@
 //! Persistent config detection is tolerant.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
+#[cfg(test)]
 use crate::ConfigError;
 
 /// True when config path is on a host bind mount, not container rootfs.
@@ -31,6 +34,7 @@ pub fn is_persistent_config(_path: &Path) -> bool {
 }
 
 /// Loads [[shares]] host_path entries only and tolerates incomplete config.
+#[cfg(test)]
 pub fn load_host_paths_only(path: &Path) -> Result<Vec<PathBuf>, ConfigError> {
     if !path.exists() {
         return Ok(vec![]);

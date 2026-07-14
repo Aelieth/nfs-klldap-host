@@ -1,8 +1,10 @@
 //! Classify Ganesha log NOTSUPP.
 
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 
 /// Diagnosis for Ganesha 9.6 ACL-path defect on staging.
+#[cfg(test)]
 pub const GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB: &str =
     "Ganesha 9.6: Disable_ACL on noacl still lets nfs_access_op see ACL mask in some paths; \
      use container_path staging on acl-capable tree for full compatibility.";
@@ -23,11 +25,13 @@ pub enum NotsuppFailurePath {
 }
 
 /// Path to the committed ACL-NOTSUPP reference transcript (classification tests).
+#[cfg(test)]
 pub fn acl_notsupp_fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ganesha-acl-notsupp.log")
 }
 
 /// Load the committed ACL-NOTSUPP reference transcript.
+#[cfg(test)]
 pub fn load_acl_notsupp_fixture() -> std::io::Result<String> {
     std::fs::read_to_string(acl_notsupp_fixture_path())
 }
@@ -40,7 +44,7 @@ fn line_is_identity_failure(line: &str) -> bool {
 }
 
 /// True when log shows uid2grp/principal identity chain failure (not ACL-path.
-pub fn log_shows_identity_failure(content: &str) -> bool {
+pub(crate) fn log_shows_identity_failure(content: &str) -> bool {
     content.lines().any(line_is_identity_failure)
 }
 
@@ -51,7 +55,7 @@ fn window_has_op_access_notsupp(window: &[&str]) -> bool {
 }
 
 /// True when OP_ACCESS ACL mask is followed within a few lines by OP_ACCESS N.
-pub fn log_shows_acl_path_op_access_notsupp(content: &str) -> bool {
+pub(crate) fn log_shows_acl_path_op_access_notsupp(content: &str) -> bool {
     if log_shows_identity_failure(content) {
         return false;
     }
@@ -74,7 +78,7 @@ fn window_has_getattr_notsupp(window: &[&str]) -> bool {
 }
 
 /// True when Permission check for ACL fails with NOTSUPP on the same GETATTR.
-pub fn log_shows_acl_path_getattr_notsupp(content: &str) -> bool {
+pub(crate) fn log_shows_acl_path_getattr_notsupp(content: &str) -> bool {
     if log_shows_identity_failure(content) {
         return false;
     }
@@ -95,16 +99,19 @@ pub fn log_shows_acl_path_getattr_notsupp(content: &str) -> bool {
 }
 
 /// True when GETATTR skips ACL permission check (posix-only getattr path OK)
+#[cfg(test)]
 pub fn log_shows_posix_ok_getattr(content: &str) -> bool {
     content.contains("No permission check for ACL") && content.contains("OP_GETATTR")
 }
 
 /// Diagnosis for a clean client abort after successful session setup.
+#[cfg(test)]
 pub const CLIENT_ABORT_BEFORE_NAMESPACE_DIAGNOSIS: &str =
     "Server-side Kerberos auth and NFSv4.1 session setup succeeded; the client destroyed the \
      session before any namespace op (PUTROOTFH/LOOKUP/GETATTR). Failure is client-side: check \
      rpc.gssd logs, /etc/krb5.keytab, mount options (vers=4.2,sec=krb5*), and the client journal.";
 
+#[cfg(test)]
 fn op_status_ok(content: &str, op: &str) -> bool {
     let needle = format!("Status of {op} in position");
     content
@@ -114,6 +121,7 @@ fn op_status_ok(content: &str, op: &str) -> bool {
 
 /// True when EXCHANGE_ID/CREATE_SESSION/RECLAIM_COMPLETE all succeeded, the client then
 /// destroyed session+clientid, and no namespace traversal op was ever attempted.
+#[cfg(test)]
 pub fn log_shows_client_abort_before_namespace(content: &str) -> bool {
     let namespace_attempted = [
         "OP_PUTROOTFH",
@@ -134,7 +142,7 @@ pub fn log_shows_client_abort_before_namespace(content: &str) -> bool {
 }
 
 /// True when identity/principal failure and NOTSUPP occur in the same line wi.
-pub fn log_shows_identity_path_notsupp(content: &str) -> bool {
+pub(crate) fn log_shows_identity_path_notsupp(content: &str) -> bool {
     let lines: Vec<&str> = content.lines().collect();
     for (i, line) in lines.iter().enumerate() {
         if line_is_identity_failure(line) {
@@ -160,6 +168,7 @@ pub fn classify_notsupp_failure_path(content: &str) -> NotsuppFailurePath {
 }
 
 /// Three signature lines from a ganesha.log for diagnosis evidence (OP_ACCESS ACL,
+#[cfg(test)]
 pub fn acl_notsupp_diagnosis_signatures(content: &str) -> (Option<String>, Option<String>, Option<String>) {
     let mut op_access = None;
     let mut getattr_acl = None;
@@ -182,6 +191,7 @@ pub fn acl_notsupp_diagnosis_signatures(content: &str) -> (Option<String>, Optio
 }
 
 /// Validate an ACL-NOTSUPP transcript carries the three known failure/OK signatures.
+#[cfg(test)]
 pub fn validate_acl_notsupp_fixture(path: &Path) -> Result<(), String> {
     let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let (op, ga_acl, ga_ok) = acl_notsupp_diagnosis_signatures(&content);

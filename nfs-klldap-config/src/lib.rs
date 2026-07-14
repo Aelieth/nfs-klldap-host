@@ -63,11 +63,7 @@ pub use fs_probe::{
     ReadAccessPolicyEmit, FsCapabilities,
 };
 pub use ganesha_log_contract::{
-    acl_notsupp_diagnosis_signatures, acl_notsupp_fixture_path, classify_notsupp_failure_path,
-    ganesha_96_has_mode_only_access_knob, load_acl_notsupp_fixture,
-    log_shows_acl_path_getattr_notsupp, log_shows_acl_path_op_access_notsupp,
-    log_shows_identity_failure, log_shows_identity_path_notsupp, log_shows_posix_ok_getattr,
-    validate_acl_notsupp_fixture, NotsuppFailurePath, GANESHA_96_NO_MODE_ONLY_ACCESS_KNOB,
+    classify_notsupp_failure_path, ganesha_96_has_mode_only_access_knob, NotsuppFailurePath,
 };
 pub use ganesha_identity_pipeline::{
     identity_principals_for_check, probe_client_host, probe_user_principal,
@@ -100,7 +96,7 @@ pub use fs_warnings::{
     any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warning,
     limited_fs_warning_settings_ui, limited_fs_warnings_only, share_divergent_submount_warning_snapshot,
     share_fs_acl_limited, share_fs_acl_limited_snapshot, share_fs_acl_limited_with_mountinfo,
-    share_fs_warning_message, share_fs_warning_message_snapshot,
+    share_fs_warning_message_snapshot,
     share_fs_warning_message_with_mountinfo, FsShareWarning, PosixOnlyPolicy,
 };
 pub use hook::{effective_post_generate_hook, run_post_generate_hooks};
@@ -119,7 +115,7 @@ pub use hostname::{
     webui_tls_disabled,
     ConsistentHostname, HostnameInconsistency, HostnameObservation, HostnameSource,
 };
-pub use persist::{is_persistent_config, load_host_paths_only};
+pub use persist::is_persistent_config;
 pub use startup::{
     attempt_realm_from_config, check_ldap_bind, check_ldap_reachability, check_persistent_writable,
     compute_startup_step, compute_wizard_step, config_has_required_startup_fields,

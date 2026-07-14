@@ -543,7 +543,7 @@ fn load_host_paths_only_returns_only_host_paths() {
     "#;
     fs::write(&path, partial).unwrap();
 
-    let roots = load_host_paths_only(&path).expect("should parse partial config");
+    let roots = crate::persist::load_host_paths_only(&path).expect("should parse partial config");
     assert_eq!(roots.len(), 2);
     assert!(roots.iter().any(|p| p.to_string_lossy().contains("movies")));
     assert!(roots

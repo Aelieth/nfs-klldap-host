@@ -190,6 +190,8 @@ pub fn limited_fs_warnings_only(cfg: &NfsKlldapConfig) -> Vec<FsShareWarning> {
 }
 
 /// System Settings badge text when serve path is on a limited filesystem.
+/// Live-probe convenience; production paths use the snapshot/mountinfo variants.
+#[cfg(test)]
 pub fn share_fs_warning_message(cfg: &NfsKlldapConfig, share: &Share) -> Option<String> {
     share_fs_warning_message_with_mountinfo(cfg, share, None)
 }

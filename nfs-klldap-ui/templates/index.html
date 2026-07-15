@@ -42,11 +42,22 @@
           <span class="share-dot {% if share.acl_capable %}acl{% else %}noacl{% endif %}"
                 title="{% if share.acl_capable %}ACL supported{% else %}Non-ACL limited{% endif %}"></span>
           <strong>{{ share.name }}</strong>
+          {# Chips are non-conformity signals: only options that deviate from the default/auto
+             values render (RW, root_squash, cache default, and the [ganesha] default security
+             stay implicit). ACL state stays out — the dot and the panel ACL section carry it. #}
           <div class="share-chips">
-            <span class="share-chip {% if !share.acl_capable %}noacl{% endif %}">acl {{ share.acl_state_label }}</span>
-            <span class="share-chip">{{ share.access }}</span>
-            <span class="share-chip">{{ share.squash_label }}</span>
+            {% if share.access == "RO" %}
+            <span class="share-chip ro" title="read-only export">{{ share.access }}</span>
+            {% endif %}
+            {% if share.squash_label == "no_root_squash" %}
+            <span class="share-chip warn" title="root is not squashed on this export">{{ share.squash_label }}</span>
+            {% endif %}
+            {% if share.cache_profile != "default" %}
             <span class="share-chip">cache: {{ share.cache_profile }}</span>
+            {% endif %}
+            {% if let Some(sec) = share.security_chip %}
+            <span class="share-chip" title="differs from the [ganesha] default security">{{ sec }}</span>
+            {% endif %}
             {% if let Some(warn) = share.warning %}
             <span class="share-chip warn" title="{{ warn }}">{{ warn }}</span>
             {% endif %}

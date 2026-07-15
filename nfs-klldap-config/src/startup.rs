@@ -374,18 +374,14 @@ pub fn check_ldap_bind(cfg: &NfsKlldapConfig) -> Result<(), String> {
 /// Gates on field *presence* + structural ldap_uri validity, not full validation.
 /// The first-run config is deliberately incomplete, so realm/ganesha/share validation
 /// (done by the strict `load`) must not run here — that belongs at service bring-up
-/// (`compute_startup_step`). Uses `load_unchecked` + env overrides to mirror the lenient
-/// loader the WebUI already relies on.
+/// (`compute_startup_step`). Uses `load_lenient` (parse + env overrides, no validation).
 pub fn compute_wizard_step(config_path: &Path) -> StartupStep {
     if !check_persistent_writable(config_path) {
         return StartupStep::WaitForPersistentVolume;
     }
 
-    let cfg = match NfsKlldapConfig::load_unchecked(config_path) {
-        Ok(mut c) => {
-            c.apply_core_env_overrides();
-            c
-        }
+    let cfg = match NfsKlldapConfig::load_lenient(config_path) {
+        Ok(c) => c,
         Err(_) => return StartupStep::SetLdapUri,
     };
 

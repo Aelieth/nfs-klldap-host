@@ -107,6 +107,25 @@ fn load_and_derive_works() {
 }
 
 #[test]
+fn load_lenient_accepts_first_run_config_and_applies_env_overrides() {
+    let _env = env_lock();
+    let _guards = clean_core_env();
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("nfs-klldap.conf");
+    fs::write(&path, "ldap_uri = \"ldaps://klldap.test:6360\"\n").unwrap();
+
+    // Strict load rejects the wizard-stage config; the lenient load must not.
+    assert!(NfsKlldapConfig::load(&path).is_err());
+    let cfg = NfsKlldapConfig::load_lenient(&path).unwrap();
+    assert_eq!(cfg.ldap_uri, "ldaps://klldap.test:6360");
+    assert!(cfg.sssd.ldap_default_bind_dn.is_empty());
+
+    let _uri = EnvGuard::set("NFS_KLLDAP_LDAP_URI", "ldaps://env.test:636");
+    let cfg = NfsKlldapConfig::load_lenient(&path).unwrap();
+    assert_eq!(cfg.ldap_uri, "ldaps://env.test:636");
+}
+
+#[test]
 fn generate_produces_expected_artifacts() {
     let _env = env_lock();
     let _guards = clean_core_env();

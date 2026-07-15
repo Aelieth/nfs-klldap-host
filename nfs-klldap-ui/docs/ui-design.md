@@ -29,45 +29,76 @@ beats tracker-music `.mod`, `.bin` stays 🗄️). Selecting either kind loads `
 (`templates/dir_perms.html`) — this single endpoint replaced the retired `/dir-meta`,
 `/dir-editor`, and `/dir-acl` trio and now serves **both node kinds** (the form carries
 `data-kind="dir|file"` as the JS contract). Share cards are keyboard-activatable
-(`role="button"`, `tabindex`, `aria-pressed`, Enter/Space). The panel shows **POSIX** (owner/group
-with live LLDAP search + hidden numeric uid/gid for name→id translation; **directories** get the
-condensed 2-column Read/Write matrix, **setgid/sticky** toggles (one row), the **Apply-scope
-radios** (None / single directory / all directories) and, for recursive scopes, the **File
-permission bits** editor; **files** get the full 3×3 rwx matrix with no special bits and no scope
-radios; per-checkbox `aria-label`s and a live octal + symbolic readout — plus a second `Files NNN`
-readout while a recursive scope is selected) and, beside it, the **named ACL/xattr** list (both sections render
-through the `acl_group` Askama macro). POSIX Apply POSTs the existing `/apply` (chown/chmod, incl.
-setgid/sticky — only setuid is refused); ACL add/remove POST `/acl-apply` (names resolved via LDAP,
-same as POSIX; unresolvable principals answer **422** so the client reports the rejection).
+(`role="button"`, `tabindex`, `aria-pressed`, Enter/Space); their **chips are non-conformity
+signals** (0.9.95) — a chip renders only where an option deviates from the default/auto value:
+`RO` (distinct orange `.share-chip.ro`, not the amber warn family), `no_root_squash` (amber warn),
+a non-default cache profile, a non-default security (per-share override ≠ `[ganesha]
+default_security`, empty default read as krb5p), and the unknown-config-key warning. `RW`,
+`root_squash`, `cache: default`, and the default security stay implicit, and ACL state carries
+**no chip** — the status dot and the panel's ACL section already cover it. The panel's
+Share/path line is a boxed bar (`.perm-loc` strip with the path in a darker inset). The panel
+shows **POSIX** (owner/group with live LLDAP search + hidden numeric uid/gid for name→id
+translation; **directories** get the condensed Read/Write matrix plus the scope-gated **Exec**
+(file-execute) column, **setgid/sticky** toggles (one row), and the **Apply-scope radios** (None /
+single directory / all directories); **files** get the full 3×3 rwx matrix with no special bits
+and no scope radios; per-checkbox `aria-label`s and a live octal + symbolic readout — muted
+reference styling, no separate `Files NNN` readout) and, beside it, the **named ACL/xattr** list.
+One **Apply commits everything**: the POSIX chown/chmod (setgid/sticky included — only setuid is
+refused) and every staged ACL edit ride a single `POST /apply`, the staged batch as JSON in the
+hidden `acl_ops` field, all governed by the one Apply scope. ACL principals resolve via LDAP
+server-side; an unresolvable principal, an incapable mount, or a malformed batch rejects the
+whole apply with an inline alert **before anything mutates**.
 
-**Full POSIX ACL model, tabbed layout (0.9.90):** the section header is just **"ACL"** plus a
-pill — `on` (explicit), `auto` (unset `enable_acl`, promoted because the serve path passed the
-write probe), or `off` (one short reason line whose hover carries the detail; everything longer
-lives in tooltips per the compaction contract). Two **tabs** switch layers: **Current** (the
-access ACL) and, on directories, **Inherit** (the default ACL — server refuses default ops on
-files with 422). Each pane is a **columnar list** aligned with the POSIX matrix: an R/W/X header,
+**Full POSIX ACL model, tabbed layout (0.9.90; staged editing 0.9.95):** the section header is
+just **"ACL"** plus a pill — `on` (explicit), `auto` (unset `enable_acl`, promoted because the
+serve path passed the write probe), or `off` (one short reason line whose hover carries the
+detail; everything longer lives in tooltips per the compaction contract). Two **tabs** switch
+layers: **Current** (the access ACL) and, on directories, **Inherit** (the default ACL — server
+refuses default ops on files). Each pane is a **columnar list** aligned with the POSIX matrix: a
+Read/Write/Exec header, an **inline add row** (hidden until add mode) on the same grid template,
 then Users and Groups categories (collapsible headers, simple divider between them) and the
 **mask** as a distinguished last row; the whole list scrolls (~8–10 rows visible). A ✓ marks the
 entry as granted; a **dimmed ✓** marks bits the mask withholds (row hover names the effective
 triad). Once the access ACL is extended, the POSIX **Group row grows a `mask-star`** with hover
-prose — the 2.4 mask-envelope made visible. Editing matches the POSIX side
-(2026-07-12 round 4): row checkboxes under **Read/Write/Exec** headers **toggle directly in edit
-mode** (op=set on change; the mask row posts op=mask; node-only), clicking a row's name selects it
-for **[Remove]**, and **[Add User] / [Add Group]** enter an **add mode**: a POSIX-style
-LDAP-searching principal field, R/W/E boxes (labels above), and — on directories — the same
-Apply-scope radios as POSIX; everything else in the panel goes inert, the state chip reads
-`EDITING - ADDING ACL USER|GROUP`, and the panel's **Apply** (armed only once a principal is typed
-and ≥1 permission is checked) or **Cancel** finish the flow. The `/acl-apply` endpoint itself
-refuses NOACL/incapable paths with 422 (capability decision enforced server-side, probed against
-the SELECTED node's own mount — submounts included), and a settings save rejects `enable_acl =
-true` on a known-incapable serve path. The panel reloads from getfacl truth after every op — never
-optimistic state. All ops carry `layer`; `-b` is never emitted (entry-merge + targeted remove
-only). Recursive ACL grants use **split specs**: directories get fused r→x perms; files get the
-literal triad from the panel Exec checkbox (capital-`X` conditional grant is retired).
-Inherit-tab recursion touches directories only. Tree rows on ACL-active shares carry a
-**`+` marker** (one batched getfacl per fragment) where an entry's ACL exceeds base mode.
-Behavior change with `list_dir`: an unreadable or missing container directory now renders the
-tree diagnostic alert (`list_dir` returns None) instead of a silently empty level.
+prose — the 2.4 mask-envelope made visible.
+
+**Editing is staged (0.9.95):** nothing an ACL control does touches the network by itself. Row
+and mask checkboxes toggle in place; **[Remove]** marks the selected row `data-remove` (struck
+through, inert; a staged-new row just drops); **[Add User] / [Add Group]** enter an **add mode**
+whose inline row takes a POSIX-style LDAP-searching principal field plus R/W/E boxes — the panel
+Apply plays **"Add entry"** there (armed once a principal is typed and ≥1 permission is checked)
+and stages a `data-new` row (re-adding an existing principal folds into its row and un-stages a
+pending removal). While adding, POSIX dims **per child** with the Apply scope excluded and
+accent-ringed — the scope stays the one live reach control — and the state chip reads
+`EDITING - ADDING ACL USER|GROUP`. The panel **Apply** then commits everything at once:
+`collectAclPlan()` diffs each enabled pane's DOM against the server-rendered `data-perms`
+baseline (set/delete per row, the mask op **last per pane** — setfacl `-m` recalculates the mask,
+so an explicit mask must land after the entry ops to win) and submits the batch as JSON in the
+form's hidden `acl_ops` field through the normal `POST /apply`; **Cancel** discards by reloading
+truth. `/apply` re-runs the same capability backstop as `/acl-apply` whenever `acl_ops` is
+present (probed against the SELECTED node's own mount — submounts included), refuses default-layer
+ops on files, and LDAP-resolves every principal **before anything mutates** — one bad op rejects
+the whole apply, chown/chmod included. In the job the chown/chmod walk lands first, then each
+setfacl op in batch order (stop on first error, cancel-aware), each named in the Apply Log. The
+panel reloads from getfacl truth after the apply — never optimistic state. The standalone
+`/acl-apply` endpoint (one op per POST, 422 on refusals) remains for API use but the panel no
+longer drives it; a settings save still rejects `enable_acl = true` on a known-incapable serve
+path. All ops carry `layer`; `-b` is never emitted (entry-merge + targeted remove only).
+
+**Dir ACL Exec = the file-execute knob (0.9.95):** directory panes render the full
+Read/Write/Exec grid on rows, mask, and add row alike, but every dir-pane Exec box is a
+**scope-gated grant knob with POSIX-fbit semantics** — always rendered, disabled + cleared at
+scope None, live under a recursive scope, and **never a display of the directory's own fused x
+bit** (a row can read `R✓ W✓ Exec☐` while getfacl shows `rwx` on the directory itself — correct,
+not a bug). The staged diff compares dir rows on Read/Write only and contributes x exactly when
+the knob is checked. Recursive ACL commits use **split specs**: directories get fused r→x perms
+(mask included); files get the literal triad — execute lands on files only where a knob granted
+it. Inherit-pane Exec boxes render but never arm: inherited execute is derived (subdirectories
+fuse it from Read; new files take their creation mode), and Inherit-tab recursion touches
+directories only. Tree rows on ACL-active shares carry a **`+` marker** (one batched getfacl per
+fragment) where an entry's ACL exceeds base mode. Behavior change with `list_dir`: an unreadable
+or missing container directory now renders the tree diagnostic alert (`list_dir` returns None)
+instead of a silently empty level.
 
 **Owner/group resolution contract (`/apply`, since 0.9.81):** uid/gid **0 is a first-class
 owner** — on-disk root is the nobody/anonymous identity NFS clients see under root-squash, so it
@@ -104,17 +135,27 @@ concept for directories, coordinated across three layers:
   (`target_is_file` forces `ApplyScope::DirOnly`).
 
 **Apply scope + file execute (dir panels):** the fragment's `.rec-scope` radios
-(`recursive_scope` = `none|single|all`) choose how far Apply reaches — **None** chowns/chmods the
+(`recursive_scope` = `none|single|all`) choose how far Apply reaches — **None** touches the
 directory's own inode only; **Recursive — single directory** adds the files directly inside it;
-**Recursive — all directories** descends the whole subtree. There is no separate file-bits
-editor: the matrix's **Exec column is the file-execute grant** for recursive scopes — files in
-scope take the matrix Read/Write bits plus execute only where Exec is checked, submitted as
-`file_mode` (`ApplyScope`/`ApplySpec` in fs.rs; special bits in `file_mode` are refused), while
-directories always fuse execute from Read server-side. The Exec boxes disable+clear on scope
-None. So file execute is always an explicit grant — asserted end-to-end by
-`web_recursive_apply_xless_mode_fuses_dirs_not_files` (x-less file bits stay x-less) and
-`web_apply_scope_all_grants_file_execute_only_when_chosen`. Both recursive scopes require a
-`confirm()`; the fragment reload after an apply resets the scope to None on purpose.
+**Recursive — all directories** descends the whole subtree. Since 0.9.95 the one scope governs
+**both sides**: the POSIX chown/chmod walk and every staged ACL op fan out with it. There is no
+separate file-bits editor: the matrix's **Exec column is the file-execute grant** for recursive
+scopes — files in scope take the matrix Read/Write bits plus execute only where Exec is checked,
+submitted as `file_mode` (`ApplyScope`/`ApplySpec` in fs.rs; special bits in `file_mode` are
+refused), while directories always fuse execute from Read server-side. Every Exec box —
+POSIX fbits and the dir-pane ACL knobs alike — disables + clears on scope None rather than
+disappearing (**controls stay rendered and disable when inapplicable**; that persistent-controls
+rule is deliberate design). So file execute is always an explicit grant — asserted end-to-end by
+`web_recursive_apply_xless_mode_fuses_dirs_not_files` (x-less file bits stay x-less),
+`web_apply_scope_all_grants_file_execute_only_when_chosen`, and
+`web_apply_acl_ops_scope_all_dir_fused_file_literal` (the ACL twin). Both recursive scopes
+require a `confirm()`; the fragment reload after an apply resets the scope to None on purpose.
+
+The rationale runs the whole stack: **a directory given Read MUST carry execute** — that is the
+traversal bit, and stripping it breaks listings and provokes Ganesha errors — so the backend
+fuses r→x on every directory-shaped write (`fs::dir_mode_r_implies_x`,
+`AclPerms::dir_r_implies_x`, ops and mask and Inherit layer included), and **every Exec control
+shown on a directory panel means execute for FILES under recursive applies only**.
 
 A directory whose current mode grants x-without-r (traverse-only) shows a compact amber
 `.perm-note.warn` — that state isn't representable in the condensed matrix and is stripped on
@@ -220,7 +261,7 @@ Semantics: localStorage key `theme` ∈ `auto|dark|light`; explicit values set
 | GET | `/tree` | one-level dir+file listing: root row (`root=true`) or children fragment | session |
 | GET | `/dir-perms` | detached panel body (directory or file) | session |
 | GET | `/users/search`, `/groups/search` | LLDAP suggestion fragments | session |
-| POST | `/apply`, `/acl-apply`, `/cancel-apply` | POSIX / ACL apply + cancel | session |
+| POST | `/apply`, `/acl-apply`, `/cancel-apply` | POSIX apply (+ optional `acl_ops` staged ACL batch) / single ACL op / cancel | session |
 | GET | `/apply-progress` | oob Apply Log poller (286 when finished = htmx stop-polling) | session |
 | GET | `/settings` | System Settings page | session |
 | GET | `/settings/share-card` | blank share card fragment | session |
@@ -256,10 +297,12 @@ Use `var(--font-mono)` for any monospace text — never restate the stack.
 
 Resolved cleanups (2026-07-10): `--font-mono` token, app script decomposed to
 `assets/permissions.js`, Share Permissions inline `style=""` fully converted to classes.
+Resolved 0.9.95: per-entry ACL checkbox edits persist — staged in the panel and committed through
+`/apply`'s `acl_ops` batch (on Non-ACL shares they stay disabled in edit mode).
 Still deferred: inline styles on the Settings/setup pages; a full ARIA tree pattern for the
-directory tree (roving tabindex + arrow keys — rows are plain tab-order buttons today); wiring the
-per-entry ACL rwx checkboxes to `/acl-apply` on ACL-supported shares (they render the current
-perms but toggling is not persisted — on Non-ACL shares they stay disabled in edit mode).
+directory tree (roving tabindex + arrow keys — rows are plain tab-order buttons today); batching
+the staged setfacl ops into one walk (today each recursive op re-walks the scope, matching the
+old per-op cost).
 
 See templates/ + source for current UX. (Historical decisions resolved: lazy tree, detached
 permissions panel, structured shares, full progress.)

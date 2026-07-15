@@ -119,14 +119,14 @@
         pl.querySelector('.perm-state').textContent = editing ? 'editing' : 'viewing';
         const aclInert = !!pl.querySelector('.acl-sec.disabled');
         pl.querySelectorAll('.p-owner,.p-group,.pbit,.sbit,.fbit,.rec-radio').forEach(el => el.disabled = !editing);
-        pl.querySelectorAll('.acl-ename,.ebit,.abit,.mbit,.acl-rec-radio').forEach(el => el.disabled = !editing || aclInert);
+        pl.querySelectorAll('.acl-ename,.ebit,.abit,.mbit').forEach(el => el.disabled = !editing || aclInert);
         if (!editing) {
             pl.querySelectorAll('.acl-row.selected').forEach(r => r.classList.remove('selected'));
             exitAclAdd();
         }
         pl.querySelectorAll('.acl-pane').forEach(syncAclActions);
-        // Scope-gated boxes (POSIX Exec column, ACL add-form Exec) re-derive
-        // their disabled state after the blanket sweeps above.
+        // Scope-gated boxes (POSIX Exec column; ACL Exec knobs on rows, mask,
+        // and add form) re-derive their disabled state after the sweeps above.
         syncScopeUI();
         syncAclExecGate();
         setTreeLock(editing);
@@ -162,8 +162,6 @@
         }
         const ffield = pl.querySelector('.file-mode-field');
         if (ffield) ffield.value = '0' + fsum.u + fsum.g + fsum.o;
-        const foct = pl.querySelector('.file-octal');
-        if (foct) foct.textContent = '0' + fsum.u + fsum.g + fsum.o;
     }
 
     // The Exec column is the FILE-execute grant: it participates only when a
@@ -178,24 +176,30 @@
             cb.disabled = !editing || scopeNone;
             if (scopeNone) cb.checked = false;
         });
-        const fr = pl.querySelector('.file-mode-readout');
-        if (fr) fr.hidden = scopeNone;
     }
 
-    // Dir panels: the ACL add form's Exec is the FILE-execute grant — inert
-    // unless the chosen reach is recursive (the directory's own entry always
-    // fuses execute from Read server-side).
+    // Dir panels: every ACL Exec box — entry rows, the mask row, and the add
+    // form — is the FILE-execute grant knob, gated by the single POSIX Apply
+    // scope: inert (and cleared) on None, live on a recursive reach. It never
+    // displays the directory's own fused bit. Inherit-pane boxes never arm:
+    // the server fuses inherited execute for subdirectories, and new files
+    // take execute from their creation mode.
     function syncAclExecGate() {
         const pl = panel(); if (!pl) return;
         const editing = pl.classList.contains('editing');
-        const aclInert = !!pl.querySelector('.acl-sec.disabled');
-        pl.querySelectorAll('.acl-sec[data-kind="dir"] .acl-addform').forEach(form => {
-            const xbit = form.querySelector('.ebit[data-ch="x"]');
-            if (!xbit) return;
-            const sel = form.querySelector('.acl-rec-radio:checked');
-            const scopeNone = !sel || sel.value === 'none';
-            xbit.disabled = !editing || aclInert || scopeNone;
-            if (scopeNone) xbit.checked = false;
+        const form = pl.querySelector('form.posix-sec');
+        const sel = form && form.querySelector('.rec-radio:checked');
+        const scopeNone = !sel || sel.value === 'none';
+        pl.querySelectorAll('.acl-sec[data-kind="dir"]').forEach(sec => {
+            const inert = sec.classList.contains('disabled');
+            sec.querySelectorAll('.acl-pane').forEach(pane => {
+                const inherit = pane.dataset.layer === 'default';
+                pane.querySelectorAll('.abit[data-ch="x"],.mbit[data-ch="x"],.ebit[data-ch="x"]').forEach(xbit => {
+                    const off = !editing || inert || scopeNone || inherit;
+                    xbit.disabled = off;
+                    if (off) xbit.checked = false;
+                });
+            });
         });
     }
     function symbolicMode(s, u, g, o) {
@@ -250,24 +254,97 @@
         box.textContent = msg;
     }
 
-    // POST an ACL add/delete to /acl-apply, then refresh the panel; the poller delivers the
-    // async setfacl result to the Apply Log and self-terminates on the finished (286) response.
-    function aclApply(fields) {
-        const pl = panel(); if (!pl || !state.currentPath) return;
-        const fd = new URLSearchParams(Object.assign({ path: state.currentPath }, fields));
-        fetch('/acl-apply', { method: 'POST', credentials: 'include',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: fd.toString() })
-            .then(res => {
-                if (!res.ok) throw new Error(String(res.status));
-                startApplyProgressPoller();
-                loadDirPerms(state.currentPath);
-            })
-            .catch(err => {
-                pl.querySelectorAll('.acl-pane').forEach(syncAclActions);
-                showPermPanelError(err && err.message === '422'
-                    ? 'ACL apply rejected — could not resolve that user/group in LLDAP.'
-                    : 'ACL apply failed — the server rejected the request. See server logs.');
+    // ===== Staged ACL editing: adds, removals, and checkbox toggles collect
+    // in the panel DOM and commit together through POST /apply (the hidden
+    // acl_ops field) on the panel Apply. Cancel discards by reloading truth;
+    // nothing is ever optimistic — the panel re-reads getfacl afterwards. =====
+    const escHtml = s => String(s).replace(/[&<>"]/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+    // Diff every enabled pane's staged DOM against the server-rendered
+    // baseline in data-perms → the acl_ops batch. Dir rows compare Read/Write
+    // only (their Exec box is the file-execute knob, not a display of the
+    // stored fused bit) and contribute x exactly when the knob is checked.
+    // The mask op goes last per pane: setfacl -m recalculates the mask, so an
+    // explicit mask change must land afterwards to win.
+    function collectAclPlan() {
+        const pl = panel(); if (!pl) return [];
+        const ops = [];
+        pl.querySelectorAll('.acl-sec:not(.disabled) .acl-pane').forEach(pane => {
+            const layer = pane.dataset.layer || 'access';
+            const isDirPane = !!pane.closest('.acl-sec[data-kind="dir"]');
+            const baseline = row => {
+                const p = row.dataset.perms || '---';
+                return isDirPane ? p.slice(0, 2) + '-' : p;
+            };
+            pane.querySelectorAll('.acl-row[data-type="user"],.acl-row[data-type="group"]').forEach(row => {
+                const op = { typ: row.dataset.type, id: row.dataset.id || '',
+                             name: row.dataset.name || '', layer: layer };
+                if (row.dataset.remove) { op.op = 'delete'; ops.push(op); return; }
+                const perms = rowPerms(row);
+                if (row.dataset.new || perms !== baseline(row)) {
+                    op.op = 'set'; op.perms = perms; ops.push(op);
+                }
             });
+            const maskRow = pane.querySelector('.acl-mask-row');
+            if (maskRow) {
+                const perms = rowPerms(maskRow);
+                if (perms !== baseline(maskRow)) ops.push({ op: 'mask', perms: perms, layer: layer });
+            }
+        });
+        return ops;
+    }
+
+    // Stage the add-form entry as a data-new row in its category — or fold it
+    // into an existing row with the same principal (which also un-stages a
+    // pending removal). No network here: the server resolves typed names when
+    // the batch commits, so an id is optional.
+    function stageAclAdd() {
+        const pl = panel(); if (!pl) return;
+        const form = activeAclAddForm(); if (!form) return;
+        const pane = form.closest('.acl-pane');
+        const inp = form.querySelector('.acl-ename');
+        const name = inp.value.trim();
+        const perms = addFormPerms(form);
+        if (!name || perms === '---') return;
+        const typ = form.dataset.typ || 'user';
+        const idm = name.match(/(\d+)/);
+        const id = inp.dataset.pickId || (idm ? idm[1] : '');
+        const clean = name.replace(/\s*\(?\d+\)?\s*$/, '').trim() || name;
+        const cat = pane.querySelector('.acl-cat[data-cat="' + typ + '"]');
+        const rows = cat && cat.nextElementSibling;
+        if (!rows) return;
+        let existing = null;
+        rows.querySelectorAll('.acl-row').forEach(r => {
+            if (!existing && ((id && r.dataset.id === id) || r.dataset.name === clean)) existing = r;
+        });
+        if (existing) {
+            delete existing.dataset.remove;
+            ['r', 'w', 'x'].forEach((ch, i) => {
+                const cb = existing.querySelector('.abit[data-ch="' + ch + '"]');
+                if (cb) cb.checked = perms[i] === ch;
+            });
+        } else {
+            const isDirPane = !!pane.closest('.acl-sec[data-kind="dir"]');
+            const cell = (ch, i) => '<span class="acl-cell"><input type="checkbox" class="abit" data-ch="' + ch
+                + '" aria-label="' + (isDirPane && ch === 'x' ? 'Files: execute (recursive reach)' : ch) + '"'
+                + (perms[i] === ch ? ' checked' : '') + '></span>';
+            rows.insertAdjacentHTML('beforeend',
+                '<div class="acl-row" data-new="1" data-type="' + typ + '" data-id="' + escHtml(id)
+                + '" data-name="' + escHtml(clean) + '" data-layer="' + (pane.dataset.layer || 'access')
+                + '" data-perms="' + perms + '">'
+                + '<span class="acl-name">' + escHtml(clean)
+                + (id ? ' <span class="id">' + escHtml(id) + '</span>' : '') + '</span>'
+                + cell('r', 0) + cell('w', 1) + cell('x', 2) + '</div>');
+        }
+        // A collapsed category would hide the staged row — open it.
+        if (cat.classList.contains('collapsed')) {
+            cat.classList.remove('collapsed');
+            rows.hidden = false;
+        }
+        exitAclAdd();
+        syncAclExecGate();
+        state.dirty = true;
     }
 
     // Selection-aware enable state: the Add buttons are always available in
@@ -279,9 +356,10 @@
             else b.disabled = false;
         });
     }
-    // Perms strings stay canonical rwx triads even though directory grids
-    // omit the Exec checkbox (execute fuses from Read server-side, mirroring
-    // the POSIX dir matrix) — an absent box reads as '-'.
+    // Perms strings are canonical rwx triads. On directory rows the x box is
+    // the file-execute knob (unchecked unless explicitly granted), so the
+    // triad carries x exactly when the knob grants it — the directory's own
+    // execute is fused from Read server-side either way.
     function rowPerms(row) {
         return ['r', 'w', 'x'].map(ch => {
             const cb = row.querySelector('.abit[data-ch="' + ch + '"],.mbit[data-ch="' + ch + '"]');
@@ -320,6 +398,9 @@
         pl.classList.add('acl-adding');
         pl.querySelector('.perm-state').textContent =
             typ === 'group' ? 'EDITING - ADDING ACL GROUP' : 'EDITING - ADDING ACL USER';
+        // While adding, the panel Apply plays "stage this entry"; it reverts
+        // to the normal commit label on exit.
+        pl.querySelectorAll('.btn-apply').forEach(b => b.textContent = 'Add entry');
         wireAclAddSearch(form);
         syncAclExecGate();
         syncAclAddApply();
@@ -329,7 +410,7 @@
         const pl = panel(); if (!pl) return;
         pl.classList.remove('acl-adding');
         pl.querySelectorAll('.acl-addform').forEach(f => { f.hidden = true; });
-        pl.querySelectorAll('.btn-apply').forEach(b => b.disabled = false);
+        pl.querySelectorAll('.btn-apply').forEach(b => { b.disabled = false; b.textContent = 'Apply'; });
         const st = pl.querySelector('.perm-state');
         if (st && pl.classList.contains('editing')) st.textContent = 'editing';
     }
@@ -431,37 +512,28 @@
             return;
         }
         if (e.target.closest('.btn-apply')) {
-            if (pl.classList.contains('acl-adding')) {
-                const form = activeAclAddForm(); if (!form) return;
-                const pane = form.closest('.acl-pane');
-                const inp = form.querySelector('.acl-ename');
-                const name = inp.value.trim();
-                if (!name || addFormPerms(form) === '---') return;
-                const scopeSel = form.querySelector('.acl-rec-radio:checked');
-                const scope = scopeSel ? scopeSel.value : 'none';
-                if (scope === 'all'
-                    && !confirm('Add this ACL entry to EVERYTHING under\n' + state.currentPath + ' (all subdirectories and files)?')) return;
-                if (scope === 'single'
-                    && !confirm('Add this ACL entry to ' + state.currentPath + ' and every file directly inside it?')) return;
-                const idm = name.match(/(\d+)/);
-                aclApply({ op: 'add', typ: form.dataset.typ || 'user',
-                           layer: pane.dataset.layer, scope: scope,
-                           id: inp.dataset.pickId || (idm ? idm[1] : ''), name: name,
-                           perms: addFormPerms(form) });
-                exitAclAdd();
-                return;
-            }
+            // While adding, Apply plays "Add entry": it stages the form into
+            // the list and nothing touches the network until the real Apply.
+            if (pl.classList.contains('acl-adding')) { stageAclAdd(); return; }
             const form = pl.querySelector('form.posix-sec');
             if (!form) return;
             // Scope radios live inside the form (dir panels only) and submit
             // natively; file panels have none, so their scope is always none —
-            // the server braces file targets independently.
+            // the server braces file targets independently. The one scope
+            // governs the POSIX change and every staged ACL edit.
             const checkedScope = form.querySelector('.rec-radio:checked');
             const scope = checkedScope ? checkedScope.value : 'none';
             if (scope === 'all'
                 && !confirm('Recursively apply to EVERYTHING under\n' + state.currentPath + ' (all subdirectories and files)?')) return;
             if (scope === 'single'
                 && !confirm('Apply to ' + state.currentPath + ' and every file directly inside it?')) return;
+            // Read the staged ACL edits now — the /apply response swaps the
+            // panel body for the applying placeholder.
+            const opsField = form.querySelector('.acl-ops-field');
+            if (opsField) {
+                const ops = collectAclPlan();
+                opsField.value = ops.length ? JSON.stringify(ops) : '';
+            }
             state.dirty = false;
             state.applying = true;
             htmx.trigger(form, 'submit');
@@ -491,18 +563,21 @@
         }
 
         // Action buttons: the Add pair enters add mode (finished by the
-        // panel's Apply/Cancel); Remove deletes the selected entry.
+        // panel's "Add entry"/Cancel); Remove stages removal of the selection.
         const act = e.target.closest('.acl-act');
         if (act && !act.disabled && !panel().classList.contains('acl-adding')) {
             const pane = act.closest('.acl-pane');
-            const layer = pane.dataset.layer;
             if (act.dataset.act === 'add-user') { enterAclAdd(pane, 'user'); return; }
             if (act.dataset.act === 'add-group') { enterAclAdd(pane, 'group'); return; }
             const sel = pane.querySelector('.acl-row.selected');
             if (act.dataset.act === 'remove' && sel) {
-                act.disabled = true;
-                aclApply({ op: 'delete', typ: sel.dataset.type, layer: layer,
-                           selected: (sel.dataset.type === 'group' ? 'g:' : 'u:') + sel.dataset.id });
+                // A staged-new row just drops; an existing entry is marked for
+                // removal (struck through) — Apply commits it, Cancel restores.
+                if (sel.dataset.new) sel.remove();
+                else sel.dataset.remove = '1';
+                sel.classList.remove('selected');
+                syncAclActions(pane);
+                state.dirty = true;
             }
             return;
         }
@@ -521,36 +596,24 @@
         }
     });
 
-    // POSIX-style direct toggles: a row checkbox change applies immediately
-    // to that node (op=set; the mask row posts op=mask) and the panel reloads
-    // from getfacl truth. Add-form checkboxes only re-arm the Apply button.
+    // Staged toggles: an ACL row/mask checkbox change stays in the DOM — the
+    // panel Apply diffs it against data-perms and commits, Cancel reloads
+    // truth. Add-form checkboxes only re-arm the "Add entry" button.
     document.addEventListener('change', (e) => {
-        const bit = e.target.closest('.abit,.mbit,.ebit,.acl-rec-radio');
+        const bit = e.target.closest('.abit,.mbit,.ebit');
         if (!bit || bit.disabled) return;
         // Directory ACL grids mirror the POSIX dir matrix coupling: Write
-        // requires Read (execute is fused from Read server-side, never shown).
+        // requires Read (the directory's own execute is fused from Read
+        // server-side; the Exec knob is independent — it only feeds files).
         const aclSec = bit.closest('.acl-sec');
         if (aclSec && aclSec.dataset.kind === 'dir' && bit.dataset.ch) {
             const scopeEl = bit.classList.contains('ebit')
-                ? bit.closest('.acl-add-boxes') : bit.closest('.acl-row');
+                ? bit.closest('.acl-addform') : bit.closest('.acl-row');
             const peer = ch => scopeEl && scopeEl.querySelector('[data-ch="' + ch + '"]');
             if (bit.dataset.ch === 'w' && bit.checked) { const r = peer('r'); if (r) r.checked = true; }
             if (bit.dataset.ch === 'r' && !bit.checked) { const w = peer('w'); if (w) w.checked = false; }
         }
-        if (bit.classList.contains('ebit') || bit.classList.contains('acl-rec-radio')) {
-            if (bit.classList.contains('acl-rec-radio')) syncAclExecGate();
-            syncAclAddApply();
-            return;
-        }
-        const row = bit.closest('.acl-row');
-        if (!row || panel().classList.contains('acl-adding')) return;
-        const layer = row.dataset.layer || 'access';
-        if (bit.classList.contains('mbit')) {
-            aclApply({ op: 'mask', layer: layer, perms: rowPerms(row) });
-        } else {
-            aclApply({ op: 'set', typ: row.dataset.type, layer: layer,
-                       id: row.dataset.id, perms: rowPerms(row) });
-        }
+        if (bit.classList.contains('ebit')) syncAclAddApply();
     });
 
     // Live octal readout while toggling the matrix / special bits.
@@ -586,13 +649,16 @@
             // File bits are fully independent — no auto-check between them.
             recomputeMode();
         } else if (e.target.classList.contains('rec-radio')) {
+            // The one scope also gates every dir-panel ACL Exec knob.
             syncScopeUI();
+            syncAclExecGate();
             recomputeMode();
         }
     });
 
-    // Mark unsaved edits. ACL quick-add fields are excluded: those apply immediately
-    // via /acl-apply, so text typed there is never "unsaved" POSIX state.
+    // Mark unsaved edits. Add-form fields are excluded: text typed there only
+    // becomes a staged edit once "Add entry" lands it in the list (stageAclAdd
+    // sets dirty itself).
     function markDirtyIfEditing(e) {
         const t = e.target;
         if (!isEditing() || !t || !t.closest) return;
@@ -655,6 +721,7 @@
         const t = evt.detail && evt.detail.target;
         if (!t || !t.closest || !t.closest('#perm-panel .perm-body')) return;
         syncScopeUI();
+        syncAclExecGate();
         recomputeMode();
         if (t.querySelector('[data-applying]')) {
             state.applying = true;
@@ -673,8 +740,8 @@
         const txt = (xhr && xhr.responseText) || '';
         if (txt.indexOf('data-apply-finished="true"') === -1) return;
         stopApplyProgressPoller();
-        // A stale finished marker (an in-flight poll racing the stop, or an ACL op's
-        // log-only poll) must not touch the panel or the tree lock.
+        // A stale finished marker (an in-flight poll racing the stop) must not
+        // touch the panel or the tree lock.
         const ph = document.querySelector('#perm-panel [data-applying]');
         if (!state.applying && !ph) return;
         state.applying = false;

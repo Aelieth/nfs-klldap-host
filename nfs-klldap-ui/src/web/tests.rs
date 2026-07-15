@@ -996,23 +996,32 @@ async fn dir_perms_acl_grid_execute_column_matches_node_kind() {
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     let dir_html = String::from_utf8_lossy(&bytes).to_string();
-    assert!(dir_html.contains(r#"data-kind="dir""#), "dir panel is marked for the 2-col grid");
+    assert!(dir_html.contains(r#"data-kind="dir""#), "dir panel carries its kind for the JS contract");
+    // Dir panes render the full R/W/Exec grid, but every Exec box is the
+    // file-execute KNOB: always present, never checked from the stored bit
+    // (the seeded rwx entry's fused x must not surface as a checked box).
     assert!(
-        !dir_html.contains(r#"class="abit" data-ch="x""#),
-        "dir entry rows must not render an Exec checkbox"
+        dir_html.contains(r#"class="abit" data-ch="x" aria-label="Files: execute (recursive reach)" disabled"#),
+        "dir entry rows render an unchecked scope-gated Exec knob"
     );
     assert!(
-        !dir_html.contains(r#"class="mbit" data-ch="x""#),
-        "dir mask row must not render an Exec checkbox"
+        dir_html.contains(r#"class="mbit" data-ch="x" aria-label="Files: mask execute (recursive reach)" disabled"#),
+        "dir mask row renders an unchecked scope-gated Exec knob"
     );
-    // Exactly one Exec box on the whole dir panel's ACL side: the ACCESS add
-    // form's file-execute grant (the Inherit form and all rows stay 2-col).
+    // Both add rows carry an Exec box (access = the file-execute grant;
+    // Inherit's stays permanently disabled — execute is derived on inherit).
     assert_eq!(
         dir_html.matches(r#"class="ebit" data-ch="x""#).count(),
-        1,
-        "dir ACL Exec exists only on the access add form"
+        2,
+        "both dir add rows render an Exec box"
     );
-    assert!(dir_html.contains(r#"aria-label="Files: execute (recursive reach)""#));
+    // Staged-batch plumbing: rows carry the principal name; the form carries
+    // the hidden acl_ops field; the retired per-form scope radios are gone.
+    assert!(dir_html.contains(r#"data-name=""#), "rows carry data-name for the staged batch");
+    assert!(dir_html.contains(r#"class="acl-ops-field""#), "form carries the acl_ops field");
+    assert!(!dir_html.contains("acl-rec-scope"), "the add form has no scope radios of its own");
+    assert!(!dir_html.contains("acl-add-hd"), "the add form has no private header labels");
+    assert!(!dir_html.contains("file-mode-readout"), "the Files NNN readout is retired");
     // The POSIX matrix's Exec column still offers per-file execute.
     assert!(dir_html.contains("Files: owner execute"));
 
@@ -1139,6 +1148,221 @@ async fn web_acl_apply_recursive_exec_unchecked_files_stay_xless() {
     assert_eq!(perms_of("/acldata"), "r-x", "target dir takes the fused grant");
     assert_eq!(perms_of("/acldata/sub"), "r-x", "dirs in scope take the fused grant");
     assert_eq!(perms_of("/acldata/sub/f.txt"), "r--", "files take the literal x-less grant");
+}
+
+// One Apply commits POSIX and the staged ACL batch in order: chown/chmod
+// first, then each setfacl op, with an explicit mask op landing last so it
+// wins over the recalculation the entry ops trigger.
+#[tokio::test]
+async fn web_apply_acl_ops_batch_runs_after_posix() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (fs, progress, token, app) = acl_test_scaffold(&tmp).await;
+    let real = tmp.path().join("aclroot");
+    let ops = r#"[{"op":"set","typ":"user","id":"7777","name":"","perms":"rw-","layer":"access"},{"op":"mask","perms":"r--","layer":"access"}]"#;
+    let body = format!(
+        "path=%2Facldata&owner_user=&owner_group=&mode=770&recursive_scope=none&acl_ops={}",
+        urlencoding::encode(ops)
+    );
+    let req = Request::builder()
+        .method("POST")
+        .uri("/apply")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    assert!(text.contains("data-applying"), "batch apply runs as the normal async job: {text}");
+    let cmd = wait_apply_finished(&progress).await;
+    assert!(cmd.contains("chmod"), "log names the POSIX pass: {cmd}");
+    assert!(cmd.contains("setfacl -m u:7777:rwx"), "log names the fused entry op: {cmd}");
+    assert!(cmd.contains("setfacl -m m::r-x"), "log names the fused mask op: {cmd}");
+    use std::os::unix::fs::PermissionsExt;
+    // Owner/other bits prove the chmod landed; the group class of an
+    // extended-ACL inode IS the mask, so the explicit r-x mask op landing
+    // LAST leaves group bits 5 — had it run before the entry op, the -m
+    // recalculation would have bumped them back to 7.
+    let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o750, "chmod first, explicit mask op last");
+    let table = fs
+        .read()
+        .expect("fs lock")
+        .get_acl_table(std::path::Path::new("/acldata"))
+        .expect("allowed");
+    let entry = table
+        .access
+        .iter()
+        .find(|l| l.tag == crate::privileged::AclTag::NamedUser(7777))
+        .expect("staged entry landed");
+    assert_eq!(entry.perms.to_str(), "rwx", "dir entry takes the fused grant");
+    let mask = table
+        .access
+        .iter()
+        .find(|l| l.tag == crate::privileged::AclTag::Mask)
+        .expect("mask present");
+    assert_eq!(
+        mask.perms.to_str(),
+        "r-x",
+        "the explicit (fused) mask op lands last and wins over the -m recalculation"
+    );
+}
+
+// The capability backstop from /acl-apply guards the batched path too: an
+// incapable mount refuses the whole apply before anything mutates.
+#[tokio::test]
+async fn web_apply_acl_ops_gate_rejected_no_mutation() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (_fs, progress, token, app) = acl_test_scaffold(&tmp).await;
+    let real = tmp.path().join("aclroot");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o750)).unwrap();
+    std::fs::write(
+        tmp.path().join("mi"),
+        format!("36 35 0:59 / {} rw,relatime - vfat /dev/sdd1 rw\n", tmp.path().display()),
+    )
+    .unwrap();
+    let ops = r#"[{"op":"set","typ":"user","id":"7878","perms":"rw-","layer":"access"}]"#;
+    let body = format!(
+        "path=%2Facldata&owner_user=&owner_group=&mode=770&recursive_scope=none&acl_ops={}",
+        urlencoding::encode(ops)
+    );
+    let req = Request::builder()
+        .method("POST")
+        .uri("/apply")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    assert!(text.contains("ACL editing is not available"), "alert names the refusal: {text}");
+    assert!(!text.contains("data-applying"), "no apply job may start: {text}");
+    assert!(progress.lock().await.is_none(), "no progress slot may be claimed");
+    let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o750, "the POSIX half must not land either");
+}
+
+// An unresolvable principal rejects the whole batch before any mutation —
+// the chown/chmod half must not land without its staged ACL edits.
+#[tokio::test]
+async fn web_apply_acl_ops_unresolved_principal_rejected_before_mutation() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (_fs, progress, token, app) = acl_test_scaffold(&tmp).await;
+    let real = tmp.path().join("aclroot");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o750)).unwrap();
+    let ops = r#"[{"op":"set","typ":"user","id":"","name":"no-such-user-xyz","perms":"rw-","layer":"access"}]"#;
+    let body = format!(
+        "path=%2Facldata&owner_user=&owner_group=&mode=770&recursive_scope=none&acl_ops={}",
+        urlencoding::encode(ops)
+    );
+    let req = Request::builder()
+        .method("POST")
+        .uri("/apply")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    assert!(
+        text.contains("Could not resolve ACL principal"),
+        "alert names the unresolved principal: {text}"
+    );
+    assert!(progress.lock().await.is_none(), "no progress slot may be claimed");
+    let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o750, "nothing mutates on a rejected batch");
+}
+
+// The single Apply scope fans every batched op out with the split specs:
+// dirs take the fused grant, files take the literal triad — execute lands
+// on files exactly where the staged Exec knob granted it.
+#[tokio::test]
+async fn web_apply_acl_ops_scope_all_dir_fused_file_literal() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (fs, progress, token, app) = acl_test_scaffold(&tmp).await;
+    let real = tmp.path().join("aclroot");
+    std::fs::create_dir_all(real.join("sub")).unwrap();
+    std::fs::write(real.join("sub").join("f.txt"), b"x").unwrap();
+    let ops = r#"[{"op":"set","typ":"user","id":"6001","perms":"rw-","layer":"access"},{"op":"set","typ":"user","id":"6002","perms":"rwx","layer":"access"}]"#;
+    let body = format!(
+        "path=%2Facldata&owner_user=&owner_group=&mode=770&recursive_scope=all&file_mode=660&acl_ops={}",
+        urlencoding::encode(ops)
+    );
+    let req = Request::builder()
+        .method("POST")
+        .uri("/apply")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    wait_apply_finished(&progress).await;
+    let perms_of = |p: &str, uid: u32| {
+        fs.read()
+            .expect("fs lock")
+            .get_acl_table(std::path::Path::new(p))
+            .expect("allowed")
+            .access
+            .iter()
+            .find(|l| l.tag == crate::privileged::AclTag::NamedUser(uid))
+            .map(|l| l.perms.to_str())
+            .expect("entry present")
+    };
+    assert_eq!(perms_of("/acldata/sub", 6001), "rwx", "dirs fuse execute from read");
+    assert_eq!(perms_of("/acldata/sub/f.txt", 6001), "rw-", "x-less op leaves files x-less");
+    assert_eq!(perms_of("/acldata/sub/f.txt", 6002), "rwx", "the Exec knob grants file execute literally");
+}
+
+// A staged removal commits as setfacl -x for that principal.
+#[tokio::test]
+async fn web_apply_acl_ops_remove_by_id() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (fs, progress, token, app) = acl_test_scaffold(&tmp).await;
+    let real = tmp.path().join("aclroot");
+    crate::privileged::apply_acl(
+        &real,
+        crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(5252),
+            perms: crate::privileged::AclPerms::from_str("rwx"),
+            default: false,
+        },
+    )
+    .expect("seed");
+    let ops = r#"[{"op":"delete","typ":"user","id":"5252","layer":"access"}]"#;
+    let body = format!(
+        "path=%2Facldata&owner_user=&owner_group=&mode=770&recursive_scope=none&acl_ops={}",
+        urlencoding::encode(ops)
+    );
+    let req = Request::builder()
+        .method("POST")
+        .uri("/apply")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    wait_apply_finished(&progress).await;
+    let table = fs
+        .read()
+        .expect("fs lock")
+        .get_acl_table(std::path::Path::new("/acldata"))
+        .expect("allowed");
+    assert!(
+        !table
+            .access
+            .iter()
+            .any(|l| l.tag == crate::privileged::AclTag::NamedUser(5252)),
+        "staged removal deletes the entry"
+    );
 }
 
 // Tree rows on ACL-active shares carry the "+" marker exactly where the
@@ -1397,6 +1621,79 @@ async fn index_renders_apply_log_shell() {
         html.contains(r#"<div id="apply-status" class="apply-status">"#),
         "index must render the initial Apply Log shell without oob/finished attrs"
     );
+}
+
+// Share-card chips are non-conformity signals: only options that deviate
+// from the default/auto values render (RW, root_squash, cache default, and
+// the [ganesha] default security stay implicit; ACL state rides the dot).
+#[tokio::test]
+async fn index_share_cards_render_standout_chips_only() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().join("shares");
+    for sub in ["alpha", "beta", "gamma"] {
+        std::fs::create_dir_all(root.join(sub)).unwrap();
+    }
+    let mi = tmp.path().join("mi");
+    std::fs::write(
+        &mi,
+        format!("36 35 0:59 / {} rw,relatime - btrfs /dev/sda1 rw\n", tmp.path().display()),
+    )
+    .unwrap();
+    let cp = tmp.path().join("c");
+    // alpha = all defaults; beta = deviates on every chip-worthy option;
+    // gamma = explicit values that EQUAL the defaults (must stay chipless).
+    let cfg = format!(
+        r#"ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "{root}"
+[sssd]
+ldap_default_bind_dn = "uid=admin"
+ldap_default_authtok = "s"
+[[shares]]
+name = "alpha"
+host_path = "/alpha"
+container_path = "{root}/alpha"
+[[shares]]
+name = "beta"
+host_path = "/beta"
+container_path = "{root}/beta"
+rw = false
+squash = "no_root_squash"
+cache_profile = "Read - Heavy"
+security = "krb5i"
+[[shares]]
+name = "gamma"
+host_path = "/gamma"
+container_path = "{root}/gamma"
+rw = true
+squash = "root_squash"
+security = "krb5p"
+"#,
+        root = root.display()
+    );
+    std::fs::write(&cp, cfg).unwrap();
+    let sm = write_setup_marker(&tmp, ".chips");
+    let state = test_app_state(&cp, sm, Some(mi));
+    let token = state.auth.create_privileged_session("chipstest");
+    let app = router(state);
+    let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let html = String::from_utf8_lossy(&body).to_string();
+    // Deviations render, each exactly once (beta only).
+    assert_eq!(html.matches(r#"class="share-chip ro""#).count(), 1, "one RO chip: {html}");
+    assert_eq!(html.matches(">no_root_squash<").count(), 1, "one squash warn chip");
+    assert_eq!(html.matches(">cache: read - heavy<").count(), 1, "one cache chip");
+    assert_eq!(html.matches(">krb5i<").count(), 1, "one security chip");
+    // Defaults stay implicit — explicitly-configured defaults included.
+    assert!(!html.contains(">RW<"), "rw is the default access — no chip");
+    assert!(!html.contains(">root_squash<"), "root_squash is the default — no chip");
+    assert!(!html.contains(">cache: default<"), "the default cache profile carries no chip");
+    assert!(!html.contains(">krb5p<"), "the default security carries no chip");
+    // ACL state stays out of the chips: the dot + panel ACL section carry it.
+    assert!(!html.contains(">acl "), "no acl chip on the share cards");
 }
 
 // The vendored htmx asset must bypass the setup gate, and served pages must reference it (no CDN).
@@ -1990,4 +2287,42 @@ async fn web_apply_rejects_special_bits_in_file_mode() {
     );
     assert_eq!(disk_mode(&real_root), 0o755, "rejection happens before any chmod");
     assert_eq!(disk_mode(&real_root.join("f1.txt")), 0o600);
+}
+
+#[tokio::test]
+async fn html_pages_are_no_store_but_assets_keep_their_cache_policy() {
+    let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
+    let app = router(state);
+
+    let login = app
+        .clone()
+        .oneshot(Request::builder().uri("/login").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    assert_eq!(
+        login
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store"),
+        "auth-sensitive HTML must never be replayed from browser cache"
+    );
+
+    let css = app
+        .oneshot(
+            Request::builder()
+                .uri("/assets/style.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        css.headers()
+            .get(CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("public, max-age=3600"),
+        "an explicit asset cache policy wins over the HTML no-store default"
+    );
 }

@@ -158,6 +158,26 @@ async fn style_css() -> impl IntoResponse {
     )
 }
 
+/// Stamps Cache-Control: no-store on HTML responses that set no cache policy.
+/// Auth-sensitive pages (login, wizard) must never be replayed from browser
+/// cache: a cached first-run form re-posts to /setup-password after the
+/// password exists and dead-ends on a 400.
+async fn html_no_store(req: Request<Body>, next: Next) -> Response<Body> {
+    let mut res = next.run(req).await;
+    let is_html = res
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("text/html"));
+    if is_html && !res.headers().contains_key(CACHE_CONTROL) {
+        res.headers_mut().insert(
+            CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+    }
+    res
+}
+
 /// Redirect to the setup wizard when first-run steps are incomplete.
 async fn require_setup_complete(
     State(state): State<AppState>,
@@ -247,6 +267,7 @@ pub fn router(state: AppState) -> Router {
         setup_gate_state,
         require_setup_complete,
     ))
+    .layer(middleware::from_fn(html_no_store))
     .layer(NormalizePathLayer::trim_trailing_slash())
 }
 

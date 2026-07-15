@@ -81,6 +81,16 @@ impl NfsKlldapConfig {
         Self::parse_str(&path.display().to_string(), &contents)
     }
 
+    /// Parse + env overrides, no validation, for wizard-stage consumers
+    /// (step gating, bind probes). The first-run config is deliberately
+    /// incomplete, so the strict `load` would reject it for missing the very
+    /// fields the wizard is about to supply.
+    pub fn load_lenient(path: &std::path::Path) -> Result<Self, ConfigError> {
+        let mut cfg = Self::load_unchecked(path)?;
+        cfg.apply_core_env_overrides();
+        Ok(cfg)
+    }
+
     /// Parse config text without validation (no file read): one string parse
     /// serves both the struct and the unknown-key scan. A failed tree
     /// deserialize re-parses the string only to keep the span-rich message.

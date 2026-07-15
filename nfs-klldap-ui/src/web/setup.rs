@@ -219,7 +219,9 @@ fn bind_probe(cfg: &nfs_klldap_config::NfsKlldapConfig) -> (Result<(), String>, 
 }
 
 fn run_bind_probe_from_disk(path: &Path) -> Option<(Result<(), String>, String)> {
-    let cfg = nfs_klldap_config::NfsKlldapConfig::load(path).ok()?;
+    // Lenient load so the emptiness checks below (not full validation) decide
+    // whether creds are "saved on disk" — the wizard config is incomplete.
+    let cfg = nfs_klldap_config::NfsKlldapConfig::load_lenient(path).ok()?;
     if cfg.ldap_uri.trim().is_empty()
         || cfg.sssd.ldap_default_bind_dn.trim().is_empty()
         || cfg.sssd.ldap_default_authtok.trim().is_empty()
@@ -602,7 +604,10 @@ pub(crate) fn run_bind_probe_blocking(
     dn: &str,
     pw: &str,
 ) -> (Result<(), String>, String) {
-    let mut cfg = match nfs_klldap_config::NfsKlldapConfig::load(config_path) {
+    // Lenient load: on first-run the bind fields are not on disk yet — this
+    // probe is what establishes them — so the strict validated load would
+    // reject the config for missing the very values the form supplies.
+    let mut cfg = match nfs_klldap_config::NfsKlldapConfig::load_lenient(config_path) {
         Ok(c) => c,
         Err(e) => {
             let log = format!(
@@ -611,6 +616,12 @@ pub(crate) fn run_bind_probe_blocking(
             return (Err(e.to_string()), log);
         }
     };
+    if cfg.ldap_uri.trim().is_empty() {
+        let msg = "ldap_uri is not set. Complete the LDAP server step first.".to_string();
+        let log =
+            format!("<strong>Command</strong>\n(validation)\n\n<strong>Status</strong>\n{msg}");
+        return (Err(msg), log);
+    }
     cfg.sssd.ldap_default_bind_dn = dn.trim().to_string();
     // Blank password keeps the stored authtok (settings test-bind fallback).
     if !pw.is_empty() {
@@ -725,6 +736,34 @@ mod tests {
         assert!(!step3_test_matches(Some(dn), Some(pw), dn, "different"));
         assert!(!step3_test_matches(None, Some(pw), dn, pw));
         assert!(!step3_test_matches(Some(dn), None, dn, pw));
+    }
+
+    #[test]
+    fn step3_bind_probe_runs_on_first_run_config_without_stored_creds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nfs-klldap.conf");
+        std::fs::write(&path, "ldap_uri = \"ldap://127.0.0.1:9\"\n").unwrap();
+        let (result, log) =
+            run_bind_probe_blocking(&path, "uid=admin,ou=people,dc=x,dc=com", "pw");
+        assert!(
+            log.contains("ldapsearch -H"),
+            "probe must get past config load on a creds-less first-run config: {log}"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            !err.contains("is required"),
+            "validated-load rejection leaked through: {err}"
+        );
+    }
+
+    #[test]
+    fn step3_bind_probe_reports_missing_ldap_uri_clearly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nfs-klldap.conf");
+        std::fs::write(&path, "").unwrap();
+        let (result, _log) =
+            run_bind_probe_blocking(&path, "uid=admin,ou=people,dc=x,dc=com", "pw");
+        assert!(result.unwrap_err().contains("ldap_uri is not set"));
     }
 }
 

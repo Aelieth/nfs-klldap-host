@@ -22,5 +22,7 @@ The WebUI runs as **root in the container** and mutates bind-mounted `host_path`
 | Directory mode | Server fuses r→x per dir entry; client may submit x-less |
 | File mode | Explicit triad only; special bits refused; never inherits directory mode |
 | Scope | `ApplyScope` bounds recursive reach |
+| ACL capability | `/acl-apply` AND `/apply` with a staged `acl_ops` batch re-probe the selected node's own mount (`acl_apply_gate`) — NOACL/incapable paths refuse ACL writes outright |
+| ACL batch | Parsed, gated, and LDAP-resolved before any mutation; one bad op rejects the whole apply, chown/chmod included |
 
 See `fs.rs` and `privileged.rs`.

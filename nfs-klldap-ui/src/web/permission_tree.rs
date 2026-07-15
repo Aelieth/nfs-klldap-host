@@ -265,18 +265,20 @@ struct ShareInfo {
     pub host_path: String,
     /// Access label is either RW or RO.
     pub access: String,
-    /// Squash label uses official Ganesha Squash values.
+    /// Squash label uses official Ganesha Squash values; unset resolves to the
+    /// generator's default (root_squash) so the card never mislabels a share.
     pub squash_label: String,
     pub cache_profile: String,
     pub warning: Option<String>,
+    /// Effective security, only when it deviates from `[ganesha] default_security`
+    /// — the card chips render non-conformity, not the whole option set.
+    pub security_chip: Option<String>,
     /// True when the share actually serves ACLs (resolved enable_acl — explicit or
     /// auto-promoted by the live write probe — AND a capable filesystem). Same rule as
     /// the Settings rows and generate; drives the share-card status dot.
     pub acl_capable: bool,
     /// Probe verdict string ("capable"/"incapable"/"unverified") for data-acl-probed.
     pub acl_probed: &'static str,
-    /// Chip label ("on", "auto (on)", …) matching the Settings card chip.
-    pub acl_state_label: String,
 }
 
 /// Panel body for the detached Permissions view (POSIX matrix + ACL/xattr), served by /dir-perms.
@@ -670,6 +672,31 @@ pub(crate) struct ApplyForm {
     owner_user_uid: String,
     #[serde(default)]
     owner_group_gid: String,
+    /// Staged ACL batch from the panel: a JSON array of AclOpSpec, committed
+    /// after the chown/chmod pass under the same recursive_scope. Empty means
+    /// a plain POSIX apply.
+    #[serde(default)]
+    acl_ops: String,
+}
+
+/// One staged ACL edit from the panel's `acl_ops` batch. Ops use the
+/// /acl-apply vocabulary: "set" (add-or-update an entry), "delete", "mask".
+#[derive(Debug, Deserialize)]
+struct AclOpSpec {
+    #[serde(default)]
+    op: String,
+    #[serde(default)]
+    typ: String,
+    #[serde(default)]
+    id: String,
+    /// Principal name to resolve via LDAP when a numeric id is absent.
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    perms: String,
+    /// "access" (default) or "default" — the Inherit layer, directories only.
+    #[serde(default)]
+    layer: String,
 }
 #[derive(Deserialize)]
 pub(crate) struct AclApplyForm {
@@ -728,18 +755,34 @@ fn index_html(state: &AppState, current_user: String) -> String {
             } else {
                 "RO".to_string()
             };
-            let root_squash = s.squash.as_deref() == Some("root_squash");
-            let squash_label = if root_squash {
-                "root_squash".to_string()
-            } else {
-                "no_root_squash".to_string()
-            };
+            // Unset squash means the generator default (root_squash) — resolve the
+            // same way fragments.rs does so a squash-less share never grows a
+            // false no_root_squash warn chip.
+            let squash_label = s
+                .squash
+                .as_deref()
+                .unwrap_or(nfs_klldap_config::GANESHA_DEFAULT_SQUASH)
+                .to_string();
             let cache_profile = s
                 .cache_profile
                 .clone()
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| "Default".to_string())
                 .to_lowercase();
+            // Effective security mirrors the generator (per-share override, else the
+            // [ganesha] default); the chip renders only the deviation. A config with
+            // no [ganesha] section derives an EMPTY default_security — read that as
+            // the intended krb5p default, not as "everything deviates".
+            let default_security = match cfg.ganesha.default_security.trim() {
+                "" => nfs_klldap_config::GANESHA_DEFAULT_SECTYPE,
+                v => v,
+            };
+            let security_chip = s
+                .security
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty() && *v != default_security)
+                .map(str::to_string);
 
             let warning = nfs_klldap_config::ShareFieldWarning::for_share(
                 &cfg.share_warnings,
@@ -760,9 +803,9 @@ fn index_html(state: &AppState, current_user: String) -> String {
                 squash_label,
                 cache_profile,
                 warning,
+                security_chip,
                 acl_capable: status.effective_acl_capable,
                 acl_probed: status.probed,
-                acl_state_label: status.state_label,
             }
         })
         .collect();
@@ -1278,6 +1321,101 @@ pub(crate) async fn apply_permissions(
     } else {
         None
     };
+    // Staged ACL batch: parsed, capability-gated, and LDAP-resolved BEFORE any
+    // mutation, so a bad op rejects the whole apply — chown/chmod included.
+    // Each prepared op carries (dir spec, literal file spec, log line, label).
+    let mut acl_batch: Vec<(
+        crate::privileged::AclModification,
+        crate::privileged::AclModification,
+        String,
+        String,
+    )> = Vec::new();
+    if !form.acl_ops.trim().is_empty() {
+        let specs: Vec<AclOpSpec> = match serde_json::from_str(form.acl_ops.trim()) {
+            Ok(v) => v,
+            Err(_) => {
+                return Ok(Html(
+                    r#"<div class="note-danger">Staged ACL edits could not be parsed — nothing was changed.</div>"#
+                        .to_string(),
+                ));
+            }
+        };
+        if !specs.is_empty() {
+            // Same server-side backstop as /acl-apply: NOACL/incapable paths
+            // refuse ACL mutations outright, probed on the node's own mount —
+            // a stale panel or hand-built POST can never smuggle ACL writes
+            // into a POSIX apply.
+            let gate = acl_apply_gate(&state, std::path::Path::new(&form.path));
+            if !gate.editable {
+                return Ok(Html(format!(
+                    r#"<div class="note-danger">ACL editing is not available here: {} — nothing was changed.</div>"#,
+                    gate.short.replace('<', "&lt;").replace('>', "&gt;")
+                )));
+            }
+        }
+        for spec in specs {
+            let op = spec.op.trim().to_lowercase();
+            let is_user = {
+                let t = spec.typ.trim().to_lowercase();
+                t == "user" || t == "u"
+            };
+            let default_layer = spec.layer.trim().eq_ignore_ascii_case("default");
+            if default_layer && target_is_file {
+                return Ok(Html(
+                    r#"<div class="note-danger">Default (inheritance) ACL entries apply to directories only — nothing was changed.</div>"#
+                        .to_string(),
+                ));
+            }
+            // Principal resolution mirrors /acl-apply: numeric id wins, then
+            // the typed name via LDAP; the mask op has no principal at all.
+            let mut id: u32 = spec.id.trim().parse().unwrap_or(0);
+            if id == 0 && op != "mask" && !spec.name.trim().is_empty() {
+                if let Some(stripped) =
+                    crate::ldap::LdapClient::normalize_editor_search_query(Some(&spec.name))
+                {
+                    let lldap = state.lldap.read().await.clone();
+                    if let Ok(n) = stripped.parse::<u32>() {
+                        id = n;
+                    } else if is_user {
+                        if let Some((uid, _)) = lldap.resolve_user(&stripped).await {
+                            id = uid as u32;
+                        }
+                    } else if let Some((gid, _)) = lldap.resolve_group(&stripped).await {
+                        id = gid as u32;
+                    }
+                }
+            }
+            if id == 0 && op != "mask" {
+                let safe_name = spec
+                    .name
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace('"', "&quot;");
+                return Ok(Html(format!(
+                    r#"<div class="note-danger">Could not resolve ACL principal "{}" (unknown name or invalid id) — nothing was changed.</div>"#,
+                    safe_name
+                )));
+            }
+            let Some((modification, file_modification, op_cmd)) = build_acl_modification(
+                AclOpInput {
+                    op: &op,
+                    is_user,
+                    id,
+                    delete_kinds: vec![],
+                    perms: &spec.perms,
+                    default_layer,
+                },
+                !target_is_file,
+                &form.path,
+            ) else {
+                return Ok(Html(
+                    r#"<div class="note-danger">Unknown op in the staged ACL batch — nothing was changed.</div>"#
+                        .to_string(),
+                ));
+            };
+            acl_batch.push((modification, file_modification, op_cmd, op));
+        }
+    }
     // Directories are normalized r-implies-x at apply time (fs.rs) — an
     // r-without-x directory lists as EMPTY over NFS, so for directories the
     // two bits are one concept. Surface the normalization in the apply log.
@@ -1325,6 +1463,30 @@ pub(crate) async fn apply_permissions(
     let cmd = match mode_warning {
         Some(w) => format!("{cmd}\n{w}"),
         None => cmd,
+    };
+    // The staged setfacl lines land in the Apply Log alongside chown/chmod;
+    // recursive reaches name the literal file spec like /acl-apply does.
+    let cmd = if acl_batch.is_empty() {
+        cmd
+    } else {
+        let scope_name = match scope {
+            crate::fs::ApplyScope::All => "all",
+            crate::fs::ApplyScope::ImmediateFiles => "single",
+            crate::fs::ApplyScope::DirOnly => "none",
+        };
+        let lines: Vec<String> = acl_batch
+            .iter()
+            .map(|(_, file_modf, op_cmd, _)| {
+                if scope == crate::fs::ApplyScope::DirOnly {
+                    op_cmd.clone()
+                } else if let crate::privileged::AclModification::Set { perms, .. } = file_modf {
+                    format!("{} [scope: {}, files: {}]", op_cmd, scope_name, perms.to_str())
+                } else {
+                    format!("{} [scope: {}]", op_cmd, scope_name)
+                }
+            })
+            .collect();
+        format!("{cmd}\n{}", lines.join("\n"))
     };
     let progress = Arc::new(ApplyProgress::default());
     {
@@ -1408,6 +1570,122 @@ pub(crate) async fn apply_permissions(
         }
         if apply_res.skipped > 0 {
             rtext.push_str("\n(skipped entries were typically symlinks — never followed for safety)");
+        }
+        // Staged ACL batch: runs after the POSIX pass under the same scope
+        // (the hard-error walk paths above return before reaching it). A
+        // cancel skips it; a failing op stops the rest — the panel reloads
+        // getfacl truth afterwards either way, never optimistic state.
+        if !acl_batch.is_empty() {
+            if prog.cancelled.load(Ordering::Relaxed) {
+                rtext.push_str("\n\nStaged ACL edits skipped (apply cancelled).");
+            } else {
+                let total_ops = acl_batch.len();
+                for (i, (modf, file_modf, _op_cmd, op_label)) in acl_batch.into_iter().enumerate() {
+                    if prog.cancelled.load(Ordering::Relaxed) {
+                        rtext.push_str(&format!(
+                            "\nACL batch CANCELLED — {} of {} ops not applied.",
+                            total_ops - i,
+                            total_ops
+                        ));
+                        break;
+                    }
+                    *prog.phase.lock().expect("progress mutex poisoned") =
+                        format!("applying ACLs ({}/{})", i + 1, total_ops);
+                    let (op_ok, op_note) = if sc == crate::fs::ApplyScope::DirOnly {
+                        let fs3 = fs.clone();
+                        let pth3 = pth.clone();
+                        let r = tokio::task::spawn_blocking(move || {
+                            fs3.apply_acl_mod(std::path::Path::new(&pth3), modf)
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("apply task failed: {e}")));
+                        match r {
+                            Ok(m) => (true, m),
+                            Err(e) => (false, e),
+                        }
+                    } else {
+                        // Count-then-apply per op — the same two-phase shape as
+                        // /acl-apply's scoped branch.
+                        let scan = {
+                            let fs3 = fs.clone();
+                            let pth3 = pth.clone();
+                            let m3 = modf.clone();
+                            let prog3 = prog.clone();
+                            tokio::task::spawn_blocking(move || {
+                                fs3.count_acl_applicable_with_live(
+                                    std::path::Path::new(&pth3),
+                                    &m3,
+                                    sc,
+                                    &prog3,
+                                )
+                            })
+                            .await
+                        };
+                        match scan {
+                            Ok(Ok(n)) => {
+                                prog.total.store(n, Ordering::Relaxed);
+                                prog.processed.store(0, Ordering::Relaxed);
+                                let fs3 = fs.clone();
+                                let pth3 = pth.clone();
+                                let m3 = modf.clone();
+                                let f3 = file_modf.clone();
+                                let prog3 = prog.clone();
+                                let applied = tokio::task::spawn_blocking(move || {
+                                    fs3.apply_acl_with_progress(
+                                        std::path::Path::new(&pth3),
+                                        &m3,
+                                        &f3,
+                                        sc,
+                                        &prog3,
+                                    )
+                                })
+                                .await;
+                                match applied {
+                                    Ok(Ok(res)) => {
+                                        let ok = res.errors.is_empty();
+                                        let mut note =
+                                            format!("{} changed, {} skipped", res.changed, res.skipped);
+                                        if !ok {
+                                            note.push_str(&format!(
+                                                ", {} errors (first: {})",
+                                                res.errors.len(),
+                                                res.errors[0].1
+                                            ));
+                                        }
+                                        (ok, note)
+                                    }
+                                    Ok(Err(e)) => (false, e),
+                                    Err(e) => (false, format!("apply task failed: {e}")),
+                                }
+                            }
+                            Ok(Err(e)) => (false, format!("scan failed: {e}")),
+                            Err(e) => (false, format!("scan task failed: {e}")),
+                        }
+                    };
+                    if op_ok {
+                        rtext.push_str(&format!(
+                            "\nACL {} ({}/{}) OK: {}",
+                            op_label,
+                            i + 1,
+                            total_ops,
+                            op_note
+                        ));
+                    } else {
+                        prog.error_count.fetch_add(1, Ordering::Relaxed);
+                        if let Ok(mut errs) = prog.recent_errors.lock() {
+                            errs.push((PathBuf::from(&pth), op_note.clone()));
+                        }
+                        rtext.push_str(&format!(
+                            "\nACL {} ({}/{}) FAILED: {} — remaining staged ACL edits skipped.",
+                            op_label,
+                            i + 1,
+                            total_ops,
+                            op_note
+                        ));
+                        break;
+                    }
+                }
+            }
         }
         {
             let mut ft = prog.final_result_text.lock().expect("progress mutex poisoned");
@@ -1521,6 +1799,95 @@ pub(crate) async fn cancel_apply(
     Ok(Html(r#"<span class="note-danger">Cancel requested.</span>"#.to_string()))
 }
 
+/// Inputs for one ACL op, shared by /acl-apply and the /apply staged batch.
+struct AclOpInput<'a> {
+    op: &'a str,
+    is_user: bool,
+    id: u32,
+    /// Pre-parsed principals for delete (may be empty — a lone id falls back).
+    delete_kinds: Vec<crate::privileged::AclEntryKind>,
+    perms: &'a str,
+    default_layer: bool,
+}
+
+/// Builds the modification pair for one ACL op — the (possibly fused)
+/// directory spec, the literal file spec for recursive sweeps, and the
+/// human-readable setfacl line for the Apply Log. Shared by /acl-apply and
+/// the /apply staged batch so both paths mutate identically. Returns None
+/// for an unknown op.
+fn build_acl_modification(
+    input: AclOpInput<'_>,
+    node_is_dir: bool,
+    path: &str,
+) -> Option<(
+    crate::privileged::AclModification,
+    crate::privileged::AclModification,
+    String,
+)> {
+    let AclOpInput { op, is_user, id, mut delete_kinds, perms, default_layer } = input;
+    let dflag = if default_layer { "-d " } else { "" };
+    // Directory targets fuse r→x exactly like the POSIX dir matrix: the dir
+    // editor's Exec box is the FILE-execute grant for recursive reaches, so
+    // the selected dir (and dirs in scope) take the fused perms while files
+    // in scope take the literal submitted triad — x only when Exec granted.
+    let fuse_dir = |p: crate::privileged::AclPerms| {
+        if node_is_dir { p.dir_r_implies_x() } else { p }
+    };
+    let kind = if is_user {
+        crate::privileged::AclEntryKind::User(id)
+    } else {
+        crate::privileged::AclEntryKind::Group(id)
+    };
+    if op == "mask" {
+        let pstr = if perms.trim().is_empty() { "r--".to_string() } else { perms.trim().to_string() };
+        let lit = crate::privileged::AclPerms::from_str(&pstr);
+        let fused = fuse_dir(lit.clone());
+        let c = format!("setfacl {}-m m::{} {}", dflag, fused.to_str(), path);
+        Some((
+            crate::privileged::AclModification::SetMask { perms: fused, default: default_layer },
+            crate::privileged::AclModification::SetMask { perms: lit, default: default_layer },
+            c,
+        ))
+    } else if op == "add" || op == "edit" || op == "set" {
+        let pstr = if perms.trim().is_empty() { "r--".to_string() } else { perms.trim().to_string() };
+        let lit = crate::privileged::AclPerms::from_str(&pstr);
+        let fused = fuse_dir(lit.clone());
+        let c = format!(
+            "setfacl {}-m {}:{}:{} {}",
+            dflag,
+            if is_user { "u" } else { "g" },
+            id,
+            fused.to_str(),
+            path
+        );
+        Some((
+            crate::privileged::AclModification::Set { kind: kind.clone(), perms: fused, default: default_layer },
+            crate::privileged::AclModification::Set { kind, perms: lit, default: default_layer },
+            c,
+        ))
+    } else if op == "delete" || op == "del" {
+        if delete_kinds.is_empty() && id > 0 {
+            delete_kinds.push(kind);
+        }
+        let c = if delete_kinds.is_empty() {
+            format!("setfacl {}-x (no-op) {}", dflag, path)
+        } else {
+            let specs: Vec<String> = delete_kinds
+                .iter()
+                .map(|k| match k {
+                    crate::privileged::AclEntryKind::User(u) => format!("u:{}", u),
+                    crate::privileged::AclEntryKind::Group(g) => format!("g:{}", g),
+                })
+                .collect();
+            format!("setfacl {}-x {} {}", dflag, specs.join(","), path)
+        };
+        let rm = crate::privileged::AclModification::Remove { kinds: delete_kinds, default: default_layer };
+        Some((rm.clone(), rm, c))
+    } else {
+        None
+    }
+}
+
 pub(crate) async fn acl_apply(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1617,71 +1984,34 @@ pub(crate) async fn acl_apply(
         )
             .into_response());
     }
-    let kind = if is_user {
-        crate::privileged::AclEntryKind::User(id)
-    } else {
-        crate::privileged::AclEntryKind::Group(id)
-    };
-
-    let dflag = if default_layer { "-d " } else { "" };
-    // Directory targets fuse r→x exactly like the POSIX dir matrix: the dir
-    // editor's Exec box is the FILE-execute grant for recursive reaches, so
-    // the selected dir (and dirs in scope) take the fused perms while files
-    // in scope take the literal submitted triad — x only when Exec granted.
-    let fuse_dir = |p: crate::privileged::AclPerms| {
-        if node_is_dir == Some(true) { p.dir_r_implies_x() } else { p }
-    };
-    let (modification, file_modification, cmd) = if op == "mask" {
-        let pstr = if form.perms.trim().is_empty() { "r--".to_string() } else { form.perms.trim().to_string() };
-        let lit = crate::privileged::AclPerms::from_str(&pstr);
-        let perms = fuse_dir(lit.clone());
-        let c = format!("setfacl {}-m m::{} {}", dflag, perms.to_str(), form.path);
-        (
-            crate::privileged::AclModification::SetMask { perms, default: default_layer },
-            crate::privileged::AclModification::SetMask { perms: lit, default: default_layer },
-            c,
-        )
-    } else if op == "add" || op == "edit" || op == "set" {
-        let pstr = if form.perms.trim().is_empty() { "r--".to_string() } else { form.perms.trim().to_string() };
-        let lit = crate::privileged::AclPerms::from_str(&pstr);
-        let perms = fuse_dir(lit.clone());
-        let c = format!("setfacl {}-m {}:{}:{} {}", dflag, if is_user {"u"} else {"g"}, id, perms.to_str(), form.path);
-        (
-            crate::privileged::AclModification::Set { kind: kind.clone(), perms, default: default_layer },
-            crate::privileged::AclModification::Set { kind, perms: lit, default: default_layer },
-            c,
-        )
-    } else if op == "delete" || op == "del" {
-        let mut ks: Vec<crate::privileged::AclEntryKind> = vec![];
-        if !form.selected.trim().is_empty() {
-            for tok in form.selected.split(',') {
-                let t = tok.trim();
-                if t.is_empty() { continue; }
-                let num: u32 = t.split(':').next_back().unwrap_or("0").trim().parse().unwrap_or(0);
-                if num > 0 {
-                    if t.starts_with('g') || t.starts_with("group") {
-                        ks.push(crate::privileged::AclEntryKind::Group(num));
-                    } else {
-                        ks.push(crate::privileged::AclEntryKind::User(num));
-                    }
+    // Delete may carry several principals at once (comma list "u:1001,g:3001").
+    let mut delete_kinds: Vec<crate::privileged::AclEntryKind> = vec![];
+    if (op == "delete" || op == "del") && !form.selected.trim().is_empty() {
+        for tok in form.selected.split(',') {
+            let t = tok.trim();
+            if t.is_empty() { continue; }
+            let num: u32 = t.split(':').next_back().unwrap_or("0").trim().parse().unwrap_or(0);
+            if num > 0 {
+                if t.starts_with('g') || t.starts_with("group") {
+                    delete_kinds.push(crate::privileged::AclEntryKind::Group(num));
+                } else {
+                    delete_kinds.push(crate::privileged::AclEntryKind::User(num));
                 }
             }
         }
-        if ks.is_empty() && id > 0 {
-            ks.push(kind);
-        }
-        let c = if ks.is_empty() {
-            format!("setfacl {}-x (no-op) {}", dflag, form.path)
-        } else {
-            let specs: Vec<String> = ks.iter().map(|k| match k {
-                crate::privileged::AclEntryKind::User(u) => format!("u:{}", u),
-                crate::privileged::AclEntryKind::Group(g) => format!("g:{}", g),
-            }).collect();
-            format!("setfacl {}-x {} {}", dflag, specs.join(","), form.path)
-        };
-        let rm = crate::privileged::AclModification::Remove { kinds: ks, default: default_layer };
-        (rm.clone(), rm, c)
-    } else {
+    }
+    let Some((modification, file_modification, cmd)) = build_acl_modification(
+        AclOpInput {
+            op: &op,
+            is_user,
+            id,
+            delete_kinds,
+            perms: &form.perms,
+            default_layer,
+        },
+        node_is_dir == Some(true),
+        &form.path,
+    ) else {
         return Ok((
             StatusCode::UNPROCESSABLE_ENTITY,
             Html(r#"<div class="note-danger">Unknown ACL op</div>"#.to_string()),

@@ -606,7 +606,6 @@ while :; do :; done
                     if self.bring_up_services().is_ok() {
                         self.services_started = true;
                         let _ = services::start_watcher(self);
-                        self.touch_recycle_marker();
                         // Gate on readiness for ganesha case (AC1) before final ready declaration.
                         let readiness_ok = if !self.env.host_nfs_mode && self.pids.ganesha.is_some() {
                             self.wait_for_ganesha_readiness()
@@ -615,6 +614,11 @@ while :; do :; done
                         };
                         // Start WebUI (moved out of bring_up) for wizard path.
                         let _ = self.start_webui();
+                        // Marker only after the WebUI restart: restarting.html
+                        // redirects to /login the moment the marker appears, so
+                        // touching it earlier sends the user to the old, about-
+                        // to-be-killed process (handle_sighup orders it the same).
+                        self.touch_recycle_marker();
                         if readiness_ok {
                             self.log_info("Container is ready.");
                         } else {

@@ -1,65 +1,56 @@
 {# Panel body for the detached "Permissions" panel (GET /dir-perms?path=...).
-   Renders in VIEW mode (inputs disabled); the base.html permissions script flips `disabled` off on Edit,
-   re-fetches this fragment on Cancel, and POSTs to the existing /apply (POSIX) and
-   /acl-apply (ACL) endpoints. Owner/Group carry live LLDAP search + a hidden numeric
+   Renders in VIEW mode (inputs disabled); the base.html permissions script flips `disabled` off on Edit
+   and re-fetches this fragment on Cancel. Edits STAGE in the panel — POSIX and ACL alike — and one
+   Apply commits them all through POST /apply (the staged ACL batch rides the hidden acl_ops field;
+   /acl-apply is no longer driven by the panel). Owner/Group carry live LLDAP search + a hidden numeric
    uid/gid so name→id translation matches the old inline editor.
    When the directory can't be stat'd, a full-width diagnostic replaces the split editors. #}
 
 {# Columnar ACL rows for one category (users or groups) of one layer. A ✓ shows
    the entry as granted; a dimmed ✓ marks bits the mask withholds (row hover
-   names the effective triad). Rows are display + selection targets — all
-   mutation goes through the Add User/Add Group/Remove buttons and the row
-   checkboxes (toggle-apply). Directory panels
-   hide the Exec column like the POSIX dir matrix: execute is the traversal
-   bit, fused from Read server-side on every dir apply. #}
+   names the effective triad). Checkbox toggles stage in place and commit on the
+   panel Apply; rows also select for [Remove]. Directory rows keep the full
+   Read/Write/Exec grid, but their Exec box is the FILE-execute grant knob
+   (scope-gated, never checked from the stored bit): the directory's own
+   execute is the traversal bit, fused from Read server-side on every apply. #}
 {% macro acl_rows(kind, entries, layer) %}
         {% for e in entries %}
-        <div class="acl-row" data-type="{{ kind }}" data-id="{{ e.id }}" data-layer="{{ layer }}"
+        <div class="acl-row" data-type="{{ kind }}" data-id="{{ e.id }}" data-name="{{ e.name }}" data-layer="{{ layer }}"
              data-perms="{% if e.r %}r{% else %}-{% endif %}{% if e.w %}w{% else %}-{% endif %}{% if e.x %}x{% else %}-{% endif %}"
              {% if e.capped %}title="Mask caps this entry to {% if e.eff_r %}r{% else %}-{% endif %}{% if e.eff_w %}w{% else %}-{% endif %}{% if e.eff_x %}x{% else %}-{% endif %}"{% endif %}>
           <span class="acl-name">{{ e.name }} <span class="id">{{ e.id }}</span></span>
           <span class="acl-cell{% if e.r && !e.eff_r %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="r" aria-label="read" {% if e.r %}checked{% endif %} disabled></span>
           <span class="acl-cell{% if e.w && !e.eff_w %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="w" aria-label="write" {% if e.w %}checked{% endif %} disabled></span>
-          {% if !is_dir %}<span class="acl-cell{% if e.x && !e.eff_x %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="x" aria-label="execute" {% if e.x %}checked{% endif %} disabled></span>{% endif %}
+          {% if is_dir %}<span class="acl-cell"><input type="checkbox" class="abit" data-ch="x" aria-label="Files: execute (recursive reach)" disabled></span>{% else %}<span class="acl-cell{% if e.x && !e.eff_x %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="x" aria-label="execute" {% if e.x %}checked{% endif %} disabled></span>{% endif %}
         </div>
         {% endfor %}
 {% endmacro %}
 
 {# One ACL layer pane: action buttons (edit mode), the R/W/X column header, the
-   scrolling Users/Groups/mask list, and the unified entry editor. #}
+   inline add row (hidden until Add User/Add Group), and the scrolling
+   Users/Groups/mask list. All edits stage; the panel Apply commits them with
+   the single POSIX Apply scope. #}
 {% macro acl_pane(layer, users_list, groups_list, mask_opt, active) %}
   <div class="acl-pane" data-layer="{{ layer }}" {% if !active %}hidden{% endif %}>
     <div class="acl-actions">
-      <button type="button" class="btn acl-act" data-act="add-user" title="Add a user entry: pick the user, set Read/Write{% if !is_dir %}/Exec{% endif %}, choose the reach, then Apply.">Add User</button>
-      <button type="button" class="btn acl-act" data-act="add-group" title="Add a group entry: pick the group, set Read/Write{% if !is_dir %}/Exec{% endif %}, choose the reach, then Apply.">Add Group</button>
-      <button type="button" class="btn acl-act" data-act="remove" disabled title="Remove the selected entry (click a row's name to select).">Remove</button>
+      <button type="button" class="btn acl-act" data-act="add-user" title="Add a user entry: pick the user, set Read/Write/Exec, then Add entry stages it. The panel Apply commits every staged edit with the Apply scope.">Add User</button>
+      <button type="button" class="btn acl-act" data-act="add-group" title="Add a group entry: pick the group, set Read/Write/Exec, then Add entry stages it. The panel Apply commits every staged edit with the Apply scope.">Add Group</button>
+      <button type="button" class="btn acl-act" data-act="remove" disabled title="Stage removal of the selected entry (click a row's name to select) — Apply commits it, Cancel restores.">Remove</button>
     </div>
-    {# Add-mode form: sits right under the Add buttons that summon it, above the list.
-       Hidden until Add User / Add Group; the panel header's Apply/Cancel finish the
-       flow (Apply arms once a principal is typed and at least one permission is checked). #}
+    <div class="acl-cols" aria-hidden="true"><span class="acl-name"></span><span class="colhd" title="{% if is_dir %}Read includes browse (execute) on directories — an entry without execute can't traverse. Toggles stage here and commit on Apply; hover a dimmed box: the mask caps it.{% else %}read{% endif %}">Read</span><span class="colhd" title="{% if is_dir %}Write requires Read.{% else %}write{% endif %}">Write</span><span class="colhd" title="{% if is_dir %}{% if layer == "access" %}Files only: under a recursive Apply scope, files in reach get execute where this box is checked. The directory's own entry always carries execute with Read.{% else %}Derived on inherit — subdirectories fuse execute from Read; new files take execute from their creation mode.{% endif %}{% else %}execute — toggles stage on this node and commit on Apply; hover a dimmed box: the mask caps it{% endif %}">Exec</span></div>
+    {# Inline add row: grid-aligned under the reused column headers, above the
+       list. Hidden until Add User / Add Group; the panel Apply plays "Add
+       entry" and stages it as a data-new row. Reach comes from the single
+       POSIX Apply scope — the form carries no scope of its own. #}
     <div class="acl-addform" data-typ="user" hidden>
       <span class="acl-ename-wrap">
         <input type="text" class="acl-ename" placeholder="user or id" aria-label="Principal" autocomplete="off" disabled>
         <div class="suggestions acl-sugg"></div>
       </span>
-      <span class="acl-add-bits">
-        <span class="acl-add-hd" aria-hidden="true"><span>Read</span><span>Write</span>{% if !is_dir %}<span>Exec</span>{% else %}{% if layer == "access" %}<span title="Files only — needs a recursive reach.">Exec</span>{% endif %}{% endif %}</span>
-        <span class="acl-add-boxes">
-          <input type="checkbox" class="ebit" data-ch="r" aria-label="read" checked disabled>
-          <input type="checkbox" class="ebit" data-ch="w" aria-label="write" disabled>
-          {% if !is_dir %}<input type="checkbox" class="ebit" data-ch="x" aria-label="execute" disabled>{% else %}{% if layer == "access" %}<input type="checkbox" class="ebit" data-ch="x" aria-label="Files: execute (recursive reach)" title="Files only: with a recursive reach, files in scope get execute in this entry. The directory's own entry always carries execute with Read." disabled>{% endif %}{% endif %}
-        </span>
-      </span>
-      {% if is_dir %}
-      <div class="rec-scope acl-rec-scope">
-        <div class="perm-bits-lbl" title="How far the new entry reaches — the POSIX apply scopes. Directories in reach always carry execute; files take the Exec box literally (no execute unless granted). On the Inherit tab recursion touches directories only.">Apply scope</div>
-        <label title="This directory's own inode only."><input type="radio" class="acl-rec-radio" name="acl_scope_{{ layer }}" value="none" checked disabled><span>None</span></label>
-        <label title="This directory plus the files directly inside it."><input type="radio" class="acl-rec-radio" name="acl_scope_{{ layer }}" value="single" disabled><span>Recursive &mdash; single directory</span></label>
-        <label title="This directory and everything beneath it."><input type="radio" class="acl-rec-radio" name="acl_scope_{{ layer }}" value="all" disabled><span>Recursive &mdash; all directories</span></label>
-      </div>
-      {% endif %}
+      <span class="acl-cell"><input type="checkbox" class="ebit" data-ch="r" aria-label="read" checked disabled></span>
+      <span class="acl-cell"><input type="checkbox" class="ebit" data-ch="w" aria-label="write" disabled></span>
+      {% if is_dir %}{% if layer == "access" %}<span class="acl-cell"><input type="checkbox" class="ebit" data-ch="x" aria-label="Files: execute (recursive reach)" title="Files only: under a recursive Apply scope, files in scope get execute in this entry. The directory's own entry always carries execute with Read." disabled></span>{% else %}<span class="acl-cell"><input type="checkbox" class="ebit" data-ch="x" aria-label="execute (derived on inherit)" title="Derived on inherit — subdirectories fuse execute from Read; new files take execute from their creation mode." disabled></span>{% endif %}{% else %}<span class="acl-cell"><input type="checkbox" class="ebit" data-ch="x" aria-label="execute" disabled></span>{% endif %}
     </div>
-    <div class="acl-cols" aria-hidden="true"><span class="acl-name"></span><span class="colhd" title="{% if is_dir %}Read includes browse (execute) on directories — an entry without execute can't traverse. Toggles apply to this node; hover a dimmed box: the mask caps it.{% else %}read{% endif %}">Read</span><span class="colhd" title="{% if is_dir %}Write requires Read.{% else %}write{% endif %}">Write</span>{% if !is_dir %}<span class="colhd" title="execute — toggles apply to this node; hover a dimmed box: the mask caps it">Exec</span>{% endif %}</div>
     <div class="acl-list">
       <div class="acl-cat" data-cat="user" title="Named user entries — per-user grants beyond owner/group/other."><span class="acl-caret" aria-hidden="true">&#9662;</span>Users</div>
       <div class="acl-cat-rows">
@@ -74,11 +65,11 @@
       <div class="acl-sep"></div>
       <div class="acl-row acl-mask-row" data-type="mask" data-layer="{{ layer }}"
            data-perms="{% if m.r %}r{% else %}-{% endif %}{% if m.w %}w{% else %}-{% endif %}{% if m.x %}x{% else %}-{% endif %}"
-           title="Mask: caps every named entry and the owning group. chmod's Group bits rewrite this same value. Toggle its checkboxes in edit mode to change it.">
+           title="Mask: caps every named entry and the owning group. chmod's Group bits rewrite this same value. Toggle its checkboxes in edit mode — changes stage and commit on Apply.">
         <span class="acl-name">mask</span>
         <span class="acl-cell"><input type="checkbox" class="mbit" data-ch="r" aria-label="mask read" {% if m.r %}checked{% endif %} disabled></span>
         <span class="acl-cell"><input type="checkbox" class="mbit" data-ch="w" aria-label="mask write" {% if m.w %}checked{% endif %} disabled></span>
-        {% if !is_dir %}<span class="acl-cell"><input type="checkbox" class="mbit" data-ch="x" aria-label="mask execute" {% if m.x %}checked{% endif %} disabled></span>{% endif %}
+        {% if is_dir %}<span class="acl-cell"><input type="checkbox" class="mbit" data-ch="x" aria-label="Files: mask execute (recursive reach)" disabled></span>{% else %}<span class="acl-cell"><input type="checkbox" class="mbit" data-ch="x" aria-label="mask execute" {% if m.x %}checked{% endif %} disabled></span>{% endif %}
       </div>
       {% when None %}{% endmatch %}
     </div>
@@ -164,12 +155,12 @@
     </label>
   </div>
 
-  {# Apply scope: how far Apply reaches from this directory. The file bits
-     below appear only for a recursive scope — files are never touched by
-     "None". Radios submit as recursive_scope; the fragment reload after an
-     apply resets the choice to None on purpose. #}
+  {# Apply scope: how far Apply reaches from this directory — the ONE reach
+     control, governing the POSIX change and every staged ACL edit alike.
+     Files are never touched by "None". Radios submit as recursive_scope; the
+     fragment reload after an apply resets the choice to None on purpose. #}
   <div class="rec-scope">
-    <div class="perm-bits-lbl" title="How far Apply reaches. Files are changed only by a recursive scope — they receive this matrix's Read/Write plus the Exec column's execute, never the directory's fused bits.">Apply scope</div>
+    <div class="perm-bits-lbl" title="How far Apply reaches — governs both the POSIX change and any staged ACL edits. Files change only on a recursive scope (they take the matrix Read/Write plus the Exec column); the directory always fuses execute from Read.">Apply scope</div>
     <label title="chown/chmod this directory's own inode only — no files, no subdirectories.">
       <input type="radio" class="rec-radio" name="recursive_scope" value="none" checked disabled>
       <span>None</span>
@@ -212,13 +203,14 @@
   </div>
   {% endif %}
 
-  {# name="mode" is what /apply expects; the base.html permissions script keeps it in sync with the checkboxes. #}
+  {# name="mode" is what /apply expects; the permissions script keeps it in sync with the
+     checkboxes. acl_ops carries the staged ACL batch (JSON), filled at Apply time. #}
   <input type="hidden" name="mode" class="mode-field" value="{{ mode_octal }}">
+  <input type="hidden" name="acl_ops" class="acl-ops-field" value="">
   <div class="perm-readout">
     <span class="lbl">Mode</span>
     <span class="octal">{{ mode_octal }}</span>
     <code class="symbolic"></code>{# filled by the base.html permissions script from the octal #}
-    <span class="file-mode-readout" hidden><span class="lbl">Files</span> <span class="file-octal"></span></span>
   </div>
 </form>
 

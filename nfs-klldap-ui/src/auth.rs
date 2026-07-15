@@ -2,6 +2,7 @@
 //! Sessions last twelve hours with HttpOnly cookies and SHA-256 hashing.
 
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -9,41 +10,127 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 use subtle::ConstantTimeEq;
 
 // Twelve hours is the session TTL.
 const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
 const SIMPLE_PW_FILENAME: &str = "webui-password";
+const SESSIONS_FILENAME: &str = "webui-sessions";
 
 #[derive(Clone, Debug)]
 pub struct Session {
     pub username: String,
-    pub created: Instant,
+    pub expires_at: SystemTime,
+}
+
+/// On-disk session entry. The map key is SHA-256(token) hex, so the sidecar
+/// never contains a usable bearer token.
+#[derive(Serialize, Deserialize)]
+struct PersistedSession {
+    username: String,
+    expires_unix: u64,
 }
 
 pub struct AuthManager {
-    /// Active sessions are keyed by opaque bearer token.
+    /// Active sessions keyed by SHA-256 of the opaque bearer token, mirrored
+    /// to the webui-sessions sidecar so service recycles keep users logged in.
     sessions: RwLock<HashMap<String, Session>>,
     /// The webui-password sidecar file lives beside nfs-klldap.conf.
     simple_pw_path: PathBuf,
+    /// The webui-sessions sidecar file lives beside nfs-klldap.conf.
+    sessions_path: PathBuf,
     /// Names the LDAP admin group from webui_admin_group.
     admin_group: String,
 }
 
+/// SHA-256 hex of a bearer token: the only form sessions are keyed/stored by.
+fn token_hash(token: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(token.as_bytes());
+    hex_encode(&h.finalize())
+}
+
+/// Loads unexpired sessions from the sidecar; any read/parse failure means
+/// starting empty (users just log in again).
+fn load_sessions(path: &Path) -> HashMap<String, Session> {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    let Ok(entries) = serde_json::from_str::<HashMap<String, PersistedSession>>(&raw) else {
+        eprintln!(
+            "WARN: ignoring unreadable session store at {}",
+            path.display()
+        );
+        return HashMap::new();
+    };
+    let now = SystemTime::now();
+    entries
+        .into_iter()
+        .filter_map(|(key, p)| {
+            let expires_at = SystemTime::UNIX_EPOCH + Duration::from_secs(p.expires_unix);
+            (expires_at > now).then_some((
+                key,
+                Session {
+                    username: p.username,
+                    expires_at,
+                },
+            ))
+        })
+        .collect()
+}
+
 impl AuthManager {
     /// Builds a manager using paths derived from nfs-klldap.conf.
+    /// Sessions persisted by a previous WebUI process are picked up here so a
+    /// service recycle (first-run setup, settings apply) never logs users out.
     pub fn new(config_path: impl AsRef<Path>, admin_group: Option<String>) -> Self {
         let config_path = config_path.as_ref();
-        let simple_pw_path = config_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(SIMPLE_PW_FILENAME);
+        let parent = config_path.parent().unwrap_or_else(|| Path::new("."));
+        let simple_pw_path = parent.join(SIMPLE_PW_FILENAME);
+        let sessions_path = parent.join(SESSIONS_FILENAME);
 
         Self {
-            sessions: RwLock::new(HashMap::new()),
+            sessions: RwLock::new(load_sessions(&sessions_path)),
             simple_pw_path,
+            sessions_path,
             admin_group: admin_group.unwrap_or_else(|| "lldap_admin".to_string()),
+        }
+    }
+
+    /// Best-effort mirror of the live map to the sessions sidecar (0600,
+    /// write + rename). A failed save only shortens sessions to this
+    /// process's lifetime.
+    fn persist_sessions(&self, map: &HashMap<String, Session>) {
+        let out: HashMap<&String, PersistedSession> = map
+            .iter()
+            .map(|(key, s)| {
+                (
+                    key,
+                    PersistedSession {
+                        username: s.username.clone(),
+                        expires_unix: s
+                            .expires_at
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0),
+                    },
+                )
+            })
+            .collect();
+        let Ok(json) = serde_json::to_string(&out) else {
+            return;
+        };
+        let tmp = self.sessions_path.with_extension("saving");
+        if fs::write(&tmp, json.as_bytes()).is_err() {
+            return;
+        }
+        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+        if let Err(e) = fs::rename(&tmp, &self.sessions_path) {
+            eprintln!(
+                "WARN: failed to persist sessions to {}: {e}",
+                self.sessions_path.display()
+            );
         }
     }
 
@@ -156,35 +243,42 @@ impl AuthManager {
 
         let session = Session {
             username: username.to_string(),
-            created: Instant::now(),
+            expires_at: SystemTime::now() + SESSION_TTL,
         };
 
         let mut map = self.sessions.write().unwrap();
-        map.insert(token.clone(), session);
+        map.insert(token_hash(&token), session);
 
         // Drops expired sessions opportunistically while holding the lock.
-        let now = Instant::now();
-        map.retain(|_, s| now.duration_since(s.created) < SESSION_TTL);
+        let now = SystemTime::now();
+        map.retain(|_, s| s.expires_at > now);
+        self.persist_sessions(&map);
 
         token
     }
 
     /// Validate token → username (for require_auth compatibility).
     pub fn validate(&self, token: &str) -> Option<String> {
+        let key = token_hash(token);
         let mut map = self.sessions.write().unwrap();
-        if let Some(session) = map.get(token) {
-            if Instant::now().duration_since(session.created) < SESSION_TTL {
-                return Some(session.username.clone());
-            } else {
-                map.remove(token);
+        match map.get(&key) {
+            Some(session) if session.expires_at > SystemTime::now() => {
+                Some(session.username.clone())
             }
+            Some(_) => {
+                map.remove(&key);
+                self.persist_sessions(&map);
+                None
+            }
+            None => None,
         }
-        None
     }
 
     pub fn logout(&self, token: &str) {
         let mut map = self.sessions.write().unwrap();
-        map.remove(token);
+        if map.remove(&token_hash(token)).is_some() {
+            self.persist_sessions(&map);
+        }
     }
 }
 
@@ -233,5 +327,64 @@ fn from_hex_digit(c: u8) -> Option<u8> {
         b'a'..=b'f' => Some(10 + c - b'a'),
         b'A'..=b'F' => Some(10 + c - b'A'),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sessions_survive_a_new_manager_and_store_only_hashes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf = tmp.path().join("nfs-klldap.conf");
+        let mgr = AuthManager::new(&conf, None);
+        let token = mgr.create_privileged_session("localhost");
+        assert_eq!(mgr.validate(&token).as_deref(), Some("localhost"));
+
+        let store = tmp.path().join(SESSIONS_FILENAME);
+        let raw = fs::read_to_string(&store).unwrap();
+        assert!(
+            !raw.contains(&token),
+            "sidecar must not hold usable bearer tokens: {raw}"
+        );
+        let mode = fs::metadata(&store).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "session store must be private");
+
+        // A recycled WebUI builds a fresh manager over the same config dir;
+        // the browser's cookie must stay valid across it.
+        let mgr2 = AuthManager::new(&conf, None);
+        assert_eq!(mgr2.validate(&token).as_deref(), Some("localhost"));
+
+        mgr2.logout(&token);
+        let mgr3 = AuthManager::new(&conf, None);
+        assert!(mgr3.validate(&token).is_none(), "logout must persist");
+    }
+
+    #[test]
+    fn expired_persisted_sessions_are_dropped_on_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf = tmp.path().join("nfs-klldap.conf");
+        let store = tmp.path().join(SESSIONS_FILENAME);
+        fs::write(
+            &store,
+            r#"{"deadbeef":{"username":"localhost","expires_unix":1}}"#,
+        )
+        .unwrap();
+        let mgr = AuthManager::new(&conf, None);
+        let _ = mgr.create_privileged_session("localhost");
+        let raw = fs::read_to_string(&store).unwrap();
+        assert!(!raw.contains("deadbeef"), "expired entry must be pruned");
+    }
+
+    #[test]
+    fn corrupt_session_store_falls_back_to_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf = tmp.path().join("nfs-klldap.conf");
+        fs::write(tmp.path().join(SESSIONS_FILENAME), "not-json").unwrap();
+        let mgr = AuthManager::new(&conf, None);
+        assert!(mgr.validate("whatever").is_none());
+        let token = mgr.create_privileged_session("localhost");
+        assert_eq!(mgr.validate(&token).as_deref(), Some("localhost"));
     }
 }

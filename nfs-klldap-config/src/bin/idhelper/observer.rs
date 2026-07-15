@@ -103,12 +103,21 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                                         recently.retain(|_, t| now.duration_since(*t) < dedup_window);
                                     }
 
+                                    if !unmapped_principal_needs_heal(&candidate, realm, variants) {
+                                        // Client machine principals are anonymous by design; resolving
+                                        // them here only added LDAP round-trips and NSS rewrites that
+                                        // raced ganesha's first-contact getgrouplist (13/7-of-17 group
+                                        // capture, 2026-07-14 blue-lt diag). Observe and move on.
+                                        eprintln!(
+                                            "[idhelper] observed client machine principal (anonymous by design, no resolve): {}",
+                                            candidate
+                                        );
+                                        continue;
+                                    }
+
                                     // Heal shares the dedup gate (was one SIGHUP per log line).
                                     let unmapped = line.contains("Could not map principal ");
-                                    if failure_line
-                                        && (!unmapped
-                                            || unmapped_principal_needs_heal(&candidate, realm, variants))
-                                    {
+                                    if failure_line {
                                         heal_principal_immediately(
                                             &candidate, &cache, realm, variants, unmapped,
                                         );
@@ -297,6 +306,15 @@ fn unmapped_principal_needs_heal(candidate: &str, realm: &str, variants: &[Strin
     }
 }
 
+/// Resolver group snapshot for materialize calls. Heal paths must feed the
+/// same ldap_groups as rebulk/resolve, or the content guard sees two canonical
+/// forms (LDAP display names vs g{gid} stubs) and every heal+rebulk pair
+/// rewrites the stores.
+fn resolver_groups_snapshot(
+) -> Option<std::collections::HashMap<String, nfs_klldap_config::PosixGroupEntry>> {
+    crate::resolve::get_or_init_resolver().map(|(r, _, _)| r.snapshot().groups)
+}
+
 /// Self-healing + exposes ganesha view.
 fn heal_principal_immediately(
     candidate: &str,
@@ -316,7 +334,9 @@ fn heal_principal_immediately(
         let _ = resolve_gids_and_materialize(
             candidate, realm, variants, &mut guard, &prod, true,
         );
-        let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);
+        let _ = crate::materialize::materialize_nss_wrappers_at(
+            &guard, &prod, resolver_groups_snapshot().as_ref(),
+        );
     }
     if send_sighup {
         if let Some(pid) = resolve_live_ganesha_pid() {
@@ -428,7 +448,9 @@ fn detect_my_getgrouplist_failure_and_heal(
         let _ = crate::resolve::resolve_gids_and_materialize(
             &principal, realm, variants, &mut guard, &prod, true,
         );
-        let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);
+        let _ = crate::materialize::materialize_nss_wrappers_at(
+            &guard, &prod, resolver_groups_snapshot().as_ref(),
+        );
     }
     // Clear ganesha idmapper negative cache after nss heal (same as principal map failure path).
     if let Some(pid) = resolve_live_ganesha_pid() {
@@ -533,7 +555,9 @@ fn detect_managed_gids_uid_failure_and_heal(
     }
     {
         let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
-        let _ = crate::materialize::materialize_nss_wrappers_at(&guard, &prod, None);
+        let _ = crate::materialize::materialize_nss_wrappers_at(
+            &guard, &prod, resolver_groups_snapshot().as_ref(),
+        );
     }
     if let Some(pid) = resolve_live_ganesha_pid() {
         if nfs_klldap_config::signal_ganesha_reload_idmap(pid) {

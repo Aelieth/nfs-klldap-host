@@ -73,18 +73,20 @@ pub(crate) fn rebulk_apply_sync(
     let synced = sync_user_cache_from_snapshot(snap, realm, cache);
     let user_changed = cache_changed_since(fp_before, cache);
     // Always full consistent snapshot (root + users + supps + groups) on every rebulk; idempotent, no marker dep (AC2).
-    materialize_nss_wrappers_at(cache, &paths.nss, Some(&snap.groups))?;
-    refresh_supplemental_nss_for_cached_users(cache, realm, &get_server_variants(), &paths.nss);
-    // re-apply snap for tests expecting @ members from the passed snap.groups; because build_nss is now enriched
-    // with members from cached entries' supplemental_gids, runtime supps survive the re-mat.
-    materialize_nss_wrappers_at(cache, &paths.nss, Some(&snap.groups))?;
+    // All three passes are content-guarded, so a steady-state cycle is a no-op on
+    // disk and idle rebulks no longer race ganesha's in-flight getgrouplist.
+    let mut wrote = materialize_nss_wrappers_at(cache, &paths.nss, Some(&snap.groups))?;
+    wrote |= refresh_supplemental_nss_for_cached_users(cache, realm, &get_server_variants(), &paths.nss);
+    // Normalize after refresh: the supp gids it persisted onto cache entries only
+    // reach canonical @-member rows through a post-refresh build_nss pass.
+    wrote |= materialize_nss_wrappers_at(cache, &paths.nss, Some(&snap.groups))?;
     if user_changed {
         cache.write_to_file(paths.cache_path)?;
     }
     // Marker write removed: seeding is now always-run idempotent snapshot (no race, full consistent on config/sssd/idhelper start).
     Ok(RebulkOutcome {
         synced,
-        materialized: user_changed,
+        materialized: wrote,
     })
 }
 
@@ -354,7 +356,7 @@ pub(crate) fn run_daemon() {
     {
         let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
         let prod_paths = NssMaterializePaths::production();
-        refresh_supplemental_nss_for_cached_users(&mut guard, &realm, &server_variants, &prod_paths);
+        let _ = refresh_supplemental_nss_for_cached_users(&mut guard, &realm, &server_variants, &prod_paths);
     }
 
     let prod_paths = NssMaterializePaths::production();
@@ -547,6 +549,54 @@ mod rebulk_ldap_users_tests {
             assert!(passwd.contains("alice:x:1001:1001:"));
             // Root entry always present for getgrouplist("root") (idempotent full snapshot)
             assert!(passwd.lines().any(|l| l == "root:x:0:0:root:/root:/bin/sh"));
+        });
+    }
+
+    #[test]
+    fn rebulk_steady_state_cycle_leaves_nss_stores_untouched() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = rebulk_paths_in(tmp.path());
+        let ov = TestRebulkOverride { paths };
+        with_test_rebulk_override(ov, || {
+            std::env::set_var(
+                "TEST_REBULK_POPULATE",
+                "u:testuser1:3788:3002;g:staff:3002:testuser1;g:writers:3005:testuser1;g:aux:3007:testuser1",
+            );
+            let mut cache = IdCache::default();
+            let _ = rebulk_ldap_users(&mut cache, "EX.COM");
+            let store_inodes = || -> Vec<u64> {
+                [
+                    paths.nss.nss_passwd,
+                    paths.nss.nss_group,
+                    paths.nss.extrausers_passwd,
+                    paths.nss.extrausers_group,
+                ]
+                .iter()
+                .map(|p| fs::metadata(p).expect("store exists").ino())
+                .collect()
+            };
+            // Settle: a second full cycle may still normalize ensure-appended rows once.
+            let _ = rebulk_ldap_users(&mut cache, "EX.COM");
+            let settled = store_inodes();
+            sleep(Duration::from_millis(50));
+            // Steady state: identical LDAP data must make the whole cycle (bulk
+            // materialize + per-user supplemental refresh) a disk no-op — every
+            // rename here races an in-flight ganesha getgrouplist.
+            let (r, dn, pw) = crate::resolve::get_or_init_resolver().expect("test resolver");
+            let _ = r.load_full_identities(dn, pw);
+            let snap = r.snapshot();
+            let out = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths).expect("steady rebulk");
+            std::env::remove_var("TEST_REBULK_POPULATE");
+            assert!(
+                !out.materialized,
+                "steady-state rebulk must report no materialization"
+            );
+            assert_eq!(
+                store_inodes(),
+                settled,
+                "steady-state rebulk must not rewrite any nss store"
+            );
         });
     }
 

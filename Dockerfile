@@ -100,7 +100,7 @@ FROM debian:13-slim
 # getgrouplist return fix; see container/ganesha/README.md). Rollback: the
 # tagged 9.6+klldap1 image (Phase 1 anchor), or stock
 # nfs-ganesha=9.6-1~bpo13+1 from trixie-backports.
-ARG GANESHA_VERSION=9.13-1+klldap2
+ARG GANESHA_VERSION=9.13-1+klldap3
 
 LABEL maintainer="Aelieth" \
       version="0.9.94"

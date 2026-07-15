@@ -366,12 +366,28 @@ pub(crate) fn resolve_gids_and_materialize(
 /// Re-materialize supplemental member-of NSS rows for every cached user principal.
 /// Also covers uid0 machine principals so root group membership is refreshed after bulk.
 /// Call after bulk nss writes that only used LDAP bulk snap (machine resolve, rebulk_apply_sync).
+/// Returns true when any of the four stores changed on disk (per-user materializes
+/// and ensure repairs are content-guarded, so a steady-state pass reports false).
 pub(crate) fn refresh_supplemental_nss_for_cached_users(
     cache: &mut IdCache,
     realm: &str,
     server_variants: &[String],
     paths: &NssMaterializePaths<'_>,
-) {
+) -> bool {
+    // Rename-based writes always change the inode, so an (ino, len, mtime)
+    // snapshot of the four stores detects any write made by the loop below.
+    let store_fingerprints = |paths: &NssMaterializePaths<'_>| -> Vec<Option<(u64, u64, std::time::SystemTime)>> {
+        use std::os::unix::fs::MetadataExt;
+        [paths.nss_passwd, paths.nss_group, paths.extrausers_passwd, paths.extrausers_group]
+            .iter()
+            .map(|p| {
+                std::fs::metadata(p)
+                    .ok()
+                    .and_then(|m| m.modified().ok().map(|t| (m.ino(), m.len(), t)))
+            })
+            .collect()
+    };
+    let before = store_fingerprints(paths);
     let principals: Vec<String> = cache
         .entries
         .values()
@@ -384,6 +400,7 @@ pub(crate) fn refresh_supplemental_nss_for_cached_users(
     for p in principals {
         let _ = resolve_gids_and_materialize(&p, realm, server_variants, cache, paths, true);
     }
+    store_fingerprints(paths) != before
 }
 
 /// Load resolver + bind creds from NfsKlldapConfig (NFS_CONFIG).
@@ -702,7 +719,7 @@ pub(crate) fn resolve_principal(
             if let Err(e) = materialize_nss_wrappers_at(cache, paths, snap_groups.as_ref()) {
                 dlog!("  nss_wrapper_write err={}", e);
             }
-            refresh_supplemental_nss_for_cached_users(cache, realm, server_variants, paths);
+            let _ = refresh_supplemental_nss_for_cached_users(cache, realm, server_variants, paths);
         }
     }
     if fp_before != fp_after || resolved.uid == 0 {

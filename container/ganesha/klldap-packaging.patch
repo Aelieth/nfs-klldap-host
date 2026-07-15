@@ -1,7 +1,24 @@
 diff -Naur a/debian/changelog b/debian/changelog
 --- a/debian/changelog	2026-06-25 11:47:11.000000000 -0500
-+++ b/debian/changelog	2026-07-10 23:23:05.568100519 -0500
-@@ -1,3 +1,39 @@
++++ b/debian/changelog	2026-07-14 19:44:21.980118116 -0500
+@@ -1,3 +1,56 @@
++nfs-ganesha (9.13-1+klldap3) unstable; urgency=medium
++
++  * Add klldap-uid2grp-serialize-fetch.patch: single-flight the uid2grp
++    cache-miss path. Concurrent misses for the same user each ran
++    getpwuid_r + getgrouplist and the last uid2grp_add_user() won; with
++    the NSS backend mid-update (nss_wrapper file swap, cold SSSD) the
++    fetches could disagree — observed live on 9.13 as concurrent 13- and
++    7-group results for the same 17-group RPCSEC_GSS user, with the
++    partial list cached for the whole validity window and group-based
++    permissions wrong until expiry. One fetch mutex plus a double-checked
++    cache re-read dedupes the directory work and caches one consistent
++    snapshot. Found preparing the plan 2.6 ACL gate (>16-group identity
++    rows); candidate for upstream submission alongside the getgrouplist
++    return fix.
++
++ -- Aelieth <shaiaelieth@gmail.com>  Tue, 14 Jul 2026 19:45:00 +0000
++
 +nfs-ganesha (9.13-1+klldap2) unstable; urgency=medium
 +
 +  * Add klldap-nsswitch-getgrouplist-return.patch: normalize the libc
@@ -43,7 +60,7 @@ diff -Naur a/debian/changelog b/debian/changelog
    * New upstream version 9.13
 diff -Naur a/debian/control b/debian/control
 --- a/debian/control	2026-05-03 09:05:46.000000000 -0500
-+++ b/debian/control	2026-07-10 23:22:08.585432677 -0500
++++ b/debian/control	2026-07-14 19:41:51.947055820 -0500
 @@ -14,19 +14,14 @@
   libattr1-dev,
   libblkid-dev,
@@ -218,7 +235,7 @@ diff -Naur a/debian/control b/debian/control
  Section: libs
 diff -Naur a/debian/patches/klldap-nsswitch-getgrouplist-return.patch b/debian/patches/klldap-nsswitch-getgrouplist-return.patch
 --- a/debian/patches/klldap-nsswitch-getgrouplist-return.patch	1969-12-31 18:00:00.000000000 -0600
-+++ b/debian/patches/klldap-nsswitch-getgrouplist-return.patch	2026-07-10 23:23:05.567668436 -0500
++++ b/debian/patches/klldap-nsswitch-getgrouplist-return.patch	2026-07-14 19:41:51.947055820 -0500
 @@ -0,0 +1,47 @@
 +Description: normalize libc getgrouplist(3) return to the wrapper contract
 + libc getgrouplist() returns the number of groups on success and -1 on
@@ -267,17 +284,168 @@ diff -Naur a/debian/patches/klldap-nsswitch-getgrouplist-return.patch b/debian/p
 + 		getpwnam_r_func = getpwnam_r;
 + 		getpwuid_r_func = getpwuid_r;
 + 		getgrnam_r_func = getgrnam_r;
+diff -Naur a/debian/patches/klldap-uid2grp-serialize-fetch.patch b/debian/patches/klldap-uid2grp-serialize-fetch.patch
+--- a/debian/patches/klldap-uid2grp-serialize-fetch.patch	1969-12-31 18:00:00.000000000 -0600
++++ b/debian/patches/klldap-uid2grp-serialize-fetch.patch	2026-07-14 19:43:46.128706328 -0500
+@@ -0,0 +1,146 @@
++Description: single-flight uid2grp cache-miss fetches
++ uid2grp()/uname2grp()/principal2grp() drop the user-cache read lock before
++ fetching, so two threads that miss for the same user both run
++ getpwuid_r + getgrouplist and the last uid2grp_add_user() wins. Besides the
++ duplicated directory work, the two fetches can disagree when the NSS backend
++ is mid-update (nss_wrapper file swap, cold SSSD): observed live on 9.13 as
++ concurrent 13- and 7-group results for the same 17-group RPCSEC_GSS user,
++ with one partial list then cached for the whole validity window and group-
++ based permissions wrong until expiry. Serialize cache-miss fetches with one
++ mutex and a double-checked cache re-read: N concurrent misses now cost one
++ fetch and cache one consistent snapshot.
++Author: Aelieth <shaiaelieth@gmail.com>
++Forwarded: no (candidate for upstream submission)
++Last-Update: 2026-07-14
++--- a/src/support/uid2grp.c
+++++ b/src/support/uid2grp.c
++@@ -64,6 +64,21 @@
++ 
++ sem_t uid2grp_sem;
++ 
+++/* Serializes cache-miss group fetches. Two threads that both miss the cache
+++ * for the same user otherwise run getpwuid_r/getgrouplist concurrently and
+++ * the last uid2grp_add_user() wins; when the NSS backend is mid-update
+++ * (nss_wrapper file swap, cold SSSD) the two fetches can return different
+++ * group lists and a partial one may be cached for the whole validity window
+++ * (observed live: 13- and 7-group results for the same 17-group user). The
+++ * duplicate fetch is also wasted directory work. One mutex plus a
+++ * double-checked cache re-read makes N concurrent misses cost one fetch and
+++ * cache one consistent snapshot. Deliberately global rather than per-uid:
+++ * fetches are rare (once per user per validity window) and the optional
+++ * max_uid_to_grp_reqs semaphore already throttles globally in the same
+++ * spirit.
+++ */
+++static pthread_mutex_t uid2grp_fetch_mutex = PTHREAD_MUTEX_INITIALIZER;
+++
++ /* group_data has a reference counter. If it goes to zero, it implies
++  * that it is out of the cache (AVL trees) and should be freed. The
++  * reference count is 1 when we put it into AVL trees. We decrement when
++@@ -628,11 +643,26 @@
++ 	}
++ 	PTHREAD_RWLOCK_unlock(&uid2grp_user_lock);
++ 
++-	/* We could not find non-expired group-data in cache, fetch it afresh */
+++	/* We could not find non-expired group-data in cache, fetch it afresh.
+++	 * Single-flight: re-check the cache under the fetch mutex, another
+++	 * thread may have completed the same fetch while we waited.
+++	 */
+++	PTHREAD_MUTEX_lock(&uid2grp_fetch_mutex);
+++	PTHREAD_RWLOCK_rdlock(&uid2grp_user_lock);
+++	success = uid2grp_lookup_by_uname(name, &uid, gdata);
+++	if (success && !uid2grp_is_group_data_expired(*gdata)) {
+++		uid2grp_hold_group_data(*gdata);
+++		PTHREAD_RWLOCK_unlock(&uid2grp_user_lock);
+++		PTHREAD_MUTEX_unlock(&uid2grp_fetch_mutex);
+++		return true;
+++	}
+++	PTHREAD_RWLOCK_unlock(&uid2grp_user_lock);
+++
++ 	*gdata = uid2grp_allocate_by_name(name);
++ 	if (*gdata) {
++ 		/* This will also remove existing expired cache entry */
++ 		add_user_groups_to_cache(gdata);
+++		PTHREAD_MUTEX_unlock(&uid2grp_fetch_mutex);
++ 		return true;
++ 	}
++ 
++@@ -647,6 +677,7 @@
++ 		uid2grp_remove_expired_by_uname(name);
++ 		PTHREAD_RWLOCK_unlock(&uid2grp_user_lock);
++ 	}
+++	PTHREAD_MUTEX_unlock(&uid2grp_fetch_mutex);
++ 	return false;
++ }
++ 
++@@ -717,11 +748,26 @@
++ 		return false;
++ 
++ 	/* We could not find non-expired group-data in cache,
++-	 * nor in the negative cache, fetch it afresh */
+++	 * nor in the negative cache, fetch it afresh.
+++	 * Single-flight: re-check the cache under the fetch mutex, another
+++	 * thread may have completed the same fetch while we waited.
+++	 */
+++	PTHREAD_MUTEX_lock(&uid2grp_fetch_mutex);
+++	PTHREAD_RWLOCK_rdlock(&uid2grp_user_lock);
+++	success = uid2grp_lookup_by_uid(uid, gdata);
+++	if (success && !uid2grp_is_group_data_expired(*gdata)) {
+++		uid2grp_hold_group_data(*gdata);
+++		PTHREAD_RWLOCK_unlock(&uid2grp_user_lock);
+++		PTHREAD_MUTEX_unlock(&uid2grp_fetch_mutex);
+++		return true;
+++	}
+++	PTHREAD_RWLOCK_unlock(&uid2grp_user_lock);
+++
++ 	*gdata = uid2grp_allocate_by_uid(uid);
++ 	if (*gdata) {
++ 		/* This will also remove existing expired cache entry */
++ 		add_user_groups_to_cache(gdata);
+++		PTHREAD_MUTEX_unlock(&uid2grp_fetch_mutex);
++ 		return true;
++ 	}
++ 
++@@ -738,6 +784,7 @@
++ 	}
++ 	/* We couldn't find that uid, place it in the negative cache */
++ 	add_uid_to_negative_cache(uid);
+++	PTHREAD_MUTEX_unlock(&uid2grp_fetch_mutex);
++ 	return false;
++ }
++ 
++@@ -785,11 +832,26 @@
++ 	}
++ 	PTHREAD_RWLOCK_unlock(&uid2grp_user_lock);
++ 
++-	/* We could not find non-expired group-data in cache, fetch it afresh */
+++	/* We could not find non-expired group-data in cache, fetch it afresh.
+++	 * Single-flight: re-check the cache under the fetch mutex, another
+++	 * thread may have completed the same fetch while we waited.
+++	 */
+++	PTHREAD_MUTEX_lock(&uid2grp_fetch_mutex);
+++	PTHREAD_RWLOCK_rdlock(&uid2grp_user_lock);
+++	success = uid2grp_lookup_by_uname(&princbuff, &unused_cached_uid, gdata);
+++	if (success && !uid2grp_is_group_data_expired(*gdata)) {
+++		uid2grp_hold_group_data(*gdata);
+++		PTHREAD_RWLOCK_unlock(&uid2grp_user_lock);
+++		PTHREAD_MUTEX_unlock(&uid2grp_fetch_mutex);
+++		return true;
+++	}
+++	PTHREAD_RWLOCK_unlock(&uid2grp_user_lock);
+++
++ 	*gdata = uid2grp_allocate_by_principal(principal, uid, gid);
++ 	if (*gdata) {
++ 		/* This will also remove existing expired cache entry */
++ 		add_user_groups_to_cache(gdata);
+++		PTHREAD_MUTEX_unlock(&uid2grp_fetch_mutex);
++ 		return true;
++ 	}
++ 
++@@ -804,6 +866,7 @@
++ 		uid2grp_remove_expired_by_uname(&princbuff);
++ 		PTHREAD_RWLOCK_unlock(&uid2grp_user_lock);
++ 	}
+++	PTHREAD_MUTEX_unlock(&uid2grp_fetch_mutex);
++ 	return false;
++ }
++ 
 diff -Naur a/debian/patches/series b/debian/patches/series
 --- a/debian/patches/series	2026-06-25 08:10:07.000000000 -0500
-+++ b/debian/patches/series	2026-07-10 23:23:05.567751562 -0500
-@@ -7,3 +7,4 @@
++++ b/debian/patches/series	2026-07-14 19:43:46.129706340 -0500
+@@ -7,3 +7,5 @@
  #0004-vfs-referral-ioerror.patch
  0004-RREADDIR-handle-error-conditions-and-fslocations-better.patch
  0008-Fix-ganesha-top-installation.patch
 +klldap-nsswitch-getgrouplist-return.patch
++klldap-uid2grp-serialize-fetch.patch
 diff -Naur a/debian/rules b/debian/rules
 --- a/debian/rules	2026-06-25 08:10:07.000000000 -0500
-+++ b/debian/rules	2026-07-10 23:22:08.585455330 -0500
++++ b/debian/rules	2026-07-14 19:41:51.947100795 -0500
 @@ -1,6 +1,20 @@
  #!/usr/bin/make -f
  # -*- makefile -*-

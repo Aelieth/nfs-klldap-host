@@ -2,7 +2,7 @@
 
 use crate::dlog;
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::Instant;
 
@@ -153,12 +153,18 @@ pub(crate) fn sanitize_for_nss(name: &str) -> String {
 }
 
 /// LDAP group display name takes priority over user-name stub for gid groups.
+/// Ties on gid resolve by lowest map key so repeated builds emit identical bytes
+/// (the materialize content guard depends on build determinism).
 fn gname_for_gid(gid: u32, ldap_groups: Option<&HashMap<String, PosixGroupEntry>>, fallback: &str) -> String {
     if gid == FALLBACK_NOBODY_GID {
         return "nobody".to_string();
     }
     if let Some(groups) = ldap_groups {
-        if let Some(entry) = groups.values().find(|g| g.gid as u32 == gid) {
+        if let Some((_, entry)) = groups
+            .iter()
+            .filter(|(_, g)| g.gid as u32 == gid)
+            .min_by(|a, b| a.0.cmp(b.0))
+        {
             return sanitize_for_nss(&entry.display);
         }
     }
@@ -512,8 +518,13 @@ pub(crate) fn build_nss_snapshot(
     }
 
     if let Some(groups) = ldap_groups {
-        let mut by_gid: HashMap<i32, &PosixGroupEntry> = HashMap::new();
-        for entry in groups.values() {
+        // Deterministic emission (sorted keys → gid-sorted rows): repeated builds of
+        // the same data must be byte-identical or the materialize guard never skips.
+        let mut by_gid: std::collections::BTreeMap<i32, &PosixGroupEntry> = std::collections::BTreeMap::new();
+        let mut keys: Vec<&String> = groups.keys().collect();
+        keys.sort();
+        for k in keys {
+            let entry = &groups[k];
             by_gid.entry(entry.gid).or_insert(entry);
         }
         for entry in by_gid.values() {
@@ -644,22 +655,41 @@ pub(crate) fn build_nss_snapshot(
     (passwd_lines, group_lines)
 }
 
+/// Atomic temp+fsync+rename write, skipped when the file already holds exactly
+/// `content`. The skip is load-bearing, not an optimization: ganesha reads these
+/// files through nss_wrapper, which reloads on mtime change, and a rename racing
+/// an in-flight getgrouplist can yield a partial group view that uid2grp then
+/// caches for the whole validity window. Unchanged content must not bump mtime.
+fn write_atomic_if_changed(path: &Path, content: &str) -> io::Result<bool> {
+    if let Ok(current) = fs::read_to_string(path) {
+        if current == content {
+            return Ok(false);
+        }
+    }
+    let tmp = path.with_extension("new");
+    let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
+    f.write_all(content.as_bytes())?;
+    let _ = f.sync_all();
+    fs::rename(tmp, path)?;
+    Ok(true)
+}
+
 /// Atomically write nss_wrapper passwd/group for ganesha.nfsd LD_PRELOAD.
 /// Also writes extrausers supplement.
-pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<()> {
+pub(crate) fn materialize_nss_wrappers(cache: &IdCache) -> io::Result<bool> {
     materialize_nss_wrappers_at(cache, &NssMaterializePaths::production(), None)
 }
 
 /// Same as materialize_nss_wrappers but writes to caller-supplied paths.
-/// Used in rebulk tests.
+/// Used in rebulk tests. Returns true when any of the four stores was rewritten
+/// (content-identical stores are left untouched — see write_atomic_if_changed).
 pub(crate) fn materialize_nss_wrappers_at(
     cache: &IdCache,
     paths: &NssMaterializePaths<'_>,
     ldap_groups: Option<&HashMap<String, PosixGroupEntry>>,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let start = Instant::now();
     let nss_p = paths.nss_passwd.display().to_string();
-    eprintln!("[idhelper] materialize start: target_nss_passwd={} entries_in_cache={}", nss_p, cache.entries.len());
     dlog!("materialize start nss={} cache_entries={}", nss_p, cache.entries.len());
 
     // Explicit dir creation for both nss_wrapper and extrausers (strengthen visibility).
@@ -670,74 +700,24 @@ pub(crate) fn materialize_nss_wrappers_at(
     }
 
     let (passwd_lines, group_lines) = build_nss_snapshot(cache, ldap_groups);
+    // Nss_wrapper (Debian trixie) and libnss-extrausers reject '#' comment lines;
+    // both stores get bare entries only.
+    let passwd_content: String = passwd_lines.iter().map(|l| format!("{}\n", l)).collect();
+    let group_content: String = group_lines.iter().map(|l| format!("{}\n", l)).collect();
 
-    {
-        // nss_passwd atomic + fsync for durability before rename
-        let tmp = paths.nss_passwd.with_extension("new");
-        let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
-        {
-            let mut w = BufWriter::new(&mut f);
-            // Nss_wrapper (Debian trixie) rejects '#' comment lines Emit entries.
-            for l in &passwd_lines {
-                writeln!(w, "{}", l)?;
-            }
-            w.flush()?;
-        }
-        let _ = f.sync_all();
-        fs::rename(tmp, paths.nss_passwd)?;
+    let mut wrote = false;
+    for (path, content) in [
+        (paths.nss_passwd, &passwd_content),
+        (paths.nss_group, &group_content),
+        (paths.extrausers_passwd, &passwd_content),
+        (paths.extrausers_group, &group_content),
+    ] {
+        wrote |= write_atomic_if_changed(path, content)?;
     }
 
-    {
-        // nss_group atomic + fsync
-        let tmp = paths.nss_group.with_extension("new");
-        let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
-        {
-            let mut w = BufWriter::new(&mut f);
-            for l in &group_lines {
-                writeln!(w, "{}", l)?;
-            }
-            w.flush()?;
-        }
-        let _ = f.sync_all();
-        fs::rename(tmp, paths.nss_group)?;
-    }
-
-    dlog!(
-        "nss_wrapper materialized passwd={} entries group={} entries",
-        passwd_lines.len(),
-        group_lines.len()
-    );
-
-    // Write supplemental extrausers entries so machines map to 0 via nsswitch.
-    {
-        {
-            // extrausers_passwd atomic + fsync + readback visibility
-            let tmp = paths.extrausers_passwd.with_extension("new");
-            let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
-            {
-                let mut w = BufWriter::new(&mut f);
-                // libnss-extrausers rejects '#' lines; emit passwd entries only.
-                for l in &passwd_lines {
-                    writeln!(w, "{}", l)?;
-                }
-                w.flush()?;
-            }
-            let _ = f.sync_all();
-            fs::rename(tmp, paths.extrausers_passwd)?;
-        }
-        {
-            let tmp = paths.extrausers_group.with_extension("new");
-            let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
-            {
-                let mut w = BufWriter::new(&mut f);
-                for l in &group_lines {
-                    writeln!(w, "{}", l)?;
-                }
-                w.flush()?;
-            }
-            let _ = f.sync_all();
-            fs::rename(tmp, paths.extrausers_group)?;
-        }
+    if !wrote {
+        dlog!("materialize unchanged (no rewrite) nss={}", nss_p);
+        return Ok(false);
     }
 
     // Post-write read-back check for visibility to subsequent NSS lookups (getpwnam/getgrouplist).
@@ -750,24 +730,56 @@ pub(crate) fn materialize_nss_wrappers_at(
     }
 
     let elapsed = start.elapsed();
-    let outcome = "ok";
     eprintln!(
-        "[idhelper] materialize done: elapsed={:?} passwd_entries={} group_entries={} nss_path={} extrausers_path={} outcome={}",
+        "[idhelper] materialize done: elapsed={:?} passwd_entries={} group_entries={} nss_path={} extrausers_path={} outcome=ok",
         elapsed, passwd_lines.len(), group_lines.len(), nss_p,
-        paths.extrausers_passwd.display(), outcome
+        paths.extrausers_passwd.display()
     );
     dlog!(
-        "materialize outcome elapsed={:?} passwd={} group={} nss={} outcome={}",
-        elapsed, passwd_lines.len(), group_lines.len(), nss_p, outcome
+        "materialize outcome elapsed={:?} passwd={} group={} nss={} outcome=ok",
+        elapsed, passwd_lines.len(), group_lines.len(), nss_p
     );
 
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
 mod root_snapshot_tests {
     use super::*;
     use crate::common::{IdCache, PrincipalKind, Resolved};
+
+    #[test]
+    fn materialize_skips_rewrite_when_content_unchanged() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = NssMaterializePaths::under(tmp.path());
+        let mut cache = IdCache::default();
+        cache.insert(Resolved {
+            principal: "testuser1@TESTLAB.LOCAL".into(),
+            name: "testuser1".into(),
+            uid: 3788,
+            gid: 3002,
+            kind: PrincipalKind::User,
+            source: "bulk".into(),
+            supplemental_gids: vec![3005, 3007],
+        });
+        let store_inodes = |paths: &NssMaterializePaths<'_>| -> Vec<u64> {
+            [paths.nss_passwd, paths.nss_group, paths.extrausers_passwd, paths.extrausers_group]
+                .iter()
+                .map(|p| fs::metadata(p).expect("store exists").ino())
+                .collect()
+        };
+        let first = materialize_nss_wrappers_at(&cache, &paths, None).expect("first materialize");
+        assert!(first, "fresh paths must report a write");
+        let inodes_after_first = store_inodes(&paths);
+        let second = materialize_nss_wrappers_at(&cache, &paths, None).expect("second materialize");
+        assert!(!second, "identical content must not rewrite");
+        assert_eq!(
+            store_inodes(&paths),
+            inodes_after_first,
+            "unchanged pass must leave every store untouched (rename would bump mtime and force an nss_wrapper reload in ganesha)"
+        );
+    }
 
     #[test]
     fn supplemental_gids_from_snapshot_collects_member_of_groups() {

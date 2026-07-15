@@ -2,7 +2,7 @@
 
 This directory holds the delta that turns the stock Debian unstable
 `nfs-ganesha 9.13-1` source into the nfs-klldap-host Phase 2 build, versioned
-**`9.13-1+klldap2`** (sorts above stock, so the custom package wins an
+**`9.13-1+klldap3`** (sorts above stock, so the custom package wins an
 upgrade comparison). Per the 2026-07-10 realignment this is **one
 ACL-capable binary** serving both share classes — NOACL is enforced
 per-export via `Disable_ACL`, not by the build. Rollback is the tagged
@@ -12,10 +12,10 @@ per-export via `Disable_ACL`, not by the build. Rollback is the tagged
 ## Files
 
 - `klldap-packaging.patch` — the entire packaging delta, applied with
-  `patch -p1` on top of the extracted stock source. Touches exactly four
+  `patch -p1` on top of the extracted stock source. Touches exactly five
   files:
-  - `debian/changelog`: prepends the `+klldap1`/`+klldap2` entries
-    (package identity).
+  - `debian/changelog`: prepends the `+klldap1`/`+klldap2`/`+klldap3`
+    entries (package identity).
   - `debian/control`: drops the per-FSAL binary packages (ceph, rgw,
     gluster, gpfs, mem, nullfs, proxy-v4, rados-grace, mount-9p) and their
     build deps (`libcephfs-dev`, `libglusterfs-dev`, `librados-dev`,
@@ -31,6 +31,16 @@ per-export via `Disable_ACL`, not by the build. Rollback is the tagged
     per-request managed-gids fallbacks in the 2026-07-10 round-2 capture).
     The patch normalizes the nsswitch path to the 0-on-success convention
     the SSSD implementation uses. Candidate for upstream submission.
+  - `debian/patches/klldap-uid2grp-serialize-fetch.patch` (+ series): the
+    **source** fix in klldap3 — `uid2grp()`/`uname2grp()`/`principal2grp()`
+    drop the user-cache lock before fetching, so concurrent misses for the
+    same user each run `getpwuid_r` + `getgrouplist` and the last
+    `uid2grp_add_user()` wins. With the NSS backend mid-update the fetches
+    can disagree (2026-07-14 blue-lt capture: concurrent 13- and 7-group
+    results for the same 17-group RPCSEC_GSS user, the partial list cached
+    for the whole validity window). A single fetch mutex + double-checked
+    cache re-read makes N concurrent misses cost one fetch and cache one
+    consistent snapshot. Candidate for upstream submission.
 - `build-ganesha-debs.sh` — runs in the `ganesha-build` Docker stage:
   fetch stock source (sha256-pinned), `dpkg-source -x`, apply patch,
   `apt-get build-dep ./`, `dpkg-buildpackage -B`, then **gate** the result

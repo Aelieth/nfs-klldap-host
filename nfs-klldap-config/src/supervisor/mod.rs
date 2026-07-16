@@ -1,4 +1,5 @@
-//! Pid-1: preflight, ordered service start, SIGHUP recycle via ServiceRecyclePlan.
+//! Pid-1: preflight, ordered service start, SIGHUP scoped reload + SIGUSR1
+//! forced full recycle via ServiceRecyclePlan.
 
 mod env;
 mod services;
@@ -24,13 +25,14 @@ use nfs_klldap_config::{
     pgrep_running, pkill_binary, pkill_process,
     probe_client_host, warm_principals_for_startup, warm_principals_nss_ready,
     install_signal_handlers, is_preconfigured_deployment, is_setup_wizard_complete,
-    discover_ganesha_daemon_pid, mark_setup_wizard_complete, plan_from_changes, process_is_live,
+    discover_ganesha_daemon_pid, mark_setup_wizard_complete, plan_from_changes,
+    plan_full_recycle, process_is_live,
     reap_children, resolve_host_nfs_mode, resolve_keytab_path,
     request_sighup, run_post_generate_hooks, runtime_hostname, runtime_realm, shutdown_requested,
     signal_process_hup, signal_process_term, supervisor_loop_tick,
-    take_sighup_requested, webui_setup_url, ConfigError,
+    take_full_recycle_requested, take_sighup_requested, webui_setup_url, ConfigError,
     GaneshaAction, NfsKlldapConfig,
-    ServiceRecyclePlan, SupervisorLoopAction,
+    ServiceRecyclePlan, SupervisorLoopAction, WebuiAction,
 };
 
 #[derive(Default)]
@@ -51,6 +53,13 @@ struct Supervisor {
     ganesha_managed: bool,
     /// Last [[shares]] fingerprint for WebUI-only recycle detection.
     last_shares_fingerprint: u64,
+}
+
+/// Fingerprint deltas reported by `regenerate_and_diff`.
+struct FingerprintChanges {
+    exports_changed: bool,
+    identity_changed: bool,
+    shares_changed: bool,
 }
 
 /// Pid-1 supervision entry (replaces the old shell main loop).
@@ -397,7 +406,8 @@ while :; do :; done
         }
     }
 
-    /// Verifies an [sssd] edit with unchanged exports restarts SSSD only.
+    /// Verifies an [sssd] edit with unchanged exports stages identity artifacts
+    /// without restarting SSSD or signaling ganesha.
     fn run_supervise_identity_recycle_probe(&mut self) -> Result<(), String> {
         self.log_info("Supervise-identity-recycle-probe mode enabled");
         // Self-contained copy to private temp (pid-unique) so bind_dn mutation for identity change test does not touch shared fixture.
@@ -566,6 +576,7 @@ while :; do :; done
                 return Ok(());
             }
             let sighup_pending = take_sighup_requested();
+            let full_recycle_pending = take_full_recycle_requested();
             let wizard_complete = is_setup_wizard_complete();
             // The startup step drives BringUp only while services are down; once
             // up, supervisor_loop_tick ignores it. Skip the expensive probe
@@ -580,6 +591,7 @@ while :; do :; done
             let (action, _) = supervisor_loop_tick(
                 self.services_started,
                 sighup_pending,
+                full_recycle_pending,
                 wizard_complete,
                 step,
             );
@@ -597,6 +609,21 @@ while :; do :; done
                         }
                         Err(e) => self.log_warn(&format!(
                             "SIGHUP reload failed ({e}); keeping services on the previous configuration"
+                        )),
+                    }
+                }
+                SupervisorLoopAction::ProcessFullRecycle => {
+                    let need_watcher = self.pids.watcher.is_none();
+                    // Same pid-1-survives contract as the SIGHUP arm.
+                    match self.handle_full_recycle() {
+                        Ok(()) => {
+                            self.services_started = true;
+                            if need_watcher {
+                                let _ = services::start_watcher(self);
+                            }
+                        }
+                        Err(e) => self.log_warn(&format!(
+                            "Full recycle failed ({e}); keeping services on the previous configuration"
                         )),
                     }
                 }
@@ -645,6 +672,45 @@ while :; do :; done
         reap_children();
         self.refresh_tracked_ganesha_pid();
         self.log_info("SIGHUP received — reloading configuration...");
+        let changes = self.regenerate_and_diff()?;
+        // A cold HUP has nothing running to reload gracefully: fall back to the
+        // full plan so an external HUP racing bring-up still starts every
+        // service (the pre-scoped-plan behavior).
+        let plan = if self.services_started {
+            plan_from_changes(
+                changes.exports_changed,
+                changes.identity_changed,
+                changes.shares_changed,
+                self.env.host_nfs_mode,
+                self.ganesha_running(),
+            )
+        } else {
+            plan_full_recycle(self.env.host_nfs_mode)
+        };
+        self.execute_recycle_plan(plan);
+        self.finish_recycle();
+        Ok(())
+    }
+
+    /// Forced full recycle (SIGUSR1, "Restart and apply"): regenerate, then
+    /// restart every managed service regardless of fingerprint deltas. This is
+    /// the only path that applies staged identity changes and edits the
+    /// fingerprints cannot see (ganesha main conf, nfs.conf, WebUI settings).
+    fn handle_full_recycle(&mut self) -> Result<(), String> {
+        reap_children();
+        self.refresh_tracked_ganesha_pid();
+        self.log_info("SIGUSR1 received — forced full service recycle...");
+        // Deltas are still computed and logged for observability; the forced
+        // plan applies either way.
+        self.regenerate_and_diff()?;
+        let plan = plan_full_recycle(self.env.host_nfs_mode);
+        self.execute_recycle_plan(plan);
+        self.finish_recycle();
+        Ok(())
+    }
+
+    /// Regenerates all derived config and reports which fingerprints moved.
+    fn regenerate_and_diff(&mut self) -> Result<FingerprintChanges, String> {
         let exports_fp_before = fingerprint_exports_dir(&self.env.exports_dir);
         let identity_fp_before = fingerprint_identity_artifacts(
             &self.env.sssd_conf,
@@ -656,10 +722,10 @@ while :; do :; done
             .args(["generate", "--config"])
             .arg(&self.env.nfs_config)
             .status()
-            .map_err(|e| format!("generate on SIGHUP failed: {e}"))?;
+            .map_err(|e| format!("generate on reload failed: {e}"))?;
         if !status.success() {
-            self.log_error("Config generator failed during SIGHUP reload");
-            return Err("SIGHUP generate failed".into());
+            self.log_error("Config generator failed during reload");
+            return Err("config generate failed".into());
         }
         self.run_post_generate_hooks()?;
         self.fix_derived_permissions();
@@ -686,21 +752,22 @@ while :; do :; done
         self.log_info(&format!(
             "Shares fingerprint: before={shares_fp_before} after={shares_fp_after} changed={shares_changed}"
         ));
-        let plan = plan_from_changes(
+        Ok(FingerprintChanges {
             exports_changed,
             identity_changed,
             shares_changed,
-            self.env.host_nfs_mode,
-            self.ganesha_running(),
-        );
-        self.execute_recycle_plan(plan);
+        })
+    }
+
+    /// Shared recycle epilogue: completion log (greped by tests and operators),
+    /// first-recycle bootstrap, and the marker the restarting page polls.
+    fn finish_recycle(&mut self) {
         self.log_info("Services recycled after config apply.");
         if !self.services_started {
             self.services_started = true;
             let _ = services::start_watcher(self);
         }
         self.touch_recycle_marker();
-        Ok(())
     }
 
     /// Signals the WebUI poller when core services are up.
@@ -871,15 +938,22 @@ while :; do :; done
             self.log_info("Supervise-probe: service recycle simulated (SSSD/Ganesha/WebUI)");
             return;
         }
-        if plan.is_noop() {
+        if plan.identity_staged {
             self.log_info(
-                "No service recycle required — export, identity, and share mapping unchanged",
+                "Identity changes staged: sssd.conf/krb5.conf/idmapd.conf regenerated on disk; running SSSD/idhelper keep the previous settings until 'Restart and apply' runs a full recycle.",
             );
+        }
+        if plan.is_noop() {
+            if !plan.identity_staged {
+                self.log_info(
+                    "No service recycle required — export, identity, and share mapping unchanged",
+                );
+            }
             return;
         }
         self.log_info(&format!(
-            "Service recycle plan: ganesha={:?} restart_sssd={} restart_idhelper={} restart_webui={}",
-            plan.ganesha, plan.restart_sssd, plan.restart_idhelper, plan.restart_webui
+            "Service recycle plan: ganesha={:?} restart_sssd={} restart_idhelper={} webui={:?} identity_staged={}",
+            plan.ganesha, plan.restart_sssd, plan.restart_idhelper, plan.webui, plan.identity_staged
         ));
 
         if self.env.host_nfs_mode {
@@ -921,7 +995,36 @@ while :; do :; done
             self.log_info("Starting NFS-Ganesha after recycle...");
             services::start_ganesha(self);
         }
-        if plan.restart_webui {
+        match plan.webui {
+            WebuiAction::Skip => {}
+            WebuiAction::Restart => {
+                let _ = self.start_webui();
+            }
+            WebuiAction::Reload => self.reload_webui(),
+        }
+    }
+
+    /// In-process WebUI config reload: SIGHUP to the child (its tokio handler
+    /// re-reads nfs-klldap.conf), keeping live admin connections intact. Falls
+    /// back to a spawn when the UI is not running, and respawns if the child
+    /// dies on the signal (a HUP delivered before the UI installs its handler
+    /// is fatal to it, and no steady-state respawn exists).
+    fn reload_webui(&mut self) {
+        let Some(pid) = self.pids.webui.filter(|p| process_is_live(*p)) else {
+            self.pids.webui = None;
+            self.log_info("WebUI not running — starting it to pick up share/export changes");
+            let _ = self.start_webui();
+            return;
+        };
+        signal_process_hup(pid);
+        self.log_info(&format!(
+            "Sent SIGHUP to WebUI (pid {pid}) for in-process config reload"
+        ));
+        thread::sleep(Duration::from_millis(300));
+        reap_children();
+        if !process_is_live(pid) {
+            self.log_warn("WebUI exited on reload SIGHUP — respawning it");
+            self.pids.webui = None;
             let _ = self.start_webui();
         }
     }

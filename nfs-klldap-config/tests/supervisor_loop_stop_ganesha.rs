@@ -16,7 +16,7 @@ fn supervisor_loop_export_change_escalates_to_stop_ganesha_and_restart() {
     let stub_log = dirs.stub_ganesha_trap_log();
     dirs.stub_sssd_pipe();
     dirs.stub_idhelper_fixture();
-    dirs.stub_sleeper("nfs-klldap-ui");
+    dirs.stub_webui_trap_log();
     dirs.stub_sleeper("nfs-klldap-conf-watcher");
     dirs.stub_exit0("healthcheck.sh");
     dirs.stub_sleeper("inotifywait");

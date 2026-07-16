@@ -23,6 +23,9 @@ pub(crate) enum FieldKind {
     Password,
     /// u16 port: absent or unparsable form value leaves config + doc alone.
     Port,
+    /// Optional u16: parse-ok writes both sides; a blank submission clears
+    /// (config None + key removed); absent or unparsable leaves state alone.
+    U16OrClear,
     /// Checkbox persisted both ways on every save.
     BoolAlways,
     /// Auto/Custom text pair gated by the override_<name> checkbox; Auto
@@ -238,6 +241,17 @@ pub(crate) const FIELDS: &[FieldSpec] = &[
             }
         },
     },
+    FieldSpec {
+        name: "webui_session_timeout_minutes",
+        section: "webui",
+        key: "session_timeout_minutes",
+        kind: FieldKind::U16OrClear,
+        set: |c, v| {
+            if let FieldValue::U16(p) = v {
+                c.webui.session_timeout_minutes = p;
+            }
+        },
+    },
 ];
 
 /// Auto/Custom text field view for the settings panes.
@@ -410,6 +424,15 @@ pub(crate) fn apply_structured_form_to_config(
                     (spec.set)(cfg, FieldValue::U16(Some(p)));
                 }
             }
+            FieldKind::U16OrClear => {
+                if let Some(v) = form_str(form, spec.name) {
+                    if v.trim().is_empty() {
+                        (spec.set)(cfg, FieldValue::U16(None));
+                    } else if let Ok(p) = v.trim().parse::<u16>() {
+                        (spec.set)(cfg, FieldValue::U16(Some(p)));
+                    }
+                }
+            }
             FieldKind::OverrideText { .. } => {
                 if form_flag(form, &format!("override_{}", spec.name)) {
                     if let Some(v) = form_str(form, spec.name) {
@@ -474,6 +497,15 @@ pub(crate) fn apply_structured_form_to_toml_doc(
                     form_str(form, spec.name).and_then(|v| v.trim().parse::<u16>().ok())
                 {
                     set_key(doc, spec.section, spec.key, p as i64);
+                }
+            }
+            FieldKind::U16OrClear => {
+                if let Some(v) = form_str(form, spec.name) {
+                    if v.trim().is_empty() {
+                        remove_key(doc, spec.section, spec.key);
+                    } else if let Ok(p) = v.trim().parse::<u16>() {
+                        set_key(doc, spec.section, spec.key, p as i64);
+                    }
                 }
             }
             FieldKind::OverrideText { remove_when_blank } => {
@@ -647,6 +679,33 @@ mod spec_tests {
         let out = d.to_string();
         assert!(out.contains("user_principal = \"alice\""), "{out}");
         assert!(out.contains("client_host = \"lt-a\""), "{out}");
+    }
+
+    #[test]
+    fn u16_or_clear_roundtrips_clears_and_ignores_garbage() {
+        let mut d = doc("ldap_uri = \"x\"\n");
+        let mut cfg = NfsKlldapConfig::default();
+
+        let form = form_of(&[("webui_session_timeout_minutes", "45")]);
+        apply_structured_form_to_config(&form, &mut cfg);
+        apply_structured_form_to_toml_doc(&form, &mut d);
+        assert_eq!(cfg.webui.session_timeout_minutes, Some(45));
+        assert!(d.to_string().contains("session_timeout_minutes = 45"), "{d}");
+
+        // Blank clears both sides (back to the built-in default).
+        let blank = form_of(&[("webui_session_timeout_minutes", "")]);
+        apply_structured_form_to_config(&blank, &mut cfg);
+        apply_structured_form_to_toml_doc(&blank, &mut d);
+        assert_eq!(cfg.webui.session_timeout_minutes, None);
+        assert!(!d.to_string().contains("session_timeout_minutes"), "{d}");
+
+        // Absent and unparsable both leave prior state alone.
+        cfg.webui.session_timeout_minutes = Some(45);
+        apply_structured_form_to_config(&form_of(&[]), &mut cfg);
+        assert_eq!(cfg.webui.session_timeout_minutes, Some(45));
+        let garbage = form_of(&[("webui_session_timeout_minutes", "abc")]);
+        apply_structured_form_to_config(&garbage, &mut cfg);
+        assert_eq!(cfg.webui.session_timeout_minutes, Some(45));
     }
 
     #[test]

@@ -1,4 +1,6 @@
-//! Full supervisor_loop + real OS SIGHUP: export-only change recycles Ganesha + WebUI, not SSSD.
+//! Full supervisor_loop + real OS SIGHUP: export-only change gracefully
+//! rereads Ganesha exports and reloads the WebUI in place — no process
+//! restarts, no SSSD recycle.
 
 mod common;
 
@@ -7,15 +9,15 @@ use std::fs;
 use std::time::Duration;
 
 #[test]
-fn supervisor_loop_real_sighup_export_only_recycles_ganesha_and_webui_not_sssd() {
+fn supervisor_loop_real_sighup_export_only_reloads_ganesha_and_webui_in_place() {
     let dirs = TestDirs::new(COMPLETE_TOML);
     let keytab = dirs.keytab();
     let recycle_marker = dirs.recycle_marker();
 
     let stub_log = dirs.stub_ganesha_trap_log();
+    let webui_log = dirs.stub_webui_trap_log();
     dirs.stub_sssd_pipe();
     dirs.stub_idhelper_fixture();
-    dirs.stub_sleeper("nfs-klldap-ui");
     dirs.stub_sleeper("nfs-klldap-conf-watcher");
     dirs.stub_exit0("healthcheck.sh");
     dirs.stub_sleeper("inotifywait");
@@ -47,22 +49,14 @@ fn supervisor_loop_real_sighup_export_only_recycles_ganesha_and_webui_not_sssd()
 
     sup.wait_for(
         Duration::from_secs(25),
-        "export-only SIGHUP recycle did not complete",
+        "export-only SIGHUP apply did not complete",
         |combined| {
             combined.contains("Export fragments fingerprint:")
                 && combined.contains("changed=true")
                 && combined.contains("Identity artifacts fingerprint:")
                 && combined.contains("changed=false")
-                && (combined.contains("Services recycled after config apply.")
-                    || combined.contains("Starting WebUI on 0.0.0.0:9630")
-                    || combined.contains("restart_webui=true"))
+                && combined.contains("Services recycled after config apply.")
         },
-    );
-
-    sup.wait_for(
-        Duration::from_secs(5),
-        "export-only SIGHUP must finish recycle",
-        |combined| combined.contains("Services recycled after config apply."),
     );
 
     let combined = sup.stop_and_log();
@@ -86,12 +80,16 @@ fn supervisor_loop_real_sighup_export_only_recycles_ganesha_and_webui_not_sssd()
         "identity artifacts unchanged on export-only reload; post_sighup={post_sighup:?}"
     );
     assert!(
-        post_sighup.contains("restart_webui=true"),
-        "recycle plan must restart WebUI when exports change; post_sighup={post_sighup:?}"
+        post_sighup.contains("webui=Reload"),
+        "recycle plan must reload the WebUI in place when exports change; post_sighup={post_sighup:?}"
     );
     assert!(
-        post_sighup.contains("Starting WebUI on 0.0.0.0:9630"),
-        "export-only reload must spawn a fresh WebUI process; post_sighup={post_sighup:?}"
+        post_sighup.contains("Sent SIGHUP to WebUI"),
+        "export-only reload must signal the WebUI for an in-process reload; post_sighup={post_sighup:?}"
+    );
+    assert!(
+        !post_sighup.contains("Starting WebUI on 0.0.0.0:9630"),
+        "export-only reload must NOT spawn a fresh WebUI process; post_sighup={post_sighup:?}"
     );
     assert!(
         post_sighup.contains("Sent SIGHUP to ganesha.nfsd"),
@@ -106,5 +104,15 @@ fn supervisor_loop_real_sighup_export_only_recycles_ganesha_and_webui_not_sssd()
     assert!(
         stub_log_text.contains("HUP"),
         "ganesha stub must receive SIGHUP on export change; log={stub_log_text:?}"
+    );
+
+    let webui_log_text = fs::read_to_string(&webui_log).unwrap_or_default();
+    assert!(
+        webui_log_text.contains("HUP"),
+        "webui stub must receive the reload SIGHUP; log={webui_log_text:?}"
+    );
+    assert!(
+        !webui_log_text.contains("TERM"),
+        "webui stub must not be SIGTERMed on a graceful apply; log={webui_log_text:?}"
     );
 }

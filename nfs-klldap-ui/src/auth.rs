@@ -1,5 +1,6 @@
 //! Hybrid auth uses a localhost sidecar password or LLDAP admin group.
-//! Sessions last twelve hours with HttpOnly cookies and SHA-256 hashing.
+//! Sessions use HttpOnly cookies and SHA-256 hashing; their TTL defaults to
+//! twelve hours and follows [webui] session_timeout_minutes.
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -7,14 +8,14 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::{Duration, SystemTime};
 use subtle::ConstantTimeEq;
 
-// Twelve hours is the session TTL.
-const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
+// Twelve hours when no session_timeout_minutes is configured.
+const DEFAULT_SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
 const SIMPLE_PW_FILENAME: &str = "webui-password";
 const SESSIONS_FILENAME: &str = "webui-sessions";
 
@@ -42,6 +43,8 @@ pub struct AuthManager {
     sessions_path: PathBuf,
     /// Names the LDAP admin group from webui_admin_group.
     admin_group: String,
+    /// Lifetime of newly created sessions (and the cookie Max-Age).
+    session_ttl: Duration,
 }
 
 /// SHA-256 hex of a bearer token: the only form sessions are keyed/stored by.
@@ -84,7 +87,11 @@ impl AuthManager {
     /// Builds a manager using paths derived from nfs-klldap.conf.
     /// Sessions persisted by a previous WebUI process are picked up here so a
     /// service recycle (first-run setup, settings apply) never logs users out.
-    pub fn new(config_path: impl AsRef<Path>, admin_group: Option<String>) -> Self {
+    pub fn new(
+        config_path: impl AsRef<Path>,
+        admin_group: Option<String>,
+        session_ttl: Option<Duration>,
+    ) -> Self {
         let config_path = config_path.as_ref();
         let parent = config_path.parent().unwrap_or_else(|| Path::new("."));
         let simple_pw_path = parent.join(SIMPLE_PW_FILENAME);
@@ -95,6 +102,7 @@ impl AuthManager {
             simple_pw_path,
             sessions_path,
             admin_group: admin_group.unwrap_or_else(|| "lldap_admin".to_string()),
+            session_ttl: session_ttl.unwrap_or(DEFAULT_SESSION_TTL),
         }
     }
 
@@ -138,6 +146,12 @@ impl AuthManager {
         &self.admin_group
     }
 
+    /// Session lifetime for new sessions; cookie Max-Age must use the same
+    /// value so browser and server expire together.
+    pub fn session_ttl(&self) -> Duration {
+        self.session_ttl
+    }
+
     // These tests cover simple password (localhost) handling.
 
     /// Return true when the simple password sidecar already exists.
@@ -167,27 +181,32 @@ impl AuthManager {
             let _ = fs::create_dir_all(parent);
         }
 
-        // Write atomically-ish: create + write + set perms.
+        // Tmp sibling + rename so a crash mid-write can never truncate the
+        // live sidecar and lock the localhost account out.
+        let tmp = self.simple_pw_path.with_extension("saving");
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open(&self.simple_pw_path)
-            .map_err(|e| format!("failed to open {}: {}", self.simple_pw_path.display(), e))?;
-
-        // Set 0600 before writing the secret (best effort on Unix).
-        let mut perms = file
-            .metadata()
-            .map_err(|e| format!("metadata: {}", e))?
-            .permissions();
-        perms.set_mode(0o600);
-        let _ = file.set_permissions(perms);
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| format!("failed to open {}: {}", tmp.display(), e))?;
+        // mode() only applies on create; force 0600 in case a stale tmp existed.
+        let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
 
         file.write_all(line.as_bytes())
             .map_err(|e| format!("write failed: {}", e))?;
         file.sync_all().ok();
+        drop(file);
 
-        Ok(())
+        fs::rename(&tmp, &self.simple_pw_path).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            format!(
+                "failed to move password file into place at {}: {}",
+                self.simple_pw_path.display(),
+                e
+            )
+        })
     }
 
     /// Validate the special "localhost" user against the lightweight sidecar.
@@ -243,7 +262,7 @@ impl AuthManager {
 
         let session = Session {
             username: username.to_string(),
-            expires_at: SystemTime::now() + SESSION_TTL,
+            expires_at: SystemTime::now() + self.session_ttl,
         };
 
         let mut map = self.sessions.write().unwrap();
@@ -279,6 +298,21 @@ impl AuthManager {
         if map.remove(&token_hash(token)).is_some() {
             self.persist_sessions(&map);
         }
+    }
+
+    /// Drop every session belonging to `username` except the one keyed by
+    /// `keep_token` (the acting session, e.g. after a password change).
+    /// Returns the number of sessions dropped.
+    pub fn invalidate_sessions_for_user_except(&self, username: &str, keep_token: &str) -> usize {
+        let keep_key = token_hash(keep_token);
+        let mut map = self.sessions.write().unwrap();
+        let before = map.len();
+        map.retain(|key, s| s.username != username || *key == keep_key);
+        let dropped = before - map.len();
+        if dropped > 0 {
+            self.persist_sessions(&map);
+        }
+        dropped
     }
 }
 
@@ -338,7 +372,7 @@ mod tests {
     fn sessions_survive_a_new_manager_and_store_only_hashes() {
         let tmp = tempfile::tempdir().unwrap();
         let conf = tmp.path().join("nfs-klldap.conf");
-        let mgr = AuthManager::new(&conf, None);
+        let mgr = AuthManager::new(&conf, None, None);
         let token = mgr.create_privileged_session("localhost");
         assert_eq!(mgr.validate(&token).as_deref(), Some("localhost"));
 
@@ -353,11 +387,11 @@ mod tests {
 
         // A recycled WebUI builds a fresh manager over the same config dir;
         // the browser's cookie must stay valid across it.
-        let mgr2 = AuthManager::new(&conf, None);
+        let mgr2 = AuthManager::new(&conf, None, None);
         assert_eq!(mgr2.validate(&token).as_deref(), Some("localhost"));
 
         mgr2.logout(&token);
-        let mgr3 = AuthManager::new(&conf, None);
+        let mgr3 = AuthManager::new(&conf, None, None);
         assert!(mgr3.validate(&token).is_none(), "logout must persist");
     }
 
@@ -371,7 +405,7 @@ mod tests {
             r#"{"deadbeef":{"username":"localhost","expires_unix":1}}"#,
         )
         .unwrap();
-        let mgr = AuthManager::new(&conf, None);
+        let mgr = AuthManager::new(&conf, None, None);
         let _ = mgr.create_privileged_session("localhost");
         let raw = fs::read_to_string(&store).unwrap();
         assert!(!raw.contains("deadbeef"), "expired entry must be pruned");
@@ -382,9 +416,67 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let conf = tmp.path().join("nfs-klldap.conf");
         fs::write(tmp.path().join(SESSIONS_FILENAME), "not-json").unwrap();
-        let mgr = AuthManager::new(&conf, None);
+        let mgr = AuthManager::new(&conf, None, None);
         assert!(mgr.validate("whatever").is_none());
         let token = mgr.create_privileged_session("localhost");
         assert_eq!(mgr.validate(&token).as_deref(), Some("localhost"));
+    }
+
+    #[test]
+    fn password_change_is_atomic_keeps_0600_and_rotates_validation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf = tmp.path().join("nfs-klldap.conf");
+        let mgr = AuthManager::new(&conf, None, None);
+
+        mgr.set_simple_password("oldpassword").unwrap();
+        assert!(mgr.validate_simple_password("localhost", "oldpassword").is_ok());
+
+        mgr.set_simple_password("newpassword").unwrap();
+        assert!(mgr.validate_simple_password("localhost", "newpassword").is_ok());
+        assert!(mgr.validate_simple_password("localhost", "oldpassword").is_err());
+
+        let pw_file = tmp.path().join(SIMPLE_PW_FILENAME);
+        let mode = fs::metadata(&pw_file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "password sidecar must stay private");
+        assert!(
+            !pw_file.with_extension("saving").exists(),
+            "tmp sibling must be renamed away"
+        );
+    }
+
+    #[test]
+    fn invalidation_keeps_the_acting_token_and_other_users() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf = tmp.path().join("nfs-klldap.conf");
+        let mgr = AuthManager::new(&conf, None, None);
+        let acting = mgr.create_privileged_session("localhost");
+        let other_local = mgr.create_privileged_session("localhost");
+        let ldap_admin = mgr.create_privileged_session("someadmin");
+
+        assert_eq!(mgr.invalidate_sessions_for_user_except("localhost", &acting), 1);
+        assert_eq!(mgr.validate(&acting).as_deref(), Some("localhost"));
+        assert!(mgr.validate(&other_local).is_none());
+        assert_eq!(mgr.validate(&ldap_admin).as_deref(), Some("someadmin"));
+
+        // The drop must persist: a recycled manager over the same dir agrees.
+        let mgr2 = AuthManager::new(&conf, None, None);
+        assert!(mgr2.validate(&other_local).is_none());
+        assert_eq!(mgr2.validate(&acting).as_deref(), Some("localhost"));
+    }
+
+    #[test]
+    fn configured_session_ttl_governs_new_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conf = tmp.path().join("nfs-klldap.conf");
+        let mgr = AuthManager::new(&conf, None, Some(Duration::ZERO));
+        assert_eq!(mgr.session_ttl(), Duration::ZERO);
+        let token = mgr.create_privileged_session("localhost");
+        assert!(
+            mgr.validate(&token).is_none(),
+            "a zero TTL session must be expired on arrival"
+        );
+
+        let mgr = AuthManager::new(&conf, None, None);
+        assert_eq!(mgr.session_ttl(), DEFAULT_SESSION_TTL);
     }
 }

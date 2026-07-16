@@ -119,6 +119,35 @@ while :; do :; done
         log
     }
 
+    pub fn webui_stub_log(&self) -> PathBuf {
+        self.tmp.path().join("webui-stub.log")
+    }
+
+    /// nfs-klldap-ui stub logging START/HUP/TERM; returns the log path. Unlike
+    /// `stub_sleeper` (whose `exec sleep` dies on SIGHUP, tripping the
+    /// supervisor's reload-escalation respawn), this survives the in-process
+    /// reload signal like the real UI does. `sleep & wait` instead of a busy
+    /// loop: traps still fire instantly (signals interrupt the `wait`
+    /// builtin), but a stub orphaned by the harness SIGKILLing the supervisor
+    /// idles instead of burning a core.
+    pub fn stub_webui_trap_log(&self) -> PathBuf {
+        let log = self.webui_stub_log();
+        write_exe(
+            &self.stubs.join("nfs-klldap-ui"),
+            &format!(
+                r#"#!/bin/sh
+LOG="{log}"
+echo START >> "$LOG"
+trap 'echo HUP >> "$LOG"' HUP
+trap 'echo TERM >> "$LOG"; exit 0' TERM
+while :; do sleep 60 & wait $!; done
+"#,
+                log = log.display()
+            ),
+        );
+        log
+    }
+
     /// sssd stub that creates the NSS pipe then sleeps.
     pub fn stub_sssd_pipe(&self) {
         write_exe(
@@ -286,6 +315,18 @@ impl Supervised {
                 .expect("kill -HUP")
                 .success(),
             "must deliver real OS SIGHUP to running supervisor"
+        );
+    }
+
+    /// Deliver a real OS SIGUSR1 (forced full recycle) to the supervisor.
+    pub fn sigusr1(&self) {
+        assert!(
+            Command::new("kill")
+                .args(["-USR1", &self.pid().to_string()])
+                .status()
+                .expect("kill -USR1")
+                .success(),
+            "must deliver real OS SIGUSR1 to running supervisor"
         );
     }
 

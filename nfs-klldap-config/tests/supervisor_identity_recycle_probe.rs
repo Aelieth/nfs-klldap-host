@@ -1,4 +1,5 @@
-//! Identity-only config change recycles SSSD without ganesha SIGHUP.
+//! Identity-only config change stages artifacts on disk — no SSSD restart, no
+//! ganesha SIGHUP; a forced full recycle applies them later.
 
 mod common;
 
@@ -30,16 +31,25 @@ fn supervise_identity_recycle_probe_sssd_only_change() {
     assert!(combined.contains("changed=true"));
     assert!(combined.contains("Export fragments fingerprint:"));
     assert!(combined.contains("changed=false"));
-    assert!(combined.contains("restart_sssd=true"));
-    assert!(combined.contains("ganesha=Skip"));
-    assert!(combined.contains("Starting SSSD..."));
+    assert!(
+        combined.contains("Identity changes staged:"),
+        "identity-only change must be loudly staged; log={combined:?}"
+    );
+    assert!(
+        !combined.contains("Starting SSSD..."),
+        "identity-only change must NOT restart SSSD (staged); log={combined:?}"
+    );
+    assert!(
+        !combined.contains("Service recycle plan:"),
+        "a staged-only change must not execute a recycle plan; log={combined:?}"
+    );
     assert!(!combined.contains("Sent SIGHUP to ganesha.nfsd"));
     assert!(combined.contains("Supervise-identity-recycle-probe complete"));
 
     let stub_log_text = fs::read_to_string(&stub_log).unwrap_or_default();
     assert!(
         !stub_log_text.contains("HUP"),
-        "ganesha stub must not see SIGHUP on identity-only recycle; log={stub_log_text:?}"
+        "ganesha stub must not see SIGHUP on a staged identity change; log={stub_log_text:?}"
     );
 
     if let Ok(scratch) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {

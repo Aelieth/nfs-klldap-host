@@ -21,7 +21,7 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 
 # --- Core async runtime ------------------------------------------------------
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "time", "signal"] }
 
 # --- TOML handling (comment-preserving edits for the central config) ---------
 toml_edit = { workspace = true }

@@ -58,6 +58,42 @@ fn spawn_webui_ldap_refresh(
     });
 }
 
+/// Installs the SIGHUP listener that reloads nfs-klldap.conf in place (config
+/// snapshot, share allow-list, ACL verdict cache) without bouncing the
+/// process — the supervisor sends this HUP on share/export changes so live
+/// admin sessions and connections survive. Registering the handler also
+/// replaces the default terminate-on-HUP disposition. TLS/bind, LDAP client,
+/// and admin-group changes still require the forced full restart.
+fn spawn_sighup_reload_listener(state: crate::web::AppState) {
+    #[cfg(unix)]
+    {
+        let mut hup =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!(
+                        "WARNING: SIGHUP reload listener unavailable ({e}); config reloads require a WebUI restart"
+                    );
+                    return;
+                }
+            };
+        tokio::spawn(async move {
+            while hup.recv().await.is_some() {
+                match state.reload_config_and_fs() {
+                    Ok(()) => eprintln!(
+                        "INFO: SIGHUP — reloaded nfs-klldap.conf (shares and allow-list refreshed in place)"
+                    ),
+                    Err(e) => eprintln!(
+                        "WARNING: SIGHUP config reload failed ({e}); keeping the previous in-memory config"
+                    ),
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    let _ = state;
+}
+
 /// Resolves the runtime hostname and logs diagnostics when sources disagree.
 fn resolve_runtime_hostname_for_banner() -> String {
     match get_consistent_hostname() {
@@ -198,7 +234,15 @@ async fn main() {
 
     // Hybrid auth manager (localhost simple-pw sidecar + LLDAP + admin group).
     let admin_group = loaded_config.management.webui_admin_group.clone();
-    let auth = Arc::new(crate::auth::AuthManager::new(&config_path, admin_group));
+    let session_ttl = loaded_config
+        .webui
+        .session_timeout_minutes
+        .map(|m| std::time::Duration::from_secs(u64::from(m) * 60));
+    let auth = Arc::new(crate::auth::AuthManager::new(
+        &config_path,
+        admin_group,
+        session_ttl,
+    ));
 
     // Keytab banner off-thread so klist cannot block startup.
     let keytab_alert: Arc<StdMutex<Option<String>>> = Arc::new(StdMutex::new(None));
@@ -235,8 +279,9 @@ async fn main() {
         keytab_realm,
         keytab_alert,
         apply_progress: Arc::new(Mutex::new(None)),
-        restart_requested: Arc::new(Mutex::new(false)),
+        restart_requested: Arc::new(Mutex::new(None)),
         direct_tls: !webui_tls_off,
+        webui_bind: addr.clone(),
         setup_marker_override: None,
         setup_test: Arc::new(std::sync::Mutex::new(crate::web::setup::SetupTestState::default())),
         host_nfs_mode,
@@ -247,6 +292,9 @@ async fn main() {
 
     // Reconcile stored ACL/NOACL decisions with live filesystem capability.
     crate::web::acl_watch::spawn_acl_reprobe_loop(state.clone());
+
+    // Supervisor-driven in-process config reload (graceful shares apply).
+    spawn_sighup_reload_listener(state.clone());
 
     let app = crate::web::router(state);
 

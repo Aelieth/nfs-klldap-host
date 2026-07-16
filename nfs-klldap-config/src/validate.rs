@@ -148,6 +148,14 @@ impl NfsKlldapConfig {
         normalize_blank(&mut self.webui.tls_cert);
         normalize_blank(&mut self.webui.tls_key);
 
+        if let Some(m) = self.webui.session_timeout_minutes {
+            if m < 5 {
+                return Err(ConfigError::Validation(
+                    "webui.session_timeout_minutes must be at least 5 (minutes)".into(),
+                ));
+            }
+        }
+
         let host = crate::extract_host_from_uri(&self.ldap_uri);
         if nfs_klldap_identity::host_is_ip(&host) {
             return Err(ConfigError::Validation(
@@ -771,5 +779,19 @@ mod container_path_validation_tests {
         let mut cfg = minimal_cfg_with_share(share);
         cfg.validate_and_derive().expect("valid");
         assert_eq!(cfg.serve_path_for(&cfg.shares[0]), "/export/movies");
+    }
+
+    #[test]
+    fn session_timeout_minutes_enforces_minimum() {
+        let mut cfg = minimal_cfg_with_share(minimal_share());
+        cfg.webui.session_timeout_minutes = Some(4);
+        let err = cfg.validate_and_derive().unwrap_err().to_string();
+        assert!(err.contains("session_timeout_minutes"), "{err}");
+
+        cfg.webui.session_timeout_minutes = Some(5);
+        cfg.validate_and_derive().expect("5 minutes is the floor");
+
+        cfg.webui.session_timeout_minutes = None;
+        cfg.validate_and_derive().expect("unset means the default");
     }
 }

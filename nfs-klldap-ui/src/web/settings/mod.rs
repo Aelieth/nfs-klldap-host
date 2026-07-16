@@ -22,6 +22,8 @@ pub(crate) struct SettingsTemplate {
     raw_toml: String,
     config_path: String,
     message: Option<String>,
+    /// Renders the message box as alert-danger instead of alert-success.
+    message_is_error: bool,
     /// The hostname the container will use for the NFS service principal.
     effective_hostname: String,
     /// The Kerberos realm for the NFS service principal.
@@ -58,6 +60,19 @@ pub(crate) struct SettingsTemplate {
     next_share_idx: usize,
     /// Reflects HOST_NFS mode where host Ganesha serves exports and WebUI.
     host_nfs_mode: bool,
+    /// True when the acting session is the local "localhost" account; the
+    /// Admin-pane password form then requires the current password.
+    is_localhost_user: bool,
+    /// Admin group name for the LDAP-admin change-password note.
+    admin_group: String,
+    /// Workspace version for the Admin pane System rows.
+    app_version: &'static str,
+    /// WebUI bind address:port as launched (Admin pane System rows).
+    webui_bind: String,
+    /// True when the WebUI terminates TLS itself (System row URL scheme).
+    webui_tls: bool,
+    /// [webui] session_timeout_minutes as text; empty means the 720 default.
+    webui_session_timeout_minutes: String,
 }
 /// One share card; included per row by settings.html and served blank by /settings/share-card.
 #[derive(Template)]
@@ -110,30 +125,84 @@ fn recycle_marker_is_fresh(marker: &std::path::Path, latch_at: std::time::System
         .unwrap_or(false)
 }
 
-/// Clear recycle marker and schedule delayed HUP (pid 1 or test override).
-///
-/// The `restart_requested` latch means "one HUP is in flight", not "once per
-/// process": the spawned task releases it once the supervisor touches the
-/// recycle marker (or after a timeout), so a HUP that turns out to be a no-op
-/// generate — which never restarts the WebUI — cannot wedge the latch and
-/// silently swallow every later save.
-pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_context: &str) -> bool {
-    {
-        let mut flag = state.restart_requested.lock().await;
-        if *flag {
-            return false;
+/// Sends the supervisor signal for `kind`: SIGHUP = graceful shares/export
+/// apply, SIGUSR1 = forced full recycle. Pid comes pre-parsed from the caller.
+fn send_recycle_signal(label: &str, hup_pid: &str, kind: super::RecycleKind) {
+    match hup_pid.parse::<u32>() {
+        Ok(pid) if pid > 0 => {
+            let result = match kind {
+                super::RecycleKind::SharesApply => {
+                    eprintln!("INFO: '{label}' — triggering graceful apply (HUP to pid {pid})");
+                    nfs_klldap_config::signal_supervisor_hup(pid)
+                }
+                super::RecycleKind::FullRestart => {
+                    eprintln!(
+                        "INFO: '{label}' — triggering full service recycle (USR1 to pid {pid})"
+                    );
+                    nfs_klldap_config::signal_supervisor_full_recycle(pid)
+                }
+            };
+            if let Err(e) = result {
+                eprintln!("WARN: '{label}' — supervisor signal failed: {e}");
+            }
         }
-        *flag = true;
+        _ => {
+            eprintln!(
+                "WARN: '{label}' — invalid NFS_KLLDAP_SUPERVISOR_PID '{hup_pid}', skipping signal"
+            );
+        }
     }
-    let marker = service_recycle_marker_path();
-    let _ = std::fs::remove_file(&marker);
-    let latch_at = std::time::SystemTime::now();
+}
+
+/// Clear recycle marker and schedule a delayed supervisor signal (pid 1 or
+/// test override): SIGHUP for a graceful shares/export apply, SIGUSR1 for the
+/// forced full recycle behind "Restart and apply".
+///
+/// The `restart_requested` latch holds the kind in flight, not "once per
+/// process": the spawned task releases it once the supervisor touches the
+/// recycle marker (or after a timeout), so a signal that turns out to be a
+/// no-op generate cannot wedge the latch and silently swallow every later
+/// save. A FullRestart arriving while a SharesApply is in flight upgrades the
+/// latch and sends its own USR1 (the full recycle is a strict superset, and
+/// the button's promise must never be silently dropped); any other request
+/// while latched is deduped.
+pub(crate) async fn try_schedule_service_recycle(
+    state: &super::AppState,
+    kind: super::RecycleKind,
+    log_context: &str,
+) -> bool {
+    let escalation_only = {
+        let mut flag = state.restart_requested.lock().await;
+        match (*flag, kind) {
+            (None, requested) => {
+                *flag = Some(requested);
+                false
+            }
+            (Some(super::RecycleKind::SharesApply), super::RecycleKind::FullRestart) => {
+                *flag = Some(super::RecycleKind::FullRestart);
+                true
+            }
+            _ => return false,
+        }
+    };
     let label = log_context.to_string();
     let hup_pid = std::env::var("NFS_KLLDAP_SUPERVISOR_PID").unwrap_or_else(|_| "1".to_string());
     let delay_ms = std::env::var("NFS_KLLDAP_RECYCLE_DELAY_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1400);
+    if escalation_only {
+        // Sender-only upgrade: the original SharesApply task keeps ownership
+        // of the marker wait and the unlatch.
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            send_recycle_signal(&label, &hup_pid, super::RecycleKind::FullRestart);
+        });
+        return true;
+    }
+    let marker = service_recycle_marker_path();
+    let _ = std::fs::remove_file(&marker);
+    let latch_at = std::time::SystemTime::now();
     let unlatch_timeout_ms = std::env::var("NFS_KLLDAP_RECYCLE_UNLATCH_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -141,19 +210,7 @@ pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_co
     let restart_flag = std::sync::Arc::clone(&state.restart_requested);
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-        match hup_pid.parse::<u32>() {
-            Ok(pid) if pid > 0 => {
-                eprintln!("INFO: '{label}' — triggering service bounce (HUP to pid {pid})");
-                if let Err(e) = nfs_klldap_config::signal_supervisor_hup(pid) {
-                    eprintln!("WARN: '{label}' — SIGHUP failed: {e}");
-                }
-            }
-            _ => {
-                eprintln!(
-                    "WARN: '{label}' — invalid NFS_KLLDAP_SUPERVISOR_PID '{hup_pid}', skipping HUP"
-                );
-            }
-        }
+        send_recycle_signal(&label, &hup_pid, kind);
         // Release the latch once the recycle completes (marker touched) or the
         // timeout elapses, on every path above.
         let deadline =
@@ -161,7 +218,7 @@ pub(crate) async fn try_schedule_service_recycle(state: &super::AppState, log_co
         while !recycle_marker_is_fresh(&marker, latch_at) && std::time::Instant::now() < deadline {
             tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
         }
-        *restart_flag.lock().await = false;
+        *restart_flag.lock().await = None;
     });
     true
 }
@@ -298,11 +355,18 @@ pub(crate) fn build_settings_template(
     let sssd_ac_fields = spec::sssd_ac_text_views(&cfg, &doc);
     let tls_ac_fields = spec::tls_ac_text_views(&cfg, &doc);
     let tls_ac_bools = spec::tls_ac_bool_views(&cfg, &doc);
+    let is_localhost_user = current_user.as_deref() == Some("localhost");
+    let webui_session_timeout_minutes = cfg
+        .webui
+        .session_timeout_minutes
+        .map(|v| v.to_string())
+        .unwrap_or_default();
     SettingsTemplate {
         current_user,
         raw_toml,
         config_path: p.display().to_string(),
         message,
+        message_is_error: false,
         effective_hostname: keytab.hostname.clone(),
         effective_realm: keytab.realm.clone(),
         keytab_alert: keytab.alert.clone(),
@@ -330,6 +394,12 @@ pub(crate) fn build_settings_template(
         current_shares,
         next_share_idx,
         host_nfs_mode,
+        is_localhost_user,
+        admin_group: state.auth.admin_group().to_string(),
+        app_version: env!("CARGO_PKG_VERSION"),
+        webui_bind: state.webui_bind.clone(),
+        webui_tls: state.direct_tls,
+        webui_session_timeout_minutes,
     }
 }
 pub(crate) async fn settings_page(
@@ -363,7 +433,7 @@ pub(crate) async fn settings_save_raw(
     let tpl = build_settings_template(
         &state,
         Some(user.0),
-        Some("Raw TOML saved and validated. Container will pick up changes via its watcher (or send SIGHUP).".into()),
+        Some("Raw TOML saved and validated. The watcher applies share/export changes gracefully; identity ([sssd]/kerberos) and core service settings are staged until 'Restart and apply'.".into()),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -383,7 +453,8 @@ pub(crate) async fn settings_save_structured(
     apply_structured_form_to_config(&form, &mut cfg);
     if let Err(e) = cfg.validate_and_derive() {
         let msg = format!("Validation error: {}", e);
-        let tpl = build_settings_template(&state, Some(user.0.clone()), Some(msg));
+        let mut tpl = build_settings_template(&state, Some(user.0.clone()), Some(msg));
+        tpl.message_is_error = true;
         return Ok(Html(tpl.render().unwrap()));
     }
     let mut doc = original_text
@@ -398,7 +469,7 @@ pub(crate) async fn settings_save_structured(
     let tpl = build_settings_template(
         &state,
         Some(user.0),
-        Some("Structured settings saved (shares left untouched in TOML). Container will regenerate configs shortly.".into()),
+        Some("Structured settings saved (shares left untouched in TOML). Configs regenerate shortly; identity/TLS/WebUI settings take effect after 'Restart and apply'.".into()),
     );
     Ok(Html(tpl.render().unwrap()))
 }
@@ -496,6 +567,7 @@ pub(crate) async fn settings_save_shares(
     };
     let _ = try_schedule_service_recycle(
         &state,
+        super::RecycleKind::SharesApply,
         &format!("Shares saved by '{}'", user.0),
     )
     .await;
@@ -503,7 +575,7 @@ pub(crate) async fn settings_save_shares(
         &state,
         Some(user.0),
         Some(format!(
-            "Shares saved (SSSD and other sections left untouched in TOML).{reload_msg} Service recycle scheduled so Ganesha + WebUI pick up the new paths."
+            "Shares saved (SSSD and other sections left untouched in TOML).{reload_msg} Graceful apply scheduled — Ganesha rereads its exports and the WebUI refreshes in place (no restart, sessions unaffected)."
         )),
     );
     Ok(Html(tpl.render().unwrap()))
@@ -672,14 +744,180 @@ pub(crate) async fn restart_status() -> impl IntoResponse {
     }
     (axum::http::StatusCode::SERVICE_UNAVAILABLE, "pending")
 }
-/// Schedules a one-shot HUP recycle and renders the restarting page.
+/// Schedules a one-shot forced full recycle (SIGUSR1) and renders the
+/// restarting page. Unlike the graceful shares apply, this restarts every
+/// managed service, applying staged identity and main-conf/WebUI settings.
 pub(crate) async fn system_restart(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
     let user = require_auth(&state, &headers).await?;
-    let _ = try_schedule_service_recycle(&state, &format!("Restart and apply by '{}'", user.0)).await;
+    let _ = try_schedule_service_recycle(
+        &state,
+        super::RecycleKind::FullRestart,
+        &format!("Restart and apply by '{}'", user.0),
+    )
+    .await;
     Ok(render_restarting_page())
+}
+
+/// Change-password form for the local "localhost" account (Admin pane).
+#[derive(Deserialize)]
+pub(crate) struct ChangePasswordForm {
+    current_password: Option<String>,
+    new_password: String,
+    confirm_password: String,
+}
+
+/// POST /settings/change-password — rotate the local "localhost" account
+/// password (LDAP accounts manage theirs in LLDAP). A localhost session must
+/// verify the current password; an LDAP admin session is re-authorized by a
+/// live admin-group membership check instead (fails closed on LDAP errors),
+/// so a stale 12h session or revoked membership cannot rotate the account.
+pub(crate) async fn settings_change_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<ChangePasswordForm>,
+) -> Result<impl IntoResponse, Redirect> {
+    let user = require_auth(&state, &headers).await?;
+
+    let authz: Result<(), String> = if user.0 == "localhost" {
+        state
+            .auth
+            .validate_simple_password("localhost", form.current_password.as_deref().unwrap_or(""))
+    } else {
+        let client = state.lldap.read().await.clone();
+        client
+            .verify_admin_group_membership_live(&user.0, state.auth.admin_group())
+            .await
+            .map_err(|e| format!("live admin-group re-check failed (failing closed): {e}"))
+    };
+
+    let outcome: Result<String, String> = match authz {
+        Err(e) => Err(e),
+        Ok(()) => {
+            let new_pw = form.new_password.trim();
+            if new_pw != form.confirm_password.trim() {
+                Err("new password and confirmation do not match.".to_string())
+            } else {
+                state.auth.set_simple_password(new_pw).map(|()| {
+                    let keep =
+                        super::current_session_token(&state, &headers).unwrap_or_default();
+                    let dropped = state
+                        .auth
+                        .invalidate_sessions_for_user_except("localhost", &keep);
+                    format!(
+                        "Password for 'localhost' updated. Signed out {dropped} other localhost session(s)."
+                    )
+                })
+            }
+        }
+    };
+
+    let (message, is_error) = match outcome {
+        Ok(m) => (m, false),
+        Err(e) => (format!("Password not changed — {e}"), true),
+    };
+    let mut tpl = build_settings_template(&state, Some(user.0), Some(message));
+    tpl.message_is_error = is_error;
+    Ok(Html(tpl.render().unwrap()))
+}
+
+/// Minimal HTML escape for share names interpolated into the JSON log field
+/// (the Diagnostics panel assigns it via innerHTML).
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// POST /settings/reprobe-filesystems — drop every cached ACL write-probe
+/// verdict and re-classify each share's serve root now (Diagnostics JSON).
+/// The background watcher keeps its own hysteresis state, so this endpoint
+/// never rebuilds the acl_alert banner.
+pub(crate) async fn settings_reprobe_filesystems(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Redirect> {
+    require_auth(&state, &headers).await?;
+    // The write probe shells out (setfacl/getfacl); keep it off the runtime.
+    let blocking_state = state.clone();
+    let probed = tokio::task::spawn_blocking(move || {
+        blocking_state.acl_caps.invalidate_all();
+        let snap = nfs_klldap_config::MountinfoSnapshot::capture(
+            blocking_state.fs_probe_mountinfo_path.as_deref(),
+        );
+        // The same disk view the settings page renders from.
+        let raw = std::fs::read_to_string(&blocking_state.config_path).unwrap_or_default();
+        let cfg = nfs_klldap_config::NfsKlldapConfig::parse_str(
+            &blocking_state.config_path.display().to_string(),
+            &raw,
+        )
+        .and_then(|mut c| c.validate_and_derive().map(|_| c))
+        .unwrap_or_default();
+        cfg.shares
+            .iter()
+            .map(|s| {
+                let status =
+                    super::acl_status::share_acl_status(&blocking_state.acl_caps, &snap, &cfg, s);
+                format!(
+                    "share '{}': {} (probe: {})",
+                    html_escape(&s.name),
+                    status.state_label,
+                    status.probed
+                )
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+    Ok(match probed {
+        Ok(lines) => {
+            let log = if lines.is_empty() {
+                "No shares configured.".to_string()
+            } else {
+                lines.join("\n")
+            };
+            Json(SetupTestResponse {
+                ok: true,
+                message: Some("Re-probe complete.".into()),
+                error: None,
+                log: Some(log),
+            })
+        }
+        Err(_) => Json(SetupTestResponse {
+            ok: false,
+            message: None,
+            error: Some("Re-probe task failed".into()),
+            log: Some("<strong>Status</strong>\nRe-probe task failed".into()),
+        }),
+    })
+}
+
+/// POST /settings/refresh-identity — clear identity caches and bulk re-fetch
+/// users/groups from LDAP, same as the periodic refresher (Diagnostics JSON).
+pub(crate) async fn settings_refresh_identity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Redirect> {
+    require_auth(&state, &headers).await?;
+    let client = state.lldap.read().await.clone();
+    Ok(match client.refresh_identity_data().await {
+        Some(n) => Json(SetupTestResponse {
+            ok: true,
+            message: Some("Identity refresh complete.".into()),
+            error: None,
+            log: Some(format!(
+                "Bulk reload complete: {n} identities (0 can mean an empty directory or an unreachable LDAP server). Autocomplete lists repopulated."
+            )),
+        }),
+        None => Json(SetupTestResponse {
+            ok: false,
+            message: None,
+            error: Some(
+                "LDAP service credentials are not configured (or the refresh task failed)."
+                    .into(),
+            ),
+            log: Some("<strong>Status</strong>\nNo service bind available — nothing refreshed.".into()),
+        }),
+    })
 }
 
 /// POST /settings/test-ldap — diagnostic DNS + TCP probe of ldap_uri.

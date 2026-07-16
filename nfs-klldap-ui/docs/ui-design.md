@@ -1,8 +1,10 @@
 # UI Notes
 
-Axum + HTMX + server templates extending `base.html`. First-run: `/setup/1` (persistent volume) → `/setup/2` and `/setup/3` (**Test Settings** then **Save and Continue**) → restarting page (polls `/restart-status`, same as settings restart) → `/login` + `POST /setup-password`. Pre-configured conf+keytab skips `/setup`. Main pages: `/` (tree + apply), `/settings` (raw/structured TOML, shares, restart).
+Axum + HTMX + server templates extending `base.html`. First-run: `/setup/1` (persistent volume) → `/setup/2` and `/setup/3` (**Test Settings** then **Save and Continue**) → restarting page (polls `/restart-status`, same forced full recycle as settings "Restart and apply") → `/login` + `POST /setup-password`. Pre-configured conf+keytab skips `/setup`. Main pages: `/` (tree + apply), `/settings` (raw/structured TOML, shares, Admin: restart/local password/maintenance). Shares saves apply gracefully — Ganesha rereads exports and the WebUI reloads its config in place via a supervisor SIGHUP (no process restart, sessions kept); the restarting page is only ever the full-recycle path.
 
-Auth: webui-password sidecar (localhost) or LLDAP in webui_admin_group.
+Auth: webui-password sidecar (localhost) or LLDAP in webui_admin_group. Session TTL defaults to
+12 h and follows `[webui] session_timeout_minutes` (cookie Max-Age and server expiry both read
+`AuthManager::session_ttl()`; new value applies to logins after the next full restart).
 
 Handlers in `web/` (`mod`, `auth`, `permission_tree`, `settings`, `setup`, plus ACL helpers). FS policy + progress in `fs.rs`; LDAP in `ldap.rs`. Keytab/hostname checks live under settings/setup surfaces (no separate `keytab.rs`).
 
@@ -210,6 +212,29 @@ New cards from **+ Add share** are server-rendered: the card markup lives once i
 returns a blank card that `addShareRow()` appends via htmx. Never reintroduce a JS copy of the card —
 that duplication is exactly what previously lost the field tooltips on new cards.
 
+## System Settings → Admin
+
+The old "Apply" rail pane is the **Admin** pane (renamed in 0.9.96 — the restore JS maps a stale
+`localStorage['settings-pane'] == "apply"` to `admin`; keep that shim). Five blocks, top to bottom:
+
+- **Restart & apply / Apply to host** — the original forced-full-recycle form, unchanged
+  (`POST /settings/restart`, confirm() dialog, mode-conditional labels).
+- **Local password** — `POST /settings/change-password`, `localhost` account only. A localhost
+  session must supply the current password; an LDAP admin session is instead re-authorized by a
+  **live** `webui_admin_group` membership check (`verify_admin_group_membership_live`, composed
+  from uncached resolver searches — never the 120 s memberOf shortcut) and **fails closed** when
+  LDAP is unreachable. Success invalidates every other localhost session and rewrites the
+  `webui-password` sidecar atomically (tmp + rename, 0600). The block wrapper carries
+  `data-nosave` so typing a password never arms the savebar.
+- **Sessions** — the `webui_session_timeout_minutes` input lives in this pane but joins
+  `#settings-form` via the HTML `form=` attribute. Never give it (or any Admin field) a mini-form
+  posting to `/settings/save`: partial submissions remove every absent `override_*` key.
+- **Maintenance** — "Re-probe filesystems" (`invalidate_all()` + fresh per-share
+  `share_acl_status`; deliberately does **not** run `acl_reprobe_tick`, whose throwaway
+  FlipTracker would clear the acl_alert banner) and "Refresh identity now"
+  (`refresh_identity_data`). Both reuse the Diagnostics `runProbe` JSON contract.
+- **System** — read-only rows: workspace version, `http(s)://` bind, deploy-mode chip.
+
 ## Page shell & viewport
 
 Every page extending `base.html` shares one centered shell: `body { margin: 2rem auto;
@@ -273,8 +298,10 @@ Semantics: localStorage key `theme` ∈ `auto|dark|light`; explicit values set
 | POST | `/settings/save`, `/settings/save-shares`, `/settings/save-raw` | save structured / shares / raw TOML | session |
 | GET | `/settings/lldap-status` | LLDAP NFS client status fragment | session |
 | POST | `/settings/reload-nfs-client`, `/settings/clear-ldap-cache` | LLDAP client maintenance | session |
-| POST | `/settings/restart` | apply + service bounce | session |
+| POST | `/settings/restart` | forced full recycle (SIGUSR1: SSSD + idhelper + Ganesha stop/start + WebUI) | session |
 | POST | `/settings/test-ldap`, `/settings/test-bind` | diagnostics probes (JSON) | session |
+| POST | `/settings/change-password` | rotate the local `localhost` password (localhost verifies current pw; LDAP admin gets a live fail-closed group re-check) | session |
+| POST | `/settings/reprobe-filesystems`, `/settings/refresh-identity` | Admin pane maintenance (JSON, diagnostics contract) | session |
 
 All routes except the setup-gate allowlist (`/setup*`, `/assets/*`, `/login`, `/setup-password`,
 `/restart-status`, `/logout`) redirect to the wizard while first-run setup is incomplete; session

@@ -483,17 +483,29 @@ pub fn should_bring_up_services(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupervisorLoopAction {
     ProcessSighup,
+    ProcessFullRecycle,
     BringUpServices,
     Idle,
 }
 
 /// Handles one supervisor-loop tick and triggers bring-up on HUP when needed.
+/// A pending full recycle supersedes a simultaneous SIGHUP (its work is a
+/// strict superset; both flags were already consumed for this tick), and
+/// coalesces into `BringUpServices` while services are still down — a cold
+/// bring-up from freshly generated configs IS the full recycle.
 pub fn supervisor_loop_tick(
     services_started: bool,
     sighup_pending: bool,
+    full_recycle_pending: bool,
     wizard_complete: bool,
     startup_step: StartupStep,
 ) -> (SupervisorLoopAction, bool) {
+    if full_recycle_pending {
+        if should_bring_up_services(services_started, wizard_complete, startup_step) {
+            return (SupervisorLoopAction::BringUpServices, true);
+        }
+        return (SupervisorLoopAction::ProcessFullRecycle, true);
+    }
     if sighup_pending {
         return (SupervisorLoopAction::ProcessSighup, true);
     }
@@ -619,19 +631,48 @@ mod tests {
     #[test]
     fn supervisor_loop_tick_hup_sets_started_and_next_tick_is_idle() {
         let (action, started) =
-            supervisor_loop_tick(false, true, true, StartupStep::Ready);
+            supervisor_loop_tick(false, true, false, true, StartupStep::Ready);
         assert_eq!(action, SupervisorLoopAction::ProcessSighup);
         assert!(started);
-        let (next, _) = supervisor_loop_tick(started, false, true, StartupStep::Ready);
+        let (next, _) = supervisor_loop_tick(started, false, false, true, StartupStep::Ready);
         assert_eq!(next, SupervisorLoopAction::Idle);
     }
 
     #[test]
     fn supervisor_loop_tick_brings_up_without_hup_when_ready() {
         let (action, started) =
-            supervisor_loop_tick(false, false, true, StartupStep::Ready);
+            supervisor_loop_tick(false, false, false, true, StartupStep::Ready);
         assert_eq!(action, SupervisorLoopAction::BringUpServices);
         assert!(started);
+    }
+
+    #[test]
+    fn supervisor_loop_tick_full_recycle_when_services_up() {
+        let (action, started) =
+            supervisor_loop_tick(true, false, true, true, StartupStep::Ready);
+        assert_eq!(action, SupervisorLoopAction::ProcessFullRecycle);
+        assert!(started);
+    }
+
+    #[test]
+    fn supervisor_loop_tick_full_recycle_supersedes_simultaneous_hup() {
+        let (action, _) = supervisor_loop_tick(true, true, true, true, StartupStep::Ready);
+        assert_eq!(action, SupervisorLoopAction::ProcessFullRecycle);
+    }
+
+    #[test]
+    fn supervisor_loop_tick_full_recycle_coalesces_into_cold_bring_up() {
+        let (action, started) =
+            supervisor_loop_tick(false, false, true, true, StartupStep::Ready);
+        assert_eq!(action, SupervisorLoopAction::BringUpServices);
+        assert!(started);
+    }
+
+    #[test]
+    fn supervisor_loop_tick_full_recycle_cold_but_step_not_ready_still_recycles() {
+        let (action, _) =
+            supervisor_loop_tick(false, false, true, true, StartupStep::AddBindCredentials);
+        assert_eq!(action, SupervisorLoopAction::ProcessFullRecycle);
     }
 
     #[test]

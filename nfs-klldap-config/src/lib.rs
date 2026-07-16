@@ -42,11 +42,13 @@ pub use ganesha_liveness::{
     pkill_binary, pkill_process, process_is_live,
 };
 pub use recycle_plan::{
-    plan_from_changes, ganesha_sighup_failed, GaneshaAction, ServiceRecyclePlan,
+    plan_from_changes, plan_full_recycle, ganesha_sighup_failed, GaneshaAction,
+    ServiceRecyclePlan, WebuiAction,
 };
 pub use signals::{
-    install_signal_handlers, reap_children, request_sighup, shutdown_requested,
-    signal_process_hup, signal_process_kill, signal_process_term, signal_supervisor_hup,
+    install_signal_handlers, reap_children, request_full_recycle, request_sighup,
+    shutdown_requested, signal_process_hup, signal_process_kill, signal_process_term,
+    signal_supervisor_full_recycle, signal_supervisor_hup, take_full_recycle_requested,
     take_sighup_requested,
 };
 pub use fs_probe::{

@@ -61,5 +61,6 @@ services:
 # (typically at the host's /etc/krb5.keytab). --uts=host is still strongly recommended.
 
 # WebUI: https://<host>:9630
-# Reload config: docker kill -s HUP nfs-klldap-host
+# Graceful apply (shares/exports; identity staged): docker kill -s HUP nfs-klldap-host
+# Forced full recycle (all services; applies staged identity): docker kill -s USR1 nfs-klldap-host
 # See docs/run/README.md for keytab principals and uts: host.

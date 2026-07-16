@@ -4,7 +4,7 @@
 
 Ganesha **9.13-1+klldap2** (custom build; one ACL-capable binary, NOACL per-export via `Disable_ACL`; klldap2 fixes nsswitch `getgrouplist` return so supplemental groups are not dropped — see [container/ganesha/README.md](../container/ganesha/README.md)).
 
-Single TOML (`nfs-klldap.conf`) is source of truth. `nfs-klldap-config` validates, derives, and generates sssd/krb5/idmapd/nfs/ganesha fragments. `nfs-klldap-startup supervise` is pid 1: preflight, ordered start, SIGHUP recycle. WebUI (HTTPS 9630) edits TOML and applies chown/chmod on allowed `host_path` trees. Ganesha VFS + SSSD serve NFSv4 krb5*. No host kernel NFS (unless `HOST_NFS` sidecar mode).
+Single TOML (`nfs-klldap.conf`) is source of truth. `nfs-klldap-config` validates, derives, and generates sssd/krb5/idmapd/nfs/ganesha fragments. `nfs-klldap-startup supervise` is pid 1: preflight, ordered start, SIGHUP graceful apply + SIGUSR1 full recycle. WebUI (HTTPS 9630) edits TOML and applies chown/chmod on allowed `host_path` trees. Ganesha VFS + SSSD serve NFSv4 krb5*. No host kernel NFS (unless `HOST_NFS` sidecar mode).
 
 ## Key contracts
 
@@ -15,7 +15,7 @@ Single TOML (`nfs-klldap.conf`) is source of truth. `nfs-klldap-config` validate
 | Realm | Required. Auto-derived from `ldap_uri` host or `NFS_KLLDAP_KERBEROS_REALM`. No silent EXAMPLE.COM. |
 | ldap_uri | DNS hostname only (IP rejected). Forward+reverse for Kerberos NFS. Keytab: `nfs/<short>@REALM` and `nfs/<fqdn>@REALM` when they differ. |
 | Execution | Ganesha, SSSD, WebUI, generator run as root in the container. |
-| Reload | Watcher → SIGHUP pid 1 → generate + `ServiceRecyclePlan` (Ganesha SIGHUP `reread_exports` or stop/start; SSSD/idhelper on identity change; WebUI on exports/identity/shares). No full container death. System bus is for Ganesha internals; management is fragments + HUP. |
+| Reload | Two triggers. **SIGHUP** (watcher, WebUI shares save) → generate + `plan_from_changes`: Ganesha SIGHUP `reread_exports` (stop/start only if dead), WebUI **in-process reload** (no restart — sessions/connections survive), identity changes **staged on disk** without daemon restarts. **SIGUSR1** ("Restart and apply", setup completion) → generate + `plan_full_recycle`: restart SSSD/idhelper/WebUI + Ganesha stop/start (clients reclaim via grace) regardless of fingerprints — the only path applying staged identity and ganesha-main-conf/nfs.conf/WebUI-settings edits. No full container death. System bus is for Ganesha internals; management is fragments + signals. |
 
 ## Volumes (typical)
 

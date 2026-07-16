@@ -1153,17 +1153,28 @@ impl IdLdapResolver {
         bind_dn: &str,
         bind_pw: &str,
     ) -> bool {
+        self.user_dn_memberof_check(user_dn, group_dn, bind_dn, bind_pw)
+            .unwrap_or(false)
+    }
+
+    /// memberOf-filter search that distinguishes an LDAP failure from a
+    /// definitive miss, so privileged callers can fail closed with an accurate
+    /// reason. Uncached: every call is a live directory query.
+    pub fn user_dn_memberof_check(
+        &self,
+        user_dn: &str,
+        group_dn: &str,
+        bind_dn: &str,
+        bind_pw: &str,
+    ) -> Result<bool, String> {
         let filter = format!(
             "(&(objectClass={})(memberOf={}))",
             self.posix_attributes.user_object_class,
             escape_ldap_filter(group_dn)
         );
-        let entries = self
-            .service_search(&self.user_base, &filter, vec!["1.1".into()], bind_dn, bind_pw)
-            .unwrap_or_default();
-        entries
-            .iter()
-            .any(|e| e.dn.eq_ignore_ascii_case(user_dn))
+        let entries =
+            self.service_search(&self.user_base, &filter, vec!["1.1".into()], bind_dn, bind_pw)?;
+        Ok(entries.iter().any(|e| e.dn.eq_ignore_ascii_case(user_dn)))
     }
 
     /// Full group list (up to `limit`) for permission-editor autocomplete; the

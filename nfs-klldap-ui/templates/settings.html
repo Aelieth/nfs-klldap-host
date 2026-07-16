@@ -5,16 +5,19 @@
   Extends base.html (theme vars, .btn, .alert, .mono-log-panel, htmx, theme tray).
 
   Preserves the existing POST contract:
-    /settings/save        (structured settings: Core + SSSD + TLS)   -> #settings-form
-    /settings/save-shares (shares)                                   -> #shares-form
+    /settings/save        (structured settings: Core + SSSD + TLS + Admin timeout) -> #settings-form
+    /settings/save-shares (shares; schedules the graceful apply)     -> #shares-form
     /settings/save-raw    (raw TOML)                                 -> #raw-form
-    /settings/restart     (apply / restart)
+    /settings/restart     (forced full recycle via SIGUSR1)
+    /settings/change-password (Admin pane; localhost account only)
   and the existing context vars + override_* checkbox semantics (the
   Auto/Custom segmented control just drives the same hidden override_* checkbox).
 
-  Two lightweight endpoints in web/settings/ power the Diagnostics buttons:
+  Lightweight JSON endpoints in web/settings/ power the Diagnostics-style buttons:
     POST /settings/test-ldap  { ldap_uri }                       -> JSON {ok, log, message?, error?}
     POST /settings/test-bind  { ldap_default_bind_dn, ldap_default_authtok } -> JSON {ok, log, ...}
+    POST /settings/reprobe-filesystems {}                        -> JSON (Admin pane maintenance)
+    POST /settings/refresh-identity {}                           -> JSON (Admin pane maintenance)
   Reuse the probe logic from /setup/2/test and /setup/3/test. A failing test never blocks Save.
 #}
 
@@ -144,7 +147,7 @@
 </style>
 
 {# keytab_alert intentionally not repeated here — base.html already banners it #}
-{% if let Some(msg) = message %}<div class="alert alert-success" style="margin:0 0 12px">{{ msg }}</div>{% endif %}
+{% if let Some(msg) = message %}<div class="alert {% if message_is_error %}alert-danger{% else %}alert-success{% endif %}" style="margin:0 0 12px">{{ msg }}</div>{% endif %}
 
 <div id="settings-app">
   <div class="set-shell">
@@ -155,7 +158,7 @@
       <button type="button" class="rail-item" data-pane="tls"><span>TLS &amp; Security</span><span class="rail-dot"></span></button>
       <button type="button" class="rail-item" data-pane="shares"><span>Shares</span><span class="rail-dot"></span></button>
       <button type="button" class="rail-item" data-pane="raw"><span>Raw TOML</span><span class="rail-dot"></span></button>
-      <button type="button" class="rail-item" data-pane="apply"><span>Apply</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="admin"><span>Admin</span><span class="rail-dot"></span></button>
     </nav>
 
     <div class="set-main">
@@ -333,14 +336,14 @@
             {# Relocated from the Share Permissions page: this pane is where shares change, so the
                load/apply lifecycle note belongs here. #}
             <p class="pane-note">
-              Shares and allowed roots load at WebUI startup.
               {% if host_nfs_mode %}
               The host NFS server reads the generated fragments — after adding or editing shares, use
-              "Apply to host" (Apply pane) or wait for the watcher.
+              "Apply to host" (Admin pane) or wait for the watcher to regenerate them.
               {% else %}
-              Ganesha reads the exports at its startup — after adding or editing shares, use
-              "Restart &amp; apply" (Apply pane) or wait for the config watcher so the permission tree
-              and NFS see them.
+              Saving shares applies them gracefully: Ganesha rereads its exports in place and this
+              WebUI refreshes without restarting, so sessions and connected clients on other shares
+              are untouched. "Restart &amp; apply" (Admin pane) is only needed for a full service
+              restart.
               {% endif %}
             </p>
             <div class="shares-split">
@@ -377,26 +380,108 @@
           <section class="set-section" data-pane-content="raw" hidden>
             <div class="sec-hd"><h3>Raw TOML</h3><span class="sec-sub">full control · comments preserved</span></div>
             <textarea name="raw_content" rows="20" style="width:100%;flex:1;min-height:320px;font-family:var(--font-mono);font-size:.86em;border-radius:6px;padding:10px;box-sizing:border-box">{{ raw_toml }}</textarea>
-            <p class="muted" style="font-size:.82em;margin:.5rem 0 0">The container watches the config file and regenerates + reloads automatically.</p>
+            <p class="muted" style="font-size:.82em;margin:.5rem 0 0">The container watches the config file: share/export changes apply gracefully (no service restart); identity ([sssd]/kerberos) and core service settings are staged until "Restart &amp; apply".</p>
           </section>
         </form>
 
-        {# ===================== APPLY ===================== #}
-        <section class="set-section" data-pane-content="apply" hidden>
-          <div class="sec-hd"><h3>{% if host_nfs_mode %}Apply to host{% else %}Restart &amp; apply{% endif %}</h3></div>
-          <p class="muted" style="font-size:.88em;max-width:560px">
-            {% if host_nfs_mode %}
-            Regenerate the Ganesha fragments (sssd.conf + krb5.conf) so the host NFS server sees the latest definitions. No local bounce.
-            {% else %}
-            Bounce Ganesha + SSSD + WebUI via the supervisor so the updated config + shares are active. NFS is briefly unavailable.
-            {% endif %}
-          </p>
-          <form method="post" action="/settings/restart" style="margin-top:.6rem">
-            <button type="submit" class="btn {% if host_nfs_mode %}btn-primary{% else %}btn-danger{% endif %}" style="padding:8px 16px"
-                    onclick="return confirm('{% if host_nfs_mode %}Apply latest fragments to the host-managed NFS server?{% else %}Restart services now to apply changes? NFS and the WebUI will be briefly unavailable.{% endif %}');">
-              {% if host_nfs_mode %}Apply to host NFS{% else %}Restart and apply{% endif %}
-            </button>
-          </form>
+        {# ===================== ADMIN ===================== #}
+        <section class="set-section" data-pane-content="admin" hidden>
+          <div class="sec-hd"><h3>Admin</h3></div>
+
+          {# --- restart / apply: the pane's primary action, behavior unchanged --- #}
+          <div class="diag" style="margin-top:0;padding-top:0;border-top:0">
+            <div class="diag-hd">{% if host_nfs_mode %}Apply to host{% else %}Restart &amp; apply{% endif %}</div>
+            <p class="muted" style="font-size:.88em;max-width:560px;margin:0">
+              {% if host_nfs_mode %}
+              Regenerate the Ganesha fragments (sssd.conf + krb5.conf) so the host NFS server sees the latest definitions. No local bounce.
+              {% else %}
+              Full restart of SSSD, the identity helper, Ganesha (stop/start; clients reclaim through
+              the grace period), and the WebUI. Required for identity ([sssd]/kerberos), main
+              Ganesha/nfs.conf, and WebUI (port/TLS/admin group/session timeout) settings — share
+              edits apply automatically on save. NFS is briefly unavailable.
+              {% endif %}
+            </p>
+            <form method="post" action="/settings/restart" style="margin-top:.6rem">
+              <button type="submit" class="btn {% if host_nfs_mode %}btn-primary{% else %}btn-danger{% endif %}" style="padding:8px 16px"
+                      onclick="return confirm('{% if host_nfs_mode %}Apply latest fragments to the host-managed NFS server?{% else %}Restart services now to apply changes? NFS and the WebUI will be briefly unavailable.{% endif %}');">
+                {% if host_nfs_mode %}Apply to host NFS{% else %}Restart and apply{% endif %}
+              </button>
+            </form>
+          </div>
+
+          {# --- local account password (data-nosave: typing here must not arm the savebar) --- #}
+          <div class="diag" data-nosave>
+            <div class="diag-hd">Local password</div>
+            <div class="test-hint">Changes the local <code>localhost</code> account only — LDAP accounts manage their
+              passwords in LLDAP. All other localhost sessions are signed out after a successful change.</div>
+            <form method="post" action="/settings/change-password" style="max-width:420px;display:flex;flex-direction:column;gap:8px">
+              {% if is_localhost_user %}
+              <div class="fld">
+                <label class="fld-lab" for="current_password">current password</label>
+                <input type="password" name="current_password" id="current_password" required autocomplete="current-password">
+              </div>
+              {% else %}
+              <div class="derived-note" style="max-width:420px">Signed in as an LDAP admin: a fresh
+                '{{ admin_group }}' membership check authorizes this change — no current password
+                needed, denied if LDAP is unreachable.</div>
+              {% endif %}
+              <div class="fld">
+                <label class="fld-lab" for="new_password">new password</label>
+                <input type="password" name="new_password" id="new_password" required minlength="8" autocomplete="new-password" placeholder="min 8 chars">
+              </div>
+              <div class="fld">
+                <label class="fld-lab" for="confirm_password">confirm new password</label>
+                <input type="password" name="confirm_password" id="confirm_password" required minlength="8" autocomplete="new-password">
+              </div>
+              <div><button type="submit" class="btn btn-primary" style="padding:6px 14px">Change password</button></div>
+            </form>
+          </div>
+
+          {# --- sessions: rides #settings-form via the form attribute (never a partial POST) --- #}
+          <div class="diag">
+            <div class="diag-hd">Sessions</div>
+            <div class="fld" style="max-width:300px">
+              <label class="fld-lab" for="webui_session_timeout_minutes"
+                     title="WebUI auto-logout in minutes.&#10;&rarr; [webui] session_timeout_minutes">webui.session_timeout_minutes <span class="ico">i</span></label>
+              <input type="number" name="webui_session_timeout_minutes" id="webui_session_timeout_minutes"
+                     form="settings-form" min="5" max="65535" step="1" placeholder="720 (default)"
+                     value="{{ webui_session_timeout_minutes }}">
+              <div class="derived-note">Auto-logout for WebUI sessions. Default 720 (12&nbsp;h), minimum 5; blank
+                returns to the default. Saved with "Save Settings"; applies to new logins after the full restart above.</div>
+            </div>
+          </div>
+
+          {# --- maintenance: one-click actions, Diagnostics contract --- #}
+          <div class="diag" data-nosave>
+            <div class="diag-hd">Maintenance</div>
+            <div class="test-row">
+              <button type="button" id="reprobe-fs-btn" class="btn btn-primary">Re-probe filesystems</button>
+              <span id="reprobe-fs-pill" class="tpill">not run</span>
+            </div>
+            <div class="test-hint">Drops every cached ACL write-probe verdict and re-classifies each share's serve
+              root now (the background watcher re-checks every ~3 minutes on its own).</div>
+            <div id="reprobe-fs-log" class="mono-log-panel"><em style="color:var(--text-light)">Run to list each share's fresh verdict.</em></div>
+            <div class="test-row" style="margin-top:12px">
+              <button type="button" id="refresh-identity-btn" class="btn btn-primary">Refresh identity now</button>
+              <span id="refresh-identity-pill" class="tpill">not run</span>
+            </div>
+            <div class="test-hint">Clears the identity caches and bulk re-fetches users/groups from LDAP — same as
+              the periodic refresher.</div>
+            <div id="refresh-identity-log" class="mono-log-panel"><em style="color:var(--text-light)">Run to reload identities from the directory.</em></div>
+          </div>
+
+          {# --- system info --- #}
+          <div class="diag">
+            <div class="diag-hd">System</div>
+            <div class="ov-card" style="max-width:560px">
+              <div class="ov-row"><span class="ov-k">version</span><code>{{ app_version }}</code></div>
+              <div class="ov-row"><span class="ov-k">webui</span><code>{% if webui_tls %}https{% else %}http{% endif %}://{{ webui_bind }}</code></div>
+              <div class="ov-row"><span class="ov-k">mode</span>
+                {% if host_nfs_mode %}<span class="sc-chip">HOST_NFS</span><span class="muted" style="font-size:.85em">host runs NFS; server controls are host-enforced</span>
+                {% else %}<span class="sc-chip">Container-managed</span><span class="muted" style="font-size:.85em">this container runs Ganesha</span>{% endif %}
+              </div>
+            </div>
+          </div>
         </section>
 
       </div>
@@ -422,7 +507,8 @@
   const saveBtn = document.getElementById('primary-save');
   const SAVE = {
     core: ['settings-form', 'Save Settings'], sssd: ['settings-form', 'Save Settings'], tls: ['settings-form', 'Save Settings'],
-    shares: ['shares-form', 'Save Shares'], raw: ['raw-form', 'Save Raw TOML']
+    shares: ['shares-form', 'Save Shares'], raw: ['raw-form', 'Save Raw TOML'],
+    admin: ['settings-form', 'Save Settings']
   };
   function setPane(name) {
     panes.forEach(p => { p.hidden = p.dataset.paneContent !== name; });
@@ -435,6 +521,7 @@
   rail.addEventListener('click', e => { const b = e.target.closest('[data-pane]'); if (b) setPane(b.dataset.pane); });
   let initial = 'overview';
   try { initial = localStorage.getItem('settings-pane') || 'overview'; } catch (e) {}
+  if (initial === 'apply') initial = 'admin'; // pane renamed in 0.9.96
   if (!panes.some(p => p.dataset.paneContent === initial)) initial = 'overview';
   setPane(initial);
 
@@ -536,6 +623,8 @@
   // ---------- input / change: live toml, dot + chip sync, dirty ----------
   root.addEventListener('input', e => {
     const t = e.target;
+    // Password fields and maintenance buttons never ride a save form.
+    if (t.closest && t.closest('[data-nosave]')) return;
     if (t.closest && t.closest('#shares-container')) {
       if (t.dataset.f === 'name') {
         const card = t.closest('.share-card-ed');
@@ -581,6 +670,7 @@
   }
   root.addEventListener('change', e => {
     const t = e.target;
+    if (t.closest && t.closest('[data-nosave]')) return;
     if (t.closest && t.closest('#shares-container')) {
       if (t.dataset.f === 'enable_acl') {
         syncAclStatus(t.closest('.share-card-ed'), t.value);
@@ -612,6 +702,14 @@
   if (bindBtn) bindBtn.addEventListener('click', () => runProbe('/settings/test-bind',
     { ldap_default_bind_dn: document.getElementById('sssd_bind_dn').value, ldap_default_authtok: document.getElementById('sssd_bind_pw').value },
     document.getElementById('test-bind-pill'), document.getElementById('test-bind-log')));
+
+  // ---------- Admin pane maintenance actions (same JSON contract) ----------
+  const reprobeBtn = document.getElementById('reprobe-fs-btn');
+  if (reprobeBtn) reprobeBtn.addEventListener('click', () => runProbe('/settings/reprobe-filesystems', {},
+    document.getElementById('reprobe-fs-pill'), document.getElementById('reprobe-fs-log')));
+  const refreshIdBtn = document.getElementById('refresh-identity-btn');
+  if (refreshIdBtn) refreshIdBtn.addEventListener('click', () => runProbe('/settings/refresh-identity', {},
+    document.getElementById('refresh-identity-pill'), document.getElementById('refresh-identity-log')));
 })();
 </script>
 {% endblock %}

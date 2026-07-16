@@ -152,8 +152,8 @@
 <body>
     <h1>Restarting to apply changes</h1>
 
-    <p>Applying updated System Settings (and any shares) by cycling the required services.</p>
-    <p>NFS (served by the host in HOST_NFS mode, or by the in-container Ganesha otherwise) and this WebUI will be briefly affected while SSSD (identity), config regeneration, and the WebUI recycle. In normal mode Ganesha is also cycled. The supervisor stays up; this is a targeted service bounce.</p>
+    <p>Running the forced full service recycle: config regeneration, then a restart of SSSD (identity), the identity helper, the WebUI, and — unless the host serves NFS (HOST_NFS mode) — Ganesha, whose clients reclaim through the grace period. Share-only edits never land here; they apply gracefully on save.</p>
+    <p>NFS and this WebUI will be briefly unavailable. The supervisor stays up; this is a targeted service bounce, not a container restart.</p>
 
     <div id="retry" class="status">
         <span class="spinner"></span>
@@ -175,11 +175,11 @@
                 msg.textContent = 'Retrying connection (attempt ' + n + ')…';
                 try {
                     // Poll the dedicated status. The Rust handler for /settings/restart
-                    // clears the marker, and the shell's HUP handler only touches
-                    // /tmp/.nfs-klldap-services-recycled *after* logging
-                    // "Services (Ganesha + SSSD + WebUI) recycled in place for config apply."
-                    // This ensures we don't declare success (and redirect) until the
-                    // *full* service restart (not just the new WebUI process binding).
+                    // clears the marker, and the supervisor touches it again only after
+                    // the recycle finishes (finish_recycle, right after it logs
+                    // "Services recycled after config apply."). The marker mtime — not
+                    // any log line — is the contract, so we don't declare success (and
+                    // redirect) until the full restart, not just the new WebUI binding.
                     const r = await fetch(origin + '/restart-status', {
                         method: 'GET',
                         cache: 'no-store'

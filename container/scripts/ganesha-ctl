@@ -1,7 +1,9 @@
 #!/bin/bash
-# Ganesha helper: diagnostics + supervisor-triggered reload (SIGHUP to pid 1).
-# Export fragments are generated from nfs-klldap.conf by nfs-klldap-config; the
-# conf-watcher signals pid 1 on TOML changes. reload/remove-export also signal pid 1.
+# Ganesha helper: diagnostics + supervisor-triggered applies. SIGHUP to pid 1 =
+# graceful scoped apply (Ganesha export reread + WebUI in-place refresh;
+# identity changes staged); SIGUSR1 = forced full service recycle. Export
+# fragments are generated from nfs-klldap.conf by nfs-klldap-config; the
+# conf-watcher signals pid 1 (HUP) on TOML changes.
 # The container dbus bus is for Ganesha internals only (no DBUS export RPCs here).
 # See container/README.md.
 #
@@ -43,7 +45,10 @@ ganesha-ctl - NFS-Ganesha helper (supervisor SIGHUP; container bus is for Ganesh
 Usage:
   remove-export <name>       # delete matching fragment + signal supervisor reload
   show-fragments             # list on-disk exports.d fragments (not live D-Bus state)
-  reload                     # signal supervisor (regenerate + full service recycle)
+  reload                     # graceful scoped apply (regenerate; Ganesha export reread +
+                             # WebUI in-place refresh; identity changes staged)
+  full-recycle               # forced full recycle: regenerate + restart SSSD/idhelper/
+                             # Ganesha/WebUI (applies staged identity + main-conf changes)
   refresh-identity [user]    # flush SSSD + idhelper + Ganesha uid2grp caches so an LLDAP group change lands now
   id-resolve <principal>     # resolve full user@REALM (exercises uid2grp/getent group); surfaces ID MAPPER
   id-uid <uid>               # replicate Ganesha uid2grp for a numeric uid under the LIVE daemon environ
@@ -58,12 +63,24 @@ Container watches nfs-klldap.conf; supervisor regenerates exports.d on SIGHUP.
 EOF
 }
 
-# Ask the supervisor to regenerate config and recycle SSSD, idhelper, Ganesha, and WebUI.
+# Ask the supervisor for the graceful scoped apply: regenerate, Ganesha export
+# reread + WebUI in-place refresh; identity changes are staged (see full-recycle).
 # In-container pid 1 is the supervisor; NFS_KLLDAP_SUPERVISOR_PID overrides for CI/evidence.
 signal_supervisor_reload() {
     local pid="${NFS_KLLDAP_SUPERVISOR_PID:-1}"
     if kill -HUP "$pid" 2>/dev/null; then
-        log "Signaled supervisor (pid ${pid}) for privileged regeneration + service recycle"
+        log "Signaled supervisor (pid ${pid}) for privileged regeneration + graceful scoped apply"
+        return 0
+    fi
+    die "Could not signal supervisor (pid ${pid}) — run from inside the container"
+}
+
+# Ask the supervisor for the forced full recycle: regenerate + restart every
+# managed service (applies staged identity and main-conf/WebUI changes).
+signal_supervisor_full_recycle() {
+    local pid="${NFS_KLLDAP_SUPERVISOR_PID:-1}"
+    if kill -USR1 "$pid" 2>/dev/null; then
+        log "Signaled supervisor (pid ${pid}) for forced full service recycle"
         return 0
     fi
     die "Could not signal supervisor (pid ${pid}) — run from inside the container"
@@ -158,8 +175,13 @@ case "$CMD" in
         ;;
 
     reload)
-        log "Requesting supervisor reload (regenerate + recycle SSSD/idhelper/Ganesha/WebUI)..."
+        log "Requesting graceful scoped apply (regenerate; Ganesha export reread + WebUI refresh)..."
         signal_supervisor_reload
+        ;;
+
+    full-recycle)
+        log "Requesting forced full recycle (regenerate + restart SSSD/idhelper/Ganesha/WebUI)..."
+        signal_supervisor_full_recycle
         ;;
 
     refresh-identity)

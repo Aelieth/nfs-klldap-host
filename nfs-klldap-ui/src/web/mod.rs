@@ -31,16 +31,29 @@ mod settings;
 pub mod setup;
 
 // Pub(crate) re-exports for router assembly and in-module integration tests.
-pub(crate) use auth::{login, login_page, logout, require_auth, setup_password};
+pub(crate) use auth::{
+    current_session_token, login, login_page, logout, require_auth, setup_password,
+};
 pub(crate) use permission_tree::{
     acl_apply, apply_permissions, apply_progress, cancel_apply, dir_perms, index,
     search_groups, search_users, tree_fragment,
 };
 pub(crate) use settings::{
-    clear_ldap_cache, lldap_status, reload_nfs_client, restart_status, settings_page,
-    settings_save_raw, settings_save_structured, settings_save_shares,
-    settings_test_bind, settings_test_ldap, share_card_blank, system_restart,
+    clear_ldap_cache, lldap_status, reload_nfs_client, restart_status, settings_change_password,
+    settings_page, settings_refresh_identity, settings_reprobe_filesystems, settings_save_raw,
+    settings_save_structured, settings_save_shares, settings_test_bind, settings_test_ldap,
+    share_card_blank, system_restart,
 };
+
+/// Which supervisor recycle a caller wants: the graceful shares/export apply
+/// (SIGHUP: Ganesha export reread + WebUI in-process reload) or the forced
+/// full recycle behind "Restart and apply" (SIGUSR1: every service restarts,
+/// applying staged identity and main-conf/WebUI settings).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecycleKind {
+    SharesApply,
+    FullRestart,
+}
 
 /// Shared state for all handlers.
 #[derive(Clone)]
@@ -56,10 +69,13 @@ pub struct AppState {
     pub keytab_alert: Arc<StdMutex<Option<String>>>,
     /// Tracks in-flight apply state for /apply-progress and cancel_apply.
     pub apply_progress: Arc<Mutex<Option<Arc<crate::fs::ApplyProgress>>>>,
-    /// Latches after the first restart POST to prevent duplicate HUP signals.
-    pub restart_requested: Arc<Mutex<bool>>,
+    /// Holds the recycle kind in flight to dedupe supervisor signals; a
+    /// pending SharesApply can be upgraded to FullRestart (never the reverse).
+    pub restart_requested: Arc<Mutex<Option<RecycleKind>>>,
     /// Returns true when the WebUI terminates TLS internally.
     pub direct_tls: bool,
+    /// WebUI bind address:port as launched (NFS_KLLDAP_WEBUI_BIND).
+    pub webui_bind: String,
     /// Overrides the setup marker path during tests only.
     pub setup_marker_override: Option<PathBuf>,
     /// Stores last wizard test inputs until the user clicks continue.
@@ -95,6 +111,9 @@ impl AppState {
     }
 
     /// Re-read nfs-klldap.conf and rebuild the in-memory FsManager (share paths / allow-list).
+    /// Scope: config snapshot, FsManager, and ACL verdict cache only — the
+    /// AuthManager admin group, LDAP client, keytab banner, and TLS/bind are
+    /// process-start facts that only the forced full restart refreshes.
     pub fn reload_config_and_fs(&self) -> Result<(), String> {
         let cfg = crate::config::load_config_from(&self.config_path)?;
         let fs = FsManager::new(cfg.clone());
@@ -260,6 +279,10 @@ pub fn router(state: AppState) -> Router {
         .route("/settings/restart", post(system_restart))
         .route("/settings/test-ldap", post(settings_test_ldap))
         .route("/settings/test-bind", post(settings_test_bind))
+        // Admin pane: local password + one-click maintenance actions.
+        .route("/settings/change-password", post(settings_change_password))
+        .route("/settings/reprobe-filesystems", post(settings_reprobe_filesystems))
+        .route("/settings/refresh-identity", post(settings_refresh_identity))
 
         .with_state(state);
 

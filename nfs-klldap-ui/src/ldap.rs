@@ -670,6 +670,59 @@ impl LdapClient {
         .await
         .unwrap_or(false)
     }
+
+    /// Live admin-group re-check for privileged actions on an existing
+    /// session (no user password involved). Bypasses the recent-memberOf
+    /// shortcut and the resolver identity caches by construction: group DN,
+    /// user DN, and the memberOf filter search are all fresh directory
+    /// queries over the service bind. Err means the check could not complete
+    /// or membership is absent — callers must fail closed either way.
+    pub async fn verify_admin_group_membership_live(
+        &self,
+        username: &str,
+        admin_group: &str,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Ok(mode) = std::env::var("TEST_LIVE_ADMIN_CHECK") {
+            return match mode.as_str() {
+                "member" => Ok(()),
+                "not-member" => Err(format!("'{username}' is not a member of '{admin_group}'")),
+                _ => Err("LDAP unreachable (test)".to_string()),
+            };
+        }
+        if self.service_bind_creds().is_none() {
+            return Err(
+                "LDAP service credentials are not configured; cannot verify admin membership"
+                    .to_string(),
+            );
+        }
+        let group = admin_group.to_string();
+        let group_dn = self
+            .with_identity(move |resolver, bind_dn, bind_pw| {
+                resolver.lookup_group_dn(&group, bind_dn, bind_pw)
+            })
+            .await
+            .filter(|dn| !dn.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "could not resolve admin group '{admin_group}' (LDAP unreachable or group missing)"
+                )
+            })?;
+        let user_dn = self.resolve_user_dn(username).await.ok_or_else(|| {
+            format!("could not resolve user '{username}' (LDAP unreachable or user missing)")
+        })?;
+        let membership = self
+            .with_identity(move |resolver, bind_dn, bind_pw| {
+                Some(resolver.user_dn_memberof_check(&user_dn, &group_dn, bind_dn, bind_pw))
+            })
+            .await
+            .ok_or_else(|| "LDAP membership query failed".to_string())?;
+        match membership {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(format!("'{username}' is not a member of '{admin_group}'")),
+            Err(e) => Err(format!("LDAP membership check failed: {e}")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -696,6 +749,18 @@ mod list_search_tests {
         );
         assert_eq!(LdapClient::normalize_editor_search_query(Some("")), None);
         assert_eq!(LdapClient::normalize_editor_search_query(None), None);
+    }
+
+    #[tokio::test]
+    async fn live_admin_check_fails_closed_without_service_creds() {
+        // A fresh unauthenticated client has no service bind: the live
+        // re-check must err (deny) rather than fall through to "member".
+        let client = crate::create_test_lldap();
+        let err = client
+            .verify_admin_group_membership_live("someadmin", "lldap_admin")
+            .await
+            .unwrap_err();
+        assert!(err.contains("service credentials"), "{err}");
     }
 
     #[tokio::test]

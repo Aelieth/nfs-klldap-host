@@ -87,7 +87,7 @@ pub(crate) fn spawn_acl_reprobe_loop(state: AppState) {
 /// explicit-ACL warning banner.
 pub(crate) async fn acl_reprobe_tick(state: &AppState, tracker: &mut FlipTracker) -> TickOutcome {
     // Never probe or fire while a recycle is already in flight.
-    if *state.restart_requested.lock().await {
+    if state.restart_requested.lock().await.is_some() {
         return TickOutcome::default();
     }
 
@@ -149,7 +149,13 @@ pub(crate) async fn acl_reprobe_tick(state: &AppState, tracker: &mut FlipTracker
             .unwrap_or(true);
         if rate_ok {
             let reason = format!("ACL capability change on share '{name}'");
-            if super::settings::try_schedule_service_recycle(state, &reason).await {
+            if super::settings::try_schedule_service_recycle(
+                state,
+                super::RecycleKind::SharesApply,
+                &reason,
+            )
+            .await
+            {
                 tracker.last_auto_hup = Some(Instant::now());
                 hup_scheduled = true;
                 // Adopt the new capability as the baseline for every auto share

@@ -40,12 +40,13 @@ flowchart TD
   gen --> idmap["/etc/idmapd.conf"]
   gen --> nfsconf["/etc/nfs.conf"]
   gen --> ganesha["/etc/ganesha/*.conf + exports.d"]
-  watcher["conf-watcher / WebUI apply"] -->|SIGHUP| pid1["nfs-klldap-startup supervise pid 1"]
+  watcher["conf-watcher / WebUI shares save"] -->|"SIGHUP (graceful apply)"| pid1["nfs-klldap-startup supervise pid 1"]
+  button["WebUI 'Restart and apply'"] -->|"SIGUSR1 (full recycle)"| pid1
   pid1 --> recycle["ServiceRecyclePlan"]
   recycle --> sssd
   recycle --> idhelper["nfs-klldap-idhelper"]
   recycle --> ganesha
-  recycle --> ui["nfs-klldap-ui :9630"]
+  recycle -->|"reload (HUP) or restart (USR1)"| ui["nfs-klldap-ui :9630"]
   ui -->|chown/chmod ACL| trees["bind-mounted host_path trees"]
 ```
 
@@ -61,14 +62,18 @@ Full table and staging (`source_path`) → [docs/ganesha-architecture.md](docs/g
 
 ### Config reload / recycle
 
+Two triggers, one pipeline. **SIGHUP** (the conf-watcher, a WebUI shares save, `ganesha-ctl reload`) is the graceful shares-scoped apply: nothing user-facing restarts, so WebUI sessions/connections and NFS clients on unchanged shares are untouched. **SIGUSR1** (the WebUI "Restart and apply" button, setup completion, `ganesha-ctl full-recycle`) is the forced full recycle: every managed service restarts regardless of what changed — the only path that applies staged identity changes and edits the fingerprints cannot see (ganesha main conf, nfs.conf, WebUI port/TLS/admin group).
+
 ```mermaid
 flowchart LR
-  change["Config or exports change"] --> fp["Fingerprint exports / identity / shares"]
+  hup["SIGHUP: graceful apply"] --> fp["Fingerprint exports / identity / shares"]
   fp --> plan["plan_from_changes"]
   plan -->|exports changed| g["Ganesha: SIGHUP reread_exports\nor StopStart if down"]
-  plan -->|identity changed| id["Restart SSSD + idhelper"]
-  plan -->|any of above or shares| w["Restart WebUI"]
+  plan -->|identity changed| id["STAGED on disk\n(no restarts until full recycle)"]
+  plan -->|exports or shares| w["WebUI: in-process reload\n(no restart, sessions kept)"]
   plan -->|HOST_NFS| skip["Skip Ganesha manage"]
+  usr1["SIGUSR1: forced full recycle"] --> full["plan_full_recycle"]
+  full --> all["Restart SSSD + idhelper + WebUI;\nGanesha StopStart (grace period)"]
 ```
 
 ## Quick Start
@@ -144,6 +149,7 @@ default_security = "krb5p"                                      # krb5p | krb5i 
 # tls = false                                                   # TLS on by default; false or NFS_KLLDAP_WEBUI_TLS=off for reverse proxy
 # tls_cert = "/config/webui.crt"
 # tls_key = "/config/webui.key"
+# session_timeout_minutes = 720                                 # WebUI auto-logout (default 720 = 12h, min 5); new logins after "Restart & apply"
 
 # [[shares]]
 # name = "movies"

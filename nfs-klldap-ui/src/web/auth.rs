@@ -311,7 +311,8 @@ fn effective_cookie_secure(state: &super::AppState, headers: &HeaderMap) -> bool
 
 /// Session cookie builder with HttpOnly/Lax and conditional Secure.
 fn build_session_cookie(state: &super::AppState, req_headers: &HeaderMap, token: &str) -> String {
-    let max_age = cookie::time::Duration::seconds(12 * 3600);
+    // Max-Age mirrors the server-side session TTL so both expire together.
+    let max_age = cookie::time::Duration::seconds(state.auth.session_ttl().as_secs() as i64);
 
     let mut cookie = Cookie::build(("session", token))
         .http_only(true)
@@ -371,6 +372,19 @@ fn validate_session_in_headers(
         }
     }
     None
+}
+
+/// Bearer token of the session that authenticated this request (newest valid
+/// cookie) — for handlers that keep the acting session while invalidating
+/// the user's others.
+pub(crate) fn current_session_token(
+    state: &super::AppState,
+    headers: &HeaderMap,
+) -> Option<String> {
+    extract_all_session_tokens_from_headers(headers)
+        .into_iter()
+        .rev()
+        .find(|t| state.auth.validate(t).is_some())
 }
 
 // Auth guard helpers for protected routes.

@@ -14,7 +14,7 @@ fn supervisor_loop_survives_sighup_generate_failure_and_recovers() {
     dirs.stub_ganesha_trap_log();
     dirs.stub_sssd_pipe();
     dirs.stub_idhelper_fixture();
-    dirs.stub_sleeper("nfs-klldap-ui");
+    dirs.stub_webui_trap_log();
     dirs.stub_sleeper("nfs-klldap-conf-watcher");
     dirs.stub_exit0("healthcheck.sh");
     dirs.stub_sleeper("inotifywait");

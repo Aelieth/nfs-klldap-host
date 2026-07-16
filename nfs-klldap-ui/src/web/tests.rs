@@ -35,14 +35,15 @@ fn test_app_state(
         fs,
         lldap: Arc::new(tokio::sync::RwLock::new(Arc::new(crate::create_test_lldap()))),
         config: cfg,
-        auth: Arc::new(AuthManager::new(cp, None)),
+        auth: Arc::new(AuthManager::new(cp, None, None)),
         config_path: cp.to_path_buf(),
         keytab_hostname: "h".into(),
         keytab_realm: "R".into(),
         keytab_alert: Arc::new(StdMutex::new(None)),
         apply_progress: Arc::new(Mutex::new(None)),
-        restart_requested: Arc::new(Mutex::new(false)),
+        restart_requested: Arc::new(Mutex::new(None)),
         direct_tls: true,
+        webui_bind: "0.0.0.0:9630".into(),
         setup_marker_override: Some(setup_marker),
         setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
         host_nfs_mode: false,
@@ -292,9 +293,21 @@ async fn recycle_latch_releases_after_marker_and_reschedules() {
     std::env::set_var("NFS_KLLDAP_RECYCLE_MARKER", &marker);
 
     // First schedule latches; an immediate second is refused.
-    assert!(super::settings::try_schedule_service_recycle(&state, "t1").await);
     assert!(
-        !super::settings::try_schedule_service_recycle(&state, "t2").await,
+        super::settings::try_schedule_service_recycle(
+            &state,
+            super::RecycleKind::SharesApply,
+            "t1"
+        )
+        .await
+    );
+    assert!(
+        !super::settings::try_schedule_service_recycle(
+            &state,
+            super::RecycleKind::SharesApply,
+            "t2"
+        )
+        .await,
         "a second recycle must be refused while one is in flight"
     );
 
@@ -304,7 +317,7 @@ async fn recycle_latch_releases_after_marker_and_reschedules() {
     let released = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             std::fs::write(&marker, "recycled\n").ok();
-            if !*state.restart_requested.lock().await {
+            if state.restart_requested.lock().await.is_none() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -313,13 +326,97 @@ async fn recycle_latch_releases_after_marker_and_reschedules() {
     .await;
     assert!(released.is_ok(), "latch must clear after the marker is touched");
     assert!(
-        super::settings::try_schedule_service_recycle(&state, "t3").await,
+        super::settings::try_schedule_service_recycle(
+            &state,
+            super::RecycleKind::SharesApply,
+            "t3"
+        )
+        .await,
         "a later recycle must schedule once the latch cleared"
     );
 
     std::env::remove_var("NFS_KLLDAP_SUPERVISOR_PID");
     std::env::remove_var("NFS_KLLDAP_RECYCLE_DELAY_MS");
     std::env::remove_var("NFS_KLLDAP_RECYCLE_MARKER");
+}
+
+// A "Restart and apply" arriving while a graceful shares apply is in flight
+// must never be silently dropped: the latch upgrades to FullRestart and the
+// call reports success; anything else arriving while latched is deduped.
+#[tokio::test]
+async fn full_restart_escalates_over_inflight_shares_apply() {
+    let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
+    std::env::set_var("NFS_KLLDAP_SUPERVISOR_PID", "0"); // skip a real signal
+    std::env::set_var("NFS_KLLDAP_RECYCLE_DELAY_MS", "1");
+
+    assert!(
+        super::settings::try_schedule_service_recycle(
+            &state,
+            super::RecycleKind::SharesApply,
+            "esc1"
+        )
+        .await
+    );
+    assert!(
+        super::settings::try_schedule_service_recycle(
+            &state,
+            super::RecycleKind::FullRestart,
+            "esc2"
+        )
+        .await,
+        "a full restart must escalate over an in-flight shares apply"
+    );
+    assert_eq!(
+        *state.restart_requested.lock().await,
+        Some(super::RecycleKind::FullRestart),
+        "the latch must upgrade to the full restart"
+    );
+    assert!(
+        !super::settings::try_schedule_service_recycle(
+            &state,
+            super::RecycleKind::FullRestart,
+            "esc3"
+        )
+        .await,
+        "a second full restart must dedupe while one is pending"
+    );
+    assert!(
+        !super::settings::try_schedule_service_recycle(
+            &state,
+            super::RecycleKind::SharesApply,
+            "esc4"
+        )
+        .await,
+        "a shares apply must dedupe under a pending full restart"
+    );
+
+    std::env::remove_var("NFS_KLLDAP_SUPERVISOR_PID");
+    std::env::remove_var("NFS_KLLDAP_RECYCLE_DELAY_MS");
+}
+
+// Deterministic core of the supervisor-driven SIGHUP reload: a share appended
+// to the conf becomes visible in the in-memory config without any restart.
+#[test]
+fn reload_config_and_fs_picks_up_share_edits() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (state, _mi) = acl_watch_state(&tmp, "", true);
+    assert_eq!(state.config.read().unwrap().shares.len(), 1);
+
+    let extra = tmp.path().join("serve2");
+    std::fs::create_dir_all(&extra).unwrap();
+    let mut conf = std::fs::read_to_string(&state.config_path).unwrap();
+    conf.push_str(&format!(
+        "\n[[shares]]\nname = \"s2\"\nhost_path = \"/s2\"\ncontainer_path = \"{}\"\n",
+        extra.display()
+    ));
+    std::fs::write(&state.config_path, conf).unwrap();
+
+    state
+        .reload_config_and_fs()
+        .expect("in-process reload must succeed");
+    let cfg = state.config.read().unwrap();
+    assert_eq!(cfg.shares.len(), 2, "reload must surface the appended share");
+    assert_eq!(cfg.shares[1].name, "s2");
 }
 
 fn write_watch_mountinfo(path: &std::path::Path, mount: &std::path::Path, capable: bool) {
@@ -382,7 +479,11 @@ async fn acl_watch_auto_flip_schedules_recycle() {
     assert!(!o1.hup_scheduled, "one divergent tick must not fire (hysteresis)");
     let o2 = super::acl_watch::acl_reprobe_tick(&state, &mut tr).await;
     assert!(o2.hup_scheduled, "a stable flip over two ticks must schedule a recycle");
-    assert!(*state.restart_requested.lock().await, "recycle latch must be set");
+    assert_eq!(
+        *state.restart_requested.lock().await,
+        Some(super::RecycleKind::SharesApply),
+        "recycle latch must hold the graceful apply kind"
+    );
     std::env::remove_var("NFS_KLLDAP_SUPERVISOR_PID");
     std::env::remove_var("NFS_KLLDAP_RECYCLE_DELAY_MS");
 }
@@ -2642,4 +2743,235 @@ async fn html_pages_are_no_store_but_assets_keep_their_cache_policy() {
         Some("public, max-age=3600"),
         "an explicit asset cache policy wins over the HTML no-store default"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Admin pane: change-password authorization matrix, maintenance endpoints,
+// pane render contract, and the session-timeout FieldSpec round-trip.
+// ---------------------------------------------------------------------------
+
+fn change_pw_body(current: Option<&str>, new: &str, confirm: &str) -> String {
+    let mut b = format!("new_password={new}&confirm_password={confirm}");
+    if let Some(c) = current {
+        b.push_str(&format!("&current_password={c}"));
+    }
+    b
+}
+
+async fn post_change_password(
+    app: &axum::Router,
+    token: &str,
+    body: String,
+) -> (StatusCode, String) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/settings/change-password")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let req = add_session_cookie(req, token);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+#[tokio::test]
+async fn settings_change_password_localhost_matrix() {
+    let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
+    state.auth.set_simple_password("oldpassword").unwrap();
+    let auth = state.auth.clone();
+    let acting = auth.create_privileged_session("localhost");
+    let other_local = auth.create_privileged_session("localhost");
+    let ldap_admin = auth.create_privileged_session("someadmin");
+    let app = router(state);
+
+    // Wrong current password: 200 error page, nothing rotated.
+    let (st, html) =
+        post_change_password(&app, &acting, change_pw_body(Some("wrong"), "newpassword1", "newpassword1")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(html.contains("alert-danger") && html.contains("Password not changed"), "{html}");
+    assert!(auth.validate_simple_password("localhost", "oldpassword").is_ok());
+
+    // Confirmation mismatch and a too-short password both refuse.
+    let (_, html) =
+        post_change_password(&app, &acting, change_pw_body(Some("oldpassword"), "newpassword1", "different1")).await;
+    assert!(html.contains("do not match"), "{html}");
+    let (_, html) =
+        post_change_password(&app, &acting, change_pw_body(Some("oldpassword"), "short1", "short1")).await;
+    assert!(html.contains("at least 8"), "{html}");
+    assert!(auth.validate_simple_password("localhost", "oldpassword").is_ok());
+
+    // Correct current password rotates and signs out the other localhost session.
+    let (st, html) =
+        post_change_password(&app, &acting, change_pw_body(Some("oldpassword"), "newpassword1", "newpassword1")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(html.contains("alert-success") && html.contains("Signed out 1 other localhost session"), "{html}");
+    assert!(auth.validate_simple_password("localhost", "newpassword1").is_ok());
+    assert!(auth.validate_simple_password("localhost", "oldpassword").is_err());
+    assert_eq!(auth.validate(&acting).as_deref(), Some("localhost"), "acting session survives");
+    assert!(auth.validate(&other_local).is_none(), "other localhost session dropped");
+    assert_eq!(auth.validate(&ldap_admin).as_deref(), Some("someadmin"), "LDAP session untouched");
+}
+
+#[tokio::test]
+async fn settings_change_password_ldap_admin_paths() {
+    // One test drives all three live-check outcomes so the TEST_LIVE_ADMIN_CHECK
+    // env hook is never observed half-set by a parallel test.
+    let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
+    state.auth.set_simple_password("oldpassword").unwrap();
+    let auth = state.auth.clone();
+    let admin = auth.create_privileged_session("someadmin");
+    let stale_local = auth.create_privileged_session("localhost");
+    let app = router(state);
+
+    // Env unset: the offline test client has no service creds -> fail closed.
+    let (st, html) =
+        post_change_password(&app, &admin, change_pw_body(None, "newpassword1", "newpassword1")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(html.contains("alert-danger") && html.contains("failing closed"), "{html}");
+    assert!(auth.validate_simple_password("localhost", "oldpassword").is_ok());
+
+    // Live member: rotates without the current password (recovery path) and
+    // signs out localhost sessions while keeping the acting LDAP session.
+    std::env::set_var("TEST_LIVE_ADMIN_CHECK", "member");
+    let (_, html) =
+        post_change_password(&app, &admin, change_pw_body(None, "newpassword1", "newpassword1")).await;
+    std::env::set_var("TEST_LIVE_ADMIN_CHECK", "not-member");
+    assert!(html.contains("alert-success"), "{html}");
+    assert!(auth.validate_simple_password("localhost", "newpassword1").is_ok());
+    assert!(auth.validate(&stale_local).is_none(), "localhost sessions dropped");
+    assert_eq!(auth.validate(&admin).as_deref(), Some("someadmin"), "acting admin kept");
+
+    // Live non-member: denied.
+    let (_, html) =
+        post_change_password(&app, &admin, change_pw_body(None, "anotherpw123", "anotherpw123")).await;
+    std::env::remove_var("TEST_LIVE_ADMIN_CHECK");
+    assert!(html.contains("alert-danger") && html.contains("not a member"), "{html}");
+    assert!(auth.validate_simple_password("localhost", "newpassword1").is_ok());
+}
+
+#[tokio::test]
+async fn settings_admin_pane_renders_for_both_principals() {
+    let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
+    let auth = state.auth.clone();
+    let local = auth.create_privileged_session("localhost");
+    let admin = auth.create_privileged_session("someadmin");
+    let app = router(state);
+
+    let get = |token: String| {
+        let app = app.clone();
+        async move {
+            let req = Request::builder().uri("/settings").body(Body::empty()).unwrap();
+            let req = add_session_cookie(req, &token);
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+            String::from_utf8_lossy(&body).into_owned()
+        }
+    };
+
+    let html = get(local.clone()).await;
+    // Pane renamed: admin rail item + section, no stale apply names.
+    assert!(html.contains(r#"data-pane="admin""#) && html.contains(">Admin<"), "{html}");
+    assert!(!html.contains(r#"data-pane="apply""#) && !html.contains(r#"data-pane-content="apply""#));
+    // Restart block intact, new blocks present.
+    assert!(html.contains(r#"action="/settings/restart""#));
+    assert!(html.contains(r#"action="/settings/change-password""#));
+    assert!(html.contains("reprobe-fs-btn") && html.contains("refresh-identity-btn"));
+    assert!(html.contains(r#"name="webui_session_timeout_minutes""#) && html.contains(r#"form="settings-form""#));
+    // System rows: version + bind URL (test harness always binds 0.0.0.0:9630, TLS on).
+    assert!(html.contains(env!("CARGO_PKG_VERSION")));
+    assert!(html.contains("https://0.0.0.0:9630"));
+    // localhost sees the current-password field.
+    assert!(html.contains(r#"name="current_password""#));
+
+    // An LDAP admin sees the live-recheck note instead of a current-password field.
+    let html = get(admin.clone()).await;
+    assert!(!html.contains(r#"name="current_password""#));
+    assert!(html.contains("membership check authorizes this change"), "{html}");
+}
+
+#[tokio::test]
+async fn settings_maintenance_endpoints_gate_and_report() {
+    let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
+    let auth = state.auth.clone();
+    let token = auth.create_privileged_session("localhost");
+    let app = router(state);
+
+    for uri in ["/settings/reprobe-filesystems", "/settings/refresh-identity"] {
+        let req = Request::builder().method("POST").uri(uri).body(Body::empty()).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert!(resp.status().is_redirection(), "{uri} must gate on auth");
+    }
+
+    // Re-probe classifies the fixture share: noacl ext4 -> auto (off)/incapable.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/settings/reprobe-filesystems")
+        .body(Body::empty())
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let json = String::from_utf8_lossy(&body);
+    assert!(json.contains(r#""ok":true"#), "{json}");
+    assert!(json.contains("share 'data'") && json.contains("incapable"), "{json}");
+
+    // Identity refresh fails honestly on the creds-less offline test client.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/settings/refresh-identity")
+        .body(Body::empty())
+        .unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let json = String::from_utf8_lossy(&body);
+    assert!(json.contains(r#""ok":false"#) && json.contains("service credentials"), "{json}");
+}
+
+#[tokio::test]
+async fn settings_save_roundtrips_session_timeout() {
+    let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
+    let cp = state.config_path.clone();
+    let auth = state.auth.clone();
+    let token = auth.create_privileged_session("localhost");
+    let app = router(state);
+
+    let save = |body: &'static str| {
+        let app = app.clone();
+        let token = token.clone();
+        async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/settings/save")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap();
+            let req = add_session_cookie(req, &token);
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let b = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+            String::from_utf8_lossy(&b).into_owned()
+        }
+    };
+
+    let html = save("webui_session_timeout_minutes=45").await;
+    assert!(html.contains(r#"value="45""#), "render reflects the saved value: {html}");
+    let written = std::fs::read_to_string(&cp).unwrap();
+    assert!(written.contains("[webui]") && written.contains("session_timeout_minutes = 45"), "{written}");
+
+    // Below the floor: validation refuses at 200 with an error box, no write.
+    let html = save("webui_session_timeout_minutes=3").await;
+    assert!(html.contains("Validation error") && html.contains("alert-danger"), "{html}");
+    let written = std::fs::read_to_string(&cp).unwrap();
+    assert!(written.contains("session_timeout_minutes = 45"), "failed save must not touch the file");
+
+    // Blank clears back to the default (key removed).
+    let _ = save("webui_session_timeout_minutes=").await;
+    let written = std::fs::read_to_string(&cp).unwrap();
+    assert!(!written.contains("session_timeout_minutes"), "{written}");
 }

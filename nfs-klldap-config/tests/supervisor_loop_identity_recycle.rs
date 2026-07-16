@@ -1,4 +1,6 @@
-//! Full supervisor_loop + real OS SIGHUP: identity-only change recycles SSSD, not ganesha.
+//! Full supervisor_loop + real OS SIGHUP: identity-only change is STAGED —
+//! artifacts regenerate on disk but no daemon restarts until a forced full
+//! recycle.
 
 mod common;
 
@@ -7,15 +9,15 @@ use std::fs;
 use std::time::Duration;
 
 #[test]
-fn supervisor_loop_real_sighup_identity_only_recycles_sssd_not_ganesha() {
+fn supervisor_loop_real_sighup_identity_only_stages_without_restarts() {
     let dirs = TestDirs::new(COMPLETE_TOML);
     let keytab = dirs.keytab();
     let recycle_marker = dirs.recycle_marker();
 
     let stub_log = dirs.stub_ganesha_trap_log();
+    let webui_log = dirs.stub_webui_trap_log();
     dirs.stub_sssd_pipe();
     dirs.stub_idhelper_fixture();
-    dirs.stub_sleeper("nfs-klldap-ui");
     dirs.stub_sleeper("nfs-klldap-conf-watcher");
     dirs.stub_exit0("healthcheck.sh");
     dirs.stub_sleeper("inotifywait");
@@ -47,45 +49,59 @@ fn supervisor_loop_real_sighup_identity_only_recycles_sssd_not_ganesha() {
 
     sup.wait_for(
         Duration::from_secs(25),
-        "identity-only SIGHUP recycle did not complete",
+        "identity-only SIGHUP staging did not complete",
         |combined| {
             combined.contains("Identity artifacts fingerprint:")
                 && combined.contains("changed=true")
                 && combined.contains("Export fragments fingerprint:")
                 && combined.contains("changed=false")
-                && (combined.contains("Starting SSSD...")
-                    || combined.contains("idhelper")
-                    || combined.contains("recycle plan"))
+                && combined.contains("Identity changes staged:")
         },
     );
 
     let combined = sup.stop_and_log();
+    let post_sighup = combined
+        .split_once("SIGHUP received — reloading configuration")
+        .map(|(_, tail)| tail)
+        .unwrap_or("");
 
     assert!(
-        combined.contains("SIGHUP received — reloading configuration"),
+        !post_sighup.is_empty(),
         "supervisor must process OS SIGHUP; log={combined:?}"
     );
     assert!(
-        combined.contains("Export fragments fingerprint:")
-            && combined.contains("changed=false"),
-        "exports unchanged on identity-only reload; log={combined:?}"
+        post_sighup.contains("Export fragments fingerprint:")
+            && post_sighup.contains("changed=false"),
+        "exports unchanged on identity-only reload; post_sighup={post_sighup:?}"
     );
     assert!(
-        combined.contains("Identity artifacts fingerprint:")
-            && combined.contains("changed=true"),
-        "identity artifacts must change; log={combined:?}"
+        post_sighup.contains("Identity artifacts fingerprint:")
+            && post_sighup.contains("changed=true"),
+        "identity artifacts must change; post_sighup={post_sighup:?}"
     );
     assert!(
-        combined.contains("ganesha=Skip") || combined.contains("restart_sssd=true"),
-        "recycle plan must skip ganesha and restart sssd; log={combined:?}"
+        post_sighup.contains("Identity changes staged:"),
+        "identity change must be loudly staged; post_sighup={post_sighup:?}"
     );
     assert!(
-        combined.contains("Starting SSSD..."),
-        "full path must restart SSSD; log={combined:?}"
+        !post_sighup.contains("Starting SSSD..."),
+        "identity-only reload must NOT restart SSSD (staged); post_sighup={post_sighup:?}"
     );
     assert!(
-        !combined.contains("Sent SIGHUP to ganesha.nfsd"),
-        "identity-only reload must not SIGHUP ganesha; log={combined:?}"
+        !post_sighup.contains("Sent SIGHUP to ganesha.nfsd"),
+        "identity-only reload must not SIGHUP ganesha; post_sighup={post_sighup:?}"
+    );
+    assert!(
+        !post_sighup.contains("Sent SIGHUP to WebUI"),
+        "identity-only reload must not signal the WebUI; post_sighup={post_sighup:?}"
+    );
+    assert!(
+        !post_sighup.contains("Starting WebUI on 0.0.0.0:9630"),
+        "identity-only reload must not restart the WebUI; post_sighup={post_sighup:?}"
+    );
+    assert!(
+        post_sighup.contains("Services recycled after config apply."),
+        "the completion line stays unconditional (marker contract); post_sighup={post_sighup:?}"
     );
 
     let stub_log_text = fs::read_to_string(&stub_log).unwrap_or_default();
@@ -93,13 +109,9 @@ fn supervisor_loop_real_sighup_identity_only_recycles_sssd_not_ganesha() {
         !stub_log_text.contains("HUP"),
         "ganesha stub must not receive SIGHUP; log={stub_log_text:?}"
     );
-    // tolerate marker not always materialized in stubbed fast-path tests; require recycle evidence in logs instead
-    if !recycle_marker.is_file() {
-        assert!(
-            combined.contains("recycle plan")
-                || combined.contains("idhelper")
-                || combined.contains("Identity artifacts fingerprint"),
-            "expected recycle evidence or marker; log={combined:?}"
-        );
-    }
+    let webui_log_text = fs::read_to_string(&webui_log).unwrap_or_default();
+    assert!(
+        !webui_log_text.contains("HUP") && !webui_log_text.contains("TERM"),
+        "webui stub must be untouched by a staged identity change; log={webui_log_text:?}"
+    );
 }

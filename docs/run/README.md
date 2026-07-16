@@ -24,7 +24,7 @@ On a fresh container the supervisor starts the WebUI immediately and polls until
 1. **https://\<host\>:9630/setup/1** — verify a persistent `/config` bind mount.
 2. **/setup/2** — set `ldap_uri` (DNS name); **Test Settings**, then **Save and Continue**.
 3. **/setup/3** — set `[sssd]` bind DN/password; **Test Settings**, then **Save and Continue**.
-4. **Restarting page** — same service recycle as System Settings **Restart and apply**; polls `/restart-status` until SSSD/Ganesha/WebUI are ready, then **/login** to create the localhost admin password (`webui-password` sidecar).
+4. **Restarting page** — same forced full recycle as System Settings **Restart and apply** (SIGUSR1); polls `/restart-status` until SSSD/Ganesha/WebUI are ready, then **/login** to create the localhost admin password (`webui-password` sidecar).
 
 **Pre-configured bypass:** mount a valid `nfs-klldap.conf` and `/etc/krb5.keytab` before start — steps 1–3 are skipped; go directly to `/login`.
 
@@ -94,6 +94,7 @@ Or set in `nfs-klldap.conf` (single source of truth; env still wins at runtime):
 tls = false
 # tls_cert = "/config/webui.crt"
 # tls_key = "/config/webui.key"
+# session_timeout_minutes = 720   # WebUI auto-logout (default 720 = 12h, min 5); new logins after "Restart & apply"
 ```
 
 Start-up logs will clearly state `TLS: disabled (reverse proxy mode)` vs `TLS: enabled (self-signed or custom)`.
@@ -133,7 +134,7 @@ These are less commonly needed:
 | `LOG_FORMAT`                 | `text`    | `json`  | Container stdout log format: `text` (default) or `json`. |
 | `SSSD_DEBUG_LEVEL`           | *(unset)* | `4`     | When set, passed as `-d $SSSD_DEBUG_LEVEL` to the `sssd` daemon for increased verbosity. |
 | `GANESHA_DEBUG`              | *(unset)* | `TRUE`  | When truthy (`true`/`1`/`yes`/`on`, any case), the generator emits a `LOG { Default_Log_Level = DEBUG; }` block with CLIENTID/SESSIONS/IDMAPPER at FULL_DEBUG and NFS4/NFS_V4_ACL/DISPATCH/XPRT at DEBUG (no RPCSEC_GSS component on Ganesha 9.13 — GSS cred flow logs under DISPATCH). For deep Ganesha troubleshooting only. |
-| `WATCHER_DEBOUNCE_SECONDS`   | `2`       | `1`     | Seconds to sleep after detecting a config file change (via inotify) before signaling the supervisor for reload. |
+| `WATCHER_DEBOUNCE_SECONDS`   | `2`       | `1`     | Seconds to sleep after detecting a config file change (via inotify) before signaling the supervisor for the graceful apply (share/export changes only; identity changes are staged until "Restart and apply"). |
 | `HOST_NFS` (or `NFS_KLLDAP_HOST_NFS`) | `false` | `true` | When truthy, runs the container as a management sidecar only. Ganesha fragments are still generated and written to host-visible paths (mount the host's `/etc/ganesha`); the container does not start or manage the NFS server. See the dedicated "HOST_NFS mode" section below for compose, keytab, UI, and ZimaOS notes. |
 | `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS` | `180` | `0` | Seconds between idhelper LDAP→nss_passwd syncs (`0` disables periodic rebulk). |
 | `NFS_KLLDAP_WEBUI_COOKIE_SECURE` | *(derived)* | `false` | Force non-Secure session cookies regardless of TLS mode or `X-Forwarded-Proto`. |
@@ -195,7 +196,7 @@ The WebUI setup wizard and System Settings page compare `hostname` with `/proc/s
 
 Watch `docker logs`. `nfs-klldap-startup` prints step-by-step requirements (persistent `/config`, DNS `ldap_uri`, bind test) and SSSD-oriented hints at step 3.
 
-Force reload from host: `docker kill -s HUP <name>`.
+Apply from the host: `docker kill -s HUP <name>` runs the graceful scoped apply (Ganesha export reread + WebUI in-place refresh; identity changes staged). `docker kill -s USR1 <name>` runs the forced full recycle (restarts SSSD, idhelper, Ganesha, and the WebUI — the equivalent of "Restart and apply"). Note: images older than 0.9.96 have no SIGUSR1 handler, so `-s USR1` terminates them.
 
 Do not set compose `user:` unless you have a specific reason — pid 1 must manage 0600 files and daemons as root.
 
@@ -236,7 +237,7 @@ volumes:
 ### dbus-daemon and rpcbind
 - Ganesha (custom `+klldap1` build) expects a D-Bus system bus (`/run/dbus/system_bus_socket`). The entrypoint launches `dbus-daemon --system --nofork &` before `ganesha.nfsd`.
 - `rpcbind` is installed and started (best-effort). For pure NFSv4 (`Protocols = 4`) it is not strictly required; some tooling and status scripts still reference the portmapper.
-- The supervisor and `ganesha-ctl` management path remain "DBUS-free" (export fragments on disk + SIGHUP to pid 1 for full recycle). The bus is present for Ganesha's internal/monitoring use.
+- The supervisor and `ganesha-ctl` management path remain "DBUS-free" (export fragments on disk + signals to pid 1: SIGHUP for the graceful scoped apply, SIGUSR1 for the forced full recycle). The bus is present for Ganesha's internal/monitoring use.
 
 In the container you should see the socket and processes:
 ```

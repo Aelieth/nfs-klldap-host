@@ -554,6 +554,7 @@ pub async fn setup_step3_continue(
     clear_step3_test(&state);
     let _ = super::settings::try_schedule_service_recycle(
         &state,
+        super::RecycleKind::FullRestart,
         "First-run setup complete",
     )
     .await;

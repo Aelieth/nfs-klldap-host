@@ -80,6 +80,7 @@ default_security = "krb5p"                                      # Security, krb5
 # tls = false                                                   # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
 # tls_cert = "/config/webui.crt"                                # optional custom cert (NFS_KLLDAP_WEBUI_TLS_CERT env wins)
 # tls_key = "/config/webui.key"                                 # optional custom key (NFS_KLLDAP_WEBUI_TLS_KEY env wins; 0600)
+# session_timeout_minutes = 720                                 # WebUI auto-logout minutes (default 720 = 12h, min 5); new logins after "Restart & apply"
 
 "#
     .to_string()

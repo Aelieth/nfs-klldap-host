@@ -1,4 +1,5 @@
-//! Process signal plumbing: shutdown/SIGHUP flags and pid signaling.
+//! Process signal plumbing: shutdown/SIGHUP/SIGUSR1 flags and pid signaling
+//! (SIGHUP = scoped graceful apply, SIGUSR1 = forced full service recycle).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(unix)]
@@ -10,12 +11,13 @@ use nix::sys::wait::{waitpid, WaitPidFlag};
 #[cfg(unix)]
 use nix::unistd::Pid;
 #[cfg(unix)]
-use signal_hook::consts::{SIGINT, SIGHUP, SIGTERM};
+use signal_hook::consts::{SIGINT, SIGHUP, SIGTERM, SIGUSR1};
 #[cfg(unix)]
 use signal_hook::iterator::Signals;
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SIGHUP_REQUESTED: AtomicBool = AtomicBool::new(false);
+static FULL_RECYCLE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub fn shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
@@ -27,6 +29,14 @@ pub fn take_sighup_requested() -> bool {
 
 pub fn request_sighup() {
     SIGHUP_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+pub fn take_full_recycle_requested() -> bool {
+    FULL_RECYCLE_REQUESTED.swap(false, Ordering::SeqCst)
+}
+
+pub fn request_full_recycle() {
+    FULL_RECYCLE_REQUESTED.store(true, Ordering::SeqCst);
 }
 
 #[cfg(unix)]
@@ -72,13 +82,14 @@ pub fn reap_children() {
 pub fn install_signal_handlers() -> Result<(), String> {
     #[cfg(unix)]
     {
-        let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP])
+        let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP, SIGUSR1])
             .map_err(|e| format!("signal setup failed: {e}"))?;
         thread::spawn(move || {
             for sig in &mut signals {
                 match sig {
                     SIGTERM | SIGINT => SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst),
                     SIGHUP => SIGHUP_REQUESTED.store(true, Ordering::SeqCst),
+                    SIGUSR1 => FULL_RECYCLE_REQUESTED.store(true, Ordering::SeqCst),
                     _ => {}
                 }
             }
@@ -104,5 +115,23 @@ pub fn signal_supervisor_hup(pid: u32) -> Result<(), String> {
     {
         let _ = pid;
         Err("SIGHUP requires a Unix target".to_string())
+    }
+}
+
+/// Asks the supervisor for a forced full service recycle (SIGUSR1), as opposed
+/// to the scoped graceful apply that SIGHUP performs.
+pub fn signal_supervisor_full_recycle(pid: u32) -> Result<(), String> {
+    if pid == 0 {
+        return Err("invalid supervisor pid 0".to_string());
+    }
+    #[cfg(unix)]
+    {
+        kill(Pid::from_raw(pid as i32), Signal::SIGUSR1)
+            .map_err(|e| format!("SIGUSR1 to pid {pid} failed: {e}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Err("SIGUSR1 requires a Unix target".to_string())
     }
 }

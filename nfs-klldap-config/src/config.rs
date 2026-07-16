@@ -266,6 +266,10 @@ pub struct WebuiSection {
     pub tls_cert: Option<String>,
     /// Sets custom key PEM unless NFS_KLLDAP_WEBUI_TLS_KEY wins.
     pub tls_key: Option<String>,
+    /// WebUI auto-logout in minutes (default 720 = 12h, minimum 5). Governs
+    /// sessions created after the next full restart; existing sessions keep
+    /// their stored expiry.
+    pub session_timeout_minutes: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -232,6 +232,20 @@ pub(crate) fn build_settings_template(
             effective_pseudo: nfs_klldap_config::derive_share_pseudo(s),
             container_path: s.container_path.clone(),
             security: s.security.clone().unwrap_or_default(),
+            // Same deviation rule as the Share Permissions cards: chip only a
+            // security that differs from [ganesha] default_security (an empty
+            // default — no [ganesha] table — reads as the intended krb5p).
+            security_chip: {
+                let default_security = match cfg.ganesha.default_security.trim() {
+                    "" => nfs_klldap_config::GANESHA_DEFAULT_SECTYPE,
+                    v => v,
+                };
+                s.security
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty() && *v != default_security)
+                    .map(str::to_string)
+            },
             rw: s.rw.unwrap_or(true),
             root_squash: s.squash.as_deref() == Some("root_squash"),
             cache_profile: s

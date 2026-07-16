@@ -31,6 +31,9 @@ pub(crate) struct ShareTemplateRow {
     pub effective_pseudo: String,
     pub container_path: String,
     pub security: String,
+    /// Card chip value: the explicit security only when it deviates from
+    /// `[ganesha] default_security` — chips signal non-conformity, not the raw key.
+    pub security_chip: Option<String>,
     pub rw: bool,
     pub root_squash: bool,
     pub cache_profile: String,
@@ -64,6 +67,7 @@ impl ShareTemplateRow {
             effective_pseudo: String::new(),
             container_path: String::new(),
             security: String::new(),
+            security_chip: None,
             rw: true,
             root_squash: true,
             cache_profile: "Default".to_string(),
@@ -193,7 +197,9 @@ pub(crate) fn collect_shares_from_structured_form(
         name: r.name,
         host_path: std::path::PathBuf::from(r.host),
         pseudo_path: r.pseudo_path,
-        security: Some(r.security.unwrap_or_else(|| "krb5p".to_string())),
+        // Blank select = "default from [ganesha]": stay None so no security key is
+        // written and the share keeps following default_security wherever it moves.
+        security: r.security,
         rw: Some(r.rw),
         cache_profile: Some(r.cache_profile.unwrap_or_else(|| "Default".to_string())),
         pref_read: r.pref_read.and_then(|s| s.parse().ok()),

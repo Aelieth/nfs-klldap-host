@@ -9,7 +9,8 @@
                       <span class="sc-sum">
                         <span class="sc-chip">{% if row.rw %}RW{% else %}RO{% endif %}</span>
                         <span class="sc-chip {% if !row.effective_acl_capable %}noacl{% endif %}" data-acl-chip>acl {{ row.acl_state_label }}</span>
-                        {% if row.security != "" %}<span class="sc-chip">{{ row.security }}</span>{% endif %}
+                        {# Non-conformity signal: only a security deviating from [ganesha] default_security chips. #}
+                        {% if let Some(sec) = row.security_chip %}<span class="sc-chip">{{ sec }}</span>{% endif %}
                       </span>
                       <button type="button" class="sc-del" title="Remove share">&#10005;</button>
                     </div>

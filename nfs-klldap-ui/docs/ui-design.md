@@ -33,9 +33,14 @@ beats tracker-music `.mod`, `.bin` stays 🗄️). Selecting either kind loads `
 signals** (0.9.95) — a chip renders only where an option deviates from the default/auto value:
 `RO` (distinct orange `.share-chip.ro`, not the amber warn family), `no_root_squash` (amber warn),
 a non-default cache profile, a non-default security (per-share override ≠ `[ganesha]
-default_security`, empty default read as krb5p), and the unknown-config-key warning. `RW`,
-`root_squash`, `cache: default`, and the default security stay implicit, and ACL state carries
-**no chip** — the status dot and the panel's ACL section already cover it. The panel's
+default_security`, empty default read as krb5p), and the unknown-config-key warning. The security
+comparison targets the **configured** default, whatever flavor it is: under `default_security =
+"krb5i"`, krb5p and krb5 shares chip while krb5i shares don't. The Settings share cards apply the
+same rule to their `sc-chip`, and the share editor's blank security ("default") **stays unset
+across saves** — it inherits `[ganesha] default_security` and is never materialized into an
+explicit per-share key. `RW`, `root_squash`, `cache: default`, and the default security stay
+implicit, and ACL state carries **no chip** — the status dot and the panel's ACL section already
+cover it. The panel's
 Share/path line is a boxed bar (`.perm-loc` strip with the path in a darker inset). The panel
 shows **POSIX** (owner/group with live LLDAP search + hidden numeric uid/gid for name→id
 translation; **directories** get the condensed Read/Write matrix plus the scope-gated **Exec**

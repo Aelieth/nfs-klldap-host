@@ -1697,6 +1697,184 @@ security = "krb5p"
     assert!(!html.contains(">acl "), "no acl chip on the share cards");
 }
 
+// The security chip's comparison target is the CONFIGURED [ganesha]
+// default_security, not a hardcoded krb5p: whichever flavor is the default
+// stays chipless while the other two chip.
+#[tokio::test]
+async fn index_security_chips_follow_configured_default() {
+    async fn chips_html(default_security: &str, shares: &[(&str, Option<&str>)]) -> String {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("shares");
+        let mut shares_toml = String::new();
+        for (name, sec) in shares {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+            shares_toml.push_str(&format!(
+                "[[shares]]\nname = \"{name}\"\nhost_path = \"/{name}\"\ncontainer_path = \"{}/{name}\"\n",
+                root.display()
+            ));
+            if let Some(sec) = sec {
+                shares_toml.push_str(&format!("security = \"{sec}\"\n"));
+            }
+        }
+        let mi = tmp.path().join("mi");
+        std::fs::write(
+            &mi,
+            format!("36 35 0:59 / {} rw,relatime - btrfs /dev/sda1 rw\n", tmp.path().display()),
+        )
+        .unwrap();
+        let cp = tmp.path().join("c");
+        std::fs::write(
+            &cp,
+            format!(
+                r#"ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "{root}"
+[sssd]
+ldap_default_bind_dn = "uid=admin"
+ldap_default_authtok = "s"
+[ganesha]
+default_security = "{default_security}"
+{shares_toml}"#,
+                root = root.display()
+            ),
+        )
+        .unwrap();
+        let sm = write_setup_marker(&tmp, ".secchips");
+        let state = test_app_state(&cp, sm, Some(mi));
+        let token = state.auth.create_privileged_session("secchips");
+        let app = router(state);
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let req = add_session_cookie(req, &token);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        String::from_utf8_lossy(&body).to_string()
+    }
+
+    // krb5i default: inherit and explicit-krb5i stay chipless; krb5p + krb5 chip.
+    let html = chips_html(
+        "krb5i",
+        &[("delta", None), ("eps", Some("krb5i")), ("zeta", Some("krb5p")), ("eta", Some("krb5"))],
+    )
+    .await;
+    assert_eq!(html.matches(">krb5p<").count(), 1, "krb5p deviates from krb5i: {html}");
+    assert_eq!(html.matches(">krb5<").count(), 1, "krb5 deviates from krb5i");
+    assert!(!html.contains(">krb5i<"), "the configured default never chips");
+
+    // krb5 default: same rule rotated (the krb5p default is covered above).
+    let html = chips_html(
+        "krb5",
+        &[("delta", Some("krb5")), ("eps", Some("krb5i")), ("zeta", Some("krb5p"))],
+    )
+    .await;
+    assert_eq!(html.matches(">krb5p<").count(), 1, "krb5p deviates from krb5");
+    assert_eq!(html.matches(">krb5i<").count(), 1, "krb5i deviates from krb5");
+    assert!(!html.contains(">krb5<"), "the configured default never chips");
+}
+
+// The share select's blank option means "default from [ganesha]": a shares
+// save must keep it unset (the old path materialized security = "krb5p",
+// silently mis-exporting every share under a non-krb5p default), and the
+// settings card chips only an explicit security that deviates.
+#[tokio::test]
+async fn settings_save_shares_blank_security_stays_inherited() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().join("shares");
+    std::fs::create_dir_all(root.join("data")).unwrap();
+    let mi = tmp.path().join("mi");
+    std::fs::write(
+        &mi,
+        format!("36 35 0:59 / {} rw,relatime - btrfs /dev/sda1 rw\n", tmp.path().display()),
+    )
+    .unwrap();
+    let cp = tmp.path().join("c");
+    std::fs::write(
+        &cp,
+        format!(
+            r#"ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "{root}"
+[sssd]
+ldap_default_bind_dn = "uid=admin"
+ldap_default_authtok = "s"
+[ganesha]
+default_security = "krb5i"
+[[shares]]
+name = "data"
+host_path = "/media/data"
+container_path = "{root}/data"
+"#,
+            root = root.display()
+        ),
+    )
+    .unwrap();
+    let sm = write_setup_marker(&tmp, ".secsave");
+    let state = test_app_state(&cp, sm, Some(mi));
+    let token = state.auth.create_privileged_session("secsave");
+    let app = router(state);
+
+    // container_path must stay under storage.container_root or validation
+    // rejects the whole save (and every assertion below would be vacuous).
+    let base = format!(
+        "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=false&share_container_path_0={}&share_root_squash_0=on",
+        urlencoding::encode(&format!("{}/data", root.display()))
+    );
+    let save = |security: &str| {
+        let body = format!("{base}&share_security_0={security}");
+        let req = Request::builder()
+            .method("POST")
+            .uri("/settings/save-shares")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        add_session_cookie(req, &token)
+    };
+
+    // Blank select → no security key on disk, no chip anywhere.
+    let resp = app.clone().oneshot(save("")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let html = String::from_utf8_lossy(&body);
+    assert!(html.contains("Shares saved"), "save must not be rejected: {html}");
+    let written = std::fs::read_to_string(&cp).unwrap();
+    assert!(
+        !written.contains("\nsecurity ="),
+        "blank security must stay unset (inherit), not materialize: {written}"
+    );
+    assert!(!html.contains(r#"<span class="sc-chip">krb5"#), "inheriting share carries no chip");
+
+    // Explicit deviation → key written, chip on the settings card.
+    let resp = app.clone().oneshot(save("krb5p")).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let html = String::from_utf8_lossy(&body);
+    let written = std::fs::read_to_string(&cp).unwrap();
+    assert!(written.contains("security = \"krb5p\""), "explicit override persists: {written}");
+    assert!(
+        html.contains(r#"<span class="sc-chip">krb5p</span>"#),
+        "krb5p deviates from the krb5i default — settings card chips it"
+    );
+
+    // Explicit but EQUAL to the default → key persists, chip stays off.
+    let resp = app.clone().oneshot(save("krb5i")).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let html = String::from_utf8_lossy(&body);
+    let written = std::fs::read_to_string(&cp).unwrap();
+    assert!(written.contains("security = \"krb5i\""), "explicit-but-equal stays explicit");
+    assert!(
+        !html.contains(r#"<span class="sc-chip">krb5i</span>"#),
+        "a security matching the default is conformant — no chip"
+    );
+
+    // Back to blank → the stale key is removed, not left pinned.
+    let resp = app.clone().oneshot(save("")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let written = std::fs::read_to_string(&cp).unwrap();
+    assert!(
+        !written.contains("\nsecurity ="),
+        "reverting to default must drop the security key: {written}"
+    );
+}
+
 // The vendored htmx asset must bypass the setup gate, and served pages must reference it (no CDN).
 #[tokio::test]
 async fn htmx_asset_served_pre_setup_and_referenced_locally() {

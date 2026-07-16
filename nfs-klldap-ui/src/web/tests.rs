@@ -967,9 +967,9 @@ async fn web_acl_apply_file_add_keeps_literal_perms() {
     assert_eq!(entry.perms.to_str(), "rw-", "file add must keep the literal perms");
 }
 
-// The ACL grid mirrors the POSIX matrices per node kind: directory panels
-// hide the Exec column entirely (execute fuses from Read), file panels keep
-// the full triad.
+// The ACL grid shows the stored triad truthfully on BOTH node kinds: Exec is
+// a real checked-from-disk bit on directory panels too (the server fuses r→x
+// for dirs at apply time; the old scope-gated file-execute knob is retired).
 #[tokio::test]
 async fn dir_perms_acl_grid_execute_column_matches_node_kind() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -997,19 +997,19 @@ async fn dir_perms_acl_grid_execute_column_matches_node_kind() {
     let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     let dir_html = String::from_utf8_lossy(&bytes).to_string();
     assert!(dir_html.contains(r#"data-kind="dir""#), "dir panel carries its kind for the JS contract");
-    // Dir panes render the full R/W/Exec grid, but every Exec box is the
-    // file-execute KNOB: always present, never checked from the stored bit
-    // (the seeded rwx entry's fused x must not surface as a checked box).
+    // Dir panes render the full R/W/Exec grid with Exec checked from the
+    // stored bit: the seeded rwx entry surfaces its x as a checked box.
     assert!(
-        dir_html.contains(r#"class="abit" data-ch="x" aria-label="Files: execute (recursive reach)" disabled"#),
-        "dir entry rows render an unchecked scope-gated Exec knob"
+        dir_html.contains(r#"class="abit" data-ch="x" aria-label="execute" checked disabled"#),
+        "dir entry rows show the stored execute bit checked"
     );
+    // The seeded mask is rwx (setfacl recalc from the rwx entry).
     assert!(
-        dir_html.contains(r#"class="mbit" data-ch="x" aria-label="Files: mask execute (recursive reach)" disabled"#),
-        "dir mask row renders an unchecked scope-gated Exec knob"
+        dir_html.contains(r#"class="mbit" data-ch="x" aria-label="mask execute" checked disabled"#),
+        "dir mask row shows the stored mask execute bit checked"
     );
-    // Both add rows carry an Exec box (access = the file-execute grant;
-    // Inherit's stays permanently disabled — execute is derived on inherit).
+    // Both add rows carry a plain Exec box (Inherit's included — the server
+    // fuses r→x for the directory layer at apply time).
     assert_eq!(
         dir_html.matches(r#"class="ebit" data-ch="x""#).count(),
         2,
@@ -1022,8 +1022,9 @@ async fn dir_perms_acl_grid_execute_column_matches_node_kind() {
     assert!(!dir_html.contains("acl-rec-scope"), "the add form has no scope radios of its own");
     assert!(!dir_html.contains("acl-add-hd"), "the add form has no private header labels");
     assert!(!dir_html.contains("file-mode-readout"), "the Files NNN readout is retired");
-    // The POSIX matrix's Exec column still offers per-file execute.
-    assert!(dir_html.contains("Files: owner execute"));
+    // The scope-gated knob labels are gone everywhere.
+    assert!(!dir_html.contains("recursive reach)"), "the file-execute knob labels are retired");
+    assert!(!dir_html.contains("derived on inherit)"), "the inherit-derived Exec label is retired");
 
     let req = Request::builder()
         .uri("/dir-perms?path=%2Facldata%2Ff.txt")
@@ -1927,6 +1928,32 @@ async fn wait_apply_finished(
     .expect("apply must finish")
 }
 
+// Like wait_apply_finished, but returns the final result text — the Apply
+// Log body carrying per-op outcomes and the traversal-fusion notices.
+async fn wait_apply_result_text(
+    progress_slot: &Arc<Mutex<Option<Arc<crate::fs::ApplyProgress>>>>,
+) -> String {
+    use std::time::Duration;
+    use tokio::time::timeout;
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(prog) = progress_slot.lock().await.as_ref() {
+                if prog.finished.load(std::sync::atomic::Ordering::Relaxed) {
+                    return prog
+                        .final_result_text
+                        .lock()
+                        .expect("poison")
+                        .clone()
+                        .unwrap_or_default();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("apply must finish")
+}
+
 #[tokio::test]
 async fn tree_lists_files_after_dirs_with_icons_and_mtime() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1979,13 +2006,13 @@ async fn tree_child_fragment_renders_empty_row_for_empty_dir() {
 }
 
 #[tokio::test]
-async fn dir_perms_dir_renders_condensed_matrix_with_specials_and_traverse_note() {
+async fn dir_perms_dir_renders_matrix_with_specials_and_real_exec_bits() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::TempDir::new().unwrap();
     let real_root = tmp.path().join("permroot");
     std::fs::create_dir_all(real_root.join("Alpha")).unwrap();
-    // 0711: group/other are execute-only — traverse-only access the
-    // condensed matrix can't express, so the amber note must render.
+    // 0711: owner rwx, group/other execute-only. Every stored bit — x
+    // included — must render truthfully now that Exec is a real column.
     std::fs::set_permissions(
         real_root.join("Alpha"),
         std::fs::Permissions::from_mode(0o711),
@@ -1997,10 +2024,20 @@ async fn dir_perms_dir_renders_condensed_matrix_with_specials_and_traverse_note(
 
     let html = get_html(&app, &token, "/dir-perms?path=%2Fpermsdata%2FAlpha").await;
     assert!(html.contains(r#"data-kind="dir""#), "dir panels are marked for the JS");
-    assert!(html.contains("perm-matrix-dir"), "condensed matrix renders for dirs");
+    assert!(html.contains("perm-matrix-dir"), "dir matrix renders for dirs");
+    // The stored 0711 renders as-is: owner x checked, group x checked with
+    // group read unchecked (traverse-only is now expressible, not warned).
     assert!(
-        !html.contains(r#"aria-label="Owner execute""#),
-        "no execute column on the condensed dir matrix"
+        html.contains(r#"aria-label="Owner execute" checked"#),
+        "dir matrix shows the stored owner execute bit: {html}"
+    );
+    assert!(
+        html.contains(r#"aria-label="Group execute" checked"#),
+        "dir matrix shows the stored group execute bit"
+    );
+    assert!(
+        !html.contains(r#"aria-label="Group read" checked"#),
+        "group read stays unchecked for 0711"
     );
     assert!(html.contains(r#"class="sbit""#), "setgid/sticky stay available on dirs");
     // Compaction contract: helper prose lives in title hovers, not body text.
@@ -2009,16 +2046,16 @@ async fn dir_perms_dir_renders_condensed_matrix_with_specials_and_traverse_note(
         "fuse hint lives in the Read column's hover title"
     );
     assert!(
-        html.contains("cleared on Apply"),
-        "0711 must surface the (compact) traverse-only warning: {html}"
+        !html.contains("cleared on Apply"),
+        "the traverse-only warning is retired — x is a real editable bit"
     );
     assert!(
         !html.contains("(inherit group)") && !html.contains("(restrict delete)")
             && !html.contains("(this directory only)") && !html.contains(">Permission bits<"),
         "parenthetical subtitles and the redundant matrix heading are gone"
     );
-    // Apply-scope radios + the Exec column (the FILE-execute grant: one fbit
-    // per audience inside the matrix, disabled until a recursive scope).
+    // Apply-scope radios stay; the scope-gated fbit knob column is retired —
+    // Exec is a real pbit on all three audiences (9 pbits total).
     assert_eq!(
         html.matches(r#"name="recursive_scope""#).count(),
         3,
@@ -2029,12 +2066,12 @@ async fn dir_perms_dir_renders_condensed_matrix_with_specials_and_traverse_note(
         !html.contains("file-opts"),
         "the separate file-bits matrix is gone — Exec lives in the main matrix"
     );
+    assert!(!html.contains("fbit"), "the scope-gated file-execute knob class is retired");
     assert_eq!(
-        html.matches(r#"class="fbit""#).count(),
-        3,
-        "one file-execute box per audience"
+        html.matches(r#"class="pbit""#).count(),
+        9,
+        "full R/W/X triad per audience"
     );
-    assert!(html.contains(r#"aria-label="Files: owner execute""#));
     assert!(html.contains(r#"name="file_mode""#), "hidden file_mode field survives");
 }
 
@@ -2066,9 +2103,9 @@ async fn dir_perms_file_renders_full_matrix_without_specials() {
 }
 
 // HTTP-layer extension of fs::apply_normalizes_directory_mode_but_not_files:
-// the condensed dir editor submits an x-less mode; the server fuses r→x on
-// every directory it walks while files receive exactly the explicit
-// File-options bits (here x-less, so they never gain execute).
+// an x-less mode POST (the editor submits the triad as checked — here all
+// Exec boxes unchecked) fuses r→x on every directory the server walks while
+// files receive exactly the explicit file_mode bits (x-less: no execute).
 #[tokio::test]
 async fn web_recursive_apply_xless_mode_fuses_dirs_not_files() {
     use std::os::unix::fs::PermissionsExt;
@@ -2106,6 +2143,108 @@ async fn web_recursive_apply_xless_mode_fuses_dirs_not_files() {
         mode_of(&real_root.join("f.txt")),
         0o660,
         "file gets the x-less file bits — no implicit execute"
+    );
+}
+
+// Requirement 3/4 of the truthful-Exec redesign: a Read-only recursive apply
+// fuses every directory to r-x and the Apply Log NAMES each fused directory,
+// so the refreshed panel (disk truth: r-x, not the r-- the user set) is
+// explained. Files stay literal r--.
+#[tokio::test]
+async fn web_apply_r_only_recursive_logs_traversal_notice() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let real_root = tmp.path().join("noticeroot");
+    std::fs::create_dir_all(real_root.join("sub")).unwrap();
+    std::fs::write(real_root.join("f.txt"), b"data").unwrap();
+    let st = make_share_backed_state(&real_root, "/noticedata", &tmp);
+    let slot = st.apply_progress.clone();
+    let token = st.auth.create_privileged_session("noticetest");
+    let app = router(st);
+
+    let status = post_form(
+        &app,
+        &token,
+        "/apply",
+        "path=%2Fnoticedata&owner_user=&owner_group=&mode=0444&recursive_scope=all&file_mode=0444&owner_user_uid=&owner_group_gid="
+            .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let rtext = wait_apply_result_text(&slot).await;
+    assert!(
+        rtext.contains("set with 555 to allow traversal"),
+        "the log names the fused directory mode: {rtext}"
+    );
+    assert!(
+        rtext.matches("to allow traversal").count() == 2,
+        "one notice per fused directory (root + sub): {rtext}"
+    );
+    assert!(
+        !rtext.contains("more directories"),
+        "no overflow line for a 2-dir tree: {rtext}"
+    );
+    let mode_of = |p: &std::path::Path| {
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
+    };
+    assert_eq!(mode_of(&real_root), 0o555, "share root fused r→x");
+    assert_eq!(mode_of(&real_root.join("sub")), 0o555, "subdir fused r→x");
+    assert_eq!(mode_of(&real_root.join("f.txt")), 0o444, "files stay literal r--");
+
+    // Scope None: the target dir alone is walked — exactly one notice.
+    let status = post_form(
+        &app,
+        &token,
+        "/apply",
+        "path=%2Fnoticedata&owner_user=&owner_group=&mode=0400&recursive_scope=none&owner_user_uid=&owner_group_gid="
+            .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let rtext = wait_apply_result_text(&slot).await;
+    assert!(
+        rtext.contains("set with 500 to allow traversal"),
+        "DirOnly scope still explains the fused target dir: {rtext}"
+    );
+    assert_eq!(rtext.matches("to allow traversal").count(), 1, "{rtext}");
+    assert_eq!(mode_of(&real_root), 0o500, "target dir fused r→x at scope none");
+}
+
+// The staged-batch twin: an Exec-unchecked (r--) ACL set on a directory
+// lands fused r-x on disk, the op's OK line carries the fusion note, and the
+// refreshed panel shows the stored x checked — truthful display end to end.
+#[tokio::test]
+async fn web_apply_acl_x_uncheck_round_trip_logs_fusion() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (fs, progress, token, app) = acl_test_scaffold(&tmp).await;
+    let ops = r#"[{"op":"set","typ":"user","id":"6262","name":"","perms":"r--","layer":"access"}]"#;
+    let body = format!(
+        "path=%2Facldata&owner_user=&owner_group=&mode=750&recursive_scope=none&acl_ops={}",
+        urlencoding::encode(ops)
+    );
+    let status = post_form(&app, &token, "/apply", body).await;
+    assert_eq!(status, StatusCode::OK);
+    let rtext = wait_apply_result_text(&progress).await;
+    assert!(
+        rtext.contains("ACL set (1/1) OK:") && rtext.contains("directories fused to r-x for traversal"),
+        "the op's OK line explains the dir fusion: {rtext}"
+    );
+    let table = fs
+        .read()
+        .expect("fs lock")
+        .get_acl_table(std::path::Path::new("/acldata"))
+        .expect("allowed");
+    let entry = table
+        .access
+        .iter()
+        .find(|l| l.tag == crate::privileged::AclTag::NamedUser(6262))
+        .expect("entry present");
+    assert_eq!(entry.perms.to_str(), "r-x", "dir entry landed fused");
+    // The panel re-reads getfacl and must show the stored x as checked.
+    let html = get_html(&app, &token, "/dir-perms?path=%2Facldata").await;
+    assert!(
+        html.contains(r#"class="abit" data-ch="x" aria-label="execute" checked disabled"#),
+        "refreshed dir panel shows the fused execute bit checked: {html}"
     );
 }
 

@@ -297,9 +297,6 @@ pub(crate) struct DirPermsTemplate {
     setgid: bool, sticky: bool,
     /// False for a regular file: full rwx triad, no special bits, no recursive apply.
     is_dir: bool,
-    /// Directory grants x-without-r for some audience — the condensed matrix
-    /// can't express traverse-only access and Apply strips it; warn.
-    traverse_only_note: bool,
     /// False when the directory could not be stat'd; the template shows a full-width diagnostic
     /// (meta_hint + the paths below) instead of the POSIX/ACL editors.
     meta_available: bool,
@@ -958,14 +955,10 @@ pub(crate) async fn dir_perms(
     // Directory is the default: when meta is unavailable the diagnostic branch
     // renders instead, so the flag only matters for a node that was stat'd.
     let mut is_dir = true;
-    let mut traverse_only_note = false;
 
     if let Some(m) = meta {
         let (owner, group, mode) = (m.uid, m.gid, m.mode);
         is_dir = m.is_dir;
-        // x granted where r is not (per audience): traverse-only access the
-        // condensed dir matrix can't express — Apply strips it, so warn.
-        traverse_only_note = is_dir && ((mode & 0o111) & !((mode & 0o444) >> 2)) != 0;
         let l = state.lldap.read().await.clone();
         owner_display = friendly_user_label(&l, owner).await;
         group_display = friendly_group_label(&l, group).await;
@@ -1061,7 +1054,6 @@ pub(crate) async fn dir_perms(
         u_r, u_w, u_x, g_r, g_w, g_x, o_r, o_w, o_x,
         setgid, sticky,
         is_dir,
-        traverse_only_note,
         meta_available,
         meta_hint,
         serve_path_display: diag
@@ -1571,6 +1563,23 @@ pub(crate) async fn apply_permissions(
         if apply_res.skipped > 0 {
             rtext.push_str("\n(skipped entries were typically symlinks — never followed for safety)");
         }
+        // Requirement: the panel shows disk truth after apply, so when the
+        // r-implies-x fuse changed what landed vs what was requested, say so
+        // per directory (capped list; the count covers the rest).
+        if apply_res.fused_dir_count > 0 {
+            rtext.push('\n');
+            for pp in &apply_res.fused_dirs {
+                rtext.push_str(&format!(
+                    "\nDirectory {} set with {:o} to allow traversal (read implies execute on directories).",
+                    pp.display(),
+                    dir_mode & 0o7777
+                ));
+            }
+            let more = apply_res.fused_dir_count - apply_res.fused_dirs.len();
+            if more > 0 {
+                rtext.push_str(&format!("\n… and {} more directories.", more));
+            }
+        }
         // Staged ACL batch: runs after the POSIX pass under the same scope
         // (the hard-error walk paths above return before reaching it). A
         // cancel skips it; a failing op stops the rest — the panel reloads
@@ -1591,6 +1600,26 @@ pub(crate) async fn apply_permissions(
                     }
                     *prog.phase.lock().expect("progress mutex poisoned") =
                         format!("applying ACLs ({}/{})", i + 1, total_ops);
+                    // The dir/file modification pair differs exactly when the
+                    // r-implies-x fuse fired on this op; name it in the log so
+                    // the refreshed panel (disk truth) is explained.
+                    let fusion_note = match (&modf, &file_modf) {
+                        (
+                            crate::privileged::AclModification::Set { perms: d, .. },
+                            crate::privileged::AclModification::Set { perms: f, .. },
+                        ) if d != f => Some(format!(
+                            " — directories fused to {} for traversal",
+                            d.to_str()
+                        )),
+                        (
+                            crate::privileged::AclModification::SetMask { perms: d, .. },
+                            crate::privileged::AclModification::SetMask { perms: f, .. },
+                        ) if d != f => Some(format!(
+                            " — directory mask fused to {} for traversal",
+                            d.to_str()
+                        )),
+                        _ => None,
+                    };
                     let (op_ok, op_note) = if sc == crate::fs::ApplyScope::DirOnly {
                         let fs3 = fs.clone();
                         let pth3 = pth.clone();
@@ -1664,11 +1693,12 @@ pub(crate) async fn apply_permissions(
                     };
                     if op_ok {
                         rtext.push_str(&format!(
-                            "\nACL {} ({}/{}) OK: {}",
+                            "\nACL {} ({}/{}) OK: {}{}",
                             op_label,
                             i + 1,
                             total_ops,
-                            op_note
+                            op_note,
+                            fusion_note.as_deref().unwrap_or("")
                         ));
                     } else {
                         prog.error_count.fetch_add(1, Ordering::Relaxed);
@@ -1826,10 +1856,11 @@ fn build_acl_modification(
 )> {
     let AclOpInput { op, is_user, id, mut delete_kinds, perms, default_layer } = input;
     let dflag = if default_layer { "-d " } else { "" };
-    // Directory targets fuse r→x exactly like the POSIX dir matrix: the dir
-    // editor's Exec box is the FILE-execute grant for recursive reaches, so
+    // Directory targets fuse r→x exactly like the POSIX dir matrix: the
+    // submitted triad is what the user checked (Exec is a real stored bit),
     // the selected dir (and dirs in scope) take the fused perms while files
-    // in scope take the literal submitted triad — x only when Exec granted.
+    // in scope take the literal triad. The pair differing is what the /apply
+    // log keys its "fused for traversal" note on.
     let fuse_dir = |p: crate::privileged::AclPerms| {
         if node_is_dir { p.dir_r_implies_x() } else { p }
     };

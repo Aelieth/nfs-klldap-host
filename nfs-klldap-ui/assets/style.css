@@ -610,10 +610,8 @@ small { color: var(--text-light); }
 .perm-matrix .rowhd { font-size:.8em; font-weight:600; }
 .perm-matrix .cell  { text-align:center; }
 .perm-matrix input  { transform:none; }
-/* Condensed directory matrix: Read/Write columns only (r+x fused server-side). */
+/* Directory matrix: full R/W/X triad (dirs fuse r→x server-side on apply). */
 .perm-matrix.perm-matrix-dir { grid-template-columns:64px repeat(3,1fr); max-width:280px; }
-.perm-note          { font-size:.72em; color:var(--text-muted); margin-top:6px; }
-.perm-note.warn     { color:var(--warning-amber-text); }
 /* Apply-scope radios + file-mode readout (dir panels; see dir_perms.html).
    Dashed dividers, not helper text, separate the groups — descriptions
    live in title hovers. */

@@ -102,8 +102,6 @@
                 pl.querySelector('.perm-path').textContent = path;
                 setPanelLoading(false);
                 setPanelMode(false);
-                syncScopeUI();
-                syncAclExecGate();
                 recomputeMode();
                 attachEditorInputListeners(pbody());
                 syncApplyLogHeight();
@@ -118,25 +116,23 @@
         pl.classList.toggle('editing', editing);
         pl.querySelector('.perm-state').textContent = editing ? 'editing' : 'viewing';
         const aclInert = !!pl.querySelector('.acl-sec.disabled');
-        pl.querySelectorAll('.p-owner,.p-group,.pbit,.sbit,.fbit,.rec-radio').forEach(el => el.disabled = !editing);
+        pl.querySelectorAll('.p-owner,.p-group,.pbit,.sbit,.rec-radio').forEach(el => el.disabled = !editing);
         pl.querySelectorAll('.acl-ename,.ebit,.abit,.mbit').forEach(el => el.disabled = !editing || aclInert);
         if (!editing) {
             pl.querySelectorAll('.acl-row.selected').forEach(r => r.classList.remove('selected'));
             exitAclAdd();
         }
         pl.querySelectorAll('.acl-pane').forEach(syncAclActions);
-        // Scope-gated boxes (POSIX Exec column; ACL Exec knobs on rows, mask,
-        // and add form) re-derive their disabled state after the sweeps above.
-        syncScopeUI();
-        syncAclExecGate();
         setTreeLock(editing);
     }
 
     // Matrix + setgid/sticky -> live octal + symbolic; keeps the hidden name="mode" field in sync.
-    // The SUBMITTED mode is always the raw checkbox sum — x-less on the condensed
-    // directory matrix, so recursive applies can never hand files execute. The
-    // octal/symbolic READOUT previews the r→x fusion the server performs on the
-    // directory itself (fs::dir_mode_r_implies_x, per entry, dirs only).
+    // The SUBMITTED mode is the raw checkbox sum — the full triad, Exec
+    // included, on directories too. The octal/symbolic READOUT previews the
+    // r→x fusion the server performs on the directory itself
+    // (fs::dir_mode_r_implies_x, per entry, dirs only). The hidden file_mode
+    // is the same triad literal (specials stripped): files in a recursive
+    // reach get exactly what the boxes show.
     function recomputeMode() {
         const pl = panel(); if (!pl) return;
         const oct = pl.querySelector('.octal'); if (!oct) return;
@@ -152,55 +148,8 @@
         const d = isDir ? { u: fuse(sum.u), g: fuse(sum.g), o: fuse(sum.o) } : sum;
         oct.textContent = '' + s + d.u + d.g + d.o;
         const sym = pl.querySelector('.symbolic'); if (sym) sym.textContent = symbolicMode(s, d.u, d.g, d.o);
-        // File bits (dir panels): r/w ride the directory matrix; the Exec
-        // column adds file execute for recursive scopes. The directory itself
-        // never reads these — its execute is fused from Read server-side.
-        const fsum = { u: 0, g: 0, o: 0 };
-        if (isDir) {
-            fsum.u = sum.u; fsum.g = sum.g; fsum.o = sum.o;
-            pl.querySelectorAll('.fbit').forEach(cb => { if (cb.checked) fsum[cb.dataset.role] += +cb.dataset.bit; });
-        }
         const ffield = pl.querySelector('.file-mode-field');
-        if (ffield) ffield.value = '0' + fsum.u + fsum.g + fsum.o;
-    }
-
-    // The Exec column is the FILE-execute grant: it participates only when a
-    // recursive scope reaches files, so it stays inert (and cleared) on None.
-    function syncScopeUI() {
-        const pl = panel(); if (!pl) return;
-        const form = pl.querySelector('form.posix-sec'); if (!form) return;
-        const checked = form.querySelector('.rec-radio:checked');
-        const scopeNone = !checked || checked.value === 'none';
-        const editing = pl.classList.contains('editing');
-        form.querySelectorAll('.fbit').forEach(cb => {
-            cb.disabled = !editing || scopeNone;
-            if (scopeNone) cb.checked = false;
-        });
-    }
-
-    // Dir panels: every ACL Exec box — entry rows, the mask row, and the add
-    // form — is the FILE-execute grant knob, gated by the single POSIX Apply
-    // scope: inert (and cleared) on None, live on a recursive reach. It never
-    // displays the directory's own fused bit. Inherit-pane boxes never arm:
-    // the server fuses inherited execute for subdirectories, and new files
-    // take execute from their creation mode.
-    function syncAclExecGate() {
-        const pl = panel(); if (!pl) return;
-        const editing = pl.classList.contains('editing');
-        const form = pl.querySelector('form.posix-sec');
-        const sel = form && form.querySelector('.rec-radio:checked');
-        const scopeNone = !sel || sel.value === 'none';
-        pl.querySelectorAll('.acl-sec[data-kind="dir"]').forEach(sec => {
-            const inert = sec.classList.contains('disabled');
-            sec.querySelectorAll('.acl-pane').forEach(pane => {
-                const inherit = pane.dataset.layer === 'default';
-                pane.querySelectorAll('.abit[data-ch="x"],.mbit[data-ch="x"],.ebit[data-ch="x"]').forEach(xbit => {
-                    const off = !editing || inert || scopeNone || inherit;
-                    xbit.disabled = off;
-                    if (off) xbit.checked = false;
-                });
-            });
-        });
+        if (ffield) ffield.value = '0' + sum.u + sum.g + sum.o;
     }
     function symbolicMode(s, u, g, o) {
         const trip = (b, kind) => {
@@ -262,9 +211,9 @@
         c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
     // Diff every enabled pane's staged DOM against the server-rendered
-    // baseline in data-perms → the acl_ops batch. Dir rows compare Read/Write
-    // only (their Exec box is the file-execute knob, not a display of the
-    // stored fused bit) and contribute x exactly when the knob is checked.
+    // baseline in data-perms → the acl_ops batch. Rows compare the full
+    // triad — Exec is a real stored bit on directories too (the server
+    // fuses r→x for dirs at apply time and logs the fix-up).
     // The mask op goes last per pane: setfacl -m recalculates the mask, so an
     // explicit mask change must land afterwards to win.
     function collectAclPlan() {
@@ -272,11 +221,7 @@
         const ops = [];
         pl.querySelectorAll('.acl-sec:not(.disabled) .acl-pane').forEach(pane => {
             const layer = pane.dataset.layer || 'access';
-            const isDirPane = !!pane.closest('.acl-sec[data-kind="dir"]');
-            const baseline = row => {
-                const p = row.dataset.perms || '---';
-                return isDirPane ? p.slice(0, 2) + '-' : p;
-            };
+            const baseline = row => row.dataset.perms || '---';
             pane.querySelectorAll('.acl-row[data-type="user"],.acl-row[data-type="group"]').forEach(row => {
                 const op = { typ: row.dataset.type, id: row.dataset.id || '',
                              name: row.dataset.name || '', layer: layer };
@@ -325,9 +270,8 @@
                 if (cb) cb.checked = perms[i] === ch;
             });
         } else {
-            const isDirPane = !!pane.closest('.acl-sec[data-kind="dir"]');
             const cell = (ch, i) => '<span class="acl-cell"><input type="checkbox" class="abit" data-ch="' + ch
-                + '" aria-label="' + (isDirPane && ch === 'x' ? 'Files: execute (recursive reach)' : ch) + '"'
+                + '" aria-label="' + ch + '"'
                 + (perms[i] === ch ? ' checked' : '') + '></span>';
             rows.insertAdjacentHTML('beforeend',
                 '<div class="acl-row" data-new="1" data-type="' + typ + '" data-id="' + escHtml(id)
@@ -343,7 +287,6 @@
             rows.hidden = false;
         }
         exitAclAdd();
-        syncAclExecGate();
         state.dirty = true;
     }
 
@@ -356,10 +299,9 @@
             else b.disabled = false;
         });
     }
-    // Perms strings are canonical rwx triads. On directory rows the x box is
-    // the file-execute knob (unchecked unless explicitly granted), so the
-    // triad carries x exactly when the knob grants it — the directory's own
-    // execute is fused from Read server-side either way.
+    // Perms strings are canonical rwx triads read straight off the boxes —
+    // Exec included, on directory rows too (the server fuses r→x for
+    // directories at apply time and reports it in the Apply Log).
     function rowPerms(row) {
         return ['r', 'w', 'x'].map(ch => {
             const cb = row.querySelector('.abit[data-ch="' + ch + '"],.mbit[data-ch="' + ch + '"]');
@@ -402,7 +344,6 @@
         // to the normal commit label on exit.
         pl.querySelectorAll('.btn-apply').forEach(b => b.textContent = 'Add entry');
         wireAclAddSearch(form);
-        syncAclExecGate();
         syncAclAddApply();
         inp.focus();
     }
@@ -523,10 +464,16 @@
             // governs the POSIX change and every staged ACL edit.
             const checkedScope = form.querySelector('.rec-radio:checked');
             const scope = checkedScope ? checkedScope.value : 'none';
+            // Name the file mode in the recursive confirms: files take the
+            // triad literally, so an Exec box left checked hands every file
+            // in reach execute — say so before it happens.
+            const ffield = form.querySelector('.file-mode-field');
+            const fmNote = ffield && ffield.value
+                ? '\nFiles will get mode ' + ffield.value + '; directories keep execute wherever read is granted.' : '';
             if (scope === 'all'
-                && !confirm('Recursively apply to EVERYTHING under\n' + state.currentPath + ' (all subdirectories and files)?')) return;
+                && !confirm('Recursively apply to EVERYTHING under\n' + state.currentPath + ' (all subdirectories and files)?' + fmNote)) return;
             if (scope === 'single'
-                && !confirm('Apply to ' + state.currentPath + ' and every file directly inside it?')) return;
+                && !confirm('Apply to ' + state.currentPath + ' and every file directly inside it?' + fmNote)) return;
             // Read the staged ACL edits now — the /apply response swaps the
             // panel body for the applying placeholder.
             const opsField = form.querySelector('.acl-ops-field');
@@ -603,8 +550,8 @@
         const bit = e.target.closest('.abit,.mbit,.ebit');
         if (!bit || bit.disabled) return;
         // Directory ACL grids mirror the POSIX dir matrix coupling: Write
-        // requires Read (the directory's own execute is fused from Read
-        // server-side; the Exec knob is independent — it only feeds files).
+        // requires Read. Exec stays uncoupled — it's a real stored bit the
+        // user controls; the server fuses r→x for directories at apply time.
         const aclSec = bit.closest('.acl-sec');
         if (aclSec && aclSec.dataset.kind === 'dir' && bit.dataset.ch) {
             const scopeEl = bit.classList.contains('ebit')
@@ -617,11 +564,11 @@
     });
 
     // Live octal readout while toggling the matrix / special bits.
-    // Directory panels use the condensed Read/Write matrix where each audience
-    // is none / read-only / read-write: checking Write auto-checks Read, and
-    // un-checking Read drops Write (a w-without-r directory can't even be
-    // entered over NFS). File panels keep the full independent triad —
-    // r without x is normal for a file, so no auto-check at all.
+    // Directory panels couple Write to Read: checking Write auto-checks Read,
+    // and un-checking Read drops Write (a w-without-r directory can't even be
+    // entered over NFS). Exec is a real independent bit on both panel kinds —
+    // the server fuses r→x for directories at apply time. File panels keep
+    // the full independent triad with no auto-check at all.
     document.addEventListener('change', function (e) {
         if (!e.target.classList) return;
         if (e.target.classList.contains('pbit')) {
@@ -645,13 +592,7 @@
                 }
             }
             recomputeMode();
-        } else if (e.target.classList.contains('sbit') || e.target.classList.contains('fbit')) {
-            // File bits are fully independent — no auto-check between them.
-            recomputeMode();
-        } else if (e.target.classList.contains('rec-radio')) {
-            // The one scope also gates every dir-panel ACL Exec knob.
-            syncScopeUI();
-            syncAclExecGate();
+        } else if (e.target.classList.contains('sbit')) {
             recomputeMode();
         }
     });
@@ -720,8 +661,6 @@
     document.addEventListener('htmx:afterSwap', function (evt) {
         const t = evt.detail && evt.detail.target;
         if (!t || !t.closest || !t.closest('#perm-panel .perm-body')) return;
-        syncScopeUI();
-        syncAclExecGate();
         recomputeMode();
         if (t.querySelector('[data-applying]')) {
             state.applying = true;

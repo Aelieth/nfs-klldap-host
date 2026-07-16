@@ -94,6 +94,10 @@ pub struct ApplyResult {
     pub errors: Vec<(PathBuf, String)>,
     /// Skipped entries (symlinks, filtered types).
     pub skipped: usize,
+    /// Directories whose applied mode gained execute over the requested mode
+    /// (capped at 10 for the Apply Log; fused_dir_count is the full total).
+    pub fused_dirs: Vec<PathBuf>,
+    pub fused_dir_count: usize,
 }
 
 /// Tracks live apply progress atomics the web poller reads during apply.
@@ -123,7 +127,8 @@ pub struct ApplyProgress {
 /// with R+X on the directory — so the split pair is meaningless for
 /// directories and directly counter-intuitive (round-4: a 0776 share root
 /// "returned nothing"). Files keep their raw mode (r without x is normal).
-/// The full r/x UI collapse for directories is tracked in TODO.md.
+/// The UI shows execute as a real editable bit; this fuse is the server
+/// backstop, and each fused directory is reported in the Apply Log.
 pub(crate) fn dir_mode_r_implies_x(mode: u32) -> u32 {
     mode | ((mode & 0o444) >> 2)
 }
@@ -652,6 +657,7 @@ impl FsManager {
         // Sync walk + direct privileged calls. Progress atomics (processed/changed/phase) mutated here for live UI feedback.
         let mut result = ApplyResult::default();
 
+        let fusion_active = dir_mode_r_implies_x(mode) != mode;
         let max_d = opts.scope.max_depth();
 
         let walker = WalkDir::new(root)
@@ -735,12 +741,23 @@ impl FsManager {
             } else {
                 result.changed += 1;
                 progress.changed.fetch_add(1, Ordering::Relaxed);
+                // Notice only after the chmod landed: the Apply Log line
+                // claims the fused mode is on disk.
+                if fusion_active && ft.is_dir() {
+                    result.fused_dir_count += 1;
+                    if result.fused_dirs.len() < 10 {
+                        result.fused_dirs.push(p.clone());
+                    }
+                }
             }
 
             progress.processed.fetch_add(1, Ordering::Relaxed);
         }
 
-        progress.finished.store(true, Ordering::Relaxed);
+        // The finished flag belongs to the spawning handler (FinishOnDrop):
+        // the walker is only the first phase of an apply — a staged ACL batch
+        // and the final result text still follow, and a poll seeing finished
+        // early would stop the Apply Log at "Finished." without them.
         Ok(result)
     }
 
@@ -1367,6 +1384,51 @@ mod tests {
         assert_eq!(fmode, 0o776, "files keep the raw mode");
     }
 
+    // Every directory the fuse touched is recorded for the Apply Log —
+    // capped at 10 paths, with the full total in fused_dir_count. A mode
+    // that already carries x wherever r is set records nothing.
+    #[test]
+    fn apply_records_fused_dir_notices_capped() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("fusetree");
+        for i in 0..12 {
+            std::fs::create_dir_all(root.join(format!("d{i:02}"))).unwrap();
+        }
+        std::fs::write(root.join("f.txt"), b"data").unwrap();
+        let logical = Path::new("/rootbind");
+        let mut cfg = make_test_config_with_shares(&[logical.to_str().unwrap()]);
+        cfg.storage.container_root = root.to_string_lossy().into_owned();
+        cfg.shares[0].name.clear();
+        cfg.shares[0].container_path = root.to_string_lossy().into_owned();
+        let fs = FsManager::new(cfg);
+        let (u, g) = (nix::unistd::getuid().as_raw(), nix::unistd::getgid().as_raw());
+
+        let prog = ApplyProgress::default();
+        let res = fs
+            .apply_permissions_with_progress(
+                logical, u, g,
+                ApplySpec { mode: 0o644, scope: ApplyScope::All, file_mode: Some(0o644) },
+                &prog,
+            )
+            .expect("apply must run");
+        assert!(res.errors.is_empty(), "chmod/chown as owner must succeed: {:?}", res.errors);
+        assert_eq!(res.fused_dir_count, 13, "root + 12 subdirs gained x from r");
+        assert_eq!(res.fused_dirs.len(), 10, "notice paths cap at 10");
+        assert!(res.fused_dirs[0].ends_with("fusetree"), "the walk root is listed first");
+
+        // 0755 already fuses to itself — nothing to report.
+        let prog2 = ApplyProgress::default();
+        let res2 = fs
+            .apply_permissions_with_progress(
+                logical, u, g,
+                ApplySpec { mode: 0o755, scope: ApplyScope::All, file_mode: Some(0o644) },
+                &prog2,
+            )
+            .expect("apply must run");
+        assert_eq!(res2.fused_dir_count, 0, "an x-complete mode records no fusion");
+        assert!(res2.fused_dirs.is_empty());
+    }
+
     // The tree browser lists one level: dirs first, then files, both sorted
     // case-insensitively; files carry an mtime for the modified column.
     #[test]
@@ -1693,10 +1755,11 @@ mod tests {
             assert!(res.changed >= 2);
         }
 
-        // Verify live progress mutated (processed/changed).
+        // Verify live progress mutated (processed/changed). finished stays
+        // false here — the spawning handler owns that flag (FinishOnDrop).
         assert!(prog.processed.load(Ordering::Relaxed) >= 2);
         assert!(prog.changed.load(Ordering::Relaxed) >= 2);
-        assert!(prog.finished.load(Ordering::Relaxed));
+        assert!(!prog.finished.load(Ordering::Relaxed));
 
         // Direct drive of shipped privileged fns (real path) + verify chmod (always succeeds for owner).
         // chown may EPERM in restricted test env but the nix call is exercised (error mentions it).
@@ -1766,7 +1829,8 @@ mod tests {
         // Live increments from blocking apply task (even if partial chown EPERM).
         let processed = prog.processed.load(Ordering::Relaxed);
         assert!(processed >= 1, "apply via spawn_blocking must increment processed live");
-        assert!(prog.finished.load(Ordering::Relaxed));
+        // finished is the handler's flag (FinishOnDrop), not the walker's.
+        assert!(!prog.finished.load(Ordering::Relaxed));
 
         // Prove real std chmod path + that apply !dry branch + spawn_blocking was used.
         let fpath = root.join("top.txt");

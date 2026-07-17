@@ -56,6 +56,12 @@ pub enum RecycleKind {
 }
 
 /// Shared state for all handlers.
+///
+/// Lock order when `config` and `fs` are BOTH held: config first, fs second
+/// (acl_apply_gate is the canonical nesting). Hot read paths should instead
+/// snapshot (`FsManager` is Clone; acl_watch clones the share list) and drop
+/// the guard before subprocess or I/O work — never hold either lock across a
+/// getfacl/probe.
 #[derive(Clone)]
 pub struct AppState {
     pub fs: Arc<RwLock<FsManager>>,

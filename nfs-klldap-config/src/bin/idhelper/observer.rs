@@ -53,6 +53,23 @@ fn observe_ganesha_log(path: &str, realm: &str, variants: &[String], cache: Arc<
                     buf.clear();
                     match reader.read_line(&mut buf) {
                         Ok(0) => {
+                            // Rotation guard: an in-place truncate (len below
+                            // our offset — the supervisor's copytruncate cap)
+                            // or an inode swap would leave this tail blind
+                            // until a read error; break to reopen instead.
+                            let rotated = {
+                                use std::os::unix::fs::MetadataExt;
+                                let pos = reader.stream_position().unwrap_or(0);
+                                let open_meta = reader.get_ref().metadata().ok();
+                                match (open_meta, std::fs::metadata(path)) {
+                                    (Some(o), Ok(d)) => d.len() < pos || o.ino() != d.ino(),
+                                    (_, Err(_)) => true,
+                                    _ => false,
+                                }
+                            };
+                            if rotated {
+                                break;
+                            }
                             // No new data yet (regular file at EOF). Sleep.
                             thread::sleep(Duration::from_millis(250));
                             continue;

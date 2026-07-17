@@ -5,6 +5,7 @@
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 // chown uses nix::unistd (requires "user" feature) for direct syscall; keeps error shape
 // compatible with prior. chmod on std. (libc dep retained only if other unix needs; unused import cleaned)
@@ -167,14 +168,23 @@ pub enum AclModification {
 // Safe ACL via getfacl/setfacl (pure Command, no FFI).
 // Named entries only; base preserved by tool. ACL vs NOACL remains explicit in callers.
 
+/// Ceilings for the ACL tools. A stalled mount must fail the request, not
+/// park a blocking-pool thread forever: single-path reads stay short; the
+/// batched tree read and the chunked recursive write get room for slow disks.
+const GETFACL_TIMEOUT: Duration = Duration::from_secs(15);
+const GETFACL_BATCH_TIMEOUT: Duration = Duration::from_secs(30);
+const SETFACL_CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Full table: base + named + mask entries of both the access and default
 /// ACLs. Safe getfacl (numeric ids; effective-comment suffixes stripped).
 pub fn get_acl_table(path: &Path) -> io::Result<AclTable> {
-    let out = std::process::Command::new("getfacl")
-        .args(["-c", "-n", "--absolute-names", "--"])
-        .arg(path)
-        .output()
-        .map_err(|e| io::Error::other(format!("getfacl: {}", e)))?;
+    let out = nfs_klldap_config::proc_run::run_with_timeout(
+        std::process::Command::new("getfacl")
+            .args(["-c", "-n", "--absolute-names", "--"])
+            .arg(path),
+        GETFACL_TIMEOUT,
+    )
+    .map_err(|e| io::Error::other(format!("getfacl: {}", e)))?;
     if !out.status.success() {
         return Err(io::Error::other("getfacl failed"));
     }
@@ -251,7 +261,8 @@ fn run_setfacl_many(paths: &[PathBuf], default: bool, op: &str, spec: &str) -> i
     for p in paths {
         cmd.arg(p);
     }
-    let out = cmd.output().map_err(|e| io::Error::other(e.to_string()))?;
+    let out = nfs_klldap_config::proc_run::run_with_timeout(&mut cmd, SETFACL_CHUNK_TIMEOUT)
+        .map_err(|e| io::Error::other(e.to_string()))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(io::Error::other(format!(
@@ -299,10 +310,12 @@ pub fn modification_spec(m: &AclModification) -> (bool, &'static str, String) {
 
 /// One batched getfacl over many paths: returns the subset whose ACL is
 /// extended (named entries, mask, or default entries). Powers the tree's
-/// `+` marker without a subprocess per row. Unreadable paths are skipped.
-pub fn extended_acl_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+/// `+` marker without a subprocess per row. Unreadable paths are skipped by
+/// the tool; a spawn failure or timeout is an Err so callers can tell "no
+/// extended ACLs" from "the read never happened".
+pub fn extended_acl_paths(paths: &[PathBuf]) -> io::Result<Vec<PathBuf>> {
     if paths.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut cmd = std::process::Command::new("getfacl");
     // No -c: the "# file:" headers are the per-path delimiters here.
@@ -310,9 +323,8 @@ pub fn extended_acl_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
     for p in paths {
         cmd.arg(p);
     }
-    let Ok(out) = cmd.output() else {
-        return Vec::new();
-    };
+    let out = nfs_klldap_config::proc_run::run_with_timeout(&mut cmd, GETFACL_BATCH_TIMEOUT)
+        .map_err(|e| io::Error::other(format!("getfacl batch: {}", e)))?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut result = Vec::new();
     let mut current: Option<PathBuf> = None;
@@ -347,7 +359,7 @@ pub fn extended_acl_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
     if let (Some(p), true) = (current, current_extended) {
         result.push(p);
     }
-    result
+    Ok(result)
 }
 
 /// Chunked multi-path apply for recursive walks: one setfacl invocation per

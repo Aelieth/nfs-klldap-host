@@ -111,4 +111,30 @@ Run: `cargo test --workspace` (idmap, resolve, generate, supervisor probes). Idh
 ## NSS snapshot golden tests
 `build_nss_snapshot` + ensure drive complete supps in both stores; ondemand fast cache + uid0 tests cover reactive authoritative path for getgrouplist.
 
+## 2.6 ACL gate run (pre-1.0 live checklist)
+
+The gate's vehicle is `setup-script/stress-test.sh` **v1.4** (the 2026-07-17 audit closed the harness gaps: B9 server-side landing assert + deny-intent access check + malformed-set case, new `aclcrossclass` phase, client copy-vs-move in acllifecycle, WI-8 out-of-band ACL-edit leg). Run as the LDAP test user on a kit-provisioned client.
+
+**Pre-flight (before anything):**
+- Client kit **v5.11** deployed on EVERY participating client (`SCRIPT_VERSION` in `satomlin-ldap-setup-v5.sh` on the box, not from memory — blue-lt's 07-14 evening burned on a stale v5.8 kit).
+- `nfs4-acl-tools` on the ONE designated audit client only; it is not part of the supported client configuration.
+- Harness config block set: `WEBUI_BASE_URL` + `ACL_SHARE_NAME` (aclcrossclass asserts class flips through `/client-manifest.json`), and `SERVER_EXEC_CMD` with NOPASSWD sudo — it upgrades aclwire/acllifecycle/aclcrossclass from operator-y/n to machine asserts.
+- Re-run `aclprep` before the session: v1.4 adds two fixture files (`inherit/lc-client.txt`, `wi8-ace.txt`); older fixtures make those steps SKIP.
+- Server side: no conf edits under a live app without a fresh relaunch (the in-memory vs on-disk split), and `scripts/collect-server-diag.sh` ready for any anomaly window.
+
+**btrfs (production) session:** `./stress-test.sh aclgate` = aclprep → aclmatrix → aclperf → aclwire → aclpropagation → aclcoherency → acllifecycle → aclcrossclass, in order. B7 note: the phase measures the refresh-identity-collapsed path only (decision 2026-07-17); the natural window stays documented (~3 min typical, <10 worst) in `docs/ganesha-architecture.md`.
+
+**ext4 leg:** on the host `sudo scripts/make-scratch-fs.sh ext4`, then follow its printed steps — the load-bearing one: `docker restart nfs-klldap-host`, because the compose bind is rprivate and the in-container Admin/SIGUSR1 recycle canNOT see a mount created after container start. Add the share in the UI (leave enable_acl unset — the write probe auto-classifies), retarget `ACL_SHARE`/`ACL_FIXTURE`/`SERVER_FIXTURE_PATH`/`ACL_SHARE_NAME`, then `./stress-test.sh aclprep aclmatrix aclperf` (+ `aclwire` on the audit client). Identity/propagation rows are filesystem-independent — no per-fstype re-run. Optional: a `vfat` scratch share proves the Incapable classification end to end.
+
+**Evidence:** archive every `stress-results-*` dir under `setup-script/` — the 2026-07-15 green runs were never archived (only the pre-hardening 07-14 dir exists), so tonight's runs are the gate's evidence of record.
+
+**Row → phase map:** Semantics deny-intent = aclwire access check; B9 = aclwire incl. server-side landing; B7 = aclpropagation; B6 UI half = the panel on `b6-unknown.txt` renders "(unknown) 59999" (live-verified 2026-07-17); Lifecycle = acllifecycle; Coherency = aclcoherency both legs; Cross-class + A8 + NOACL re-proof = aclcrossclass; Cost = aclperf. Gate exit: all green on btrfs + the ext4 leg, NOACL unchanged.
+
+**Redeploy-time proofs (2026-07-17 production audit — container-only, first image rebuild):**
+- Steady-state respawn: `docker exec nfs-klldap-host pkill -9 -x ganesha.nfsd` → within ~1 tick + cooldown the supervisor logs "ganesha is down — respawning (steady-state liveness)" and 2049 comes back; repeat 4× fast to see the budget line (3 per 10 min). Harness-proven against stubs (`tests/supervisor_steady_state_respawn.rs`); this is the real-daemon confirmation.
+- Log rotation: set `NFS_KLLDAP_LOG_ROTATE_MAX_MB=1` for the run (or wait out a real 64MB), confirm `ganesha.log.1` appears and the live file truncates without a Ganesha reload (rotation is copytruncate by design — SIGHUP would reread exports).
+- `ganesha-ctl refresh-identity <user>` now exits nonzero with a `FAILED:` line when any layer (sssd/idhelper/ganesha DBus) does not confirm — B7 operators must treat a nonzero exit as "flush did not land".
+- Generate ceiling: a SIGHUP with a deliberately stalled share mount errors within 120s instead of freezing the supervisor loop.
+- Deployed compose now ships `GANESHA_DEBUG=FALSE` / `SSSD_DEBUG_LEVEL=1` — raise only for diagnosis.
+
 Documentation and tests should be updated together when behavior changes. (See also fs.rs symlink policy comments and privileged.rs boundary.)

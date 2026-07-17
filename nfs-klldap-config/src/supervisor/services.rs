@@ -58,11 +58,29 @@ pub(crate) fn stop_ganesha(sup: &mut Supervisor) {
         thread::sleep(Duration::from_millis(100));
         ::nfs_klldap_config::reap_children();
     }
-    sup.pids.ganesha = None;
-    sup.ganesha_managed = false;
+    // Still alive after SIGKILL = unkillable (D-state on a hung mount).
+    // KEEP it tracked: dropping the pid here made the supervisor forget a
+    // process that still owns port 2049, and the next start double-spawned
+    // against it. It stays managed; a later stop/liveness pass retries once
+    // the kernel releases it.
+    sup.log_warn(&format!(
+        "stop_ganesha: pid {pid} survived SIGKILL (uninterruptible I/O?) — keeping it tracked; will not double-spawn"
+    ));
 }
 
 pub(crate) fn start_ganesha(sup: &mut Supervisor) {
+    // A tracked pid that is still live means stop_ganesha could not kill it
+    // (see its SIGKILL-survivor branch) — it still owns 2049; spawning a
+    // second daemon against it helps nobody.
+    if let Some(pid) = sup.pids.ganesha {
+        if ::nfs_klldap_config::process_is_live(pid) {
+            sup.log_warn(&format!(
+                "start_ganesha: refusing to double-spawn — pid {pid} is still live"
+            ));
+            return;
+        }
+        sup.pids.ganesha = None;
+    }
     if !sup.wait_for_idhelper_socket() {
         return;
     }

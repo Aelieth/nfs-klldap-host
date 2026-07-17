@@ -72,6 +72,9 @@ pub(crate) struct SupervisorEnv {
     pub supervisor_tick_ms: u64,
     /// Max loop iterations before exit when supervise_wizard_probe is set.
     pub supervisor_max_ticks: u32,
+    /// Copytruncate cap for the runtime logs (NFS_KLLDAP_LOG_ROTATE_MAX_MB,
+    /// default 64; 0 disables rotation).
+    pub log_rotate_max_bytes: u64,
 }
 
 impl SupervisorEnv {
@@ -129,6 +132,12 @@ impl SupervisorEnv {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(12),
+            log_rotate_max_bytes: std::env::var("NFS_KLLDAP_LOG_ROTATE_MAX_MB")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(64)
+                * 1024
+                * 1024,
         }
     }
 }

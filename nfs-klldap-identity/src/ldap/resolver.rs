@@ -55,9 +55,13 @@ pub struct IdLdapResolver {
     memberof_cache: Mutex<HashMap<String, CachedMemberOf>>,
     /// Keys of recent authoritative misses (u:/g:/uid:/gid: prefixed).
     negative_cache: Mutex<HashMap<String, Instant>>,
-    /// One bound connection reused across searches; rebound only when the
-    /// bind DN changes or an operation on it fails.
-    conn_pool: Mutex<Option<PooledConn>>,
+    /// Bound connections reused across searches (up to POOL_MAX_CONNS —
+    /// resolves run concurrently since the outer client mutex was dissolved,
+    /// 2026-07-17 audit); an entry is dropped when its bind DN differs, it
+    /// idles past POOL_IDLE_MAX, or an operation on it fails.
+    conn_pool: Mutex<Vec<PooledConn>>,
+    /// Last full evict sweep; gates the O(n) 7-map retain to once per 5s.
+    last_evict: Mutex<Option<Instant>>,
 
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
@@ -76,6 +80,9 @@ struct PooledConn {
 /// gambling on a connection the server may already have closed; the retry loop
 /// still heals a connection that dies sooner.
 const POOL_IDLE_MAX: Duration = Duration::from_secs(300);
+/// Pool depth: enough for the panel's concurrent resolves without holding a
+/// fleet of idle binds against LLDAP.
+const POOL_MAX_CONNS: usize = 4;
 
 /// Default upper bound on one connect+bind+search attempt. The 10s connect
 /// timeout only covers the TCP/TLS handshake; this catches a server that
@@ -202,7 +209,8 @@ impl IdLdapResolver {
             group_gid_by_dn_cache: Mutex::new(HashMap::new()),
             memberof_cache: Mutex::new(HashMap::new()),
             negative_cache: Mutex::new(HashMap::new()),
-            conn_pool: Mutex::new(None),
+            conn_pool: Mutex::new(Vec::new()),
+            last_evict: Mutex::new(None),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
             bind_count: AtomicU64::new(0),
@@ -274,6 +282,15 @@ impl IdLdapResolver {
     /// Evict expired (exposed for shared use by UI wrapper). 1 sentence.
     pub fn evict_expired(&self) {
         let now = Instant::now();
+        // Callers invoke this at every public entry point; full 7-map retain
+        // sweeps are O(n), so throttle to one sweep per 5s (TTLs are minutes).
+        {
+            let mut last = self.last_evict.lock().unwrap_or_else(|p| p.into_inner());
+            if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5)) {
+                return;
+            }
+            *last = Some(now);
+        }
         self.user_cache
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -379,25 +396,28 @@ impl IdLdapResolver {
     /// POOL_IDLE_MAX, is discarded so the pool never mixes identities or hands
     /// back a connection the server has likely already closed.
     fn take_pooled_conn(&self, bind_dn: &str) -> Option<LdapConn> {
-        let mut slot = self.conn_pool.lock().unwrap_or_else(|p| p.into_inner());
-        match slot.take() {
-            Some(p) if p.bound_as == bind_dn && !pool_entry_stale(p.last_used, Instant::now()) => {
-                Some(p.ldap)
+        let mut pool = self.conn_pool.lock().unwrap_or_else(|p| p.into_inner());
+        let now = Instant::now();
+        // Stale or foreign-identity entries never survive a take pass.
+        pool.retain_mut(|p| {
+            let keep = p.bound_as == bind_dn && !pool_entry_stale(p.last_used, now);
+            if !keep {
+                let _ = p.ldap.unbind();
             }
-            Some(mut discard) => {
-                let _ = discard.ldap.unbind();
-                None
-            }
-            None => None,
-        }
+            keep
+        });
+        pool.pop().map(|p| p.ldap)
     }
 
     fn store_pooled_conn(&self, ldap: LdapConn, bind_dn: &str) {
-        let mut slot = self.conn_pool.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(mut old) = slot.take() {
-            let _ = old.ldap.unbind();
+        let mut pool = self.conn_pool.lock().unwrap_or_else(|p| p.into_inner());
+        if pool.len() >= POOL_MAX_CONNS {
+            // Full pool: the surplus connection is simply closed.
+            let mut surplus = ldap;
+            let _ = surplus.unbind();
+            return;
         }
-        *slot = Some(PooledConn {
+        pool.push(PooledConn {
             ldap,
             bound_as: bind_dn.to_string(),
             last_used: Instant::now(),
@@ -406,7 +426,7 @@ impl IdLdapResolver {
 
     /// True when a bound connection is currently pooled (surfaced in stats).
     pub fn pool_is_warm(&self) -> bool {
-        self.conn_pool.lock().map(|s| s.is_some()).unwrap_or(false)
+        self.conn_pool.lock().map(|s| !s.is_empty()).unwrap_or(false)
     }
 
     /// Performs sync LDAP in a worker thread (callers may sit on an async

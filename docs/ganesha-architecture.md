@@ -2,7 +2,7 @@
 
 **Purpose:** serve-path contract, ACL vs NOACL generation, identity/runtime hardening for the packaged Ganesha binary.
 
-Ganesha **9.13-1+klldap2** (custom build; one ACL-capable binary, NOACL per-export via `Disable_ACL`; klldap2 fixes nsswitch `getgrouplist` return so supplemental groups are not dropped — see [container/ganesha/README.md](../container/ganesha/README.md)).
+Ganesha **9.13-1+klldap3** (custom build; one ACL-capable binary, NOACL per-export via `Disable_ACL`; klldap2 normalizes nsswitch `getgrouplist` return so supplemental groups are not dropped; klldap3 single-flights uid2grp cache-miss fetches so concurrent NSS rewrites cannot cache a partial group list — see [container/ganesha/README.md](../container/ganesha/README.md)).
 
 Single TOML (`nfs-klldap.conf`) is source of truth. `nfs-klldap-config` validates, derives, and generates sssd/krb5/idmapd/nfs/ganesha fragments. `nfs-klldap-startup supervise` is pid 1: preflight, ordered start, SIGHUP graceful apply + SIGUSR1 full recycle. WebUI (HTTPS 9630) edits TOML and applies chown/chmod on allowed `host_path` trees. Ganesha VFS + SSSD serve NFSv4 krb5*. No host kernel NFS (unless `HOST_NFS` sidecar mode).
 

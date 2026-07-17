@@ -33,7 +33,9 @@ impl Drop for FinishOnDrop {
 }
 
 /// True when an apply is already in flight (its progress slot exists and has not
-/// finished). Used to reject a concurrent apply instead of clobbering the slot.
+/// finished). A COURTESY pre-check only — two requests can both pass it; the
+/// authoritative gate is `try_claim_apply_slot`, whose check and write share
+/// one lock scope.
 async fn apply_in_progress(state: &AppState) -> bool {
     state
         .apply_progress
@@ -42,6 +44,25 @@ async fn apply_in_progress(state: &AppState) -> bool {
         .as_ref()
         .is_some_and(|p| !p.finished.load(Ordering::Relaxed))
 }
+
+/// Atomically claim the single apply slot for this apply's progress. False =
+/// another apply's slot is live; nothing was overwritten and the caller must
+/// bail without spawning. Check-then-set under separate lock acquisitions
+/// (the original 0.9.94 shape) let two applies race the gap and orphan the
+/// first poller.
+pub(crate) async fn try_claim_apply_slot(state: &AppState, progress: &Arc<ApplyProgress>) -> bool {
+    let mut slot = state.apply_progress.lock().await;
+    if slot
+        .as_ref()
+        .is_some_and(|p| !p.finished.load(Ordering::Relaxed))
+    {
+        return false;
+    }
+    *slot = Some(progress.clone());
+    true
+}
+
+const APPLY_BUSY_NOTE: &str = r#"<div class="note-danger">Another permission apply is already running — wait for it to finish before starting a new one.</div>"#;
 #[derive(Template)]
 #[template(path = "index.html")]
 struct IndexTemplate {
@@ -322,6 +343,10 @@ pub(crate) struct DirPermsTemplate {
     /// True when the access ACL is extended — the POSIX Group row then edits
     /// the mask, and the template says so.
     acl_extended: bool,
+    /// Extended-ACL-on-NOACL detector (gate B6/A8): the share serves without
+    /// ACL support but this directory carries extended POSIX ACLs on disk,
+    /// which the kernel still enforces. Renders a warn note on the panel.
+    acl_disk_note: bool,
 }
 
 /// One named ACL row for the panel (friendly name already LDAP-resolved).
@@ -338,6 +363,10 @@ pub(crate) struct AclEntryView {
     eff_w: bool,
     eff_x: bool,
     capped: bool,
+    /// True when the id resolved to no LDAP entity — the row renders
+    /// "(unknown)" beside the numeric id while `name` (and data-name on the
+    /// wire) stays the bare numeric string.
+    unknown: bool,
 }
 
 /// The mask row of one ACL layer (group-class cap; chmod's group bits edit
@@ -380,20 +409,26 @@ async fn friendly_group_label(lldap: &Ldap, gid: u32) -> String {
     }
     gid.to_string()
 }
-/// Bare friendly name (no trailing "(id)") for ACL rows; falls back to the numeric id.
-async fn friendly_user_name(lldap: &Ldap, uid: u32) -> String {
-    if let Some((id, display)) = lldap.resolve_user_by_uid(uid as i32).await {
-        if !display.is_empty() && display != id { display } else { id }
-    } else {
-        uid.to_string()
+/// Bare friendly name (no trailing "(id)") for ACL rows plus an unresolved
+/// flag; falls back to the numeric id. uid 0 is never flagged: root on disk
+/// is a known identity (the squash/nobody owner), not a stray ACE.
+async fn friendly_user_name(lldap: &Ldap, uid: u32) -> (String, bool) {
+    if uid != 0 {
+        if let Some((id, display)) = lldap.resolve_user_by_uid(uid as i32).await {
+            let name = if !display.is_empty() && display != id { display } else { id };
+            return (name, false);
+        }
     }
+    (uid.to_string(), uid != 0)
 }
-async fn friendly_group_name(lldap: &Ldap, gid: u32) -> String {
-    if let Some((id, display)) = lldap.resolve_group_by_gid(gid as i32).await {
-        if !display.is_empty() && display != id { display } else { id }
-    } else {
-        gid.to_string()
+async fn friendly_group_name(lldap: &Ldap, gid: u32) -> (String, bool) {
+    if gid != 0 {
+        if let Some((id, display)) = lldap.resolve_group_by_gid(gid as i32).await {
+            let name = if !display.is_empty() && display != id { display } else { id };
+            return (name, false);
+        }
     }
+    (gid.to_string(), gid != 0)
 }
 /// Resolved ACL editor gate: whether the editor is live, the pill label and
 /// its colour class, and the short/long reasons the panel shows.
@@ -434,7 +469,7 @@ fn gate_outside_shares() -> AclGateView {
 /// ACL on only when the serve path passes the write round-trip probe — the
 /// same decision generate makes, so the panel mirrors the export.
 fn share_acl_gate(state: &AppState, host_path: &std::path::Path) -> AclGateView {
-    let cfg = state.config.read().expect("config lock poisoned");
+    let cfg = state.config.read().unwrap_or_else(|p| p.into_inner());
     let Some(s) = best_share_for(&cfg, host_path) else {
         return gate_outside_shares();
     };
@@ -459,7 +494,7 @@ fn share_acl_gate(state: &AppState, host_path: &std::path::Path) -> AclGateView 
 /// re-checks the node so an ACL write can never land on a divergent
 /// (ACL-incapable or unverified) submount — the server-side 422 backstop.
 fn acl_apply_gate(state: &AppState, host_path: &std::path::Path) -> AclGateView {
-    let cfg = state.config.read().expect("config lock poisoned");
+    let cfg = state.config.read().unwrap_or_else(|p| p.into_inner());
     let Some(s) = best_share_for(&cfg, host_path) else {
         return gate_outside_shares();
     };
@@ -478,7 +513,7 @@ fn acl_apply_gate(state: &AppState, host_path: &std::path::Path) -> AclGateView 
     // ACL share cannot store ACLs even though the share serves them. The write
     // probe needs a directory, so file targets probe their parent.
     let node_real = {
-        let fs = state.fs.read().expect("fs lock poisoned");
+        let fs = state.fs.read().unwrap_or_else(|p| p.into_inner());
         fs.host_path_to_container_path(host_path).ok()
     };
     let node_path = node_real.unwrap_or_else(|| serve.clone());
@@ -737,7 +772,7 @@ pub(crate) async fn index(
 
 fn index_html(state: &AppState, current_user: String) -> String {
     let server = &state.keytab_hostname;
-    let cfg = state.config.read().expect("config lock poisoned");
+    let cfg = state.config.read().unwrap_or_else(|p| p.into_inner());
     let snap =
         nfs_klldap_config::MountinfoSnapshot::capture(state.fs_probe_mountinfo_path.as_deref());
     let display_shares: Vec<ShareInfo> = cfg
@@ -809,8 +844,8 @@ fn index_html(state: &AppState, current_user: String) -> String {
     let tpl = IndexTemplate {
         shares: display_shares,
         current_user: Some(current_user),
-        keytab_alert: state.keytab_alert.lock().unwrap().clone(),
-        acl_alert: state.acl_alert.lock().unwrap().clone(),
+        keytab_alert: state.keytab_alert.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+        acl_alert: state.acl_alert.lock().unwrap_or_else(|p| p.into_inner()).clone(),
         apply_log_initial: apply_log_shell(
             r#"<em class="placeholder-note">No permission applies yet.</em>"#,
             false,
@@ -819,7 +854,7 @@ fn index_html(state: &AppState, current_user: String) -> String {
         ),
     };
 
-    tpl.render().unwrap()
+    tpl.render().unwrap_or_else(|_| render_500("dashboard"))
 }
 /// Lazy-loads one level of a directory (HTMX partial): subdirectories first,
 /// then files with a type emoji and modified date.
@@ -841,7 +876,10 @@ pub(crate) async fn tree_fragment(
 /// the diagnostic fallback. Returns the rendered HTML fragment.
 fn tree_fragment_html(state: &AppState, params: &TreeParams) -> String {
     let path = std::path::Path::new(&params.path);
-    let fs = state.fs.read().expect("fs lock poisoned");
+    // Snapshot the manager out of the lock: list_dir stats O(files) and the
+    // "+" marker shells a batched getfacl — neither may hold the fs lock and
+    // block writers (settings save, config reload) for a subprocess lifetime.
+    let fs = state.fs.read().unwrap_or_else(|p| p.into_inner()).clone();
     if let Some(entries) = fs.list_dir(path) {
         let mut children: Vec<EntryView> = entries.into_iter().map(EntryView::from_fs_entry).collect();
         // The "+" marker runs one batched getfacl per fragment and only on
@@ -862,15 +900,14 @@ fn tree_fragment_html(state: &AppState, params: &TreeParams) -> String {
                 .unwrap_or_else(|| normalized.clone());
             let root = DirNode { path: normalized, name };
             let tpl = TreeRootTemplate { root, children };
-            return tpl.render().unwrap();
+            return tpl.render().unwrap_or_else(|_| render_500("directory tree"));
         } else {
             let tpl = TreeFragmentTemplate { children };
-            return tpl.render().unwrap();
+            return tpl.render().unwrap_or_else(|_| render_500("directory tree"));
         }
     }
 
     let diag = fs.diagnose_path(path);
-    drop(fs);
     let safe_path = params
         .path
         .replace('&', "&amp;")
@@ -924,12 +961,12 @@ pub(crate) async fn dir_perms(
         tokio::task::spawn_blocking(move || {
             let host = std::path::Path::new(&path);
             let (meta, diag) = {
-                let fs = state.fs.read().expect("fs lock poisoned");
+                let fs = state.fs.read().unwrap_or_else(|p| p.into_inner());
                 (fs.get_node_meta(host), fs.diagnose_path(host))
             };
             let gate = share_acl_gate(&state, host);
             let table = {
-                let fs = state.fs.read().expect("fs lock poisoned");
+                let fs = state.fs.read().unwrap_or_else(|p| p.into_inner());
                 fs.get_acl_table(host).unwrap_or_default()
             };
             (meta, diag, gate, table)
@@ -1015,22 +1052,26 @@ pub(crate) async fn dir_perms(
             let capped = eff != line.perms;
             match line.tag {
                 crate::privileged::AclTag::NamedUser(uid) => {
+                    let (name, unknown) = friendly_user_name(&l, uid).await;
                     let view = AclEntryView {
-                        name: friendly_user_name(&l, uid).await,
+                        name,
                         id: uid,
                         r: line.perms.r, w: line.perms.w, x: line.perms.x,
                         eff_r: eff.r, eff_w: eff.w, eff_x: eff.x,
                         capped,
+                        unknown,
                     };
                     if default { default_users.push(view) } else { users.push(view) }
                 }
                 crate::privileged::AclTag::NamedGroup(gid) => {
+                    let (name, unknown) = friendly_group_name(&l, gid).await;
                     let view = AclEntryView {
-                        name: friendly_group_name(&l, gid).await,
+                        name,
                         id: gid,
                         r: line.perms.r, w: line.perms.w, x: line.perms.x,
                         eff_r: eff.r, eff_w: eff.w, eff_x: eff.x,
                         capped,
+                        unknown,
                     };
                     if default { default_groups.push(view) } else { groups.push(view) }
                 }
@@ -1043,6 +1084,9 @@ pub(crate) async fn dir_perms(
     let mask = table.mask_of(false).map(|m| AclMaskView { r: m.r, w: m.w, x: m.x });
     let default_mask = table.mask_of(true).map(|m| AclMaskView { r: m.r, w: m.w, x: m.x });
     let acl_extended = table.is_extended();
+    // is_extended() covers named entries, a bare mask, and default-only trees —
+    // default entries keep shaping newborn files on a NOACL share, so they count.
+    let acl_disk_note = !acl_supported && acl_extended;
 
     let tpl = DirPermsTemplate {
         path,
@@ -1073,8 +1117,13 @@ pub(crate) async fn dir_perms(
         default_groups,
         default_mask,
         acl_extended,
+        acl_disk_note,
     };
-    Ok(Html(tpl.render().unwrap()))
+    // This render runs on the async handler (not behind a spawn_blocking join
+    // like index/tree), so a template error must degrade, not panic the task.
+    Ok(Html(
+        tpl.render().unwrap_or_else(|_| render_500("permissions panel")),
+    ))
 }
 /// True when the owner/group query should offer the synthetic "nobody (0)"
 /// row. uid/gid 0 is not an LDAP entity but is a first-class share owner
@@ -1191,10 +1240,7 @@ pub(crate) async fn apply_permissions(
     // One apply at a time: a second concurrent apply would clobber the single
     // progress slot and orphan the first apply's poller.
     if apply_in_progress(&state).await {
-        return Ok(Html(
-            r#"<div class="note-danger">Another permission apply is already running — wait for it to finish before starting a new one.</div>"#
-                .to_string(),
-        ));
+        return Ok(Html(APPLY_BUSY_NOTE.to_string()));
     }
     // Option-based resolution — uid/gid 0 (root on disk, the nobody/anonymous
     // identity NFS clients see under root-squash) is a first-class owner.
@@ -1262,7 +1308,7 @@ pub(crate) async fn apply_permissions(
     // Untouched fields keep the directory's current ownership.
     if owner_uid.is_none() || group_gid.is_none() {
         let meta = {
-            let fs = state.fs.read().expect("fs lock poisoned");
+            let fs = state.fs.read().unwrap_or_else(|p| p.into_inner());
             fs.get_dir_meta(std::path::Path::new(&form.path))
         };
         match meta {
@@ -1284,7 +1330,7 @@ pub(crate) async fn apply_permissions(
     // The file panel exposes no scope radios; this is the server-side belt for
     // hand-crafted POSTs.
     let target_is_file = {
-        let fs = state.fs.read().expect("fs lock poisoned");
+        let fs = state.fs.read().unwrap_or_else(|p| p.into_inner());
         fs.get_node_meta(std::path::Path::new(&form.path))
             .map(|m| !m.is_dir)
             .unwrap_or(false)
@@ -1481,15 +1527,14 @@ pub(crate) async fn apply_permissions(
         format!("{cmd}\n{}", lines.join("\n"))
     };
     let progress = Arc::new(ApplyProgress::default());
-    {
-        let mut slot = state.apply_progress.lock().await;
-        *slot = Some(progress.clone());
+    if !try_claim_apply_slot(&state, &progress).await {
+        return Ok(Html(APPLY_BUSY_NOTE.to_string()));
     }
     {
-        let mut c = progress.cmd.lock().unwrap();
+        let mut c = progress.cmd.lock().unwrap_or_else(|p| p.into_inner());
         *c = Some(cmd.clone());
     }
-    let fs = state.fs.read().expect("fs lock poisoned").clone();
+    let fs = state.fs.read().unwrap_or_else(|p| p.into_inner()).clone();
     let pth = form.path.clone();
     let uid = owner_uid;
     let gid = group_gid;
@@ -1499,7 +1544,7 @@ pub(crate) async fn apply_permissions(
     tokio::spawn(async move {
         // Guarantees the poller is released even if the task panics mid-apply.
         let _finish = FinishOnDrop(prog.clone());
-        *prog.phase.lock().unwrap() = "scanning".to_string();
+        *prog.phase.lock().unwrap_or_else(|p| p.into_inner()) = "scanning".to_string();
         let pth1 = pth.clone();
         let fs1 = fs.clone();
         let prog1 = prog.clone();
@@ -1516,7 +1561,7 @@ pub(crate) async fn apply_permissions(
         let total = prog.processed.load(Ordering::Relaxed);
         prog.total.store(total, Ordering::Relaxed);
         prog.processed.store(0, Ordering::Relaxed);
-        *prog.phase.lock().unwrap() = "applying".to_string();
+        *prog.phase.lock().unwrap_or_else(|p| p.into_inner()) = "applying".to_string();
 
         let pth2 = pth.clone();
         let fs2 = fs.clone();
@@ -1531,7 +1576,7 @@ pub(crate) async fn apply_permissions(
                     errs.push((PathBuf::from(&pth), e.clone()));
                 }
                 let err_text = format!("Apply error during walk: {}", e);
-                *prog.final_result_text.lock().expect("progress mutex poisoned") = Some(err_text);
+                *prog.final_result_text.lock().unwrap_or_else(|p| p.into_inner()) = Some(err_text);
                 prog.finished.store(true, Ordering::Relaxed);
                 return;
             }
@@ -1548,7 +1593,7 @@ pub(crate) async fn apply_permissions(
             apply_res.changed, apply_res.skipped, apply_res.errors.len()
         );
         if prog.cancelled.load(Ordering::Relaxed) {
-            let last = prog.last_path.lock().expect("progress mutex poisoned").clone().unwrap_or_else(|| pth.clone());
+            let last = prog.last_path.lock().unwrap_or_else(|p| p.into_inner()).clone().unwrap_or_else(|| pth.clone());
             rtext = format!("CANCELLED after {}\n{}", last, rtext);
         }
         if !apply_res.errors.is_empty() {
@@ -1598,7 +1643,7 @@ pub(crate) async fn apply_permissions(
                         ));
                         break;
                     }
-                    *prog.phase.lock().expect("progress mutex poisoned") =
+                    *prog.phase.lock().unwrap_or_else(|p| p.into_inner()) =
                         format!("applying ACLs ({}/{})", i + 1, total_ops);
                     // The dir/file modification pair differs exactly when the
                     // r-implies-x fuse fired on this op; name it in the log so
@@ -1718,7 +1763,7 @@ pub(crate) async fn apply_permissions(
             }
         }
         {
-            let mut ft = prog.final_result_text.lock().expect("progress mutex poisoned");
+            let mut ft = prog.final_result_text.lock().unwrap_or_else(|p| p.into_inner());
             *ft = Some(rtext);
         }
         prog.finished.store(true, Ordering::Relaxed);
@@ -1778,12 +1823,12 @@ pub(crate) async fn apply_progress(
             let ch = prog.changed.load(Ordering::Relaxed);
             let sk = prog.skipped.load(Ordering::Relaxed);
             let errc = prog.error_count.load(Ordering::Relaxed);
-            let phase = prog.phase.lock().expect("progress mutex poisoned").clone();
+            let phase = prog.phase.lock().unwrap_or_else(|p| p.into_inner()).clone();
             let finished = prog.finished.load(Ordering::Relaxed);
 
-            let cmd = prog.cmd.lock().expect("progress mutex poisoned").clone().unwrap_or_default();
+            let cmd = prog.cmd.lock().unwrap_or_else(|p| p.into_inner()).clone().unwrap_or_default();
             let live_or_final = if finished {
-                prog.final_result_text.lock().expect("progress mutex poisoned").clone().unwrap_or_else(|| "Finished.".into())
+                prog.final_result_text.lock().unwrap_or_else(|p| p.into_inner()).clone().unwrap_or_else(|| "Finished.".into())
             } else if total == 0 {
                 let spin_chars = ["|", "/", "-", "\\"];
                 let spin = spin_chars[proc % 4];
@@ -1928,14 +1973,7 @@ pub(crate) async fn acl_apply(
     // One apply at a time: a second concurrent apply would clobber the single
     // progress slot and orphan the first apply's poller.
     if apply_in_progress(&state).await {
-        return Ok((
-            StatusCode::CONFLICT,
-            Html(
-                r#"<div class="note-danger">Another permission apply is already running — wait for it to finish before starting a new one.</div>"#
-                    .to_string(),
-            ),
-        )
-            .into_response());
+        return Ok((StatusCode::CONFLICT, Html(APPLY_BUSY_NOTE.to_string())).into_response());
     }
     let _p = std::path::Path::new(&form.path);
     let op = form.op.trim().to_lowercase();
@@ -1960,7 +1998,7 @@ pub(crate) async fn acl_apply(
     }
     let default_layer = form.layer.trim().eq_ignore_ascii_case("default");
     let node_is_dir = {
-        let fs = state.fs.read().expect("fs lock poisoned");
+        let fs = state.fs.read().unwrap_or_else(|p| p.into_inner());
         fs.get_node_meta(std::path::Path::new(&form.path))
             .map(|m| m.is_dir)
     };
@@ -2059,19 +2097,18 @@ pub(crate) async fn acl_apply(
         format!("{} [scope: {}]", cmd, form.scope.trim())
     };
     let progress = Arc::new(ApplyProgress::default());
-    {
-        let mut slot = state.apply_progress.lock().await;
-        *slot = Some(progress.clone());
+    if !try_claim_apply_slot(&state, &progress).await {
+        return Ok((StatusCode::CONFLICT, Html(APPLY_BUSY_NOTE.to_string())).into_response());
     }
     {
-        let mut c = progress.cmd.lock().unwrap();
+        let mut c = progress.cmd.lock().unwrap_or_else(|p| p.into_inner());
         *c = Some(cmd.clone());
     }
-    *progress.phase.lock().unwrap() = "applying".to_string();
+    *progress.phase.lock().unwrap_or_else(|p| p.into_inner()) = "applying".to_string();
     progress.total.store(1, Ordering::Relaxed);
     progress.processed.store(0, Ordering::Relaxed);
 
-    let fs = state.fs.read().expect("fs lock poisoned").clone();
+    let fs = state.fs.read().unwrap_or_else(|p| p.into_inner()).clone();
     let pth = form.path.clone();
     let prog = progress.clone();
     let modf = modification;
@@ -2110,7 +2147,7 @@ pub(crate) async fn acl_apply(
             }
             prog.changed.fetch_add(1, Ordering::Relaxed);
             {
-                let mut ft = prog.final_result_text.lock().expect("progress mutex poisoned");
+                let mut ft = prog.final_result_text.lock().unwrap_or_else(|p| p.into_inner());
                 *ft = Some(rtext);
             }
             prog.finished.store(true, Ordering::Relaxed);
@@ -2119,7 +2156,7 @@ pub(crate) async fn acl_apply(
 
         // Scoped apply: scan for the total first, then chunked setfacl —
         // the same two-phase shape as the POSIX recursive apply.
-        *prog.phase.lock().expect("progress mutex poisoned") = "scanning".to_string();
+        *prog.phase.lock().unwrap_or_else(|p| p.into_inner()) = "scanning".to_string();
         let scan = {
             let fs = fs.clone();
             let pth = pth.clone();
@@ -2143,7 +2180,7 @@ pub(crate) async fn acl_apply(
         };
         prog.total.store(total, Ordering::Relaxed);
         prog.processed.store(0, Ordering::Relaxed);
-        *prog.phase.lock().expect("progress mutex poisoned") = "applying".to_string();
+        *prog.phase.lock().unwrap_or_else(|p| p.into_inner()) = "applying".to_string();
         let applied = {
             let fs = fs.clone();
             let pth = pth.clone();
@@ -2191,7 +2228,7 @@ fn finish_acl_progress(prog: &ApplyProgress, text: String) {
         let mut ft = prog
             .final_result_text
             .lock()
-            .expect("progress mutex poisoned");
+            .unwrap_or_else(|p| p.into_inner());
         *ft = Some(text);
     }
     prog.finished.store(true, Ordering::Relaxed);

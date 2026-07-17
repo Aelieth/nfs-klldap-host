@@ -63,21 +63,35 @@ pub(crate) fn spawn_acl_reprobe_loop(state: AppState) {
         eprintln!("INFO: ACL re-probe loop disabled (NFS_KLLDAP_ACL_REPROBE_INTERVAL_SECS=0)");
         return;
     }
+    // Supervised: the inner task IS the loop; if it ever dies (a panic in a
+    // probe path), auto-heal must not stay silently dead for process
+    // lifetime — respawn with fresh hysteresis state (two stable ticks are
+    // re-required before any flip, so a reset is safe).
     tokio::spawn(async move {
-        let mut tracker = FlipTracker::default();
-        let mut interval = tokio::time::interval(Duration::from_secs(secs));
-        // The first tick returns immediately; skip it so we probe after a full
-        // interval rather than racing startup.
-        interval.tick().await;
         loop {
-            interval.tick().await;
-            let outcome = acl_reprobe_tick(&state, &mut tracker).await;
-            if outcome.hup_scheduled {
-                eprintln!("INFO: ACL re-probe scheduled a service recycle");
-            }
-            if let Some(msg) = &outcome.alert {
-                eprintln!("WARN: ACL re-probe: {msg}");
-            }
+            let st = state.clone();
+            let inner = tokio::spawn(async move {
+                let mut tracker = FlipTracker::default();
+                let mut interval = tokio::time::interval(Duration::from_secs(secs));
+                // The first tick returns immediately; skip it so we probe
+                // after a full interval rather than racing startup.
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    let outcome = acl_reprobe_tick(&st, &mut tracker).await;
+                    if outcome.hup_scheduled {
+                        eprintln!("INFO: ACL re-probe scheduled a service recycle");
+                    }
+                    if let Some(msg) = &outcome.alert {
+                        eprintln!("WARN: ACL re-probe: {msg}");
+                    }
+                }
+            });
+            let _ = inner.await;
+            eprintln!(
+                "WARN: ACL re-probe loop terminated unexpectedly — respawning in 30s (hysteresis reset)"
+            );
+            tokio::time::sleep(Duration::from_secs(30)).await;
         }
     });
 }

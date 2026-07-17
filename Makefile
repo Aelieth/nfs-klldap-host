@@ -140,6 +140,7 @@ clippy:
 gate:
 	bash scripts/safety-dance.sh
 	python3 scripts/comment_lint.py
+	bash scripts/check-version-pins.sh
 	$(CARGO) test --workspace
 
 .PHONY: clean

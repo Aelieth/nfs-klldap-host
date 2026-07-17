@@ -9,9 +9,8 @@ use crate::{ConfigError, FsCapabilities, NfsKlldapConfig};
 use super::directives::{derive_export_id, export_fs_directives, export_read_access_line, export_pseudo_line, fragment_basename};
 
 pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Result<(), ConfigError> {
-    fs::create_dir_all(exports_dir)?;
-    // Prune stale fragments after writing, not before, to survive a crash.
-    let mut written: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Validate all shares before any write; an abort mid-loop split the dir.
+    let mut staged: Vec<(String, String)> = Vec::new();
     let mountinfo_once: Option<String> = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok().and_then(|p| std::fs::read_to_string(p).ok()).or_else(|| std::fs::read_to_string("/proc/self/mountinfo").ok());
 
     for (i, share) in cfg.shares.iter().enumerate() {
@@ -106,7 +105,13 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
 }}
 "#, share.name, export_id, path, sec, squash, auto_comment=auto_comment, pseudo_line=pseudo_line, disable_acl_line=disable_acl_line, manage_gids_line=manage_gids_line, read_access_line=read_access_line, pref_read_line=pref_read_line, pref_write_line=pref_write_line, attr_expiry_line=attr_expiry_line, client_block=client_block, umask_line=umask_line);
 
-        let filename = fragment_basename(i, &share.name);
+        staged.push((fragment_basename(i, &share.name), block));
+    }
+
+    // Write the validated set; prune after writing so a crash keeps fragments.
+    fs::create_dir_all(exports_dir)?;
+    let mut written: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (filename, block) in staged {
         crate::atomic_write(&exports_dir.join(&filename), block.as_bytes())?;
         written.insert(filename);
     }

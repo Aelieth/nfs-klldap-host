@@ -18,7 +18,7 @@
         <div class="acl-row" data-type="{{ kind }}" data-id="{{ e.id }}" data-name="{{ e.name }}" data-layer="{{ layer }}"
              data-perms="{% if e.r %}r{% else %}-{% endif %}{% if e.w %}w{% else %}-{% endif %}{% if e.x %}x{% else %}-{% endif %}"
              {% if e.capped %}title="Mask caps this entry to {% if e.eff_r %}r{% else %}-{% endif %}{% if e.eff_w %}w{% else %}-{% endif %}{% if e.eff_x %}x{% else %}-{% endif %}"{% endif %}>
-          <span class="acl-name">{{ e.name }} <span class="id">{{ e.id }}</span></span>
+          <span class="acl-name">{% if e.unknown %}<span class="unk" title="No LDAP user or group has this id — likely a foreign or deleted principal. The entry still enforces on disk.">(unknown)</span>{% else %}{{ e.name }}{% endif %} <span class="id">{{ e.id }}</span></span>
           <span class="acl-cell{% if e.r && !e.eff_r %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="r" aria-label="read" {% if e.r %}checked{% endif %} disabled></span>
           <span class="acl-cell{% if e.w && !e.eff_w %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="w" aria-label="write" {% if e.w %}checked{% endif %} disabled></span>
           <span class="acl-cell{% if e.x && !e.eff_x %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="x" aria-label="execute" {% if e.x %}checked{% endif %} disabled></span>
@@ -221,6 +221,10 @@
 
   {% if !acl_supported || acl_pill_class == "warn" %}
   <div class="acl-reason" title="{{ acl_reason_long }}">{{ acl_reason }}</div>
+  {% endif %}
+
+  {% if acl_disk_note %}
+  <div class="acl-disk-note" title="The export omits ACL support at the protocol level, but POSIX ACLs live on the filesystem and the kernel checks them on every access — including entries a client managed to write here (the Disable_ACL directive is advisory on the 9.13 VFS build).">Extended POSIX ACLs are present on disk here. This share serves without ACL support, but the kernel still enforces them — turn ACLs on for this share to manage them.</div>
   {% endif %}
 
   <div class="acl-tabs" role="tablist">

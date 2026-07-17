@@ -60,6 +60,38 @@ fn write_setup_marker(tmp: &tempfile::TempDir, name: &str) -> PathBuf {
     sm
 }
 
+// The claim is the authoritative apply-concurrency gate: check-and-set in ONE
+// lock scope. The 0.9.94 shape (courtesy check, then a separate lock to set)
+// let two applies race the gap and clobber the slot, orphaning the first
+// apply's poller.
+#[tokio::test]
+async fn apply_slot_claim_is_atomic_and_reclaimable_after_finish() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cp = tmp.path().join("c");
+    std::fs::write(
+        &cp,
+        "ldap_uri = \"ldaps://klldap.test:6360\"\n[storage]\ncontainer_root = \"/tmp\"\n[sssd]\nldap_default_bind_dn = \"uid=admin\"\nldap_default_authtok = \"s\"\n",
+    )
+    .unwrap();
+    let sm = write_setup_marker(&tmp, ".s");
+    let st = test_app_state(&cp, sm, None);
+    let p1 = Arc::new(crate::fs::ApplyProgress::default());
+    let p2 = Arc::new(crate::fs::ApplyProgress::default());
+    assert!(
+        super::permission_tree::try_claim_apply_slot(&st, &p1).await,
+        "free slot claims"
+    );
+    assert!(
+        !super::permission_tree::try_claim_apply_slot(&st, &p2).await,
+        "live slot must refuse a second claim"
+    );
+    p1.finished.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        super::permission_tree::try_claim_apply_slot(&st, &p2).await,
+        "finished slot is reclaimable"
+    );
+}
+
 /// Mountinfo fixture marking `root` as an ACL-capable ext4 mount: tests stay
 /// hermetic from the host mount table while the real write probe still runs
 /// against the temp directory.
@@ -675,6 +707,20 @@ async fn acl_test_scaffold(
     String,
     axum::Router,
 ) {
+    acl_scaffold_with(tmp, "").await
+}
+
+/// `acl_test_scaffold` with extra per-share TOML lines spliced into the
+/// `[[shares]]` block (e.g. `enable_acl = false` for NOACL-share panel cases).
+async fn acl_scaffold_with(
+    tmp: &tempfile::TempDir,
+    share_extra: &str,
+) -> (
+    Arc<RwLock<FsManager>>,
+    Arc<Mutex<Option<Arc<crate::fs::ApplyProgress>>>>,
+    String,
+    axum::Router,
+) {
     let real_root = tmp.path().join("aclroot");
     std::fs::create_dir_all(&real_root).unwrap();
     // Hermetic mountinfo fixture marking the tempdir capable, so the auto
@@ -697,9 +743,10 @@ ldap_default_authtok = "s"
 name = "acldata"
 host_path = "/acldata"
 container_path = "{}"
-"#,
+{}"#,
         real_root.display(),
-        real_root.display()
+        real_root.display(),
+        share_extra
     );
     std::fs::write(&cp, min_cfg).unwrap();
     let sm = write_setup_marker(tmp, ".s");
@@ -1544,6 +1591,79 @@ async fn dir_perms_renders_mask_default_and_effective_sections() {
     assert!(html.contains("Mask caps this entry"), "capped row carries the effective tooltip");
     assert!(html.contains("mask-star"), "Group row carries the mask hint when extended");
     assert!(html.contains("acl-act"), "unified Add/Remove/Modify actions rendered");
+}
+
+// Gate B6 (UI half): an ACE whose id resolves to no LDAP entity renders
+// "(unknown)" beside the numeric id, while data-name keeps the bare numeric —
+// the staged acl_ops wire format must not carry the marker. uid 0 stays a
+// bare numeric with no marker (root on disk is a known identity, not stray).
+#[tokio::test]
+async fn dir_perms_unresolved_ace_renders_unknown_marker() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (_fs, _progress, token, app) = acl_test_scaffold(&tmp).await;
+    let real = tmp.path().join("aclroot");
+    for m in [
+        crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(61616),
+            perms: crate::privileged::AclPerms::from_str("rwx"),
+            default: false,
+        },
+        crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::Group(53535),
+            perms: crate::privileged::AclPerms::from_str("r-x"),
+            default: false,
+        },
+        crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(0),
+            perms: crate::privileged::AclPerms::from_str("r--"),
+            default: false,
+        },
+    ] {
+        crate::privileged::apply_acl(&real, m).expect("seed acl");
+    }
+    let html = get_html(&app, &token, "/dir-perms?path=%2Facldata").await;
+    assert_eq!(
+        html.matches("(unknown)").count(),
+        2,
+        "exactly the two unresolved non-zero ids carry the marker: {html}"
+    );
+    assert!(html.contains(r#"class="unk""#), "marker span styled: {html}");
+    assert!(html.contains(r#"data-name="61616""#), "user data-name stays numeric: {html}");
+    assert!(html.contains(r#"data-name="53535""#), "group data-name stays numeric: {html}");
+    assert!(html.contains(r#"<span class="id">61616</span>"#), "numeric id shown beside marker: {html}");
+    assert!(html.contains(r#"data-name="0""#), "uid 0 renders as bare numeric, unflagged: {html}");
+}
+
+// Extended-ACL-on-NOACL detector: a share serving with enable_acl = false
+// whose directory carries extended POSIX ACLs gets the warn note (kernel
+// still enforces them); a plain subdirectory on the same share does not.
+#[tokio::test]
+async fn dir_perms_off_share_with_disk_acls_shows_detector_note() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (_fs, _progress, token, app) = acl_scaffold_with(&tmp, "enable_acl = false\n").await;
+    let real = tmp.path().join("aclroot");
+    std::fs::create_dir_all(real.join("plainsub")).unwrap();
+    crate::privileged::apply_acl(
+        &real,
+        crate::privileged::AclModification::Set {
+            kind: crate::privileged::AclEntryKind::User(61616),
+            perms: crate::privileged::AclPerms::from_str("r--"),
+            default: false,
+        },
+    )
+    .expect("seed acl");
+    let html = get_html(&app, &token, "/dir-perms?path=%2Facldata").await;
+    assert!(html.contains(r#"class="pill off""#), "share classifies off: {html}");
+    assert!(html.contains("acl-disk-note"), "detector note renders on the ACL'd dir: {html}");
+    assert!(
+        html.contains("Extended POSIX ACLs are present on disk"),
+        "note names the condition: {html}"
+    );
+    let plain = get_html(&app, &token, "/dir-perms?path=%2Facldata%2Fplainsub").await;
+    assert!(
+        !plain.contains("acl-disk-note"),
+        "no note on a plain directory of the same off share: {plain}"
+    );
 }
 
 // POSIX apply owner resolution: uid/gid 0 is a first-class owner (root on

@@ -172,6 +172,14 @@ impl AclCapabilityCache {
 
     fn store(&self, root: &str, caps: &FsCapabilities, probe_dir: &Path, verdict: AclProbeVerdict) {
         if let Ok(mut entries) = self.entries.write() {
+            // Orphan sweep: entries for mounts that vanished (unmounted
+            // scratch share, removed share) are never looked up again — their
+            // key stops matching — so age them out here instead of letting
+            // the map grow until the next config reload. 8x TTL keeps every
+            // live entry (they re-store on each re-probe) while bounding the
+            // dead ones; the map is small, the sweep is O(entries).
+            let horizon = self.ttl * 8;
+            entries.retain(|_, e| e.probed_at.elapsed() < horizon);
             entries.insert(
                 root.to_string(),
                 CacheEntry {

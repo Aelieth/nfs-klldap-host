@@ -2,6 +2,8 @@
 //! forced full recycle via ServiceRecyclePlan.
 
 mod env;
+mod logrotate;
+mod respawn;
 mod services;
 
 use std::fs::{self, OpenOptions};
@@ -9,6 +11,8 @@ use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 
 const NSS_PIPE: &str = "/var/lib/sss/pipes/nss";
+/// Rotation-check cadence in loop ticks (~60s at the default 2s tick).
+const LOG_ROTATE_CHECK_TICKS: u32 = 30;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -53,6 +57,8 @@ struct Supervisor {
     ganesha_managed: bool,
     /// Last [[shares]] fingerprint for WebUI-only recycle detection.
     last_shares_fingerprint: u64,
+    /// Steady-state respawn rate limiter (WI-18, Idle-tick liveness).
+    respawn: respawn::RespawnBudget,
 }
 
 /// Fingerprint deltas reported by `regenerate_and_diff`.
@@ -72,6 +78,7 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
         services_started: false,
         ganesha_managed: false,
         last_shares_fingerprint: 0,
+        respawn: respawn::RespawnBudget::default(),
     };
 
     sup.log_info("=== Starting nfs-klldap-host (Rust supervisor) ===");
@@ -653,9 +660,16 @@ while :; do :; done
                         }
                     }
                 }
-                SupervisorLoopAction::Idle => {}
+                SupervisorLoopAction::Idle => {
+                    self.check_and_respawn_services();
+                }
             }
             reap_children();
+            // Rotation piggybacks the tick clock: cheap stat every ~60s at
+            // the default 2s tick, not every pass.
+            if ticks.is_multiple_of(LOG_ROTATE_CHECK_TICKS) {
+                self.rotate_runtime_logs();
+            }
             ticks = ticks.saturating_add(1);
             if bounded && ticks >= max_ticks {
                 if !env::recycle_marker_path().is_file() {
@@ -718,11 +732,16 @@ while :; do :; done
             &self.env.idmap_conf,
         );
         let shares_fp_before = self.last_shares_fingerprint;
-        let status = Command::new(&self.env.config_bin)
-            .args(["generate", "--config"])
-            .arg(&self.env.nfs_config)
-            .status()
-            .map_err(|e| format!("generate on reload failed: {e}"))?;
+        // Ceiling, not a courtesy: generate write-probes every ACL share, and
+        // a stalled mount inside it would otherwise park THIS loop — no
+        // future SIGHUP/SIGUSR1 would ever be serviced again.
+        let status = nfs_klldap_config::proc_run::status_with_timeout(
+            Command::new(&self.env.config_bin)
+                .args(["generate", "--config"])
+                .arg(&self.env.nfs_config),
+            std::time::Duration::from_secs(120),
+        )
+        .map_err(|e| format!("generate on reload failed: {e}"))?;
         if !status.success() {
             self.log_error("Config generator failed during reload");
             return Err("config generate failed".into());
@@ -830,6 +849,109 @@ while :; do :; done
             ConfigError::Validation(msg) => msg,
             other => other.to_string(),
         })
+    }
+
+    /// Steady-state liveness from the Idle tick (WI-18, re-opened by the
+    /// 2026-07-17 audit): a managed child that died gets a rate-limited
+    /// respawn — 3 per 10 min per service, 10s cooldown — instead of a
+    /// silently degraded stack. Budget exhaustion logs fatal-degraded once
+    /// and defers to the healthcheck/orchestrator. Dependency order matters:
+    /// idhelper precedes ganesha (start_ganesha gates on its socket), so a
+    /// dead dependency doesn't burn ganesha's budget first.
+    fn check_and_respawn_services(&mut self) {
+        let now = std::time::Instant::now();
+        for service in ["dbus", "sssd", "idhelper", "watcher", "webui", "ganesha"] {
+            if !self.respawn_needed(service) {
+                continue;
+            }
+            match self.respawn.decide(service, now) {
+                respawn::RespawnDecision::Cooldown => {}
+                respawn::RespawnDecision::Exhausted { first_time } => {
+                    if first_time {
+                        self.log_error(&format!(
+                            "{service} died and its respawn budget ({} per {}s) is exhausted — \
+                             running degraded until the healthcheck/orchestrator intervenes",
+                            respawn::RESPAWN_BUDGET,
+                            respawn::RESPAWN_WINDOW.as_secs()
+                        ));
+                    }
+                }
+                respawn::RespawnDecision::Go => {
+                    self.log_warn(&format!(
+                        "{service} is down — respawning (steady-state liveness)"
+                    ));
+                    self.respawn_service(service);
+                }
+            }
+        }
+    }
+
+    /// A dead TRACKED pid is the trigger for the five sidecars — a failed
+    /// respawn leaves the dead pid in place so retries stay budget-driven.
+    /// Ganesha keys off `ganesha_managed` instead: recycle paths legally
+    /// drop its pid while it should still be running.
+    fn respawn_needed(&self, service: &str) -> bool {
+        let dead = |pid: Option<u32>| pid.is_some_and(|p| !process_is_live(p));
+        match service {
+            // The wizard path owns only the WebUI; everything else needs the
+            // full bring-up to have happened.
+            "webui" => dead(self.pids.webui),
+            "watcher" => self.services_started && dead(self.pids.watcher),
+            "sssd" => self.services_started && dead(self.pids.sssd),
+            "idhelper" => self.services_started && dead(self.pids.idhelper),
+            "dbus" => self.services_started && dead(self.pids.dbus),
+            "ganesha" => {
+                self.ganesha_managed
+                    && !self.env.host_nfs_mode
+                    && !self
+                        .pids
+                        .ganesha
+                        .is_some_and(process_is_live)
+            }
+            _ => false,
+        }
+    }
+
+    fn respawn_service(&mut self, service: &str) {
+        match service {
+            "webui" => {
+                let _ = self.start_webui();
+            }
+            "watcher" => {
+                if let Err(e) = services::start_watcher(self) {
+                    self.log_warn(&format!("watcher respawn failed: {e}"));
+                }
+            }
+            "sssd" => self.restart_sssd_and_wait(),
+            "idhelper" => self.restart_idhelper_and_wait_bulk(),
+            "dbus" => self.ensure_ganesha_prereqs(),
+            "ganesha" => {
+                services::start_ganesha(self);
+                if self.pids.ganesha.is_some() {
+                    self.log_info(
+                        "ganesha respawned — readiness re-proves via the normal probe/healthcheck path",
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Copytruncate the three runtime logs at the size cap (0 = disabled).
+    fn rotate_runtime_logs(&mut self) {
+        let cap = self.env.log_rotate_max_bytes;
+        let webui_log = std::env::var("NFS_KLLDAP_WEBUI_LOG")
+            .unwrap_or_else(|_| "/var/log/webui.log".to_string());
+        for log in ["/var/log/ganesha.log", "/var/log/idhelper.log", webui_log.as_str()] {
+            match logrotate::rotate_if_oversized(Path::new(log), cap) {
+                Ok(true) => self.log_info(&format!(
+                    "rotated {log} at the {}MB cap (one .1 generation kept)",
+                    cap / (1024 * 1024)
+                )),
+                Ok(false) => {}
+                Err(e) => self.log_warn(&format!("log rotation failed for {log}: {e}")),
+            }
+        }
     }
 
     /// Drop a dead tracked launcher/daemon pid (never pgrep on refresh).

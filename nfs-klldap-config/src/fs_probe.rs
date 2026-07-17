@@ -346,12 +346,14 @@ pub fn normalize_path(path: &str) -> String {
 /// free of raw syscalls. Returns `Some(false)` when the filesystem reports ACLs unsupported,
 /// `Some(true)` when ACLs are readable, and `None` when inconclusive (tool or path missing).
 pub fn serve_path_posix_acl_supported(path: &Path) -> Option<bool> {
-    let out = std::process::Command::new("getfacl")
-        .arg("-c") // omit the file-name header
-        .arg("--")
-        .arg(path)
-        .output()
-        .ok()?;
+    let out = crate::proc_run::run_with_timeout(
+        std::process::Command::new("getfacl")
+            .arg("-c") // omit the file-name header
+            .arg("--")
+            .arg(path),
+        PROBE_TOOL_TIMEOUT,
+    )
+    .ok()?;
     if out.status.success() {
         return Some(true);
     }
@@ -361,6 +363,11 @@ pub fn serve_path_posix_acl_supported(path: &Path) -> Option<bool> {
         None
     }
 }
+
+/// Probe-command ceiling: a probe answers "can this filesystem store ACLs" —
+/// on a healthy mount that is milliseconds; a mount that needs longer than
+/// this is not one to auto-enable ACLs on (timeout ⇒ Inconclusive, fail-safe).
+const PROBE_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Shared interpretation of acl-tool failures: the kernel's EOPNOTSUPP
 /// surfaces as "Operation not supported" from both getfacl and setfacl.
@@ -379,7 +386,13 @@ pub(crate) fn stderr_says_not_supported(stderr: &str) -> bool {
 /// refused ACL storage; `None` = inconclusive (probe file or tools
 /// unavailable) — callers keep the warning path rather than hard-failing.
 pub fn serve_path_posix_acl_write_probe(dir: &Path) -> Option<bool> {
-    let probe = dir.join(format!(".nfs-klldap-aclprobe-{}", std::process::id()));
+    // pid + per-process counter: concurrent probes in one process (watcher
+    // tick racing a settings save) must not share a file, and a crash-leaked
+    // probe from a recycled pid must not be overwritten mid-round-trip.
+    static PROBE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = PROBE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let probe = dir.join(format!(".nfs-klldap-aclprobe-{}-{}", std::process::id(), seq));
+    reap_stale_probe_files(dir);
     if std::fs::File::create(&probe).is_err() {
         return None;
     }
@@ -388,14 +401,40 @@ pub fn serve_path_posix_acl_write_probe(dir: &Path) -> Option<bool> {
     verdict
 }
 
+/// Best-effort cleanup of probe files a crashed/killed process left behind
+/// (>1h old). Probes are verdict-cached (TTL 300s), so this readdir is rare.
+fn reap_stale_probe_files(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with(".nfs-klldap-aclprobe-") {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age.as_secs() > 3600);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn write_probe_round_trip(probe: &Path) -> Option<bool> {
-    let set = std::process::Command::new("setfacl")
-        .arg("-m")
-        .arg("u:0:rwx")
-        .arg("--")
-        .arg(probe)
-        .output()
-        .ok()?;
+    let set = crate::proc_run::run_with_timeout(
+        std::process::Command::new("setfacl")
+            .arg("-m")
+            .arg("u:0:rwx")
+            .arg("--")
+            .arg(probe),
+        PROBE_TOOL_TIMEOUT,
+    )
+    .ok()?;
     if !set.status.success() {
         return if stderr_says_not_supported(&String::from_utf8_lossy(&set.stderr)) {
             Some(false)
@@ -403,11 +442,13 @@ fn write_probe_round_trip(probe: &Path) -> Option<bool> {
             None
         };
     }
-    let get = std::process::Command::new("getfacl")
-        .args(["-c", "-n", "--absolute-names", "--"])
-        .arg(probe)
-        .output()
-        .ok()?;
+    let get = crate::proc_run::run_with_timeout(
+        std::process::Command::new("getfacl")
+            .args(["-c", "-n", "--absolute-names", "--"])
+            .arg(probe),
+        PROBE_TOOL_TIMEOUT,
+    )
+    .ok()?;
     if !get.status.success() {
         return None;
     }

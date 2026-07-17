@@ -650,6 +650,11 @@ small { color: var(--text-light); }
 
 .acl-reason         { font-size:.72em; color:var(--text-muted); margin-bottom:5px;
                       cursor:help; text-decoration:underline dotted; text-underline-offset:2px; }
+/* Extended-ACL-on-NOACL detector: disk ACLs present on a share serving without ACL support. */
+.acl-disk-note      { font-size:.72em; color:var(--warning-amber-text); background:var(--warning-amber-bg);
+                      border:1px solid var(--warning-amber-border); border-radius:5px;
+                      padding:3px 8px; margin-bottom:5px; cursor:help; }
+.acl-name .unk      { color:var(--text-muted); font-style:italic; cursor:help; }
 .acl-sec.disabled .acl-pane { opacity:.5; pointer-events:none; filter:grayscale(.3); }
 /* Layer tabs: Current (access ACL) vs Inherit (default ACL). */
 .acl-tabs           { display:flex; gap:2px; margin-bottom:5px; border-bottom:1px solid var(--border-light); }

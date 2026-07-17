@@ -188,21 +188,26 @@ case "$CMD" in
         # Flush the three server-side identity cache layers so an LLDAP
         # group/membership change takes effect immediately (instead of within
         # the ~3-min natural windows). Order: SSSD -> idhelper re-materialize ->
-        # Ganesha uid2grp. Each step degrades to a warning if unavailable.
+        # Ganesha uid2grp. Each step degrades to a warning, but any failed
+        # layer fails the COMMAND: "done, exit 0" on a silent miss left the
+        # stale group list in force for the whole validity window while the
+        # operator moved on (B7's exact trap).
         USER_ARG="${1:-}"
+        FLUSH_FAILED=""
         log "refresh-identity: flushing identity caches${USER_ARG:+ for ${USER_ARG}}..."
 
         # 1) SSSD (needs sssd-tools). -u for one user, -E for everything.
         if command -v sss_cache >/dev/null 2>&1; then
             if [ -n "$USER_ARG" ]; then
                 sss_cache -u "$USER_ARG" 2>/dev/null && log "  sss_cache -u ${USER_ARG}: ok" \
-                    || log "  WARN: sss_cache -u ${USER_ARG} failed"
+                    || { log "  WARN: sss_cache -u ${USER_ARG} failed"; FLUSH_FAILED="${FLUSH_FAILED} sssd"; }
             else
                 sss_cache -E 2>/dev/null && log "  sss_cache -E: ok" \
-                    || log "  WARN: sss_cache -E failed"
+                    || { log "  WARN: sss_cache -E failed"; FLUSH_FAILED="${FLUSH_FAILED} sssd"; }
             fi
         else
             log "  WARN: sss_cache not found (install sssd-tools) — skipping SSSD flush"
+            FLUSH_FAILED="${FLUSH_FAILED} sssd"
         fi
 
         # 2) idhelper: re-read LDAP fresh + re-materialize nss_wrapper/extrausers.
@@ -210,8 +215,10 @@ case "$CMD" in
         if [ -S "$SOCK" ]; then
             RESP="$(printf 'REBULK\n' | nc -U "$SOCK" 2>/dev/null || true)"
             log "  idhelper REBULK: ${RESP:-<no response>}"
+            [ -n "$RESP" ] || FLUSH_FAILED="${FLUSH_FAILED} idhelper"
         else
             log "  WARN: idhelper socket ${SOCK} missing — skipping rebulk"
+            FLUSH_FAILED="${FLUSH_FAILED} idhelper"
         fi
 
         # 3) Ganesha uid2grp cache (the getgrouplist result cache).
@@ -220,12 +227,17 @@ case "$CMD" in
             log "  Ganesha purge_gids: ok"
         else
             log "  WARN: purge_gids D-Bus call failed (is ganesha.nfsd up on the bus?)"
+            FLUSH_FAILED="${FLUSH_FAILED} ganesha"
         fi
 
         # 4) Verify: print the user's freshly-resolved groups.
         if [ -n "$USER_ARG" ]; then
             IDHELPER="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
             [ -x "$IDHELPER" ] && log "  groups now: $("$IDHELPER" grps "$USER_ARG" 2>/dev/null || echo '?')"
+        fi
+        if [ -n "$FLUSH_FAILED" ]; then
+            log "refresh-identity: FAILED — layer(s) not flushed:${FLUSH_FAILED}. The stale identity persists until the natural windows expire (~3 min)."
+            exit 1
         fi
         log "refresh-identity: done"
         ;;

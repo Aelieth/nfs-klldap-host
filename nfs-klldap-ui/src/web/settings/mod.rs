@@ -127,7 +127,10 @@ fn recycle_marker_is_fresh(marker: &std::path::Path, latch_at: std::time::System
 
 /// Sends the supervisor signal for `kind`: SIGHUP = graceful shares/export
 /// apply, SIGUSR1 = forced full recycle. Pid comes pre-parsed from the caller.
-fn send_recycle_signal(label: &str, hup_pid: &str, kind: super::RecycleKind) {
+/// Returns whether the signal was actually delivered — an undeliverable
+/// signal means no recycle is coming and the caller's latch must not wait
+/// out the marker timeout.
+fn send_recycle_signal(label: &str, hup_pid: &str, kind: super::RecycleKind) -> bool {
     match hup_pid.parse::<u32>() {
         Ok(pid) if pid > 0 => {
             let result = match kind {
@@ -142,14 +145,19 @@ fn send_recycle_signal(label: &str, hup_pid: &str, kind: super::RecycleKind) {
                     nfs_klldap_config::signal_supervisor_full_recycle(pid)
                 }
             };
-            if let Err(e) = result {
-                eprintln!("WARN: '{label}' — supervisor signal failed: {e}");
+            match result {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("WARN: '{label}' — supervisor signal failed: {e}");
+                    false
+                }
             }
         }
         _ => {
             eprintln!(
                 "WARN: '{label}' — invalid NFS_KLLDAP_SUPERVISOR_PID '{hup_pid}', skipping signal"
             );
+            false
         }
     }
 }
@@ -210,7 +218,13 @@ pub(crate) async fn try_schedule_service_recycle(
     let restart_flag = std::sync::Arc::clone(&state.restart_requested);
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-        send_recycle_signal(&label, &hup_pid, kind);
+        if !send_recycle_signal(&label, &hup_pid, kind) {
+            // Nothing reached the supervisor, so no recycle is coming:
+            // waiting out the marker timeout would only wedge the latch and
+            // swallow the retry the user is about to click.
+            *restart_flag.lock().await = None;
+            return;
+        }
         // Release the latch once the recycle completes (marker touched) or the
         // timeout elapses, on every path above.
         let deadline =

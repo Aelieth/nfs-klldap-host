@@ -42,7 +42,13 @@ struct ManifestShare {
 pub(crate) async fn client_manifest(State(state): State<AppState>) -> impl IntoResponse {
     let snap =
         nfs_klldap_config::MountinfoSnapshot::capture(state.fs_probe_mountinfo_path.as_deref());
-    let cfg = state.config.read().expect("config lock poisoned");
+    // Poison-recover, never panic: this endpoint is unauthenticated, so a
+    // poisoned config lock must not become an anonymous crash amplifier —
+    // shares data is read-only here and safe to serve regardless.
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let shares: Vec<ManifestShare> = cfg
         .shares
         .iter()

@@ -411,7 +411,7 @@ impl FsManager {
                 progress.skipped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
-            *progress.last_path.lock().expect("last_path mutex poisoned") =
+            *progress.last_path.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
                 Some(entry.path().display().to_string());
             if entry.file_type().is_dir() {
                 dir_chunk.push(entry.path().to_path_buf());
@@ -446,9 +446,21 @@ impl FsManager {
         };
         for chunk in names.chunks(CHUNK) {
             let paths: Vec<PathBuf> = chunk.iter().map(|n| real_dir.join(n)).collect();
-            for abs in crate::privileged::extended_acl_paths(&paths) {
-                if let Some(name) = abs.file_name().map(|n| n.to_string_lossy().into_owned()) {
-                    extended.insert(name);
+            match crate::privileged::extended_acl_paths(&paths) {
+                Ok(marked) => {
+                    for abs in marked {
+                        if let Some(name) = abs.file_name().map(|n| n.to_string_lossy().into_owned()) {
+                            extended.insert(name);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Markers degrade to absent for this render, but loudly —
+                    // a silent empty set previously hid stalled mounts.
+                    eprintln!(
+                        "WARN [nfs-klldap-ui] extended-ACL batch read failed under {}: {e}",
+                        real_dir.display()
+                    );
                 }
             }
         }
@@ -636,7 +648,7 @@ impl FsManager {
             }
             if Self::should_apply_entry(&entry, opts) {
                 let p = entry.path().to_path_buf();
-                *progress.last_path.lock().expect("last_path mutex poisoned") = Some(p.display().to_string());
+                *progress.last_path.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(p.display().to_string());
                 count += 1;
                 progress.processed.fetch_add(1, Ordering::Relaxed);
             }
@@ -708,7 +720,7 @@ impl FsManager {
             }
 
             // Record the path we are about to touch (for cancel reporting).
-            *progress.last_path.lock().expect("last_path mutex poisoned") = Some(p.display().to_string());
+            *progress.last_path.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(p.display().to_string());
 
             // Perform the actual privileged operations. Directories take the
             // r-implies-x normalized mode; files take the explicit file mode

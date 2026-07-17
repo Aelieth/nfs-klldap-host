@@ -289,9 +289,11 @@ pub(crate) fn ensure_nss_group_member_login(
             changed = true;
         }
         if changed {
-            let tmp = path.with_extension("memtmp");
-            fs::write(&tmp, out.join("\n") + "\n")?;
-            fs::rename(&tmp, path)?;
+            // Same fsync + unchanged-skip discipline as the bulk writer: this
+            // is the second writer to the nss stores, and a bare rename here
+            // bumped mtime (nss_wrapper reload) even for no-op rewrites —
+            // exactly the in-flight-getgrouplist race the atomic path guards.
+            write_atomic_if_changed(path, &(out.join("\n") + "\n"))?;
         }
     }
     Ok(())

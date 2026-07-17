@@ -234,6 +234,64 @@ enable_acl = true
     assert!(msg.contains("enable_acl = false"), "error names the opt-out: {msg}");
 }
 
+/// The hard-fail must leave exports.d UNTOUCHED: every share validates before
+/// any fragment is written. The old mid-loop abort rewrote earlier shares,
+/// skipped later ones, and skipped the prune — the next reload served that
+/// mixture.
+#[test]
+fn generate_hard_fail_leaves_exports_dir_untouched() {
+    const TWO_SHARE_TOML: &str = r#"
+ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "/export"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "ok1"
+host_path = "/media/ok1"
+container_path = "/export/ok1"
+[[shares]]
+name = "usb"
+host_path = "/media/usb"
+container_path = "/export/usb"
+enable_acl = true
+"#;
+    const MOUNTINFO_VFAT: &str = r#"
+36 35 0:59 / /export rw,relatime - vfat /dev/sdd1 rw,fmask=0022,dmask=0022
+"#;
+    let _lock = MOUNTINFO_ENV_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mi = tmp.path().join("mi");
+    fs::write(&mi, MOUNTINFO_VFAT).unwrap();
+    let cp = tmp.path().join("c.toml");
+    fs::write(&cp, TWO_SHARE_TOML).unwrap();
+    let out = tmp.path().join("out");
+    fs::create_dir_all(out.join("exports.d")).unwrap();
+    // Stale fragment from an earlier generation: prune runs only after a
+    // fully-validated write pass, so a failed run must not remove it either.
+    fs::write(out.join("exports.d/99-stale.conf"), "EXPORT {}\n").unwrap();
+    let prev = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok();
+    std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mi);
+    let cfg = NfsKlldapConfig::load(&cp).expect("load");
+    let result = generate_all(&cfg, &generation_paths(&out));
+    if let Some(p) = prev {
+        std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", p);
+    } else {
+        std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");
+    }
+    result.expect_err("second share's enable_acl on vfat must refuse");
+    let entries: Vec<String> = fs::read_dir(out.join("exports.d"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        entries,
+        vec!["99-stale.conf".to_string()],
+        "no fragment for the valid first share, stale fragment untouched"
+    );
+}
+
 /// Auto ACL (0.9.90): an unset enable_acl share whose serve path passes the
 /// write round-trip probe is promoted to the ACL path with an Auto-enabled
 /// comment; the mountinfo fixture marks the tree capable and the tempdir

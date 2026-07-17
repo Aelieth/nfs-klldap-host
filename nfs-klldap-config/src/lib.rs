@@ -12,6 +12,7 @@ mod recycle_plan;
 
 mod fs_probe;
 pub mod ganesha_log_contract;
+pub mod proc_run;
 mod fs_warnings;
 mod ganesha_identity_pipeline;
 mod ganesha_nss_contract;

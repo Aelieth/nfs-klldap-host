@@ -50,7 +50,11 @@ pub struct LdapClient {
     last_full_refresh: Mutex<Option<Instant>>,
 
     /// Shared IdLdapResolver (caches + resolve). Deduped from prior UI mirrors.
-    identity_resolver: Arc<Mutex<IdLdapResolver>>,
+    // Lock-free handle (2026-07-17 audit): IdLdapResolver is &self with
+    // per-cache internal mutexes and a 15s LDAP op timeout — an outer Mutex
+    // held across every round-trip serialized ALL identity resolution behind
+    // one slow bind (dir-perms alone issues 2+K resolves per panel).
+    identity_resolver: Arc<IdLdapResolver>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,7 +121,7 @@ impl LdapClient {
         start_tls: bool,
         tls_cacert: Option<String>,
     ) -> Self {
-        let identity_resolver = Arc::new(Mutex::new(IdLdapResolver::new(
+        let identity_resolver = Arc::new(IdLdapResolver::new(
             ldap_uri,
             user_base,
             group_base,
@@ -125,7 +129,7 @@ impl LdapClient {
             no_tls_verify,
             start_tls,
             tls_cacert.clone(),
-        )));
+        ));
         Self {
             ldap_uri: ldap_uri.to_string(),
             user_base: user_base.to_string(),
@@ -188,10 +192,7 @@ impl LdapClient {
     {
         let (bind_dn, bind_pw) = self.service_bind_creds()?;
         let inner = Arc::clone(&self.identity_resolver);
-        tokio::task::spawn_blocking(move || {
-            let resolver = inner.lock().unwrap();
-            f(&resolver, &bind_dn, &bind_pw)
-        })
+        tokio::task::spawn_blocking(move || f(&inner, &bind_dn, &bind_pw))
         .await
         .ok()
         .flatten()
@@ -221,15 +222,15 @@ impl LdapClient {
 
     fn evict_expired(&self) {
         // Delegate POSIX user/group caches to shared IdLdapResolver (dedup). Keep UI-only full lists + memberof here.
-        if let Ok(r) = self.identity_resolver.lock() { r.evict_expired(); }
+        self.identity_resolver.evict_expired();
         let now = Instant::now();
         for slot in [&self.full_user_list, &self.full_group_list] {
-            let mut guard = slot.lock().unwrap();
+            let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if guard.as_ref().is_some_and(|c| now.duration_since(c.fetched_at) >= SEARCH_CACHE_TTL) {
                 *guard = None;
             }
         }
-        let mut mem = self.last_verified_memberofs.lock().unwrap();
+        let mut mem = self.last_verified_memberofs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((_, _, t)) = mem.as_ref() {
             if now.duration_since(*t) >= Duration::from_secs(120) {
                 *mem = None;
@@ -239,7 +240,7 @@ impl LdapClient {
 
     fn store_full_list(&self, is_user: bool, rows: &[ListRow]) {
         let slot = if is_user { &self.full_user_list } else { &self.full_group_list };
-        *slot.lock().unwrap() = Some(CachedSearch {
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(CachedSearch {
             results: rows.to_vec(),
             fetched_at: Instant::now(),
         });
@@ -248,7 +249,7 @@ impl LdapClient {
     fn cached_full_list(&self, is_user: bool) -> Option<Vec<ListRow>> {
         self.evict_expired();
         let slot = if is_user { &self.full_user_list } else { &self.full_group_list };
-        let hit = slot.lock().unwrap().as_ref().map(|c| c.results.clone());
+        let hit = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref().map(|c| c.results.clone());
         if hit.is_some() {
             self.cache_hits.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -265,28 +266,26 @@ impl LdapClient {
         // bind/hit counters) on every manual clear. LDAP settings changes build
         // a whole new LdapClient (reload_nfs_client), so nothing needs the
         // connection inputs re-read here.
-        if let Ok(r) = self.identity_resolver.lock() { r.clear_caches(); }
-        *self.full_user_list.lock().unwrap() = None;
-        *self.full_group_list.lock().unwrap() = None;
-        *self.last_verified_memberofs.lock().unwrap() = None;
+        self.identity_resolver.clear_caches();
+        *self.full_user_list.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self.full_group_list.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self.last_verified_memberofs.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         self.cache_clears.fetch_add(1, Ordering::Relaxed);
-        *self.last_cache_clear.lock().unwrap() = Some(Instant::now());
+        *self.last_cache_clear.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
     }
 
     pub fn cache_stats_summary(&self) -> LdapCacheStats {
         // Report resolver-backed counts + UI search recents only (after dedup). 1 sentence.
-        let last_ago = self.last_cache_clear.lock().unwrap().map(|t| Instant::now().duration_since(t).as_secs());
-        let (user_entries, group_entries, binds, pool_warm) = self
-            .identity_resolver
-            .lock()
-            .map(|r| (r.cache_entry_counts().0, r.cache_entry_counts().1, r.bind_stats(), r.pool_is_warm()))
-            .unwrap_or((0, 0, 0, false));
+        let last_ago = self.last_cache_clear.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).map(|t| Instant::now().duration_since(t).as_secs());
+        let r = &self.identity_resolver;
+        let (user_entries, group_entries, binds, pool_warm) =
+            (r.cache_entry_counts().0, r.cache_entry_counts().1, r.bind_stats(), r.pool_is_warm());
         LdapCacheStats {
             user_entries,
             group_entries,
             recent_search_entries: [&self.full_user_list, &self.full_group_list]
                 .iter()
-                .filter(|s| s.lock().unwrap().is_some())
+                .filter(|s| s.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_some())
                 .count(),
             hits: self.cache_hits.load(Ordering::Relaxed),
             misses: self.cache_misses.load(Ordering::Relaxed),
@@ -298,11 +297,11 @@ impl LdapClient {
     }
 
     fn record_verified_memberofs(&self, username: &str, memberofs: Vec<String>) {
-        *self.last_verified_memberofs.lock().unwrap() = Some((username.to_string(), memberofs, Instant::now()));
+        *self.last_verified_memberofs.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((username.to_string(), memberofs, Instant::now()));
     }
 
     fn has_recent_memberof(&self, username: &str, group_dn: &str) -> bool {
-        if let Some((u, list, _)) = &*self.last_verified_memberofs.lock().unwrap() {
+        if let Some((u, list, _)) = &*self.last_verified_memberofs.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) {
             if u.eq_ignore_ascii_case(username) {
                 return list.iter().any(|m| m.eq_ignore_ascii_case(group_dn));
             }
@@ -322,7 +321,7 @@ impl LdapClient {
     }
 
     fn user_filter_by_name(&self, name: &str) -> String {
-        self.identity_resolver.lock().unwrap().user_filter_by_name(name)
+        self.identity_resolver.user_filter_by_name(name)
     }
 
     /// Strip permission-editor values like `Alice (1000)` down to `1000` or `Alice`.
@@ -537,13 +536,13 @@ impl LdapClient {
         // Repopulate the autocomplete lists; tolerate an individual failure.
         let _ = self.fetch_and_store_full_list(true).await;
         let _ = self.fetch_and_store_full_list(false).await;
-        *self.last_full_refresh.lock().unwrap() = Some(Instant::now());
+        *self.last_full_refresh.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
         Some(loaded)
     }
 
     /// When the last full refresh completed (periodic loop skip-window check).
     pub fn last_full_refresh(&self) -> Option<Instant> {
-        *self.last_full_refresh.lock().unwrap()
+        *self.last_full_refresh.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Autocomplete rows for the permission editor. Queries are matched locally

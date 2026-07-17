@@ -376,23 +376,87 @@ pub(crate) fn run_daemon() {
 
     start_periodic_rebulk(Arc::clone(&cache), realm.clone());
 
+    // Bounded concurrency: a client flood must not spawn unbounded threads
+    // all contending the one cache lock. Past the cap the accept thread
+    // serves the connection inline — natural backpressure on the listener.
+    const MAX_CLIENT_THREADS: usize = 32;
+    let live_clients = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
                 let realm = realm.clone();
                 let variants = server_variants.clone();
                 let cache = Arc::clone(&cache);
-                thread::spawn(move || {
+                if live_clients.load(std::sync::atomic::Ordering::Relaxed) >= MAX_CLIENT_THREADS {
                     if let Err(e) = handle_client(s, &realm, &variants, &cache) {
                         eprintln!("[idhelper] client error: {}", e);
                     }
-                });
+                } else {
+                    let live = Arc::clone(&live_clients);
+                    live.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    thread::spawn(move || {
+                        if let Err(e) = handle_client(s, &realm, &variants, &cache) {
+                            eprintln!("[idhelper] client error: {}", e);
+                        }
+                        live.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    });
+                }
             }
             Err(e) => {
                 eprintln!("[idhelper] accept error: {}", e);
                 thread::sleep(Duration::from_millis(50));
             }
         }
+    }
+}
+
+/// Same-principal single-flight registry (Rust twin of the klldap3 uid2grp
+/// patch): a burst of identical socket requests — Ganesha's getgrouplist
+/// storm shape, per the 2026-07-14 blue-lt diag — rides ONE resolve. The
+/// leader does the LDAP work; followers block in `begin` and then take the
+/// warm-cache path. Cross-principal requests still serialize on the cache
+/// lock itself (the NSS-store correctness serializer), by design.
+#[derive(Default)]
+struct InFlight {
+    keys: Mutex<std::collections::HashSet<String>>,
+    cv: std::sync::Condvar,
+}
+
+static INFLIGHT: std::sync::OnceLock<InFlight> = std::sync::OnceLock::new();
+
+struct FlightGuard {
+    key: String,
+    leader: bool,
+}
+
+impl FlightGuard {
+    /// Blocks while another thread holds `key`; the woken caller comes back
+    /// as a follower (no re-claim — the cache is warm now). Leader keys are
+    /// released on drop, panic-safe.
+    fn begin(key: String) -> FlightGuard {
+        let fl = INFLIGHT.get_or_init(InFlight::default);
+        let mut keys = fl.keys.lock().unwrap_or_else(|p| p.into_inner());
+        let mut leader = true;
+        while keys.contains(&key) {
+            leader = false;
+            keys = fl.cv.wait(keys).unwrap_or_else(|p| p.into_inner());
+        }
+        if leader {
+            keys.insert(key.clone());
+        }
+        FlightGuard { key, leader }
+    }
+}
+
+impl Drop for FlightGuard {
+    fn drop(&mut self) {
+        if !self.leader {
+            return;
+        }
+        let fl = INFLIGHT.get_or_init(InFlight::default);
+        let mut keys = fl.keys.lock().unwrap_or_else(|p| p.into_inner());
+        keys.remove(&self.key);
+        fl.cv.notify_all();
     }
 }
 
@@ -413,6 +477,16 @@ fn handle_client(
     let mut parts = req.splitn(2, ' ');
     let verb = parts.next().unwrap_or("").to_ascii_uppercase();
     let arg = parts.next().unwrap_or("").trim();
+
+    // Single-flight applies to the resolve-bearing verbs only; PING/CLASSIFY
+    // never touch LDAP or the NSS stores.
+    let _flight = match verb.as_str() {
+        "RESOLVE" | "GRPS" | "GROUPLIST" | "GETGROUPLIST" if !arg.is_empty() => {
+            Some(FlightGuard::begin(format!("{verb}:{arg}")))
+        }
+        "REBULK" => Some(FlightGuard::begin("REBULK".to_string())),
+        _ => None,
+    };
 
     let mut out = String::new();
 
@@ -900,5 +974,37 @@ ldap_default_authtok = "sekret"
         std::env::remove_var("NSS_EXTRAUSERS_GROUP");
         std::env::remove_var("NFS_CONFIG");
         std::env::remove_var("TEST_REBULK_POPULATE");
+    }
+
+    // INFLIGHT is a process global — each test below uses its own keys so
+    // parallel test threads cannot interfere.
+    #[test]
+    fn single_flight_blocks_same_key_until_leader_drops() {
+        let g1 = FlightGuard::begin("t-same:x".into());
+        assert!(g1.leader, "first claim leads");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let h = std::thread::spawn(move || {
+            let g2 = FlightGuard::begin("t-same:x".into());
+            tx.send(g2.leader).unwrap();
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "same-key request must wait while the leader is in flight"
+        );
+        drop(g1);
+        assert!(
+            !rx.recv_timeout(Duration::from_secs(5)).expect("waiter released"),
+            "the woken waiter is a follower (warm-cache path), not a new leader"
+        );
+        h.join().unwrap();
+        let g3 = FlightGuard::begin("t-same:x".into());
+        assert!(g3.leader, "key fully released after both guards dropped");
+    }
+
+    #[test]
+    fn single_flight_different_keys_are_independent() {
+        let _a = FlightGuard::begin("t-indep:a".into());
+        let b = FlightGuard::begin("t-indep:b".into());
+        assert!(b.leader, "a different key must not block");
     }
 }

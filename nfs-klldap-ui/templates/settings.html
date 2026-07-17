@@ -16,8 +16,9 @@
   Lightweight JSON endpoints in web/settings/ power the Diagnostics-style buttons:
     POST /settings/test-ldap  { ldap_uri }                       -> JSON {ok, log, message?, error?}
     POST /settings/test-bind  { ldap_default_bind_dn, ldap_default_authtok } -> JSON {ok, log, ...}
-    POST /settings/reprobe-filesystems {}                        -> JSON (Admin pane maintenance)
-    POST /settings/refresh-identity {}                           -> JSON (Admin pane maintenance)
+    POST /settings/reprobe-filesystems {}                        -> JSON (Overview FS ACL probe)
+    POST /settings/refresh-identity {}                           -> JSON (endpoint only; no button —
+                                       the Overview client card's Reload/Clear covers the UI need)
   Reuse the probe logic from /setup/2/test and /setup/3/test. A failing test never blocks Save.
 #}
 
@@ -177,6 +178,8 @@
                 {% if keytab_found_principals.is_empty() %}<span class="muted">expects nfs/&lt;short&gt;@{{ effective_realm }}, nfs/{{ effective_hostname }}@{{ effective_realm }}</span>{% endif %}
               </span>
             </div>
+            <div class="ov-row"><span class="ov-k">version</span><code>{{ app_version }}</code></div>
+            <div class="ov-row"><span class="ov-k">webui</span><code>{% if webui_tls %}https{% else %}http{% endif %}://{{ webui_bind }}</code></div>
             <div class="ov-row"><span class="ov-k">mode</span>
               {% if host_nfs_mode %}<span class="sc-chip">HOST_NFS</span><span class="muted" style="font-size:.85em">host runs NFS; server controls are host-enforced</span>
               {% else %}<span class="sc-chip">Container-managed</span><span class="muted" style="font-size:.85em">this container runs Ganesha</span>{% endif %}
@@ -188,6 +191,18 @@
           <div id="nfs-client-status" hx-get="/settings/lldap-status" hx-trigger="load" hx-swap="outerHTML"
                style="border:1px solid var(--border);background:var(--bg-alt);padding:10px;margin:14px 0 0;border-radius:6px">
             <em>Loading NFS client status…</em>
+          </div>
+
+          {# Filesystem ACL probe — relocated from the Admin Maintenance block; same
+             #reprobe-fs-* ids so the runProbe listener below is untouched. #}
+          <div style="border:1px solid var(--border);background:var(--bg-alt);padding:10px;margin:12px 0 0;border-radius:6px">
+            <div style="font-weight:700;margin-bottom:7px">Filesystem ACL probe <span class="muted" style="font-weight:400;font-size:.85em">(re-classify share serve roots)</span></div>
+            <div class="test-row" style="margin-bottom:0">
+              <button type="button" id="reprobe-fs-btn" class="btn btn-primary"
+                      title="Drops every cached ACL write-probe verdict and re-classifies each share's serve root now (the background watcher re-checks every ~3 minutes on its own).">Re-probe filesystems</button>
+              <span id="reprobe-fs-pill" class="tpill">not run</span>
+            </div>
+            <div id="reprobe-fs-log" class="mono-log-panel" style="margin-top:8px;max-height:150px"><em style="color:var(--text-light)">Run to list each share's fresh ACL verdict.</em></div>
           </div>
         </section>
 
@@ -395,25 +410,20 @@
               {% if host_nfs_mode %}
               Regenerate the Ganesha fragments (sssd.conf + krb5.conf) so the host NFS server sees the latest definitions. No local bounce.
               {% else %}
-              Full restart of SSSD, the identity helper, Ganesha (stop/start; clients reclaim through
-              the grace period), and the WebUI. Required for identity ([sssd]/kerberos), main
-              Ganesha/nfs.conf, and WebUI (port/TLS/admin group/session timeout) settings — share
-              edits apply automatically on save. NFS is briefly unavailable.
+              Full restart of core services and WebUI.
               {% endif %}
             </p>
             <form method="post" action="/settings/restart" style="margin-top:.6rem">
               <button type="submit" class="btn {% if host_nfs_mode %}btn-primary{% else %}btn-danger{% endif %}" style="padding:8px 16px"
                       onclick="return confirm('{% if host_nfs_mode %}Apply latest fragments to the host-managed NFS server?{% else %}Restart services now to apply changes? NFS and the WebUI will be briefly unavailable.{% endif %}');">
-                {% if host_nfs_mode %}Apply to host NFS{% else %}Restart and apply{% endif %}
+                {% if host_nfs_mode %}Apply to host NFS{% else %}Restart and Apply{% endif %}
               </button>
             </form>
           </div>
 
           {# --- local account password (data-nosave: typing here must not arm the savebar) --- #}
           <div class="diag" data-nosave>
-            <div class="diag-hd">Local password</div>
-            <div class="test-hint">Changes the local <code>localhost</code> account only — LDAP accounts manage their
-              passwords in LLDAP. All other localhost sessions are signed out after a successful change.</div>
+            <div class="diag-hd" style="display:flex;align-items:center;gap:6px">Localhost password<span class="ico" style="cursor:help" title="Changes the local localhost account only — LDAP accounts manage their passwords in LLDAP. All other localhost sessions are signed out after a successful change.">i</span></div>
             <form method="post" action="/settings/change-password" style="max-width:420px;display:flex;flex-direction:column;gap:8px">
               {% if is_localhost_user %}
               <div class="fld">
@@ -446,42 +456,10 @@
               <input type="number" name="webui_session_timeout_minutes" id="webui_session_timeout_minutes"
                      form="settings-form" min="5" max="65535" step="1" placeholder="720 (default)"
                      value="{{ webui_session_timeout_minutes }}">
-              <div class="derived-note">Auto-logout for WebUI sessions. Default 720 (12&nbsp;h), minimum 5; blank
-                returns to the default. Saved with "Save Settings"; applies to new logins after the full restart above.</div>
+              <div class="derived-note">Auto-logout for WebUI. Default 720, min 5.</div>
             </div>
           </div>
 
-          {# --- maintenance: one-click actions, Diagnostics contract --- #}
-          <div class="diag" data-nosave>
-            <div class="diag-hd">Maintenance</div>
-            <div class="test-row">
-              <button type="button" id="reprobe-fs-btn" class="btn btn-primary">Re-probe filesystems</button>
-              <span id="reprobe-fs-pill" class="tpill">not run</span>
-            </div>
-            <div class="test-hint">Drops every cached ACL write-probe verdict and re-classifies each share's serve
-              root now (the background watcher re-checks every ~3 minutes on its own).</div>
-            <div id="reprobe-fs-log" class="mono-log-panel"><em style="color:var(--text-light)">Run to list each share's fresh verdict.</em></div>
-            <div class="test-row" style="margin-top:12px">
-              <button type="button" id="refresh-identity-btn" class="btn btn-primary">Refresh identity now</button>
-              <span id="refresh-identity-pill" class="tpill">not run</span>
-            </div>
-            <div class="test-hint">Clears the identity caches and bulk re-fetches users/groups from LDAP — same as
-              the periodic refresher.</div>
-            <div id="refresh-identity-log" class="mono-log-panel"><em style="color:var(--text-light)">Run to reload identities from the directory.</em></div>
-          </div>
-
-          {# --- system info --- #}
-          <div class="diag">
-            <div class="diag-hd">System</div>
-            <div class="ov-card" style="max-width:560px">
-              <div class="ov-row"><span class="ov-k">version</span><code>{{ app_version }}</code></div>
-              <div class="ov-row"><span class="ov-k">webui</span><code>{% if webui_tls %}https{% else %}http{% endif %}://{{ webui_bind }}</code></div>
-              <div class="ov-row"><span class="ov-k">mode</span>
-                {% if host_nfs_mode %}<span class="sc-chip">HOST_NFS</span><span class="muted" style="font-size:.85em">host runs NFS; server controls are host-enforced</span>
-                {% else %}<span class="sc-chip">Container-managed</span><span class="muted" style="font-size:.85em">this container runs Ganesha</span>{% endif %}
-              </div>
-            </div>
-          </div>
         </section>
 
       </div>
@@ -703,13 +681,10 @@
     { ldap_default_bind_dn: document.getElementById('sssd_bind_dn').value, ldap_default_authtok: document.getElementById('sssd_bind_pw').value },
     document.getElementById('test-bind-pill'), document.getElementById('test-bind-log')));
 
-  // ---------- Admin pane maintenance actions (same JSON contract) ----------
+  // ---------- Overview filesystem ACL probe (same JSON contract) ----------
   const reprobeBtn = document.getElementById('reprobe-fs-btn');
   if (reprobeBtn) reprobeBtn.addEventListener('click', () => runProbe('/settings/reprobe-filesystems', {},
     document.getElementById('reprobe-fs-pill'), document.getElementById('reprobe-fs-log')));
-  const refreshIdBtn = document.getElementById('refresh-identity-btn');
-  if (refreshIdBtn) refreshIdBtn.addEventListener('click', () => runProbe('/settings/refresh-identity', {},
-    document.getElementById('refresh-identity-pill'), document.getElementById('refresh-identity-log')));
 })();
 </script>
 {% endblock %}

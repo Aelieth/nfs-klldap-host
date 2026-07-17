@@ -610,6 +610,18 @@ small { color: var(--text-light); }
 .perm-matrix .rowhd { font-size:.8em; font-weight:600; }
 .perm-matrix .cell  { text-align:center; }
 .perm-matrix input  { transform:none; }
+/* Custom-drawn permission checkboxes: viewing (disabled) = dark-blue --noacl box,
+   editing = accent-blue box, both with a gray tick. appearance:none because native
+   accent-color can't give a gray tick on a colored box. Checkboxes only — the
+   .rec-scope radios keep native rendering. */
+#perm-panel input[type=checkbox]{-webkit-appearance:none;appearance:none;width:14px;height:14px;
+  margin:0;flex:none;vertical-align:middle;border:1px solid var(--input-border);border-radius:3px;
+  background:var(--input-bg);position:relative;cursor:pointer;}
+#perm-panel input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent);}
+#perm-panel input[type=checkbox]:checked::after{content:"";position:absolute;left:4px;top:1px;
+  width:4px;height:8px;border:solid #cdd3dc;border-width:0 2px 2px 0;transform:rotate(45deg);}
+#perm-panel input[type=checkbox]:disabled{opacity:1;background:var(--input-bg);cursor:default;}
+#perm-panel input[type=checkbox]:disabled:checked{background:var(--noacl);border-color:var(--noacl);}
 /* Directory matrix: full R/W/X triad (dirs fuse r→x server-side on apply). */
 .perm-matrix.perm-matrix-dir { grid-template-columns:64px repeat(3,1fr); max-width:280px; }
 /* Apply-scope radios + file-mode readout (dir panels; see dir_perms.html).

@@ -2878,9 +2878,10 @@ async fn settings_admin_pane_renders_for_both_principals() {
     // Restart block intact, new blocks present.
     assert!(html.contains(r#"action="/settings/restart""#));
     assert!(html.contains(r#"action="/settings/change-password""#));
-    assert!(html.contains("reprobe-fs-btn") && html.contains("refresh-identity-btn"));
+    // FS probe lives in Overview; the identity-refresh button is gone (endpoint stays).
+    assert!(html.contains("reprobe-fs-btn") && !html.contains("refresh-identity-btn"));
     assert!(html.contains(r#"name="webui_session_timeout_minutes""#) && html.contains(r#"form="settings-form""#));
-    // System rows: version + bind URL (test harness always binds 0.0.0.0:9630, TLS on).
+    // Overview rows: version + bind URL (test harness always binds 0.0.0.0:9630, TLS on).
     assert!(html.contains(env!("CARGO_PKG_VERSION")));
     assert!(html.contains("https://0.0.0.0:9630"));
     // localhost sees the current-password field.

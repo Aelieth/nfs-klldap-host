@@ -1,6 +1,6 @@
 # nfs-klldap-host
 
-**Branch 0.9.x** — WebUI setup wizard at `/setup` (HTTPS :9630); first-run configuration is browser-based.
+**1.0** — WebUI setup wizard at `/setup` (HTTPS :9630); first-run configuration is browser-based (since 0.9.x). Versions follow git branches; the Overview page shows the exact build stamp.
 
 Companion app for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos). Docker container that hosts and manages NFS shares with POSIX attributes synced via LDAP, plus simple remote management against KLLDAP.
 
@@ -24,7 +24,7 @@ Debian 13-slim runtime (Rust build stages on Fedora minimal): Kerberized NFSv4 (
 | [WebUI design notes](nfs-klldap-ui/docs/ui-design.md) | Tree, permissions panel, ACL tabs |
 | [Testing](TESTING.md) | Coverage map and test patterns |
 | [Container internals](container/README.md) | entrypoint, healthcheck, watcher, ganesha-ctl |
-| [Custom Ganesha packaging](container/ganesha/README.md) | `9.13-1+klldap2` build flags |
+| [Custom Ganesha packaging](container/ganesha/README.md) | `9.13-1+klldap3` build flags |
 
 Historical / non-product: [`TODO.md`](TODO.md), [`nfs-klldap-host-ganesha-refactor-plan.md`](nfs-klldap-host-ganesha-refactor-plan.md) (not shipped behavior).
 

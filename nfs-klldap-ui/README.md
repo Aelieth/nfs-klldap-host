@@ -1,6 +1,6 @@
 # nfs-klldap-ui
 
-Axum + HTMX WebUI (port **9630** in the container). **0.9.x:** first-run `/setup/1` … `/setup/3`, then `/login` and main UI. Edits `nfs-klldap.conf` and applies chown/chmod (nix + std fs; recursive walks via `spawn_blocking` with live ApplyProgress).
+Axum + HTMX WebUI (port **9630** in the container). **Since 0.9.x:** first-run `/setup/1` … `/setup/3`, then `/login` and main UI. Edits `nfs-klldap.conf` and applies chown/chmod (nix + std fs; recursive walks via `spawn_blocking` with live ApplyProgress).
 
 **NFS create inheritance:** not via a config `umask` key (retired; hard generate error). Use default ACL **Inherit** tab + setgid on the share tree. See [docs/ganesha-architecture.md](../docs/ganesha-architecture.md).
 

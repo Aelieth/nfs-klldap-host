@@ -10,8 +10,9 @@ FROM registry.fedoraproject.org/fedora-minimal:${FEDORA_VERSION} AS chef
 # tls-rustls-no-provider and the app installs the ring CryptoProvider at startup.
 # That removed the cmake crate, so `make` is no longer needed — only `gcc`, which
 # ring's `cc` crate invokes directly to build its C/asm.
+# git-core: nfs-klldap-ui/build.rs stamps the Overview version row from the repo.
 RUN microdnf install -y --assumeyes \
-        shadow-utils gcc curl gzip \
+        shadow-utils gcc curl gzip git-core \
     && microdnf clean all
 
 # Non-root build user
@@ -66,6 +67,12 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY --chown=nfs:nfs nfs-klldap-identity /build/nfs-klldap-identity
 COPY --chown=nfs:nfs nfs-klldap-config /build/nfs-klldap-config
 COPY --chown=nfs:nfs nfs-klldap-ui /build/nfs-klldap-ui
+# build-support + .git ride along solely for the version stamp the crate build
+# scripts include!() and derive (branch + short hash, shown by the UI Overview
+# card and every --version); without .git the build falls back to
+# CARGO_PKG_VERSION. --chown keeps git's dubious-ownership check quiet.
+COPY --chown=nfs:nfs build-support /build/build-support
+COPY --chown=nfs:nfs .git /build/.git
 
 RUN set -euxo pipefail && \
     case "$(uname -m)" in \
@@ -102,8 +109,11 @@ FROM debian:13-slim
 # nfs-ganesha=9.6-1~bpo13+1 from trixie-backports.
 ARG GANESHA_VERSION=9.13-1+klldap3
 
+# Version label rides in from make (branch-as-version; "dev" for a bare
+# docker build). The binaries stamp themselves from .git independently.
+ARG KLLDAP_VERSION=dev
 LABEL maintainer="Aelieth" \
-      version="0.9.94"
+      version="${KLLDAP_VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/aelieth/nfs-klldap-host"
 
 

@@ -415,8 +415,13 @@ small { color: var(--text-light); }
     color: var(--text) !important;
 }
 
+/* === Brand header (KLLDAP-style): the title is a flex-aligned <h2> link to the
+   project repo — no underline, color from the global link rules like KLLDAP's navbar brand. === */
+.brand-link { display: flex; align-items: center; text-decoration: none; }
+.brand-link h2 { margin: 0; font-size: 2rem; font-weight: 500; line-height: 1.2; }
+
 /* === Theme icon tray (3-state: auto 🖥️ / dark 🌙 / light ☀️) ===
-   Right-aligned on same line as h1 (compact tray, no big switch).
+   Right-aligned on same line as the brand link (compact tray, no big switch).
    Radios styled as small icon buttons. Auto is default.
    Selected state uses accent. Slightly larger per feedback but still tiny.
 */

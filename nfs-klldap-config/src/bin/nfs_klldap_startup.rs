@@ -101,7 +101,7 @@ Usage:
 
 First-run setup is handled by the WebUI wizard at https:// <host>:9630/setup.
 ",
-        env!("CARGO_PKG_VERSION")
+        env!("NFS_KLLDAP_BUILD_VERSION")
     );
 }
 

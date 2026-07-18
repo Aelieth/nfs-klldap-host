@@ -2,7 +2,7 @@
 
 **Purpose:** compose/run flags, env vars, setup wizard, TLS/proxy, HOST_NFS, keytab, container ops.
 
-**0.9.x:** first-run wizard at `https://<host>:9630/setup/1` … `/setup/3`.
+**Since 0.9.x:** first-run wizard at `https://<host>:9630/setup/1` … `/setup/3`.
 
 All services run as root in the container. Recommended: `--uts=host`, matching NFS keytab principals, bind mounts for config + data. Quick start: root [README.md](../../README.md).
 
@@ -235,7 +235,7 @@ volumes:
 `--privileged` works but is overkill and not recommended. The two caps above are the minimal practical set for this workload.
 
 ### dbus-daemon and rpcbind
-- Ganesha (custom `+klldap1` build) expects a D-Bus system bus (`/run/dbus/system_bus_socket`). The entrypoint launches `dbus-daemon --system --nofork &` before `ganesha.nfsd`.
+- Ganesha (custom `+klldap` build) expects a D-Bus system bus (`/run/dbus/system_bus_socket`). The entrypoint launches `dbus-daemon --system --nofork &` before `ganesha.nfsd`.
 - `rpcbind` is installed and started (best-effort). For pure NFSv4 (`Protocols = 4`) it is not strictly required; some tooling and status scripts still reference the portmapper.
 - The supervisor and `ganesha-ctl` management path remain "DBUS-free" (export fragments on disk + signals to pid 1: SIGHUP for the graceful scoped apply, SIGUSR1 for the forced full recycle). The bus is present for Ganesha's internal/monitoring use.
 

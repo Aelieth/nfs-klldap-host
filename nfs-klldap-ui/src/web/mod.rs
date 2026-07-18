@@ -82,6 +82,9 @@ pub struct AppState {
     pub direct_tls: bool,
     /// WebUI bind address:port as launched (NFS_KLLDAP_WEBUI_BIND).
     pub webui_bind: String,
+    /// Best-effort primary local IP resolved once at startup (kernel route
+    /// choice, no packet sent); None on routeless hosts. Overview webui row.
+    pub webui_ip: Option<std::net::IpAddr>,
     /// Overrides the setup marker path during tests only.
     pub setup_marker_override: Option<PathBuf>,
     /// Stores last wizard test inputs until the user clicks continue.

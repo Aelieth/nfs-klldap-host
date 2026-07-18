@@ -88,6 +88,8 @@ Live export gate: `scripts/ganesha-export-reload-smoke.sh` (add/update/remove vi
 
 **Store:** on-disk POSIX ACLs (`system.posix_acl_access` / `_default`) only — no private blob store.
 
+**Backups of served trees:** ACL-preserving copies must also preserve **numeric** ownership — `rsync -aAX --numeric-ids`, `tar --acls --numeric-owner`. Name-based restore in any environment whose static `/etc/group` shadows LDAP names silently remaps ownership (`users` 3002 → 100 in-container; live-caught 2026-07-18 — the ACLs round-tripped byte-identical, ownership was the corruption).
+
 **Fail-closed auto:** promotion requires write-probe proof; unproven → NOACL. `enable_acl = true` + definitive-negative probe → **hard generate error**. Inconclusive → loud warning.
 
 **9.13 VFS note:** `vfs_sub_getattrs` may fetch POSIX ACLs on attribute refresh even when `Disable_ACL` is set. Filesystems that cannot store POSIX ACLs (vfat/ntfs/exfat, `noacl` mounts) are expected to fail attribute fetches for **both** share classes — stage onto an ACL-capable tree. `Disable_ACL` is advisory (does not strip ATTR_ACL from supported attrs); NOACL class = declared policy + trees without extended ACLs.

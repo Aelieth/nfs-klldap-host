@@ -65,12 +65,11 @@ pub(crate) struct SettingsTemplate {
     is_localhost_user: bool,
     /// Admin group name for the LDAP-admin change-password note.
     admin_group: String,
-    /// Workspace version for the Admin pane System rows.
+    /// Build version stamp (git branch/commit when built in-repo, via
+    /// build.rs) for the Overview System rows.
     app_version: &'static str,
-    /// WebUI bind address:port as launched (Admin pane System rows).
-    webui_bind: String,
-    /// True when the WebUI terminates TLS itself (System row URL scheme).
-    webui_tls: bool,
+    /// Reachable WebUI URLs (FQDN leg + IP leg) for the Overview System rows.
+    webui_urls: Vec<String>,
     /// [webui] session_timeout_minutes as text; empty means the 720 default.
     webui_session_timeout_minutes: String,
 }
@@ -410,11 +409,52 @@ pub(crate) fn build_settings_template(
         host_nfs_mode,
         is_localhost_user,
         admin_group: state.auth.admin_group().to_string(),
-        app_version: env!("CARGO_PKG_VERSION"),
-        webui_bind: state.webui_bind.clone(),
-        webui_tls: state.direct_tls,
+        app_version: env!("NFS_KLLDAP_BUILD_VERSION"),
+        webui_urls: webui_display_urls(
+            &state.webui_bind,
+            &keytab.hostname,
+            state.webui_ip,
+            state.direct_tls,
+        ),
         webui_session_timeout_minutes,
     }
+}
+
+/// Reachable URLs for the Overview webui row: an FQDN leg from the
+/// config-derived keytab hostname, plus an IP leg — the bind IP when it is
+/// specific, else the route-derived primary IP. The raw bind ("0.0.0.0:9630")
+/// is not reachable from a browser and only renders as a last resort when
+/// neither leg can be built.
+pub(crate) fn webui_display_urls(
+    bind: &str,
+    fqdn: &str,
+    primary_ip: Option<std::net::IpAddr>,
+    tls: bool,
+) -> Vec<String> {
+    let scheme = if tls { "https" } else { "http" };
+    let parsed: Option<std::net::SocketAddr> = bind.parse().ok();
+    let port = parsed
+        .map(|a| a.port())
+        .or_else(|| bind.rsplit_once(':').and_then(|(_, p)| p.parse().ok()))
+        .unwrap_or(9630);
+    let mut urls = Vec::new();
+    if !fqdn.is_empty() {
+        urls.push(format!("{scheme}://{fqdn}:{port}"));
+    }
+    let ip = match parsed {
+        Some(a) if !a.ip().is_unspecified() => Some(a.ip()),
+        _ => primary_ip,
+    };
+    if let Some(ip) = ip {
+        let leg = format!("{scheme}://{}", std::net::SocketAddr::new(ip, port));
+        if !urls.contains(&leg) {
+            urls.push(leg);
+        }
+    }
+    if urls.is_empty() {
+        urls.push(format!("{scheme}://{bind}"));
+    }
+    urls
 }
 pub(crate) async fn settings_page(
     State(state): State<AppState>,

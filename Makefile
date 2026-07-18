@@ -8,7 +8,11 @@ SHELL := /bin/bash
 # Configuration
 # -----------------------------------------------------------------------------
 PROJECT_NAME := nfs-klldap-host
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+# Branch-as-version convention: a branch named like a version (leading digit,
+# e.g. 0.9.96, 1.0) IS the version; anything else (main, detached) falls back
+# to git describe. Mirrors build-support/version-stamp.rs (the in-app stamp).
+# if/grep, not case: an unbalanced ")" would end the $(shell ...) call early.
+VERSION ?= $(shell b=$$(git rev-parse --abbrev-ref HEAD 2>/dev/null); if printf '%s' "$$b" | grep -q '^[0-9]'; then printf '%s\n' "$$b"; else git describe --tags --always --dirty 2>/dev/null || echo "dev"; fi)
 
 # Docker image
 IMAGE_NAME ?= nfs-klldap-host
@@ -100,6 +104,7 @@ docker:
 		$(BUILDX) build \
 			$(if $(filter true,$(DOCKER_NO_CACHE)),--no-cache,) \
 			--platform linux/amd64/v2 \
+			--build-arg KLLDAP_VERSION=$(VERSION) \
 			--tag $(FULL_IMAGE):$(VERSION) \
 			$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(FULL_IMAGE):latest,) \
 			--push \
@@ -107,6 +112,7 @@ docker:
 	else \
 		$(DOCKER) build \
 			$(if $(filter true,$(DOCKER_NO_CACHE)),--no-cache,) \
+			--build-arg KLLDAP_VERSION=$(VERSION) \
 			--tag $(IMAGE_NAME):$(VERSION) \
 			$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(IMAGE_NAME):latest,) \
 			.; \
@@ -117,6 +123,7 @@ docker-multi:
 	@echo "==> Building multi-platform image: $(PLATFORMS)"
 	$(BUILDX) build \
 		--platform $(PLATFORMS) \
+		--build-arg KLLDAP_VERSION=$(VERSION) \
 		--tag $(FULL_IMAGE):$(VERSION) \
 		$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(FULL_IMAGE):latest,) \
 		$(if $(filter false,$(DOCKER_PUSH)),--load,--push) \

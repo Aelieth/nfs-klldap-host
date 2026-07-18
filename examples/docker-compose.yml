@@ -9,7 +9,9 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: nfs-klldap-host:0.9.94
+    # Local-build tag. `make docker` produces git-versioned tags (branch name,
+    # e.g. nfs-klldap-host:1.0) — pin one of those for reproducible deploys.
+    image: nfs-klldap-host:latest
     container_name: nfs-klldap-host
 
     # Host networking required: NFS + Kerberos need host-reachable addresses (not 172.17.x.x bridge).

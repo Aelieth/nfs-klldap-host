@@ -41,7 +41,7 @@
   mask/defaults/effective badges, recursive ACL applies riding the same
   scopes); ARIA tree pattern still deferred (ui-design.md).
 - Track regressions via `cargo test --workspace` and [TESTING.md](TESTING.md) living spec.
-- **0.9.x branch**: the branch name carries the release version; Cargo workspace, Dockerfile LABEL, and nfs-klldap-host.yaml image tag are aligned to it at each redeploy.
+- **Branch carries the release version** (0.9.x line, unchanged in 1.0). Since 1.0 the Dockerfile LABEL, `make docker` image tag, and every binary/UI version stamp derive from git automatically (build-support/version-stamp.rs; through 0.9.96 these were hand-aligned at each redeploy). Still manual per release: the Cargo workspace version and the host-side nfs-klldap-host.yaml image tag.
 - Client connects (2026-07 capture): krb5 auth + NFSv4.1 session succeed server-side, then the client destroys the session before any namespace op — failure is client-side (gssd/mount context). GANESHA_DEBUG now logs RPCSEC_GSS; see docs/client-fedora-immutable.md troubleshooting.
 
 ## Kerberos user principal idmap

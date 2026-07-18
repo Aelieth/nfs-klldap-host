@@ -6,7 +6,7 @@
     <title>NFS Kerb Manager</title>
     <script src="/assets/htmx-1.9.12.min.js"></script>
     {# ?v= pairs the cached sheet with HTML structure changes — bump it whenever both must land together. #}
-    <link rel="stylesheet" href="/assets/style.css?v=10">
+    <link rel="stylesheet" href="/assets/style.css?v=11">
     <!-- Early theme init (before body paint) to avoid FOUC. Sets data-theme based on localStorage or system. -->
     <script>
         (function() {
@@ -83,9 +83,11 @@
     <script src="/assets/permissions.js?v=5" defer></script>
 </head>
 <body>
-    <!-- Header line: title left + compact 3-state theme icon tray right-aligned (auto 🖥️ / dark 🌙 / light ☀️) -->
+    <!-- Header line: brand link left + compact 3-state theme icon tray right-aligned (auto 🖥️ / dark 🌙 / light ☀️) -->
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.25rem;">
-        <h1 style="margin:0; font-size:1.35rem;">nfs-klldap-host Manager</h1>
+        <a href="https://github.com/Aelieth/nfs-klldap-host" target="_blank" rel="noopener" class="brand-link">
+            <h2>NFS-KLLDAP-HOST</h2>
+        </a>
         <div class="theme-tray" id="theme-tray" role="radiogroup" aria-label="Theme">
             <input type="radio" id="theme-auto" name="theme-choice" value="auto">
             <label for="theme-auto" title="Auto (follow browser/OS)"><span>🖥️</span></label>

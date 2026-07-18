@@ -44,6 +44,7 @@ fn test_app_state(
         restart_requested: Arc::new(Mutex::new(None)),
         direct_tls: true,
         webui_bind: "0.0.0.0:9630".into(),
+        webui_ip: Some(std::net::IpAddr::from([192, 0, 2, 7])),
         setup_marker_override: Some(setup_marker),
         setup_test: Arc::new(StdMutex::new(setup::SetupTestState::default())),
         host_nfs_mode: false,
@@ -563,8 +564,9 @@ async fn acl_alert_banner_renders_on_index_and_settings() {
 }
 
 // Tab-row nav replaces the page headings: each page marks its own tab active (bold via
-// .active) with aria-current, no <h2>/rail label renders, the legend rides the tab row,
-// and pages that don't override the tabrow block (login/setup) get no tabs at all.
+// .active) with aria-current, the base brand link's h2 is the only <h2> (no per-page
+// heading or rail label renders), the legend rides the tab row, and pages that don't
+// override the tabrow block (login/setup) get no tabs at all.
 #[tokio::test]
 async fn nav_tabs_replace_headings_and_mark_active_page() {
     let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
@@ -577,7 +579,8 @@ async fn nav_tabs_replace_headings_and_mark_active_page() {
         "index must mark the Share Permissions tab active"
     );
     assert!(index.contains(r#"<a href="/settings" class="page-tab">System Settings</a>"#));
-    assert!(!index.contains("<h2"), "the Share Permissions heading must be gone");
+    assert!(index.contains("<h2>NFS-KLLDAP-HOST</h2>"), "the brand-link h2 must render");
+    assert_eq!(index.matches("<h2").count(), 1, "the Share Permissions heading must be gone (brand h2 only)");
     let tabs = index.find("page-tabs").unwrap();
     let legend = index.find("perm-legend").unwrap();
     let layout = index.find("perm-layout").unwrap();
@@ -589,7 +592,7 @@ async fn nav_tabs_replace_headings_and_mark_active_page() {
         "settings must mark the System Settings tab active"
     );
     assert!(settings.contains(r#"<a href="/" class="page-tab">Share Permissions</a>"#));
-    assert!(!settings.contains("<h2"), "the System Settings heading must be gone");
+    assert_eq!(settings.matches("<h2").count(), 1, "the System Settings heading must be gone (brand h2 only)");
     assert!(!settings.contains("rl-hd"), "the SETTINGS rail label must be gone");
     assert!(
         settings.contains("pane-note"),
@@ -3001,9 +3004,12 @@ async fn settings_admin_pane_renders_for_both_principals() {
     // FS probe lives in Overview; the identity-refresh button is gone (endpoint stays).
     assert!(html.contains("reprobe-fs-btn") && !html.contains("refresh-identity-btn"));
     assert!(html.contains(r#"name="webui_session_timeout_minutes""#) && html.contains(r#"form="settings-form""#));
-    // Overview rows: version + bind URL (test harness always binds 0.0.0.0:9630, TLS on).
-    assert!(html.contains(env!("CARGO_PKG_VERSION")));
-    assert!(html.contains("https://0.0.0.0:9630"));
+    // Overview rows: build-version stamp + reachable webui URLs (harness fqdn
+    // "h", fixed 192.0.2.7 webui_ip, TLS on; the raw 0.0.0.0 bind must not render).
+    assert!(html.contains(env!("NFS_KLLDAP_BUILD_VERSION")));
+    assert!(html.contains("https://h:9630"), "{html}");
+    assert!(html.contains("https://192.0.2.7:9630"), "{html}");
+    assert!(!html.contains("0.0.0.0"), "raw bind leaked into the settings page");
     // localhost sees the current-password field.
     assert!(html.contains(r#"name="current_password""#));
 
@@ -3011,6 +3017,34 @@ async fn settings_admin_pane_renders_for_both_principals() {
     let html = get(admin.clone()).await;
     assert!(!html.contains(r#"name="current_password""#));
     assert!(html.contains("membership check authorizes this change"), "{html}");
+}
+
+// Pure URL assembly for the Overview webui row: FQDN + IP legs, specific-bind
+// override, scheme from TLS, bracketed v6, raw-bind last resort.
+#[test]
+fn webui_display_urls_builds_reachable_legs() {
+    use super::settings::webui_display_urls;
+    use std::net::IpAddr;
+    let ip: Option<IpAddr> = Some(IpAddr::from([192, 0, 2, 7]));
+    // Wildcard bind: FQDN leg + detected-IP leg; the raw bind never shows.
+    assert_eq!(
+        webui_display_urls("0.0.0.0:9630", "nas.example.com", ip, true),
+        ["https://nas.example.com:9630", "https://192.0.2.7:9630"]
+    );
+    // A specific bind IP beats the detected one; http when TLS is off.
+    assert_eq!(
+        webui_display_urls("10.1.2.3:8443", "nas.example.com", ip, false),
+        ["http://nas.example.com:8443", "http://10.1.2.3:8443"]
+    );
+    // IPv6 wildcard bind with a v6 primary IP renders bracketed.
+    assert_eq!(
+        webui_display_urls("[::]:9630", "nas", Some(IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1])), true),
+        ["https://nas:9630", "https://[2001:db8::1]:9630"]
+    );
+    // Hostname-style bind (not a SocketAddr) still yields the port for the legs.
+    assert_eq!(webui_display_urls("localhost:7777", "nas", None, false), ["http://nas:7777"]);
+    // No FQDN and no IP from anywhere: the raw bind is the last resort.
+    assert_eq!(webui_display_urls("0.0.0.0:9630", "", None, true), ["https://0.0.0.0:9630"]);
 }
 
 #[tokio::test]

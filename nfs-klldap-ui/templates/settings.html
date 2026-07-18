@@ -179,7 +179,7 @@
               </span>
             </div>
             <div class="ov-row"><span class="ov-k">version</span><code>{{ app_version }}</code></div>
-            <div class="ov-row"><span class="ov-k">webui</span><code>{% if webui_tls %}https{% else %}http{% endif %}://{{ webui_bind }}</code></div>
+            <div class="ov-row"><span class="ov-k">webui</span>{% for u in webui_urls %}<code>{{ u }}</code>{% endfor %}</div>
             <div class="ov-row"><span class="ov-k">mode</span>
               {% if host_nfs_mode %}<span class="sc-chip">HOST_NFS</span><span class="muted" style="font-size:.85em">host runs NFS; server controls are host-enforced</span>
               {% else %}<span class="sc-chip">Container-managed</span><span class="muted" style="font-size:.85em">this container runs Ganesha</span>{% endif %}

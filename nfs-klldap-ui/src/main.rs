@@ -94,6 +94,18 @@ fn spawn_sighup_reload_listener(state: crate::web::AppState) {
     let _ = state;
 }
 
+/// Best-effort primary local IP for the Overview webui row: the kernel's
+/// route choice toward a documentation-range address (UDP connect assigns a
+/// source address without sending a packet). None on routeless hosts.
+fn primary_local_ip() -> Option<std::net::IpAddr> {
+    fn probe(bind: &str, dst: &str) -> Option<std::net::IpAddr> {
+        let sock = std::net::UdpSocket::bind(bind).ok()?;
+        sock.connect(dst).ok()?;
+        sock.local_addr().ok().map(|a| a.ip())
+    }
+    probe("0.0.0.0:0", "192.0.2.1:9").or_else(|| probe("[::]:0", "[2001:db8::1]:9"))
+}
+
 /// Resolves the runtime hostname and logs diagnostics when sources disagree.
 fn resolve_runtime_hostname_for_banner() -> String {
     match get_consistent_hostname() {
@@ -282,6 +294,7 @@ async fn main() {
         restart_requested: Arc::new(Mutex::new(None)),
         direct_tls: !webui_tls_off,
         webui_bind: addr.clone(),
+        webui_ip: primary_local_ip(),
         setup_marker_override: None,
         setup_test: Arc::new(std::sync::Mutex::new(crate::web::setup::SetupTestState::default())),
         host_nfs_mode,

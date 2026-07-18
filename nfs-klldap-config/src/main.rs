@@ -27,7 +27,7 @@ Companion binary:
   nfs-klldap-startup         (pid-1 supervise + diagnostics; entrypoint.sh execs it)
 
 The binaries are intended to be called by the container entrypoint and the host UI.",
-        env!("CARGO_PKG_VERSION")
+        env!("NFS_KLLDAP_BUILD_VERSION")
     );
 }
 

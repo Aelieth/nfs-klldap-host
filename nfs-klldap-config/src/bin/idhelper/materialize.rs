@@ -304,33 +304,43 @@ pub(crate) fn cache_changed_since(fp_before: u64, cache: &IdCache) -> bool {
     fp_before != cache.content_fingerprint()
 }
 
+/// Live per-user group edges from the rebulk warm pass (short name → gids).
+/// Carries the memberOf-direction truth the bulk snap cannot see: LLDAP
+/// memberOf-only groups (e.g. lldap_sudohost) report empty member lists in a
+/// bulk group search, so their membership is only visible via a live
+/// per-user resolve.
+pub(crate) type LiveGroupEdges = std::collections::HashMap<String, Vec<u32>>;
+
 /// Prunes stale LDAP users from cache but keeps machine principals.
 pub(crate) fn sync_user_cache_from_snapshot(
     snap: &IdMapSnapshot,
     realm: &str,
     cache: &mut IdCache,
+    live: &LiveGroupEdges,
 ) -> usize {
-    // Preserve on-demand supplemental gids for users across prune+reseed, so build_nss will still
-    // emit their supp rows even if this bulk snap doesn't include the g or user lists it.
-    let mut prior_supps: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
-    for (k, r) in &cache.entries {
-        if r.kind == PrincipalKind::User && principal_has_realm(&r.principal) && !r.supplemental_gids.is_empty() {
-            prior_supps.insert(k.clone(), r.supplemental_gids.clone());
-        }
-    }
     let pruned = cache.prune_non_machine_users();
     if pruned > 0 {
         dlog!("sync_user_cache pruned {} stale non-machine entries", pruned);
     }
     let n = seed_cache_and_nss_from_snapshot(snap, realm, cache);
-    // re-apply preserved supps to any re-seeded users
-    for (k, sups) in prior_supps {
-        if let Some(e) = cache.entries.get_mut(&k) {
-            for s in sups {
-                if !e.supplemental_gids.contains(&s) {
-                    e.supplemental_gids.push(s);
+    // Fold in the warm pass's LIVE memberOf edges so memberOf-only groups
+    // still seed. This REPLACES the old preserve-prior-supps union: a rebulk
+    // seeds from the two fresh LDAP edge directions ONLY (bulk member lists +
+    // live memberOf), so a revoked membership actually drops. The old union
+    // re-applied every previously discovered supp across prune+reseed forever
+    // — revocation was structurally impossible (2026-07-18 B7 gate finding).
+    for e in cache.entries.values_mut() {
+        if e.kind != PrincipalKind::User || !principal_has_realm(&e.principal) {
+            continue;
+        }
+        if let Some(gids) = live.get(&e.name) {
+            for &g in gids {
+                if g != 0 && g != e.gid && !e.supplemental_gids.contains(&g) {
+                    e.supplemental_gids.push(g);
                 }
             }
+            e.supplemental_gids.sort_unstable();
+            e.supplemental_gids.dedup();
         }
     }
     let bad = cache.prune_malformed_principals();

@@ -64,8 +64,10 @@ Generated `ganesha.conf` sets load-bearing identity/runtime parameters explicitl
 
 Three caches: (1) SSSD `entry_cache_timeout`, (2) idhelper LDAP + nss materialization, (3) Ganesha uid2grp (`Idmapped_Group_Time_Validity`). Flushing only `sss_cache -E` is insufficient.
 
+A rebulk reseeds each user's supplemental groups **authoritatively** from the two fresh LDAP edge directions — bulk group member lists plus a live per-user memberOf pass (which is what carries memberOf-only groups like `lldap_sudohost`) — so **revocations land exactly like grants**. An on-demand resolve between rebulks unions with the last seed (a transient partial resolve must not drop a known group), bounded by the next rebulk cycle or an immediate `refresh-identity`. A 0-user bulk load (LDAP outage) aborts the rebulk and keeps the last good NSS stores.
+
 - **Natural:** defaults `entry_cache_timeout = 180`, rebulk `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS = 180`, Idmapped = 180 → typically ~3 min (worst under ~10). New entities: negative caches ≈ ≤2 min.
-- **Instant:** `ganesha-ctl refresh-identity [user]` — sss_cache + idhelper REBULK (full resolver clear) + DBus `purge_gids`.
+- **Instant:** `ganesha-ctl refresh-identity [user]` — sss_cache + idhelper REBULK (full resolver clear) + DBus `purge_gids`. Nonzero exit = a layer did not confirm the flush (honest-exit contract). SSSD's user cache is usually **cold** here (idhelper/extrausers answer NSS first), and `sss_cache -u` errors on a no-cached-object user — that case degrades to `sss_cache -E` (nothing cached = nothing stale; only both failing fails the layer).
 
 ### Change-visibility (out-of-band UI edits)
 
@@ -91,6 +93,8 @@ Live export gate: `scripts/ganesha-export-reload-smoke.sh` (add/update/remove vi
 **9.13 VFS note:** `vfs_sub_getattrs` may fetch POSIX ACLs on attribute refresh even when `Disable_ACL` is set. Filesystems that cannot store POSIX ACLs (vfat/ntfs/exfat, `noacl` mounts) are expected to fail attribute fetches for **both** share classes — stage onto an ACL-capable tree. `Disable_ACL` is advisory (does not strip ATTR_ACL from supported attrs); NOACL class = declared policy + trees without extended ACLs.
 
 **Client contract:** NFSv4.2 mounts are class-agnostic (`noacl` mount option is NFSv3 sideband, inert here). Clients cannot detect class over the wire. Host publishes class via unauthenticated **`GET /client-manifest.json`** (name, pseudo, security, rw, `acl`/`noacl` + label; no internal paths; `Cache-Control: no-store`). Class is per **share** (serve root); incapable submounts → Settings warning + `/acl-apply` 422, not per-dir class.
+
+**Wire ACL edits** (client `nfs4_setfacl`, live-established 2026-07-17, 2.6 B9): whos are numeric both directions (`Only_Numeric_Owners`); a `name@domain` who anon-maps to `4294967294` (nobody) instead of resolving, and an **out-of-uint32 numeric who wraps modulo 2³²** — `4294967296` becomes uid 0, silently minting a root allow entry (bounded: only a file's owner can SETATTR its ACL, and NFS root stays squashed; still, typos land, they don't error). Deny ACEs apply as the draft-05 approximation: against a **non-owner** principal the intent binds as a named entry with the denied bits stripped; against the **file owner** it is unrepresentable — POSIX named entries never bind the owner and the mapping performs no mode surgery, so the stored `user:<owner>:---` entry is inert and the owner's class access is unchanged.
 
 **Staging:** `source_path` = data bind; `container_path` = ACL-capable serve tree; `host_path` for WebUI. Optional `[ganesha] post_generate_hook` (see `examples/post-generate-staging-sync.sh`) syncs source → serve after generate.
 

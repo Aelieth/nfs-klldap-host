@@ -324,7 +324,12 @@ pub(crate) fn resolve_gids_and_materialize(
     // (including after rebulk) will emit complete membership rows for all of them.
     if let Some(entry) = cache.entries.get_mut(&normalize_principal(&r.principal)) {
         let mut supps: Vec<u32> = gids.iter().copied().filter(|&g| g != entry.gid).collect();
-        // union with prior (never drop a previously discovered supp on a groups call that doesn't see it this time)
+        // union with prior: a TRANSIENT partial resolve must not drop a known
+        // supp mid-window. This union is bounded — the next rebulk reseeds the
+        // entry authoritatively from fresh LDAP edges (member lists + live
+        // memberOf), so revocations land within a rebulk cycle, or instantly
+        // via refresh-identity. (The rebulk-side preserve that made this union
+        // immortal was removed 2026-07-18 — B7 gate finding.)
         for s in &entry.supplemental_gids {
             if !supps.contains(s) { supps.push(*s); }
         }

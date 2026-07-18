@@ -17,7 +17,7 @@ use nfs_klldap_config::{classify_principal, IdMapSnapshot};
 
 use crate::materialize::{
     cache_changed_since, materialize_nss_wrappers, materialize_nss_wrappers_at,
-    sync_user_cache_from_snapshot, NssMaterializePaths,
+    sync_user_cache_from_snapshot, LiveGroupEdges, NssMaterializePaths,
 };
 use crate::observer::start_ganesha_observer;
 use crate::resolve::{
@@ -63,14 +63,16 @@ pub(crate) struct RebulkOutcome {
 }
 
 /// Syncs LDAP snapshot to cache and materializes nss on fingerprint change.
+/// `live` carries the warm pass's per-user memberOf edges (see LiveGroupEdges).
 pub(crate) fn rebulk_apply_sync(
     cache: &mut IdCache,
     realm: &str,
     snap: &IdMapSnapshot,
+    live: &LiveGroupEdges,
     paths: &RebulkPaths<'_>,
 ) -> Result<RebulkOutcome, io::Error> {
     let fp_before = cache.content_fingerprint();
-    let synced = sync_user_cache_from_snapshot(snap, realm, cache);
+    let synced = sync_user_cache_from_snapshot(snap, realm, cache, live);
     let user_changed = cache_changed_since(fp_before, cache);
     // Always full consistent snapshot (root + users + supps + groups) on every rebulk; idempotent, no marker dep (AC2).
     // All three passes are content-guarded, so a steady-state cycle is a no-op on
@@ -149,13 +151,17 @@ pub(crate) mod test_rebulk {
 /// Warm primary + supplemental group rows in the resolver cache before nss materialize.
 /// Ganesha 9.6 krb5 uid2grp needs supplemental member-of groups (e.g. lldap_sudohost) in nss_group
 /// at startup; bulk LDAP group load alone may omit LLDAP-only membership edges.
+/// Returns the per-user LIVE group edges it resolved — the seed folds these in
+/// (the memberOf direction the bulk snap cannot see), which is what lets the
+/// rebulk be authoritative without a stale-supp preserve.
 fn warm_rebulk_group_cache(
     resolver: &nfs_klldap_identity::IdLdapResolver,
     realm: &str,
     pre: &nfs_klldap_identity::IdMapSnapshot,
     bind_dn: &str,
     bind_pw: &str,
-) {
+) -> LiveGroupEdges {
+    let mut live = LiveGroupEdges::new();
     for u in pre.users.values() {
         let _ = resolver.resolve_group_by_gid(u.gid, bind_dn, bind_pw);
     }
@@ -178,7 +184,9 @@ fn warm_rebulk_group_cache(
         for &g in &gids {
             let _ = resolver.resolve_group_by_gid(g, bind_dn, bind_pw);
         }
+        live.insert(short.to_string(), gids.iter().map(|&g| g as u32).collect());
     }
+    live
 }
 
 /// Bulk-loads LDAP users and materializes nss before ganesha.nfsd starts.
@@ -188,11 +196,15 @@ pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usiz
         // paths-only override; still run real resolver load + primary-gid loop (data via TEST_REBULK_POPULATE)
         let (r, dn, pw) = get_or_init_resolver()?;
         let loaded = r.load_full_identities(dn, pw);
+        if loaded == 0 {
+            eprintln!("[idhelper] WARN: rebulk aborted — LDAP bulk load returned 0 users; keeping existing NSS stores");
+            return None;
+        }
         let pre = r.snapshot();
-        warm_rebulk_group_cache(r, realm, &pre, dn, pw);
+        let live = warm_rebulk_group_cache(r, realm, &pre, dn, pw);
         let snap = r.snapshot();
         let fp_before = cache.content_fingerprint();
-        return match rebulk_apply_sync(cache, realm, &snap, &ov.paths) {
+        return match rebulk_apply_sync(cache, realm, &snap, &live, &ov.paths) {
             Ok(o) => {
                 if o.materialized {
                     eprintln!(
@@ -218,12 +230,22 @@ pub(crate) fn rebulk_ldap_users(cache: &mut IdCache, realm: &str) -> Option<usiz
     // Bind delta makes KLLDAP login pressure visible per rebulk cycle.
     let binds_before = r.bind_stats();
     let loaded = r.load_full_identities(dn, pw);
+    if loaded == 0 {
+        // LDAP unreachable (or empty): the caches were already cleared by the
+        // load, but the NSS stores must keep serving the last good identity
+        // set — pruning + materializing from an empty snapshot would wipe
+        // every LDAP user until the next successful cycle. Fail honestly:
+        // the REBULK socket reply becomes "ERR rebulk failed" and
+        // refresh-identity's idhelper layer reports it.
+        eprintln!("[idhelper] WARN: rebulk aborted — LDAP bulk load returned 0 users (outage?); keeping existing NSS stores");
+        return None;
+    }
     let pre = r.snapshot();
-    warm_rebulk_group_cache(r, realm, &pre, dn, pw);
+    let live = warm_rebulk_group_cache(r, realm, &pre, dn, pw);
     let snap = r.snapshot();
     let fp_before = cache.content_fingerprint();
     let binds = r.bind_stats().saturating_sub(binds_before);
-    match rebulk_apply_sync(cache, realm, &snap, &RebulkPaths::production()) {
+    match rebulk_apply_sync(cache, realm, &snap, &live, &RebulkPaths::production()) {
         Ok(o) => {
             if o.materialized {
                 eprintln!(
@@ -659,8 +681,10 @@ mod rebulk_ldap_users_tests {
             // rename here races an in-flight ganesha getgrouplist.
             let (r, dn, pw) = crate::resolve::get_or_init_resolver().expect("test resolver");
             let _ = r.load_full_identities(dn, pw);
+            let pre = r.snapshot();
+            let live = warm_rebulk_group_cache(r, "EX.COM", &pre, dn, pw);
             let snap = r.snapshot();
-            let out = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths).expect("steady rebulk");
+            let out = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &live, &paths).expect("steady rebulk");
             std::env::remove_var("TEST_REBULK_POPULATE");
             assert!(
                 !out.materialized,
@@ -719,7 +743,7 @@ mod rebulk_ldap_users_tests {
         with_test_rebulk_override(ov2, || {
             std::env::set_var("TEST_REBULK_POPULATE", "u:bob:1002:1002");
             let mut cache = IdCache::default();
-            sync_user_cache_from_snapshot(&alice_snapshot(), "EX.COM", &mut cache);
+            sync_user_cache_from_snapshot(&alice_snapshot(), "EX.COM", &mut cache, &LiveGroupEdges::new());
             let _ = std::fs::write(paths.nss.nss_passwd, "alice:x:1001:1001:...\n");
             let mtime_before = fs::metadata(paths.nss.nss_passwd).unwrap().modified().unwrap();
             sleep(Duration::from_millis(50));
@@ -814,9 +838,9 @@ serve_path = "/export/d"
         let paths = rebulk_paths_in(tmp.path());
         let snap = alice_snapshot();
         let mut cache = IdCache::default();
-        let first = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths).unwrap();
+        let first = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &LiveGroupEdges::new(), &paths).unwrap();
         assert!(first.materialized);
-        let second = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths).unwrap();
+        let second = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &LiveGroupEdges::new(), &paths).unwrap();
         // tolerate true due to internal supps fp + refresh mats; the user delta logic is still exercised by other tests
         let _ = second.materialized;
     }
@@ -845,6 +869,117 @@ serve_path = "/export/d"
             let g2 = fs::read_to_string(paths.nss.nss_group).expect("rebulk wrote phase2");
             eprintln!("wrote nss_group (phase2):\n{}", g2);
             assert!(!g2.contains("oldgrp:x:600:"), "removed group must be pruned from nss_group");
+        });
+    }
+
+    #[test]
+    fn rebulk_drops_revoked_supplemental_gids() {
+        // The 2026-07-18 B7 gate regression: a supp discovered in cycle 1 must
+        // NOT survive a cycle-2 rebulk whose fresh LDAP data no longer lists
+        // the membership (the old preserve-prior-supps union made revocation
+        // structurally impossible — the entry, the cache file, and the nss
+        // member rows all kept the revoked gid forever).
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = rebulk_paths_in(tmp.path());
+        let ov = TestRebulkOverride { paths };
+        with_test_rebulk_override(ov, || {
+            std::env::set_var(
+                "TEST_REBULK_POPULATE",
+                "u:testuser1:3788:3002;g:staff:3002:testuser1;g:testing9:3019:testuser1",
+            );
+            let mut cache = IdCache::default();
+            let _ = rebulk_ldap_users(&mut cache, "EX.COM");
+            let supps1 = cache
+                .entries
+                .values()
+                .find(|e| e.name == "testuser1")
+                .expect("seeded entry")
+                .supplemental_gids
+                .clone();
+            assert!(supps1.contains(&3019), "fixture: membership present in cycle 1");
+            // LDAP edit: user removed from testing9 (group and user both remain).
+            std::env::set_var(
+                "TEST_REBULK_POPULATE",
+                "u:testuser1:3788:3002;g:staff:3002:testuser1;g:testing9:3019:",
+            );
+            let _ = rebulk_ldap_users(&mut cache, "EX.COM");
+            std::env::remove_var("TEST_REBULK_POPULATE");
+            let supps2 = cache
+                .entries
+                .values()
+                .find(|e| e.name == "testuser1")
+                .expect("entry survives")
+                .supplemental_gids
+                .clone();
+            assert!(
+                !supps2.contains(&3019),
+                "revoked membership must drop at rebulk (got {:?})",
+                supps2
+            );
+            let group = fs::read_to_string(paths.nss.nss_group).expect("nss_group written");
+            let t9_lines: Vec<&str> =
+                group.lines().filter(|l| l.contains(":3019:")).collect();
+            assert!(
+                t9_lines.iter().all(|l| !l.contains("testuser1")),
+                "revoked member must leave the 3019 nss rows (rows: {:?})",
+                t9_lines
+            );
+        });
+    }
+
+    #[test]
+    fn sync_folds_live_memberof_edges_into_seed() {
+        // memberOf-only groups (empty member list in the bulk snap) reach the
+        // seeded entry through the warm pass's live edges — the mechanism that
+        // replaced the stale-supp preserve.
+        let mut snap = alice_snapshot();
+        use nfs_klldap_config::PosixGroupEntry;
+        snap.groups.insert(
+            "lldap_sudohost".to_string(),
+            PosixGroupEntry { gid: 4001, display: "lldap_sudohost".to_string(), members: vec![] },
+        );
+        let mut cache = IdCache::default();
+        let live =
+            LiveGroupEdges::from([("alice".to_string(), vec![4001u32])]);
+        let n = sync_user_cache_from_snapshot(&snap, "EX.COM", &mut cache, &live);
+        assert_eq!(n, 1);
+        let e = cache
+            .entries
+            .values()
+            .find(|e| e.name == "alice")
+            .expect("alice seeded");
+        assert!(
+            e.supplemental_gids.contains(&4001),
+            "live memberOf edge must seed (got {:?})",
+            e.supplemental_gids
+        );
+    }
+
+    #[test]
+    fn rebulk_aborts_on_empty_ldap_load() {
+        // A 0-user bulk load (LDAP outage) must not prune + materialize an
+        // empty identity set over the last good NSS stores.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = rebulk_paths_in(tmp.path());
+        let ov = TestRebulkOverride { paths };
+        with_test_rebulk_override(ov, || {
+            std::env::set_var("TEST_REBULK_POPULATE", "u:alice:1001:1001;g:staff:1001:alice");
+            let mut cache = IdCache::default();
+            let _ = rebulk_ldap_users(&mut cache, "EX.COM");
+            let passwd_before =
+                fs::read_to_string(paths.nss.nss_passwd).expect("cycle 1 wrote nss_passwd");
+            assert!(passwd_before.contains("alice"));
+            // outage: populate empty -> load returns 0 users
+            std::env::set_var("TEST_REBULK_POPULATE", "");
+            let out = rebulk_ldap_users(&mut cache, "EX.COM");
+            std::env::remove_var("TEST_REBULK_POPULATE");
+            assert!(out.is_none(), "0-user load must fail the rebulk");
+            let passwd_after = fs::read_to_string(paths.nss.nss_passwd).expect("store intact");
+            assert_eq!(passwd_before, passwd_after, "NSS stores must keep the last good set");
+            assert!(
+                cache.entries.values().any(|e| e.name == "alice"),
+                "cache entries must not be pruned on an aborted rebulk"
+            );
         });
     }
 }

@@ -403,14 +403,17 @@ mod tests {
         assert!(c2.get("bob@TEST").is_some());
         assert_eq!(c2.get("bob@TEST").unwrap().uid, 2001);
         assert_eq!(c2.get("bob@TEST").unwrap().supplemental_gids, vec![4242]);
-        // Mechanical load + rebulk survival (drives shipped rebulk_apply_sync + build_nss on real paths; poor snap seeds user primary only; prior_supps re-applied so build emits non-prim).
+        // Mechanical load + rebulk survival (drives shipped rebulk_apply_sync + build_nss on real
+        // paths; poor snap seeds user primary only; the supp arrives via the live memberOf edge
+        // map — the warm-pass mechanism that replaced the stale-supp preserve).
         let base = tmp.path().join("rb");
         let _ = std::fs::create_dir_all(&base);
         let rpaths = daemon::RebulkPaths::under(&base);
         let mut c3 = IdCache::load_from_file(&p);
         let mut poor = nfs_klldap_config::IdMapSnapshot::default();
         poor.users.insert("bob".into(), nfs_klldap_config::PosixUserEntry { uid: 2001, gid: 2001, display: "bob".into() });
-        let _ = daemon::rebulk_apply_sync(&mut c3, "TEST", &poor, &rpaths);
+        let live = materialize::LiveGroupEdges::from([("bob".to_string(), vec![4242u32])]);
+        let _ = daemon::rebulk_apply_sync(&mut c3, "TEST", &poor, &live, &rpaths);
         let ng = std::fs::read_to_string(rpaths.nss.nss_group).unwrap_or_default();
         let eg = std::fs::read_to_string(rpaths.nss.extrausers_group).unwrap_or_default();
         assert!(ng.contains(":4242:") && ng.contains("bob"), "non-prim supp row from loaded supps must survive rebulk to nss_group");
@@ -774,7 +777,7 @@ mod tests {
         );
         let mut cache = IdCache::default();
         let paths = daemon::RebulkPaths::under(base);
-        let res = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths);
+        let res = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &materialize::LiveGroupEdges::new(), &paths);
         assert!(res.is_ok());
         let passwd = std::fs::read_to_string(paths.nss.nss_passwd).unwrap();
         assert!(passwd.contains("carol:x:1003:1003:"));
@@ -796,7 +799,7 @@ mod tests {
         snap.groups.insert("staff".to_string(), nfs_klldap_config::PosixGroupEntry { gid: 1001, display: "staff".to_string(), members: vec!["alice@EX.COM".to_string()] });
         let mut cache = IdCache::default();
         let paths = daemon::RebulkPaths::under(base);
-        let res = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths);
+        let res = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &materialize::LiveGroupEdges::new(), &paths);
         assert!(res.is_ok(), "apply with under() paths must succeed");
         let g = std::fs::read_to_string(paths.nss.nss_group).unwrap_or_default();
         assert!(g.contains("staff:x:1001:") && g.contains("alice@EX.COM"), "under() nss must materialize @ member + group");
@@ -830,7 +833,7 @@ mod tests {
         snap.users.insert("alice".to_string(), PosixUserEntry { uid: 1001, gid: 1001, display: "alice".to_string() });
 
         let paths = daemon::RebulkPaths::under(base);
-        let res = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &paths);
+        let res = rebulk_apply_sync(&mut cache, "EX.COM", &snap, &materialize::LiveGroupEdges::new(), &paths);
         assert!(res.is_ok());
 
         // Verify nss and extrausers contain machine as uid 0 + root group.
@@ -894,7 +897,7 @@ mod tests {
         );
         snap.by_uid.insert(1001, "alice".to_string());
 
-        let n = sync_user_cache_from_snapshot(&snap, "EX.COM", &mut cache);
+        let n = sync_user_cache_from_snapshot(&snap, "EX.COM", &mut cache, &materialize::LiveGroupEdges::new());
         assert_eq!(n, 1);
         assert!(cache.get("deleted@EX.COM").is_none());
         assert!(cache.get("host/client@EX.COM").is_some());
@@ -1607,7 +1610,9 @@ mod tests {
         eprintln!("OND_REACTIVE_FIRST_NG:\n{}", ng);
         eprintln!("OND_REACTIVE_FIRST_EG:\n{}", eg);
         std::env::remove_var("TEST_REBULK_POPULATE");
-        // Survival using rebulk_apply_sync + poor snap (lacking the supp g): write cache, load fresh (drive load_from_file), rebulk, assert non-prim rows in both from shipped path.
+        // Survival using rebulk_apply_sync + poor snap (lacking the supp g): write cache, load fresh
+        // (drive load_from_file), rebulk with the supp carried on the LIVE memberOf edge map (the
+        // warm-pass mechanism that replaced the stale-supp preserve), assert non-prim rows in both.
         let cp = tmp.path().join("idmap.cache.surv");
         let _ = cache.write_to_file(&cp);
         let mut c3 = IdCache::load_from_file(&cp);
@@ -1616,10 +1621,11 @@ mod tests {
         let cpath: &std::path::Path = Box::leak(tmp.path().join("idmap.cache").into_boxed_path());
         let _mpath: &std::path::Path = Box::leak(tmp.path().join(".bulk_seed").into_boxed_path());
         let rpaths = daemon::RebulkPaths { cache_path: cpath, nss: paths };
-        let _ = daemon::rebulk_apply_sync(&mut c3, "T.REALM", &poor_snap, &rpaths);
+        let live = materialize::LiveGroupEdges::from([("testu".to_string(), vec![4242u32])]);
+        let _ = daemon::rebulk_apply_sync(&mut c3, "T.REALM", &poor_snap, &live, &rpaths);
         let ng3 = std::fs::read_to_string(paths.nss_group).unwrap_or_default();
         let eg3 = std::fs::read_to_string(paths.extrausers_group).unwrap_or_default();
-        assert!(ng3.contains(":4242:") && (ng3.contains("testu") || ng3.contains("testu@")), "supp row must survive post-rebulk_apply_sync thanks to build using cached supplemental_gids");
+        assert!(ng3.contains(":4242:") && (ng3.contains("testu") || ng3.contains("testu@")), "supp row must survive post-rebulk_apply_sync via the live edge map");
         assert!(eg3.contains(":4242:") && (eg3.contains("testu") || eg3.contains("testu@")) );
         // repeat: pure cache + no mat side effect (mtime or content)
         let mt = std::fs::metadata(paths.nss_group).map(|m| m.modified().unwrap()).ok();

@@ -197,13 +197,26 @@ case "$CMD" in
         log "refresh-identity: flushing identity caches${USER_ARG:+ for ${USER_ARG}}..."
 
         # 1) SSSD (needs sssd-tools). -u for one user, -E for everything.
+        # sss_cache -u exits nonzero when the user has NO cached object —
+        # the normal state here (idhelper/extrausers answer NSS ahead of
+        # sss, so SSSD's user cache is usually cold) and not a stale-flush
+        # risk: nothing cached means nothing stale. rc alone cannot split
+        # that from a real failure, so degrade to -E (full invalidation,
+        # exits 0 on an empty cache) and fail the layer only when THAT
+        # fails too. 2026-07-18 B7 live finding: the -u path failed every
+        # honest-exit flush on a cold cache.
         if command -v sss_cache >/dev/null 2>&1; then
-            if [ -n "$USER_ARG" ]; then
-                sss_cache -u "$USER_ARG" 2>/dev/null && log "  sss_cache -u ${USER_ARG}: ok" \
-                    || { log "  WARN: sss_cache -u ${USER_ARG} failed"; FLUSH_FAILED="${FLUSH_FAILED} sssd"; }
+            if [ -n "$USER_ARG" ] && sss_cache -u "$USER_ARG" 2>/dev/null; then
+                log "  sss_cache -u ${USER_ARG}: ok"
+            elif sss_cache -E 2>/dev/null; then
+                if [ -n "$USER_ARG" ]; then
+                    log "  sss_cache -u ${USER_ARG}: no cached object — full flush (-E) took its place"
+                else
+                    log "  sss_cache -E: ok"
+                fi
             else
-                sss_cache -E 2>/dev/null && log "  sss_cache -E: ok" \
-                    || { log "  WARN: sss_cache -E failed"; FLUSH_FAILED="${FLUSH_FAILED} sssd"; }
+                log "  WARN: sss_cache failed (both -u and -E)"
+                FLUSH_FAILED="${FLUSH_FAILED} sssd"
             fi
         else
             log "  WARN: sss_cache not found (install sssd-tools) — skipping SSSD flush"
@@ -215,7 +228,12 @@ case "$CMD" in
         if [ -S "$SOCK" ]; then
             RESP="$(printf 'REBULK\n' | nc -U "$SOCK" 2>/dev/null || true)"
             log "  idhelper REBULK: ${RESP:-<no response>}"
-            [ -n "$RESP" ] || FLUSH_FAILED="${FLUSH_FAILED} idhelper"
+            # The daemon answers "OK <n>" or "ERR rebulk failed" — an ERR
+            # reply is a failed flush, not a flushed layer.
+            case "$RESP" in
+                OK*) : ;;
+                *) FLUSH_FAILED="${FLUSH_FAILED} idhelper" ;;
+            esac
         else
             log "  WARN: idhelper socket ${SOCK} missing — skipping rebulk"
             FLUSH_FAILED="${FLUSH_FAILED} idhelper"

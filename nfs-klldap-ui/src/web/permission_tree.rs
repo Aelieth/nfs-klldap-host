@@ -294,6 +294,10 @@ struct ShareInfo {
     /// Effective security, only when it deviates from `[ganesha] default_security`
     /// — the card chips render non-conformity, not the whole option set.
     pub security_chip: Option<String>,
+    /// Effective Navahi exposure (global navahi_discovery AND per-share navahi_insecure):
+    /// the share is advertised over mDNS and accepts insecure NFSv3/AUTH_SYS mounts.
+    /// Same effective-only rule as the Settings card chip — never a raw-key echo.
+    pub navahi: bool,
     /// True when the share actually serves ACLs (resolved enable_acl — explicit or
     /// auto-promoted by the live write probe — AND a capable filesystem). Same rule as
     /// the Settings rows and generate; drives the share-card status dot.
@@ -836,6 +840,7 @@ fn index_html(state: &AppState, current_user: String) -> String {
                 cache_profile,
                 warning,
                 security_chip,
+                navahi: cfg.navahi_discovery && s.navahi_insecure.unwrap_or(false),
                 acl_capable: status.effective_acl_capable,
                 acl_probed: status.probed,
             }

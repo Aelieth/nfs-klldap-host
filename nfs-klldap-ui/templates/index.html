@@ -58,6 +58,9 @@
             {% if let Some(sec) = share.security_chip %}
             <span class="share-chip" title="differs from the [ganesha] default security">{{ sec }}</span>
             {% endif %}
+            {% if share.navahi %}
+            <span class="share-chip navahi" title="advertised on the LAN (mDNS); accepts insecure NFSv3/AUTH_SYS mounts">navahi</span>
+            {% endif %}
             {% if let Some(warn) = share.warning %}
             <span class="share-chip warn" title="{{ warn }}">{{ warn }}</span>
             {% endif %}

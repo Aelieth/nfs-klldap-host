@@ -524,6 +524,10 @@ small { color: var(--text-light); }
                           overflow:hidden; text-overflow:ellipsis; }
 .share-chip.warn        { background:var(--warning-amber-bg); color:var(--warning-amber-text);
                           border-color:var(--warning-amber-border); }
+/* Effective Navahi exposure (global toggle && share flag): green success family,
+   same palette as the ACL dot. */
+.share-chip.navahi      { background:var(--success-bg); color:var(--success-text);
+                          border-color:var(--success-border); }
 /* Read-only export: distinct orange, deliberately NOT the amber warn family.
    Theme-invariant literals for CVD contrast, same rationale as --noacl. */
 .share-chip.ro          { background:rgba(234,88,12,.14); color:#ea580c;

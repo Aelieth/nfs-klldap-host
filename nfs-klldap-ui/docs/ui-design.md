@@ -214,8 +214,9 @@ that duplication is exactly what previously lost the field tooltips on new cards
 
 ### Navahi controls (Core toggle + share checkbox)
 
-- The Core pane's **"Navahi Network Discovery"** checkbox is a `BoolAlways` FieldSpec writing
-  top-level `navahi_discovery` (always before the first `[section]`). Like the other core settings
+- The Core pane's **"Navahi Network Discovery"** control is a boxed Enabled/Disabled seg
+  (`data-bool-for`) driving a hidden checkbox — still the `BoolAlways` FieldSpec writing top-level
+  `navahi_discovery` (always before the first `[section]`). Like the other core settings
   it is **staged**: the derived-note names "Restart and apply" as the application step. The Overview
   card carries a `navahi` row (`on — N share(s) advertised` / `off`).
 - Each share card has a **navahi** checkbox (`navahi_insecure`). While the saved global is off it
@@ -224,6 +225,8 @@ that duplication is exactly what previously lost the field tooltips on new cards
   the global is off; with the global on, an absent field is a real uncheck and clears the key.
 - Chip rule: `navahi` chips **only when effective** (global && flag) — an exposure signal (mDNS
   advert + NFSv3/AUTH_SYS accepted), same family as the security-deviation chip, never a raw-key echo.
+  The Share Permissions cards carry the same chip (`.share-chip.navahi`, green `--success` family
+  like the ACL dot) under the same effective-only rule.
 - Blank cards from `GET /settings/share-card` load the saved global so a fresh card mutes/unmutes
   identically to server-rendered rows.
 

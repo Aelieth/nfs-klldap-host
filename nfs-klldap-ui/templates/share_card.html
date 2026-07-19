@@ -53,12 +53,12 @@
                             </select>
                           </div>
                           <div class="scf">
-                            <label class="fld-lab" title="On = root_squash; off = no_root_squash.&#10;&rarr; squash / EXPORT Squash">squash <span class="ico">i</span></label>
-                            <label class="chkline"><input type="checkbox" data-f="root_squash" name="share_root_squash_{{ row.idx }}" {% if row.root_squash %}checked{% endif %}> root_squash</label>
+                            <label class="fld-lab" title="On = root_squash; off = no_root_squash.&#10;&rarr; squash / EXPORT Squash">root_squash <span class="ico">i</span></label>
+                            <label class="chkline"><input type="checkbox" data-f="root_squash" name="share_root_squash_{{ row.idx }}" {% if row.root_squash %}checked{% endif %}></label>
                           </div>
                           <div class="scf">
-                            <label class="fld-lab" title="Advertise on the local network (mDNS/Avahi) and allow insecure click-mount: NFSv3 + AUTH_SYS, no Kerberos. Effective only while the Core &quot;Navahi Network Discovery&quot; toggle is on.&#10;&rarr; navahi_insecure">navahi <span class="ico">i</span></label>
-                            <label class="chkline"><input type="checkbox" data-f="navahi_insecure" name="share_navahi_insecure_{{ row.idx }}" {% if row.navahi_insecure %}checked{% endif %} {% if !row.navahi_global %}disabled{% endif %}> insecure</label>
+                            <label class="fld-lab" title="Advertise on the local network (mDNS/Avahi) and allow insecure click-mount: NFSv3 + AUTH_SYS, no Kerberos. Effective only while the Core &quot;Navahi Network Discovery&quot; toggle is on.&#10;&rarr; navahi_insecure">navahi_insecure <span class="ico">i</span></label>
+                            <label class="chkline"><input type="checkbox" data-f="navahi_insecure" name="share_navahi_insecure_{{ row.idx }}" {% if row.navahi_insecure %}checked{% endif %} {% if !row.navahi_global %}disabled{% endif %}></label>
                             {% if !row.navahi_global %}<small class="muted" style="font-size:.62em;display:block;margin-top:2px">requires Navahi Network Discovery (Core)</small>{% endif %}
                           </div>
                         </div>

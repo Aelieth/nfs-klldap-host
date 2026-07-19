@@ -45,7 +45,7 @@
   .rail-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;color:var(--text-muted);font-size:.9em;font-weight:600;border:1px solid transparent;background:transparent;text-align:left;width:100%;font-family:inherit;white-space:nowrap}
   .rail-item:hover{background:var(--dir-hover)}
   .rail-item.active{background:var(--accent-light);color:var(--text);border-color:var(--selected-border)}
-  .rail-dot{width:7px;height:7px;border-radius:50%;background:var(--warning-amber-border);margin-left:auto;opacity:0}
+  .rail-dot{width:7px;height:7px;border-radius:50%;background:var(--warning-amber-border);margin-left:auto;opacity:0;transition:opacity .15s}
   .rail-item.dirty .rail-dot{opacity:1}
   .set-main{flex:1;min-width:0;display:flex;flex-direction:column}
   .set-scroll{flex:1;padding:18px 22px;display:flex;flex-direction:column;min-height:0}
@@ -61,6 +61,12 @@
   .fld-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px}
   .fld{margin-bottom:2px;min-width:0;position:static}
   .fld.wide{grid-column:1 / -1}
+  /* Core pane: the tall probe card anchors the left of the last two rows; the boxed
+     Navahi card stacks under ganesha.default_security (both reset to flow at ≤640px). */
+  .fld[data-probe-card]{grid-row:span 2}
+  .fld.navahi-card{grid-column:2;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px}
+  .fld.navahi-card .ac-head{margin-bottom:6px}
+  .fld.navahi-card .derived-note{margin-top:0}
   .fld-lab{display:inline-flex;align-items:center;gap:5px;font:600 .78em var(--font-mono);color:var(--text-muted);margin-bottom:4px;cursor:help;position:static}
   .ico{width:11px;height:11px;border-radius:50%;border:1px solid currentColor;font:italic 700 8px/1 Georgia,serif;display:inline-flex;align-items:center;justify-content:center;opacity:.55;flex:none}
   .fld input[type=text],.fld input[type=password],.fld input[type=number],.fld select{width:100%;padding:5px 8px;border-radius:5px;font-size:.92em;box-sizing:border-box}
@@ -111,11 +117,13 @@
   .sc-body{display:none}
   .share-card-ed.open .sc-body{display:block;margin-top:11px;padding-top:11px;border-top:1px dashed var(--border-light)}
   .sc-optwrap{margin-top:11px;padding-top:11px;border-top:1px dashed var(--border-light);display:flex;flex-direction:column;gap:11px}
-  .sc-access{display:grid;grid-template-columns:repeat(3,1fr);gap:9px 12px}
-  .sc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(116px,1fr));gap:9px 12px}
+  /* minmax(0,1fr) lets the equal columns shrink so each option row stays on one line:
+     row 1 (.sc-access) security·rw·root_squash·navahi_insecure, row 2 (.sc-grid) 5-up. */
+  .sc-access{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+  .sc-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
   .scf{min-width:0}
   .scf .fld-lab{margin-bottom:3px}
-  .scf select,.scf input{width:100%;padding:4px 6px;border-radius:5px;font-size:.86em;box-sizing:border-box}
+  .scf select,.scf input{width:100%;padding:3px 4px;border-radius:5px;font-size:.78em;box-sizing:border-box}
   .scf .chkline{padding:5px 0}
   .add-share{align-self:flex-start;margin-top:14px;border:1px dashed var(--border);background:transparent;color:var(--accent);padding:7px 14px;border-radius:6px;cursor:pointer;font-weight:600;font-size:.88em;font-family:inherit}
   .add-share:hover{background:var(--accent-light);border-style:solid}
@@ -144,7 +152,7 @@
   .sb-spacer{margin-left:auto}
 
   @media (max-width:900px){.shares-split{flex-direction:column}.toml-side{flex:1 1 auto;position:static;width:100%}}
-  @media (max-width:640px){.fld-grid{grid-template-columns:1fr}.sc-access{grid-template-columns:1fr}}
+  @media (max-width:640px){.fld-grid{grid-template-columns:1fr}.fld[data-probe-card]{grid-row:auto}.fld.navahi-card{grid-column:auto}.sc-access{grid-template-columns:1fr}.sc-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 
 {# keytab_alert intentionally not repeated here — base.html already banners it #}
@@ -253,6 +261,23 @@
                 <input type="checkbox" name="override_kerberos_realm" id="override_kerberos_realm" value="true" {% if override_kerberos_realm %}checked{% endif %} hidden>
               </div>
 
+              {# [probe] identity probe — the Auto/Custom seg drives the hidden auto_probe_ldap
+                 checkbox (Auto = checked; POST contract unchanged) and gates the two pinned-identity
+                 fields. Spans two grid rows so ganesha.default_security + Navahi stack beside it. #}
+              <div class="fld" data-probe-card>
+                <div class="ac-head">
+                  <label class="fld-lab" title="Startup identity checks probe a sample directory user and an enrolled client machine.&#10;Auto picks them from the directory; Custom pins specific identities.&#10;&rarr; [probe] user_principal / client_host">probe (identity checks) <span class="ico">i</span></label>
+                  <div class="seg" data-ac-for="probe">
+                    <button type="button" data-ac="auto" class="{% if auto_probe_ldap %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if !auto_probe_ldap %}on{% endif %}">Custom</button>
+                  </div>
+                </div>
+                <input type="checkbox" name="auto_probe_ldap" id="auto_probe_ldap" value="true" {% if auto_probe_ldap %}checked{% endif %} hidden>
+                <input type="text" name="probe_user_principal" id="probe_user_principal" placeholder="sample user (name or name@REALM)" value="{{ probe_user_principal }}" {% if auto_probe_ldap %}disabled{% endif %}>
+                <input type="text" name="probe_client_host" id="probe_client_host" placeholder="client machine short name" value="{{ probe_client_host }}" {% if auto_probe_ldap %}disabled{% endif %} style="margin-top:6px">
+                <div class="derived-note">Auto: startup checks pick a sample user and client from the directory. Custom pins a specific user principal / client host.</div>
+              </div>
+
               {# ganesha.default_security — host-managed OR Auto/Custom select #}
               <div class="fld" data-ac-field="ganesha_default_security">
                 <div class="ac-head">
@@ -277,26 +302,17 @@
                 {% endif %}
               </div>
 
-              {# [probe] identity probe — Auto checkbox gates two optional fields #}
-              <div class="fld" data-probe-card>
+              {# Navahi Network Discovery — staged like other core settings; the Enabled/Disabled
+                 seg drives the hidden navahi_discovery checkbox (POST contract unchanged). #}
+              <div class="fld navahi-card">
                 <div class="ac-head">
-                  <label class="fld-lab" title="Startup identity checks probe a sample directory user and an enrolled client machine.&#10;Auto picks them from the directory; uncheck to pin specific identities.&#10;&rarr; [probe] user_principal / client_host">probe (identity checks) <span class="ico">i</span></label>
+                  <label class="fld-lab" title="Advertise flagged shares over mDNS/Avahi and enable their NFSv3/AUTH_SYS click-mount path for GNOME/KDE network browsing. Per-share opt-in via the share card's navahi_insecure checkbox.&#10;&rarr; navahi_discovery">Navahi Network Discovery <span class="ico">i</span></label>
+                  <div class="seg" data-bool-for="navahi_discovery">
+                    <button type="button" data-bv="1" class="{% if navahi_discovery %}on{% endif %}">Enabled</button>
+                    <button type="button" data-bv="0" class="{% if !navahi_discovery %}on{% endif %}">Disabled</button>
+                  </div>
                 </div>
-                <label style="display:flex;align-items:center;gap:6px;font-size:.85em;margin:4px 0">
-                  <input type="checkbox" name="auto_probe_ldap" id="auto_probe_ldap" value="true" {% if auto_probe_ldap %}checked{% endif %}>
-                  Auto probe LDAP
-                </label>
-                <input type="text" name="probe_user_principal" id="probe_user_principal" placeholder="sample user (name or name@REALM)" value="{{ probe_user_principal }}" {% if auto_probe_ldap %}disabled{% endif %}>
-                <input type="text" name="probe_client_host" id="probe_client_host" placeholder="client machine short name" value="{{ probe_client_host }}" {% if auto_probe_ldap %}disabled{% endif %} style="margin-top:6px">
-                <div class="derived-note">Auto: startup checks pick a sample user and client from the directory. Uncheck to pin a specific user principal / client host.</div>
-              </div>
-
-              {# Navahi Network Discovery — staged like other core settings #}
-              <div class="fld">
-                <label class="chkline" title="Advertise flagged shares over mDNS/Avahi and enable their NFSv3/AUTH_SYS click-mount path for GNOME/KDE network browsing. Per-share opt-in via the share card's navahi_insecure checkbox.&#10;&rarr; navahi_discovery">
-                  <input type="checkbox" name="navahi_discovery" value="true" {% if navahi_discovery %}checked{% endif %}>
-                  <span style="font-weight:600">Navahi Network Discovery</span> <span class="ico">i</span>
-                </label>
+                <input type="checkbox" id="navahi_discovery" name="navahi_discovery" value="true" {% if navahi_discovery %}checked{% endif %} hidden>
                 <div class="derived-note">Takes effect after "Restart and apply" (Admin pane). Flagged shares then broadcast on the LAN and accept insecure NFSv3/AUTH_SYS mounts.</div>
               </div>
             </div>
@@ -516,31 +532,40 @@
   if (!panes.some(p => p.dataset.paneContent === initial)) initial = 'overview';
   setPane(initial);
 
-  // ---------- Auto/Custom toggles (drive the existing override_* checkbox) ----------
+  // ---------- Auto/Custom toggles (drive the existing override_* checkbox; the probe
+  // seg has no override_* twin — it drives auto_probe_ldap + the two pinned inputs) ----------
   root.addEventListener('click', e => {
     const btn = e.target.closest('.seg[data-ac-for] button');
     if (!btn) return;
     const key = btn.closest('.seg').dataset.acFor;
     const custom = btn.dataset.ac === 'custom';
     btn.closest('.seg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === btn));
-    const field = document.getElementById(key);
-    const cb = document.getElementById('override_' + key);
-    if (field) field.disabled = !custom;
-    if (cb) cb.checked = custom;
-    markDirty();
-  });
-
-  // ---------- probe card: Auto checkbox gates the two [probe] fields ----------
-  const probeAuto = document.getElementById('auto_probe_ldap');
-  if (probeAuto) {
-    probeAuto.addEventListener('change', () => {
+    if (key === 'probe') {
       ['probe_user_principal', 'probe_client_host'].forEach(id => {
         const f = document.getElementById(id);
-        if (f) f.disabled = probeAuto.checked;
+        if (f) f.disabled = !custom;
       });
-      markDirty();
-    });
-  }
+      const auto = document.getElementById('auto_probe_ldap');
+      if (auto) auto.checked = !custom;
+    } else {
+      const field = document.getElementById(key);
+      const cb = document.getElementById('override_' + key);
+      if (field) field.disabled = !custom;
+      if (cb) cb.checked = custom;
+    }
+    markDirty(paneOf(btn));
+  });
+
+  // ---------- Enabled/Disabled segs (drive a hidden boolean checkbox, id = data-bool-for) ----------
+  root.addEventListener('click', e => {
+    const btn = e.target.closest('.seg[data-bool-for] button');
+    if (!btn) return;
+    const seg = btn.closest('.seg');
+    seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === btn));
+    const cb = document.getElementById(seg.dataset.boolFor);
+    if (cb) cb.checked = btn.dataset.bv === '1';
+    markDirty(paneOf(btn));
+  });
 
   // ---------- shares: collapse / expand / add / remove ----------
   const container = document.getElementById('shares-container');
@@ -558,8 +583,8 @@
       return;
     }
     const del = e.target.closest('.sc-del');
-    if (del) { del.closest('.share-card-ed').remove(); buildToml(); markDirty(); return; }
-    if (e.target.closest('#add-share')) { addShareRow(); markDirty(); return; }
+    if (del) { del.closest('.share-card-ed').remove(); buildToml(); markDirty('shares'); return; }
+    if (e.target.closest('#add-share')) { addShareRow(); markDirty('shares'); return; }
   });
 
   // New cards come from the server (share_card.html) so Askama stays the single card source.
@@ -625,7 +650,7 @@
       }
       buildToml();
     }
-    markDirty();
+    markDirty(paneOf(t));
   });
   // Mirrors web/acl_status.rs (share_acl_state_label / effective_acl_capable) —
   // the single Rust helper behind every surface; keep in lockstep with it. The
@@ -669,13 +694,17 @@
       }
       buildToml();
     }
-    markDirty();
+    markDirty(paneOf(t));
   });
   buildToml();
 
-  // ---------- dirty hint ----------
+  // ---------- dirty hint (savebar text + per-pane rail dot) ----------
   const saveHint = document.getElementById('save-hint');
-  function markDirty() { if (saveHint) { saveHint.textContent = 'Unsaved changes'; saveHint.classList.add('dirty'); } }
+  const paneOf = el => { const sec = el && el.closest ? el.closest('[data-pane-content]') : null; return sec ? sec.dataset.paneContent : null; };
+  function markDirty(pane) {
+    if (saveHint) { saveHint.textContent = 'Unsaved changes'; saveHint.classList.add('dirty'); }
+    if (pane) { const item = rail.querySelector('.rail-item[data-pane="' + pane + '"]'); if (item) item.classList.add('dirty'); }
+  }
 
   // ---------- diagnostics (independent of Save) ----------
   function runProbe(url, body, pill, log) {

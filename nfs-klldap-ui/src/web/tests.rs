@@ -1869,6 +1869,7 @@ async fn index_share_cards_render_standout_chips_only() {
     // gamma = explicit values that EQUAL the defaults (must stay chipless).
     let cfg = format!(
         r#"ldap_uri = "ldaps://klldap.test:6360"
+navahi_discovery = true
 [storage]
 container_root = "{root}"
 [sssd]
@@ -1886,6 +1887,7 @@ rw = false
 squash = "no_root_squash"
 cache_profile = "Read - Heavy"
 security = "krb5i"
+navahi_insecure = true
 [[shares]]
 name = "gamma"
 host_path = "/gamma"
@@ -1893,6 +1895,7 @@ container_path = "{root}/gamma"
 rw = true
 squash = "root_squash"
 security = "krb5p"
+navahi_insecure = false
 "#,
         root = root.display()
     );
@@ -1912,6 +1915,8 @@ security = "krb5p"
     assert_eq!(html.matches(">no_root_squash<").count(), 1, "one squash warn chip");
     assert_eq!(html.matches(">cache: read - heavy<").count(), 1, "one cache chip");
     assert_eq!(html.matches(">krb5i<").count(), 1, "one security chip");
+    // Effective Navahi exposure chips green, once (beta; gamma's explicit false stays implicit).
+    assert_eq!(html.matches(r#"class="share-chip navahi""#).count(), 1, "one navahi chip: {html}");
     // Defaults stay implicit — explicitly-configured defaults included.
     assert!(!html.contains(">RW<"), "rw is the default access — no chip");
     assert!(!html.contains(">root_squash<"), "root_squash is the default — no chip");
@@ -1919,6 +1924,48 @@ security = "krb5p"
     assert!(!html.contains(">krb5p<"), "the default security carries no chip");
     // ACL state stays out of the chips: the dot + panel ACL section carry it.
     assert!(!html.contains(">acl "), "no acl chip on the share cards");
+}
+
+// The navahi chip is an exposure signal, not a raw-key echo: while the global
+// navahi_discovery toggle is off a flagged share is inert (no advert, no
+// AUTH_SYS path), so its card must stay chipless — same effective-only rule
+// as the Settings share row.
+#[tokio::test]
+async fn index_navahi_chip_only_when_effective() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().join("shares");
+    std::fs::create_dir_all(root.join("alpha")).unwrap();
+    let cp = tmp.path().join("c");
+    let cfg = format!(
+        r#"ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "{root}"
+[sssd]
+ldap_default_bind_dn = "uid=admin"
+ldap_default_authtok = "s"
+[[shares]]
+name = "alpha"
+host_path = "/alpha"
+container_path = "{root}/alpha"
+navahi_insecure = true
+"#,
+        root = root.display()
+    );
+    std::fs::write(&cp, cfg).unwrap();
+    let sm = write_setup_marker(&tmp, ".navahichip");
+    let state = test_app_state(&cp, sm, None);
+    let token = state.auth.create_privileged_session("navahichiptest");
+    let app = router(state);
+    let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+    let req = add_session_cookie(req, &token);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let html = String::from_utf8_lossy(&body);
+    assert!(
+        !html.contains(r#"class="share-chip navahi""#),
+        "flagged share must not chip while the global toggle is off: {html}"
+    );
 }
 
 // The security chip's comparison target is the CONFIGURED [ganesha]

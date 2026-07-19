@@ -48,13 +48,14 @@ case "$1" in
   daemon)
     # Seed root nss row where the supervisor waits (NSS_PASSWD), then idle.
     # Without this, restart_idhelper_and_wait_bulk spins for the full timeout.
-    mkdir -p "$(dirname "$PW")" "$(dirname "$GR")" /var/run/nfs-klldap 2>/dev/null || true
+    mkdir -p "$(dirname "$PW")" "$(dirname "$GR")" 2>/dev/null || true
     if ! grep -q '^root:x:0:0:root:/root:/bin/sh' "$PW" 2>/dev/null; then
       echo 'root:x:0:0:root:/root:/bin/sh' >> "$PW"
     fi
-    # Dummy socket path so wait_for_idhelper_socket can succeed in probe modes.
-    : > /var/run/nfs-klldap/idhelper.sock 2>/dev/null || true
-    exec sleep 3600
+    # Keep the process as this shell (not exec'd to sleep) so pkill by binary
+    # path and process_is_live(pid) stay aligned under the supervisor.
+    trap 'exit 0' TERM HUP
+    while :; do sleep 60 & wait $! || true; done
     ;;
   grps)
     case "$2" in

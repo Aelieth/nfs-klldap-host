@@ -218,6 +218,16 @@ Diagnostics: `nfs-klldap-config fs-warnings` / `ganesha-ctl fs-warnings`.
 
 Legacy numeric `pref_read` / `pref_write` without `cache_profile` are still honored on generate. The WebUI maps known exact pairs to a profile name for the dropdown; unmatched pairs show **Default**. Host `read_ahead_kb` is outside the container.
 
+### System Settings → Shares (WebUI)
+
+Prefer the **System Settings → Shares** pane over hand-editing TOML: add/edit cards for `host_path` / `container_path` / `pseudo_path`, security, ACL class, cache profile, and Navahi, with a live `[[shares]]` preview. **Save changes** rewrites the conf and applies exports via SIGHUP; global toggles such as `navahi_discovery` need **Restart and apply**.
+
+<img
+  src="settings_shares.png"
+  alt="System Settings Shares: share cards and live [[shares]] TOML"
+  width="75%"
+/>
+
 ## Environment variables
 
 Optional overrides (env always wins). Core: `NFS_KLLDAP_LDAP_URI`, bind DN/password, realm, hostname, storage root, Ganesha security, WebUI admin group, SSSD TLS fields, `[webui]` TLS. Full table: [docs/run/README.md](docs/run/README.md).
@@ -245,13 +255,7 @@ environment:
 
 Auth: localhost sidecar `webui-password` (iterated SHA-256, 0600) or members of `webui_admin_group` (default `lldap_admin`). Sessions persist across WebUI restarts via `webui-sessions`.
 
-**System Settings → Shares** edits `[[shares]]` (paths, security, ACL class, cache profile, Navahi) with a live TOML preview. Save applies exports via SIGHUP; global toggles such as `navahi_discovery` need **Restart and apply**. Ganesha/idhelper group flush remains CLI: `ganesha-ctl refresh-identity [user]`.
-
-<img
-  src="https://raw.githubusercontent.com/Aelieth/nfs-klldap-host/refs/heads/main/settings_shares.png"
-  alt="System Settings Shares: share cards and live [[shares]] TOML"
-  width="75%"
-/>
+**Shares editor:** see [System Settings → Shares](#system-settings--shares-webui) under Configuration. Ganesha/idhelper group flush remains CLI: `ganesha-ctl refresh-identity [user]`.
 
 **Permission apply (short):** root-in-container via `FsManager` + `privileged`; no symlink descent; directory modes fuse r→x; recursive scopes send explicit file bits; numeric UID/GID only on disk. Full model: [nfs-klldap-ui/docs/security.md](nfs-klldap-ui/docs/security.md).
 

@@ -152,17 +152,15 @@ default_security = "krb5p"                                      # krb5p | krb5i 
 # session_timeout_minutes = 720                                 # WebUI auto-logout (default 720 = 12h, min 5); new logins after "Restart & apply"
 
 # [[shares]]
-# name = "movies"
-# host_path = "/home/user/nfs-data/movies"
-# container_path = "/export/movies"                             # required; Ganesha Path= + WebUI tree
-# pseudo_path = "/movies"                                       # optional client Pseudo; default /<name>
-# security = "krb5p"
-# rw = true
-# enable_acl = false                                            # tri-state: true | false | unset=auto (probe-proven ACL)
-# manage_gids = true                                            # default true
-# navahi_insecure = false                                       # advertise via mDNS + insecure NFSv3/AUTH_SYS click-mount (needs top-level navahi_discovery = true)
-# cache_profile = "Default"                                     # or raw pref_read / pref_write without profile
-# # umask is retired (hard generate error) — use Inherit-tab default ACLs + setgid
+# name            = "movies"                                    # Required - unique share name; default client mount path becomes /<name>
+# host_path       = "/home/user/nfs-data/movies"                # Required - host-side data path (WebUI ownership + allow-list checks)
+# container_path  = "/export/movies"                            # Required - in-container serve path under container_root (Ganesha EXPORT Path)
+# pseudo_path     = "/movies"                                   # Optional - client-visible mount path; defaults to /<name>
+# rw              = true                                        # Optional - default true; false exports read-only
+# manage_gids     = true                                        # Optional - default true; resolves full LDAP group lists server-side
+# enable_acl      = false                                       # Optional - omit = auto (the POSIX-ACL write probe decides); true hard-fails generate on a non-ACL filesystem; false forces NOACL
+# source_path     = "/export/staging/movies"                    # Optional - ACL staging source; post_generate_hook syncs it into the ACL-capable container_path
+# navahi_insecure = false                                       # Optional - advertise via mDNS for NFSv3/AUTH_SYS click-mount; needs top-level navahi_discovery = true
 ```
 
 `[[shares]]` is optional on first run. The generator writes sssd.conf, krb5.conf, idmapd.conf, nfs.conf, and Ganesha fragments. Unrecognized share keys are ignored with warnings (`ganesha_path` gets a rename hint to `container_path`).

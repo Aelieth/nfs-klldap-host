@@ -74,7 +74,7 @@
                             </select>
                           </div>
                           <div class="scf">
-                            <label class="fld-lab" title="on = ACL path (native NFSv4 ACL); auto/unset = detect via a live write probe and turn ACLs on only when the filesystem stores POSIX ACLs; off = explicit NOACL.&#10;&rarr; enable_acl">enable_acl <span class="ico">i</span></label>
+                            <label class="fld-lab" title="on = ACLs enforced from on-disk POSIX ACLs (requires an ACL-capable serve path); auto/unset = detect via a live write probe and turn ACLs on only when the filesystem stores POSIX ACLs; off = explicit NOACL.&#10;&rarr; enable_acl">enable_acl <span class="ico">i</span></label>
                             <select data-f="enable_acl" name="share_enable_acl_{{ row.idx }}">
                               <option value="auto" {% if row.enable_acl == "auto" %}selected{% endif %}>auto (detect)</option>
                               <option value="true" {% if row.enable_acl == "true" %}selected{% endif %}>on</option>

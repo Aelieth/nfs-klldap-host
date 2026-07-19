@@ -572,6 +572,49 @@ fn template_defaults_navahi_off_top_level() {
     assert!(nav < first_section, "top-level key must precede the first [section]");
 }
 
+// The documented flow is "uncomment and edit", so the stripped example must
+// be real TOML with only recognized keys — a drifted example would otherwise
+// hand every new operator a warning (or a parse error) on first use.
+#[test]
+fn template_share_example_uncomments_to_a_valid_share() {
+    let tmpl = crate::generate_default_template();
+    let mut example = String::new();
+    let mut in_example = false;
+    for line in tmpl.lines() {
+        if line.starts_with("# [[shares]]") {
+            in_example = true;
+        }
+        if in_example {
+            match line.strip_prefix("# ") {
+                Some(rest) => {
+                    example.push_str(rest);
+                    example.push('\n');
+                }
+                None => break,
+            }
+        }
+    }
+    assert!(
+        example.starts_with("[[shares]]"),
+        "template must carry the commented [[shares]] example"
+    );
+    let full = format!(
+        "ldap_uri = \"ldaps://klldap.test:6360\"\n[sssd]\nldap_default_bind_dn = \"uid=admin\"\nldap_default_authtok = \"s\"\n{}",
+        example
+    );
+    let cfg = NfsKlldapConfig::parse_str("template-example", &full)
+        .expect("uncommented example must parse as valid config");
+    assert_eq!(cfg.shares.len(), 1);
+    assert!(
+        cfg.share_warnings.is_empty(),
+        "every example key must be recognized: {:?}",
+        cfg.share_warnings
+    );
+    assert_eq!(cfg.shares[0].name, "users");
+    assert_eq!(cfg.shares[0].enable_acl, Some(false));
+    assert_eq!(cfg.shares[0].navahi_insecure, Some(false));
+}
+
 #[test]
 fn legacy_export_path_alias_populates_pseudo_path_no_warning() {
     let tmp = tempfile::tempdir().unwrap();

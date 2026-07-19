@@ -2146,6 +2146,76 @@ container_path = "{root}/data"
     );
 }
 
+// First-ever shares save used to splice the [[shares]] block between the
+// [webui] header and its keys, reparenting them into the last share. The
+// block must land at the bottom of the file with [webui] left whole.
+#[tokio::test]
+async fn settings_save_shares_first_share_lands_at_bottom_not_inside_webui() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().join("shares");
+    std::fs::create_dir_all(root.join("data")).unwrap();
+    let mi = tmp.path().join("mi");
+    std::fs::write(
+        &mi,
+        format!("36 35 0:59 / {} rw,relatime - btrfs /dev/sda1 rw\n", tmp.path().display()),
+    )
+    .unwrap();
+    let cp = tmp.path().join("c");
+    std::fs::write(
+        &cp,
+        format!(
+            r#"ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "{root}"
+[sssd]
+ldap_default_bind_dn = "uid=admin"
+ldap_default_authtok = "s"
+
+[webui]
+tls = false
+session_timeout_minutes = 30
+"#,
+            root = root.display()
+        ),
+    )
+    .unwrap();
+    let sm = write_setup_marker(&tmp, ".first");
+    let state = test_app_state(&cp, sm, Some(mi));
+    let token = state.auth.create_privileged_session("first");
+    let app = router(state);
+
+    let body = format!(
+        "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_pseudo_0=&share_rw_0=true&share_cache_profile_0=Default&share_enable_acl_0=false&share_container_path_0={}&share_root_squash_0=on",
+        urlencoding::encode(&format!("{}/data", root.display()))
+    );
+    let req = Request::builder()
+        .method("POST")
+        .uri("/settings/save-shares")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let resp = app.clone().oneshot(add_session_cookie(req, &token)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rbody = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let html = String::from_utf8_lossy(&rbody);
+    assert!(html.contains("Shares saved"), "save must not be rejected: {html}");
+
+    let written = std::fs::read_to_string(&cp).unwrap();
+    let webui = written.find("[webui]").expect("[webui] survives");
+    let tls = written.find("tls = false").expect("tls key survives");
+    let sto = written.find("session_timeout_minutes = 30").expect("timeout key survives");
+    let sh = written.find("\n[[shares]]").expect("shares block written");
+    assert!(
+        webui < tls && tls < sh && sto < sh,
+        "[[shares]] must sit below the whole [webui] section: {written}"
+    );
+    let cfg = nfs_klldap_config::NfsKlldapConfig::parse_str("t", &written).expect("output parses");
+    assert_eq!(cfg.webui.tls, Some(false), "webui keys must not reparent: {written}");
+    assert_eq!(cfg.webui.session_timeout_minutes, Some(30));
+    assert_eq!(cfg.shares.len(), 1);
+    assert_eq!(cfg.shares[0].name, "data");
+}
+
 // The vendored htmx asset must bypass the setup gate, and served pages must reference it (no CDN).
 #[tokio::test]
 async fn htmx_asset_served_pre_setup_and_referenced_locally() {

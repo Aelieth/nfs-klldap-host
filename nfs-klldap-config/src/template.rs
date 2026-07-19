@@ -53,7 +53,7 @@ kllldap_ignored_attributes = true                               # KLLDAP specifi
 # realm = "EXAMPLE.COM"                                         # Default - auto-derived from ldap_uri host, edit to override
 
 [ganesha]
-default_security = "krb5p"                                      # Security, krb5p (default) | krb5i | krb5
+default_security = "krb5p"                                      # Optional - krb5p (default) | krb5i | krb5 (per-share security key overrides)
 # post_generate_hook = "/config/post-generate-staging-sync.sh"  # optional; runs after each generate (see examples/)
 
 [webui]
@@ -63,25 +63,19 @@ default_security = "krb5p"                                      # Security, krb5
 # session_timeout_minutes = 720                                 # WebUI auto-logout minutes (default 720 = 12h, min 5); new logins after "Restart & apply"
 
 # ---------------------------------------------------------------------------
-# Shares (repeat the [[shares]] block per export). Uncomment and edit:
+# Shares — one [[shares]] block per export, kept at the bottom of this file.
+# The WebUI rewrites these blocks on every shares save. Uncomment and edit:
 # ---------------------------------------------------------------------------
 # [[shares]]
-# name          = "users"                                        # Required - unique; drives default Pseudo (/users)
-# host_path     = "/var/data/nvme-raid/users"                    # Required - host path (WebUI chown/allow-list)
-# container_path = "/export/nvme-raid/users"                     # Required - Ganesha EXPORT Path= (serve dir in container)
-# pseudo_path   = "/users"                                       # Optional - client-visible NFSv4 Pseudo (defaults to /<name>)
-# rw            = true                                           # Optional - default true
-# manage_gids   = true                                           # Optional - default true
-# navahi_insecure = false                                        # Optional - advertise over mDNS + insecure NFSv3/AUTH_SYS click-mount; needs navahi_discovery = true
-#
-# enable_acl tri-state: true | false | omit=auto (auto promotes only if the serve
-# path passes the write-probe). Explicit true hard-fails generate on non-ACL FS.
-# enable_acl    = false                                          # force NOACL; true requires ACL-capable serve path
-#
-# ACL staging: when the real data lives on a filesystem the VFS can't serve ACLs
-# from, set source_path to where it lands and container_path to an ACL-capable tree;
-# the post_generate_hook syncs source_path -> container_path.
-# source_path   = "/export/nvme-raid/users"                      # staging source (Ganesha serves container_path)
+# name            = "users"                                      # Required - unique share name; default client mount path becomes /<name>
+# host_path       = "/var/data/nvme-raid/users"                  # Required - host-side data path (WebUI ownership + allow-list checks)
+# container_path  = "/export/nvme-raid/users"                    # Required - in-container serve path under [storage] container_root (Ganesha EXPORT Path)
+# pseudo_path     = "/users"                                     # Optional - client-visible mount path; defaults to /<name>
+# rw              = true                                         # Optional - default true; false exports read-only
+# manage_gids     = true                                         # Optional - default true; resolves full LDAP group lists server-side
+# enable_acl      = false                                        # Optional - omit = auto (the POSIX-ACL write probe decides); true hard-fails generate on a non-ACL filesystem; false forces NOACL
+# source_path     = "/export/hdd-pool/users"                     # Optional - ACL staging source; post_generate_hook syncs it into the ACL-capable container_path
+# navahi_insecure = false                                        # Optional - advertise via mDNS for NFSv3/AUTH_SYS click-mount; active only while navahi_discovery = true
 
 "#
     .to_string()

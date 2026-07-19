@@ -14,9 +14,32 @@ pub(crate) fn atomic_write_config(path: &std::path::Path, content: &str) -> Resu
 }
 
 /// Replace only the `[[shares]]` array in the raw TOML doc (shares-save path).
+/// Rebuilt tables carry no position metadata, so toml_edit renders them after
+/// every positioned section: `[[shares]]` always lands at the bottom of the
+/// file (a mid-file block migrates there on its next save). The comment block
+/// above the shares region rides along — the first-ever insert hoists the
+/// document trailing (the template's commented example), later saves re-attach
+/// the first table's prefix — so a rewrite never eats operator comments.
 /// ACL vs NOACL kept explicit via enable_acl field write; container_path required per share.
-pub(crate) fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_shares: &[nfs_klldap_config::Share]) {
-    let had_shares = doc.get("shares").is_some();
+pub(crate) fn apply_shares_to_toml_doc(
+    doc: &mut toml_edit::DocumentMut,
+    new_shares: &[nfs_klldap_config::Share],
+) {
+    let mut banner: Option<String> = doc
+        .get("shares")
+        .and_then(|i| i.as_array_of_tables())
+        .and_then(|a| a.iter().next())
+        .and_then(|t| t.decor().prefix())
+        .and_then(|p| p.as_str())
+        .filter(|p| !p.trim().is_empty())
+        .map(str::to_string);
+    if banner.is_none() {
+        let trailing = doc.trailing().as_str().unwrap_or("").to_string();
+        if !trailing.trim().is_empty() {
+            doc.set_trailing("");
+            banner = Some(trailing);
+        }
+    }
     let _ = doc.as_table_mut().remove("shares");
     let mut shares = toml_edit::ArrayOfTables::new();
     for s in new_shares {
@@ -34,10 +57,11 @@ pub(crate) fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_sha
         if !rw {
             t["rw"] = toml_edit::value(false);
         }
+        // Written verbatim: an absent key falls back to the root_squash
+        // default, so swallowing no_root_squash would silently re-enable
+        // squashing the form explicitly turned off.
         if let Some(sq) = &s.squash {
-            if sq != "no_root_squash" {
-                t["squash"] = toml_edit::value(sq.clone());
-            }
+            t["squash"] = toml_edit::value(sq.clone());
         }
         if let Some(cp) = &s.cache_profile {
             if !cp.trim().is_empty() {
@@ -65,6 +89,10 @@ pub(crate) fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_sha
         if let Some(exp) = s.manage_gids_expiration {
             t["manage_gids_expiration"] = toml_edit::value(exp as i64);
         }
+        // Some(0) is meaningful (attribute caching off), so every set value writes.
+        if let Some(v) = s.attr_expiration_secs {
+            t["attr_expiration_secs"] = toml_edit::value(i64::from(v));
+        }
         // Default-false economy (the rw idiom): only an explicit true writes.
         if s.navahi_insecure == Some(true) {
             t["navahi_insecure"] = toml_edit::value(true);
@@ -74,121 +102,132 @@ pub(crate) fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_sha
                 t["source_path"] = toml_edit::value(sp.clone());
             }
         }
-        if let Some(um) = &s.umask {
-            if !um.trim().is_empty() {
-                t["umask"] = toml_edit::value(um.clone());
-            }
-        }
         shares.push(t);
     }
-    let shares_item = toml_edit::Item::ArrayOfTables(shares);
-    if !had_shares {
-        let anchor = if doc.get("webui").is_some() {
-            Some("webui")
-        } else if doc.get("ganesha").is_some() {
-            Some("ganesha")
-        } else if doc.get("kerberos").is_some() {
-            Some("kerberos")
-        } else if doc.get("sssd").is_some() {
-            Some("sssd")
-        } else {
-            None
-        };
-        if let Some(anchor_key) = anchor {
-            let trailing = doc.trailing().clone();
-            let items: Vec<(String, toml_edit::Item)> = doc
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.clone()))
-                .collect();
-            for (k, _) in &items {
-                let _ = doc.as_table_mut().remove(k.as_str());
-            }
-            let mut inserted = false;
-            for (k, v) in items {
-                doc[k.as_str()] = v;
-                if k == anchor_key {
-                    doc["shares"] = shares_item.clone();
-                    inserted = true;
-                }
-            }
-            if !inserted {
-                doc["shares"] = shares_item;
-            }
-            doc.set_trailing(trailing);
-        } else {
-            doc["shares"] = shares_item;
+    if shares.is_empty() {
+        // Deleting the last share leaves no table to carry the banner: it
+        // returns to the document trailing instead of vanishing.
+        if let Some(b) = banner {
+            let rest = doc.trailing().as_str().unwrap_or("").to_string();
+            doc.set_trailing(format!("{b}{rest}"));
         }
-    } else {
-        doc["shares"] = shares_item;
+        return;
     }
-    if !had_shares {
-        let mut full = doc.to_string();
-        let shares_tail = if let Some(start) = full.find("[[shares]]") {
-            let t = full[start..].trim_end().to_string();
-            full = full[..start].to_string();
-            Some(t)
-        } else {
-            None
-        };
-        if let Some(tail) = shares_tail {
-            let lines: Vec<&str> = tail.lines().collect();
-            let mut peel_count = 0usize;
-            for line in lines.iter().rev() {
-                let t = line.trim_start();
-                if t.is_empty() || t.starts_with('#') {
-                    peel_count += 1;
-                } else {
-                    break;
-                }
-            }
-            let (shares_part_owned, peeled_comments) = if peel_count > 0 {
-                let keep = lines.len() - peel_count;
-                let s = if keep == 0 { String::new() } else { lines[..keep].join("\n") };
-                let c = lines[keep..].join("\n");
-                (s, c)
-            } else {
-                (tail.clone(), String::new())
-            };
-            let shares_text = shares_part_owned.trim().to_string();
-            if let Some(wstart) = full.find("[webui]") {
-                let mut insert_at = wstart;
-                if let Some(nl) = full[insert_at..].find('\n') {
-                    insert_at += nl + 1;
-                } else {
-                    insert_at = full.len();
-                }
-                let tail_after = &full[insert_at..];
-                let mut consumed = 0usize;
-                for line in tail_after.lines() {
-                    let t = line.trim_start();
-                    if t.is_empty() || t.starts_with('#') {
-                        consumed += line.len() + 1;
-                    } else {
-                        break;
-                    }
-                }
-                insert_at += consumed;
-                let before = &full[..insert_at];
-                let after = &full[insert_at..];
-                let mut middle = String::new();
-                if !peeled_comments.is_empty() {
-                    middle.push('\n');
-                    middle.push_str(&peeled_comments);
-                }
-                if !shares_text.is_empty() {
-                    middle.push_str("\n\n");
-                    middle.push_str(&shares_text);
-                }
-                let reassembled = if after.trim().is_empty() {
-                    format!("{}{}\n", before.trim_end(), middle)
-                } else {
-                    format!("{}{}{}", before.trim_end(), middle, after)
-                };
-                if let Ok(reparsed) = reassembled.parse::<toml_edit::DocumentMut>() {
-                    *doc = reparsed;
-                }
-            }
+    if let Some(mut prefix) = banner {
+        if !prefix.ends_with('\n') {
+            prefix.push('\n');
+        }
+        if let Some(first) = shares.iter_mut().next() {
+            first.decor_mut().set_prefix(prefix);
         }
     }
+    doc["shares"] = toml_edit::Item::ArrayOfTables(shares);
 }
 
+#[cfg(test)]
+mod apply_tests {
+    use super::apply_shares_to_toml_doc;
+
+    fn share(name: &str) -> nfs_klldap_config::Share {
+        nfs_klldap_config::Share {
+            name: name.to_string(),
+            host_path: std::path::PathBuf::from(format!("/data/{name}")),
+            container_path: format!("/export/{name}"),
+            ..Default::default()
+        }
+    }
+
+    fn apply_to(text: &str, shares: &[nfs_klldap_config::Share]) -> String {
+        let mut doc: toml_edit::DocumentMut = text.parse().expect("fixture parses");
+        apply_shares_to_toml_doc(&mut doc, shares);
+        doc.to_string()
+    }
+
+    /// Start of the real `[[shares]]` header (example lines carry a leading `# `).
+    fn shares_pos(out: &str) -> usize {
+        out.find("\n[[shares]]").expect("real [[shares]] block present")
+    }
+
+    #[test]
+    fn first_share_on_fresh_template_lands_at_bottom_with_example_above() {
+        let out = apply_to(&nfs_klldap_config::generate_default_template(), &[share("users")]);
+        let sh = shares_pos(&out);
+        let banner = out.find("# [[shares]]").expect("template example survives");
+        let webui = out.find("[webui]").expect("webui section survives");
+        assert!(webui < banner && banner < sh, "layout must read [webui] .. example .. [[shares]]: {out}");
+        assert!(
+            !out[sh + "\n[[shares]]".len()..].contains("\n["),
+            "[[shares]] must be the last section: {out}"
+        );
+        let cfg = nfs_klldap_config::NfsKlldapConfig::parse_str("t", &out).expect("round-trips");
+        assert_eq!(cfg.shares.len(), 1);
+        assert_eq!(cfg.shares[0].name, "users");
+    }
+
+    #[test]
+    fn first_share_never_splits_a_populated_webui_section() {
+        let src = "ldap_uri = \"ldaps://x:6360\"\n\n[webui]\ntls = false\nsession_timeout_minutes = 30\n";
+        let out = apply_to(src, &[share("users")]);
+        let reparsed: toml_edit::DocumentMut = out.parse().expect("output parses");
+        let webui = reparsed.get("webui").and_then(|i| i.as_table()).expect("[webui] intact");
+        assert_eq!(webui.get("tls").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            webui.get("session_timeout_minutes").and_then(|v| v.as_integer()),
+            Some(30),
+            "webui keys must not reparent into a share: {out}"
+        );
+        assert!(
+            out.find("session_timeout_minutes").expect("key present") < shares_pos(&out),
+            "webui keys stay above the shares block: {out}"
+        );
+        let t0 = reparsed["shares"].as_array_of_tables().unwrap().iter().next().unwrap();
+        assert!(t0.get("tls").is_none(), "share must not absorb webui keys: {out}");
+    }
+
+    #[test]
+    fn midfile_shares_normalize_to_bottom_on_save() {
+        let src = "[storage]\ncontainer_root = \"/export\"\n\n[[shares]]\nname = \"a\"\nhost_path = \"/h/a\"\ncontainer_path = \"/export/a\"\n\n[webui]\ntls = false\n";
+        let out = apply_to(src, &[share("a"), share("b")]);
+        let sh = shares_pos(&out);
+        assert!(
+            out.find("[webui]").expect("webui survives") < sh,
+            "shares must migrate below [webui]: {out}"
+        );
+        let reparsed: toml_edit::DocumentMut = out.parse().unwrap();
+        assert_eq!(reparsed["shares"].as_array_of_tables().unwrap().len(), 2);
+        assert_eq!(reparsed["webui"]["tls"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn banner_above_existing_shares_survives_rewrites() {
+        let src = "ldap_uri = \"x\"\n\n# keep me\n# above the shares\n[[shares]]\nname = \"a\"\nhost_path = \"/h/a\"\ncontainer_path = \"/export/a\"\n";
+        let once = apply_to(src, &[share("a")]);
+        let twice = apply_to(&once, &[share("a")]);
+        for out in [&once, &twice] {
+            let keep = out.find("# keep me").expect("banner survives");
+            assert!(keep < shares_pos(out), "banner stays above the shares block: {out}");
+        }
+    }
+
+    #[test]
+    fn deleting_all_shares_keeps_the_example_banner() {
+        let with_share = apply_to(&nfs_klldap_config::generate_default_template(), &[share("users")]);
+        let out = apply_to(&with_share, &[]);
+        assert!(!out.contains("\n[[shares]]"), "real shares gone: {out}");
+        assert!(out.contains("# [[shares]]"), "example banner preserved: {out}");
+        assert!(out.parse::<toml_edit::DocumentMut>().is_ok());
+    }
+
+    #[test]
+    fn no_root_squash_and_attr_expiration_round_trip() {
+        let mut s = share("a");
+        s.squash = Some("no_root_squash".to_string());
+        s.attr_expiration_secs = Some(0);
+        let out = apply_to("ldap_uri = \"x\"\n", &[s]);
+        assert!(out.contains("squash = \"no_root_squash\""), "no_root_squash must persist: {out}");
+        assert!(out.contains("attr_expiration_secs = 0"), "attr_expiration_secs = 0 must persist: {out}");
+        let cfg = nfs_klldap_config::NfsKlldapConfig::parse_str("t", &out).unwrap();
+        assert_eq!(cfg.shares[0].squash.as_deref(), Some("no_root_squash"));
+        assert_eq!(cfg.shares[0].attr_expiration_secs, Some(0));
+    }
+}

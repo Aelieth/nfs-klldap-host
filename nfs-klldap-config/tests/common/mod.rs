@@ -101,6 +101,7 @@ impl TestDirs {
     }
 
     /// ganesha.nfsd stub logging START/HUP/TERM; returns the log path.
+    /// Idle via `sleep & wait` (not a busy loop) so parallel CI runners stay responsive.
     pub fn stub_ganesha_trap_log(&self) -> PathBuf {
         let log = self.ganesha_stub_log();
         write_exe(
@@ -111,7 +112,7 @@ LOG="{log}"
 echo START >> "$LOG"
 trap 'echo HUP >> "$LOG"' HUP
 trap 'echo TERM >> "$LOG"; exit 0' TERM
-while :; do :; done
+while :; do sleep 60 & wait $!; done
 "#,
                 log = log.display()
             ),

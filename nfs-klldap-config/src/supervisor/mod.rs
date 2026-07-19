@@ -1211,11 +1211,27 @@ while :; do :; done
 
     fn wait_for_idhelper_socket(&self) -> bool {
         let sock = idhelper_socket_path();
-        for _ in 0..30 {
+        // Probe / test-persistent modes never run a real idhelper daemon — one
+        // quick check avoids a 3s stall per start_ganesha. Production waits ~3s.
+        let attempts = if self.env.supervise_probe
+            || self.env.supervise_wizard_probe
+            || self.env.supervise_loop_probe
+            || self.env.supervise_recycle_probe
+            || self.env.supervise_identity_recycle_probe
+            || self.env.supervise_sighup_hook_probe
+            || std::env::var("NFS_KLLDAP_TEST_PERSISTENT").is_ok()
+        {
+            1
+        } else {
+            30
+        };
+        for _ in 0..attempts {
             if Path::new(&sock).exists() {
                 return true;
             }
-            thread::sleep(Duration::from_millis(100));
+            if attempts > 1 {
+                thread::sleep(Duration::from_millis(100));
+            }
         }
         self.log_warn("idhelper socket not ready before Ganesha start — principal mapping may lag");
         false

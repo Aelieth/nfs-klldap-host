@@ -81,9 +81,12 @@ pub(crate) fn start_ganesha(sup: &mut Supervisor) {
         }
         sup.pids.ganesha = None;
     }
-    if !sup.wait_for_idhelper_socket() {
-        return;
-    }
+    // Soft wait only: missing idhelper must not skip Ganesha entirely. The
+    // warn inside wait_for_idhelper_socket documents lag; observer/heal and
+    // post-start readiness cover catch-up. Probe suites never start a real
+    // idhelper daemon, so a hard return here failed CI with "stub ganesha
+    // did not start" while local leftover sockets masked the bug.
+    let _ = sup.wait_for_idhelper_socket();
     if !sup.warm_identity_principals_before_ganesha() {
         sup.log_warn("principal-warm:incomplete — skipping Ganesha start until NSS warm succeeds");
         return;

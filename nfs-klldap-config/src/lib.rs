@@ -104,9 +104,9 @@ pub use idhelper_check::{
 pub use hostname::{
     format_nfs_principal_list, get_consistent_hostname, host_nfs_active, host_nfs_from_env,
     looks_like_docker_default_hostname, nfs_keytab_host_matches, nfs_keytab_host_variants,
-    resolve_host_nfs_mode, runtime_hostname, runtime_realm,
-    runtime_realm_from_disk, runtime_server_variants_from_disk,
-    webui_tls_disabled,
+    resolve_host_nfs_mode, resolve_nfs_host_identity, runtime_host_identity, runtime_hostname,
+    runtime_realm, runtime_realm_from_disk, runtime_server_variants_from_disk, webui_tls_disabled,
+    NfsHostIdentity,
 };
 pub use persist::{atomic_write, is_persistent_config};
 pub use startup::{

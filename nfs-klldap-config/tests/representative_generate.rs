@@ -59,7 +59,7 @@ fn representative_config_generate_twice_is_consistent() {
     let fr = fs::read_dir(&ps.exports_dir).unwrap().filter_map(|e|e.ok()).find(|e|e.path().extension().is_some_and(|x| x == "conf")).map(|e|fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
     assert!(fr.contains("Pseudo = /movies;") && fr.contains("Path = /export/NVME-RAID/movies;"));
     assert_eq!(g1,g2); assert_ganesha_96_compliant(&g1,&i1);
-    let vs = nfs_keytab_host_variants("nfs-server.example.com");
+    let vs = nfs_keytab_host_variants("nfs-server.example.com", "EXAMPLE.COM");
     let (h,_)=classify_principal("host/client.test@TEST","TEST",&vs); let (n,_)=classify_principal("nfs/client@TEST","TEST",&vs); let (a,_)=classify_principal("alice@TEST","TEST",&vs);
     assert!(h && n && !a);
 }

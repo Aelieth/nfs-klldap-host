@@ -20,7 +20,8 @@ pub fn generate_default_template() -> String {
 #
 # Kerberos keytab (best practice with --uts=host):
 #   Include nfs/<short-hostname>@REALM and nfs/<fqdn>@REALM
-#   The hostname is confirmed by `hostname` matching /proc/sys/kernel/hostname.
+#   When the system hostname is short, the FQDN is {short}.{realm_lower}
+#   (from Kerberos realm / ldap_uri). Confirmed by hostname + /proc agreement.
 #
 # After first edit: the container NEVER overwrites this file.
 # Advanced users may insert 1:1 value overrides under respective section.
@@ -36,7 +37,7 @@ container_root = "/export"                                      # Required - Gan
 # webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins
 
 [server]
-# hostname = "myhost.example.com"                               # Default - Optional override for keytab only. Recommended: docker run --uts=host
+# hostname = "myhost.example.com"                               # Optional - override for keytab/Navahi/certs. Short UTS uses {short}.{realm}; set full FQDN here only if it differs.
 
 [sssd]
 ldap_default_bind_dn = ""                                       # Required - LDAP bind DN, e.g. uid=admin,ou=people,dc=example,dc=com

@@ -360,6 +360,24 @@ fn main() {
 mod tests {
     use super::*;
     use nfs_klldap_config::{probe_nss_passwd_exact, probe_nss_passwd_from_file_exact, GaneshaNssEnv, evaluate_nss_contract, IdMapSnapshot, PosixUserEntry};
+    use std::path::PathBuf;
+
+    /// Path to the built `nfs-klldap-idhelper` binary for CLI subprocess tests.
+    /// Unit tests of this binary do not get `CARGO_BIN_EXE_*` at compile time
+    /// (integration tests do); fall back to the workspace debug target. Never use
+    /// a host-absolute developer path — that broke GitHub Actions gate for every run.
+    fn idhelper_bin() -> PathBuf {
+        if let Some(p) = option_env!("CARGO_BIN_EXE_nfs_klldap_idhelper") {
+            return PathBuf::from(p);
+        }
+        if let Ok(p) = std::env::var("CARGO_BIN_EXE_nfs_klldap_idhelper") {
+            return PathBuf::from(p);
+        }
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target"));
+        target.join("debug/nfs-klldap-idhelper")
+    }
 
     #[test]
     fn machine_principal_detection_basic() {
@@ -1663,11 +1681,16 @@ mod tests {
         std::env::set_var("NSS_EXTRAUSERS_PASSWD", &ep);
         std::env::set_var("NSS_EXTRAUSERS_GROUP", &eg);
         std::env::set_var("IDHELPER_CACHE_PATH", &cp);
-        let bin = std::option_env!("CARGO_BIN_EXE_nfs_klldap_idhelper").unwrap_or("/var/home/local/Projects/nfs-klldap-host/target/debug/nfs-klldap-idhelper");
+        let bin = idhelper_bin();
+        assert!(
+            bin.is_file(),
+            "idhelper binary missing at {} — cargo test should have built it under target/debug/",
+            bin.display()
+        );
         // First user@ using pre-seeded cache with supps (no TEST env passed to bin subprocess for pure CLI evidence path).
-        let outu = ::std::process::Command::new(bin).arg("grps").arg("testu@T.REALM").env("NSS_PASSWD", &np).env("NSS_GROUP", &ng).env("NSS_EXTRAUSERS_PASSWD", &ep).env("NSS_EXTRAUSERS_GROUP", &eg).env("IDHELPER_CACHE_PATH", &cp).output().expect("bin grps user");
+        let outu = ::std::process::Command::new(&bin).arg("grps").arg("testu@T.REALM").env("NSS_PASSWD", &np).env("NSS_GROUP", &ng).env("NSS_EXTRAUSERS_PASSWD", &ep).env("NSS_EXTRAUSERS_GROUP", &eg).env("IDHELPER_CACHE_PATH", &cp).output().expect("bin grps user");
         // machine
-        let outm = ::std::process::Command::new(bin).arg("grps").arg("host/client-a@T.REALM").env("NSS_PASSWD", &np).env("NSS_GROUP", &ng).env("NSS_EXTRAUSERS_PASSWD", &ep).env("NSS_EXTRAUSERS_GROUP", &eg).env("IDHELPER_CACHE_PATH", &cp).output().expect("bin grps mach");
+        let outm = ::std::process::Command::new(&bin).arg("grps").arg("host/client-a@T.REALM").env("NSS_PASSWD", &np).env("NSS_GROUP", &ng).env("NSS_EXTRAUSERS_PASSWD", &ep).env("NSS_EXTRAUSERS_GROUP", &eg).env("IDHELPER_CACHE_PATH", &cp).output().expect("bin grps mach");
         let ngc = std::fs::read_to_string(&ng).unwrap_or_default();
         let egc = std::fs::read_to_string(&eg).unwrap_or_default();
         let npc = std::fs::read_to_string(&np).unwrap_or_default();
@@ -1722,14 +1745,7 @@ ldap_default_authtok = "sekret"
         std::env::set_var("NSS_EXTRAUSERS_PASSWD", paths.extrausers_passwd);
         std::env::set_var("NSS_EXTRAUSERS_GROUP", paths.extrausers_group);
 
-        let bin = std::option_env!("CARGO_BIN_EXE_nfs_klldap_idhelper")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                format!(
-                    "{}/../target/debug/nfs-klldap-idhelper",
-                    env!("CARGO_MANIFEST_DIR")
-                )
-            });
+        let bin = idhelper_bin();
         for principal in ["missinguser@MISS.REALM", "nobody@MISS.REALM"] {
             for sub in ["grps", "resolve"] {
                 let out = std::process::Command::new(&bin)

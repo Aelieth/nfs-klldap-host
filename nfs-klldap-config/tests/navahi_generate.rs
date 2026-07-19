@@ -170,18 +170,18 @@ fn navahi_on_emits_core_v3_and_flagged_fragment_only() {
 }
 
 #[test]
-fn unqualified_hostname_omits_host_name_element() {
+fn short_hostname_synthesizes_fqdn_host_name_from_realm() {
     let tmp = tempfile::tempdir().unwrap();
     let out = tmp.path().join("out");
-    // An undotted hostname cannot resolve as an SRV target; the advert must
-    // fall back to avahi's own <short>.local identity (no host-name element).
+    // Short UTS + multi-label realm → Kerberos DNS FQDN as SRV target.
+    // Realm derives from ldap_uri host (klldap.test → TEST).
     let toml = on_toml().replacen("nas.test.example", "shortname", 1);
     run_generate(tmp.path(), &out, &toml);
     let xml =
         fs::read_to_string(out.join("avahi-services/nfs-klldap-movies.service")).unwrap();
     assert!(
-        !xml.contains("<host-name>"),
-        "unqualified hostname must not publish a host-name element:\n{xml}"
+        xml.contains("<host-name>shortname.test</host-name>"),
+        "short hostname + realm must publish synthesized FQDN:\n{xml}"
     );
 }
 

@@ -34,10 +34,12 @@ pub struct TlsPaths {
 }
 
 /// Ensures WebUI TLS certs from env paths or generates self-signed ones.
+/// `realm` qualifies a short hostname into an FQDN for SANs (empty = no synthesis).
 pub fn ensure_webui_tls_certs(
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,
     hostname: &str,
+    realm: &str,
 ) -> Result<TlsPaths, CertError> {
     if nfs_klldap_config::webui_tls_disabled() {
         return Err(CertError::TlsDisabled);
@@ -56,7 +58,9 @@ pub fn ensure_webui_tls_certs(
         ) {
             let cert = PathBuf::from(cert);
             let key = PathBuf::from(key);
-            if cert.exists() && key.exists() && existing_material_usable(&cert, &key, hostname, false)
+            if cert.exists()
+                && key.exists()
+                && existing_material_usable(&cert, &key, hostname, realm, false)
             {
                 return Ok(TlsPaths { cert, key });
             }
@@ -65,7 +69,7 @@ pub fn ensure_webui_tls_certs(
 
     if cert_path.exists()
         && key_path.exists()
-        && existing_material_usable(&cert_path, &key_path, hostname, managed_self_signed)
+        && existing_material_usable(&cert_path, &key_path, hostname, realm, managed_self_signed)
     {
         return Ok(TlsPaths {
             cert: cert_path,
@@ -73,7 +77,7 @@ pub fn ensure_webui_tls_certs(
         });
     }
 
-    write_self_signed_material(&cert_path, &key_path, hostname)
+    write_self_signed_material(&cert_path, &key_path, hostname, realm)
 }
 
 /// Deletes existing material and writes a fresh self-signed cert/key pair.
@@ -81,6 +85,7 @@ pub fn regenerate_webui_tls_certs(
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,
     hostname: &str,
+    realm: &str,
 ) -> Result<TlsPaths, CertError> {
     let cert_path = cert_path.as_ref();
     let key_path = key_path.as_ref();
@@ -88,16 +93,19 @@ pub fn regenerate_webui_tls_certs(
     let _ = std::fs::remove_file(key_path);
     let _ = std::fs::remove_file(san_metadata_path(cert_path));
     let _ = std::fs::remove_file(hostname_metadata_path(cert_path));
-    write_self_signed_material(cert_path, key_path, hostname)
+    write_self_signed_material(cert_path, key_path, hostname, realm)
 }
 
 fn write_self_signed_material(
     cert_path: &Path,
     key_path: &Path,
     hostname: &str,
+    realm: &str,
 ) -> Result<TlsPaths, CertError> {
-    let sans = cert_sans_for_host(hostname);
-    let (cert_pem, key_pem) = generate_self_signed(hostname, &sans)?;
+    let id = nfs_klldap_config::resolve_nfs_host_identity(hostname, realm);
+    let cn = id.preferred();
+    let sans = cert_sans_for_host(hostname, realm);
+    let (cert_pem, key_pem) = generate_self_signed(cn, &sans)?;
 
     if let Some(parent) = cert_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -105,7 +113,8 @@ fn write_self_signed_material(
 
     std::fs::write(cert_path, &cert_pem)?;
     std::fs::write(key_path, &key_pem)?;
-    write_hostname_metadata(cert_path, hostname)?;
+    // Store preferred (FQDN when known) so a later short→synthesized flip regenerates.
+    write_hostname_metadata(cert_path, cn)?;
     write_san_metadata(cert_path, &sans)?;
 
     #[cfg(unix)]
@@ -137,6 +146,7 @@ fn existing_material_usable(
     cert_path: &Path,
     key_path: &Path,
     hostname: &str,
+    realm: &str,
     check_sans: bool,
 ) -> bool {
     let Ok(cert_pem) = std::fs::read_to_string(cert_path) else {
@@ -149,12 +159,16 @@ fn existing_material_usable(
         return false;
     }
 
+    let preferred = nfs_klldap_config::resolve_nfs_host_identity(hostname, realm)
+        .preferred()
+        .to_string();
+
     if let Some(stored_host) = read_hostname_metadata(cert_path) {
-        return hosts_equivalent(&stored_host, hostname);
+        return hosts_equivalent(&stored_host, &preferred);
     }
 
     if let Some(stored) = read_san_metadata(cert_path) {
-        let current = cert_sans_for_host(hostname);
+        let current = cert_sans_for_host(hostname, realm);
         return stored == current;
     }
 
@@ -173,7 +187,8 @@ fn hosts_equivalent(left: &str, right: &str) -> bool {
 }
 
 /// SAN entries for the self-signed WebUI certificate (also the startup banner).
-pub fn cert_sans_for_host(hostname: &str) -> Vec<String> {
+/// `realm` qualifies a short hostname into an FQDN SAN (empty = split-only).
+pub fn cert_sans_for_host(hostname: &str, realm: &str) -> Vec<String> {
     let mut sans = Vec::new();
     let mut add = |value: &str| {
         let t = value.trim().trim_matches('.');
@@ -185,7 +200,7 @@ pub fn cert_sans_for_host(hostname: &str) -> Vec<String> {
         }
     };
 
-    for host in nfs_klldap_config::nfs_keytab_host_variants(hostname) {
+    for host in nfs_klldap_config::nfs_keytab_host_variants(hostname, realm) {
         add(&host);
         if let Ok(addrs) = (host.as_str(), 0).to_socket_addrs() {
             for addr in addrs {

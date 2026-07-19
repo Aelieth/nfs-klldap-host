@@ -111,7 +111,7 @@ fn generate_all_limited_btrfs_emits_safe_export_flags() {
     assert!(ganesha.contains("Root_Kerberos_Principal = nfs, root;"));
     assert!(ganesha.contains("Pwnam_Implementation = nsswitch"));
 
-    let variants = nfs_keytab_host_variants("nfs-server.example.com");
+    let variants = nfs_keytab_host_variants("nfs-server.example.com", "EXAMPLE.COM");
     let (m_host, _) = classify_principal("host/client.test@TEST", "TEST", &variants);
     let (m_nfs, _) = classify_principal("nfs/client@TEST", "TEST", &variants);
     let (u_alice, _) = classify_principal("alice@TEST", "TEST", &variants);

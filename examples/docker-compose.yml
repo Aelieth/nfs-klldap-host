@@ -40,8 +40,7 @@ services:
 
     environment:
       # Optional env overrides for core nfs-klldap.conf options (env wins; only NFS_KLLDAP_* prefixed forms).
-      # See root README "Environment Variables" section for the full table (with defaults/examples).
-      # Common ones: NFS_KLLDAP_KERBEROS_REALM, NFS_KLLDAP_WEBUI_TLS=off for reverse proxy.
+      # Full table: docs/run/README.md. Common: NFS_KLLDAP_KERBEROS_REALM, NFS_KLLDAP_WEBUI_TLS=off for reverse proxy.
       # - NFS_KLLDAP_LDAP_URI=ldaps://...
       # - NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN=...
       # - NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK=...

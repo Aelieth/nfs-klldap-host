@@ -575,6 +575,14 @@ impl NfsKlldapConfig {
             .expect("effective_realm called on config that did not pass validation")
     }
 
+    /// Short + FQDN for keytab / Navahi / certs (synthesizes FQDN from realm when UTS is short).
+    pub fn effective_nfs_host_identity(&self) -> nfs_klldap_identity::NfsHostIdentity {
+        nfs_klldap_identity::resolve_nfs_host_identity(
+            &self.effective_hostname(),
+            &self.effective_realm(),
+        )
+    }
+
     /// Uppercase NFSv4 domain for ganesha.conf DomainName and idmapd.conf.
     /// Realm strings must match case because libnfsidmap is case-sensitive.
     pub fn nfsv4_domain(&self) -> String {

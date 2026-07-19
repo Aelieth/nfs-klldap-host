@@ -5,7 +5,7 @@ pub mod realm;
 
 pub use hostname::{
     format_nfs_principal_list, looks_like_docker_default_hostname, nfs_keytab_host_matches,
-    nfs_keytab_host_variants,
+    nfs_keytab_host_variants, resolve_nfs_host_identity, NfsHostIdentity,
 };
 pub use keytab::{
     get_keytab_info, parse_klist_nfs_hosts, parse_klist_nfs_principals,

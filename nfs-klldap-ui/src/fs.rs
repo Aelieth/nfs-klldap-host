@@ -1731,7 +1731,7 @@ mod tests {
 
         let fs = FsManager::new(cfg);
 
-        // Use current uid/gid (or synthetic if root) via nix (safe, no deny(unsafe_code)).
+        // Use current uid/gid (or synthetic if root) via nix safe wrappers.
         // Drives the real (!dry) privileged::chown (nix) + chmod paths.
         #[cfg(unix)]
         let (target_uid, target_gid) = {

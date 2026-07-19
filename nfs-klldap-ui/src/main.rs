@@ -177,6 +177,7 @@ async fn main() {
     let config = std::sync::Arc::new(std::sync::RwLock::new(loaded_config.clone()));
 
     // Keytab host: [server] override, else two-tier consistent hostname.
+    // Realm qualifies a short UTS name into the Kerberos DNS FQDN for principals.
     let keytab_host = if let Some(h) = &loaded_config.server.hostname {
         if !h.trim().is_empty() {
             h.trim().to_string()
@@ -187,8 +188,18 @@ async fn main() {
         resolve_runtime_hostname_for_banner()
     };
 
-    // Reads the realm from loaded config for keytab reminders (see krb5.conf).
-    let keytab_realm = loaded_config.display_realm();
+    // Prefer validated realm; fall back to display (wizard / incomplete config).
+    let keytab_realm = loaded_config
+        .kerberos
+        .realm
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(|r| r.to_string())
+        .unwrap_or_else(|| loaded_config.display_realm());
+    let host_id =
+        nfs_klldap_config::resolve_nfs_host_identity(&keytab_host, &keytab_realm);
+    let keytab_display_host = host_id.preferred().to_string();
 
     let principals = nfs_klldap_config::format_nfs_principal_list(&keytab_host, &keytab_realm);
     println!("\nKeytab reminder: include {principals}");
@@ -263,6 +274,7 @@ async fn main() {
         let h = keytab_host.clone();
         let r = keytab_realm.clone();
         tokio::spawn(async move {
+            // get_keytab_info expands short host + realm into expected nfs/* list.
             let alert = nfs_klldap_config::get_keytab_info(&h, &r).alert;
             if let Some(ref msg) = alert {
                 eprintln!("WARNING: {}", msg);
@@ -287,8 +299,9 @@ async fn main() {
         config: config.clone(),
         auth,
         config_path: config_path.clone(),
-        keytab_hostname: keytab_host,
-        keytab_realm,
+        // Prefer FQDN for Overview URLs / settings when synthesized from realm.
+        keytab_hostname: keytab_display_host.clone(),
+        keytab_realm: keytab_realm.clone(),
         keytab_alert,
         apply_progress: Arc::new(Mutex::new(None)),
         restart_requested: Arc::new(Mutex::new(None)),
@@ -322,16 +335,10 @@ async fn main() {
             .await
             .expect("WebUI HTTP server failed");
     } else {
-        // The existing axum_server is :bind_rustls path (TLS enabled).
-        let cert_hostname = if let Some(h) = &loaded_config.server.hostname {
-            if !h.trim().is_empty() {
-                h.trim().to_string()
-            } else {
-                resolve_runtime_hostname_for_banner()
-            }
-        } else {
-            resolve_runtime_hostname_for_banner()
-        };
+        // TLS CN/SANs use the same host + realm identity as the keytab reminder.
+        let cert_hostname = keytab_host.clone();
+        let cert_realm = keytab_realm.clone();
+        let cert_display = keytab_display_host.clone();
 
         // Uses stable absolute cert paths in the container when env is unset.
         let default_cert = "/var/lib/nfs-klldap/webui-certs/webui.crt".to_string();
@@ -348,6 +355,7 @@ async fn main() {
             &cert_path,
             &key_path,
             &cert_hostname,
+            &cert_realm,
         )
         .expect("failed to ensure WebUI TLS certificates");
 
@@ -371,6 +379,7 @@ async fn main() {
                         &cert_path,
                         &key_path,
                         &cert_hostname,
+                        &cert_realm,
                     )
                     .expect("failed to regenerate WebUI TLS certificates after load failure");
                     match axum_server::tls_rustls::RustlsConfig::from_pem_file(
@@ -396,11 +405,11 @@ async fn main() {
             .split(':')
             .nth(1)
             .unwrap_or("9630");
-        let sans = crate::certs::cert_sans_for_host(&cert_hostname);
+        let sans = crate::certs::cert_sans_for_host(&cert_hostname, &cert_realm);
         println!("Listening on https://{addr} (TLS enabled via axum-server)");
         println!(
             "Open https://{}:{webui_port}/setup (self-signed; accept the browser warning if prompted)",
-            cert_hostname
+            cert_display
         );
         if sans.len() > 1 {
             println!("Certificate SANs: {}", sans.join(", "));

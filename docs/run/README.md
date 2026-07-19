@@ -117,9 +117,10 @@ Or persistently: `[host] host_nfs = true` (env still wins). Healthcheck asserts 
 
 ## Keytab
 
-Mount 0600 root-owned keytab at `/etc/krb5.keytab:ro` (`:Z` on SELinux). With `--uts=host`, create principals for short + FQDN when they differ:
+Mount 0600 root-owned keytab at `/etc/krb5.keytab:ro` (`:Z` on SELinux). With `--uts=host`, create principals for short + FQDN when they differ. If the host UTS name is short, the FQDN is synthesized as `{short}.{realm_lower}` from the Kerberos realm (same domain as generated `[domain_realm]`):
 
 ```bash
+# host "aurora", realm EXAMPLE.COM → nfs/aurora + nfs/aurora.example.com
 addprinc -randkey nfs/aurora@EXAMPLE.COM
 addprinc -randkey nfs/aurora.example.com@EXAMPLE.COM
 ktadd -k /tmp/keytab nfs/aurora@EXAMPLE.COM nfs/aurora.example.com@EXAMPLE.COM
@@ -131,7 +132,7 @@ Optional, **off by default**. Core toggle `navahi_discovery` (Restart & apply) +
 
 - Host network + firewall: mdns (5353/udp), 111, 20048/tcp (MOUNT), 2049/tcp.
 - Global toggle is full-recycle gated; per-share flags apply on graceful shares save (export + advert XML).
-- Adverts prefer qualified `[server] hostname` (not `.local`) when dotted.
+- Adverts prefer the Kerberos-qualified FQDN (`[server] hostname` or `{short}.{realm}`) as the SRV target (not avahi `.local`).
 - Healthcheck **WARN** only if toggle on but avahi/adverts missing.
 
 ## Troubleshooting at start

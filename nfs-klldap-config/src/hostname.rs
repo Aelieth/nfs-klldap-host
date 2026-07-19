@@ -3,7 +3,7 @@
 
 pub use nfs_klldap_identity::{
     format_nfs_principal_list, looks_like_docker_default_hostname, nfs_keytab_host_matches,
-    nfs_keytab_host_variants,
+    nfs_keytab_host_variants, resolve_nfs_host_identity, NfsHostIdentity,
 };
 
 use std::path::PathBuf;
@@ -436,14 +436,21 @@ pub fn runtime_realm(cfg: Option<&NfsKlldapConfig>) -> String {
     "EXAMPLE.COM".to_string()
 }
 
-/// Keytab host variants for principal classification.
+/// Keytab host variants for principal classification (short + realm-qualified FQDN).
 pub fn runtime_server_variants(cfg: Option<&NfsKlldapConfig>) -> Vec<String> {
-    let variants = nfs_keytab_host_variants(&runtime_hostname(cfg));
+    let host = runtime_hostname(cfg);
+    let realm = runtime_realm(cfg);
+    let variants = nfs_keytab_host_variants(&host, &realm);
     if variants.is_empty() {
         vec!["localhost".to_string()]
     } else {
         variants
     }
+}
+
+/// Short + FQDN identity from runtime hostname and realm.
+pub fn runtime_host_identity(cfg: Option<&NfsKlldapConfig>) -> NfsHostIdentity {
+    resolve_nfs_host_identity(&runtime_hostname(cfg), &runtime_realm(cfg))
 }
 
 /// Convenience for idhelper when NFS_CONFIG is the only source.

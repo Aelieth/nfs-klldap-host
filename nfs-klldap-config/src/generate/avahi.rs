@@ -38,11 +38,11 @@ pub fn write_avahi_services(cfg: &NfsKlldapConfig, dir: &Path) -> Result<(), Con
     }
     fs::create_dir_all(dir)?;
 
-    // SRV target: a qualified hostname resolves on clients via unicast DNS
-    // (krb5 deployments already require it) and survives avahi's short-label
-    // .local identity and conflict renames. Unqualified names stay omitted so
-    // the advert falls back to avahi's own <short>.local record.
-    let host = cfg.effective_hostname();
+    // SRV target: prefer the Kerberos-qualified FQDN (observed dotted host, or
+    // short UTS + realm domain). That resolves on clients via unicast DNS and
+    // survives avahi's short-label .local renames. Still-unqualified names are
+    // omitted so the advert falls back to avahi's own <short>.local record.
+    let host = cfg.effective_nfs_host_identity().preferred().to_string();
     let host_line = if host.contains('.') {
         format!("    <host-name>{}</host-name>\n", xml_escape(&host))
     } else {

@@ -21,7 +21,7 @@ pub use krb5::{
     nfs_keytab_host_matches, nfs_keytab_host_variants, parse_klist_nfs_hosts,
     canonicalize_principal, is_numeric_local_principal, parse_klist_nfs_principals,
     normalize_principal, principal_has_realm, principal_local_part,
-    read_keytab_nfs_principals, KeytabInfo,
+    read_keytab_nfs_principals, resolve_nfs_host_identity, KeytabInfo, NfsHostIdentity,
 };
 pub use ldap::{
     effective_ldap_search_bases, escape_ldap_filter, IdLdapResolver,

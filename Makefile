@@ -134,6 +134,9 @@ docker-multi:
 # -----------------------------------------------------------------------------
 .PHONY: test
 test:
+	# Production bins first: unit tests that spawn nfs-klldap-idhelper/config need
+	# target/debug/* (cargo test alone only builds the test harness for those bins).
+	$(CARGO) build --workspace --bins
 	$(CARGO) test --workspace
 
 .PHONY: clippy
@@ -148,6 +151,7 @@ gate:
 	bash scripts/safety-dance.sh
 	python3 scripts/comment_lint.py
 	bash scripts/check-version-pins.sh
+	$(CARGO) build --workspace --bins
 	$(CARGO) test --workspace
 
 .PHONY: clean

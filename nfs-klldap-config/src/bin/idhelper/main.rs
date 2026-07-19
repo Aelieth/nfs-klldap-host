@@ -1662,7 +1662,9 @@ mod tests {
 
     #[test]
     fn cli_verif_step2_user_and_machine_writes_complete_supps() {
-        // Real binary grps under temp-bound NSS+cache (via effective); proves user supp + uid0 root written to both stores.
+        // Real production binary grps under temp-bound NSS+cache. Proves user
+        // supplemental + uid0 root land in both stores. env_clear avoids parent
+        // test pollution; force-rebuild path is `make test` building --bins first.
         let _lock = crate::common::ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         crate::resolve::reset_id_resolver_for_test();
         let tmp = tempfile::tempdir().unwrap();
@@ -1673,52 +1675,109 @@ mod tests {
         let ep = base.join("extra_passwd");
         let eg = base.join("extra_group");
         let cp = base.join("idmap.cache");
-        // Pre-seed nss_passwd (uid via getent) + cp with supp gids so CLI bin (no TEST passed) hits cache, augments gids, always-ensure + build write non-prim 4242 rows to *both* stores. Pure CLI evidence path.
-        std::fs::write(&np, "testu@T.REALM:x:2001:100:testu@T.REALM:/nonexistent:/usr/sbin/nologin\nroot:x:0:0:root:/root:/bin/sh\n").unwrap();
-        std::fs::write(&cp, "# preseed supps for user@ CLI evidence (no TEST to bin)\ntestu@T.REALM|2001|100|user|pre|4242\n").unwrap();
-        std::env::set_var("NSS_PASSWD", &np);
-        std::env::set_var("NSS_GROUP", &ng);
-        std::env::set_var("NSS_EXTRAUSERS_PASSWD", &ep);
-        std::env::set_var("NSS_EXTRAUSERS_GROUP", &eg);
-        std::env::set_var("IDHELPER_CACHE_PATH", &cp);
+        // Pre-seed nss_passwd + cache with supp gids so the bin (no TEST_* env)
+        // hits cache and ensure writes non-prim 4242 rows to both stores.
+        std::fs::write(
+            &np,
+            "testu@T.REALM:x:2001:100:testu@T.REALM:/nonexistent:/usr/sbin/nologin\nroot:x:0:0:root:/root:/bin/sh\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &cp,
+            "# preseed supps for user@ CLI evidence (no TEST to bin)\ntestu@T.REALM|2001|100|user|pre|4242\n",
+        )
+        .unwrap();
+
         let bin = idhelper_bin();
         assert!(
             bin.is_file(),
-            "idhelper binary missing at {} — cargo test should have built it under target/debug/",
+            "idhelper binary missing at {} — run `cargo build -p nfs-klldap-config --bins` (make test does this)",
             bin.display()
         );
-        // First user@ using pre-seeded cache with supps (no TEST env passed to bin subprocess for pure CLI evidence path).
-        let outu = ::std::process::Command::new(&bin).arg("grps").arg("testu@T.REALM").env("NSS_PASSWD", &np).env("NSS_GROUP", &ng).env("NSS_EXTRAUSERS_PASSWD", &ep).env("NSS_EXTRAUSERS_GROUP", &eg).env("IDHELPER_CACHE_PATH", &cp).output().expect("bin grps user");
-        // machine
-        let outm = ::std::process::Command::new(&bin).arg("grps").arg("host/client-a@T.REALM").env("NSS_PASSWD", &np).env("NSS_GROUP", &ng).env("NSS_EXTRAUSERS_PASSWD", &ep).env("NSS_EXTRAUSERS_GROUP", &eg).env("IDHELPER_CACHE_PATH", &cp).output().expect("bin grps mach");
+
+        let path_env = std::env::var_os("PATH").unwrap_or_default();
+        let run_grps = |principal: &str| {
+            ::std::process::Command::new(&bin)
+                .arg("grps")
+                .arg(principal)
+                // Isolate from parent cargo-test env (parallel crates / prior tests).
+                .env_clear()
+                .env("PATH", &path_env)
+                .env("NSS_PASSWD", &np)
+                .env("NSS_GROUP", &ng)
+                .env("NSS_EXTRAUSERS_PASSWD", &ep)
+                .env("NSS_EXTRAUSERS_GROUP", &eg)
+                .env("IDHELPER_CACHE_PATH", &cp)
+                .output()
+                .unwrap_or_else(|e| panic!("spawn grps {principal}: {e}"))
+        };
+
+        let outu = run_grps("testu@T.REALM");
+        let outm = run_grps("host/client-a@T.REALM");
+        let su = String::from_utf8_lossy(&outu.stdout);
+        let eu = String::from_utf8_lossy(&outu.stderr);
+        let sm = String::from_utf8_lossy(&outm.stdout);
+        let em = String::from_utf8_lossy(&outm.stderr);
+        assert!(
+            outu.status.success(),
+            "user grps must exit 0\nstdout={su}\nstderr={eu}"
+        );
+        assert!(
+            outm.status.success(),
+            "machine grps must exit 0\nstdout={sm}\nstderr={em}"
+        );
+        assert!(
+            su.contains("4242") || su.contains("OK "),
+            "user grps stdout should report gids including 4242: {su}"
+        );
+
         let ngc = std::fs::read_to_string(&ng).unwrap_or_default();
         let egc = std::fs::read_to_string(&eg).unwrap_or_default();
         let npc = std::fs::read_to_string(&np).unwrap_or_default();
         let epc = std::fs::read_to_string(&ep).unwrap_or_default();
-        // capture evidence to OUR scratch only (verif plan + isolation)
-        let scr = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH")
-            .map(|s| std::path::Path::new(&s).join("idhelper-verify.out"))
-            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/idhelper-verify.out"));
-        let scr = scr.as_path();
-        let _ = std::fs::create_dir_all(scr.parent().unwrap());
-        let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(scr).unwrap();
-        use std::io::Write;
-        writeln!(f, "=== cli_verif_step2 FRESH direct from user@ grps (real bin temp files) ===").unwrap();
-        writeln!(f, "user grps stdout: {}", String::from_utf8_lossy(&outu.stdout)).unwrap();
-        writeln!(f, "mach grps stdout: {}", String::from_utf8_lossy(&outm.stdout)).unwrap();
-        writeln!(f, "=== nss_passwd (post user grps) ===\n{}", npc).unwrap();
-        writeln!(f, "=== nss_group (post user grps) ===\n{}", ngc).unwrap();
-        writeln!(f, "=== extra_passwd (post) ===\n{}", epc).unwrap();
-        writeln!(f, "=== extra_group (post user grps) ===\n{}", egc).unwrap();
-        // assertions for AC1/AC2: real uid from pre-seed (proves bin path didn't fallback to nobody), supp in both, root members. Drive real shipped bin.
-        assert!(npc.contains("testu@T.REALM:x:2001") || npc.contains("testu:x:2001"), "real uid not nobody from bin (pre-seed + bin grps path)");
-        assert!(!npc.contains("nobody:x:65534") || npc.lines().any(|l| l.starts_with("testu@T.REALM:x:2001")), "no fallback");
-        assert!(!ngc.contains("testu:x:65534") && !egc.contains("testu:x:65534"), "no bogus user-named 65534 gid row");
-        assert!(ngc.contains(":4242:") && (ngc.contains("testu") || ngc.contains("testu@")), "supp row 4242 in nss_group from bin");
-        assert!(egc.contains(":4242:") && (egc.contains("testu") || egc.contains("testu@")), "supp row 4242 in extra_group from bin");
-        assert!(egc.contains("root:x:0:") && (egc.contains("root,") || egc.contains("daemon") || egc.contains("client-a")), "uid0 root members from bin mach");
-        // cleanup envs
-        for k in ["NSS_PASSWD","NSS_GROUP","NSS_EXTRAUSERS_PASSWD","NSS_EXTRAUSERS_GROUP","IDHELPER_CACHE_PATH"] { std::env::remove_var(k); }
+
+        if let Ok(scr) = std::env::var("NFS_KLLDAP_CAPTURE_SCRATCH") {
+            let path = std::path::Path::new(&scr).join("idhelper-verify.out");
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path)
+            {
+                let _ = writeln!(f, "=== cli_verif_step2 ===\nuser: {su}\nmach: {sm}\nnss_group:\n{ngc}\nextra_group:\n{egc}");
+            }
+        }
+
+        assert!(
+            npc.contains("testu@T.REALM:x:2001") || npc.contains("testu:x:2001"),
+            "real uid not nobody from bin (pre-seed + bin grps path); nss_passwd:\n{npc}"
+        );
+        assert!(
+            !npc.contains("nobody:x:65534")
+                || npc.lines().any(|l| l.starts_with("testu@T.REALM:x:2001")),
+            "no fallback; nss_passwd:\n{npc}"
+        );
+        assert!(
+            !ngc.contains("testu:x:65534") && !egc.contains("testu:x:65534"),
+            "no bogus user-named 65534 gid row; nss_group:\n{ngc}\nextra_group:\n{egc}"
+        );
+        assert!(
+            ngc.contains(":4242:") && (ngc.contains("testu") || ngc.contains("testu@")),
+            "supp row 4242 in nss_group from bin\nstdout={su}\nstderr={eu}\nnss_group:\n{ngc}\nextra_group:\n{egc}\nextra_passwd:\n{epc}"
+        );
+        assert!(
+            egc.contains(":4242:") && (egc.contains("testu") || egc.contains("testu@")),
+            "supp row 4242 in extra_group from bin\nextra_group:\n{egc}"
+        );
+        assert!(
+            egc.contains("root:x:0:")
+                && (egc.contains("root,") || egc.contains("daemon") || egc.contains("client-a")),
+            "uid0 root members from bin mach\nstdout={sm}\nextra_group:\n{egc}"
+        );
     }
 
     #[test]

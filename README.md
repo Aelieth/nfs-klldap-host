@@ -15,9 +15,7 @@
   </a>
 </p>
 
-**1.0** — Kerberized NFSv4 host for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos). First-run setup at `https://<host>:9630/setup`; Overview shows the exact build stamp.
-
-**nfs-klldap-host** is a companion for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos): it reads your directory, resolves users and groups into numeric UID/GID (and back to friendly names), and serves NFS shares with Kerberos-protected mounts and proper POSIX ownership. Opinionated defaults get shares on another host or device up quickly — one TOML file drives SSSD, Kerberos client config, idmap, and Ganesha exports — without hand-stitching five daemons and export fragments.
+**nfs-klldap-host 1.0** is a companion for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos): it reads your directory, resolves users and groups into numeric UID/GID (and back to friendly names), and serves NFS shares with Kerberos-protected mounts and proper POSIX ownership. Opinionated defaults get shares on another host or device up quickly — one TOML file drives SSSD, Kerberos client config, idmap, and Ganesha exports — without hand-stitching five daemons and export fragments.
 
 It stays flexible across real host setups: bind-mounted trees, mixed storage, and optional host-managed NFS (`HOST_NFS`). Per share it probes whether the serve path can do POSIX ACLs and falls back gracefully to NOACL with basic owner/group/mode when the filesystem cannot; capable mounts keep full ACL editing in the UI. A remote HTTPS WebUI lets domain admins and localhost operators browse trees, chown/chmod, stage ACL changes, and manage `[[shares]]` with a live TOML preview. Beyond a plain Ganesha container, you get identity materialization for user and machine principals (`nfs-klldap-idhelper`), SIGHUP-scoped export apply without bouncing sessions, SIGUSR1 full recycle for identity and main conf, optional Navahi mDNS click-mount for guest NFSv3 paths, and a custom Ganesha build tuned for KLLDAP group lookups.
 

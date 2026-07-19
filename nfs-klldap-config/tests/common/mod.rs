@@ -201,6 +201,7 @@ exec sleep 3600
             .env("EXPORTS_DIR", self.out.join("exports.d"))
             .env("IDMAP_CONF", self.out.join("idmapd.conf"))
             .env("NFS_CONF", self.out.join("nfs.conf"))
+            .env("AVAHI_SERVICES_DIR", self.out.join("avahi-services"))
             .env(
                 "PATH",
                 format!(

@@ -33,6 +33,23 @@ warn_export_fragments() {
     fi
 }
 
+warn_navahi_discovery() {
+    local config="${NFS_CONFIG:-/config/nfs-klldap.conf}"
+    local svc_dir="${AVAHI_SERVICES_DIR:-/etc/avahi/services}"
+    [ -f "$config" ] || return 0
+    grep -Eq '^[[:space:]]*navahi_discovery[[:space:]]*=[[:space:]]*true' "$config" || return 0
+    if ! pgrep -x avahi-daemon >/dev/null 2>&1; then
+        echo "WARN: navahi_discovery = true but avahi-daemon is not running (staged toggle? apply via 'Restart and apply')"
+    fi
+    if grep -Eq '^[[:space:]]*navahi_insecure[[:space:]]*=[[:space:]]*true' "$config"; then
+        local n
+        n=$(find "$svc_dir" -maxdepth 1 -name 'nfs-klldap-*.service' 2>/dev/null | wc -l)
+        if [ "$n" -eq 0 ]; then
+            echo "WARN: navahi shares flagged but no advert XMLs in $svc_dir (regenerate pending?)"
+        fi
+    fi
+}
+
 warn_fs_limited_shares() {
     local config="${NFS_CONFIG:-/config/nfs-klldap.conf}"
     local bin="${1:-}"

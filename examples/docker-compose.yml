@@ -15,6 +15,10 @@ services:
     container_name: nfs-klldap-host
 
     # Host networking required: NFS + Kerberos need host-reachable addresses (not 172.17.x.x bridge).
+    # Navahi Network Discovery (navahi_discovery = true) also depends on it: mDNS
+    # multicast + rpcbind/MOUNT must live on the LAN-visible host. Open the host
+    # firewall for 5353/udp (mdns), 111/tcp+udp, 20048/tcp, 2049/tcp — see
+    # docs/run/README.md "Navahi network discovery".
     network_mode: host
     uts: host
 

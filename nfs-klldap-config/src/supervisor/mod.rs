@@ -18,7 +18,7 @@ use std::thread;
 use std::time::Duration;
 
 use nfs_klldap_config::{
-    compute_startup_step, compute_wizard_step, fingerprint_exports_dir,
+    compute_startup_step, compute_wizard_step, fingerprint_avahi_dir, fingerprint_exports_dir,
     fingerprint_identity_artifacts, fingerprint_shares, GaneshaNssEnv,
     ganesha_readiness::{
         build_ganesha_envp, check_ganesha_readiness, filter_proc_environ_keys,
@@ -47,6 +47,7 @@ struct ChildPids {
     pub webui: Option<u32>,
     pub dbus: Option<u32>,
     pub idhelper: Option<u32>,
+    pub avahi: Option<u32>,
 }
 
 struct Supervisor {
@@ -55,6 +56,9 @@ struct Supervisor {
     services_started: bool,
     /// True between start_ganesha and stop_ganesha (pid adoption).
     ganesha_managed: bool,
+    /// True between start_avahi and stop_avahi. Respawn keys off this, not the
+    /// conf flag — toggle flips wait for a recycle (restart-gated contract).
+    avahi_managed: bool,
     /// Last [[shares]] fingerprint for WebUI-only recycle detection.
     last_shares_fingerprint: u64,
     /// Steady-state respawn rate limiter (WI-18, Idle-tick liveness).
@@ -66,6 +70,8 @@ struct FingerprintChanges {
     exports_changed: bool,
     identity_changed: bool,
     shares_changed: bool,
+    /// Navahi advert XMLs moved; drives only the avahi reload belt.
+    avahi_changed: bool,
 }
 
 /// Pid-1 supervision entry (replaces the old shell main loop).
@@ -77,6 +83,7 @@ pub fn run_supervisor(config_path: &Path) -> Result<(), String> {
         pids: ChildPids::default(),
         services_started: false,
         ganesha_managed: false,
+        avahi_managed: false,
         last_shares_fingerprint: 0,
         respawn: respawn::RespawnBudget::default(),
     };
@@ -533,6 +540,7 @@ while :; do :; done
             self.ensure_ganesha_prereqs();
             self.log_info("Starting NFS-Ganesha...");
             services::start_ganesha(self);
+            services::start_avahi(self);
         }
         // WebUI start moved after readiness gate in preconf path to ensure readiness logs (confirmed + synthetic krb) appear before WebUI log in transcripts.
         // For host mode and wizard BringUp, callers will start it.
@@ -702,6 +710,11 @@ while :; do :; done
             plan_full_recycle(self.env.host_nfs_mode)
         };
         self.execute_recycle_plan(plan);
+        // Belt over avahi's own inotify: a HUP re-reads the service XMLs.
+        // Skipped when the plan bounced avahi (it re-read them at start).
+        if changes.avahi_changed && !plan.restart_avahi {
+            self.reload_avahi_services();
+        }
         self.finish_recycle();
         Ok(())
     }
@@ -732,6 +745,7 @@ while :; do :; done
             &self.env.idmap_conf,
         );
         let shares_fp_before = self.last_shares_fingerprint;
+        let avahi_fp_before = fingerprint_avahi_dir(&self.env.avahi_services_dir);
         // Ceiling, not a courtesy: generate write-probes every ACL share, and
         // a stalled mount inside it would otherwise park THIS loop — no
         // future SIGHUP/SIGUSR1 would ever be serviced again.
@@ -757,6 +771,7 @@ while :; do :; done
         );
         let exports_changed = exports_fp_before != exports_fp_after;
         let identity_changed = identity_fp_before != identity_fp_after;
+        let avahi_changed = avahi_fp_before != fingerprint_avahi_dir(&self.env.avahi_services_dir);
         let shares_fp_after = NfsKlldapConfig::load(&self.env.nfs_config)
             .map(|c| fingerprint_shares(&c))
             .unwrap_or(shares_fp_before);
@@ -771,10 +786,14 @@ while :; do :; done
         self.log_info(&format!(
             "Shares fingerprint: before={shares_fp_before} after={shares_fp_after} changed={shares_changed}"
         ));
+        if avahi_changed {
+            self.log_info("Navahi advert XMLs changed");
+        }
         Ok(FingerprintChanges {
             exports_changed,
             identity_changed,
             shares_changed,
+            avahi_changed,
         })
     }
 
@@ -811,6 +830,7 @@ while :; do :; done
             self.pids.watcher,
             self.pids.dbus,
             self.pids.idhelper,
+            self.pids.avahi,
         ]
         .into_iter()
         .flatten()
@@ -819,6 +839,8 @@ while :; do :; done
         }
         services::stop_ganesha(self);
         self.ganesha_managed = false;
+        self.avahi_managed = false;
+        pkill_process("-TERM", "avahi-daemon");
         pkill_process("-TERM", "sssd");
         pkill_binary("-TERM", &self.env.watcher_bin);
         pkill_process("-TERM", "dbus-daemon");
@@ -860,7 +882,7 @@ while :; do :; done
     /// dead dependency doesn't burn ganesha's budget first.
     fn check_and_respawn_services(&mut self) {
         let now = std::time::Instant::now();
-        for service in ["dbus", "sssd", "idhelper", "watcher", "webui", "ganesha"] {
+        for service in ["dbus", "sssd", "idhelper", "watcher", "webui", "ganesha", "avahi"] {
             if !self.respawn_needed(service) {
                 continue;
             }
@@ -908,6 +930,13 @@ while :; do :; done
                         .ganesha
                         .is_some_and(process_is_live)
             }
+            // Managed-keyed like ganesha: stop_avahi legally drops the pid,
+            // and a conf-flag flip alone must not start it outside a recycle.
+            "avahi" => {
+                self.avahi_managed
+                    && !self.env.host_nfs_mode
+                    && !self.pids.avahi.is_some_and(process_is_live)
+            }
             _ => false,
         }
     }
@@ -933,6 +962,7 @@ while :; do :; done
                     );
                 }
             }
+            "avahi" => services::start_avahi(self),
             _ => {}
         }
     }
@@ -1124,6 +1154,23 @@ while :; do :; done
             }
             WebuiAction::Reload => self.reload_webui(),
         }
+        if plan.restart_avahi {
+            // start_avahi self-gates on navahi_discovery + host mode, so the
+            // full recycle is exactly the toggle-application path.
+            services::stop_avahi(self);
+            services::start_avahi(self);
+        }
+    }
+
+    /// Belt over avahi's inotify watch: SIGHUP re-reads the static services.
+    fn reload_avahi_services(&mut self) {
+        let Some(pid) = self.pids.avahi.filter(|p| process_is_live(*p)) else {
+            return;
+        };
+        signal_process_hup(pid);
+        self.log_info(&format!(
+            "Sent SIGHUP to avahi-daemon (pid {pid}) to re-read service XMLs"
+        ));
     }
 
     /// In-process WebUI config reload: SIGHUP to the child (its tokio handler
@@ -1172,6 +1219,12 @@ while :; do :; done
         }
         self.log_warn("idhelper socket not ready before Ganesha start — principal mapping may lag");
         false
+    }
+
+    fn navahi_enabled(&self) -> bool {
+        NfsKlldapConfig::load(&self.env.nfs_config)
+            .map(|cfg| cfg.navahi_discovery)
+            .unwrap_or(false)
     }
 
     fn krb5_shares_enabled(&self) -> bool {

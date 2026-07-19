@@ -142,6 +142,51 @@ mount in the user session and fail `Operation not permitted`. The **`users`**
 option (above) now covers that path too, so a cold click mounts as root. No
 per-user setup or Places seeding is required.
 
+## Discover shares from the file manager (Navahi)
+
+Since 0.9.99 the host can advertise flagged shares over mDNS/Avahi ("Navahi
+Network Discovery": the `navahi_discovery` Core toggle plus a per-share
+`navahi_insecure` checkbox, both in System Settings). Advertised shares appear
+by name in the desktop network browser with **zero client setup**:
+
+- **GNOME Files** → Other Locations → Networks: "`<share> on <host>`". A click
+  mounts it in place (gvfs `nfs://` backend).
+- **Dolphin** → Network: the same entries via KDE's zeroconf listing; opening
+  one browses it through the `nfs` KIO worker.
+
+How it works — and why it is the *guest* path: the desktop NFS clients
+(gvfs-nfs/libnfs and kio_nfs) speak **NFSv3 with AUTH_SYS only**, no Kerberos.
+A flagged share therefore also accepts NFSv3 + `sys` alongside its normal krb5
+flavors while the toggle is on. That means:
+
+- **Identity is the client's numeric uid/gid.** On a kit-provisioned
+  (LDAP/SSSD) client the ids match the server and permissions behave; an
+  ad-hoc laptop's uid 1000 is just uid 1000 — expect skewed ownership on
+  writes. `root` stays squashed per the share's normal squash setting.
+- **No transport security.** Traffic is neither encrypted nor
+  integrity-protected. Flag read-mostly media/guest shares, not sensitive
+  trees.
+- The kerberized `vers=4.2` fstab mounts this script provisions are unchanged
+  and remain the supported full-integrity path — discovery is a convenience
+  layer on top, never a replacement.
+
+Client prerequisites (verified/installed by kit v5.12's `--discovery` stage,
+also part of `--all`): `gvfs-nfs` (GNOME click-mount backend), `kio-extras`
+(KDE), `nss-mdns` with `mdns4_minimal` in `/etc/nsswitch.conf` (`.local`
+names), and an active `avahi-daemon.service`. Stock Fedora
+Workstation/Silverblue/Kinoite images carry all of these except sometimes
+`gvfs-nfs`, which the kit layers.
+
+Debugging: `avahi-browse -rt _nfs._tcp` (on a client) lists the adverts with
+their `path=` TXT record; `showmount -e <host>` lists the v3 mount namespace
+(pseudo paths — the server runs `Mount_Path_Pseudo`). Nothing listed usually
+means the server toggle is off/staged, no share is flagged, or the server-host
+firewall blocks mdns (5353/udp) / 111 / 20048. Adverts carry the server's
+qualified hostname as the mount target (resolved via your normal DNS, same as
+the krb5 mounts); if a host-side avahi coexists with the container's, a
+`<host>-2.local` conflict rename can appear in the display label only —
+harmless.
+
 ## Troubleshooting
 
 Run the server with `GANESHA_DEBUG=TRUE` while reproducing — the debug LOG set raises

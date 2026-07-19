@@ -138,6 +138,7 @@ fn generate_produces_expected_artifacts() {
         exports_dir: tmp.path().join("exports.d"),
         idmap_conf: tmp.path().join("idmapd.conf"),
         nfs_conf: tmp.path().join("nfs.conf"),
+        avahi_services_dir: tmp.path().join("avahi-services"),
     };
     generate_all(&cfg, &paths).expect("generate");
 
@@ -258,6 +259,7 @@ fn ganesha_debug_log_block_emitted_only_when_env_true() {
         exports_dir: tmp.path().join("exports.d"),
         idmap_conf: tmp.path().join("idmapd.conf"),
         nfs_conf: tmp.path().join("nfs.conf"),
+        avahi_services_dir: tmp.path().join("avahi-services"),
     };
     generate_all(&cfg, &paths).expect("generate default");
     let main_default = fs::read_to_string(&paths.ganesha_conf).unwrap();
@@ -281,6 +283,7 @@ fn ganesha_debug_log_block_emitted_only_when_env_true() {
         exports_dir: tmp2.path().join("exports.d"),
         idmap_conf: tmp2.path().join("idmapd.conf"),
         nfs_conf: tmp2.path().join("nfs.conf"),
+        avahi_services_dir: tmp2.path().join("avahi-services"),
     };
     generate_all(&cfg2, &paths2).expect("generate with debug");
 
@@ -520,6 +523,56 @@ fn share_enable_acl_valid_no_warnings() {
 }
 
 #[test]
+fn share_navahi_insecure_valid_no_warnings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("navahi.conf");
+    let toml = r#"
+        ldap_uri = "ldaps://klldap.test:6360"
+        navahi_discovery = true
+        [sssd]
+        ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+        ldap_default_authtok = "sekret"
+        [[shares]]
+        name = "movies"
+        host_path = "/media/movies"
+        container_path = "/export/movies"
+        navahi_insecure = true
+    "#;
+    fs::write(&path, toml).unwrap();
+
+    let cfg = NfsKlldapConfig::load(&path).expect("load");
+    assert!(cfg.share_warnings.is_empty());
+    assert!(cfg.navahi_discovery);
+    assert_eq!(cfg.shares[0].navahi_insecure, Some(true));
+}
+
+#[test]
+fn navahi_effective_requires_both_flags() {
+    let mut cfg = NfsKlldapConfig::default();
+    let mut share = crate::Share {
+        navahi_insecure: Some(true),
+        ..crate::Share::default()
+    };
+    assert!(!crate::share_navahi_effective(&cfg, &share));
+    cfg.navahi_discovery = true;
+    assert!(crate::share_navahi_effective(&cfg, &share));
+    share.navahi_insecure = None;
+    assert!(!crate::share_navahi_effective(&cfg, &share));
+    share.navahi_insecure = Some(false);
+    assert!(!crate::share_navahi_effective(&cfg, &share));
+}
+
+#[test]
+fn template_defaults_navahi_off_top_level() {
+    let tmpl = crate::generate_default_template();
+    let nav = tmpl
+        .find("navahi_discovery = false")
+        .expect("template carries the toggle");
+    let first_section = tmpl.find("\n[").expect("template has sections");
+    assert!(nav < first_section, "top-level key must precede the first [section]");
+}
+
+#[test]
 fn legacy_export_path_alias_populates_pseudo_path_no_warning() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("legacy.conf");
@@ -717,6 +770,7 @@ fn sssd_tls_options_are_emitted_when_set() {
         exports_dir: tmp.path().join("exports.d"),
         idmap_conf: tmp.path().join("idmapd.conf"),
         nfs_conf: tmp.path().join("nfs.conf"),
+        avahi_services_dir: tmp.path().join("avahi-services"),
     };
     generate_all(&c, &paths).expect("generate with tls");
 
@@ -743,6 +797,7 @@ fn kllldap_ignored_attributes_false_omits_ignore_blocks() {
         exports_dir: tmp.path().join("exports.d"),
         idmap_conf: tmp.path().join("idmapd.conf"),
         nfs_conf: tmp.path().join("nfs.conf"),
+        avahi_services_dir: tmp.path().join("avahi-services"),
     };
     generate_all(&c, &paths).expect("generate with kll=false");
 

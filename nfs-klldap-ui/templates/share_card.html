@@ -11,6 +11,8 @@
                         <span class="sc-chip {% if !row.effective_acl_capable %}noacl{% endif %}" data-acl-chip>acl {{ row.acl_state_label }}</span>
                         {# Non-conformity signal: only a security deviating from [ganesha] default_security chips. #}
                         {% if let Some(sec) = row.security_chip %}<span class="sc-chip">{{ sec }}</span>{% endif %}
+                        {# Exposure signal: this share broadcasts on the LAN and accepts NFSv3/AUTH_SYS. #}
+                        {% if row.navahi_global && row.navahi_insecure %}<span class="sc-chip">navahi</span>{% endif %}
                       </span>
                       <button type="button" class="sc-del" title="Remove share">&#10005;</button>
                     </div>
@@ -53,6 +55,11 @@
                           <div class="scf">
                             <label class="fld-lab" title="On = root_squash; off = no_root_squash.&#10;&rarr; squash / EXPORT Squash">squash <span class="ico">i</span></label>
                             <label class="chkline"><input type="checkbox" data-f="root_squash" name="share_root_squash_{{ row.idx }}" {% if row.root_squash %}checked{% endif %}> root_squash</label>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="Advertise on the local network (mDNS/Avahi) and allow insecure click-mount: NFSv3 + AUTH_SYS, no Kerberos. Effective only while the Core &quot;Navahi Network Discovery&quot; toggle is on.&#10;&rarr; navahi_insecure">navahi <span class="ico">i</span></label>
+                            <label class="chkline"><input type="checkbox" data-f="navahi_insecure" name="share_navahi_insecure_{{ row.idx }}" {% if row.navahi_insecure %}checked{% endif %} {% if !row.navahi_global %}disabled{% endif %}> insecure</label>
+                            {% if !row.navahi_global %}<small class="muted" style="font-size:.62em;display:block;margin-top:2px">requires Navahi Network Discovery (Core)</small>{% endif %}
                           </div>
                         </div>
                         <div class="sc-grid">

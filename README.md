@@ -4,7 +4,7 @@
 
 Companion app for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos). Docker container that hosts and manages NFS shares with POSIX attributes synced via LDAP, plus simple remote management against KLLDAP.
 
-Debian 13-slim runtime (Rust build stages on Fedora minimal): Kerberized NFSv4 (NFS-Ganesha) with KLLDAP-backed UID/GID mapping via SSSD. Multi-stage build keeps cargo-chef reliable on Fedora; final image uses Debian 13-slim with a custom Ganesha package from this repo (`container/ganesha/`).
+Debian 13-slim runtime (Rust build stages on Fedora minimal): Kerberized NFSv4 (NFS-Ganesha) with KLLDAP-backed UID/GID mapping via SSSD. Multi-stage build keeps cargo-chef reliable on Fedora; final image uses Debian 13-slim with a custom Ganesha package from this repo (`container/ganesha/`). Optional **Navahi network discovery** advertises flagged shares over mDNS/Avahi for click-mount from GNOME/KDE file managers (an insecure NFSv3/AUTH_SYS guest path — see [Running & deployment](docs/run/README.md)).
 
 <img
   src="https://raw.githubusercontent.com/Aelieth/nfs-klldap-host/refs/heads/main/screenshot.png"
@@ -160,6 +160,7 @@ default_security = "krb5p"                                      # krb5p | krb5i 
 # rw = true
 # enable_acl = false                                            # tri-state: true | false | unset=auto (probe-proven ACL)
 # manage_gids = true                                            # default true
+# navahi_insecure = false                                       # advertise via mDNS + insecure NFSv3/AUTH_SYS click-mount (needs top-level navahi_discovery = true)
 # cache_profile = "Default"                                     # or raw pref_read / pref_write without profile
 # # umask is retired (hard generate error) — use Inherit-tab default ACLs + setgid
 ```
@@ -174,6 +175,7 @@ default_security = "krb5p"                                      # krb5p | krb5i 
 - **ACL emission:** `Disable_ACL = false;` (declared). No per-export FSAL `Umask` on Ganesha 9.13 — creation modes use default ACL Inherit tab + setgid.
 - **Limited / non-ACL-capable FS (vfat, ntfs, btrfs+noacl):** cannot store POSIX ACLs; on 9.13 attribute fetches may fail for both classes — stage via `source_path` → ACL-capable `container_path` and optional `[ganesha] post_generate_hook` (see `examples/post-generate-staging-sync.sh`).
 - **Diagnostics:** `nfs-klldap-config fs-warnings` / `ganesha-ctl fs-warnings`.
+- **Navahi discovery (per share):** `navahi_insecure = true` together with the top-level `navahi_discovery` toggle advertises the share over mDNS and widens its export to NFSv3 + AUTH_SYS for GNOME/KDE click-mount. The toggle applies on "Restart & apply"; details in [docs/run/README.md](docs/run/README.md).
 
 ### Cache profiles
 

@@ -49,7 +49,7 @@ manage_gids = false
 "#;
 
 fn generation_paths(out: &std::path::Path) -> GenerationPaths {
-    GenerationPaths { sssd_conf: out.join("sssd.conf"), krb5_conf: out.join("krb5.conf"), ganesha_conf: out.join("ganesha.conf"), exports_dir: out.join("exports.d"), idmap_conf: out.join("idmapd.conf"), nfs_conf: out.join("nfs.conf") }
+    GenerationPaths { sssd_conf: out.join("sssd.conf"), krb5_conf: out.join("krb5.conf"), ganesha_conf: out.join("ganesha.conf"), exports_dir: out.join("exports.d"), idmap_conf: out.join("idmapd.conf"), nfs_conf: out.join("nfs.conf"), avahi_services_dir: out.join("avahi-services") }
 }
 fn read_single_fragment(ed: &std::path::Path) -> String {
     fs::read_dir(ed).unwrap().map(|e| e.unwrap().path()).find(|p| p.extension().is_some_and(|e| e == "conf")).map(|p| fs::read_to_string(p).unwrap()).unwrap()
@@ -160,7 +160,7 @@ fn generate_all_noacl_with_explicit_manage_gids_false_override() {
     let eff = compute_effective_flags(&cfg.shares[0], &caps);
     assert!(!eff.enable_acl && !eff.manage_gids);
     let out = t2.path().join("o"); fs::create_dir_all(out.join("e.d")).unwrap();
-    let ps = GenerationPaths { sssd_conf: out.join("s"), krb5_conf: out.join("k"), ganesha_conf: out.join("g"), exports_dir: out.join("e.d"), idmap_conf: out.join("i"), nfs_conf: out.join("n") };
+    let ps = GenerationPaths { sssd_conf: out.join("s"), krb5_conf: out.join("k"), ganesha_conf: out.join("g"), exports_dir: out.join("e.d"), idmap_conf: out.join("i"), nfs_conf: out.join("n"), avahi_services_dir: out.join("av") };
     generate_all(&cfg, &ps).unwrap();
     let gf = fs::read_dir(&ps.exports_dir).unwrap().filter_map(|e| e.ok()).find(|e| e.path().extension().is_some_and(|x| x == "conf")).map(|e| fs::read_to_string(e.path()).unwrap()).unwrap_or_default();
     assert!(gf.contains("Manage_Gids = false;"));

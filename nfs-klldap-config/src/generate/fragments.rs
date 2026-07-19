@@ -17,8 +17,15 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
         let export_id = derive_export_id(&share.name, 1000 + (i as u16 * 10));
         let path = cfg.serve_path_for(share);
         let pseudo = crate::derive_share_pseudo(share);
+        let navahi = crate::share_navahi_effective(cfg, share);
         let default_sec = &cfg.ganesha.default_security;
-        let sec = share.security.as_deref().unwrap_or(default_sec);
+        let base_sec = share.security.as_deref().unwrap_or(default_sec);
+        // Navahi clients are AUTH_SYS-only; sys goes last, krb5 first.
+        let sec = if navahi && !base_sec.split(',').any(|s| s.trim() == "sys") {
+            format!("{base_sec}, sys")
+        } else {
+            base_sec.to_string()
+        };
         let access = if share.rw.unwrap_or(true) { "RW" } else { "RO" };
         let squash = share.squash.as_deref().unwrap_or(constants::GANESHA_DEFAULT_SQUASH);
 
@@ -42,7 +49,12 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
             crate::acl_probe_verdict(&caps, Path::new(&path))
         };
         let eff = crate::compute_effective_flags_probed(share, &caps, verdict);
-        let (disable_acl_line, manage_gids_line, umask_line, auto_comment) = export_fs_directives(share, &caps, &eff);
+        let (disable_acl_line, manage_gids_line, umask_line, mut auto_comment) = export_fs_directives(share, &caps, &eff);
+        if navahi {
+            auto_comment.push_str(
+                "# Navahi: advertised via mDNS; NFSv3 + AUTH_SYS click-mount enabled (navahi_discovery + navahi_insecure).\n",
+            );
+        }
         let read_access_line = export_read_access_line(share, &eff);
         if share.enable_acl == Some(true) {
             // Negative probe refuses; inconclusive warns; auto skips this.
@@ -84,6 +96,9 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
         }
         // Deprecated share manage_gids_expiration seeds main-conf Idmapped_*.
         let pseudo_line = export_pseudo_line(&pseudo);
+        // EXPORT_DEFAULTS pins Protocols = 4; navahi exports widen themselves.
+        let export_protocols_line = if navahi { "    Protocols = 3,4;\n" } else { "" };
+        let client_proto = if navahi { "3,4" } else { constants::GANESHA_PROTOCOLS };
         let client_block = format!(r#"
     CLIENT {{
         Clients = *;
@@ -91,19 +106,19 @@ pub fn write_export_fragments(cfg: &NfsKlldapConfig, exports_dir: &Path) -> Resu
         Protocols = {proto};
     }}
 
-"#, access = access, proto = constants::GANESHA_PROTOCOLS);
+"#, access = access, proto = client_proto);
 
         let block = format!(r#"# Generated from nfs-klldap.conf share "{}"
 {auto_comment}EXPORT {{
     Export_Id = {};
     Path = {};
-{pseudo_line}{disable_acl_line}    SecType = {};
+{pseudo_line}{export_protocols_line}{disable_acl_line}    SecType = {};
     Squash = {};
 {manage_gids_line}{read_access_line}{pref_read_line}{pref_write_line}{attr_expiry_line}{client_block}    FSAL {{
         Name = VFS;
 {umask_line}    }}
 }}
-"#, share.name, export_id, path, sec, squash, auto_comment=auto_comment, pseudo_line=pseudo_line, disable_acl_line=disable_acl_line, manage_gids_line=manage_gids_line, read_access_line=read_access_line, pref_read_line=pref_read_line, pref_write_line=pref_write_line, attr_expiry_line=attr_expiry_line, client_block=client_block, umask_line=umask_line);
+"#, share.name, export_id, path, sec, squash, auto_comment=auto_comment, pseudo_line=pseudo_line, export_protocols_line=export_protocols_line, disable_acl_line=disable_acl_line, manage_gids_line=manage_gids_line, read_access_line=read_access_line, pref_read_line=pref_read_line, pref_write_line=pref_write_line, attr_expiry_line=attr_expiry_line, client_block=client_block, umask_line=umask_line);
 
         staged.push((fragment_basename(i, &share.name), block));
     }

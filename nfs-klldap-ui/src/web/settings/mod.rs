@@ -72,6 +72,11 @@ pub(crate) struct SettingsTemplate {
     webui_urls: Vec<String>,
     /// [webui] session_timeout_minutes as text; empty means the 720 default.
     webui_session_timeout_minutes: String,
+    /// Top-level navahi_discovery toggle (Core pane checkbox + Overview row
+    /// + share-card muting). Staged: applies on "Restart and apply".
+    navahi_discovery: bool,
+    /// Shares currently effective for mDNS advertisement (global && flag).
+    navahi_advertised_count: usize,
 }
 /// One share card; included per row by settings.html and served blank by /settings/share-card.
 #[derive(Template)]
@@ -92,9 +97,13 @@ pub(crate) async fn share_card_blank(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Redirect> {
     let _user = require_auth(&state, &headers).await?;
-    let tpl = ShareCardTemplate {
-        row: ShareTemplateRow::blank(params.idx),
-    };
+    let mut row = ShareTemplateRow::blank(params.idx);
+    // Fresh cards mute/unmute the navahi control from the SAVED global toggle,
+    // exactly like server-rendered rows.
+    row.navahi_global = nfs_klldap_config::NfsKlldapConfig::load(&state.config_path)
+        .map(|c| c.navahi_discovery)
+        .unwrap_or(false);
+    let tpl = ShareCardTemplate { row };
     Ok(Html(tpl.render().unwrap()))
 }
 
@@ -343,6 +352,8 @@ pub(crate) fn build_settings_template(
                 _ => "auto".to_string(),
             },
             manage_gids_expiration: s.manage_gids_expiration,
+            navahi_insecure: s.navahi_insecure == Some(true),
+            navahi_global: cfg.navahi_discovery,
             warning: nfs_klldap_config::ShareFieldWarning::for_share(
                 &cfg.share_warnings,
                 idx,
@@ -374,6 +385,11 @@ pub(crate) fn build_settings_template(
         .session_timeout_minutes
         .map(|v| v.to_string())
         .unwrap_or_default();
+    let navahi_advertised_count = cfg
+        .shares
+        .iter()
+        .filter(|s| nfs_klldap_config::share_navahi_effective(&cfg, s))
+        .count();
     SettingsTemplate {
         current_user,
         raw_toml,
@@ -417,6 +433,8 @@ pub(crate) fn build_settings_template(
             state.direct_tls,
         ),
         webui_session_timeout_minutes,
+        navahi_discovery: cfg.navahi_discovery,
+        navahi_advertised_count,
     }
 }
 
@@ -570,6 +588,12 @@ pub(crate) async fn settings_save_shares(
         // attr_expiration_secs likewise rides raw TOML only for now.
         if new_share.attr_expiration_secs.is_none() {
             new_share.attr_expiration_secs = old.attr_expiration_secs;
+        }
+        // navahi_insecure is muted (disabled → never submitted) while the
+        // global toggle is off: absence then means "untouched", not cleared.
+        // With the global on, absence is a real uncheck and clears the key.
+        if !old_cfg.navahi_discovery && new_share.navahi_insecure.is_none() {
+            new_share.navahi_insecure = old.navahi_insecure;
         }
     }
     let mut cfg = old_cfg;

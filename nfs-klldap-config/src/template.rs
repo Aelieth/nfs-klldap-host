@@ -27,6 +27,7 @@ pub fn generate_default_template() -> String {
 # =============================================================================
 
 ldap_uri = ""                                                  # Required - e.g. ldaps://klldap.example.com:6360 (DNS name, not an IP; 6360 is the LLDAP default LDAPS port)
+navahi_discovery = false                                        # Optional - Navahi Network Discovery: advertise flagged shares via mDNS/Avahi and enable their NFSv3/AUTH_SYS click-mount path; applies on "Restart & apply"
 
 [storage]
 container_root = "/export"                                      # Required - Ganesha Path each share requires container_path (inside container; maps to Ganesha EXPORT Path=)
@@ -71,6 +72,7 @@ default_security = "krb5p"                                      # Security, krb5
 # pseudo_path   = "/users"                                       # Optional - client-visible NFSv4 Pseudo (defaults to /<name>)
 # rw            = true                                           # Optional - default true
 # manage_gids   = true                                           # Optional - default true
+# navahi_insecure = false                                        # Optional - advertise over mDNS + insecure NFSv3/AUTH_SYS click-mount; needs navahi_discovery = true
 #
 # enable_acl tri-state: true | false | omit=auto (auto promotes only if the serve
 # path passes the write-probe). Explicit true hard-fails generate on non-ACL FS.

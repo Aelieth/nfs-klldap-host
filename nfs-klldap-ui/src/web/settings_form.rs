@@ -19,6 +19,9 @@ pub(crate) struct ShareFormRow {
     pub manage_gids_expiration: Option<u64>,
     pub container_path: String,
     pub source_path: Option<String>,
+    /// Checkbox-presence: Some(true) when submitted, None otherwise (the
+    /// muting passthrough in settings_save_shares decides what None means).
+    pub navahi_insecure: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +53,10 @@ pub(crate) struct ShareTemplateRow {
     pub manage_gids: String,
     pub read_access_policy: String,
     pub manage_gids_expiration: Option<u64>,
+    pub navahi_insecure: bool,
+    /// Saved global toggle; false renders the navahi control disabled (muted,
+    /// never hidden) with its explainer.
+    pub navahi_global: bool,
     pub warning: Option<String>,
     pub fs_warning: Option<String>,
 }
@@ -78,6 +85,8 @@ impl ShareTemplateRow {
             manage_gids: "auto".to_string(),
             read_access_policy: "auto".to_string(),
             manage_gids_expiration: None,
+            navahi_insecure: false,
+            navahi_global: false,
             warning: None,
             fs_warning: None,
         }
@@ -188,6 +197,7 @@ pub(crate) fn collect_shares_from_structured_form(
                     manage_gids_expiration: share_field(extra, "manage_gids_expiration", idx).and_then(|vv| vv.trim().parse().ok()),
                     container_path: cp,
                     source_path: share_field_nonblank(extra, "source_path", idx),
+                    navahi_insecure: share_field(extra, "navahi_insecure", idx).is_some().then_some(true),
                 });
             }
         }
@@ -216,6 +226,7 @@ pub(crate) fn collect_shares_from_structured_form(
         // No structured control yet; raw-TOML values are preserved by the
         // same passthrough that guards source_path.
         attr_expiration_secs: None,
+        navahi_insecure: r.navahi_insecure,
         // Explicit both ways: the default is root_squash, so an unchecked box
         // must emit no_root_squash to actually turn squashing off (None would
         // fall through to the safe default and the checkbox would be inert).

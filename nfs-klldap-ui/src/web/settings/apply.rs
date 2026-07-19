@@ -65,6 +65,10 @@ pub(crate) fn apply_shares_to_toml_doc(doc: &mut toml_edit::DocumentMut, new_sha
         if let Some(exp) = s.manage_gids_expiration {
             t["manage_gids_expiration"] = toml_edit::value(exp as i64);
         }
+        // Default-false economy (the rw idiom): only an explicit true writes.
+        if s.navahi_insecure == Some(true) {
+            t["navahi_insecure"] = toml_edit::value(true);
+        }
         if let Some(sp) = &s.source_path {
             if !sp.trim().is_empty() {
                 t["source_path"] = toml_edit::value(sp.clone());

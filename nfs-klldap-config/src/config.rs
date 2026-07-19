@@ -9,6 +9,12 @@ pub struct NfsKlldapConfig {
     #[serde(default)]
     pub ldap_uri: String,
 
+    /// Navahi Network Discovery: advertise flagged shares over mDNS and open
+    /// their NFSv3/AUTH_SYS click-mount path. Restart-gated — applies on full
+    /// recycle / container start, never on SIGHUP.
+    #[serde(default)]
+    pub navahi_discovery: bool,
+
     #[serde(default)]
     pub storage: StorageSection,
 
@@ -63,6 +69,7 @@ pub const SHARE_KNOWN_KEYS: &[&str] = &[
     "source_path",
     "umask",
     "attr_expiration_secs",
+    "navahi_insecure",
 ];
 
 /// Warning for unrecognized keys in a `[[shares]]` table (config still loads).
@@ -301,6 +308,9 @@ pub struct Share {
     pub source_path: Option<String>,
     /// Per-export Attr_Expiration_Time override (0 = always fresh).
     pub attr_expiration_secs: Option<i32>,
+    /// Advertise over mDNS + NFSv3/AUTH_SYS click-mount; acts only while the
+    /// top-level navahi_discovery toggle is on.
+    pub navahi_insecure: Option<bool>,
     /// Retired: hard generate error; use Inherit-tab default ACLs + setgid.
     pub umask: Option<String>,
 }
@@ -314,6 +324,12 @@ pub fn derive_share_pseudo(share: &Share) -> String {
     } else {
         format!("/{}", raw)
     }
+}
+
+/// Single Navahi gate for every surface (generator, avahi XML set, UI): the
+/// per-share flag acts only while the global toggle is on.
+pub fn share_navahi_effective(cfg: &NfsKlldapConfig, share: &Share) -> bool {
+    cfg.navahi_discovery && share.navahi_insecure == Some(true)
 }
 
 impl Default for Share {
@@ -336,6 +352,7 @@ impl Default for Share {
             source_path: None,
             umask: None,
             attr_expiration_secs: None,
+            navahi_insecure: None,
         }
     }
 }
@@ -351,6 +368,8 @@ pub struct GenerationPaths {
     pub idmap_conf: PathBuf,
     /// Holds the output path for nfs-utils client defaults.
     pub nfs_conf: PathBuf,
+    /// Navahi mDNS service XMLs; regenerated/pruned per apply.
+    pub avahi_services_dir: PathBuf,
 }
 
 impl Default for GenerationPaths {
@@ -374,6 +393,7 @@ impl GenerationPaths {
             exports_dir: env_path("EXPORTS_DIR", "/etc/ganesha/exports.d"),
             idmap_conf: env_path("IDMAP_CONF", "/etc/idmapd.conf"),
             nfs_conf: env_path("NFS_CONF", "/etc/nfs.conf"),
+            avahi_services_dir: env_path("AVAHI_SERVICES_DIR", "/etc/avahi/services"),
         }
     }
 }

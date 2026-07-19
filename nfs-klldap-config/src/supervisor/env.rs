@@ -42,10 +42,15 @@ pub(crate) struct SupervisorEnv {
     pub exports_dir: PathBuf,
     pub idmap_conf: PathBuf,
     pub nfs_conf: PathBuf,
+    /// Navahi service XMLs; fingerprinted for the avahi reload belt, never
+    /// part of the exports fingerprint.
+    pub avahi_services_dir: PathBuf,
     pub config_bin: PathBuf,
     pub ui_bin: PathBuf,
     pub watcher_bin: PathBuf,
     pub idhelper_bin: PathBuf,
+    /// Optional feature binary — deliberately absent from preflight_checks.
+    pub avahi_bin: PathBuf,
     pub healthcheck: PathBuf,
     pub nss_passwd: PathBuf,
     pub nss_group: PathBuf,
@@ -95,10 +100,12 @@ impl SupervisorEnv {
             exports_dir: env_path("EXPORTS_DIR", "/etc/ganesha/exports.d"),
             idmap_conf: env_path("IDMAP_CONF", "/etc/idmapd.conf"),
             nfs_conf: env_path("NFS_CONF", "/etc/nfs.conf"),
+            avahi_services_dir: env_path("AVAHI_SERVICES_DIR", "/etc/avahi/services"),
             config_bin: env_path("CONFIG_BIN", "/usr/local/bin/nfs-klldap-config"),
             ui_bin: env_path("UI_BIN", "/usr/local/bin/nfs-klldap-ui"),
             watcher_bin: env_path("WATCHER_BIN", "/usr/local/bin/nfs-klldap-conf-watcher"),
             idhelper_bin: env_path("IDHELPER_BIN", "/usr/local/bin/nfs-klldap-idhelper"),
+            avahi_bin: env_path("AVAHI_BIN", "/usr/sbin/avahi-daemon"),
             healthcheck: env_path("HEALTHCHECK", "/container/healthcheck.sh"),
             nss_passwd: env_path("NSS_PASSWD", "/var/lib/nfs-klldap/nss_passwd"),
             nss_group: env_path("NSS_GROUP", "/var/lib/nfs-klldap/nss_group"),

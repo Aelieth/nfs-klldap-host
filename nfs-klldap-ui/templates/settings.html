@@ -184,6 +184,10 @@
               {% if host_nfs_mode %}<span class="sc-chip">HOST_NFS</span><span class="muted" style="font-size:.85em">host runs NFS; server controls are host-enforced</span>
               {% else %}<span class="sc-chip">Container-managed</span><span class="muted" style="font-size:.85em">this container runs Ganesha</span>{% endif %}
             </div>
+            <div class="ov-row"><span class="ov-k">navahi</span>
+              {% if navahi_discovery %}<span class="sc-chip">on</span><span class="muted" style="font-size:.85em">{{ navahi_advertised_count }} share(s) advertised via mDNS</span>
+              {% else %}<span class="muted">off</span>{% endif %}
+            </div>
           </div>
 
           {# LLDAP NFS client status — htmx-loaded (unchanged endpoint) #}
@@ -285,6 +289,15 @@
                 <input type="text" name="probe_user_principal" id="probe_user_principal" placeholder="sample user (name or name@REALM)" value="{{ probe_user_principal }}" {% if auto_probe_ldap %}disabled{% endif %}>
                 <input type="text" name="probe_client_host" id="probe_client_host" placeholder="client machine short name" value="{{ probe_client_host }}" {% if auto_probe_ldap %}disabled{% endif %} style="margin-top:6px">
                 <div class="derived-note">Auto: startup checks pick a sample user and client from the directory. Uncheck to pin a specific user principal / client host.</div>
+              </div>
+
+              {# Navahi Network Discovery — staged like other core settings #}
+              <div class="fld">
+                <label class="chkline" title="Advertise flagged shares over mDNS/Avahi and enable their NFSv3/AUTH_SYS click-mount path for GNOME/KDE network browsing. Per-share opt-in via the share card's navahi_insecure checkbox.&#10;&rarr; navahi_discovery">
+                  <input type="checkbox" name="navahi_discovery" value="true" {% if navahi_discovery %}checked{% endif %}>
+                  <span style="font-weight:600">Navahi Network Discovery</span> <span class="ico">i</span>
+                </label>
+                <div class="derived-note">Takes effect after "Restart and apply" (Admin pane). Flagged shares then broadcast on the LAN and accept insecure NFSv3/AUTH_SYS mounts.</div>
               </div>
             </div>
 
@@ -583,6 +596,7 @@
       out.push('manage_gids = ' + q(g('manage_gids')));
       out.push('read_access_policy = ' + q(g('read_access_policy')));
       if (g('manage_gids_expiration')) out.push('manage_gids_expiration = ' + g('manage_gids_expiration'));
+      if (chk('navahi_insecure')) out.push('navahi_insecure = true');
     });
     return out;
   }

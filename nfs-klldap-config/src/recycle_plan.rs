@@ -37,6 +37,10 @@ pub struct ServiceRecyclePlan {
     /// on disk but the running daemons keep the previous settings until a
     /// forced full recycle applies them.
     pub identity_staged: bool,
+    /// Stop/start avahi-daemon (start self-gates on navahi_discovery). Only
+    /// the full recycle applies toggle flips — SharesApply never bounces it;
+    /// advert-content changes ride avahi's inotify plus a supervisor HUP.
+    pub restart_avahi: bool,
 }
 
 impl ServiceRecyclePlan {
@@ -47,6 +51,7 @@ impl ServiceRecyclePlan {
             && !self.restart_sssd
             && !self.restart_idhelper
             && self.webui == WebuiAction::Skip
+            && !self.restart_avahi
     }
 }
 
@@ -80,6 +85,7 @@ pub fn plan_from_changes(
         restart_idhelper: false,
         webui,
         identity_staged: identity_changed,
+        restart_avahi: false,
     }
 }
 
@@ -98,6 +104,7 @@ pub fn plan_full_recycle(host_nfs_mode: bool) -> ServiceRecyclePlan {
         restart_idhelper: true,
         webui: WebuiAction::Restart,
         identity_staged: false,
+        restart_avahi: true,
     }
 }
 
@@ -125,6 +132,7 @@ mod tests {
         assert!(!plan.restart_idhelper);
         assert_eq!(plan.webui, WebuiAction::Reload);
         assert!(!plan.identity_staged);
+        assert!(!plan.restart_avahi);
     }
 
     #[test]
@@ -134,6 +142,7 @@ mod tests {
         assert!(!plan.restart_sssd);
         assert!(!plan.restart_idhelper);
         assert_eq!(plan.webui, WebuiAction::Reload);
+        assert!(!plan.restart_avahi, "SharesApply must never bounce avahi");
     }
 
     #[test]
@@ -198,6 +207,7 @@ mod tests {
         assert!(plan.restart_idhelper);
         assert_eq!(plan.webui, WebuiAction::Restart);
         assert!(!plan.identity_staged);
+        assert!(plan.restart_avahi, "full recycle is the navahi-toggle application path");
         assert!(!plan.is_noop());
     }
 

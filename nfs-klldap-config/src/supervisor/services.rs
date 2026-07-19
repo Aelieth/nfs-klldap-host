@@ -105,6 +105,64 @@ pub(crate) fn start_ganesha(sup: &mut Supervisor) {
         sup.confirm_ganesha_daemon_pid_env();
     }
 }
+pub(crate) fn start_avahi(sup: &mut Supervisor) {
+    if !sup.navahi_enabled() {
+        return;
+    }
+    if sup.env.host_nfs_mode {
+        sup.log_warn(
+            "navahi_discovery is on but HOST_NFS mode has no in-container NFS server — not starting avahi-daemon",
+        );
+        return;
+    }
+    if let Some(pid) = sup.pids.avahi {
+        if ::nfs_klldap_config::process_is_live(pid) {
+            return;
+        }
+        sup.pids.avahi = None;
+    }
+    // --no-chroot keeps the Debian chroot helper out of the picture so
+    // inotify + SIGHUP re-reads of /etc/avahi/services stay direct (and the
+    // daemon stays a single trackable process).
+    match Command::new(&sup.env.avahi_bin)
+        .arg("--no-chroot")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => {
+            let pid = child.id();
+            sup.pids.avahi = Some(pid);
+            sup.avahi_managed = true;
+            sup.log_info(&format!("Started avahi-daemon pid {pid} (Navahi mDNS advertisement)"));
+        }
+        Err(e) => sup.log_warn(&format!(
+            "avahi-daemon start failed: {e} — Navahi advertisement unavailable (NFS service unaffected)"
+        )),
+    }
+}
+
+pub(crate) fn stop_avahi(sup: &mut Supervisor) {
+    let Some(pid) = sup.pids.avahi else {
+        sup.avahi_managed = false;
+        return;
+    };
+    if ::nfs_klldap_config::process_is_live(pid) {
+        ::nfs_klldap_config::signal_process_term(pid);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while ::nfs_klldap_config::process_is_live(pid) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(100));
+            ::nfs_klldap_config::reap_children();
+        }
+        if ::nfs_klldap_config::process_is_live(pid) {
+            ::nfs_klldap_config::signal_process_kill(pid);
+        }
+    }
+    sup.pids.avahi = None;
+    sup.avahi_managed = false;
+    sup.log_info("Stopped avahi-daemon");
+}
+
 pub(crate) fn start_watcher(sup: &mut Supervisor) -> Result<(), String> {
     if sup.env.supervise_probe {
         sup.log_info("Supervise-probe: config watcher start skipped");

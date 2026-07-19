@@ -218,7 +218,7 @@ async fn settings_ganesha_roundtrip_cases() {
     std::fs::create_dir_all(&gen_dir).ok();
     let exd = gen_dir.join("exports.d"); std::fs::create_dir_all(&exd).ok();
     let cfg_for_gen = nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("load");
-    let paths = nfs_klldap_config::GenerationPaths { sssd_conf: gen_dir.join("s.conf"), krb5_conf: gen_dir.join("k.conf"), ganesha_conf: gen_dir.join("g.conf"), exports_dir: exd.clone(), idmap_conf: gen_dir.join("i.conf"), nfs_conf: gen_dir.join("n.conf") };
+    let paths = nfs_klldap_config::GenerationPaths { sssd_conf: gen_dir.join("s.conf"), krb5_conf: gen_dir.join("k.conf"), ganesha_conf: gen_dir.join("g.conf"), exports_dir: exd.clone(), idmap_conf: gen_dir.join("i.conf"), nfs_conf: gen_dir.join("n.conf"), avahi_services_dir: gen_dir.join("avahi-services") };
     nfs_klldap_config::generate_all(&cfg_for_gen, &paths).ok();
     let frag = std::fs::read_dir(&exd).ok().and_then(|it| it.filter_map(|e| e.ok()).find(|e| e.path().extension().is_some_and(|x| x == "conf")).and_then(|e| std::fs::read_to_string(e.path()).ok())).unwrap_or_default();
     // The group-trust window is global: the deprecated share value seeds
@@ -3129,4 +3129,148 @@ async fn settings_save_roundtrips_session_timeout() {
     let _ = save("webui_session_timeout_minutes=").await;
     let written = std::fs::read_to_string(&cp).unwrap();
     assert!(!written.contains("session_timeout_minutes"), "{written}");
+}
+
+#[tokio::test]
+async fn settings_save_roundtrips_navahi_toggle() {
+    let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
+    let cp = state.config_path.clone();
+    let auth = state.auth.clone();
+    let token = auth.create_privileged_session("localhost");
+    let app = router(state);
+
+    let save = |body: &'static str| {
+        let app = app.clone();
+        let token = token.clone();
+        async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/settings/save")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap();
+            let req = add_session_cookie(req, &token);
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let b = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+            String::from_utf8_lossy(&b).into_owned()
+        }
+    };
+
+    let html = save("navahi_discovery=true").await;
+    assert!(
+        html.contains(r#"name="navahi_discovery" value="true" checked"#),
+        "render reflects the enabled toggle: {html}"
+    );
+    let written = std::fs::read_to_string(&cp).unwrap();
+    assert!(written.contains("navahi_discovery = true"), "{written}");
+    let key_at = written.find("navahi_discovery").unwrap();
+    let first_table = written.find("\n[").unwrap();
+    assert!(
+        key_at < first_table,
+        "top-level key must precede the first [section]: {written}"
+    );
+
+    // BoolAlways: a structured save without the box writes explicit false.
+    let _ = save("ldap_uri=ldaps%3A%2F%2Fklldap.test%3A6360").await;
+    let written = std::fs::read_to_string(&cp).unwrap();
+    assert!(written.contains("navahi_discovery = false"), "{written}");
+}
+
+#[tokio::test]
+async fn settings_navahi_share_roundtrip_and_muting() {
+    let (state, _tmp) = make_test_state_with_limited_fs_mountinfo();
+    let cp = state.config_path.clone();
+    let auth = state.auth.clone();
+    let token = auth.create_privileged_session("testadmin");
+    let app = router(state);
+
+    let send = |method: &'static str, uri: &'static str, body: String| {
+        let app = app.clone();
+        let token = token.clone();
+        async move {
+            let mut b = Request::builder().method(method).uri(uri);
+            if method == "POST" {
+                b = b.header("content-type", "application/x-www-form-urlencoded");
+            }
+            let req = b.body(Body::from(body)).unwrap();
+            let req = add_session_cookie(req, &token);
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+    };
+    let row = "share_name_0=data&share_host_0=%2Fmedia%2Fdata&share_container_path_0=%2Fexport%2Fdata";
+
+    // Global off: the control renders muted (disabled + explainer), never hidden.
+    let html = send("GET", "/settings", String::new()).await;
+    assert!(
+        html.contains(r#"name="share_navahi_insecure_0""#)
+            && html.contains("requires Navahi Network Discovery (Core)"),
+        "muted-not-hidden: {html}"
+    );
+
+    // A stored flag survives a shares-save that omits the muted control
+    // (disabled checkboxes never submit; absence must not clear while off).
+    let _ = send("POST", "/settings/save-shares", format!("{row}&share_navahi_insecure_0=on")).await;
+    assert!(std::fs::read_to_string(&cp).unwrap().contains("navahi_insecure = true"));
+    let _ = send("POST", "/settings/save-shares", row.to_string()).await;
+    assert!(
+        std::fs::read_to_string(&cp).unwrap().contains("navahi_insecure = true"),
+        "muted flag must survive a shares-save that omits it"
+    );
+
+    // Enable the global: control un-mutes, the effective share shows the
+    // exposure chip, and a fresh blank card honors the saved global.
+    let _ = send("POST", "/settings/save", "navahi_discovery=true".to_string()).await;
+    let html = send("GET", "/settings", String::new()).await;
+    assert!(!html.contains("requires Navahi Network Discovery (Core)"), "{html}");
+    assert!(
+        html.contains(r#"<span class="sc-chip">navahi</span>"#),
+        "effective share must chip: {html}"
+    );
+    let card = send("GET", "/settings/share-card?idx=5", String::new()).await;
+    assert!(
+        card.contains(r#"name="share_navahi_insecure_5""#)
+            && !card.contains("requires Navahi Network Discovery"),
+        "blank card honors the saved global: {card}"
+    );
+
+    // With the global on, omitting the box is a real uncheck.
+    let _ = send("POST", "/settings/save-shares", row.to_string()).await;
+    assert!(
+        !std::fs::read_to_string(&cp).unwrap().contains("navahi_insecure = true"),
+        "unchecked box must clear the key while the global is on"
+    );
+
+    // Re-flag and generate: the export widens and the advert XML exists.
+    let _ = send("POST", "/settings/save-shares", format!("{row}&share_navahi_insecure_0=on")).await;
+    let gen = tempfile::tempdir().unwrap();
+    let out = gen.path();
+    std::fs::create_dir_all(out.join("exports.d")).unwrap();
+    let cfg = nfs_klldap_config::NfsKlldapConfig::load(&cp).expect("load");
+    let paths = nfs_klldap_config::GenerationPaths {
+        sssd_conf: out.join("s.conf"),
+        krb5_conf: out.join("k.conf"),
+        ganesha_conf: out.join("g.conf"),
+        exports_dir: out.join("exports.d"),
+        idmap_conf: out.join("i.conf"),
+        nfs_conf: out.join("n.conf"),
+        avahi_services_dir: out.join("avahi-services"),
+    };
+    nfs_klldap_config::generate_all(&cfg, &paths).expect("generate");
+    let frag = std::fs::read_dir(out.join("exports.d"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().extension().is_some_and(|x| x == "conf"))
+        .and_then(|e| std::fs::read_to_string(e.path()).ok())
+        .unwrap_or_default();
+    assert!(
+        frag.contains(", sys") && frag.contains("Protocols = 3,4;"),
+        "flagged export must widen to v3 + sys: {frag}"
+    );
+    let xml = std::fs::read_to_string(out.join("avahi-services/nfs-klldap-data.service"))
+        .expect("advert xml");
+    assert!(xml.contains("<txt-record>path=/data</txt-record>"), "{xml}");
 }

@@ -129,7 +129,10 @@ ENV NSS_EXTRAUSERS_GROUP=/var/lib/extrausers/group
 #   Core: nfs-ganesha* (custom Ganesha VFS), sssd* + libnss-sss (identity via LLDAP + nsswitch files+extrausers+sss),
 #         libnss-wrapper + libnss-extrausers (nss_wrapper + extrausers materialization for idhelper/Ganesha),
 #         krb5-user (klist/keytab for startup + ganesha-ctl), acl (getfacl/setfacl for WebUI ACL editor).
-#   Daemons/helpers: dbus (dbus-daemon + dbus-send for Ganesha bus), rpcbind (best-effort, 111 compat),
+#   Daemons/helpers: dbus (dbus-daemon + dbus-send for Ganesha bus), rpcbind (best-effort, 111 compat;
+#         also MOUNT/portmap registration for Navahi NFSv3 click-mount),
+#         avahi-daemon (Navahi mDNS advertisement: static XMLs in /etc/avahi/services, enable-dbus=no,
+#         supervised by pid-1 only while navahi_discovery = true; /run/avahi-daemon is daemon-created),
 #         inotify-tools (conf-watcher), procps (pgrep/pkill in supervisor/health), iproute2 (ip/ss for bridge/net checks).
 #   Probes: ldap-utils (ldapsearch in startup wizard bind/DNS checks), netcat-openbsd (nc in ldap reachability).
 #   Base debian:13-slim already provides: hostname, findutils, dpkg (for dpkg-architecture), coreutils (id/getent/timeout), etc.
@@ -151,7 +154,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         sssd sssd-ldap sssd-tools libnss-sss \
         krb5-user \
-        dbus rpcbind \
+        dbus rpcbind avahi-daemon \
         inotify-tools procps iproute2 netcat-openbsd \
         ldap-utils \
         libnss-wrapper libnss-extrausers \
@@ -172,7 +175,8 @@ RUN mkdir -p \
     /var/lib/nfs-klldap /var/run/nfs-klldap \
     /var/lib/nfs-klldap/webui-certs /container/scripts /output \
     /var/lib/extrausers \
-    /run/dbus /run/rpcbind
+    /run/dbus /run/rpcbind \
+    /etc/avahi/services
 
 COPY --from=builder /output/ /output/
 RUN cp /output/nfs-klldap-config /usr/local/bin/ && \
@@ -185,6 +189,7 @@ COPY container/scripts/ganesha-ctl /usr/local/bin/ganesha-ctl
 COPY container/scripts/nfs-klldap-conf-watcher /usr/local/bin/nfs-klldap-conf-watcher
 COPY container/healthcheck.sh /container/healthcheck.sh
 COPY container/scripts/check-common.sh /container/scripts/check-common.sh
+COPY container/avahi-daemon.conf /etc/avahi/avahi-daemon.conf
 COPY scripts/verify-ganesha.sh /usr/local/bin/verify-ganesha.sh
 RUN chmod +x /usr/local/bin/ganesha-ctl /usr/local/bin/nfs-klldap-conf-watcher \
         /container/healthcheck.sh /container/scripts/check-common.sh /usr/local/bin/verify-ganesha.sh
@@ -200,5 +205,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=150s --retries=3 \
     CMD /container/healthcheck.sh || exit 1
 
 # NFSv4 TCP only (Enable_UDP=false); 111 kept for rpcbind compatibility tooling.
-EXPOSE 2049/tcp 111/tcp 111/udp
+# 5353/udp (mDNS) + 20048/tcp (MOUNT) serve Navahi discovery — cosmetic under
+# the host networking the deploy requires; the host firewall is what matters.
+EXPOSE 2049/tcp 111/tcp 111/udp 5353/udp 20048/tcp
 ENTRYPOINT ["/entrypoint.sh"]

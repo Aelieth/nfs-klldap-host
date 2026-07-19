@@ -65,6 +65,29 @@ pub fn fingerprint_exports_dir(exports_dir: &Path) -> u64 {
     h
 }
 
+/// FNV-1a over sorted avahi `.service` XML contents (missing dir → 0). Keeps
+/// Navahi advert changes visible to the supervisor without ever entering the
+/// exports fingerprint that drives ganesha recycles.
+pub fn fingerprint_avahi_dir(dir: &Path) -> u64 {
+    let mut h: u64 = FNV1A_SEED;
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut files: Vec<_> = entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "service"))
+        .collect();
+    files.sort_by_key(|e| e.file_name());
+    for entry in files {
+        if let Ok(bytes) = fs::read(entry.path()) {
+            h = fingerprint_bytes(&bytes, h);
+            h ^= 0xff;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    }
+    h
+}
+
 /// FNV-1a over share fields that affect WebUI allow-list / serve-path mapping but not Ganesha fragments.
 pub fn fingerprint_shares(cfg: &NfsKlldapConfig) -> u64 {
     let mut h: u64 = FNV1A_SEED;
@@ -123,6 +146,19 @@ mod tests {
             fingerprint_exports_dir(dir),
             fingerprint_exports_dir(dir)
         );
+    }
+
+    #[test]
+    fn avahi_fingerprint_tracks_service_files_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        assert_eq!(fingerprint_avahi_dir(&dir.join("absent")), 0);
+        fs::write(dir.join("nfs-klldap-a.service"), b"<service-group/>\n").unwrap();
+        let fp1 = fingerprint_avahi_dir(dir);
+        fs::write(dir.join("10-a.conf"), b"EXPORT {}\n").unwrap();
+        assert_eq!(fp1, fingerprint_avahi_dir(dir), ".conf files must not contribute");
+        fs::write(dir.join("nfs-klldap-a.service"), b"<service-group>x</service-group>\n").unwrap();
+        assert_ne!(fp1, fingerprint_avahi_dir(dir));
     }
 
     #[test]

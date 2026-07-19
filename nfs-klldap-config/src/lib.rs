@@ -26,8 +26,8 @@ mod template;
 mod validate;
 
 pub use config::{
-    derive_share_pseudo, GenerationPaths, NfsKlldapConfig, PosixAttributeMapping, Share,
-    ShareFieldWarning, SssdSection, StorageSection,
+    derive_share_pseudo, share_navahi_effective, GenerationPaths, NfsKlldapConfig,
+    PosixAttributeMapping, Share, ShareFieldWarning, SssdSection, StorageSection,
 };
 pub use network::{
     command_with_timeout, container_primary_ipv4, extract_server_addr_from_ganesha_line,
@@ -36,7 +36,8 @@ pub use network::{
 pub mod ignored_attributes;
 pub use error::ConfigError;
 pub use exports_fingerprint::{
-    fingerprint_exports_dir, fingerprint_identity_artifacts, fingerprint_shares, FNV1A_SEED,
+    fingerprint_avahi_dir, fingerprint_exports_dir, fingerprint_identity_artifacts,
+    fingerprint_shares, FNV1A_SEED,
 };
 pub use ganesha_liveness::{
     discover_ganesha_daemon_pid, pgrep_running,
@@ -93,7 +94,7 @@ pub use fs_warnings::{
     share_fs_warning_message_with_mountinfo, FsShareWarning, PosixOnlyPolicy,
 };
 pub use hook::run_post_generate_hooks;
-pub use generate::generate_all;
+pub use generate::{generate_all, write_avahi_services};
 
 mod idhelper_check;
 pub use idhelper_check::{

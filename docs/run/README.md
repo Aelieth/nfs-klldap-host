@@ -192,6 +192,52 @@ ktadd -k /tmp/keytab nfs/aurora@EXAMPLE.COM nfs/aurora.example.com@EXAMPLE.COM
 
 The WebUI setup wizard and System Settings page compare `hostname` with `/proc/sys/kernel/hostname` and check the mounted keytab.
 
+## Navahi network discovery (mDNS + insecure click-mount)
+
+Optional, **off by default**. System Settings → Core → "Navahi Network
+Discovery" (`navahi_discovery = true`, staged until **Restart and apply**)
+starts an in-container `avahi-daemon` that advertises every share whose card
+has the **navahi** checkbox (`navahi_insecure = true`). Advertised shares
+appear in GNOME Files / Dolphin network views and click-mount via the
+desktops' NFSv3/AUTH_SYS clients; flagged exports accept `sys` + `Protocols
+3,4` while everything else stays kerberized v4.2-only. Client-side story and
+security trade-offs: [Client: Fedora Immutable](../client-fedora-immutable.md).
+
+Requirements and notes:
+
+- **Host networking** (already required) is what lets mDNS multicast and
+  rpcbind reach the LAN. Open the **host** firewall: `firewall-cmd
+  --add-service=mdns` (5353/udp) plus `111/tcp+udp`, `20048/tcp` (MOUNT,
+  pinned via `MNT_Port`) and `2049/tcp`.
+- The Core toggle is **restart-gated**: the full recycle (Restart and apply /
+  container start) starts or stops avahi-daemon and Ganesha's v3 core.
+  Flagging or un-flagging individual shares while the toggle is on applies
+  gracefully via the normal shares save (export reread + advert-XML rewrite;
+  avahi reloads in place).
+- Enabling the global while a share already carries a retained
+  `navahi_insecure = true` applies `sys` on that export at the next graceful
+  apply — before the restart delivers v3 + mDNS. Both flags were on, so this
+  is the requested end state arriving in two steps, not a leak.
+- **Adverts target the qualified hostname, not `.local`.** Each service file
+  carries `<host-name>` = `[server] hostname` (else the container/system
+  hostname) whenever it contains a dot, so a click resolves the mount target
+  through your normal DNS — which a krb5 deployment already has. Only when no
+  dotted name is known does the advert fall back to avahi's `<short>.local`
+  identity. If the click lands on the wrong name, set `[server] hostname` to
+  the FQDN and Restart-and-apply.
+- If the Docker **host** runs its own avahi-daemon the two coexist; the
+  container instance may claim `<hostname>-2.local` after the mDNS conflict
+  auto-rename. With FQDN-targeted adverts that affects only the display label
+  ("`<share> on <host>`"), never the mount target. (Alternative for the
+  avahi-averse: keep the toggle driving exports and bind-mount
+  `/etc/avahi/services` into the host's avahi — workable, not the supported
+  shape.)
+- The healthcheck reports WARN (never a failure) when the toggle is on but
+  avahi is not running yet (staged) or flagged shares have no advert XMLs.
+- Generated adverts live in `/etc/avahi/services/nfs-klldap-<share>.service`
+  (world-readable 0644; pruned when un-flagged). `showmount -e <host>` shows
+  the v3 namespace as pseudo paths (`Mount_Path_Pseudo = true`).
+
 ## Troubleshooting at Start
 
 Watch `docker logs`. `nfs-klldap-startup` prints step-by-step requirements (persistent `/config`, DNS `ldap_uri`, bind test) and SSSD-oriented hints at step 3.

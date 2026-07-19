@@ -185,6 +185,82 @@ grep -m1 -iE 'export.*(pseudo|/smoke)' /tmp/ganesha-smoke.log | sed 's/^/    /' 
 
 kill "$GPID" 2>/dev/null; wait "$GPID" 2>/dev/null
 
+echo "== [5] navahi discovery =="
+# Generator end-to-end with the shipped binary: flag on ⇒ core v3 lines +
+# widened flagged export + advert XML (0644); flag off ⇒ our XMLs pruned.
+# Env-redirected outputs keep /etc (used by legs [3]/[4]) untouched.
+NAV_DIR=/tmp/smoke-navahi
+rm -rf "$NAV_DIR"; mkdir -p "$NAV_DIR/out/exports.d" "$NAV_DIR/avahi"
+cat > "$NAV_DIR/nfs-klldap.conf" <<'EOF'
+ldap_uri = "ldaps://klldap.smoke:6360"
+navahi_discovery = true
+[server]
+hostname = "smoke.nfs.test"
+[storage]
+container_root = "/srv"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=smoke,dc=test"
+ldap_default_authtok = "smokepw"
+[[shares]]
+name = "smoke"
+host_path = "/srv/smoke"
+container_path = "/srv/smoke"
+navahi_insecure = true
+EOF
+nav_gen() {
+    SSSD_CONF="$NAV_DIR/out/sssd.conf" KRB5_CONF="$NAV_DIR/out/krb5.conf" \
+    GANESHA_CONF="$NAV_DIR/out/ganesha.conf" EXPORTS_DIR="$NAV_DIR/out/exports.d" \
+    IDMAP_CONF="$NAV_DIR/out/idmapd.conf" NFS_CONF="$NAV_DIR/out/nfs.conf" \
+    AVAHI_SERVICES_DIR="$NAV_DIR/avahi" \
+    nfs-klldap-config generate --config "$NAV_DIR/nfs-klldap.conf" >/dev/null 2>&1
+}
+if nav_gen; then ok "navahi generate succeeded"; else bad "navahi generate failed"; fi
+g="$NAV_DIR/out/ganesha.conf"
+if grep -q 'Protocols = 3,4;' "$g" && grep -q 'Mount_Path_Pseudo = true;' "$g" && grep -q 'MNT_Port = 20048;' "$g"; then
+    ok "core conf carries v3 + Mount_Path_Pseudo + MNT_Port"
+else
+    bad "core navahi lines missing in $g"
+fi
+frag="$(ls "$NAV_DIR/out/exports.d"/*.conf 2>/dev/null | head -1)"
+if [ -n "$frag" ] && grep -q ', sys;' "$frag" && grep -q 'Protocols = 3,4;' "$frag"; then
+    ok "flagged export widened (sys + v3)"
+else
+    bad "flagged export not widened: ${frag:-<no fragment>}"
+fi
+xml="$NAV_DIR/avahi/nfs-klldap-smoke.service"
+if grep -q '_nfs._tcp' "$xml" 2>/dev/null && grep -q 'path=/smoke' "$xml"; then
+    ok "advert XML generated"
+else
+    bad "advert XML missing/incomplete: $xml"
+fi
+if grep -q '<host-name>smoke.nfs.test</host-name>' "$xml" 2>/dev/null; then
+    ok "advert SRV target is the qualified hostname (not <short>.local)"
+else
+    bad "advert lacks the FQDN host-name element"
+fi
+if [ "$(stat -c '%a' "$xml" 2>/dev/null)" = "644" ]; then
+    ok "advert XML world-readable (0644 — avahi drops privileges)"
+else
+    bad "advert XML not 0644"
+fi
+if command -v avahi-daemon >/dev/null 2>&1; then
+    avahi-daemon --no-chroot >/tmp/avahi-smoke.log 2>&1 &
+    APID=$!
+    sleep 2
+    if kill -0 "$APID" 2>/dev/null; then
+        ok "avahi-daemon --no-chroot runs (pid $APID)"
+    else
+        bad "avahi-daemon exited early:"; tail -3 /tmp/avahi-smoke.log | sed 's/^/    /'
+    fi
+    kill "$APID" 2>/dev/null; wait "$APID" 2>/dev/null
+else
+    bad "avahi-daemon binary missing from image"
+fi
+sed -i 's/navahi_discovery = true/navahi_discovery = false/' "$NAV_DIR/nfs-klldap.conf"
+nav_gen || bad "navahi flag-off regenerate failed"
+if [ -e "$xml" ]; then bad "flag-off must prune the advert XML"; else ok "flag-off pruned the advert XML"; fi
+if grep -q 'Protocols = 3,4' "$g"; then bad "flag-off must drop core v3"; else ok "flag-off core back to v4-only"; fi
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

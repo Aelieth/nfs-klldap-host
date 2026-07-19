@@ -34,7 +34,7 @@ fn generate_limited(mountinfo: &str, toml: &str) -> (tempfile::TempDir, String, 
     let out = tmp.path().join("out"); fs::create_dir_all(out.join("exports.d")).unwrap();
     let prev = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok(); std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", &mp);
     let cfg = NfsKlldapConfig::load(&cp).expect("load");
-    let ps = GenerationPaths { sssd_conf: out.join("s"), krb5_conf: out.join("k"), ganesha_conf: out.join("g"), exports_dir: out.join("e"), idmap_conf: out.join("i"), nfs_conf: out.join("n") };
+    let ps = GenerationPaths { sssd_conf: out.join("s"), krb5_conf: out.join("k"), ganesha_conf: out.join("g"), exports_dir: out.join("e"), idmap_conf: out.join("i"), nfs_conf: out.join("n"), avahi_services_dir: out.join("av") };
     generate_all(&cfg, &ps).expect("gen");
     if let Some(p) = prev { std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH", p); } else { std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH"); }
     let frag = fs::read_dir(out.join("e")).unwrap().map(|e|e.unwrap().path()).find(|p|p.extension().is_some_and(|x| x == "conf")).and_then(|p|fs::read_to_string(p).ok()).unwrap();

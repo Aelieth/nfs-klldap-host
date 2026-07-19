@@ -69,6 +69,7 @@ fi
 
 if [ "$HOST_NFS_MODE" -ne 1 ]; then
     warn_export_fragments
+    warn_navahi_discovery
 fi
 warn_fs_limited_shares
 warn_idhelper_overrides

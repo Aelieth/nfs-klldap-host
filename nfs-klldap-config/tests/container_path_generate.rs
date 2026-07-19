@@ -18,7 +18,7 @@ fn generate_with_mountinfo(mountinfo: &str, toml: &str) -> String {
     let cp=tmp.path().join("c"); fs::write(&cp,toml).unwrap(); let out=tmp.path().join("o"); fs::create_dir_all(out.join("e.d")).unwrap();
     let pv = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok(); std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH",&mp);
     let cfg = NfsKlldapConfig::load(&cp).expect("l"); assert_eq!(cfg.serve_path_for(&cfg.shares[0]), "/export/staging/movies");
-    let ps=GenerationPaths{sssd_conf:out.join("s"),krb5_conf:out.join("k"),ganesha_conf:out.join("g"),exports_dir:out.join("e.d"),idmap_conf:out.join("i"),nfs_conf:out.join("n")};
+    let ps=GenerationPaths{sssd_conf:out.join("s"),krb5_conf:out.join("k"),ganesha_conf:out.join("g"),exports_dir:out.join("e.d"),idmap_conf:out.join("i"),nfs_conf:out.join("n"),avahi_services_dir:out.join("av")};
     generate_all(&cfg,&ps).expect("g");
     if let Some(p)=pv{std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH",p);}else{std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");}
     fs::read_dir(out.join("e.d")).unwrap().map(|e|e.unwrap().path()).find(|p|p.extension().is_some_and(|x| x == "conf")).map(|p|fs::read_to_string(p).unwrap()).unwrap()
@@ -131,6 +131,7 @@ umask = "0027"
         exports_dir: out.join("e.d"),
         idmap_conf: out.join("i"),
         nfs_conf: out.join("n"),
+        avahi_services_dir: out.join("av"),
     };
     let err = generate_all(&cfg, &ps).expect_err("umask must refuse to generate");
     let msg = err.to_string();

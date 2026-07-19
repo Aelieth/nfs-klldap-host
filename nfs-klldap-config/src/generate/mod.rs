@@ -12,10 +12,12 @@ use nfs_klldap_identity::{
     effective_ldap_search_bases, resolve_posix_attribute_mapping, PosixAttributeMapping,
 };
 
+mod avahi;
 mod directives;
 mod fragments;
 
 pub(crate) use directives::fragment_basename;
+pub use avahi::write_avahi_services;
 pub use fragments::write_export_fragments;
 
 
@@ -30,6 +32,7 @@ pub fn generate_all(cfg: &NfsKlldapConfig, paths: &GenerationPaths) -> Result<()
     write_nfs_conf(&paths.nfs_conf)?;
     write_export_fragments(cfg, &paths.exports_dir)?;
     write_ganesha_main(cfg, &paths.ganesha_conf, &paths.exports_dir)?;
+    write_avahi_services(cfg, &paths.avahi_services_dir)?;
     Ok(())
 }
 
@@ -500,15 +503,28 @@ fn write_ganesha_main(
     // Deliberate 60 default: the out-of-band-change staleness bound.
     let attr_expiry = cfg.ganesha.attr_expiration_secs.unwrap_or(60);
 
+    // Navahi opens the v3 core; off output must stay byte-identical.
+    let core_proto = if cfg.navahi_discovery {
+        "3,4"
+    } else {
+        constants::GANESHA_PROTOCOLS
+    };
+    // Core Protocols is start-time-only in ganesha — the restart gate itself.
+    let navahi_core_lines = if cfg.navahi_discovery {
+        "    # Navahi: v3 MOUNT namespace = Pseudo; fixed MNT port for firewalls.\n    Mount_Path_Pseudo = true;\n    MNT_Port = 20048;\n"
+    } else {
+        ""
+    };
+
     let mut content = format!(
         r#"NFS_CORE_PARAM {{
-    Protocols = {proto};
+    Protocols = {core_proto};
     Enable_UDP = false;
     Bind_addr = 0.0.0.0;
     NFS_Port = 2049;
     Enable_RQUOTA = false;
     Enable_NLM = false;
-    Allow_Set_Io_Flusher_Fail = true;
+{navahi_core_lines}    Allow_Set_Io_Flusher_Fail = true;
 {rpc_cred_line}    # Bound concurrent uid->groups resolutions hitting SSSD/LLDAP (0 = unlimited).
     Max_Uid_To_Group_Reqs = {uid2grp_reqs};
     Readdir_Res_Size = {readdir_res};
@@ -567,6 +583,8 @@ EXPORT_DEFAULTS {{
         sec = sec,
         attr_expiry = attr_expiry,
         proto = constants::GANESHA_PROTOCOLS,
+        core_proto = core_proto,
+        navahi_core_lines = navahi_core_lines,
         pwnam = constants::GANESHA_PWNAM_IMPL,
         root_krb = root_krb,
         idmap_validity = idmap_validity,

@@ -37,7 +37,7 @@ fn cargo_bin(name: &str) -> PathBuf {
     assert!(p.is_file(), "bin {name} missing"); p
 }
 fn generation_paths(out: &std::path::Path) -> GenerationPaths {
-    GenerationPaths { sssd_conf: out.join("sssd.conf"), krb5_conf: out.join("krb5.conf"), ganesha_conf: out.join("ganesha.conf"), exports_dir: out.join("exports.d"), idmap_conf: out.join("idmapd.conf"), nfs_conf: out.join("nfs.conf") }
+    GenerationPaths { sssd_conf: out.join("sssd.conf"), krb5_conf: out.join("krb5.conf"), ganesha_conf: out.join("ganesha.conf"), exports_dir: out.join("exports.d"), idmap_conf: out.join("idmapd.conf"), nfs_conf: out.join("nfs.conf"), avahi_services_dir: out.join("avahi-services") }
 }
 
 fn assert_ganesha_96_compliant(g: &str, i: &str) {

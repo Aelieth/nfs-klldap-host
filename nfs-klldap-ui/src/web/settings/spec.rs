@@ -218,6 +218,17 @@ pub(crate) const FIELDS: &[FieldSpec] = &[
         },
     },
     FieldSpec {
+        name: "navahi_discovery",
+        section: "",
+        key: "navahi_discovery",
+        kind: FieldKind::BoolAlways,
+        set: |c, v| {
+            if let FieldValue::Bool(b) = v {
+                c.navahi_discovery = b.unwrap_or(false);
+            }
+        },
+    },
+    FieldSpec {
         name: "kerberos_realm",
         section: "kerberos",
         key: "realm",
@@ -726,6 +737,7 @@ mod spec_tests {
             ("override_sssd_ldap_id_use_start_tls", "true"),
             ("sssd_ldap_id_use_start_tls", "true"),
             ("kllldap_ignored_attributes", "true"),
+            ("navahi_discovery", "true"),
             ("override_ganesha_default_security", "on"),
             ("ganesha_default_security", "nfs"),
         ]);
@@ -741,6 +753,7 @@ mod spec_tests {
         assert!(out.contains("ldap_user_search_base = \"\""), "{out}");
         assert!(out.contains("ldap_id_use_start_tls = true"));
         assert!(out.contains("kllldap_ignored_attributes = true"));
+        assert!(out.contains("navahi_discovery = true"));
         assert!(out.contains("default_security = \"nfs\""));
 
         let mut cfg = NfsKlldapConfig::default();
@@ -751,6 +764,7 @@ mod spec_tests {
         assert_eq!(cfg.sssd.ldap_search_base, None);
         assert_eq!(cfg.sssd.ldap_id_use_start_tls, Some(true));
         assert_eq!(cfg.sssd.kllldap_ignored_attributes, Some(true));
+        assert!(cfg.navahi_discovery);
         assert_eq!(cfg.ganesha.default_security, "nfs");
 
         // Override off snaps default_security back to krb5p on both sides

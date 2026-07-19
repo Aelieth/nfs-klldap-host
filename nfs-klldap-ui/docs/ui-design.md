@@ -212,6 +212,21 @@ New cards from **+ Add share** are server-rendered: the card markup lives once i
 returns a blank card that `addShareRow()` appends via htmx. Never reintroduce a JS copy of the card —
 that duplication is exactly what previously lost the field tooltips on new cards.
 
+### Navahi controls (Core toggle + share checkbox)
+
+- The Core pane's **"Navahi Network Discovery"** checkbox is a `BoolAlways` FieldSpec writing
+  top-level `navahi_discovery` (always before the first `[section]`). Like the other core settings
+  it is **staged**: the derived-note names "Restart and apply" as the application step. The Overview
+  card carries a `navahi` row (`on — N share(s) advertised` / `off`).
+- Each share card has a **navahi** checkbox (`navahi_insecure`). While the saved global is off it
+  renders **disabled with a muted explainer — never hidden** (controls disable, not disappear).
+  Disabled checkboxes don't submit, so `settings_save_shares` passes the stored value through while
+  the global is off; with the global on, an absent field is a real uncheck and clears the key.
+- Chip rule: `navahi` chips **only when effective** (global && flag) — an exposure signal (mDNS
+  advert + NFSv3/AUTH_SYS accepted), same family as the security-deviation chip, never a raw-key echo.
+- Blank cards from `GET /settings/share-card` load the saved global so a fresh card mutes/unmutes
+  identically to server-rendered rows.
+
 ## System Settings → Admin
 
 The old "Apply" rail pane is the **Admin** pane (renamed in 0.9.96 — the restore JS maps a stale

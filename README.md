@@ -1,10 +1,8 @@
 # nfs-klldap-host
 
-**1.0** — WebUI setup wizard at `/setup` (HTTPS :9630); first-run configuration is browser-based (since 0.9.x). Versions follow git branches; the Overview page shows the exact build stamp.
+**1.0** — Kerberized NFSv4 host for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos). WebUI setup at `https://<host>:9630/setup`; Overview shows the exact build stamp.
 
-Companion app for [KLLDAP](https://github.com/Aelieth/lldap-with-kerberos). Docker container that hosts and manages NFS shares with POSIX attributes synced via LDAP, plus simple remote management against KLLDAP.
-
-Debian 13-slim runtime (Rust build stages on Fedora minimal): Kerberized NFSv4 (NFS-Ganesha) with KLLDAP-backed UID/GID mapping via SSSD. Multi-stage build keeps cargo-chef reliable on Fedora; final image uses Debian 13-slim with a custom Ganesha package from this repo (`container/ganesha/`). Optional **Navahi network discovery** advertises flagged shares over mDNS/Avahi for click-mount from GNOME/KDE file managers (an insecure NFSv3/AUTH_SYS guest path — see [Running & deployment](docs/run/README.md)).
+Docker image (Debian 13-slim runtime, Fedora build stages): NFS-Ganesha + SSSD UID/GID mapping from LLDAP/KLLDAP, recursive share permissions in the browser. Custom Ganesha package: `container/ganesha/`. Optional **Navahi** advertises flagged shares over mDNS for GNOME/KDE click-mount (NFSv3/AUTH_SYS guest path — see [Running & deployment](docs/run/README.md)).
 
 <img
   src="https://raw.githubusercontent.com/Aelieth/nfs-klldap-host/refs/heads/main/screenshot.png"
@@ -26,7 +24,7 @@ Debian 13-slim runtime (Rust build stages on Fedora minimal): Kerberized NFSv4 (
 | [Container internals](container/README.md) | entrypoint, healthcheck, watcher, ganesha-ctl |
 | [Custom Ganesha packaging](container/ganesha/README.md) | `9.13-1+klldap3` build flags |
 
-Historical / non-product: [`TODO.md`](TODO.md), [`nfs-klldap-host-ganesha-refactor-plan.md`](nfs-klldap-host-ganesha-refactor-plan.md) (not shipped behavior).
+Non-product: [`TODO.md`](TODO.md), [`nfs-klldap-host-ganesha-refactor-plan.md`](nfs-klldap-host-ganesha-refactor-plan.md).
 
 ## Architecture
 
@@ -167,13 +165,16 @@ default_security = "krb5p"                                      # krb5p | krb5i 
 
 ### Share options (generator)
 
-- **Required:** `container_path` under `container_root`.
-- **ACL class (per share):** `enable_acl` tri-state — `true` hard-fails generate if the serve path is definitively non-ACL; `false` = NOACL; unset = **auto** (promote only when the write round-trip probe proves storage). Same class on Share Permissions, System Settings, and `GET /client-manifest.json`.
-- **NOACL emission:** `Disable_ACL = true; Manage_Gids = true; Read_Access_Check_Policy = pre;` (plus Pseudo). Explicit `manage_gids = false` still honored.
-- **ACL emission:** `Disable_ACL = false;` (declared). No per-export FSAL `Umask` on Ganesha 9.13 — creation modes use default ACL Inherit tab + setgid.
-- **Limited / non-ACL-capable FS (vfat, ntfs, btrfs+noacl):** cannot store POSIX ACLs; on 9.13 attribute fetches may fail for both classes — stage via `source_path` → ACL-capable `container_path` and optional `[ganesha] post_generate_hook` (see `examples/post-generate-staging-sync.sh`).
-- **Diagnostics:** `nfs-klldap-config fs-warnings` / `ganesha-ctl fs-warnings`.
-- **Navahi discovery (per share):** `navahi_insecure = true` together with the top-level `navahi_discovery` toggle advertises the share over mDNS and widens its export to NFSv3 + AUTH_SYS for GNOME/KDE click-mount. The toggle applies on "Restart & apply"; details in [docs/run/README.md](docs/run/README.md).
+| Option | Behavior |
+|--------|----------|
+| **Required** | `container_path` under `container_root` |
+| **ACL (`enable_acl`)** | `true` hard-fails generate on definitive non-ACL FS; `false` = NOACL; unset = **auto** (promote only when write probe proves storage). Same class on UI + `GET /client-manifest.json` |
+| **NOACL emission** | `Disable_ACL = true; Manage_Gids = true; Read_Access_Check_Policy = pre;` (+ Pseudo). Explicit `manage_gids = false` honored |
+| **ACL emission** | `Disable_ACL = false;` — no per-export Umask on 9.13 (Inherit tab + setgid) |
+| **Limited FS** | Stage `source_path` → ACL-capable `container_path`; optional `[ganesha] post_generate_hook` (`examples/post-generate-staging-sync.sh`) |
+| **Navahi** | Share `navahi_insecure` + top-level `navahi_discovery` → mDNS + NFSv3/AUTH_SYS. Global toggle needs Restart & apply |
+
+Diagnostics: `nfs-klldap-config fs-warnings` / `ganesha-ctl fs-warnings`.
 
 ### Cache profiles
 

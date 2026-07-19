@@ -2,11 +2,9 @@
 
 **Purpose:** LDAP/SSSD generation, TLS, and idhelper identity mapping.
 
-SSSD (LDAP provider) supplies `uidNumber`/`gidNumber` from LLDAP/KLLDAP to Ganesha. The WebUI applies chown/chmod on bind-mounted host paths.
+SSSD (LDAP provider) supplies `uidNumber`/`gidNumber` from LLDAP/KLLDAP to Ganesha. Shared resolution lives in **`nfs-klldap-identity`** (used by config, idhelper, WebUI).
 
-Shared resolution (`IdLdapResolver`, POSIX mapping, principal classification) lives in **`nfs-klldap-identity`**. Config, idhelper, and WebUI `LdapClient` all use it.
-
-**KLLDAP load contract (0.9.81+):** one pooled bound connection (bind on first use, DN change, or op failure — not per search). Positive cache 10 min; negative/errors 60 s. memberOf DNs resolve from the group cache first. Each idhelper rebulk logs `ldap_binds=+N`.
+**KLLDAP load:** one pooled bound connection; positive cache 10 min; negative/errors 60 s. Rebulk logs `ldap_binds=+N`.
 
 ## LLDAP requirements
 
@@ -15,33 +13,31 @@ Shared resolution (`IdLdapResolver`, POSIX mapping, principal classification) li
 | Users (`ou=people`) | `posixAccount` | `uid`, `uidNumber`, `gidNumber`, `homeDirectory`, `loginShell` |
 | Groups (`ou=groups`) | `posixGroup` | `cn`, `gidNumber` |
 
-Numeric IDs in LDAP must match ownership on host data directories.
+Numeric IDs in LDAP must match ownership on host data.
 
-## nfs-klldap.conf → generated sssd.conf
+## nfs-klldap.conf → sssd.conf
 
-| TOML field | Default when omitted | In generated sssd.conf |
-|------------|----------------------|-------------------------|
-| `ldap_default_bind_dn` / `authtok` | required | yes |
+| TOML field | Default | Generated |
+|------------|---------|-----------|
+| bind DN / authtok | required | yes |
 | `kllldap_ignored_attributes` | `true` | ignore block + `ldap_group_member=member` |
 | `ldap_schema` | `rfc2307bis` | yes |
 | `ldap_id_mapping` | `false` | yes |
 | `enumerate` | `false` | yes (avoid `true` on KLLDAP) |
-| `auth_provider` | `ldap` | yes (`krb5` optional) |
+| `auth_provider` | `ldap` | yes |
 | `access_provider` | `permit` | yes |
 | `entry_cache_timeout` | `180` | yes |
 | `entry_negative_timeout` | `60` | yes |
 | Search bases | `dc=<realm>` Subtree | derived or explicit |
-| Kerberos KDC (`krb5_*`) | from ldap_uri host + realm | always emitted |
-| `ldap_tls_reqcert` | unset for ldaps | only if set in TOML |
-| `ldap_auth_disable_tls_never_use_in_production` | `true` for `ldap://` only | conditional |
+| Kerberos KDC | from ldap_uri + realm | always |
+| `ldap_tls_reqcert` | unset for ldaps | only if set |
+| `ldap_auth_disable_tls_never_use_in_production` | `true` for `ldap://` | conditional |
 
 ### TLS
 
-- **`ldaps://` without `ldap_tls_reqcert`:** SSSD system/OpenLDAP defaults (not auto-`never`). Self-signed lab: `ldap_tls_reqcert = "never"`.
-- **`ldap://`:** generator emits `ldap_auth_disable_tls_never_use_in_production = true` by default (lab only).
-- **WebUI LDAP client:** `ldap_tls_policy()` — for `ldaps://` with no custom CA the client does **not** verify the server certificate (self-signed-friendly default; the WebUI logs a `WARNING` at startup when this is active). To verify against a real CA, set `ldap_tls_cacert` to the CA's PEM file — the client then validates the LDAP server certificate against it (system trust roots plus that CA). `ldap_tls_reqcert = "never"` still overrides to no-verify.
-
-### Example `[sssd]`
+- **`ldaps://` without `ldap_tls_reqcert`:** system/OpenLDAP defaults (not auto-`never`). Lab: `ldap_tls_reqcert = "never"`.
+- **`ldap://`:** generator emits the disable-TLS production flag by default (lab only).
+- **WebUI LDAP client:** no-verify for `ldaps://` without CA (startup WARNING). Set `ldap_tls_cacert` to verify. `ldap_tls_reqcert = "never"` forces no-verify.
 
 ```toml
 ldap_uri = "ldaps://klldap.example.com:6360"
@@ -49,61 +45,47 @@ ldap_uri = "ldaps://klldap.example.com:6360"
 [sssd]
 ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"
 ldap_default_authtok = "..."
-ldap_tls_reqcert = "never"   # typical self-signed LLDAP/KLLDAP
+ldap_tls_reqcert = "never"
 ```
 
-Copy generated `ignored_*_attributes` into the KLLDAP server config when using ignored attributes.
-
-## Identity path (idhelper + Ganesha)
+## Identity path
 
 ```mermaid
 flowchart TD
-  princ["Kerberos principal\nuser@REALM or host/x@REALM"] --> classify["classify_principal"]
+  princ["Kerberos principal"] --> classify["classify_principal"]
   classify -->|machine| root["uid/gid 0"]
   classify -->|user| ldap["IdLdapResolver + SSSD NSS"]
-  root --> mat["materialize nss_wrapper\n+ extrausers"]
+  root --> mat["nss_wrapper + extrausers"]
   ldap --> mat
-  mat --> ganesha["ganesha.nfsd UseGetpwnam\ngetpwuid_r + getgrouplist"]
+  mat --> ganesha["ganesha UseGetpwnam / getgrouplist"]
   log["ganesha.log observer"] -->|on-demand| mat
-  timer["rebulk timer\nNFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS=180"] --> mat
+  timer["rebulk 180s"] --> mat
 ```
 
-### Machine vs user principals
+| Principal | Mapping |
+|-----------|---------|
+| `host/…`, `nfs/…`, `root/…` @REALM | machine → 0 + full supp materialization |
+| `alice@REALM` | user via LDAP POSIX + nss |
 
-| Principal form | Mapping |
-|----------------|---------|
-| `host/…@REALM`, `nfs/…`, `root/…` | machine → uid/gid 0 + full supp materialization |
-| `alice@REALM` | user via LDAP POSIX + nss materialization |
+Static Ganesha: `Root_Kerberos_Principal = nfs, root` (excludes `host`). Live mapping is nss_wrapper + idhelper. Also: `/etc/idmapd.conf` + DIRECTORY_SERVICES (`UseGetpwnam`, Only/Allow_Numeric).
 
-Ganesha does not inject dynamic data into `ganesha.conf` for live mapping: we emit static `Root_Kerberos_Principal = nfs, root` (excludes `host` so client machine keytabs are not root on exports; override via `[ganesha] root_kerberos_principals`). Live uid/gid translation is nss_wrapper + idhelper.
-
-Also generated: `/etc/idmapd.conf` (Domain + Local-Realms from realm; Method + GSS-Methods = nsswitch) and DIRECTORY_SERVICES (`Pwnam_Implementation=nsswitch`, `UseGetpwnam=true`, Only/Allow_Numeric).
-
-Client display of owners: server emits `Only_Numeric_Owners`; Ganesha encodes wire ids with +524287 offset — install `scripts/nfsidmap-client-helper` on clients ([client-fedora-immutable.md](client-fedora-immutable.md)).
-
-### Commands (in container)
+Client display of owners needs `scripts/nfsidmap-client-helper` ([client-fedora-immutable.md](client-fedora-immutable.md)) — wire uses +524287 offset with `Only_Numeric_Owners`.
 
 ```bash
-/container/healthcheck.sh
 getent passwd alice && id alice
 nfs-klldap-idhelper resolve 'host/myclient.example.com@MY.REALM'
 ganesha-ctl id-resolve 'alice@MY.REALM'
-ganesha-ctl id-map-test testuser1
-ganesha-ctl refresh-identity    # flush SSSD + idhelper + Ganesha gids
-cat /var/lib/nfs-klldap/nss_passwd
-klist -k /etc/krb5.keytab
+ganesha-ctl refresh-identity
 ```
 
-Periodic rebulk: `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS` (default **180**, `0` disables). Observer handles new principals from `ganesha.log`.
+Rebulk: `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS` (default **180**, `0` = off).
 
 ## Common issues
 
 | Symptom | Likely cause |
 |---------|----------------|
-| `nobody` / 65534 | missing POSIX objectClasses/attrs, or host UID mismatch |
-| Permission denied with correct IDs | ownership ≠ LDAP IDs, or SELinux on binds |
+| `nobody` / 65534 | missing POSIX attrs, or host UID mismatch |
+| Permission denied with correct IDs | ownership ≠ LDAP IDs, or SELinux |
 | LDAP/TLS noise | enable KLLDAP ignores; avoid `enumerate=true` |
-| Large numeric owners on client | missing id_resolver helper (see client guide) |
+| Large numeric owners on client | missing id_resolver helper |
 | Hybrid Kerberos teardown | incomplete machine materialization — `ganesha-ctl id-check` |
-
-See also [README.md](../README.md) (Identity section) and [TESTING.md](../TESTING.md).

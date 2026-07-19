@@ -2,312 +2,168 @@
 
 **Purpose:** compose/run flags, env vars, setup wizard, TLS/proxy, HOST_NFS, keytab, container ops.
 
-**Since 0.9.x:** first-run wizard at `https://<host>:9630/setup/1` … `/setup/3`.
-
-All services run as root in the container. Recommended: `--uts=host`, matching NFS keytab principals, bind mounts for config + data. Quick start: root [README.md](../../README.md).
+All services run as **root in the container**. Recommended: `--uts=host`, matching NFS keytab principals, bind mounts for config + data. Quick start: root [README.md](../../README.md).
 
 ## docker-compose
 
-See [examples/docker-compose.yml](../../examples/docker-compose.yml). The example uses `uts: host` + `network_mode: host`. Four volumes: data, config, keytab, and `ganesha-recovery:/var/lib/nfs/ganesha` (NFSv4 client recovery state — without it, clients cannot reclaim locks/opens through grace after a container recreate). `cap_add: [SYS_ADMIN, DAC_READ_SEARCH]` is included in the example and strongly recommended for reliable Ganesha VFS + WebUI recursive operations on host bind mounts (see the dedicated section below).
+See [examples/docker-compose.yml](../../examples/docker-compose.yml): `uts: host`, `network_mode: host`, volumes for data/config/keytab + `ganesha-recovery`, `cap_add: [SYS_ADMIN, DAC_READ_SEARCH]`.
 
-## Realm & ldap_uri Hardening
+## Realm & ldap_uri
 
-- `kerberos.realm` is mandatory after first init (or `NFS_KLLDAP_KERBEROS_REALM` env). No silent EXAMPLE.COM.
-- `ldap_uri` host must be a DNS name (literal IPs are rejected at validation).
-- Port must be in `ldap_uri` (not only `[sssd] port`, which is derived for reference).
-- Forward + reverse DNS are required for Kerberos NFS.
+- `kerberos.realm` required after first init (or `NFS_KLLDAP_KERBEROS_REALM`). No silent EXAMPLE.COM.
+- `ldap_uri` host must be DNS (literal IPs rejected). Port belongs in the URI.
+- Forward + reverse DNS required for Kerberos NFS.
 
 ## First-run setup (WebUI wizard)
 
-On a fresh container the supervisor starts the WebUI immediately and polls until setup is complete.
+Supervisor starts the WebUI immediately and polls until setup completes.
 
-1. **https://\<host\>:9630/setup/1** — verify a persistent `/config` bind mount.
-2. **/setup/2** — set `ldap_uri` (DNS name); **Test Settings**, then **Save and Continue**.
-3. **/setup/3** — set `[sssd]` bind DN/password; **Test Settings**, then **Save and Continue**.
-4. **Restarting page** — same forced full recycle as System Settings **Restart and apply** (SIGUSR1); polls `/restart-status` until SSSD/Ganesha/WebUI are ready, then **/login** to create the localhost admin password (`webui-password` sidecar).
+1. **https://\<host\>:9630/setup/1** — persistent `/config` bind mount  
+2. **/setup/2** — `ldap_uri` (DNS); **Test Settings** → **Save and Continue**  
+3. **/setup/3** — `[sssd]` bind DN/password; **Test Settings** → **Save and Continue**  
+4. **Restarting** — SIGUSR1 full recycle (same as **Restart and apply**); polls `/restart-status` → **/login** for localhost admin password  
 
-**Pre-configured bypass:** mount a valid `nfs-klldap.conf` and `/etc/krb5.keytab` before start — steps 1–3 are skipped; go directly to `/login`.
+**Pre-configured:** mount valid `nfs-klldap.conf` + `/etc/krb5.keytab` → skip steps 1–3.
 
-### Setup wizard troubleshooting
+### Wizard troubleshooting
 
-The **Test Log** on each setup page shows live probe output. Common failures:
-
-- **DNS failure (step 2):** check hostname spelling and DNS records on the Docker host; try `getent hosts <host>` from the host; container may need `--network=host` or `--dns=...`.
-- **Port unreachable (step 2):** confirm port in `ldap_uri` (ldaps usually 636, ldap usually 389); check firewall/SELinux; try `nc -zv <host> <port>` from the Docker host.
-- **Bind failed / error 49 (step 3):** verify `ldap_default_bind_dn` and password match LLDAP exactly (no trailing spaces).
-- **TLS / contact errors (step 3):** wrong port or self-signed cert — add `ldap_tls_reqcert = "never"` under `[sssd]` for internal LLDAP/KLLDAP certs.
+| Symptom | Check |
+|---------|--------|
+| DNS failure (step 2) | Host DNS; `getent hosts <host>`; `--network=host` / `--dns` |
+| Port unreachable | Port in `ldap_uri`; firewall; `nc -zv <host> <port>` |
+| Bind failed / 49 (step 3) | DN + password match LLDAP exactly |
+| TLS errors (step 3) | Self-signed: `[sssd] ldap_tls_reqcert = "never"` |
 
 ## WebUI (9630)
 
-HTTPS by default (axum-server + rustls, self-signed or via `NFS_KLLDAP_WEBUI_TLS_CERT` / `NFS_KLLDAP_WEBUI_TLS_KEY`).
+HTTPS by default (self-signed or custom cert/key). Login: `localhost` (`webui-password`) or LLDAP `webui_admin_group` (default `lldap_admin`).
 
-- Edit `nfs-klldap.conf` (raw or structured form).
-- Reload NFS client after changing bind credentials.
-- Login: `localhost` (`webui-password` sidecar) or LLDAP members of `webui_admin_group` (default `lldap_admin`).
+### TLS / reverse proxy
 
-### TLS mode and reverse proxy support
+| Mode | Setting | Behavior |
+|------|---------|----------|
+| Default TLS | (on) | Internal rustls; `Secure` cookies |
+| Reverse proxy | `NFS_KLLDAP_WEBUI_TLS=off` or `[webui] tls = false` | Plain HTTP; proxy must set `X-Forwarded-Proto: https` for Secure cookies |
 
-The WebUI always serves on `NFS_KLLDAP_WEBUI_BIND` (default `0.0.0.0:9630`).
+`NFS_KLLDAP_WEBUI_BIND` (default `0.0.0.0:9630`) is runtime-only (not TOML-validated). `NFS_KLLDAP_WEBUI_COOKIE_SECURE=false` forces non-Secure cookies.
 
-- **Default (TLS enabled)**: internal TLS is terminated by the WebUI. Session cookies are emitted with the `Secure` flag. Self-signed certs are generated into a stable container path unless you provide `NFS_KLLDAP_WEBUI_TLS_CERT` + `NFS_KLLDAP_WEBUI_TLS_KEY`.
-- **Reverse proxy mode (`NFS_KLLDAP_WEBUI_TLS=off`)**: disables internal TLS and the cert ensure logic entirely; a plain HTTP server is started (`axum::serve` + `TcpListener`). Use this when a front proxy (Caddy, Nginx, Traefik, ...) terminates TLS and forwards to the container. The proxy **must** set `X-Forwarded-Proto: https` (and preferably `X-Forwarded-Host`) on requests that arrived over HTTPS; the WebUI reads these (via a lightweight middleware layer) so that `AppState::is_https()` returns true and session cookies still get `Secure` (plus `HttpOnly`, `SameSite=Lax`, `Path=/`, 12h Max-Age). Without the header the cookies will be non-Secure (appropriate for a direct HTTP client).
-
-The `NFS_KLLDAP_WEBUI_COOKIE_SECURE=false` override is honored when present (forces non-Secure regardless of TLS/headers).
-
-`NFS_KLLDAP_WEBUI_BIND` (default `0.0.0.0:9630`) is a runtime-only setting read by `nfs-klldap-ui`; it is not validated by the TOML config crate.
-
-Login, first-run setup, redirects, logout, and all session validation are identical in both modes. The large in-tree auth flow tests cover the cookie emission paths for both direct-TLS and proxied cases.
-
-#### Recommended proxy snippets
-
-Caddy (headers are set automatically):
-
-```
-yourhost.example.com {
-    reverse_proxy 127.0.0.1:9630
-}
-```
-
-Nginx:
-
-```
+```nginx
+# Nginx example
 location / {
     proxy_pass http://127.0.0.1:9630;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-Host $host;
-    # add other standard proxy headers as needed
 }
 ```
 
-Set the env in your container / compose:
-
-```
-NFS_KLLDAP_WEBUI_TLS=off
-# NFS_KLLDAP_WEBUI_BIND=0.0.0.0:9630   # (optional, default is fine)
-```
-
-Or set in `nfs-klldap.conf` (single source of truth; env still wins at runtime):
-
-```
+```toml
 [webui]
 tls = false
-# tls_cert = "/config/webui.crt"
-# tls_key = "/config/webui.key"
-# session_timeout_minutes = 720   # WebUI auto-logout (default 720 = 12h, min 5); new logins after "Restart & apply"
+# session_timeout_minutes = 720   # default 12h, min 5; after Restart & apply
 ```
 
-Start-up logs will clearly state `TLS: disabled (reverse proxy mode)` vs `TLS: enabled (self-signed or custom)`.
+## Environment overrides
 
-## Environment variable overrides (core nfs-klldap.conf options)
+Env always wins over file. Core options:
 
-Core `nfs-klldap.conf` options (not every advanced `[sssd]` field) plus select runtime options can be supplied or overridden via environment variables at container start (`docker -e` or compose `environment:`). Environment variables always win over file values. This enables secrets injection, 12-factor deploys, and minimal TOML files.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NFS_CONFIG` | `/config/nfs-klldap.conf` | TOML path |
+| `NFS_KLLDAP_LDAP_URI` | required | LDAP(S) URI (DNS + port) |
+| `NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN` | required | Bind DN |
+| `NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK` | required | Bind password |
+| `NFS_KLLDAP_LLDAP_USER` / `_PW` | — | Compat aliases for bind DN/password |
+| `NFS_KLLDAP_KERBEROS_REALM` | from ldap_uri host | Realm override |
+| `NFS_KLLDAP_SERVER_HOSTNAME` | container hostname | Keytab match; prefer `--uts=host` |
+| `NFS_KLLDAP_STORAGE_CONTAINER_ROOT` | `/export` | Data mount inside container |
+| `NFS_KLLDAP_GANESHA_DEFAULT_SECURITY` | `krb5p` | krb5p / krb5i / krb5 |
+| `NFS_KLLDAP_MANAGEMENT_WEBUI_ADMIN_GROUP` | `lldap_admin` | WebUI admin group |
+| `NFS_KLLDAP_SSSD_KLLLDAP_IGNORED_ATTRIBUTES` | `true` | Emit KLLDAP ignore blocks |
+| `NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT` | — | e.g. `never` |
+| `NFS_KLLDAP_SSSD_LDAP_TLS_CACERT` | — | CA PEM path |
+| `NFS_KLLDAP_SSSD_LDAP_ID_USE_START_TLS` | `false` | `ldap://` only |
+| `NFS_KLLDAP_WEBUI_TLS` | on | `off` = plain HTTP for proxy |
+| `NFS_KLLDAP_WEBUI_TLS_CERT` / `_KEY` | self-signed | Custom PEM paths |
+| `NFS_KLLDAP_WEBUI_BIND` | `0.0.0.0:9630` | Listen address |
 
-| Variable                                   | Default                          | Example                                      | Description |
-|--------------------------------------------|----------------------------------|----------------------------------------------|-------------|
-| `NFS_CONFIG`                               | `/config/nfs-klldap.conf`        | `/config/nfs-klldap.conf`                    | Path to the central `nfs-klldap.conf` (single source of truth TOML). Override if you mount the config volume to a different container path. |
-| `NFS_KLLDAP_LDAP_URI`                      | *(required)*                     | `ldaps://klldap.example.com:6360`             | LDAP(S) server URI. **Must** include port and use a resolvable DNS hostname (IPs are rejected for Kerberos reasons). |
-| `NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN`     | *(required)*                     | `uid=admin,ou=people,dc=example,dc=com`      | Full bind DN (or identity) used by SSSD for LDAP lookups. |
-| `NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK`     | *(required)*                     | `strong-secret`                              | Bind password / authentication token for the above DN. |
-| `NFS_KLLDAP_LLDAP_USER`                    | *(compat alias)*                 | `uid=admin,ou=people,dc=example,dc=com`      | Alias that also sets the bind DN. Honored by the WebUI for live directory queries (in addition to generate/setup). |
-| `NFS_KLLDAP_LLDAP_PW`                      | *(compat alias)*                 | `strong-secret`                              | Alias that also sets the bind password. |
-| `NFS_KLLDAP_KERBEROS_REALM`                | *(derived from `ldap_uri` host)* | `EXAMPLE.COM`                                | Kerberos realm. Overrides automatic derivation from the LDAP URI hostname. |
-| `NFS_KLLDAP_SERVER_HOSTNAME`               | *(container hostname)*           | `myhost.example.com`                         | Optional override for the hostname used when matching keytab `nfs/<host>` principals. Strongly prefer `docker run --uts=host`. |
-| `NFS_KLLDAP_STORAGE_CONTAINER_ROOT`        | `/export`                        | `/export`                                    | Container mount point for exported data. Must match the target of your `-v /host/data:/export` (or compose equivalent). |
-| `NFS_KLLDAP_GANESHA_DEFAULT_SECURITY`      | `krb5p`                          | `krb5p`                                      | Default Ganesha security type for exports: `krb5p` (recommended), `krb5i`, or `krb5`. Can be overridden per `[[shares]]`. |
-| `NFS_KLLDAP_MANAGEMENT_WEBUI_ADMIN_GROUP`  | `lldap_admin`                    | `lldap_admin`                                | Name of the LLDAP group whose members are granted WebUI admin rights (alongside the localhost `webui-password` sidecar). |
-| `NFS_KLLDAP_SSSD_KLLLDAP_IGNORED_ATTRIBUTES` | `true`                         | `true`                                       | Boolean (accepts `true`/`1`/`yes`/`on`). When enabled (default), the generator emits KLLDAP-specific `ignored_*_attributes` blocks into `sssd.conf`. |
-| `NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT`         | *(none / derived)*               | `never`                                      | Value for SSSD `ldap_tls_reqcert` (commonly `never` when using self-signed/internal CAs). |
-| `NFS_KLLDAP_SSSD_LDAP_TLS_CACERT`          | *(none)*                         | `/config/ca.pem`                             | Absolute path inside the container to a CA certificate file for verifying the LDAP server. |
-| `NFS_KLLDAP_SSSD_LDAP_ID_USE_START_TLS`    | `false`                          | `true`                                       | Boolean. When true, emits `ldap_id_use_start_tls = true` (only valid with plain `ldap://` URIs, not `ldaps://`). |
-| `NFS_KLLDAP_WEBUI_TLS`                     | *(TLS enabled)*                  | `off`                                        | Set to `off` / `false` / `0` / `no` (case-insensitive) to disable the WebUI's internal TLS server (plain HTTP for reverse-proxy frontends). |
-| `NFS_KLLDAP_WEBUI_TLS_CERT`                | *(self-signed in container)*     | `/config/webui.crt`                          | Custom cert PEM path for the WebUI. Takes precedence over `[webui] tls_cert` in the TOML. |
-| `NFS_KLLDAP_WEBUI_TLS_KEY`                 | *(self-signed in container)*     | `/config/webui.key`                          | Custom key PEM path (recommend 0600). Precedence same as cert. |
-| `NFS_KLLDAP_WEBUI_BIND`                    | `0.0.0.0:9630`                   | `127.0.0.1:9630`                             | Listen address and port for the WebUI (both TLS and plain-http modes). |
+Operational:
 
-### Additional / operational environment variables
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_FORMAT` | `text` | `text` or `json` |
+| `SSSD_DEBUG_LEVEL` | — | Passed as `-d` to sssd |
+| `GANESHA_DEBUG` | — | Emit DEBUG LOG block (troubleshooting) |
+| `WATCHER_DEBOUNCE_SECONDS` | `2` | Conf-watcher debounce before SIGHUP |
+| `HOST_NFS` / `NFS_KLLDAP_HOST_NFS` | `false` | Management sidecar (no ganesha.nfsd) |
+| `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS` | `180` | `0` = off |
+| `NFS_KLLDAP_WEBUI_COOKIE_SECURE` | derived | Force non-Secure cookies |
 
-These are less commonly needed:
+### HOST_NFS mode
 
-| Variable                     | Default   | Example | Description |
-|------------------------------|-----------|---------|-------------|
-| `LOG_FORMAT`                 | `text`    | `json`  | Container stdout log format: `text` (default) or `json`. |
-| `SSSD_DEBUG_LEVEL`           | *(unset)* | `4`     | When set, passed as `-d $SSSD_DEBUG_LEVEL` to the `sssd` daemon for increased verbosity. |
-| `GANESHA_DEBUG`              | *(unset)* | `TRUE`  | When truthy (`true`/`1`/`yes`/`on`, any case), the generator emits a `LOG { Default_Log_Level = DEBUG; }` block with CLIENTID/SESSIONS/IDMAPPER at FULL_DEBUG and NFS4/NFS_V4_ACL/DISPATCH/XPRT at DEBUG (no RPCSEC_GSS component on Ganesha 9.13 — GSS cred flow logs under DISPATCH). For deep Ganesha troubleshooting only. |
-| `WATCHER_DEBOUNCE_SECONDS`   | `2`       | `1`     | Seconds to sleep after detecting a config file change (via inotify) before signaling the supervisor for the graceful apply (share/export changes only; identity changes are staged until "Restart and apply"). |
-| `HOST_NFS` (or `NFS_KLLDAP_HOST_NFS`) | `false` | `true` | When truthy, runs the container as a management sidecar only. Ganesha fragments are still generated and written to host-visible paths (mount the host's `/etc/ganesha`); the container does not start or manage the NFS server. See the dedicated "HOST_NFS mode" section below for compose, keytab, UI, and ZimaOS notes. |
-| `NFS_KLLDAP_IDHELPER_REBULK_INTERVAL_SECS` | `180` | `0` | Seconds between idhelper LDAP→nss_passwd syncs (`0` disables periodic rebulk). |
-| `NFS_KLLDAP_WEBUI_COOKIE_SECURE` | *(derived)* | `false` | Force non-Secure session cookies regardless of TLS mode or `X-Forwarded-Proto`. |
+Management sidecar: WebUI, SSSD, generate, permission trees — **not** container `ganesha.nfsd`.
 
-A small number of path/binary overrides (`SSSD_CONF`, `GANESHA_CONF`, `CONFIG_BIN`, `HEALTHCHECK`, etc.) and `NFS_KLLDAP_CONF` exist primarily for testing, CI, and image development. Typical users set `NFS_CONFIG` (which also drives `NFS_KLLDAP_CONF` for the WebUI) instead.
-
-After load/validate, `NfsKlldapConfig` reflects the effective (env-applied) values for generate, setup wizard, and UI.
-
-### HOST_NFS mode (host-managed NFS server)
-
-Set `HOST_NFS=true` (or `NFS_KLLDAP_HOST_NFS=true`) to run the container as a **management sidecar**:
-
-- The container still fully owns `nfs-klldap.conf`, the WebUI (9630), share editing, recursive chown/chmod on your `host_path` trees, SSSD (for numeric uid/gid resolution from LLDAP), and generation of `krb5.conf` + Ganesha export fragments.
-- It does **not** start or manage `ganesha.nfsd` (or bounce it on HUP).
-- Ganesha config fragments are written to the normal container paths (`/etc/ganesha/ganesha.conf` and `/etc/ganesha/exports.d/*.conf`). The operator bind-mounts the *host's* Ganesha config tree so the host daemon picks them up:
-  ```yaml
-  volumes:
-    - /etc/ganesha:/etc/ganesha:rw          # host Ganesha reads our fragments
-    - /media/SSD-01:/export:rw
-    - ./config:/config:rw
-    - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
-  environment:
-    - HOST_NFS=true
-  ```
-- Healthcheck, entrypoint logs, and the UI adapt automatically (no 2049 expectation inside the container; restart button becomes "Apply to host NFS").
-- The same keytab (with `nfs/<short>@REALM` + `nfs/<fqdn>@REALM`) must be available to the **host** Ganesha process (usual location `/etc/krb5.keytab` on the host). The container mount satisfies the container's krb5 client needs and the UI/startup banners continue to advertise the required principals.
-- `--uts=host` + the two caps (`SYS_ADMIN`, `DAC_READ_SEARCH`) + numeric UID identity contract remain exactly as documented for normal operation.
-- WebUI share management, permission tree, and raw/structured TOML editing stay fully functional. Only server-daemon controls are muted/grayed with explanatory notes.
-
-This mode is the recommended integration shape for appliance OSes such as ZimaOS (and similar CasaOS-derived or minimal NAS hosts). ZimaOS primarily documents kernel NFS via direct `/etc/exports` edits, but many deployments (or custom images) run Ganesha on the host and consume standard `/etc/ganesha/exports.d` fragments. The sidecar writes the exact fragments the host Ganesha expects while the container continues to provide the friendly WebUI + identity + permission layer.
-
-In the UI you will see a prominent banner on System Settings and adjusted language on the share list page and restart flow. The on-disk `nfs-klldap.conf` may also declare the mode persistently:
-
-```toml
-[host]
-host_nfs = true
+```yaml
+volumes:
+  - /etc/ganesha:/etc/ganesha:rw   # host daemon reads fragments
+  - /media/SSD-01:/export:rw
+  - ./config:/config:rw
+  - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
+environment:
+  - HOST_NFS=true
 ```
 
-Env always wins (you can force normal mode with `HOST_NFS=false` even if the file says true).
-
-Example healthcheck behavior in this mode: only SSSD NSS pipe + WebUI 9630 are asserted; ganesha process + 2049 listener checks are skipped.
+Or persistently: `[host] host_nfs = true` (env still wins). Healthcheck asserts SSSD + WebUI only (no 2049). Host Ganesha needs the same `nfs/` keytab principals.
 
 ## Keytab
 
-Mount a 0600 root-owned keytab at `/etc/krb5.keytab:ro` (`:Z` on SELinux). No host-side permission scripts are required for the root-in-container model.
-
-With `--uts=host`, the container hostname should match the Docker host. Create principals for the short name and FQDN when they differ:
+Mount 0600 root-owned keytab at `/etc/krb5.keytab:ro` (`:Z` on SELinux). With `--uts=host`, create principals for short + FQDN when they differ:
 
 ```bash
-# On the KDC (example host aurora.example.com, realm EXAMPLE.COM):
 addprinc -randkey nfs/aurora@EXAMPLE.COM
 addprinc -randkey nfs/aurora.example.com@EXAMPLE.COM
 ktadd -k /tmp/keytab nfs/aurora@EXAMPLE.COM nfs/aurora.example.com@EXAMPLE.COM
 ```
 
-The WebUI setup wizard and System Settings page compare `hostname` with `/proc/sys/kernel/hostname` and check the mounted keytab.
+## Navahi network discovery
 
-## Navahi network discovery (mDNS + insecure click-mount)
+Optional, **off by default**. Core toggle `navahi_discovery` (Restart & apply) + per-share `navahi_insecure` advertises shares over mDNS for GNOME/KDE **NFSv3/AUTH_SYS** click-mount. Kerberized v4.2 path unchanged. Client story: [client-fedora-immutable.md](../client-fedora-immutable.md).
 
-Optional, **off by default**. System Settings → Core → "Navahi Network
-Discovery" (`navahi_discovery = true`, staged until **Restart and apply**)
-starts an in-container `avahi-daemon` that advertises every share whose card
-has the **navahi** checkbox (`navahi_insecure = true`). Advertised shares
-appear in GNOME Files / Dolphin network views and click-mount via the
-desktops' NFSv3/AUTH_SYS clients; flagged exports accept `sys` + `Protocols
-3,4` while everything else stays kerberized v4.2-only. Client-side story and
-security trade-offs: [Client: Fedora Immutable](../client-fedora-immutable.md).
+- Host network + firewall: mdns (5353/udp), 111, 20048/tcp (MOUNT), 2049/tcp.
+- Global toggle is full-recycle gated; per-share flags apply on graceful shares save (export + advert XML).
+- Adverts prefer qualified `[server] hostname` (not `.local`) when dotted.
+- Healthcheck **WARN** only if toggle on but avahi/adverts missing.
 
-Requirements and notes:
+## Troubleshooting at start
 
-- **Host networking** (already required) is what lets mDNS multicast and
-  rpcbind reach the LAN. Open the **host** firewall: `firewall-cmd
-  --add-service=mdns` (5353/udp) plus `111/tcp+udp`, `20048/tcp` (MOUNT,
-  pinned via `MNT_Port`) and `2049/tcp`.
-- The Core toggle is **restart-gated**: the full recycle (Restart and apply /
-  container start) starts or stops avahi-daemon and Ganesha's v3 core.
-  Flagging or un-flagging individual shares while the toggle is on applies
-  gracefully via the normal shares save (export reread + advert-XML rewrite;
-  avahi reloads in place).
-- Enabling the global while a share already carries a retained
-  `navahi_insecure = true` applies `sys` on that export at the next graceful
-  apply — before the restart delivers v3 + mDNS. Both flags were on, so this
-  is the requested end state arriving in two steps, not a leak.
-- **Adverts target the qualified hostname, not `.local`.** Each service file
-  carries `<host-name>` = `[server] hostname` (else the container/system
-  hostname) whenever it contains a dot, so a click resolves the mount target
-  through your normal DNS — which a krb5 deployment already has. Only when no
-  dotted name is known does the advert fall back to avahi's `<short>.local`
-  identity. If the click lands on the wrong name, set `[server] hostname` to
-  the FQDN and Restart-and-apply.
-- If the Docker **host** runs its own avahi-daemon the two coexist; the
-  container instance may claim `<hostname>-2.local` after the mDNS conflict
-  auto-rename. With FQDN-targeted adverts that affects only the display label
-  ("`<share> on <host>`"), never the mount target. (Alternative for the
-  avahi-averse: keep the toggle driving exports and bind-mount
-  `/etc/avahi/services` into the host's avahi — workable, not the supported
-  shape.)
-- The healthcheck reports WARN (never a failure) when the toggle is on but
-  avahi is not running yet (staged) or flagged shares have no advert XMLs.
-- Generated adverts live in `/etc/avahi/services/nfs-klldap-<share>.service`
-  (world-readable 0644; pruned when un-flagged). `showmount -e <host>` shows
-  the v3 namespace as pseudo paths (`Mount_Path_Pseudo = true`).
-
-## Troubleshooting at Start
-
-Watch `docker logs`. `nfs-klldap-startup` prints step-by-step requirements (persistent `/config`, DNS `ldap_uri`, bind test) and SSSD-oriented hints at step 3.
-
-Apply from the host: `docker kill -s HUP <name>` runs the graceful scoped apply (Ganesha export reread + WebUI in-place refresh; identity changes staged). `docker kill -s USR1 <name>` runs the forced full recycle (restarts SSSD, idhelper, Ganesha, and the WebUI — the equivalent of "Restart and apply"). Note: images older than 0.9.96 have no SIGUSR1 handler, so `-s USR1` terminates them.
-
-Do not set compose `user:` unless you have a specific reason — pid 1 must manage 0600 files and daemons as root.
-
-## Running Ganesha in Docker against the host filesystem (capabilities, dbus, rpcbind, pitfalls)
-
-This project exports real directories from the Docker *host* via Ganesha VFS inside the container. The WebUI also performs direct recursive `chown`/`chmod` (nix::unistd + std fs; walks via spawn_blocking) on those trees (as root, under an allow-list from `[[shares]].host_path`). Per-export FSAL `Umask` is not used on Ganesha 9.13 — creation modes use default ACL Inherit entries + setgid (see ganesha-architecture.md). The following is distilled operational guidance for caps, dbus, and bind mounts.
-
-### Core contract (unchanged but worth repeating)
-- `host_path` values in `nfs-klldap.conf` (and the UI) are **absolute paths on the Docker host** (unchanged by this layout).
-- Inside the container each share is served from its required `container_path` (maps to Ganesha EXPORT `Path=` and WebUI permission tree). Example: bind `/var/data:/export` with `host_path = "/var/data/nvme-raid/users"` → `container_path = "/export/nvme-raid/users"`. `pseudo_path` (editable in the Shares section; defaults to `/<name>`) is used *only* for the client-visible Pseudo path and can be a short/friendly name independently of the internal layout.
-- Translation (host_path → real container path for chown/chmod/readdir) happens only at the syscall boundary (`FsManager` + `privileged.rs`).
-- **Numeric UID/GID identity must be identical** on the host and inside the container for the bind-mounted trees. Do **not** use `--userns-remap`, rootless podman user namespaces, or subuid/gid shifts. The on-disk owners written by the WebUI (and seen by NFS clients) are the raw numbers from LLDAP `uidNumber`/`gidNumber`.
-
-### Recommended container flags
-```yaml
-# (or equivalent docker run flags)
-network_mode: host
-uts: host
-cap_add:
-  - SYS_ADMIN
-  - DAC_READ_SEARCH
-volumes:
-  - /media/:/export:rw                # bind host parent dir(s) to container_root. Set each share's container_path to the internal serve directory. pseudo_path only controls the external Pseudo (can be short).
-  - ./config:/config:rw
-  - ./secrets/krb5.keytab:/etc/krb5.keytab:ro
+```bash
+docker logs <name>
+docker kill -s HUP <name>    # graceful apply (exports + WebUI reload; identity staged)
+docker kill -s USR1 <name>   # full recycle (= Restart and apply)
 ```
 
-- `network_mode: host` / `--network=host` — **required for production NFS + Kerberos.** Default Docker bridge networking assigns the container a `172.17.0.0/16` address; Ganesha stores this as `server_addr` in NFSv4 CLIENT records, which breaks client reconnects and complicates identity when clients mount from external hosts. Port mapping (`-p 2049:2049`) does **not** substitute for host networking.
-- `uts: host` — makes the container see the real hostname so that the keytab principals (`nfs/<short>@REALM` and `nfs/<fqdn>@REALM`) match what clients and Kerberos expect. This has always been the documented recommendation.
-- `SYS_ADMIN` — provides the broad capabilities Ganesha VFS containers commonly need for certain namespace, mount, and process-control operations when exporting host paths. Many community Ganesha images (e.g. patterns derived from janeczku/nfs-ganesha and similar) document this cap.
-- `DAC_READ_SEARCH` — allows bypassing normal directory traversal permission checks. This is important for:
-  - The WebUI's `WalkDir`-based recursive permission scanner (it must be able to descend trees that have mixed ownership and restrictive perms on intermediate directories).
-  - Ganesha VFS itself when it walks or stats content under the exported paths on behalf of NFS clients.
-  Community reports and provisioner code frequently list this exact pair for "Ganesha or NFS-provisioner on bind-mounted host trees."
+Do not set compose `user:` — pid 1 must be root.
 
-`--privileged` works but is overkill and not recommended. The two caps above are the minimal practical set for this workload.
+## Docker ops (caps, dbus, bind mounts)
 
-### dbus-daemon and rpcbind
-- Ganesha (custom `+klldap` build) expects a D-Bus system bus (`/run/dbus/system_bus_socket`). The entrypoint launches `dbus-daemon --system --nofork &` before `ganesha.nfsd`.
-- `rpcbind` is installed and started (best-effort). For pure NFSv4 (`Protocols = 4`) it is not strictly required; some tooling and status scripts still reference the portmapper.
-- The supervisor and `ganesha-ctl` management path remain "DBUS-free" (export fragments on disk + signals to pid 1: SIGHUP for the graceful scoped apply, SIGUSR1 for the forced full recycle). The bus is present for Ganesha's internal/monitoring use.
+| Flag | Why |
+|------|-----|
+| `network_mode: host` | Required for production NFS + Kerberos (bridge puts `172.17.x.x` in CLIENT records) |
+| `uts: host` | Hostname matches keytab principals |
+| `SYS_ADMIN` | Ganesha VFS on host binds |
+| `DAC_READ_SEARCH` | Walk restrictive intermediate dirs (WebUI + Ganesha) |
 
-In the container you should see the socket and processes:
-```
-/run/dbus/system_bus_socket
-dbus-daemon ...
-rpcbind (may daemonize)
-ganesha.nfsd ...
-```
+`--privileged` works but is overkill. Numeric UID/GID must match host and container (no userns-remap).
 
-### Generated ganesha.conf and exports
+Entrypoint starts `dbus-daemon` (Ganesha bus) and best-effort `rpcbind`. Management is fragments + signals to pid 1 — not D-Bus export RPCs.
 
-The generator writes a minimal `ganesha.conf` plus one fragment per share under `/etc/ganesha/exports.d/`. Defaults include Protocols=4, UDP=false, DIRECTORY_SERVICES nsswitch, `Root_Kerberos_Principal = nfs, root` (excludes `host`), `Idmapped_*_Time_Validity = 180`, Only/Allow_Numeric, UseGetpwnam. Core `Manage_Gids_Expiration` is not emitted (9.13 uses Idmapped_*). Live idmap: nss_wrapper + idhelper for uid0 and supplemental groups. See [ldap-integration.md](../ldap-integration.md).
-
-Each per-share fragment is an EXPORT with Path (container serve path), Pseudo (client-visible), SecType, Squash, optional PrefRead/PrefWrite, a CLIENT block, and VFS FSAL. Hand-appended CLIENT blocks are lost on regeneration.
-
-### Host notes and troubleshooting
-SELinux hosts may need `:Z` on bind mounts. Common failures: missing caps or wrong internal Path, UID namespace mismatch on apply, dbus socket timing, `--uts=host`/keytab hostname drift, bridge networking (`172.17.x.x` in CLIENT records — use host network), hybrid Kerberos teardown (ensure idhelper + `ganesha-ctl id-check`). See [docs/ldap-integration.md](../ldap-integration.md) and `scripts/verify-ganesha.sh`.
-
-### Verification
+Generator writes minimal `ganesha.conf` + `/etc/ganesha/exports.d/*`. Defaults: Protocols=4, DIRECTORY_SERVICES nsswitch, `Root_Kerberos_Principal = nfs, root`, Idmapped validity 180, Only/Allow_Numeric, UseGetpwnam. Hand-appended CLIENT blocks are lost on regenerate.
 
 ```bash
 /container/healthcheck.sh
-verify-ganesha.sh            # in-container Ganesha/export + network checks (/usr/local/bin/)
+verify-ganesha.sh
 ganesha-ctl show-fragments
-getent passwd <user>          # nss: files extrausers sss; extrausers gecos must not contain ':'
 ganesha-ctl id-resolve 'user@REALM' --grps
 ```
+
+SELinux: `:Z` on binds. Deep identity: [ldap-integration.md](../ldap-integration.md).

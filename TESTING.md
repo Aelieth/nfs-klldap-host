@@ -105,39 +105,51 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | Navahi supervisor (avahi child gated on `navahi_discovery` at bring-up; full recycle is the toggle-application path; SharesApply HUPs — never bounces — avahi on advert changes via the `avahi_changed` fingerprint; managed-keyed crash respawn; flag-off recycle stops without revive) | `nfs-klldap-config/tests/supervisor_navahi_avahi.rs`, `src/recycle_plan.rs` (`restart_avahi` asserts), `src/exports_fingerprint.rs` (`avahi_fingerprint_tracks_service_files_only`) |
 | Navahi UI (Core BoolAlways toggle lands top-level before the first `[section]`, staged until Restart-and-apply; share-card checkbox muted-not-hidden with passthrough persistence while the global is off and real-clear while on; `navahi` exposure chip only when effective; Overview row; blank card honors the saved global) | `nfs-klldap-ui/src/web/tests.rs` (`settings_save_roundtrips_navahi_toggle`, `settings_navahi_share_roundtrip_and_muting`), `src/web/settings/spec.rs` (`roundtrip_covers_every_field_kind`) |
 
-## Kerberos user principal idmap verification
-Run: `cargo test --workspace` (idmap, resolve, generate, supervisor probes). Idhelper env-mutating tests serialize on `common::ENV_TEST_LOCK` and reset `ID_RESOLVER` via `reset_id_resolver_for_test()` so parallel `cargo test` does not poison `TEST_REBULK_POPULATE` / `NFS_CONFIG` (those env stubs only exist under the `test-support` cargo feature; release binaries ignore them). Invoke `idhelper grps 'user@REALM'` and `host/..@REALM` (full forms + groups). Check emitted limited-FS (NOACL) fragments for `Pseudo = /<name>;`, `Disable_ACL = true;`, `Manage_Gids = true;` (auto default; explicit `manage_gids=false` overrides), and `Read_Access_Check_Policy = pre;` (0.9.40-style; no POSIX markers). `cargo test -p nfs-klldap-config idmap_log_contract` classifies OP_ACCESS/GETATTR ACL-path NOTSUPP vs identity-path failures against the committed fixture. `ganesha-ctl id-resolve` / `id-check` + `nfs-klldap-config generate/validate` surface the post-generate id resolution check (warns on incomplete user/host resolution).
+## Kerberos / idmap verification
 
-## Fedora 44 krb5p client (container)
-`scripts/fedora-krb5p-client-validate.sh` — machine kinit + sec=krb5p; on mount failure it captures `mount -vvv` output + kernel nfs/rpc/gss messages. User TGT: Kerberos principal, host rpc_pipefs, client idmapd, use-machine-creds=0. Server: NOACL default emits `Manage_Gids = true` (set `manage_gids=false` to skip AUTH_SYS managed gids only); krb5p/krb5i require `UseGetpwnam=true` + idhelper nss_wrapper supplemental groups (`getpwuid_r for uid:` + `getgrouplist for uname:` LogInfo). DOCKER_NO_CACHE after changes. Client mount steps for real Bazzite/Silverblue hosts: [docs/client-fedora-immutable.md](docs/client-fedora-immutable.md).
+```bash
+cargo test --workspace
+cargo test -p nfs-klldap-config idmap_log_contract
+```
+
+Idhelper env-mutating tests serialize on `common::ENV_TEST_LOCK` and reset `ID_RESOLVER` via `reset_id_resolver_for_test()` (`test-support` feature only). NOACL fragments must emit `Pseudo`, `Disable_ACL = true`, `Manage_Gids = true` (unless explicit `manage_gids=false`), and `Read_Access_Check_Policy = pre`. Runtime: `ganesha-ctl id-resolve` / `id-check`.
+
+## Fedora krb5p client (container)
+
+`scripts/fedora-krb5p-client-validate.sh` — machine kinit + `sec=krb5p`. Host client steps: [docs/client-fedora-immutable.md](docs/client-fedora-immutable.md).
 
 ## NSS snapshot golden tests
-`build_nss_snapshot` + ensure drive complete supps in both stores; ondemand fast cache + uid0 tests cover reactive authoritative path for getgrouplist.
 
-## 2.6 ACL gate run (pre-1.0 live checklist)
+`build_nss_snapshot` + ensure drive complete supps; ondemand + uid0 cover the reactive getgrouplist path.
 
-The gate's vehicle is `setup-script/stress-test.sh` **v2.5** (v1.4, 2026-07-17 audit, closed the harness gaps: B9 server-side landing assert + deny-intent access check + malformed-set case, new `aclcrossclass` phase, client copy-vs-move in acllifecycle, WI-8 out-of-band ACL-edit leg; v1.5, same day, machine-runs every server-side shell step through `SERVER_EXEC_CMD` — acllifecycle [1]/[2b]/[3], the aclcoherency chmod leg, the B7 refresh-identity flush with its honest-exit check — adds `SERVER_HOST_EXEC_CMD` for the host-side rsync backup leg, and a `preflight` phase that machine-checks this pre-flight list; v1.6: hooks are password-once — ControlMaster keeps the session's first typed ssh password alive ~2h, the prompt is announced with 90s to answer — and OPTIONAL: a failed hook is a preflight SKIP with every phase falling back to operator prompts, never a session-stopper; the banner version is the stale-copy tripwire; v1.7: hook timeouts run `--foreground` — plain `timeout` re-groups its child off the terminal's foreground process group, so ssh's `/dev/tty` password read got SIGTTIN and suspended silently, which was the "ssh'ing but never asking" hang; v1.8: aclwire deny redesign from the 22:19 live run — owner-targeted deny is a documented POSIX-mapping limit recorded as such, the enforceable deny-intent assert moved to a non-owner named-group case with a server-side bound-entry check, and the malformed uid-wrap case runs isolated on a scratch file; v1.9: capture-on-failure — the exec-hook helpers logged remote stdout only on rc=0, which discarded refresh-identity's honest-exit `FAILED — layer(s) not flushed:` line in the 22:35 aclpropagation run; both helpers now log stdout + rc unconditionally and the B7 flush prints the server transcript so the failing layer (sssd / idhelper / ganesha) is named on the terminal; v2.0: B7 polls on fresh inodes — the client kernel caches each inode's access verdict and membership changes bump no ctime to invalidate it, so a fixed gate file made both poll directions wait out the client cache instead of measuring the flush; each poll now consumes a virgin gated subdir from a per-run server-built pool, forcing a fresh server-side verdict per probe; v2.1: hang-proof probes — `timeout`'s TERM cannot reap a dd in uninterruptible NFS I/O, so one unanswered probe wedged the poll loop past every ceiling; the O_DIRECT dd now carries a `-k` SIGKILL backstop riding TASK_KILLABLE, bounding a non-answering server at ~15s per probe; v2.2: the prior-issue lessons swept across the remaining phases — every numeric timeout carries `-k` (any mount op can wedge the way the B7 probe did), aclcrossclass probes fresh-inode b1 twins per flip (a class flip bumps no ctime and recalls no delegation, so the original b1 could answer from pre-flip client cache), lifecycle [4] warns that client-side judgment needs ~2 min post docker-start for grace + GSS, and coherency hints bake the real test uid; v2.3: B7's gid resolve is no longer membership-gated — the client's own SSSD serves stale initgroups long after a revoke/re-add cycle, so the gid falls back to getent-by-name (divergence = static-shadow NOTE) and membership is decided solely by the server-side start-gate probe; v2.4: hook captures are wedge-proof — `$(pipe)` substitution blocks until the last write-end holder exits, and a leaked ssh ControlPersist mux fd holds it for hours immune to every timeout (the 07-18 flush wedge, server verified idle throughout); hook stdout now lands in a results-dir file read after `timeout -k` returns, and aclprep's raw hook pipe gained a 300s bound; v2.5: B7 pre-gate flush — the start gate no longer races the natural propagation window after a re-add (six 07-18 attempts were honestly denied inside it) — and probes discriminate fast-DENIED from hung-reaped rc 124/137, so a client wedge can never register as a server verdict or a false revoke; v2.6: the B7 pause points announce "THE RUN IS PAUSED FOR YOUR ENTER" — a read gate was mistaken for a hang three times on 07-18; v2.7: backup legs go numeric — the first live tar round-trip restored group "users" via the container's static /etc/group shadow (3002→100): tar --numeric-owner both directions, rsync --numeric-ids; the ACLs themselves round-tripped byte-identical; v2.8: aclprep announces its silent slow-media window (log-only output on USB flash read as a hang) and its bound rises to 600s). Run as the LDAP test user on a kit-provisioned client. Operator hands stay only on: LDAP group edits (B7), WebUI ACL edit (coherency leg 2), WebUI class flips (cross-class), docker kill/restart (lifecycle [4], killwrite, ext4 leg).
+## Live ACL gate (`setup-script/stress-test.sh`)
 
-**Pre-flight (before anything):** `./stress-test.sh preflight` now machine-checks all of this (kit version on the box, >16-group identity + fixture-group membership, mounts, manifest reachability + share class, both exec hooks + the deployed build being a klldap Ganesha, nfs4-acl-tools presence, fixture v1.4-seed freshness). The list it enforces:
-- Client kit **v5.12** deployed on EVERY participating client (`SCRIPT_VERSION` in `satomlin-ldap-setup-v5.sh` on the box, not from memory — blue-lt's 07-14 evening burned on a stale v5.8 kit).
-- `nfs4-acl-tools` on the ONE designated audit client only; it is not part of the supported client configuration.
-- Harness config block set: `WEBUI_BASE_URL` + `ACL_SHARE_NAME` (aclcrossclass asserts class flips through `/client-manifest.json`) and `SERVER_EXEC_CMD` — `ssh … docker exec` with ControlMaster, no sudo (docker group gives root in-container): the session's FIRST hook call may prompt for the ssh password on the terminal, typed once and cached ~2h; it upgrades aclwire/acllifecycle/aclcoherency/aclpropagation/aclcrossclass from operator-y/n to machine asserts. `SERVER_HOST_EXEC_CMD` (host rsync backup leg — the image ships no rsync) ships BLANK: a root shell cannot password-prompt mid-pipe, so that one step degrades to a paste-block unless NOPASSWD is granted and the hook set (shape in the config comment).
-- Re-run `aclprep` before the session: v1.4 adds two fixture files (`inherit/lc-client.txt`, `wi8-ace.txt`); older fixtures make those steps SKIP.
-- Server side: no conf edits under a live app without a fresh relaunch (the in-memory vs on-disk split), and `scripts/collect-server-diag.sh` ready for any anomaly window.
+Operator harness on a kit-provisioned client (not unit tests). Keep the script banner version current.
 
-**btrfs (production) session:** `./stress-test.sh aclgate` = preflight → aclprep → aclmatrix → aclperf → aclwire → aclpropagation → aclcoherency → acllifecycle → aclcrossclass, in order. B7 note: the phase measures the refresh-identity-collapsed path only (decision 2026-07-17); the natural window stays documented (~3 min typical, <10 worst) in `docs/ganesha-architecture.md`.
+```bash
+./stress-test.sh preflight          # kit, mounts, manifest, hooks, klldap Ganesha
+./stress-test.sh aclgate            # full btrfs session
+# phases: preflight → aclprep → aclmatrix → aclperf → aclwire →
+#         aclpropagation → aclcoherency → acllifecycle → aclcrossclass
+```
 
-**ext4 leg:** on the host `sudo scripts/make-scratch-fs.sh ext4`, then follow its printed steps — the load-bearing one: `docker restart nfs-klldap-host`, because the compose bind is rprivate and the in-container Admin/SIGUSR1 recycle canNOT see a mount created after container start. Add the share in the UI (leave enable_acl unset — the write probe auto-classifies), retarget `ACL_SHARE`/`ACL_FIXTURE`/`SERVER_FIXTURE_PATH`/`ACL_SHARE_NAME`, then `./stress-test.sh aclprep aclmatrix aclperf` (+ `aclwire` on the audit client). Identity/propagation rows are filesystem-independent — no per-fstype re-run. Optional: a `vfat` scratch share proves the Incapable classification end to end.
+| Need | Notes |
+|------|--------|
+| Client kit | Current `SCRIPT_VERSION` on every client |
+| `nfs4-acl-tools` | Audit client only |
+| Config | `WEBUI_BASE_URL`, `ACL_SHARE_NAME`, `SERVER_EXEC_CMD` (ssh + docker exec + ControlMaster) |
+| Operator hands | LDAP group edits (B7), WebUI ACL edit (coherency), class flips, docker restart (lifecycle/ext4) |
+| ext4 leg | `scripts/make-scratch-fs.sh ext4` then **host** `docker restart` (rprivate bind); leave `enable_acl` unset for auto |
+| B7 | Measures `refresh-identity` path; natural window ~3 min — [ganesha-architecture.md](docs/ganesha-architecture.md) |
+| Backups | Numeric ownership (`tar --numeric-owner`, `rsync --numeric-ids`) |
 
-**Evidence:** archive every `stress-results-*` dir under `setup-script/` — the 2026-07-15 green runs were never archived (only the pre-hardening 07-14 dir exists), so tonight's runs are the gate's evidence of record.
+| Phase | Covers |
+|-------|--------|
+| aclwire | Wire ACL + deny-intent + server-side landing |
+| aclpropagation | `refresh-identity` group flush (nonzero = layer failed) |
+| aclcoherency | UI vs client ACL visibility |
+| acllifecycle | Mount lifecycle / reclaim |
+| aclcrossclass | Class flip via manifest + NOACL re-proof |
+| aclperf | Cost |
 
-**Row → phase map:** Semantics deny-intent = aclwire access check; B9 = aclwire incl. server-side landing; B7 = aclpropagation; B6 UI half = the panel on `b6-unknown.txt` renders "(unknown) 59999" (live-verified 2026-07-17); Lifecycle = acllifecycle; Coherency = aclcoherency both legs; Cross-class + A8 + NOACL re-proof = aclcrossclass; Cost = aclperf. Gate exit: all green on btrfs + the ext4 leg, NOACL unchanged.
-
-**Redeploy-time proofs (2026-07-17 production audit — container-only, first image rebuild):**
-- Steady-state respawn: `docker exec nfs-klldap-host pkill -9 -x ganesha.nfsd` → within ~1 tick + cooldown the supervisor logs "ganesha is down — respawning (steady-state liveness)" and 2049 comes back; repeat 4× fast to see the budget line (3 per 10 min). Harness-proven against stubs (`tests/supervisor_steady_state_respawn.rs`); this is the real-daemon confirmation.
-- Log rotation: set `NFS_KLLDAP_LOG_ROTATE_MAX_MB=1` for the run (or wait out a real 64MB), confirm `ganesha.log.1` appears and the live file truncates without a Ganesha reload (rotation is copytruncate by design — SIGHUP would reread exports).
-- `ganesha-ctl refresh-identity <user>` now exits nonzero with a `FAILED:` line when any layer (sssd/idhelper/ganesha DBus) does not confirm — B7 operators must treat a nonzero exit as "flush did not land".
-- Generate ceiling: a SIGHUP with a deliberately stalled share mount errors within 120s instead of freezing the supervisor loop.
-- Deployed compose now ships `GANESHA_DEBUG=FALSE` / `SSSD_DEBUG_LEVEL=1` — raise only for diagnosis.
-
-Documentation and tests should be updated together when behavior changes. (See also fs.rs symlink policy comments and privileged.rs boundary.)
+**Redeploy smoke:** kill `ganesha.nfsd` → steady-state respawn; log rotate with `NFS_KLLDAP_LOG_ROTATE_MAX_MB=1` (copytruncate, no SIGHUP); stalled generate on SIGHUP fails within 120s. Archive `stress-results-*` under `setup-script/`.

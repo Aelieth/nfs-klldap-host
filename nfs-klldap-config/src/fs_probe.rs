@@ -246,10 +246,10 @@ pub fn compute_effective_flags(share: &Share, caps: &FsCapabilities) -> Effectiv
     compute_effective_flags_probed(share, caps, verdict_from_caps(caps))
 }
 
-/// Flags with a real probe verdict (0.9.90 auto-ACL semantics).
+/// Flags with a real probe verdict (auto ACL).
 /// Explicit true/false always wins; unset = AUTO, which turns ACL on only when
 /// the write round-trip proved the filesystem stores POSIX ACLs.
-/// Auto never fails generation: unproven degrades to NOACL, the historic rock.
+/// Auto never fails generation: unproven degrades to NOACL.
 pub fn compute_effective_flags_probed(
     share: &Share,
     caps: &FsCapabilities,

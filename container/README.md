@@ -13,16 +13,17 @@ entrypoint.sh
            ├─ rpcbind (best-effort)
            ├─ sssd
            ├─ nfs-klldap-idhelper
-           ├─ ganesha.nfsd -F   (unless HOST_NFS)
+           ├─ ganesha.nfsd -F          (unless HOST_NFS)
+           ├─ avahi-daemon             (when navahi_discovery = true)
            ├─ nfs-klldap-conf-watcher  → SIGHUP pid 1 on conf change (graceful apply)
            └─ nfs-klldap-ui :9630
 ```
 
-- NSS: `files extrausers sss`. Idhelper materializes complete supps + uid0 into nss_wrapper + extrausers for `UseGetpwnam` / `getgrouplist`. Machines → 0.
-- Ganesha starts after idhelper socket readiness, under nss_wrapper env from the supervisor (`LD_PRELOAD`, `NSS_WRAPPER_*`, idhelper socket vars).
-- Graceful apply: SIGHUP to pid 1 (conf-watcher, WebUI shares save, or `ganesha-ctl reload`) — Ganesha rereads exports in place and the WebUI reloads its config without restarting (sessions and connections survive); identity changes are only staged on disk. Not D-Bus RPCs to Ganesha for export management.
-- Full recycle: SIGUSR1 to pid 1 (WebUI "Restart and apply", setup completion, or `ganesha-ctl full-recycle`) — restarts SSSD, idhelper, Ganesha (stop/start; clients reclaim through the grace period), and the WebUI, applying staged identity plus ganesha main-conf/nfs.conf/WebUI settings.
-- **HOST_NFS:** skip ganesha.nfsd and 2049 checks; still generate fragments for a host Ganesha at `/etc/ganesha`.
+- **NSS:** `files extrausers sss`. Idhelper materializes supplemental groups + uid0 into nss_wrapper + extrausers for `UseGetpwnam` / `getgrouplist`. Machine principals → 0.
+- **Ganesha** starts after idhelper socket readiness under nss_wrapper env (`LD_PRELOAD`, `NSS_WRAPPER_*`).
+- **SIGHUP (graceful apply):** conf-watcher, WebUI shares save, or `ganesha-ctl reload` → export reread + WebUI in-process reload (sessions kept); identity staged on disk; avahi HUPed for advert changes (never bounced on this path).
+- **SIGUSR1 (full recycle):** "Restart and apply", setup completion, or `ganesha-ctl full-recycle` → restart SSSD, idhelper, Ganesha (stop/start + grace), WebUI, and avahi (only path that applies staged identity and the Navahi global toggle).
+- **HOST_NFS:** skip ganesha.nfsd and 2049 checks; still write fragments under `/etc/ganesha` for a host daemon.
 
 ## Scripts
 

@@ -1,12 +1,7 @@
-//! Size-capped copytruncate rotation for the runtime logs (2026-07-17 audit:
-//! ganesha.log / webui.log / idhelper.log grew unbounded — no logrotate in
-//! the image, and `ganesha-ctl` greps them, slowing as they grow).
-//!
-//! Copytruncate, not reopen: every writer holds its fd in O_APPEND (ganesha's
-//! -L sink and both supervisor stdout redirects), so truncating in place is
-//! safe and needs zero coordination — a ganesha SIGHUP would reread exports
-//! as a side effect, which rotation must never trigger. Lines written between
-//! the copy and the truncate are lost; that window is the documented cost.
+//! Size-capped copytruncate rotation for ganesha/webui/idhelper logs.
+//! Copytruncate (not reopen): writers hold O_APPEND fds; truncating in place
+//! needs no coordination. A ganesha SIGHUP would reread exports, so rotation
+//! must never signal the daemon. Lines between copy and truncate may be lost.
 
 use std::io;
 use std::path::{Path, PathBuf};

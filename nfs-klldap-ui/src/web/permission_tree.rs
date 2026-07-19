@@ -467,11 +467,10 @@ fn gate_outside_shares() -> AclGateView {
     }
 }
 
-/// Share-level gate for the UI surfaces (panel, tree "+" markers): classifies
-/// by the share serve-root verdict alone — strictly per share, never per
-/// directory. Auto semantics (0.9.90): explicit true/false wins; unset turns
-/// ACL on only when the serve path passes the write round-trip probe — the
-/// same decision generate makes, so the panel mirrors the export.
+/// Share-level gate for the UI (panel, tree "+" markers): classifies by the
+/// share serve-root verdict alone — per share, never per directory. Explicit
+/// true/false wins; unset (auto) turns ACL on only when the write probe proves
+/// the serve path — same decision generate makes.
 fn share_acl_gate(state: &AppState, host_path: &std::path::Path) -> AclGateView {
     let cfg = state.config.read().unwrap_or_else(|p| p.into_inner());
     let Some(s) = best_share_for(&cfg, host_path) else {

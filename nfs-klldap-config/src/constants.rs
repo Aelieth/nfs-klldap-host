@@ -17,12 +17,10 @@ pub const GANESHA_ROOT_KRB_PRINCIPALS: &str = "nfs, root";
 /// Valid Root_Kerberos_Principal tokens (Ganesha 9.6 nfs_read_conf.c);
 /// `none` in the list overrides every other token.
 pub const GANESHA_ROOT_KRB_PRINCIPAL_TOKENS: &[&str] = &["none", "nfs", "root", "host", "all"];
-/// DIRECTORY_SERVICES Idmapped_*_Time_Validity seconds: identity lookups AND
-/// the getgroups() trust window — 9.13 routes the old core param
-/// Manage_Gids_Expiration here (it now warns and is no longer emitted).
-/// 180s (0.9.84, was 600): a group-membership change lands in ~3 min without
-/// intervention; the pooled resolver keeps the extra refreshes cheap. Instant
-/// via `ganesha-ctl refresh-identity`. Override with idmapped_validity_secs.
+/// DIRECTORY_SERVICES Idmapped_*_Time_Validity (seconds): identity lookups and
+/// the getgroups trust window. On 9.13 the old core Manage_Gids_Expiration
+/// routes here and is no longer emitted. ~3 min natural group propagation;
+/// instant via `ganesha-ctl refresh-identity`. Override: idmapped_validity_secs.
 pub const GANESHA_IDMAPPED_VALIDITY_SECS: u32 = 180;
 /// Sanity cap for the manage-gids TOML knobs (Ganesha capped the old core
 /// param at 7 days; the values now feed Idmapped_*_Time_Validity).
@@ -48,15 +46,10 @@ pub const GANESHA_MALLOC_TRIM_MIN_MB: u32 = 1024;
 /// through grace/reclaim across container recreation (see nfs-klldap-host.yaml).
 pub const GANESHA_RECOVERY_ROOT: &str = "/var/lib/nfs/ganesha";
 pub const GANESHA_DEFAULT_SECTYPE: &str = "krb5p";
-/// root_squash by default (0.9.81): the plan-1.4 threat model is "client
-/// machine keytabs must never be root on an export". Root_Kerberos_Principal
-/// gates which principals may present AS root, but the 2026-07-11 stress test
-/// proved a `host/<client>` machine credential could still write to a
-/// no_root_squash export — so squash is the load-bearing control, not just a
-/// belt. No client needs uid 0 on these exports (the WebUI does privileged
-/// chown/chmod container-side on the bind mount, never over NFS), so
-/// squashing root costs nothing and closes the hole. Opt out per share via
-/// the UI checkbox (emits an explicit no_root_squash).
+/// Default per-export squash. Machine keytabs must not be root on exports;
+/// Root_Kerberos_Principal alone is insufficient if no_root_squash is set.
+/// WebUI does privileged chown/chmod container-side, never over NFS. Opt out
+/// per share (UI checkbox → explicit no_root_squash).
 pub const GANESHA_DEFAULT_SQUASH: &str = "root_squash";
 pub const GANESHA_ALLOWED_SECTYPES: &[&str] = &["krb5p", "krb5i", "krb5"];
 pub const GANESHA_ALLOWED_SQUASH: &[&str] = &[

@@ -42,8 +42,8 @@ pub(crate) struct ShareTemplateRow {
     pub cache_profile: String,
     /// Raw select value: "auto" | "true" | "false".
     pub enable_acl: String,
-    /// True only when the export will actually serve ACLs (enable_acl opted-in AND
-    /// serve-path FS is ACL-capable). Drives status-dot / legend alignment with Share Permissions.
+    /// True when the export actually serves ACLs: resolved enable_acl (explicit or
+    /// auto-promoted) and a capable serve-path FS. Status-dot / legend match Share Permissions.
     pub effective_acl_capable: bool,
     /// Live write-probe verdict: "capable" | "incapable" | "unverified".
     /// Read by the client `syncAclStatus` JS via a data attribute.
@@ -62,8 +62,8 @@ pub(crate) struct ShareTemplateRow {
 }
 
 impl ShareTemplateRow {
-    /// Blank row for the "+ Add share" card, matching the pre-server-render JS defaults
-    /// (RW, root_squash ON by default, auto/NOACL selects, editable pseudo path).
+    /// Blank row for the "+ Add share" card (RW, root_squash on, enable_acl auto,
+    /// editable pseudo). Auto stays NOACL until the write probe proves the serve path.
     pub(crate) fn blank(idx: usize) -> Self {
         Self {
             idx,

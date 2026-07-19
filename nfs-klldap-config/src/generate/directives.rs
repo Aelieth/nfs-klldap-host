@@ -76,7 +76,7 @@ pub fn export_fs_directives(
         ("    Disable_ACL = false;\n".to_string(), comment)
     };
 
-    // Per-export FSAL Umask is gone in 9.13; the 0.9.9x POSIX gate owns it.
+    // No per-export FSAL Umask on 9.13; use Inherit ACLs + setgid.
     let umask_line = String::new();
     (disable_acl_line, manage_gids_line, umask_line, auto_comment)
 }

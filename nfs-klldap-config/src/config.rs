@@ -315,7 +315,7 @@ pub struct Share {
     pub umask: Option<String>,
 }
 
-/// Derive the Ganesha NFSv4 Pseudo path from `pseudo_path` or `/{name}` (0.9.40-style).
+/// Derive the Ganesha NFSv4 Pseudo path from `pseudo_path`, or `/{name}` when unset.
 pub fn derive_share_pseudo(share: &Share) -> String {
     let default = format!("/{}", share.name);
     let raw = share.pseudo_path.as_deref().unwrap_or(&default);

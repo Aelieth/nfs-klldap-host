@@ -122,13 +122,10 @@ pub struct ApplyProgress {
     pub last_path: StdMutex<Option<String>>,
 }
 
-/// Directories get x wherever r is granted. Over NFS (Ganesha) a directory
-/// with r but not x lists as EMPTY — readdir returns entry attributes only
-/// with R+X on the directory — so the split pair is meaningless for
-/// directories and directly counter-intuitive (round-4: a 0776 share root
-/// "returned nothing"). Files keep their raw mode (r without x is normal).
-/// The UI shows execute as a real editable bit; this fuse is the server
-/// backstop, and each fused directory is reported in the Apply Log.
+/// Directories get x wherever r is granted. Over NFS a directory with r but
+/// not x lists empty (readdir needs R+X). Files keep their raw mode. The UI
+/// may show execute as editable; this fuse is the server backstop, and each
+/// fused directory is reported in the Apply Log.
 pub(crate) fn dir_mode_r_implies_x(mode: u32) -> u32 {
     mode | ((mode & 0o444) >> 2)
 }

@@ -1,60 +1,182 @@
 # Testing
 
-**Purpose:** coverage map and patterns for the workspace crates.
+**Purpose:** how we prove the stack is safe to ship — automated gates, image smokes, and live client/ACL work that already ran on real hardware.
 
-**1.0.** Pre-commit gates: `make test`, `make clippy` (nightly, `-D warnings`), `scripts/safety-dance.sh`, `python3 scripts/comment_lint.py`. Crates: `nfs-klldap-identity`, `nfs-klldap-config`, `nfs-klldap-ui`. Host-side uid2grp preflight: `scripts/ganesha-chain-preflight.sh`.
+**1.0.** Crates: `nfs-klldap-identity`, `nfs-klldap-config`, `nfs-klldap-ui`.
+
+---
+
+## Production gates (every commit)
+
+These are the gates that must stay green before a release image is trusted.
+
+| Gate | What it proves | How |
+|------|----------------|-----|
+| **`make gate`** | Full pre-merge bar | `scripts/safety-dance.sh` → comment lint → Ganesha version-pin check → `cargo build --workspace --bins` → `cargo test --workspace` |
+| **GitHub Actions `gate.yml`** | Same bar on clean runners (no leftover sockets / root paths) | Push/PR → `make gate` |
+| **`scripts/safety-dance.sh`** | No first-party `unsafe` / `libc::`; `#![deny(unsafe_code, dead_code)]`; clippy `-D warnings` | Part of `make gate` |
+| **`scripts/check-version-pins.sh`** | Packaging, image install, and smoke scripts agree on `9.13-1+klldap3` | Part of `make gate` |
+| **`make test` / `make clippy`** | Workspace tests only / nightly clippy only | Local iteration |
+
+```bash
+make gate          # preferred pre-commit / release check
+make test          # cargo build --bins + cargo test --workspace
+make clippy        # cargo +nightly clippy -D warnings
+```
+
+Supervisor integration tests run under `NFS_KLLDAP_TEST_PERSISTENT` with stubs (writable SSSD pipe, idhelper fixture). They exercise SIGHUP vs SIGUSR1 recycle, export reread, identity staging, Navahi avahi lifecycle, and steady-state respawn — the same paths pid 1 uses in production.
+
+---
+
+## Image & Ganesha smokes (in-container / against a live image)
+
+Run after a `docker build` when changing packaging, generator, or entrypoint.
+
+| Script | Proves |
+|--------|--------|
+| `scripts/ganesha-startup-smoke.sh` | Custom package identity (`+klldap3`), no MSPAC stub / no wbclient, POSIX-ACL backend present, daemon on 2049, VFS FSAL, GSS principal, clean NOACL export startup |
+| `scripts/ganesha-export-reload-smoke.sh` | Export reread / reload path survives without client-visible hard fail |
+| `scripts/ganesha-log-audit.sh` | Startup / identity log contracts (no forbidden noise, expected idmap chain) |
+| `scripts/ganesha-chain-preflight.sh` | Before a Fedora mount: `UseGetpwnam`, idhelper materialize of a sample principal |
+| `scripts/fedora-krb5p-client-validate.sh` | Machine kinit + `sec=krb5p` mount/write cycle (container client) |
+| `scripts/verify-ganesha.sh` | Broader operator verify helper |
+| `scripts/collect-server-diag.sh` | Bundle logs/conf for a failed field run |
+
+Host client checklist (immutable Fedora / Bazzite / Silverblue): [docs/client-fedora-immutable.md](docs/client-fedora-immutable.md).
+
+---
+
+## Summary of the Ganesha refactor plan (closed into 1.0)
+
+The long design doc (`nfs-klldap-host-ganesha-refactor-plan.md`, local non-product) tracked the move off stock Debian **Ganesha 9.6** into a **custom-packaged 9.13** stack with real client proof. This is that story, shortened, and where testing closed each phase.
+
+### Governing idea
+
+Change one variable at a time. **NOACL is the permanent rock** — every phase had to leave the NOACL path equal or better. ACL work was allowed only after NOACL was hardened and re-proven.
+
+### Phase 1 — Custom NOACL build (done)
+
+- Retrieve Debian packaging, ship **`+klldap*`** package identity, VFS-only FSAL trim.
+- **`_MSPAC_SUPPORT=NO`** so principal→group is not a compile-time stub and **wbclient** is gone (build gates enforce both).
+- Image swap + **startup smoke** (daemon, VFS, GSS, 2049, clean Disable_ACL export).
+- Config hardening: explicit per-export ACL disable, NSS/`UseGetpwnam` identity path, `Manage_Gids` on NOACL, `Root_Kerberos_Principal = nfs, root` (no `host/`), NFSv4-focused runtime, export reload path.
+- **1.5 rock test (merged into 2.2):** krb5 / krb5i / krb5p from Silverblue and Bazzite; multi-group users; log audit at normal verbosity; mid-write container kill + grace; performance vs stock baseline.
+
+### Realignments (what changed mid-flight)
+
+| Date | Decision |
+|------|----------|
+| **2026-07-10** | One **ACL-capable** binary for both tracks (not a NOACL-only build forever). ACL vs NOACL is **per-export** (`Disable_ACL`), proven by gates. Uplift source to **9.13**; restore stock **`ENABLE_VFS_POSIX_ACL`** (debug-ACL is in-memory only — wrong store). |
+| **2026-07-12** | **Disk POSIX ACLs are truth** (`system.posix_acl_*`). WebUI writes with `setfacl` at the serve path; no private ACL blob / reconciler. Auto `enable_acl` when the write probe proves the FS; unproven → NOACL. |
+
+Branch lines **0.9.8x** (NOACL stabilize) and **0.9.9x** (ACL stabilize) ran the **same** Ganesha package so regressions were config/feature, not version skew.
+
+### Phase 2 — ACL on the same binary (done)
+
+- **2.1–2.2:** 9.13 uplift + full Phase-1 regression gate green on the new package (multi-round stress on 0.9.8x).
+- **2.3:** POSIX↔NFSv4 mapping audit (SETATTR/GETATTR, mask/chmod, Disable_ACL mechanics, idmapping of ACE names).
+- **2.4–2.5:** Mask envelope, default-ACL inheritance (umask retired), WebUI full ACL editor (WI-2…WI-11): auto-sensing, capability cache, recursive apply, tree `+` marker, attr-cache window, per-share classification + public `/client-manifest.json`.
+- **2.6 ACL validation gate (operator stress):** wire ACL, propagation (`refresh-identity`), UI↔client coherency, lifecycle/reclaim, cross-class NOACL re-proof, cost accounting — btrfs production + ext4 scratch. Recorded green across the planned rows (including B-row identity grants and WI-8 coherency window).
+
+Packaging follow-ons still in the image today: **klldap2** (nsswitch `getgrouplist` return) and **klldap3** (uid2grp single-flight under concurrent misses).
+
+### Production audit + supervisor (2026-07-17, done)
+
+Rust/supervisor hardening after the ACL gate: dead **ganesha/sssd/idhelper** no longer stay dead (Idle-tick respawn with budget); recycle plan split (**SIGHUP** shares-scoped apply + identity **staged**; **SIGUSR1** forced full recycle); probe harnesses for export / identity / full recycle. Those contracts are what `tests/supervisor_loop_*.rs` and `recycle_plan.rs` lock in.
+
+### Explicitly not done (Phase 3 — out of 1.0)
+
+Fleet-level KLLDAP ownership of share objects, host→directory reporting, and “KLLDAP is law” remote policy loops remain **future**. 1.0 is a production NFS host for a KLLDAP domain, not a multi-host control plane.
+
+### Navahi (0.9.99 → 1.0)
+
+mDNS adverts + optional NFSv3/AUTH_SYS click-mount for flagged shares; global toggle full-recycle-gated; covered by `navahi_generate` + `supervisor_navahi_avahi` tests.
+
+### What “done” means for identity
+
+MSPAC-off **unlocks** Ganesha’s principal path and removes winbind. Production still depends on **idhelper + nss_wrapper + UseGetpwnam** for complete KLLDAP supplementals and machine principals — that was never replaced by MSPAC-off alone (see packaging notes in [container/ganesha/README.md](container/ganesha/README.md)).
+
+---
+
+## Real-world / production viability (plan gates that actually ran)
+
+Field and operator work that closed the plan — not crate unit tests:
+
+| Plan gate / drill | Evidence |
+|-------------------|----------|
+| **1.5 / 2.2 auth matrix** | Silverblue + Bazzite; krb5p / krb5i / krb5; multi-share trees; large supplemental groups |
+| **1.5 reliability** | Mid-write container kill → client grace/reclaim; export-reload smoke; steady-state Ganesha respawn |
+| **1.3 / 2.1 package smokes** | `ganesha-startup-smoke.sh` (version, no MSPAC/wbclient, POSIX ACL backend, 2049, NOACL export) |
+| **2.6 ACL gate** | `setup-script/stress-test.sh` acl* phases (below) on kit clients; btrfs + ext4 |
+| **2.6 NOACL re-proof** | Cross-class + NOACL legs after ACL work so the rock path never silently regressed |
+| **Group flush (B7-class)** | Live `ganesha-ctl refresh-identity` during propagation phase |
+| **Pre-mount chain** | `ganesha-chain-preflight.sh` + idhelper resolve of a domain user |
+| **Client script** | `fedora-krb5p-client-validate.sh` (machine kinit, write/cat, host-bind visibility) |
+| **CI production bar** | GitHub `gate.yml` / `make gate` on clean runners |
+
+**Live ACL operator harness** (`setup-script/stress-test.sh` — not unit tests):
+
+```bash
+./stress-test.sh preflight          # kit, mounts, manifest, hooks, klldap Ganesha
+./stress-test.sh aclgate            # full btrfs session
+# phases: preflight → aclprep → aclmatrix → aclperf → aclwire →
+#         aclpropagation → aclcoherency → acllifecycle → aclcrossclass
+```
+
+| Phase | Covers |
+|-------|--------|
+| aclwire | Wire ACL + deny-intent + server-side landing |
+| aclpropagation | `refresh-identity` group flush (nonzero = layer failed) |
+| aclcoherency | UI vs client ACL visibility |
+| acllifecycle | Mount lifecycle / reclaim |
+| aclcrossclass | Class flip via manifest + NOACL re-proof |
+| aclperf | Cost |
+
+**Redeploy smoke (field):** kill `ganesha.nfsd` → steady-state respawn; log rotate with `NFS_KLLDAP_LOG_ROTATE_MAX_MB=1` (copytruncate, no SIGHUP); stalled generate on SIGHUP fails within 120s. Archive `stress-results-*` under `setup-script/`.
+
+| Need | Notes |
+|------|--------|
+| Client kit | Current `SCRIPT_VERSION` on every client |
+| `nfs4-acl-tools` | Audit client only |
+| Config | `WEBUI_BASE_URL`, `ACL_SHARE_NAME`, `SERVER_EXEC_CMD` |
+| Operator hands | LDAP group edits, WebUI ACL edit, class flips, host `docker restart` for ext4 leg |
+| ext4 leg | `scripts/make-scratch-fs.sh ext4`; leave `enable_acl` unset for auto |
+| Backups | Numeric ownership (`tar --numeric-owner`, `rsync --numeric-ids`) |
+
+---
+
+## Strategy (workspace crates)
+
+- Pure unit tests for derivation, validation, hostname/keytab variants, credential helpers, allow-lists.
+- `tempfile` trees for `FsManager`; `tower::ServiceExt` oneshot for Axum.
+- Config golden checks on generated `sssd.conf` / Ganesha fragments.
+- Idhelper env-mutating tests serialize on `ENV_TEST_LOCK` + `reset_id_resolver_for_test()`.
 
 | Area | Primary tests |
 |------|----------------|
 | Full-config generate | `tests/representative_generate.rs` |
 | FS probe fixtures | `src/fs_probe.rs` |
 | Limited-FS / ACL hard-fail | `tests/limited_fs_generate.rs`, `tests/cli_generate_gate.rs` |
-| Staging / retired umask / Idmapped seeds | `tests/container_path_generate.rs` |
+| Staging / umask retirement | `tests/container_path_generate.rs` |
+| Recycle plans | `src/recycle_plan.rs`, `tests/supervisor_loop_*.rs`, `tests/supervisor_navahi_avahi.rs` |
 | `fs-warnings` CLI | `tests/fs_warnings_cli.rs` |
-| Post-generate hook env | `src/hook.rs` |
 
-## Strategy
+**Hard (not unit-tested):** live LLDAP/Kerberos binds, recursive chown on real binds, full entrypoint orchestration. Admin-login bind fail-closed mapping is unit-tested; wrong-password rejection against a live server is manual / stress.
 
-- Pure unit tests for derivation, validation, hostname/keytab variants, credential helpers, allow-lists.
-- `tempfile` trees for `FsManager`.
-- `tower::ServiceExt` oneshot tests for the Axum router.
-- Container/watcher/healthcheck via compose (not unit-tested).
+## Kerberos / idmap
 
-## Well-Tested Areas
+```bash
+cargo test --workspace
+cargo test -p nfs-klldap-config idmap_log_contract
+```
 
-- Config: `validate_and_derive`, generate output (including sssd.conf header, no duplicate keys), `load_host_paths_only`, two-tier hostname + realm-aware `resolve_nfs_host_identity` / `nfs_keytab_host_variants` / `nfs_keytab_host_matches` (short UTS → `{short}.{realm_lower}`).
-- Probe identities: `[probe]`/env/auto-pick precedence and the no-candidate skip path (`ganesha_identity_pipeline.rs` tests; readiness gate passes `Some(user)`).
-- UI config: `ldap_service_creds` (full DN verbatim, env override).
-- FsManager + web handlers: path mapping, safety refusals, tree building, settings save/apply.
-- Auth sessions and login cookie round-trip (`web/mod.rs`).
+NOACL fragments must emit `Pseudo`, `Disable_ACL = true`, `Manage_Gids = true` (unless explicit `manage_gids=false`), and `Read_Access_Check_Policy = pre`. Runtime: `ganesha-ctl id-resolve` / `id-check` / `refresh-identity`.
 
-## Hard Areas (Not Unit-Tested)
+## NSS snapshot goldens
 
-Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint + watcher orchestration. Admin-login bind verification (`try_simple_bind`) needs a live LLDAP; the fail-closed mapping is unit-tested (`bind_verdict`) but the actual wrong-password rejection is a manual check. The pooled-connection idle discard needs a live server too; only the staleness predicate (`pool_entry_stale`) is unit-tested.
+`build_nss_snapshot` + ensure drive complete supps; ondemand + uid0 cover the reactive getgrouplist path.
 
-## Patterns
-
-### Config (`nfs-klldap-config`)
-
-- Golden checks on generated `sssd.conf` (see `generate_produces_expected_artifacts` in `lib.rs`).
-- `tempfile` for generation paths.
-
-### WebUI (`nfs-klldap-ui`)
-
-- `FsManager` with `tempfile::tempdir()` and symlinks for WalkDir policy tests.
-- Router tests with `app.oneshot(request)` — preserve exact `Set-Cookie` on 303 login flows.
-
-### Auth sidecar
-
-`webui-password` uses iterated SHA-256 (not bcrypt). See `nfs-klldap-ui/src/auth.rs`.
-
-## Adding Tests — Checklist
-
-1. Prefer pure functions with controlled inputs.
-2. Security boundaries and config derivation are high priority.
-3. Update docs in the same change when tests clarify behavior.
-
-## Living Specification (module → tests)
+## Living specification (module → tests)
 
 | Behavior | Tests |
 |----------|--------|
@@ -105,51 +227,8 @@ Live LLDAP/Kerberos binds, recursive chown on real bind mounts, full entrypoint 
 | Navahi supervisor (avahi child gated on `navahi_discovery` at bring-up; full recycle is the toggle-application path; SharesApply HUPs — never bounces — avahi on advert changes via the `avahi_changed` fingerprint; managed-keyed crash respawn; flag-off recycle stops without revive) | `nfs-klldap-config/tests/supervisor_navahi_avahi.rs`, `src/recycle_plan.rs` (`restart_avahi` asserts), `src/exports_fingerprint.rs` (`avahi_fingerprint_tracks_service_files_only`) |
 | Navahi UI (Core BoolAlways toggle lands top-level before the first `[section]`, staged until Restart-and-apply; share-card checkbox muted-not-hidden with passthrough persistence while the global is off and real-clear while on; `navahi` exposure chip only when effective; Overview row; blank card honors the saved global) | `nfs-klldap-ui/src/web/tests.rs` (`settings_save_roundtrips_navahi_toggle`, `settings_navahi_share_roundtrip_and_muting`), `src/web/settings/spec.rs` (`roundtrip_covers_every_field_kind`) |
 
-## Kerberos / idmap verification
+## Adding tests
 
-```bash
-cargo test --workspace
-cargo test -p nfs-klldap-config idmap_log_contract
-```
-
-Idhelper env-mutating tests serialize on `common::ENV_TEST_LOCK` and reset `ID_RESOLVER` via `reset_id_resolver_for_test()` (`test-support` feature only). NOACL fragments must emit `Pseudo`, `Disable_ACL = true`, `Manage_Gids = true` (unless explicit `manage_gids=false`), and `Read_Access_Check_Policy = pre`. Runtime: `ganesha-ctl id-resolve` / `id-check`.
-
-## Fedora krb5p client (container)
-
-`scripts/fedora-krb5p-client-validate.sh` — machine kinit + `sec=krb5p`. Host client steps: [docs/client-fedora-immutable.md](docs/client-fedora-immutable.md).
-
-## NSS snapshot golden tests
-
-`build_nss_snapshot` + ensure drive complete supps; ondemand + uid0 cover the reactive getgrouplist path.
-
-## Live ACL gate (`setup-script/stress-test.sh`)
-
-Operator harness on a kit-provisioned client (not unit tests). Keep the script banner version current.
-
-```bash
-./stress-test.sh preflight          # kit, mounts, manifest, hooks, klldap Ganesha
-./stress-test.sh aclgate            # full btrfs session
-# phases: preflight → aclprep → aclmatrix → aclperf → aclwire →
-#         aclpropagation → aclcoherency → acllifecycle → aclcrossclass
-```
-
-| Need | Notes |
-|------|--------|
-| Client kit | Current `SCRIPT_VERSION` on every client |
-| `nfs4-acl-tools` | Audit client only |
-| Config | `WEBUI_BASE_URL`, `ACL_SHARE_NAME`, `SERVER_EXEC_CMD` (ssh + docker exec + ControlMaster) |
-| Operator hands | LDAP group edits (B7), WebUI ACL edit (coherency), class flips, docker restart (lifecycle/ext4) |
-| ext4 leg | `scripts/make-scratch-fs.sh ext4` then **host** `docker restart` (rprivate bind); leave `enable_acl` unset for auto |
-| B7 | Measures `refresh-identity` path; natural window ~3 min — [ganesha-architecture.md](docs/ganesha-architecture.md) |
-| Backups | Numeric ownership (`tar --numeric-owner`, `rsync --numeric-ids`) |
-
-| Phase | Covers |
-|-------|--------|
-| aclwire | Wire ACL + deny-intent + server-side landing |
-| aclpropagation | `refresh-identity` group flush (nonzero = layer failed) |
-| aclcoherency | UI vs client ACL visibility |
-| acllifecycle | Mount lifecycle / reclaim |
-| aclcrossclass | Class flip via manifest + NOACL re-proof |
-| aclperf | Cost |
-
-**Redeploy smoke:** kill `ganesha.nfsd` → steady-state respawn; log rotate with `NFS_KLLDAP_LOG_ROTATE_MAX_MB=1` (copytruncate, no SIGHUP); stalled generate on SIGHUP fails within 120s. Archive `stress-results-*` under `setup-script/`.
+1. Prefer pure functions with controlled inputs.
+2. Security boundaries, recycle plans, and config derivation are high priority.
+3. Update this file in the same change when tests clarify behavior.

@@ -37,11 +37,9 @@ It stays flexible across real host setups: bind-mounted trees, mixed storage, an
 | [Client: Fedora Immutable](docs/client-fedora-immutable.md) | Bazzite / Silverblue krb5p mount |
 | [WebUI security model](nfs-klldap-ui/docs/security.md) | Root-in-container allow-list, symlink policy |
 | [WebUI design notes](nfs-klldap-ui/docs/ui-design.md) | Tree, permissions panel, ACL tabs |
-| [Testing](TESTING.md) | Coverage map and test patterns |
+| [Testing](TESTING.md) | Production gates, image smokes, field viability, coverage map |
 | [Container internals](container/README.md) | entrypoint, healthcheck, watcher, ganesha-ctl |
 | [Custom Ganesha packaging](container/ganesha/README.md) | `9.13-1+klldap3` build flags |
-
-Non-product: [`TODO.md`](TODO.md), [`nfs-klldap-host-ganesha-refactor-plan.md`](nfs-klldap-host-ganesha-refactor-plan.md).
 
 ## Architecture
 

@@ -22,7 +22,7 @@
 It stays flexible across real host setups: bind-mounted trees, mixed storage, and optional host-managed NFS (`HOST_NFS`). Per share it probes whether the serve path can do POSIX ACLs and falls back gracefully to NOACL with basic owner/group/mode when the filesystem cannot; capable mounts keep full ACL editing in the UI. A remote HTTPS WebUI lets domain admins and localhost operators browse trees, chown/chmod, stage ACL changes, and manage `[[shares]]` with a live TOML preview. Beyond a plain Ganesha container, you get identity materialization for user and machine principals (`nfs-klldap-idhelper`), SIGHUP-scoped export apply without bouncing sessions, SIGUSR1 full recycle for identity and main conf, optional Navahi mDNS click-mount for guest NFSv3 paths, and a custom Ganesha build tuned for KLLDAP group lookups.
 
 <img
-  src="https://raw.githubusercontent.com/Aelieth/nfs-klldap-host/refs/heads/main/share_preferences.png"
+  src="share_preferences.png"
   alt="Share Permissions: directory tree and POSIX/ACL panel"
   width="75%"
 />

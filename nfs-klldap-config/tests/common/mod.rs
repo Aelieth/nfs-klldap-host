@@ -149,15 +149,26 @@ while :; do sleep 60 & wait $!; done
         log
     }
 
+    /// Writable SSSD NSS pipe path for this test (CI cannot write /var/lib/sss).
+    pub fn sssd_nss_pipe(&self) -> PathBuf {
+        self.tmp.path().join("sss-pipes").join("nss")
+    }
+
     /// sssd stub that creates the NSS pipe then sleeps.
+    /// Uses NFS_KLLDAP_SSSD_NSS_PIPE (set by `base_cmd`) so non-root CI works.
     pub fn stub_sssd_pipe(&self) {
+        let pipe = self.sssd_nss_pipe();
         write_exe(
             &self.stubs.join("sssd"),
-            r#"#!/bin/sh
-mkdir -p /var/lib/sss/pipes
-touch /var/lib/sss/pipes/nss
+            &format!(
+                r#"#!/bin/sh
+PIPE="${{NFS_KLLDAP_SSSD_NSS_PIPE:-{pipe}}}"
+mkdir -p "$(dirname "$PIPE")"
+: > "$PIPE"
 exec sleep 3600
 "#,
+                pipe = pipe.display()
+            ),
         );
     }
 
@@ -203,6 +214,8 @@ exec sleep 3600
             .env("IDMAP_CONF", self.out.join("idmapd.conf"))
             .env("NFS_CONF", self.out.join("nfs.conf"))
             .env("AVAHI_SERVICES_DIR", self.out.join("avahi-services"))
+            // Writable stand-in for /var/lib/sss/pipes/nss on non-root CI.
+            .env("NFS_KLLDAP_SSSD_NSS_PIPE", self.sssd_nss_pipe())
             .env(
                 "PATH",
                 format!(

@@ -10,7 +10,14 @@ use std::fs::{self, OpenOptions};
 
 use std::path::{Path, PathBuf};
 
-const NSS_PIPE: &str = "/var/lib/sss/pipes/nss";
+/// Default SSSD NSS responder pipe. Override with `NFS_KLLDAP_SSSD_NSS_PIPE`
+/// (supervisor integration tests point at a writable temp path — CI runners
+/// cannot create files under the root-owned `/var/lib/sss/pipes`).
+fn nss_pipe_path() -> PathBuf {
+    std::env::var("NFS_KLLDAP_SSSD_NSS_PIPE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/var/lib/sss/pipes/nss"))
+}
 /// Rotation-check cadence in loop ticks (~60s at the default 2s tick).
 const LOG_ROTATE_CHECK_TICKS: u32 = 30;
 use std::process::{Command, Stdio};
@@ -528,7 +535,7 @@ while :; do :; done
             return Ok(());
         }
         self.restart_sssd_and_wait();
-        if !Path::new(NSS_PIPE).exists() {
+        if !nss_pipe_path().exists() {
             // tolerate in test/harness envs without live LLDAP (for clean cargo test)
             eprintln!("WARN: SSD NSS pipe did not appear (tolerated for test)");
             // do not fatal for harness clean runs
@@ -552,10 +559,11 @@ while :; do :; done
 
     /// Touch probe markers so bring-up checks pass without real SSSD/idhelper.
     fn seed_probe_runtime_state(&self) {
-        if let Some(parent) = Path::new(NSS_PIPE).parent() {
+        let pipe = nss_pipe_path();
+        if let Some(parent) = pipe.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let _ = fs::write(NSS_PIPE, b"probe");
+        let _ = fs::write(&pipe, b"probe");
         let _ = fs::create_dir_all("/var/lib/nfs-klldap");
         if let Some(parent) = self.env.nss_passwd.parent() {
             let _ = fs::create_dir_all(parent);
@@ -1554,8 +1562,15 @@ while :; do :; done
             self.pids.sssd = Some(child.id());
         }
         self.log_info("Waiting for SSSD NSS responder...");
-        for _ in 0..60 {
-            if Path::new(NSS_PIPE).exists() {
+        let pipe = nss_pipe_path();
+        // Test harness / probe stubs are fast; production SSSD can take ~18s.
+        let attempts = if std::env::var("NFS_KLLDAP_TEST_PERSISTENT").is_ok() {
+            10
+        } else {
+            60
+        };
+        for _ in 0..attempts {
+            if pipe.exists() {
                 self.log_info("SSSD ready");
                 return;
             }
@@ -1629,10 +1644,21 @@ while :; do :; done
         if let Ok(child) = cmd.spawn() {
             self.pids.idhelper = Some(child.id());
         }
-        for _ in 0..60 {
+        // Wait on the configured NSS path (tests set NSS_PASSWD under tmp/), not
+        // a hard-coded /var/lib/nfs-klldap path that may be unwritable or unused.
+        let nss = self.env.nss_passwd.clone();
+        let attempts = if std::env::var("NFS_KLLDAP_TEST_PERSISTENT").is_ok() {
+            15
+        } else {
+            60
+        };
+        for _ in 0..attempts {
             // Marker-free: wait only for consistent full snapshot root entry (idempotent always-run seed)
-            if let Ok(content) = fs::read_to_string("/var/lib/nfs-klldap/nss_passwd") {
-                if content.lines().any(|l| l == "root:x:0:0:root:/root:/bin/sh" || l.starts_with("root:x:0:0:root:/root:/bin/sh")) {
+            if let Ok(content) = fs::read_to_string(&nss) {
+                if content.lines().any(|l| {
+                    l == "root:x:0:0:root:/root:/bin/sh"
+                        || l.starts_with("root:x:0:0:root:/root:/bin/sh")
+                }) {
                     self.log_info("idhelper preload ready (full snapshot, marker-free)");
                     return;
                 }

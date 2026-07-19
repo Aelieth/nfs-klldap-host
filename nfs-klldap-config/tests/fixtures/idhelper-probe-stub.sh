@@ -45,7 +45,17 @@ emit_machine_nss() {
 }
 
 case "$1" in
-  daemon) exec sleep 3600 ;;
+  daemon)
+    # Seed root nss row where the supervisor waits (NSS_PASSWD), then idle.
+    # Without this, restart_idhelper_and_wait_bulk spins for the full timeout.
+    mkdir -p "$(dirname "$PW")" "$(dirname "$GR")" /var/run/nfs-klldap 2>/dev/null || true
+    if ! grep -q '^root:x:0:0:root:/root:/bin/sh' "$PW" 2>/dev/null; then
+      echo 'root:x:0:0:root:/root:/bin/sh' >> "$PW"
+    fi
+    # Dummy socket path so wait_for_idhelper_socket can succeed in probe modes.
+    : > /var/run/nfs-klldap/idhelper.sock 2>/dev/null || true
+    exec sleep 3600
+    ;;
   grps)
     case "$2" in
       host/*) emit_machine_nss grps "$2" ;;

@@ -55,7 +55,7 @@ for lib in libgssapi_krb5 'libntirpc\.so' libnfsidmap libdbus-1; do
         bad "missing expected linkage: $lib"
     fi
 done
-VFS_SO=/usr/lib/x86_64-linux-gnu/ganesha/libfsalvfs.so
+VFS_SO="/usr/lib/$(uname -m)-linux-gnu/ganesha/libfsalvfs.so"
 # Flipped by the 2026-07-10 realignment: the single ACL-capable binary must
 # carry the POSIX-ACL backend (posix_acls.c: acl_get_fd/acl_set_fd et al.).
 # The in-memory debug store (vfs_acl_init) must stay absent.

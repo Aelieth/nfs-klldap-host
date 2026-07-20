@@ -275,7 +275,7 @@ case "$CMD" in
             NG="${NSS_GROUP:-/var/lib/nfs-klldap/nss_group}"
             SO="${NSS_WRAPPER_SO:-}"
             if [ -z "$SO" ]; then
-                for cand in /usr/lib64/libnss_wrapper.so /usr/lib/x86_64-linux-gnu/libnss_wrapper.so /usr/lib/libnss_wrapper.so; do
+                for cand in /usr/lib64/libnss_wrapper.so /usr/lib/x86_64-linux-gnu/libnss_wrapper.so /usr/lib/aarch64-linux-gnu/libnss_wrapper.so /usr/lib/libnss_wrapper.so; do
                     [ -f "$cand" ] && SO="$cand" && break
                 done
             fi
@@ -340,7 +340,7 @@ case "$CMD" in
             NG="${NSS_GROUP:-/var/lib/nfs-klldap/nss_group}"
             SO="${NSS_WRAPPER_SO:-}"
             if [ -z "$SO" ]; then
-                for cand in /usr/lib64/libnss_wrapper.so /usr/lib/x86_64-linux-gnu/libnss_wrapper.so /usr/lib/libnss_wrapper.so; do
+                for cand in /usr/lib64/libnss_wrapper.so /usr/lib/x86_64-linux-gnu/libnss_wrapper.so /usr/lib/aarch64-linux-gnu/libnss_wrapper.so /usr/lib/libnss_wrapper.so; do
                     [ -f "$cand" ] && SO="$cand" && break
                 done
             fi

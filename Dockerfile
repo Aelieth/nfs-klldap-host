@@ -166,8 +166,17 @@ RUN set -eux; \
     sed -i 's/^passwd:.*/passwd:         files extrausers sss/' /etc/nsswitch.conf; \
     sed -i 's/^group:.*/group:          files extrausers sss/' /etc/nsswitch.conf; \
     sed -i 's/^shadow:.*/shadow:         files sss/' /etc/nsswitch.conf; \
-    # libnss-extrausers installs to /usr/lib; glibc loads from triplet dir.
-    ln -sf /usr/lib/libnss_extrausers.so.2 /usr/lib/x86_64-linux-gnu/libnss_extrausers.so.2
+    # libnss-extrausers installs to /usr/lib; glibc loads from the per-arch
+    # multiarch triplet dir, so link it in (guarded: never clobber a real
+    # file there, and hard-fail unless the final path resolves).
+    case "$(uname -m)" in \
+        x86_64)  triplet=x86_64-linux-gnu ;; \
+        aarch64) triplet=aarch64-linux-gnu ;; \
+        *)       echo "Unsupported architecture: $(uname -m)"; exit 1 ;; \
+    esac; \
+    [ -e "/usr/lib/${triplet}/libnss_extrausers.so.2" ] || \
+        ln -s /usr/lib/libnss_extrausers.so.2 "/usr/lib/${triplet}/libnss_extrausers.so.2"; \
+    test -e "/usr/lib/${triplet}/libnss_extrausers.so.2"
 
 RUN mkdir -p \
     /etc/ganesha /etc/ganesha/exports.d /var/log/ganesha \

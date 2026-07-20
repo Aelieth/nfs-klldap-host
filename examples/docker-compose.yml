@@ -11,6 +11,8 @@ services:
       dockerfile: Dockerfile
     # Local-build tag. `make docker` produces git-versioned tags (branch name,
     # e.g. nfs-klldap-host:1.0) — pin one of those for reproducible deploys.
+    # To deploy without building, drop the build: block above and use the
+    # published image: aelieth/nfs-klldap-host:1.0
     image: nfs-klldap-host:latest
     container_name: nfs-klldap-host
 

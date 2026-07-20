@@ -91,6 +91,12 @@ flowchart LR
 
 ## Quick Start
 
+Multi-arch images (amd64/arm64) are published on Docker Hub:
+
+```bash
+docker pull aelieth/nfs-klldap-host:1.0   # or :latest
+```
+
 **Recommended:** [examples/docker-compose.yml](examples/docker-compose.yml) with `network_mode: host` and `uts: host`.
 
 ```bash
@@ -109,7 +115,7 @@ docker run -d \
   -v /media/:/export \
   -v /secure/krb5.keytab:/etc/krb5.keytab:ro \
   -v /path/to/ganesha-recovery:/var/lib/nfs/ganesha \
-  ghcr.io/aelieth/nfs-klldap-host:latest
+  aelieth/nfs-klldap-host:1.0
 ```
 
 Persist `/var/lib/nfs/ganesha` (compose: `ganesha-recovery`) so NFSv4 clients can reclaim locks/opens across container recreate.

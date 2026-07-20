@@ -84,14 +84,17 @@ No ACL mount option on NFSv4.2 — class is server-declared (`GET /client-manife
 
 **Suspend/resume:** prefer a sleep unit that unmounts krb5 shares and re-primes the machine ticket (`/tmp/krb5cc_0`). Leaving idle-timeout on causes remount “not authorized” when the root machine cred lapsed.
 
+**Credential persistence (kit v5.14):** the live ccache must stay `FILE:/tmp/krb5cc_<uid>` — rpc.gssd/gssproxy `%U` templates cannot search home paths. The kit hardens it in place instead: a tmpfiles drop-in exempts `/tmp/krb5cc_*` from the stock 10-day aging (which reaped idle caches on long uptimes), SSSD auto-renews TGTs (`krb5_renew_interval`, renewable 7d), and the prime timer/resume hook syncs valid user caches into `/var/lib/gssproxy/clients/` — the persistent fallback slot already second in gssproxy's cred chain — restoring them into `/tmp` when lost. Per-user login state (log, staged site script, TGT backup) lives in `~/.ldap-login`.
+
 ## Navahi (mDNS click-mount)
 
 Optional guest path: server `navahi_discovery` + share `navahi_insecure` advertises over mDNS. GNOME Files / Dolphin list shares with **zero** fstab setup.
 
-- Desktop clients use **NFSv3 + AUTH_SYS only** (no Kerberos). Identity = client numeric uid/gid; traffic unencrypted.
-- Prefer for read-mostly media/guest shares. Kerberized `vers=4.2` remains the supported full-integrity path.
-- Client packages: `gvfs-nfs`, `kio-extras`, `nss-mdns`, `avahi-daemon`.
-- Debug: `avahi-browse -rt _nfs._tcp`, `showmount -e <host>`.
+- Desktop clients use **NFSv3 + AUTH_SYS only** (no Kerberos): gvfs/kio ride libnfs defaults and list exports over the MOUNT protocol. Identity is the client-asserted numeric uid/gid and traffic is unencrypted — a guest tier for read-mostly media/guest shares. Kerberized `vers=4.2,sec=krb5p` (above) remains the data path; never flag krb5-only shares.
+- Adverts carry the server **FQDN** as SRV target — clients resolve it over unicast DNS (`<host>.local` only as fallback when the server identity is unqualified), so the same name serves both tiers.
+- Client packages are DE-split: GNOME layers `gvfs-nfs` (its click-mount backend); KDE relies on `kio-extras` (in the Kinoite/KDE base — gvfs-nfs is never layered there); both need `nss-mdns`, `avahi-daemon`, `avahi-tools`. The client kit's `-p` detects the desktop and layers only what it uses; `.local` resolution additionally needs authselect **`with-mdns4`** (kit `-o`) — layering nss-mdns alone does nothing on authselect-managed nsswitch.
+- Client firewall: `mdns` (5353/udp) must be allowed in the active firewalld zone (Workstation-family defaults allow it).
+- Verify: client kit `--discovery` runs the end-to-end probe (advert SRV/port/path asserts, manifest `navahi` cross-check, mountd tcp+udp, a real `gio mount`). Manual: `avahi-browse -rt _nfs._tcp`, `showmount -e <host>`, `gio mount nfs://<host>/<pseudo>`.
 
 ## Troubleshooting
 

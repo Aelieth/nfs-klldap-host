@@ -4,8 +4,8 @@
 //! an ACL from mode and owner SETATTR-ACL lands on both classes (audit A8 in
 //! docs/ganesha-architecture.md) — so the host declares it here and the client
 //! setup script consumes it. Open by design: bootstrap data only (share name,
-//! pseudo path, security flavor, rw, ACL class); server-internal paths never
-//! appear in the payload. Probe load from anonymous hits is bounded by the
+//! pseudo path, security flavor, rw, ACL class, Navahi exposure);
+//! server-internal paths never appear in the payload. Probe load from anonymous hits is bounded by the
 //! shared verdict cache because `share_acl_status` hardwires
 //! force_refresh=false.
 
@@ -34,6 +34,11 @@ struct ManifestShare {
     acl: &'static str,
     /// Resolved enable_acl state label ("on", "auto (on)", …) for diagnostics.
     acl_state: String,
+    /// True when the share is currently advertised over mDNS (global
+    /// `navahi_discovery` && per-share `navahi_insecure`) — the same
+    /// effective-exposure rule as the UI chip. Lets client tooling cross-check
+    /// the advertised set it sees in avahi-browse against the flagged set.
+    navahi: bool,
 }
 
 /// GET /client-manifest.json. Deliberately unauthenticated (never calls
@@ -68,6 +73,7 @@ pub(crate) async fn client_manifest(State(state): State<AppState>) -> impl IntoR
                     "noacl"
                 },
                 acl_state: status.state_label,
+                navahi: nfs_klldap_config::share_navahi_effective(&cfg, s),
             }
         })
         .collect();

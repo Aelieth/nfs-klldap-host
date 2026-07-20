@@ -954,6 +954,7 @@ async fn client_manifest_is_public_and_minimal() {
     assert!(body.contains(r#""security":"krb5p""#), "unset security falls to the default: {body}");
     assert!(body.contains(r#""acl":"noacl""#), "noacl fixture share must classify noacl: {body}");
     assert!(body.contains(r#""acl_state":"auto (off)""#), "{body}");
+    assert!(body.contains(r#""navahi":false"#), "unflagged share must publish navahi:false: {body}");
     // Field-name assertions: the fixture's pseudo (/data) textually equals its
     // container_path, so exclude the internal-path KEYS, not the value.
     assert!(!body.contains("host_path"), "internal paths must not leak: {body}");
@@ -1006,6 +1007,64 @@ async fn client_manifest_bypasses_setup_gate() {
         .unwrap_or("")
         .to_string();
     assert!(ct.contains("json"), "pre-setup response must still be JSON, got {ct}");
+}
+
+// The manifest's navahi field is the same effective-exposure signal as the
+// index chip (global toggle && per-share flag), so client tooling can compare
+// what avahi-browse shows against what the host thinks it advertises. A
+// flagged share under a disabled global toggle is inert and must publish
+// false, not echo its raw key.
+#[tokio::test]
+async fn client_manifest_navahi_tracks_effective_exposure() {
+    for (global_on, want_true, want_false) in [(true, 1, 1), (false, 0, 2)] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("shares");
+        std::fs::create_dir_all(root.join("alpha")).unwrap();
+        std::fs::create_dir_all(root.join("beta")).unwrap();
+        let cp = tmp.path().join("c");
+        let cfg = format!(
+            r#"ldap_uri = "ldaps://klldap.test:6360"
+navahi_discovery = {global_on}
+[storage]
+container_root = "{root}"
+[sssd]
+ldap_default_bind_dn = "uid=admin"
+ldap_default_authtok = "s"
+[[shares]]
+name = "alpha"
+host_path = "/alpha"
+container_path = "{root}/alpha"
+[[shares]]
+name = "beta"
+host_path = "/beta"
+container_path = "{root}/beta"
+navahi_insecure = true
+"#,
+            root = root.display()
+        );
+        std::fs::write(&cp, cfg).unwrap();
+        let sm = write_setup_marker(&tmp, ".navahimanifest");
+        let state = test_app_state(&cp, sm, None);
+        let app = router(state);
+        let req = Request::builder()
+            .uri("/client-manifest.json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let body = String::from_utf8_lossy(&bytes).to_string();
+        assert_eq!(
+            body.matches(r#""navahi":true"#).count(),
+            want_true,
+            "global_on={global_on}: {body}"
+        );
+        assert_eq!(
+            body.matches(r#""navahi":false"#).count(),
+            want_false,
+            "global_on={global_on}: {body}"
+        );
+    }
 }
 
 // op=mask needs no principal; it rewrites the layer's group-class cap.

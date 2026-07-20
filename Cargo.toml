@@ -1,12 +1,13 @@
 [workspace]
 members = [
+    "nfs-klldap-identity",
     "nfs-klldap-config",
     "nfs-klldap-ui",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.8.12"
+version = "1.0.0"
 edition = "2021"
 authors = ["Aelieth"]
 license = "MIT"
@@ -15,6 +16,7 @@ repository = "https://github.com/aelieth/nfs-klldap-host"
 [workspace.dependencies]
 # Core
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 toml = "0.8"
 tempfile = "3"
 
@@ -25,6 +27,8 @@ rand = "0.8"
 urlencoding = "2"
 tower = { version = "0.4" }
 walkdir = "2"
+nix = { version = "0.29", features = ["process", "signal"] }
+signal-hook = "0.3"
 
 toml_edit = "0.22"
 
@@ -42,3 +46,11 @@ ldap3 = { version = "0.12", default-features = false }
 cookie = "0.18"
 sha2 = "0.10"
 subtle = "2.6"
+
+# Release binaries: thin LTO + single codegen unit + symbol strip for size and
+# speed. Deliberately NO panic="abort": the pid-1 supervisor and tokio task
+# isolation depend on unwinding for availability.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

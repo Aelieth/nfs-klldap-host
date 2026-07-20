@@ -1,6 +1,8 @@
 #!/bin/bash
-# inotify watcher on nfs-klldap.conf; SIGHUPs pid 1 (guarantees privileged 0600 sssd.conf etc.).
-# See container/README.md.
+# inotify watcher on nfs-klldap.conf; SIGHUPs pid 1 for the graceful scoped
+# apply (Ganesha export reread + WebUI in-place refresh; identity changes are
+# staged until a forced full recycle). Signaling pid 1 also guarantees the
+# privileged 0600 sssd.conf regeneration. See container/README.md.
 set -euo pipefail
 
 CONFIG_PATH="${1:-${NFS_CONFIG:-/config/nfs-klldap.conf}}"
@@ -33,7 +35,9 @@ while true; do
         # Ask the root supervisor (pid 1) to perform the privileged regeneration.
         # This guarantees that /etc/sssd/sssd.conf is always written as root:root 0600,
         # satisfying SSSD's strict internal access_check_file() ownership requirement.
-        # The supervisor will also fix other perms and restart/reload the daemons.
+        # The supervisor then applies a scoped graceful reload: Ganesha rereads
+        # exports, the WebUI refreshes in place, and identity changes stay
+        # staged until 'Restart and apply' runs the forced full recycle.
         if kill -HUP 1 2>/dev/null; then
             log "Signaled supervisor (pid 1) for privileged regeneration + reload"
         else
@@ -43,14 +47,6 @@ while true; do
             else
                 log "ERROR: Generator failed for $CONFIG_PATH (see above for details from the binary)"
             fi
-        fi
-
-        # Ganesha-ctl / pkill will be handled inside the supervisor's SIGHUP handler.
-        # We still give ganesha an extra prod in case the supervisor path is slow.
-        if command -v /usr/local/bin/ganesha-ctl >/dev/null 2>&1; then
-            /usr/local/bin/ganesha-ctl reload || true
-        else
-            pkill -HUP ganesha.nfsd 2>/dev/null || true
         fi
     else
         log "inotifywait error, retrying in 3s..."

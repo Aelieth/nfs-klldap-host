@@ -1,0 +1,140 @@
+//! container_path: probe + EXPORT Path= use the configured serve path.
+
+use std::fs;
+use std::sync::Mutex;
+
+use nfs_klldap_config::{generate_all, GenerationPaths, NfsKlldapConfig};
+
+static MOUNTINFO_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+const MOUNTINFO_MIXED: &str = r#"
+40 39 0:70 / /export/movies rw,relatime - btrfs /dev/sda1 rw,noacl
+41 40 0:71 / /export/staging/movies rw,relatime - ext4 /dev/sdb1 rw
+"#;
+
+fn generate_with_mountinfo(mountinfo: &str, toml: &str) -> String {
+    let _lock = MOUNTINFO_ENV_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap(); let mp=tmp.path().join("m"); fs::write(&mp,mountinfo).unwrap();
+    let cp=tmp.path().join("c"); fs::write(&cp,toml).unwrap(); let out=tmp.path().join("o"); fs::create_dir_all(out.join("e.d")).unwrap();
+    let pv = std::env::var("NFS_KLLDAP_MOUNTINFO_PATH").ok(); std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH",&mp);
+    let cfg = NfsKlldapConfig::load(&cp).expect("l"); assert_eq!(cfg.serve_path_for(&cfg.shares[0]), "/export/staging/movies");
+    let ps=GenerationPaths{sssd_conf:out.join("s"),krb5_conf:out.join("k"),ganesha_conf:out.join("g"),exports_dir:out.join("e.d"),idmap_conf:out.join("i"),nfs_conf:out.join("n"),avahi_services_dir:out.join("av")};
+    generate_all(&cfg,&ps).expect("g");
+    if let Some(p)=pv{std::env::set_var("NFS_KLLDAP_MOUNTINFO_PATH",p);}else{std::env::remove_var("NFS_KLLDAP_MOUNTINFO_PATH");}
+    fs::read_dir(out.join("e.d")).unwrap().map(|e|e.unwrap().path()).find(|p|p.extension().is_some_and(|x| x == "conf")).map(|p|fs::read_to_string(p).unwrap()).unwrap()
+}
+
+#[test]
+fn container_path_staging_ext4_avoids_disable_acl() {
+    // ACL is opt-in: a share explicitly requesting ACL (enable_acl = true) whose serve
+    // path is on an ACL-capable staging tree keeps the ACL path (no Disable_ACL).
+    let toml = r#"
+ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "/export"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "movies"
+host_path = "/media/movies"
+container_path = "/export/staging/movies"
+enable_acl = true
+"#;
+    let frag = generate_with_mountinfo(MOUNTINFO_MIXED, toml);
+    assert!(frag.contains("Path = /export/staging/movies;"));
+    assert!(!frag.contains("Disable_ACL = true;"), "staging ext4 keeps ACL enabled");
+    assert!(
+        frag.contains("Disable_ACL = false;"),
+        "ACL exports declare the choice explicitly (1.4): {frag}"
+    );
+    assert!(frag.contains("Manage_Gids = true;"));
+}
+
+#[test]
+fn acl_share_emits_no_umask_and_no_export_level_manage_gids_expiration() {
+    let toml = r#"
+ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "/export"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "movies"
+host_path = "/media/movies"
+container_path = "/export/staging/movies"
+enable_acl = true
+manage_gids_expiration = 900
+"#;
+    let frag = generate_with_mountinfo(MOUNTINFO_MIXED, toml);
+    // Ganesha 9.13 dropped per-export FSAL Umask (module-global only). The
+    // TOML key is accepted but inert (loud generate-time warning) until the
+    // 0.9.9x ACL track replaces it with the POSIX-gate envelope (plan 2.4).
+    assert!(!frag.contains("Umask"), "per-export Umask must not be emitted on 9.13: {frag}");
+    // Manage_Gids_Expiration must NOT appear inside the EXPORT block (an
+    // unknown export parameter); since the 9.13 routing it appears nowhere —
+    // the deprecated share value seeds DS Idmapped_*_Time_Validity instead
+    // (covered in ganesha_96_identity_audit.rs).
+    assert!(!frag.contains("Manage_Gids_Expiration"), "{frag}");
+}
+
+#[test]
+fn container_path_default_is_noacl_even_on_ext4() {
+    // Without enable_acl the same ext4 serve path is NOACL (no fail-open onto the ACL
+    // path that the packaged Ganesha 9.6 VFS FSAL cannot service).
+    let toml = r#"
+ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "/export"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "movies"
+host_path = "/media/movies"
+container_path = "/export/staging/movies"
+"#;
+    let frag = generate_with_mountinfo(MOUNTINFO_MIXED, toml);
+    assert!(frag.contains("Path = /export/staging/movies;"));
+    assert!(frag.contains("Disable_ACL = true;"), "default (no enable_acl) is NOACL");
+    assert!(frag.contains("Read_Access_Check_Policy = pre;"));
+}
+/// 2.4 stage 2: the retired umask key is a hard generate error naming the
+/// default-ACL (Inherit tab) replacement, so stale configs fail loudly with
+/// the migration path instead of carrying an inert key forever.
+#[test]
+fn umask_key_is_a_hard_deprecation_error() {
+    let toml = r#"
+ldap_uri = "ldaps://klldap.test:6360"
+[storage]
+container_root = "/export"
+[sssd]
+ldap_default_bind_dn = "uid=admin,ou=people,dc=test,dc=com"
+ldap_default_authtok = "sekret"
+[[shares]]
+name = "movies"
+host_path = "/media/movies"
+container_path = "/export/movies"
+umask = "0027"
+"#;
+    let tmp = tempfile::tempdir().unwrap();
+    let cp = tmp.path().join("c.toml");
+    std::fs::write(&cp, toml).unwrap();
+    let out = tmp.path().join("out");
+    std::fs::create_dir_all(out.join("exports.d")).unwrap();
+    let cfg = NfsKlldapConfig::load(&cp).expect("load still accepts the key");
+    let ps = GenerationPaths {
+        sssd_conf: out.join("s"),
+        krb5_conf: out.join("k"),
+        ganesha_conf: out.join("g"),
+        exports_dir: out.join("e.d"),
+        idmap_conf: out.join("i"),
+        nfs_conf: out.join("n"),
+        avahi_services_dir: out.join("av"),
+    };
+    let err = generate_all(&cfg, &ps).expect_err("umask must refuse to generate");
+    let msg = err.to_string();
+    assert!(msg.contains("umask"), "names the key: {msg}");
+    assert!(msg.contains("Inherit"), "names the replacement: {msg}");
+}

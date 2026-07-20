@@ -8,7 +8,11 @@ SHELL := /bin/bash
 # Configuration
 # -----------------------------------------------------------------------------
 PROJECT_NAME := nfs-klldap-host
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+# Branch-as-version convention: a branch named like a version (leading digit,
+# e.g. 0.9.96, 1.0) IS the version; anything else (main, detached) falls back
+# to git describe. Mirrors build-support/version-stamp.rs (the in-app stamp).
+# if/grep, not case: an unbalanced ")" would end the $(shell ...) call early.
+VERSION ?= $(shell b=$$(git rev-parse --abbrev-ref HEAD 2>/dev/null); if printf '%s' "$$b" | grep -q '^[0-9]'; then printf '%s\n' "$$b"; else git describe --tags --always --dirty 2>/dev/null || echo "dev"; fi)
 
 # Docker image
 IMAGE_NAME ?= nfs-klldap-host
@@ -96,20 +100,30 @@ dist: build-cross
 .PHONY: docker
 docker:
 	@echo "==> Building container image for linux/amd64/v2..."
-	$(BUILDX) build \
-		--platform linux/amd64/v2 \
-		--tag $(IMAGE_NAME):latest \
-		--tag $(FULL_IMAGE):$(VERSION) \
-		$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(FULL_IMAGE):latest,) \
-		$(if $(filter true,$(DOCKER_PUSH)),--push,--load) \
-		.
-
+	@if [ "$(DOCKER_PUSH)" = "true" ]; then \
+		$(BUILDX) build \
+			$(if $(filter true,$(DOCKER_NO_CACHE)),--no-cache,) \
+			--platform linux/amd64/v2 \
+			--build-arg KLLDAP_VERSION=$(VERSION) \
+			--tag $(FULL_IMAGE):$(VERSION) \
+			$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(FULL_IMAGE):latest,) \
+			--push \
+			.; \
+	else \
+		$(DOCKER) build \
+			$(if $(filter true,$(DOCKER_NO_CACHE)),--no-cache,) \
+			--build-arg KLLDAP_VERSION=$(VERSION) \
+			--tag $(IMAGE_NAME):$(VERSION) \
+			$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(IMAGE_NAME):latest,) \
+			.; \
+	fi
 
 .PHONY: docker-multi
 docker-multi:
 	@echo "==> Building multi-platform image: $(PLATFORMS)"
 	$(BUILDX) build \
 		--platform $(PLATFORMS) \
+		--build-arg KLLDAP_VERSION=$(VERSION) \
 		--tag $(FULL_IMAGE):$(VERSION) \
 		$(if $(filter true,$(DOCKER_TAG_LATEST)),--tag $(FULL_IMAGE):latest,) \
 		$(if $(filter false,$(DOCKER_PUSH)),--load,--push) \
@@ -120,11 +134,25 @@ docker-multi:
 # -----------------------------------------------------------------------------
 .PHONY: test
 test:
+	# Production bins first: unit tests that spawn nfs-klldap-idhelper/config need
+	# target/debug/* (cargo test alone only builds the test harness for those bins).
+	$(CARGO) build --workspace --bins
 	$(CARGO) test --workspace
 
 .PHONY: clippy
 clippy:
 	$(CARGO) +nightly clippy --workspace --all-targets --all-features -- -D warnings
+
+# Full pre-commit gate: safety-dance runs clippy + the unsafe audit, then the
+# comment linter, then the workspace tests. Recipe lines already run under
+# `-eu -o pipefail` (see .SHELLFLAGS), so any failure stops the chain.
+.PHONY: gate
+gate:
+	bash scripts/safety-dance.sh
+	python3 scripts/comment_lint.py
+	bash scripts/check-version-pins.sh
+	$(CARGO) build --workspace --bins
+	$(CARGO) test --workspace
 
 .PHONY: clean
 clean:

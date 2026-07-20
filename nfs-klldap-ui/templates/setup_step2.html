@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="content-narrow">
+<h2>First-run setup <span style="font-size:0.75em; color:var(--text-muted);">Step 2 of 3</span></h2>
+
+<ul style="font-size:0.9em; color:var(--text-muted); list-style:none; padding:0;">
+    <li>{% if step1_done %}<span style="color:var(--success-text);">[✓]</span>{% else %}[ ]{% endif %} Persistent config volume</li>
+    <li><span style="color:var(--accent);">[→]</span> LDAP server (ldap_uri)</li>
+    <li>[ ] LLDAP bind credentials</li>
+</ul>
+
+<div class="settings-group">
+    <h4>Hostname &amp; keytab reminder</h4>
+    <p style="margin:0.25rem 0; font-size:0.9em;">
+        Container hostname: <strong>{{ hostname }}</strong><br>
+        Keytab should include: <code>{{ principals }}</code>
+    </p>
+</div>
+
+<div class="settings-group">
+    <h4>LDAP URI (DNS hostname required)</h4>
+    <form id="setup-form" method="post" action="/setup/2/continue" style="margin-bottom:0.75rem;">
+        <label>ldap_uri<br>
+            <input type="text" name="ldap_uri" id="ldap_uri" value="{{ ldap_uri }}" required
+                   placeholder="ldaps://lldap.yourdomain.com:6360"
+                   style="width:100%; max-width:520px; padding:8px;">
+        </label>
+        <div style="margin-top:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button type="button" id="test-btn" class="btn btn-primary">Test Settings</button>
+            <button type="submit" id="continue-btn" class="btn" disabled>Save and Continue</button>
+        </div>
+    </form>
+    <p style="margin:0.75rem 0 0; font-size:0.85em; color:var(--text-light);">
+        Tests DNS resolution and TCP connectivity (getent + nc).
+    </p>
+</div>
+
+<div id="setup-msg"></div>
+{% if let Some(msg) = message %}
+<p class="alert alert-success">{{ msg }}</p>
+{% endif %}
+{% if let Some(err) = error %}
+<p class="alert alert-danger">{{ err }}</p>
+{% endif %}
+
+<div class="setup-test-log">
+    <div class="setup-test-log-header">Test Log</div>
+    <div id="setup-test-log-content" class="mono-log-panel"><em style="color:var(--text-light);">Enter ldap_uri and click Test Settings.</em></div>
+</div>
+</div>
+
+<script>
+(function () {
+    const form = document.getElementById('setup-form');
+    const testBtn = document.getElementById('test-btn');
+    const continueBtn = document.getElementById('continue-btn');
+    const msgBox = document.getElementById('setup-msg');
+    const logBox = document.getElementById('setup-test-log-content');
+    const uriInput = document.getElementById('ldap_uri');
+    if (!form || !testBtn || !continueBtn || !uriInput || !logBox) return;
+
+    let snapshot = null;
+    let testing = false;
+
+    function showAlert(kind, text) {
+        if (!msgBox) return;
+        msgBox.innerHTML = '<p class="alert alert-' + kind + '">' + text + '</p>';
+    }
+
+    function showLog(html) {
+        logBox.innerHTML = html || '<em style="color:var(--text-light);">No test output.</em>';
+    }
+
+    function fieldValues() {
+        return { ldap_uri: uriInput.value };
+    }
+
+    function fieldsMatchSnapshot() {
+        if (!snapshot) return false;
+        return uriInput.value === snapshot.ldap_uri;
+    }
+
+    function syncContinue() {
+        continueBtn.disabled = !(snapshot && fieldsMatchSnapshot());
+    }
+
+    function parseJsonResponse(r, text) {
+        if (!r.ok) {
+            throw new Error('HTTP ' + r.status + (text ? ': ' + text.slice(0, 200) : ''));
+        }
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            throw new Error('Invalid JSON response: ' + text.slice(0, 200));
+        }
+    }
+
+    function runTest(auto) {
+        if (testing) return;
+        testing = true;
+        if (!auto) {
+            continueBtn.disabled = true;
+            snapshot = null;
+        }
+        msgBox.innerHTML = '<p class="alert" style="opacity:0.8;">Testing…</p>';
+        showLog('Stand-by, running reachability probe…');
+        const body = new URLSearchParams(new FormData(form));
+        fetch('/setup/2/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body
+        })
+            .then(function (r) { return r.text().then(function (t) { return parseJsonResponse(r, t); }); })
+            .then(function (data) {
+                if (data.log) showLog(data.log);
+                if (data.ok) {
+                    snapshot = fieldValues();
+                    if (!auto) {
+                        showAlert('success', data.message || 'Test passed.');
+                    }
+                    syncContinue();
+                } else if (!auto) {
+                    showAlert('danger', data.error || 'Test failed.');
+                }
+            })
+            .catch(function (err) {
+                showAlert('danger', 'Test request failed: ' + (err.message || err));
+            })
+            .finally(function () { testing = false; });
+    }
+
+    uriInput.addEventListener('input', syncContinue);
+    testBtn.addEventListener('click', function () { runTest(false); });
+
+    if (uriInput.value.trim()) {
+        runTest(true);
+    }
+})();
+</script>
+{% endblock %}

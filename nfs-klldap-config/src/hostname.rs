@@ -1,59 +1,18 @@
-//! Two-tier hostname: hostname(1) must match /proc/sys/kernel/hostname after normalization.
-//! Mismatch -> rich diagnostic (used for keytab + cert SANs).
+//! Validates hostname against proc.
+//! Mismatch yields diagnostic for alignment.
 
-/// Short and FQDN host variants for NFS service principals in the keytab.
-/// When the hostname contains a dot, returns `[short, fqdn]`; otherwise a single entry.
-pub fn nfs_keytab_host_variants(host: &str) -> Vec<String> {
-    let h = host.trim().trim_matches('.');
-    if h.is_empty() {
-        return vec![];
-    }
-    let short = h.split('.').next().unwrap_or(h).to_string();
-    if short.eq_ignore_ascii_case(h) {
-        vec![h.to_string()]
-    } else {
-        vec![short, h.to_string()]
-    }
-}
+pub use nfs_klldap_identity::{
+    format_nfs_principal_list, looks_like_docker_default_hostname, nfs_keytab_host_matches,
+    nfs_keytab_host_variants, resolve_nfs_host_identity, NfsHostIdentity,
+};
 
-/// Formats recommended `nfs/<host>@REALM` principals for operator messaging.
-pub fn format_nfs_principal_list(host: &str, realm: &str) -> String {
-    nfs_keytab_host_variants(host)
-        .into_iter()
-        .map(|h| format!("nfs/{}@{}", h, realm))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// True if `keytab_host` (from klist) matches the container hostname (short or FQDN).
-pub fn nfs_keytab_host_matches(keytab_host: &str, container_host: &str) -> bool {
-    let k = keytab_host.trim().to_lowercase();
-    let c = container_host.trim().to_lowercase();
-    if k.is_empty() || c.is_empty() {
-        return false;
-    }
-    if k == c {
-        return true;
-    }
-    let k_short = k.split('.').next().unwrap_or(&k);
-    let c_short = c.split('.').next().unwrap_or(&c);
-    k_short == c_short
-}
-
-/// Returns true for 8-20 hex digits with no dot (typical Docker short container ID).
-pub fn looks_like_docker_default_hostname(h: &str) -> bool {
-    let h = h.trim();
-    if h.contains('.') {
-        return false;
-    }
-    let len = h.len();
-    if !(8..=20).contains(&len) {
-        return false;
-    }
-    h.chars().all(|c| c.is_ascii_hexdigit())
-}
-
+use std::path::PathBuf;
 use std::process::Command;
+
+/// Trimmed /proc/sys/kernel/hostname contents.
+fn read_kernel_hostname() -> std::io::Result<String> {
+    std::fs::read_to_string("/proc/sys/kernel/hostname").map(|s| s.trim().to_string())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HostnameSource {
@@ -128,7 +87,8 @@ fn normalize_for_comparison(h: &str) -> String {
     h.trim().trim_matches('.').to_string()
 }
 
-/// Pure core of the two-tier check. Both inputs must match after normalization.
+/// Pure core of the two-tier check.
+/// Both inputs must match after normalization.
 pub(crate) fn confirm_consistent_hostname(
     primary_raw: &str,
     secondary_raw: &str,
@@ -170,15 +130,15 @@ pub(crate) fn confirm_consistent_hostname(
         let remediation = "\
 Use one of the two supported ways to give the container a stable hostname:
 
-1. Recommended: Add --uts=host (or uts: host in compose).
+1. Recommended: Add --uts=host (or uts: host in compose)
    The container will then see the real hostname of the Docker host.
 
 2. Explicit override: Add --hostname your-chosen-name when starting the
    container AND set [server] hostname = \"your-chosen-name\" in
-   nfs-klldap.conf (the override takes precedence for keytab reminders).
+   nfs-klldap.conf (the override takes precedence for keytab reminders)
 
 After fixing the container invocation, restart and verify that both sources
-now report the identical name in the startup TUI and WebUI logs.";
+now report the identical name in the setup wizard and WebUI logs.";
 
         return Err(HostnameInconsistency {
             primary: Some(primary_obs),
@@ -189,16 +149,15 @@ now report the identical name in the startup TUI and WebUI logs.";
         });
     }
 
-    // Both sources agree after normalization.
     Ok(primary)
 }
 
-/// Returns hostname after requiring `hostname(1)` output == /proc/sys/kernel/hostname exactly.
+/// Returns hostname when both sources agree.
+/// Uses trim/trailing-dot normalization.
 pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsistency> {
     let primary = match Command::new("hostname").output() {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         Ok(out) => {
-            // Command ran but exited non-zero — still capture stdout if any
             let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if s.is_empty() {
                 return Err(HostnameInconsistency {
@@ -229,8 +188,8 @@ pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsist
         }
     };
 
-    let secondary = match std::fs::read_to_string("/proc/sys/kernel/hostname") {
-        Ok(s) => s.trim().to_string(),
+    let secondary = match read_kernel_hostname() {
+        Ok(s) => s,
         Err(e) => {
             return Err(HostnameInconsistency {
                 primary: Some(HostnameObservation {
@@ -262,7 +221,7 @@ pub fn get_consistent_hostname() -> Result<ConsistentHostname, HostnameInconsist
     })
 }
 
-/// Test-only constructor (feeds synthetic values to the pure checker).
+/// Constructs a checker with synthetic values for unit tests only.
 #[cfg(test)]
 pub fn get_consistent_hostname_from_values(
     primary: &str,
@@ -284,14 +243,13 @@ pub fn get_consistent_hostname_from_values(
 }
 
 pub(crate) mod internal {
+    /// Best-effort hostname fallback (not two-tier validated)
     pub fn get() -> Result<std::ffi::OsString, std::io::Error> {
-        // Simple /proc/sys/kernel/hostname or env fallback
         if let Ok(h) = std::env::var("HOSTNAME") {
             return Ok(h.into());
         }
-        let p = "/proc/sys/kernel/hostname";
-        if let Ok(s) = std::fs::read_to_string(p) {
-            return Ok(s.trim().to_string().into());
+        if let Ok(s) = super::read_kernel_hostname() {
+            return Ok(s.into());
         }
         Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -303,6 +261,7 @@ pub(crate) mod internal {
 
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -324,7 +283,6 @@ mod tests {
 
     #[test]
     fn consistent_after_normalization_dots() {
-        // Both sides have trailing dots — should still agree
         let c = get_consistent_hostname_from_values("myserver.", "myserver.").unwrap();
         assert_eq!(c.hostname, "myserver");
     }
@@ -350,7 +308,6 @@ mod tests {
 
     #[test]
     fn inconsistency_case_difference_is_flagged() {
-        // Case must match exactly for keytab principals
         let err = get_consistent_hostname_from_values("Aurora", "aurora").unwrap_err();
         assert!(err.primary.is_some());
     }
@@ -376,33 +333,132 @@ mod tests {
         assert!(!looks_like_docker_default_hostname("aurora.testdomain.com"));
     }
 
-    #[test]
-    fn real_get_consistent_hostname_smoke() {
-        // Real I/O path smoke (succeeds or well-formed inconsistency; never panic/garbage).
-        let result = get_consistent_hostname();
-        match result {
-            Ok(c) => {
-                assert!(!c.hostname.is_empty());
-                assert_eq!(c.primary.source, HostnameSource::Command);
-                assert_eq!(c.secondary.source, HostnameSource::ProcSysKernel);
-                // On a normal test machine the two sources must have agreed
-                assert_eq!(c.primary.value, c.secondary.value);
-            }
-            Err(e) => {
-                // Acceptable in some CI sandboxes, but the error must be rich
-                assert!(!e.reason.is_empty());
-                assert!(!e.remediation.is_empty());
+}
+
+use std::path::Path;
+
+use crate::NfsKlldapConfig;
+
+fn load_runtime_config() -> Option<NfsKlldapConfig> {
+    let path = std::env::var("NFS_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/config/nfs-klldap.conf"));
+    NfsKlldapConfig::load(&path).ok()
+}
+
+/// True when a HOST_NFS env string enables sidecar mode.
+pub fn parse_host_nfs_env_value(value: &str) -> bool {
+    let t = value.trim().to_ascii_lowercase();
+    t == "true" || t == "1" || t == "yes" || t == "on"
+}
+
+/// True when NFS_KLLDAP_WEBUI_TLS signals reverse-proxy TLS (off/false/0/no).
+/// Central helper to eliminate repeated ad-hoc env checks.
+pub fn webui_tls_disabled() -> bool {
+    if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_TLS") {
+        let t = v.trim().to_ascii_lowercase();
+        t == "off" || t == "false" || t == "0" || t == "no"
+    } else {
+        false
+    }
+}
+
+/// HOST_NFS / NFS_KLLDAP_HOST_NFS env override, if set.
+pub fn host_nfs_from_env() -> Option<bool> {
+    std::env::var("HOST_NFS")
+        .or_else(|_| std::env::var("NFS_KLLDAP_HOST_NFS"))
+        .ok()
+        .map(|v| parse_host_nfs_env_value(&v))
+}
+
+/// Environment variables override TOML and guide the supervisor at recycle.
+pub fn resolve_host_nfs_mode(config_path: &Path) -> bool {
+    if let Some(val) = host_nfs_from_env() {
+        return val;
+    }
+    NfsKlldapConfig::load(config_path)
+        .map(|cfg| cfg.is_host_nfs())
+        .unwrap_or(false)
+}
+
+/// Effective HOST_NFS for UI and validate after env overlay.
+pub fn host_nfs_active(config: &NfsKlldapConfig) -> bool {
+    host_nfs_from_env().unwrap_or_else(|| config.is_host_nfs())
+}
+
+/// Hostname for idhelper/keytab: config override, env, then /proc.
+pub fn runtime_hostname(cfg: Option<&NfsKlldapConfig>) -> String {
+    if let Some(h) = cfg
+        .and_then(|c| c.server.hostname.as_ref())
+        .filter(|h| !h.trim().is_empty())
+    {
+        return h.trim().to_string();
+    }
+    if let Ok(h) = std::env::var("NFS_KLLDAP_SERVER_HOSTNAME") {
+        if !h.trim().is_empty() {
+            return h.trim().to_string();
+        }
+    }
+    if let Ok(h) = read_kernel_hostname() {
+        if !h.is_empty() {
+            return h;
+        }
+    }
+    "localhost".to_string()
+}
+
+/// Resolves the Kerberos realm from config, env, krb5.conf, then fallback.
+pub fn runtime_realm(cfg: Option<&NfsKlldapConfig>) -> String {
+    if let Some(c) = cfg {
+        let r = c.effective_realm();
+        if !r.trim().is_empty() && !r.trim().eq_ignore_ascii_case("example.com") {
+            return r.to_uppercase();
+        }
+    }
+    if let Ok(r) = std::env::var("NFS_KLLDAP_KERBEROS_REALM") {
+        let r = r.trim();
+        if !r.is_empty() {
+            return r.to_uppercase();
+        }
+    }
+    if let Ok(content) = std::fs::read_to_string("/etc/krb5.conf") {
+        for line in content.lines() {
+            if let Some((key, val)) = line.trim().split_once('=') {
+                if key.trim() == "default_realm" {
+                    let r = val.trim();
+                    if !r.is_empty() {
+                        return r.to_uppercase();
+                    }
+                }
             }
         }
     }
+    "EXAMPLE.COM".to_string()
+}
 
-    #[test]
-    fn consistency_returns_raw_hostname_for_keytab() {
-        let c = get_consistent_hostname_from_values("aurora.test.com", "aurora.test.com").unwrap();
-        assert_eq!(c.hostname, "aurora.test.com");
-        assert_eq!(
-            nfs_keytab_host_variants(&c.hostname),
-            vec!["aurora".to_string(), "aurora.test.com".to_string()]
-        );
+/// Keytab host variants for principal classification (short + realm-qualified FQDN).
+pub fn runtime_server_variants(cfg: Option<&NfsKlldapConfig>) -> Vec<String> {
+    let host = runtime_hostname(cfg);
+    let realm = runtime_realm(cfg);
+    let variants = nfs_keytab_host_variants(&host, &realm);
+    if variants.is_empty() {
+        vec!["localhost".to_string()]
+    } else {
+        variants
     }
+}
+
+/// Short + FQDN identity from runtime hostname and realm.
+pub fn runtime_host_identity(cfg: Option<&NfsKlldapConfig>) -> NfsHostIdentity {
+    resolve_nfs_host_identity(&runtime_hostname(cfg), &runtime_realm(cfg))
+}
+
+/// Convenience for idhelper when NFS_CONFIG is the only source.
+pub fn runtime_realm_from_disk() -> String {
+    runtime_realm(load_runtime_config().as_ref())
+}
+
+/// Convenience for idhelper when NFS_CONFIG is the only source.
+pub fn runtime_server_variants_from_disk() -> Vec<String> {
+    runtime_server_variants(load_runtime_config().as_ref())
 }

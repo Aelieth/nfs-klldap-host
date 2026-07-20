@@ -1,4 +1,4 @@
-//! First-run default template
+//! First-run default template.
 
 use std::fs;
 use std::path::Path;
@@ -20,31 +20,33 @@ pub fn generate_default_template() -> String {
 #
 # Kerberos keytab (best practice with --uts=host):
 #   Include nfs/<short-hostname>@REALM and nfs/<fqdn>@REALM
-#   The hostname is confirmed by `hostname` matching /proc/sys/kernel/hostname.
+#   When the system hostname is short, the FQDN is {short}.{realm_lower}
+#   (from Kerberos realm / ldap_uri). Confirmed by hostname + /proc agreement.
 #
 # After first edit: the container NEVER overwrites this file.
 # Advanced users may insert 1:1 value overrides under respective section.
 # =============================================================================
 
-ldap_uri = "ldaps://kllap.example.com:6360"                     # Required - LLDAP default secure port. 3890 for LLDAP unencrypted (389, 636 for standard)
+ldap_uri = ""                                                  # Required - e.g. ldaps://klldap.example.com:6360 (DNS name, not an IP; 6360 is the LLDAP default LDAPS port)
+navahi_discovery = false                                        # Optional - Navahi Network Discovery: advertise flagged shares via mDNS/Avahi and enable their NFSv3/AUTH_SYS click-mount path; applies on "Restart & apply"
 
 [storage]
-container_root = "/export"                                      # Required - Ganesha Path base + UI translation root. Bind one or more host parent dirs to this target (e.g. /media/:/export and/or /mount/:/export). The first directory component of each share's host_path is treated as the implicit per-share bind root; the tail becomes the subpath under container_root. This lets export_path (below) be a short external name only.
+container_root = "/export"                                      # Required - Ganesha Path each share requires container_path (inside container; maps to Ganesha EXPORT Path=)
 
 [management]
 # webui_admin_group = "lldap_admin"                             # Default - Edit to change group for WebUI admins
 
 [server]
-# hostname = "myhost.example.com"                               # Default - Optional override for keytab only. Recommended: docker run --uts=host
+# hostname = "myhost.example.com"                               # Optional - override for keytab/Navahi/certs. Short UTS uses {short}.{realm}; set full FQDN here only if it differs.
 
 [sssd]
-ldap_default_bind_dn = "uid=admin,ou=people,dc=example,dc=com"  # Required - LDAP bind DN
-ldap_default_authtok = "strong-secret"                          # Required - LDAP bind password
-# ldap_user_search_base = "ou=people,dc=example,dc=com"         # Default - Edit this if your base user OU differs
-# ldap_group_search_base = "ou=groups,dc=example,dc=com"        # Default - Edit this if your base user OU differs
+ldap_default_bind_dn = ""                                       # Required - LDAP bind DN, e.g. uid=admin,ou=people,dc=example,dc=com
+ldap_default_authtok = ""                                       # Required - LDAP bind password (your LLDAP admin secret)
+# ldap_user_search_base = "ou=people,dc=example,dc=com"         # Optional - defaults to dc=<realm> (Subtree)
+# ldap_group_search_base = "ou=people,dc=example,dc=com"        # Optional - defaults to dc=<realm> (Subtree)
 kllldap_ignored_attributes = true                               # KLLDAP specific - improves lookup time, prevents attribute spam
 
-# ldap_tls_reqcert = "never"                                    # auto-dervived - typical for internal/self-signed
+# ldap_tls_reqcert = "never"                                    # auto-derived - typical for internal/self-signed
 # ldap_tls_cacert = "/path/to/ca.pem"                           # when using custom CA instead of never
 # ldap_id_use_start_tls = true                                  # only with ldap:// + STARTTLS (not ldaps://)
 
@@ -52,12 +54,29 @@ kllldap_ignored_attributes = true                               # KLLDAP specifi
 # realm = "EXAMPLE.COM"                                         # Default - auto-derived from ldap_uri host, edit to override
 
 [ganesha]
-default_security = "krb5p"                                      # Security, krb5p (default) | krb5i | krb5
+default_security = "krb5p"                                      # Optional - krb5p (default) | krb5i | krb5 (per-share security key overrides)
+# post_generate_hook = "/config/post-generate-staging-sync.sh"  # optional; runs after each generate (see examples/)
 
 [webui]
-# webui_tls = false                                             # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
+# tls = false                                                   # commented off by default (tls on). Set via NFS_KLLDAP_WEBUI_TLS=off for reverse-proxy.
 # tls_cert = "/config/webui.crt"                                # optional custom cert (NFS_KLLDAP_WEBUI_TLS_CERT env wins)
 # tls_key = "/config/webui.key"                                 # optional custom key (NFS_KLLDAP_WEBUI_TLS_KEY env wins; 0600)
+# session_timeout_minutes = 720                                 # WebUI auto-logout minutes (default 720 = 12h, min 5); new logins after "Restart & apply"
+
+# ---------------------------------------------------------------------------
+# Shares — one [[shares]] block per export, kept at the bottom of this file.
+# The WebUI rewrites these blocks on every shares save. Uncomment and edit:
+# ---------------------------------------------------------------------------
+# [[shares]]
+# name            = "users"                                      # Required - unique share name; default client mount path becomes /<name>
+# host_path       = "/var/data/nvme-raid/users"                  # Required - host-side data path (WebUI ownership + allow-list checks)
+# container_path  = "/export/nvme-raid/users"                    # Required - in-container serve path under [storage] container_root (Ganesha EXPORT Path)
+# pseudo_path     = "/users"                                     # Optional - client-visible mount path; defaults to /<name>
+# rw              = true                                         # Optional - default true; false exports read-only
+# manage_gids     = true                                         # Optional - default true; resolves full LDAP group lists server-side
+# enable_acl      = false                                        # Optional - omit = auto (the POSIX-ACL write probe decides); true hard-fails generate on a non-ACL filesystem; false forces NOACL
+# source_path     = "/export/hdd-pool/users"                     # Optional - ACL staging source; post_generate_hook syncs it into the ACL-capable container_path
+# navahi_insecure = false                                        # Optional - advertise via mDNS for NFSv3/AUTH_SYS click-mount; active only while navahi_discovery = true
 
 "#
     .to_string()

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Restarting – NFS Kerb Manager</title>
+    <title>Restarting – NFS-KLLDAP</title>
     <style>
         /* === Minimal self-contained subset of base.html theme ===
            Only the vars + rules needed for a clean standalone restart/retry page.
@@ -152,15 +152,15 @@
 <body>
     <h1>Restarting to apply changes</h1>
 
-    <p>Applying updated System Settings (and any shares) by cycling the required services.</p>
-    <p>NFS service and this WebUI will be unavailable for a short time while Ganesha (for exports + core NFS params), SSSD (for idmap / bind / Kerberos bits) and the WebUI (to see the current shares list for the permission tree) are restarted. The supervisor stays up; this is a targeted service bounce rather than a full container stop/start.</p>
+    <p>Running the forced full service recycle: config regeneration, then a restart of SSSD (identity), the identity helper, the WebUI, and — unless the host serves NFS (HOST_NFS mode) — Ganesha, whose clients reclaim through the grace period. Share-only edits never land here; they apply gracefully on save.</p>
+    <p>NFS and this WebUI will be briefly unavailable. The supervisor stays up; this is a targeted service bounce, not a container restart.</p>
 
     <div id="retry" class="status">
         <span class="spinner"></span>
         <span id="msg">Waiting for full service recycle…</span>
     </div>
 
-    <p class="small">You will be redirected to the login page automatically when the service is back. Sessions are cleared on restart (log in again with your password or LLDAP account).</p>
+    <p class="small">You will be redirected automatically when the service is back. Your login session is preserved across the restart (the login page forwards straight to the dashboard while it is valid).</p>
 
     <p class="note"><a href="/login">Manual login link</a> (will work once the services are back).</p>
 
@@ -175,11 +175,11 @@
                 msg.textContent = 'Retrying connection (attempt ' + n + ')…';
                 try {
                     // Poll the dedicated status. The Rust handler for /settings/restart
-                    // clears the marker, and the shell's HUP handler only touches
-                    // /tmp/.nfs-klldap-services-recycled *after* logging
-                    // "Services (Ganesha + SSSD + WebUI) recycled in place for config apply."
-                    // This ensures we don't declare success (and redirect) until the
-                    // *full* service restart (not just the new WebUI process binding).
+                    // clears the marker, and the supervisor touches it again only after
+                    // the recycle finishes (finish_recycle, right after it logs
+                    // "Services recycled after config apply."). The marker mtime — not
+                    // any log line — is the contract, so we don't declare success (and
+                    // redirect) until the full restart, not just the new WebUI binding.
                     const r = await fetch(origin + '/restart-status', {
                         method: 'GET',
                         cache: 'no-store'

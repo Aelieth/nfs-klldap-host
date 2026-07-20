@@ -1,0 +1,239 @@
+{# Panel body for the detached "Permissions" panel (GET /dir-perms?path=...).
+   Renders in VIEW mode (inputs disabled); the base.html permissions script flips `disabled` off on Edit
+   and re-fetches this fragment on Cancel. Edits STAGE in the panel — POSIX and ACL alike — and one
+   Apply commits them all through POST /apply (the staged ACL batch rides the hidden acl_ops field;
+   /acl-apply is no longer driven by the panel). Owner/Group carry live LLDAP search + a hidden numeric
+   uid/gid so name→id translation matches the old inline editor.
+   When the directory can't be stat'd, a full-width diagnostic replaces the split editors. #}
+
+{# Columnar ACL rows for one category (users or groups) of one layer. A ✓ shows
+   the entry as granted; a dimmed ✓ marks bits the mask withholds (row hover
+   names the effective triad). Checkbox toggles stage in place and commit on the
+   panel Apply; rows also select for [Remove]. Every row shows the stored
+   Read/Write/Exec bits truthfully — Exec included, on directories too. On
+   apply the server fuses r→x for directories (traversal), reports the fix-up
+   in the Apply Log, and the refreshed panel shows what landed on disk. #}
+{% macro acl_rows(kind, entries, layer) %}
+        {% for e in entries %}
+        <div class="acl-row" data-type="{{ kind }}" data-id="{{ e.id }}" data-name="{{ e.name }}" data-layer="{{ layer }}"
+             data-perms="{% if e.r %}r{% else %}-{% endif %}{% if e.w %}w{% else %}-{% endif %}{% if e.x %}x{% else %}-{% endif %}"
+             {% if e.capped %}title="Mask caps this entry to {% if e.eff_r %}r{% else %}-{% endif %}{% if e.eff_w %}w{% else %}-{% endif %}{% if e.eff_x %}x{% else %}-{% endif %}"{% endif %}>
+          <span class="acl-name">{% if e.unknown %}<span class="unk" title="No LDAP user or group has this id — likely a foreign or deleted principal. The entry still enforces on disk.">(unknown)</span>{% else %}{{ e.name }}{% endif %} <span class="id">{{ e.id }}</span></span>
+          <span class="acl-cell{% if e.r && !e.eff_r %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="r" aria-label="read" {% if e.r %}checked{% endif %} disabled></span>
+          <span class="acl-cell{% if e.w && !e.eff_w %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="w" aria-label="write" {% if e.w %}checked{% endif %} disabled></span>
+          <span class="acl-cell{% if e.x && !e.eff_x %} capped{% endif %}"><input type="checkbox" class="abit" data-ch="x" aria-label="execute" {% if e.x %}checked{% endif %} disabled></span>
+        </div>
+        {% endfor %}
+{% endmacro %}
+
+{# One ACL layer pane: action buttons (edit mode), the R/W/X column header, the
+   inline add row (hidden until Add User/Add Group), and the scrolling
+   Users/Groups/mask list. All edits stage; the panel Apply commits them with
+   the single POSIX Apply scope. #}
+{% macro acl_pane(layer, users_list, groups_list, mask_opt, active) %}
+  <div class="acl-pane" data-layer="{{ layer }}" {% if !active %}hidden{% endif %}>
+    <div class="acl-actions">
+      <button type="button" class="btn acl-act" data-act="add-user" title="Add a user entry: pick the user, set Read/Write/Exec, then Add entry stages it. The panel Apply commits every staged edit with the Apply scope.">Add User</button>
+      <button type="button" class="btn acl-act" data-act="add-group" title="Add a group entry: pick the group, set Read/Write/Exec, then Add entry stages it. The panel Apply commits every staged edit with the Apply scope.">Add Group</button>
+      <button type="button" class="btn acl-act" data-act="remove" disabled title="Stage removal of the selected entry (click a row's name to select) — Apply commits it, Cancel restores.">Remove</button>
+    </div>
+    <div class="acl-cols" aria-hidden="true"><span class="acl-name"></span><span class="colhd" title="{% if is_dir %}Read includes browse (execute) on directories — an entry without execute can't traverse. Toggles stage here and commit on Apply; hover a dimmed box: the mask caps it.{% else %}read{% endif %}">Read</span><span class="colhd" title="{% if is_dir %}Write requires Read.{% else %}write{% endif %}">Write</span><span class="colhd" title="{% if is_dir %}Execute as stored. Directories always keep execute wherever Read is granted — Apply fuses r→x for traversal and the Apply Log notes it; files in a recursive reach take the bit literally.{% else %}execute — toggles stage on this node and commit on Apply; hover a dimmed box: the mask caps it{% endif %}">Exec</span></div>
+    {# Inline add row: grid-aligned under the reused column headers, above the
+       list. Hidden until Add User / Add Group; the panel Apply plays "Add
+       entry" and stages it as a data-new row. Reach comes from the single
+       POSIX Apply scope — the form carries no scope of its own. #}
+    <div class="acl-addform" data-typ="user" hidden>
+      <span class="acl-ename-wrap">
+        <input type="text" class="acl-ename" placeholder="user or id" aria-label="Principal" autocomplete="off" disabled>
+        <div class="suggestions acl-sugg"></div>
+      </span>
+      <span class="acl-cell"><input type="checkbox" class="ebit" data-ch="r" aria-label="read" checked disabled></span>
+      <span class="acl-cell"><input type="checkbox" class="ebit" data-ch="w" aria-label="write" disabled></span>
+      <span class="acl-cell"><input type="checkbox" class="ebit" data-ch="x" aria-label="execute"{% if is_dir %} title="Directories always keep execute wherever Read is granted — Apply fuses r→x for traversal and the Apply Log notes it."{% endif %} disabled></span>
+    </div>
+    <div class="acl-list">
+      <div class="acl-cat" data-cat="user" title="Named user entries — per-user grants beyond owner/group/other."><span class="acl-caret" aria-hidden="true">&#9662;</span>Users</div>
+      <div class="acl-cat-rows">
+        {% call acl_rows("user", users_list, layer) %}
+      </div>
+      <div class="acl-sep"></div>
+      <div class="acl-cat" data-cat="group" title="Named group entries — grants for whole groups."><span class="acl-caret" aria-hidden="true">&#9662;</span>Groups</div>
+      <div class="acl-cat-rows">
+        {% call acl_rows("group", groups_list, layer) %}
+      </div>
+      {% match mask_opt %}{% when Some with (m) %}
+      <div class="acl-sep"></div>
+      <div class="acl-row acl-mask-row" data-type="mask" data-layer="{{ layer }}"
+           data-perms="{% if m.r %}r{% else %}-{% endif %}{% if m.w %}w{% else %}-{% endif %}{% if m.x %}x{% else %}-{% endif %}"
+           title="Mask: caps every named entry and the owning group. chmod's Group bits rewrite this same value. Toggle its checkboxes in edit mode — changes stage and commit on Apply.">
+        <span class="acl-name">mask</span>
+        <span class="acl-cell"><input type="checkbox" class="mbit" data-ch="r" aria-label="mask read" {% if m.r %}checked{% endif %} disabled></span>
+        <span class="acl-cell"><input type="checkbox" class="mbit" data-ch="w" aria-label="mask write" {% if m.w %}checked{% endif %} disabled></span>
+        <span class="acl-cell"><input type="checkbox" class="mbit" data-ch="x" aria-label="mask execute" {% if m.x %}checked{% endif %} disabled></span>
+      </div>
+      {% when None %}{% endmatch %}
+    </div>
+  </div>
+{% endmacro %}
+
+{% if !meta_available %}
+<div class="panel-alert" role="alert">
+  <div class="panel-alert-hd">Permissions unavailable for this path</div>
+  <p class="panel-alert-msg">{{ meta_hint }}</p>
+  <dl class="panel-alert-paths">
+    <dt>Host path</dt><dd><code>{{ path }}</code></dd>
+    {% if serve_path_display.len() > 0 %}
+    <dt>Serve path</dt><dd><code>{{ serve_path_display }}</code></dd>
+    {% endif %}
+  </dl>
+</div>
+{% else %}
+<div class="perm-split">
+<form class="posix-sec" data-kind="{% if is_dir %}dir{% else %}file{% endif %}" hx-post="/apply" hx-target="#perm-panel .perm-body" hx-swap="innerHTML">
+  <input type="hidden" name="path" value="{{ path }}">
+  <input type="hidden" name="owner_user_uid" value="{{ owner_uid_hidden }}">
+  <input type="hidden" name="owner_group_gid" value="{{ owner_gid_hidden }}">
+  <div class="sec-title">POSIX permissions</div>
+
+  <div class="perm-owner-row">
+    <label>Owner
+      <input type="text" name="owner_user" class="p-owner" value="{{ owner_display }}"
+             hx-get="/users/search" hx-trigger="focus, click, input changed delay:220ms"
+             hx-target="#perm-user-suggestions" hx-swap="innerHTML"
+             hx-include="this" hx-params="owner_user"
+             placeholder="user or 0-60000" autocomplete="off" disabled>
+      <div id="perm-user-suggestions" class="suggestions"></div>
+    </label>
+    <label>Group
+      <input type="text" name="owner_group" class="p-group" value="{{ group_display }}"
+             hx-get="/groups/search" hx-trigger="focus, click, input changed delay:220ms"
+             hx-target="#perm-group-suggestions" hx-swap="innerHTML"
+             hx-include="this" hx-params="owner_group"
+             placeholder="group or 0-60000" autocomplete="off" disabled>
+      <div id="perm-group-suggestions" class="suggestions"></div>
+    </label>
+  </div>
+
+  {% if is_dir %}
+  {# Directories: the full stored triad, Exec included — always editable. The
+     server fuses r→x per directory at apply time (an r-without-x directory
+     lists as empty over NFS) and the Apply Log names every fused directory;
+     files in a recursive reach take the triad literally via file_mode.
+     Helper prose lives in title attributes. #}
+  <div class="perm-matrix perm-matrix-dir">
+    <div></div>
+    <div class="colhd" title="Read includes browse (execute) on directories — an r-without-x directory lists as empty over NFS.">Read</div><div class="colhd" title="Write requires Read; each audience is none, read-only, or read-write.">Write</div><div class="colhd" title="Execute as stored. Directories always keep execute wherever Read is granted — Apply fuses r→x for traversal and the Apply Log notes it; files in a recursive reach take the bit literally.">Exec</div>
+
+    <div class="rowhd">Owner</div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="4" aria-label="Owner read" {% if u_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="2" aria-label="Owner write" {% if u_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="1" aria-label="Owner execute" {% if u_x %}checked{% endif %} disabled></div>
+
+    {% if acl_extended %}<div class="rowhd" title="Extended ACL entries exist here, so the Group bits act as the ACL mask — they cap every named entry and the owning group.">Group<span class="mask-star" aria-hidden="true">*</span></div>{% else %}<div class="rowhd">Group</div>{% endif %}
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="4" aria-label="Group read" {% if g_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="2" aria-label="Group write" {% if g_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="1" aria-label="Group execute" {% if g_x %}checked{% endif %} disabled></div>
+
+    <div class="rowhd">Other</div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="4" aria-label="Other read" {% if o_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="2" aria-label="Other write" {% if o_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="1" aria-label="Other execute" {% if o_x %}checked{% endif %} disabled></div>
+  </div>
+
+  {# setgid + sticky are the only special bits meaningful on directory shares (setuid is omitted). #}
+  <div class="perm-special">
+    <label title="setgid: new files & subdirectories inherit this directory's group. Recommended for shared team shares.">
+      <input type="checkbox" class="sbit" data-special="2" {% if setgid %}checked{% endif %} disabled>
+      <span>setgid</span>
+    </label>
+    <label title="sticky bit: only the file owner (or root) may delete or rename entries. Useful for common drop / upload directories.">
+      <input type="checkbox" class="sbit" data-special="1" {% if sticky %}checked{% endif %} disabled>
+      <span>sticky</span>
+    </label>
+  </div>
+
+  {# Apply scope: how far Apply reaches from this directory — the ONE reach
+     control, governing the POSIX change and every staged ACL edit alike.
+     Files are never touched by "None". Radios submit as recursive_scope; the
+     fragment reload after an apply resets the choice to None on purpose. #}
+  <div class="rec-scope">
+    <div class="perm-bits-lbl" title="How far Apply reaches — governs both the POSIX change and any staged ACL edits. Files change only on a recursive scope (they take the matrix triad literally); directories always fuse execute from Read.">Apply scope</div>
+    <label title="chown/chmod this directory's own inode only — no files, no subdirectories.">
+      <input type="radio" class="rec-radio" name="recursive_scope" value="none" checked disabled>
+      <span>None</span>
+    </label>
+    <label title="This directory plus the files directly inside it. Subdirectories and their contents stay untouched.">
+      <input type="radio" class="rec-radio" name="recursive_scope" value="single" disabled>
+      <span>Recursive — single directory</span>
+    </label>
+    <label title="This directory and every subdirectory and file beneath it.">
+      <input type="radio" class="rec-radio" name="recursive_scope" value="all" disabled>
+      <span>Recursive — all directories</span>
+    </label>
+  </div>
+
+  {# The hidden file_mode is what /apply reads for recursive scopes: the JS
+     composes it from the same matrix triad (r/w/x literal, special bits
+     stripped — files never inherit setgid/sticky from the directory mode). #}
+  <input type="hidden" name="file_mode" class="file-mode-field" value="">
+  {% else %}
+  {# Files: the full independent triad — r without x is normal for a file, so
+     nothing is fused and no special bits are offered (setuid is refused
+     server-side; setgid/sticky are directory concepts here). #}
+  <div class="perm-matrix">
+    <div></div>
+    <div class="colhd">Read</div><div class="colhd">Write</div><div class="colhd" title="Execute is granted per file — read never implies it.">Exec</div>
+
+    <div class="rowhd">Owner</div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="4" aria-label="Owner read" {% if u_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="2" aria-label="Owner write" {% if u_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="u" data-bit="1" aria-label="Owner execute" {% if u_x %}checked{% endif %} disabled></div>
+
+    {% if acl_extended %}<div class="rowhd" title="Extended ACL entries exist here, so the Group bits act as the ACL mask — they cap every named entry and the owning group.">Group<span class="mask-star" aria-hidden="true">*</span></div>{% else %}<div class="rowhd">Group</div>{% endif %}
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="4" aria-label="Group read" {% if g_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="2" aria-label="Group write" {% if g_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="g" data-bit="1" aria-label="Group execute" {% if g_x %}checked{% endif %} disabled></div>
+
+    <div class="rowhd">Other</div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="4" aria-label="Other read" {% if o_r %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="2" aria-label="Other write" {% if o_w %}checked{% endif %} disabled></div>
+    <div class="cell"><input type="checkbox" class="pbit" data-role="o" data-bit="1" aria-label="Other execute" {% if o_x %}checked{% endif %} disabled></div>
+  </div>
+  {% endif %}
+
+  {# name="mode" is what /apply expects; the permissions script keeps it in sync with the
+     checkboxes. acl_ops carries the staged ACL batch (JSON), filled at Apply time. #}
+  <input type="hidden" name="mode" class="mode-field" value="{{ mode_octal }}">
+  <input type="hidden" name="acl_ops" class="acl-ops-field" value="">
+  <div class="perm-readout">
+    <span class="lbl">Mode</span>
+    <span class="octal">{{ mode_octal }}</span>
+    <code class="symbolic"></code>{# filled by the base.html permissions script from the octal #}
+  </div>
+</form>
+
+<div class="divider"></div>
+
+<div class="acl-sec {% if !acl_supported %}disabled{% endif %}" data-path="{{ path }}" data-kind="{% if is_dir %}dir{% else %}file{% endif %}">
+  <div class="sec-title" title="POSIX ACLs on the backing filesystem, served to NFS clients as NFSv4 ACLs. Entries grant within the mask (the Group bits).">ACL
+    <span class="pill {{ acl_pill_class }}">{{ acl_pill }}</span>
+  </div>
+
+  {% if !acl_supported || acl_pill_class == "warn" %}
+  <div class="acl-reason" title="{{ acl_reason_long }}">{{ acl_reason }}</div>
+  {% endif %}
+
+  {% if acl_disk_note %}
+  <div class="acl-disk-note" title="The export omits ACL support at the protocol level, but POSIX ACLs live on the filesystem and the kernel checks them on every access — including entries a client managed to write here (the Disable_ACL directive is advisory on the 9.13 VFS build).">Extended POSIX ACLs are present on disk here. This share serves without ACL support, but the kernel still enforces them — turn ACLs on for this share to manage them.</div>
+  {% endif %}
+
+  <div class="acl-tabs" role="tablist">
+    <button type="button" class="acl-tab active" data-layer="access" title="Entries in force on this path right now.">Current</button>
+    {% if is_dir %}<button type="button" class="acl-tab" data-layer="default" title="Entries new files and subdirectories inherit at creation (setfacl -d). Existing children are untouched.">Inherit</button>{% endif %}
+  </div>
+
+  {% call acl_pane("access", users, groups, mask, true) %}
+  {% if is_dir %}{% call acl_pane("default", default_users, default_groups, default_mask, false) %}{% endif %}
+</div>
+</div>
+{% endif %}

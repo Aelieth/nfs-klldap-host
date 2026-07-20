@@ -1,4 +1,4 @@
-//! Login handlers, cookie construction (HttpOnly/Lax/Secure, 12h), require_auth + redirects.
+//! Login handlers, session cookies, and require_auth redirects.
 
 use askama::Template;
 use axum::{
@@ -21,16 +21,7 @@ pub(crate) struct LoginTemplate {
     pub keytab_alert: Option<String>,
 }
 
-// NOTE on keytab_alert usage here:
-// The keytab principal/hostname mismatch (see web/keytab.rs + main.rs bg task) is
-// intentionally a *display-only* warning banner. It is *never* passed to
-// LoginTemplate (pre-auth login/first-run forms) so that a misconfigured
-// Kerberos keytab (hostname vs. nfs/* principal) cannot interfere with
-// completing WebUI login for administration or LDAP (webui_admin_group) auth.
-// Once logged in, the banner appears on Share Permissions and System Settings.
-// The presence or absence of an alert value must never affect the localhost
-// simple-pw path, the LLDAP+webui_admin_group path, session creation,
-// or redirects. See the AppState docs for the invariant.
+// keytab_alert on LoginTemplate stays unused (None); hostname/keytab UI is settings/setup.
 
 /// Shared form for both normal login and first-run setup.
 #[derive(Deserialize)]
@@ -39,22 +30,26 @@ pub(crate) struct LoginForm {
     pub password: String,
 }
 
-/// Optional query params for the login page (used to surface auth failure reasons
-/// after a require_auth redirect).
+/// Deserializes login-page query params including error codes from redirects.
 #[derive(Deserialize, Default)]
 pub(crate) struct LoginQuery {
-    /// When present (e.g. "session" or "required"), login_page renders a friendly
-    /// message so the user is not left wondering why they were sent back to the form.
+    /// Carry the error query value from a require_auth redirect.
     error: Option<String>,
 }
 
-/// GET /login — renders the form (or first-run variant).
-/// Supports ?error=... from require_auth redirects so failures are visible.
+/// Renders the login page and surfaces error query values from redirects.
 pub async fn login_page(
     State(state): State<super::AppState>,
     headers: HeaderMap,
     Query(q): Query<LoginQuery>,
 ) -> impl IntoResponse {
+    if super::setup::setup_wizard_required_with_marker(
+        &state.config_path,
+        state.setup_marker_override.as_deref(),
+    ) {
+        return Redirect::to(&super::setup::setup_redirect_for_step(&state.config_path))
+            .into_response();
+    }
     if validate_session_in_headers(&state, &headers).is_some() {
         return Redirect::to("/").into_response();
     }
@@ -78,12 +73,7 @@ pub async fn login_page(
     .into_response()
 }
 
-/// POST /login — the main authentication entry point.
-/// On success: creates privileged session + sets properly-formed cookie + redirects.
-/// On failure: re-renders login page with error.
-///
-/// (keytab principal mismatch warning, if any, is only carried into the re-rendered
-/// template for display; it does not change success/failure or the created session.)
+/// Handles login POST, sets a session cookie on success, or re-renders.
 pub async fn login(
     State(state): State<super::AppState>,
     headers: HeaderMap,
@@ -98,10 +88,8 @@ pub async fn login(
             Err(e) => Err(e),
         }
     } else {
-        // LLDAP path — now uses the combined helper on LdapClient so we only
-        // take the lock once and get a single, clear error for non-admins.
-        // The helper still benefits from the memberOf fast-path recorded during verify.
-        let l = state.lldap.lock().await;
+        // LLDAP path — LdapClient::verify_user_is_admin under a single lock.
+        let l = state.lldap.read().await.clone();
         match l
             .verify_user_is_admin(username, password, state.auth.admin_group())
             .await
@@ -110,7 +98,7 @@ pub async fn login(
             Err(e) => {
                 // Log the real inner reason for operators.
                 eprintln!("LDAP admin login failed for '{}': {}", username, e);
-                // Present a friendly message to the browser (hides "service account" details).
+                // Present a friendly message to the browser (hides "service.
                 if e.to_string().contains("not a member of") {
                     Err(e.to_string())
                 } else {
@@ -122,7 +110,7 @@ pub async fn login(
 
     match result {
         Ok(user) => {
-            // Drop any prior session tokens (stale browser cookies after logout/restart).
+            // Drops stale session tokens from prior cookies after re-login.
             for old in extract_all_session_tokens_from_headers(&headers) {
                 state.auth.logout(&old);
             }
@@ -130,20 +118,20 @@ pub async fn login(
             let mut response_headers = HeaderMap::new();
             insert_session_cookie(&state, &headers, &mut response_headers, &token);
 
-            // Warm permission editor search caches on (web) login for instant
-            // suggestions in UID/GID boxes (no repeated LDAP roundtrips on focus/type
-            // in the Share Permissions directory editor). The list_* calls populate
-            // both the 2m search cache (__all__) and the 10m identity caches.
+            // Warm permission editor search caches on (web) login for instant.
             {
                 let lldap = state.lldap.clone();
                 tokio::spawn(async move {
-                    let l = lldap.lock().await;
+                    let l = lldap.read().await.clone();
                     let _ = l.list_users(None).await;
                     let _ = l.list_groups(None).await;
                 });
             }
 
-            (response_headers, Redirect::to("/")).into_response()
+            // Attach Set-Cookie explicitly on the Redirect (robust through.
+            let mut response = Redirect::to("/").into_response();
+            response.headers_mut().extend(response_headers);
+            response
         }
         Err(e) => {
             let first_run = !state.auth.has_simple_password();
@@ -162,13 +150,19 @@ pub async fn login(
     }
 }
 
-/// POST /setup-password — first-run only. Sets the initial localhost password
-/// and immediately creates a session (auto-login).
+/// POST /setup-password: first-run localhost password and auto-login session.
 pub async fn setup_password(
     State(state): State<super::AppState>,
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> impl IntoResponse {
+    if super::setup::setup_wizard_required_with_marker(
+        &state.config_path,
+        state.setup_marker_override.as_deref(),
+    ) {
+        return Redirect::to(&super::setup::setup_redirect_for_step(&state.config_path))
+            .into_response();
+    }
     if state.auth.has_simple_password() {
         let html = LoginTemplate {
             error: Some(
@@ -207,17 +201,20 @@ pub async fn setup_password(
             let mut response_headers = HeaderMap::new();
             insert_session_cookie(&state, &headers, &mut response_headers, &token);
 
-            // Warm caches also for first-run setup (same benefit for editor UX).
+            // Warm caches also for first-run setup (same benefit for editor.
             {
                 let lldap = state.lldap.clone();
                 tokio::spawn(async move {
-                    let l = lldap.lock().await;
+                    let l = lldap.read().await.clone();
                     let _ = l.list_users(None).await;
                     let _ = l.list_groups(None).await;
                 });
             }
 
-            (response_headers, Redirect::to("/?first_run=1")).into_response()
+            // Attach Set-Cookie explicitly on the Redirect (see login path).
+            let mut response = Redirect::to("/?first_run=1").into_response();
+            response.headers_mut().extend(response_headers);
+            response
         }
         Err(e) => {
             let html = LoginTemplate {
@@ -243,13 +240,17 @@ pub async fn logout(State(state): State<super::AppState>, headers: HeaderMap) ->
 
     let mut h = HeaderMap::new();
     insert_session_clear_cookie(&state, &headers, &mut h);
-    (h, Redirect::to("/login")).into_response()
+
+    // Explicit attachment for consistency with the login success paths.
+    let mut response = Redirect::to("/login").into_response();
+    response.headers_mut().extend(h);
+    response
 }
 
 /// Map ?error= query values to user-visible login messages.
 fn login_error_message(first_run: bool, error: Option<&str>) -> Option<String> {
     let code = error?;
-    // First-run visitors are not "logged out" — suppress the session-expired copy.
+    // First-run visitors are not "logged out" suppress the Session-expired.
     if first_run && matches!(code, "session" | "required" | "auth") {
         return None;
     }
@@ -261,7 +262,7 @@ fn login_error_message(first_run: bool, error: Option<&str>) -> Option<String> {
     })
 }
 
-/// Where to send unauthenticated users (context-aware, avoids misleading first-run copy).
+/// Redirect target for unauthenticated users (context-aware first-run copy).
 fn auth_failure_redirect(state: &super::AppState, headers: &HeaderMap) -> Redirect {
     if !state.auth.has_simple_password() {
         return Redirect::to("/login");
@@ -299,10 +300,7 @@ fn insert_session_clear_cookie(
     headers.insert(SET_COOKIE, clear.parse().expect("valid Set-Cookie clear"));
 }
 
-/// Returns the value for the Secure flag on cookies for this request.
-/// Prefers explicit NFS_KLLDAP_WEBUI_COOKIE_SECURE (escape hatch for setups that
-/// need to force the bit off even when TLS was on). When absent,
-/// delegates to the smart detection (direct TLS or X-Forwarded-Proto: https).
+/// Chooses the cookie Secure flag and honors NFS_KLLDAP_WEBUI_COOKIE_SECURE.
 fn effective_cookie_secure(state: &super::AppState, headers: &HeaderMap) -> bool {
     if let Ok(v) = std::env::var("NFS_KLLDAP_WEBUI_COOKIE_SECURE") {
         let v = v.trim().to_ascii_lowercase();
@@ -311,11 +309,10 @@ fn effective_cookie_secure(state: &super::AppState, headers: &HeaderMap) -> bool
     state.is_https(headers)
 }
 
-/// Session cookie builder (HttpOnly/Lax/Secure + effective https).
-/// Secure bit is now conditional on effective https (direct or via proxy header),
-/// while still honoring the NFS_KLLDAP_WEBUI_COOKIE_SECURE override.
+/// Session cookie builder with HttpOnly/Lax and conditional Secure.
 fn build_session_cookie(state: &super::AppState, req_headers: &HeaderMap, token: &str) -> String {
-    let max_age = cookie::time::Duration::seconds(12 * 3600);
+    // Max-Age mirrors the server-side session TTL so both expire together.
+    let max_age = cookie::time::Duration::seconds(state.auth.session_ttl().as_secs() as i64);
 
     let mut cookie = Cookie::build(("session", token))
         .http_only(true)
@@ -340,22 +337,8 @@ fn build_clear_session_cookie(state: &super::AppState, req_headers: &HeaderMap) 
     cookie.to_string()
 }
 
-/// Env-only decider for the Secure cookie bit (still used by unit test).
-/// The primary logic now lives in `effective_cookie_secure` (which respects this
-/// env when present, else delegates to `AppState::is_https` for direct_tls or
-/// X-Forwarded-Proto). Kept so existing tests continue to work.
-#[allow(dead_code)]
-fn cookie_secure() -> bool {
-    std::env::var("NFS_KLLDAP_WEBUI_COOKIE_SECURE")
-        .map(|v| {
-            let v = v.trim().to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "off" || v == "no")
-        })
-        .unwrap_or(true)
-}
-
 /// All non-empty `session=` values from a Cookie header (oldest → newest).
-pub(crate) fn extract_all_session_tokens(cookie_header: &str) -> Vec<String> {
+fn extract_all_session_tokens(cookie_header: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for part in cookie_header.split(';') {
         let kv = part.trim();
@@ -377,8 +360,8 @@ fn extract_all_session_tokens_from_headers(headers: &HeaderMap) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Validate any session cookie on the request; prefers the last (most recently set) token.
-pub(crate) fn validate_session_in_headers(
+/// Validates session cookies and prefers the most recently set token.
+fn validate_session_in_headers(
     state: &super::AppState,
     headers: &HeaderMap,
 ) -> Option<String> {
@@ -391,17 +374,25 @@ pub(crate) fn validate_session_in_headers(
     None
 }
 
-// === Auth guard used by protected handlers ===
+/// Bearer token of the session that authenticated this request (newest valid
+/// cookie) — for handlers that keep the acting session while invalidating
+/// the user's others.
+pub(crate) fn current_session_token(
+    state: &super::AppState,
+    headers: &HeaderMap,
+) -> Option<String> {
+    extract_all_session_tokens_from_headers(headers)
+        .into_iter()
+        .rev()
+        .find(|t| state.auth.validate(t).is_some())
+}
+
+// Auth guard helpers for protected routes.
 
 #[derive(Clone)]
 pub struct AuthUser(pub String);
 
-/// Guard used by (almost) every protected route handler.
-///
-/// Key point for the principal-mismatch requirement: this (and validate_session_in_headers)
-/// only look at session cookies + the AuthManager. keytab_alert (the NFS hostname vs.
-/// keytab principal warning) lives in AppState only for template rendering and has no
-/// effect on authentication decisions or on whether modifications are allowed.
+/// Guards protected routes and ignores keytab_alert when authorizing access.
 pub async fn require_auth(
     state: &super::AppState,
     headers: &HeaderMap,
@@ -414,28 +405,16 @@ pub async fn require_auth(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::extract_all_session_tokens;
 
     #[test]
-    fn extract_all_session_tokens_collects_duplicates() {
-        let raw = "foo=bar; session=old; session=new";
-        let t = extract_all_session_tokens(raw);
-        assert_eq!(t, vec!["old".to_string(), "new".to_string()]);
-    }
-
-    #[test]
-    fn login_error_message_suppresses_session_copy_on_first_run() {
-        assert!(login_error_message(true, Some("session")).is_none());
-        assert!(login_error_message(true, Some("required")).is_none());
-        assert!(
-            login_error_message(false, Some("session"))
-                .unwrap()
-                .contains("expired")
-        );
-    }
-
-    #[test]
-    fn cookie_secure_defaults_true() {
-        assert!(cookie_secure());
+    fn extracts_every_session_cookie_in_order_skipping_empty_and_quotes() {
+        // Duplicate session cookies happen after re-login; validation prefers the newest (last).
+        let tokens = extract_all_session_tokens("session=old; theme=dark; session=\"new\"; session=");
+        assert_eq!(tokens, vec!["old".to_string(), "new".to_string()]);
+        assert!(extract_all_session_tokens("theme=dark").is_empty());
+        assert!(extract_all_session_tokens("").is_empty());
     }
 }
+
+

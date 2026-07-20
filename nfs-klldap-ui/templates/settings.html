@@ -1,271 +1,733 @@
 {% extends "base.html" %}
 
+{#
+  System Settings — paned redesign (drop-in for nfs-klldap-ui/templates/settings.html).
+  Extends base.html (theme vars, .btn, .alert, .mono-log-panel, htmx, theme tray).
+
+  Preserves the existing POST contract:
+    /settings/save        (structured settings: Core + SSSD + TLS + Admin timeout) -> #settings-form
+    /settings/save-shares (shares; schedules the graceful apply)     -> #shares-form
+    /settings/save-raw    (raw TOML)                                 -> #raw-form
+    /settings/restart     (forced full recycle via SIGUSR1)
+    /settings/change-password (Admin pane; localhost account only)
+  and the existing context vars + override_* checkbox semantics (the
+  Auto/Custom segmented control just drives the same hidden override_* checkbox).
+
+  Lightweight JSON endpoints in web/settings/ power the Diagnostics-style buttons:
+    POST /settings/test-ldap  { ldap_uri }                       -> JSON {ok, log, message?, error?}
+    POST /settings/test-bind  { ldap_default_bind_dn, ldap_default_authtok } -> JSON {ok, log, ...}
+    POST /settings/reprobe-filesystems {}                        -> JSON (Overview FS ACL probe)
+    POST /settings/refresh-identity {}                           -> JSON (endpoint only; no button —
+                                       the Overview client card's Reload/Clear covers the UI need)
+  Reuse the probe logic from /setup/2/test and /setup/3/test. A failing test never blocks Save.
+#}
+
+{% block tabrow %}
+<div class="tab-row">
+  <nav class="page-tabs" aria-label="Primary">
+    <a href="/" class="page-tab">Share Permissions</a>
+    <a href="/settings" class="page-tab active" aria-current="page">System Settings</a>
+  </nav>
+</div>
+{% endblock %}
+
 {% block content %}
-<h2>System Settings</h2>
-<p>Editing: <code>{{ config_path }}</code></p>
-
-<div class="current-state">
-    <span class="state-label">NFS Kerberos hostname: </span>
-    <strong>{{ effective_hostname }}</strong><br>
-    <span class="mode-hint">
-        Keytab should include <code>nfs/&lt;short&gt;@{{ effective_realm }}</code> and
-        <code>nfs/{{ effective_hostname }}@{{ effective_realm }}</code>.
-    </span>
-    {% if !keytab_found_principals.is_empty() %}
-    <div style="margin-top:4px; font-size:0.9em;">
-        <span class="state-label">Keytab NFS principals:</span>
-        {% for p in keytab_found_principals %}
-            <code>{{ p }}</code>{% if !loop.last %}, {% endif %}
-        {% endfor %}
-    </div>
-    {% endif %}
-    {% if let Some(keytab_msg) = keytab_alert %}
-    <br><strong style="color: var(--warning-text);">{{ keytab_msg }}</strong>
-    {% endif %}
+{% if let Some(acl_msg) = acl_alert %}
+<div class="acl-alert" role="alert" style="background: var(--warning-amber-bg); border:1px solid var(--warning-amber-border); padding:6px 12px; margin-bottom:0.75rem; border-radius:4px; font-size:0.9em; color: var(--warning-amber-text);">
+    <strong>ACL capability changed:</strong> {{ acl_msg }}
 </div>
-
-{% if let Some(msg) = message %}
-    <div class="alert alert-success" style="margin:1rem 0;">
-        {{ msg }}
-    </div>
 {% endif %}
+<style>
+  /* ---- shell / rail / panes ---- */
+  #settings-app{color:var(--text);font-size:13px;line-height:1.45}
+  .set-shell{display:flex;min-height:560px;border:1px solid var(--border);border-radius:9px;overflow:hidden;background:var(--bg)}
+  .set-rail{flex:0 0 176px;background:var(--bg-alt);border-right:1px solid var(--border-light);padding:12px 9px;display:flex;flex-direction:column;gap:2px}
+  .rail-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;color:var(--text-muted);font-size:.9em;font-weight:600;border:1px solid transparent;background:transparent;text-align:left;width:100%;font-family:inherit;white-space:nowrap}
+  .rail-item:hover{background:var(--dir-hover)}
+  .rail-item.active{background:var(--accent-light);color:var(--text);border-color:var(--selected-border)}
+  .rail-dot{width:7px;height:7px;border-radius:50%;background:var(--warning-amber-border);margin-left:auto;opacity:0;transition:opacity .15s}
+  .rail-item.dirty .rail-dot{opacity:1}
+  .set-main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .set-scroll{flex:1;padding:18px 22px;display:flex;flex-direction:column;min-height:0}
+  #raw-form{display:flex;flex-direction:column;flex:1;min-height:0}
+  #raw-form .set-section:not([hidden]){display:flex;flex-direction:column;flex:1;min-height:0}
+  .set-section{scroll-margin-top:12px}
+  .set-section[hidden]{display:none}
+  .sec-hd{display:flex;align-items:center;gap:9px;margin:0 0 14px;padding-bottom:7px;border-bottom:1px solid var(--border-light)}
+  .sec-hd h3{margin:0;font-size:1.05em}
+  .sec-hd .sec-sub{font-size:.74em;color:var(--text-light)}
 
-<!-- NFS Permission Client status (LLDAP connection used for uid/gid resolution on shares).
-     HTMX-loaded so it can be refreshed after "Reload NFS client" without full page reload. -->
-<div id="nfs-client-status"
-     hx-get="/settings/lldap-status"
-     hx-trigger="load"
-     style="border:1px solid var(--border); background:var(--bg-alt); padding:10px; margin:1rem 0; border-radius:4px;">
-    <em>Loading NFS client status…</em>
+  /* ---- fields ---- */
+  .fld-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px}
+  .fld{margin-bottom:2px;min-width:0;position:static}
+  .fld.wide{grid-column:1 / -1}
+  /* Core pane: the tall probe card anchors the left of the last two rows; the boxed
+     Navahi card stacks under ganesha.default_security (both reset to flow at ≤640px). */
+  .fld[data-probe-card]{grid-row:span 2}
+  .fld.navahi-card{grid-column:2;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px}
+  .fld.navahi-card .ac-head{margin-bottom:6px}
+  .fld.navahi-card .derived-note{margin-top:0}
+  .fld-lab{display:inline-flex;align-items:center;gap:5px;font:600 .78em var(--font-mono);color:var(--text-muted);margin-bottom:4px;cursor:help;position:static}
+  .ico{width:11px;height:11px;border-radius:50%;border:1px solid currentColor;font:italic 700 8px/1 Georgia,serif;display:inline-flex;align-items:center;justify-content:center;opacity:.55;flex:none}
+  .fld input[type=text],.fld input[type=password],.fld input[type=number],.fld select{width:100%;padding:5px 8px;border-radius:5px;font-size:.92em;box-sizing:border-box}
+  .ac-head{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+  .ac-head .fld-lab{margin-bottom:0}
+  .seg{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;flex:none}
+  .seg button{border:0;border-right:1px solid var(--border);background:var(--bg-alt);color:var(--text-muted);padding:3px 11px;font-size:.76em;font-weight:600;cursor:pointer;font-family:inherit}
+  .seg button:last-child{border-right:0}
+  .seg button.on{background:var(--accent);color:#fff}
+  .derived-note{font-size:.72em;color:var(--text-light);margin-top:3px}
+  .chkline{display:flex;align-items:center;gap:7px;font-size:.9em;color:var(--text);cursor:pointer;position:static}
+  .chkline input{transform:scale(1.1)}
+
+  /* ---- overview ---- */
+  .ov-card{background:var(--bg-alt);border:1px solid var(--border);border-radius:7px;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+  .ov-row{display:flex;align-items:baseline;gap:10px;font-size:.9em;flex-wrap:wrap}
+  .ov-k{flex:0 0 66px;font:700 .78em var(--font-mono);text-transform:uppercase;letter-spacing:.04em;color:var(--text-light)}
+  .ov-row code{font-family:var(--font-mono);font-size:.92em;color:var(--text-muted)}
+  .ov-row .kp{background:var(--input-bg-disabled);border:1px solid var(--border-light);border-radius:4px;padding:1px 6px;margin-right:4px}
+  .muted{color:var(--text-light)}
+
+  /* ---- share cards ---- */
+  .shares-split{display:flex;gap:16px;align-items:flex-start}
+  .shares-col{flex:1;min-width:0}
+  /* Phased growth: cards widen to ~640px first, then the TOML aside 288->460px, then cards again */
+  .toml-side{flex:0 0 clamp(288px, 100% - 656px, 460px);min-width:0;position:sticky;top:8px}
+  .side-hd{font:700 .72em var(--font-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--text-light);margin-bottom:6px}
+  .shares-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  /* Global legend runs .66em for the index tab row; inside the 13px settings shell that lands
+     under 9px — bump back to the pane's previous size. */
+  .shares-toolbar .perm-legend{font-size:.72em}
+  .pane-note{font-size:.78em;color:var(--text-light);margin:-6px 0 12px}
+  .sh-bulk{display:flex;gap:6px;margin-left:auto}
+  .sh-bulk button{border:1px solid var(--border);background:var(--bg);color:var(--text-muted);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:.78em;font-family:inherit}
+  .sh-bulk button:hover{border-color:var(--accent);color:var(--text)}
+  #shares-container{display:flex;flex-direction:column;gap:12px}
+  .share-card-ed{border:1px solid var(--border);background:var(--card-bg);border-radius:8px;padding:12px 13px}
+  .sc-hd{display:flex;align-items:center;gap:9px}
+  .sc-caret{flex:none;width:22px;height:22px;border:0;background:transparent;color:var(--text-light);cursor:pointer;font-size:.8em;transition:transform .12s;display:inline-flex;align-items:center;justify-content:center;font-family:inherit}
+  .share-card-ed.open .sc-caret{transform:rotate(90deg)}
+  .sc-name{flex:1;font:700 .98em var(--font-mono);padding:5px 8px}
+  .sc-sum{display:flex;gap:5px;flex-wrap:wrap;flex:none}
+  .share-card-ed.open .sc-sum{display:none}
+  .sc-chip{font-size:.72em;padding:1px 8px;border-radius:20px;background:var(--accent-light);color:var(--text);border:1px solid var(--selected-border);white-space:nowrap}
+  .sc-chip.noacl{background:var(--noacl-ring);border-color:var(--noacl);color:var(--text)}
+  .sc-del{flex:none;width:26px;height:26px;border:1px solid var(--border);background:var(--bg-alt);color:var(--text-light);border-radius:5px;cursor:pointer;font-size:.85em}
+  .sc-del:hover{border-color:var(--danger-border);color:var(--danger-text)}
+  .sc-body{display:none}
+  .share-card-ed.open .sc-body{display:block;margin-top:11px;padding-top:11px;border-top:1px dashed var(--border-light)}
+  .sc-optwrap{margin-top:11px;padding-top:11px;border-top:1px dashed var(--border-light);display:flex;flex-direction:column;gap:11px}
+  /* minmax(0,1fr) lets the equal columns shrink so each option row stays on one line:
+     row 1 (.sc-access) security·rw·root_squash·navahi_insecure, row 2 (.sc-grid) 5-up. */
+  .sc-access{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+  .sc-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+  .scf{min-width:0}
+  .scf .fld-lab{margin-bottom:3px}
+  .scf select,.scf input{width:100%;padding:3px 4px;border-radius:5px;font-size:.78em;box-sizing:border-box}
+  .scf .chkline{padding:5px 0}
+  .add-share{align-self:flex-start;margin-top:14px;border:1px dashed var(--border);background:transparent;color:var(--accent);padding:7px 14px;border-radius:6px;cursor:pointer;font-weight:600;font-size:.88em;font-family:inherit}
+  .add-share:hover{background:var(--accent-light);border-style:solid}
+
+  /* ---- live toml ---- */
+  .toml-host{border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--bg-alt)}
+  .tl-pre{margin:0;padding:10px 0;font:12px/1.5 var(--font-mono);overflow:auto;max-height:540px}
+  .tl{padding:0 14px;white-space:pre;color:var(--text-muted)}
+  .tl.chg{background:var(--accent-light);border-left:3px solid var(--accent);padding-left:11px;color:var(--text)}
+
+  /* ---- diagnostics ---- */
+  .diag{margin-top:18px;padding-top:15px;border-top:1px solid var(--border-light)}
+  .diag-hd{font:700 .72em var(--font-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--text-light);margin-bottom:9px}
+  .test-row{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .test-row .btn{white-space:nowrap}
+  .test-hint{font-size:.78em;color:var(--text-light);margin-bottom:8px}
+  .tpill{font-size:.74em;font-weight:600;padding:2px 9px;border-radius:20px;border:1px solid var(--border);color:var(--text-light);background:var(--bg-alt)}
+  .tpill.testing{background:var(--warning-amber-bg);color:var(--warning-amber-text);border-color:var(--warning-amber-border)}
+  .tpill.pass{background:var(--success-bg);color:var(--success-text);border-color:var(--success-border)}
+  .tpill.fail{background:var(--danger-bg);color:var(--danger-text);border-color:var(--danger-border)}
+
+  /* ---- save bar ---- */
+  .savebar{flex:none;display:flex;align-items:center;gap:12px;padding:10px 16px;border-top:1px solid var(--border-light);background:var(--bg-alt)}
+  #save-hint{font-size:.86em;color:var(--text-light)}
+  #save-hint.dirty{color:var(--warning-amber-text);font-weight:600}
+  .sb-spacer{margin-left:auto}
+
+  @media (max-width:900px){.shares-split{flex-direction:column}.toml-side{flex:1 1 auto;position:static;width:100%}}
+  @media (max-width:640px){.fld-grid{grid-template-columns:1fr}.fld[data-probe-card]{grid-row:auto}.fld.navahi-card{grid-column:auto}.sc-access{grid-template-columns:1fr}.sc-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+
+{# keytab_alert intentionally not repeated here — base.html already banners it #}
+{% if let Some(msg) = message %}<div class="alert {% if message_is_error %}alert-danger{% else %}alert-success{% endif %}" style="margin:0 0 12px">{{ msg }}</div>{% endif %}
+
+<div id="settings-app">
+  <div class="set-shell">
+    <nav class="set-rail">
+      <button type="button" class="rail-item active" data-pane="overview"><span>Overview</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="core"><span>Core</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="sssd"><span>SSSD</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="tls"><span>TLS &amp; Security</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="shares"><span>Shares</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="raw"><span>Raw TOML</span><span class="rail-dot"></span></button>
+      <button type="button" class="rail-item" data-pane="admin"><span>Admin</span><span class="rail-dot"></span></button>
+    </nav>
+
+    <div class="set-main">
+      <div class="set-scroll">
+
+        {# ===================== OVERVIEW ===================== #}
+        <section class="set-section" data-pane-content="overview">
+          <div class="sec-hd"><h3>Overview</h3></div>
+
+          <div class="ov-card">
+            <div class="ov-row"><span class="ov-k">config</span><code>{{ config_path }}</code></div>
+            <div class="ov-row"><span class="ov-k">nfs host</span><strong>{{ effective_hostname }}</strong><span class="muted">@ {{ effective_realm }}</span></div>
+            <div class="ov-row"><span class="ov-k">keytab</span>
+              <span>
+                {% for p in keytab_found_principals %}<code class="kp">{{ p }}</code>{% endfor %}
+                {% if keytab_found_principals.is_empty() %}<span class="muted">expects nfs/&lt;short&gt;@{{ effective_realm }}, nfs/{{ effective_hostname }}@{{ effective_realm }}</span>{% endif %}
+              </span>
+            </div>
+            <div class="ov-row"><span class="ov-k">version</span><code>{{ app_version }}</code></div>
+            <div class="ov-row"><span class="ov-k">webui</span>{% for u in webui_urls %}<code>{{ u }}</code>{% endfor %}</div>
+            <div class="ov-row"><span class="ov-k">mode</span>
+              {% if host_nfs_mode %}<span class="sc-chip">HOST_NFS</span><span class="muted" style="font-size:.85em">host runs NFS; server controls are host-enforced</span>
+              {% else %}<span class="sc-chip">Container-managed</span><span class="muted" style="font-size:.85em">this container runs Ganesha</span>{% endif %}
+            </div>
+            <div class="ov-row"><span class="ov-k">navahi</span>
+              {% if navahi_discovery %}<span class="sc-chip">on</span><span class="muted" style="font-size:.85em">{{ navahi_advertised_count }} share(s) advertised via mDNS</span>
+              {% else %}<span class="muted">off</span>{% endif %}
+            </div>
+          </div>
+
+          {# LLDAP NFS client status — htmx-loaded (unchanged endpoint) #}
+          {# outerHTML swap: the fragment brings its own #nfs-client-status wrapper #}
+          <div id="nfs-client-status" hx-get="/settings/lldap-status" hx-trigger="load" hx-swap="outerHTML"
+               style="border:1px solid var(--border);background:var(--bg-alt);padding:10px;margin:14px 0 0;border-radius:6px">
+            <em>Loading NFS client status…</em>
+          </div>
+
+          {# Filesystem ACL probe — relocated from the Admin Maintenance block; same
+             #reprobe-fs-* ids so the runProbe listener below is untouched. #}
+          <div style="border:1px solid var(--border);background:var(--bg-alt);padding:10px;margin:12px 0 0;border-radius:6px">
+            <div style="font-weight:700;margin-bottom:7px">Filesystem ACL probe <span class="muted" style="font-weight:400;font-size:.85em">(re-classify share serve roots)</span></div>
+            <div class="test-row" style="margin-bottom:0">
+              <button type="button" id="reprobe-fs-btn" class="btn btn-primary"
+                      title="Drops every cached ACL write-probe verdict and re-classifies each share's serve root now (the background watcher re-checks every ~3 minutes on its own).">Re-probe filesystems</button>
+              <span id="reprobe-fs-pill" class="tpill">not run</span>
+            </div>
+            <div id="reprobe-fs-log" class="mono-log-panel" style="margin-top:8px;max-height:150px"><em style="color:var(--text-light)">Run to list each share's fresh ACL verdict.</em></div>
+          </div>
+        </section>
+
+        {# ============ SETTINGS FORM (Core + SSSD + TLS) ============ #}
+        <form id="settings-form" method="post" action="/settings/save">
+
+          {# ---------- CORE ---------- #}
+          <section class="set-section" data-pane-content="core" hidden>
+            <div class="sec-hd"><h3>Core</h3></div>
+            <div class="fld-grid">
+              <div class="fld">
+                <label class="fld-lab" title="LLDAP server used to resolve uid/gid on shares.&#10;&rarr; sssd.conf ldap_uri">ldap_uri <span class="ico">i</span></label>
+                <input type="text" name="ldap_uri" id="ldap_uri" value="{{ ldap_uri }}" placeholder="ldaps://klldap.example.com:6360">
+              </div>
+              <div class="fld">
+                <label class="fld-lab" title="Base path in the container under which shares are served.&#10;&rarr; [storage] container_root">storage.container_root <span class="ico">i</span></label>
+                <input type="text" name="storage_container_root" value="{{ storage_container_root }}">
+              </div>
+
+              {# server.hostname — Auto/Custom #}
+              <div class="fld" data-ac-field="server_hostname">
+                <div class="ac-head">
+                  <label class="fld-lab" title="NFS Kerberos hostname. Auto = derived from the container host.&#10;&rarr; server.hostname / krb5 principal nfs/&lt;host&gt;">server.hostname <span class="ico">i</span></label>
+                  <div class="seg" data-ac-for="server_hostname">
+                    <button type="button" data-ac="auto" class="{% if !override_server_hostname %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if override_server_hostname %}on{% endif %}">Custom</button>
+                  </div>
+                </div>
+                <input type="text" name="server_hostname" id="server_hostname" value="{{ server_hostname }}" {% if !override_server_hostname %}disabled{% endif %}>
+                <input type="checkbox" name="override_server_hostname" id="override_server_hostname" value="true" {% if override_server_hostname %}checked{% endif %} hidden>
+                <div class="derived-note">Auto persists the derived value; Custom writes an explicit override.</div>
+              </div>
+
+              {# kerberos.realm — Auto/Custom #}
+              <div class="fld" data-ac-field="kerberos_realm">
+                <div class="ac-head">
+                  <label class="fld-lab" title="Kerberos realm. Auto = derived from the domain.&#10;&rarr; kerberos.realm / krb5.conf">kerberos.realm <span class="ico">i</span></label>
+                  <div class="seg" data-ac-for="kerberos_realm">
+                    <button type="button" data-ac="auto" class="{% if !override_kerberos_realm %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if override_kerberos_realm %}on{% endif %}">Custom</button>
+                  </div>
+                </div>
+                <input type="text" name="kerberos_realm" id="kerberos_realm" value="{{ kerberos_realm }}" {% if !override_kerberos_realm %}disabled{% endif %}>
+                <input type="checkbox" name="override_kerberos_realm" id="override_kerberos_realm" value="true" {% if override_kerberos_realm %}checked{% endif %} hidden>
+              </div>
+
+              {# [probe] identity probe — the Auto/Custom seg drives the hidden auto_probe_ldap
+                 checkbox (Auto = checked; POST contract unchanged) and gates the two pinned-identity
+                 fields. Spans two grid rows so ganesha.default_security + Navahi stack beside it. #}
+              <div class="fld" data-probe-card>
+                <div class="ac-head">
+                  <label class="fld-lab" title="Startup identity checks probe a sample directory user and an enrolled client machine.&#10;Auto picks them from the directory; Custom pins specific identities.&#10;&rarr; [probe] user_principal / client_host">probe (identity checks) <span class="ico">i</span></label>
+                  <div class="seg" data-ac-for="probe">
+                    <button type="button" data-ac="auto" class="{% if auto_probe_ldap %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if !auto_probe_ldap %}on{% endif %}">Custom</button>
+                  </div>
+                </div>
+                <input type="checkbox" name="auto_probe_ldap" id="auto_probe_ldap" value="true" {% if auto_probe_ldap %}checked{% endif %} hidden>
+                <input type="text" name="probe_user_principal" id="probe_user_principal" placeholder="sample user (name or name@REALM)" value="{{ probe_user_principal }}" {% if auto_probe_ldap %}disabled{% endif %}>
+                <input type="text" name="probe_client_host" id="probe_client_host" placeholder="client machine short name" value="{{ probe_client_host }}" {% if auto_probe_ldap %}disabled{% endif %} style="margin-top:6px">
+                <div class="derived-note">Auto: startup checks pick a sample user and client from the directory. Custom pins a specific user principal / client host.</div>
+              </div>
+
+              {# ganesha.default_security — host-managed OR Auto/Custom select #}
+              <div class="fld" data-ac-field="ganesha_default_security">
+                <div class="ac-head">
+                  <label class="fld-lab" title="Default NFS security flavor applied to every share.&#10;&rarr; [ganesha] default_security / EXPORT SecType">ganesha.default_security <span class="ico">i</span></label>
+                  {% if !host_nfs_mode %}
+                  <div class="seg" data-ac-for="ganesha_default_security">
+                    <button type="button" data-ac="auto" class="{% if !override_ganesha_default_security %}on{% endif %}">Auto</button>
+                    <button type="button" data-ac="custom" class="{% if override_ganesha_default_security %}on{% endif %}">Custom</button>
+                  </div>
+                  {% endif %}
+                </div>
+                <select name="ganesha_default_security" id="ganesha_default_security"
+                        {% if host_nfs_mode %}disabled{% else %}{% if !override_ganesha_default_security %}disabled{% endif %}{% endif %}>
+                  <option value="krb5p" {% if ganesha_default_security == "krb5p" %}selected{% endif %}>krb5p</option>
+                  <option value="krb5i" {% if ganesha_default_security == "krb5i" %}selected{% endif %}>krb5i</option>
+                  <option value="krb5" {% if ganesha_default_security == "krb5" %}selected{% endif %}>krb5</option>
+                </select>
+                {% if host_nfs_mode %}
+                <div class="derived-note">host-managed (NFS server runs outside this container)</div>
+                {% else %}
+                <input type="checkbox" name="override_ganesha_default_security" id="override_ganesha_default_security" value="true" {% if override_ganesha_default_security %}checked{% endif %} hidden>
+                {% endif %}
+              </div>
+
+              {# Navahi Network Discovery — staged like other core settings; the Enabled/Disabled
+                 seg drives the hidden navahi_discovery checkbox (POST contract unchanged). #}
+              <div class="fld navahi-card">
+                <div class="ac-head">
+                  <label class="fld-lab" title="Advertise flagged shares over mDNS/Avahi and enable their NFSv3/AUTH_SYS click-mount path for GNOME/KDE network browsing. Per-share opt-in via the share card's navahi_insecure checkbox.&#10;&rarr; navahi_discovery">Navahi Network Discovery <span class="ico">i</span></label>
+                  <div class="seg" data-bool-for="navahi_discovery">
+                    <button type="button" data-bv="1" class="{% if navahi_discovery %}on{% endif %}">Enabled</button>
+                    <button type="button" data-bv="0" class="{% if !navahi_discovery %}on{% endif %}">Disabled</button>
+                  </div>
+                </div>
+                <input type="checkbox" id="navahi_discovery" name="navahi_discovery" value="true" {% if navahi_discovery %}checked{% endif %} hidden>
+                <div class="derived-note">Takes effect after "Restart and apply" (Admin pane). Flagged shares then broadcast on the LAN and accept insecure NFSv3/AUTH_SYS mounts.</div>
+              </div>
+            </div>
+
+            <div class="diag">
+              <div class="diag-hd">Diagnostics</div>
+              <div class="test-row">
+                <button type="button" id="test-ldap-btn" class="btn btn-primary">Test connectivity</button>
+                <span id="test-ldap-pill" class="tpill">not tested</span>
+              </div>
+              <div class="test-hint">DNS resolution + TCP reachability (getent + nc).</div>
+              <div id="test-ldap-log" class="mono-log-panel"><em style="color:var(--text-light)">Enter ldap_uri and run the test.</em></div>
+            </div>
+          </section>
+
+          {# ---------- SSSD ---------- #}
+          <section class="set-section" data-pane-content="sssd" hidden>
+            <div class="sec-hd"><h3>SSSD</h3></div>
+            <div class="fld-grid">
+              <div class="fld">
+                <label class="fld-lab" title="Service account DN that SSSD binds with.&#10;&rarr; sssd.conf ldap_default_bind_dn">sssd.bind_dn <span class="ico">i</span></label>
+                <input type="text" name="sssd_bind_dn" id="sssd_bind_dn" value="{{ sssd_bind_dn }}" required>
+              </div>
+              <div class="fld">
+                <label class="fld-lab" title="Bind password (secret). Blank keeps the current value.&#10;&rarr; sssd.conf ldap_default_authtok">sssd.bind_pw <span class="ico">i</span></label>
+                <input type="password" name="sssd_bind_pw" id="sssd_bind_pw" placeholder="leave blank to keep current" autocomplete="new-password">
+              </div>
+
+              {% for f in sssd_ac_fields %}{% include "settings_ac_text.html" %}{% endfor %}
+            </div>
+
+            <div class="fld" style="margin-top:12px">
+              <label class="chkline" title="Emit server-side ignore blocks + use 'member'.&#10;&rarr; kllldap_ignored_attributes">
+                <input type="checkbox" name="kllldap_ignored_attributes" value="true" {% if kllldap_ignored_attributes %}checked{% endif %}>
+                <span style="font-family:var(--font-mono);font-weight:600;font-size:.9em">kllldap_ignored_attributes</span>
+              </label>
+            </div>
+
+            <div class="diag">
+              <div class="diag-hd">Diagnostics</div>
+              <div class="test-row">
+                <button type="button" id="test-bind-btn" class="btn btn-primary">Test bind</button>
+                <span id="test-bind-pill" class="tpill">not tested</span>
+              </div>
+              <div class="test-hint">ldapsearch bind using the same POSIX attributes as SSSD.</div>
+              <div id="test-bind-log" class="mono-log-panel"><em style="color:var(--text-light)">Enter bind credentials and run the test.</em></div>
+            </div>
+          </section>
+
+          {# ---------- TLS & SECURITY ---------- #}
+          <section class="set-section" data-pane-content="tls" hidden>
+            <div class="sec-hd"><h3>TLS &amp; Security</h3></div>
+            <div class="fld-grid">
+              {% for f in tls_ac_fields %}{% include "settings_ac_text.html" %}{% endfor %}
+            </div>
+
+            {% for f in tls_ac_bools %}{% include "settings_ac_bool.html" %}{% endfor %}
+          </section>
+        </form>
+
+        {# ===================== SHARES ===================== #}
+        <form id="shares-form" method="post" action="/settings/save-shares">
+          <section class="set-section" data-pane-content="shares" hidden>
+            <div class="sec-hd"><h3>Shares</h3></div>
+            {# Relocated from the Share Permissions page: this pane is where shares change, so the
+               load/apply lifecycle note belongs here. #}
+            <p class="pane-note">
+              {% if host_nfs_mode %}
+              The host NFS server reads the generated fragments — after adding or editing shares, use
+              "Apply to host" (Admin pane) or wait for the watcher to regenerate them.
+              {% else %}
+              Saving shares applies them gracefully: Ganesha rereads its exports in place and this
+              WebUI refreshes without restarting, so sessions and connected clients on other shares
+              are untouched. "Restart &amp; apply" (Admin pane) is only needed for a full service
+              restart.
+              {% endif %}
+            </p>
+            <div class="shares-split">
+              <div class="shares-col">
+                <div class="shares-toolbar">
+                  <div class="perm-legend">
+                    <span class="lbl">Legend</span>
+                    <span class="key"><span class="legend-dot acl"></span>ACL supported</span>
+                    <span class="key"><span class="legend-dot noacl"></span>Non-ACL limited</span>
+                  </div>
+                  <div class="sh-bulk">
+                    <button type="button" data-shbulk="expand">Expand all</button>
+                    <button type="button" data-shbulk="collapse">Collapse all</button>
+                  </div>
+                </div>
+
+                <div id="shares-container">
+                  {% for row in current_shares %}{% include "share_card.html" %}{% endfor %}
+                </div>
+
+                <button type="button" id="add-share" class="add-share">+ Add share</button>
+              </div>
+
+              <aside class="toml-side">
+                <div class="side-hd">live [[shares]] toml</div>
+                <div class="toml-host"><pre class="tl-pre" id="shares-toml"></pre></div>
+              </aside>
+            </div>
+          </section>
+        </form>
+
+        {# ===================== RAW TOML ===================== #}
+        <form id="raw-form" method="post" action="/settings/save-raw">
+          <section class="set-section" data-pane-content="raw" hidden>
+            <div class="sec-hd"><h3>Raw TOML</h3><span class="sec-sub">full control · comments preserved</span></div>
+            <textarea name="raw_content" rows="20" style="width:100%;flex:1;min-height:320px;font-family:var(--font-mono);font-size:.86em;border-radius:6px;padding:10px;box-sizing:border-box">{{ raw_toml }}</textarea>
+            <p class="muted" style="font-size:.82em;margin:.5rem 0 0">The container watches the config file: share/export changes apply gracefully (no service restart); identity ([sssd]/kerberos) and core service settings are staged until "Restart &amp; apply".</p>
+          </section>
+        </form>
+
+        {# ===================== ADMIN ===================== #}
+        <section class="set-section" data-pane-content="admin" hidden>
+          <div class="sec-hd"><h3>Admin</h3></div>
+
+          {# --- restart / apply: the pane's primary action, behavior unchanged --- #}
+          <div class="diag" style="margin-top:0;padding-top:0;border-top:0">
+            <div class="diag-hd">{% if host_nfs_mode %}Apply to host{% else %}Restart &amp; apply{% endif %}</div>
+            <p class="muted" style="font-size:.88em;max-width:560px;margin:0">
+              {% if host_nfs_mode %}
+              Regenerate the Ganesha fragments (sssd.conf + krb5.conf) so the host NFS server sees the latest definitions. No local bounce.
+              {% else %}
+              Full restart of core services and WebUI.
+              {% endif %}
+            </p>
+            <form method="post" action="/settings/restart" style="margin-top:.6rem">
+              <button type="submit" class="btn {% if host_nfs_mode %}btn-primary{% else %}btn-danger{% endif %}" style="padding:8px 16px"
+                      onclick="return confirm('{% if host_nfs_mode %}Apply latest fragments to the host-managed NFS server?{% else %}Restart services now to apply changes? NFS and the WebUI will be briefly unavailable.{% endif %}');">
+                {% if host_nfs_mode %}Apply to host NFS{% else %}Restart and Apply{% endif %}
+              </button>
+            </form>
+          </div>
+
+          {# --- local account password (data-nosave: typing here must not arm the savebar) --- #}
+          <div class="diag" data-nosave>
+            <div class="diag-hd" style="display:flex;align-items:center;gap:6px">Localhost password<span class="ico" style="cursor:help" title="Changes the local localhost account only — LDAP accounts manage their passwords in LLDAP. All other localhost sessions are signed out after a successful change.">i</span></div>
+            <form method="post" action="/settings/change-password" style="max-width:420px;display:flex;flex-direction:column;gap:8px">
+              {% if is_localhost_user %}
+              <div class="fld">
+                <label class="fld-lab" for="current_password">current password</label>
+                <input type="password" name="current_password" id="current_password" required autocomplete="current-password">
+              </div>
+              {% else %}
+              <div class="derived-note" style="max-width:420px">Signed in as an LDAP admin: a fresh
+                '{{ admin_group }}' membership check authorizes this change — no current password
+                needed, denied if LDAP is unreachable.</div>
+              {% endif %}
+              <div class="fld">
+                <label class="fld-lab" for="new_password">new password</label>
+                <input type="password" name="new_password" id="new_password" required minlength="8" autocomplete="new-password" placeholder="min 8 chars">
+              </div>
+              <div class="fld">
+                <label class="fld-lab" for="confirm_password">confirm new password</label>
+                <input type="password" name="confirm_password" id="confirm_password" required minlength="8" autocomplete="new-password">
+              </div>
+              <div><button type="submit" class="btn btn-primary" style="padding:6px 14px">Change password</button></div>
+            </form>
+          </div>
+
+          {# --- sessions: rides #settings-form via the form attribute (never a partial POST) --- #}
+          <div class="diag">
+            <div class="diag-hd">Sessions</div>
+            <div class="fld" style="max-width:300px">
+              <label class="fld-lab" for="webui_session_timeout_minutes"
+                     title="WebUI auto-logout in minutes.&#10;&rarr; [webui] session_timeout_minutes">webui.session_timeout_minutes <span class="ico">i</span></label>
+              <input type="number" name="webui_session_timeout_minutes" id="webui_session_timeout_minutes"
+                     form="settings-form" min="5" max="65535" step="1" placeholder="720 (default)"
+                     value="{{ webui_session_timeout_minutes }}">
+              <div class="derived-note">Auto-logout for WebUI. Default 720, min 5.</div>
+            </div>
+          </div>
+
+        </section>
+
+      </div>
+
+      <div class="savebar">
+        <span id="save-hint">No unsaved changes</span>
+        <span class="sb-spacer"></span>
+        <button type="submit" id="primary-save" class="btn btn-primary" form="settings-form" style="padding:6px 15px;display:none">Save Settings</button>
+      </div>
+    </div>
+  </div>
 </div>
-
-<h3>Structured Editor</h3>
-<div style="font-size:0.75em; color:var(--text-light); margin:-0.2rem 0 0.4rem;">
-    Settings and Shares are saved separately (one does not overwrite the other in raw TOML).
-</div>
-<form method="post" action="/settings/save" style="max-width: 920px;">
-    <div class="settings-group">
-    <h4>Core</h4>
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-        <label>ldap_uri<br><input name="ldap_uri" value="{{ ldap_uri }}" style="width:100%" placeholder="ldaps://kllap.example.com:6360"></label>
-        <label>storage.container_root<br><input name="storage_container_root" value="{{ storage_container_root }}" style="width:100%"></label>
-        <label>server.hostname (optional)<br><input name="server_hostname" id="server_hostname" value="{{ server_hostname }}" style="width:100%" {% if !override_server_hostname %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_server_hostname" value="true" {% if override_server_hostname %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-        <label>kerberos.realm (optional, usually derived)<br><input name="kerberos_realm" id="kerberos_realm" value="{{ kerberos_realm }}" style="width:100%" {% if !override_kerberos_realm %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_kerberos_realm" value="true" {% if override_kerberos_realm %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-        <label>ganesha.default_security<br>
-            <select name="ganesha_default_security" id="ganesha_default_security" style="width:100%" {% if !override_ganesha_default_security %}disabled{% endif %}>
-                {% if ganesha_default_security == "krb5p" %}<option value="krb5p" selected>krb5p</option>{% else %}<option value="krb5p">krb5p</option>{% endif %}
-                {% if ganesha_default_security == "krb5i" %}<option value="krb5i" selected>krb5i</option>{% else %}<option value="krb5i">krb5i</option>{% endif %}
-                {% if ganesha_default_security == "krb5" %}<option value="krb5" selected>krb5</option>{% else %}<option value="krb5">krb5</option>{% endif %}
-            </select>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_ganesha_default_security" value="true" {% if override_ganesha_default_security %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-    </div>
-    </div>
-
-    <div class="settings-group">
-    <h4 style="margin-top:1rem">SSSD Credentials</h4>
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-        <label>sssd.bind_dn<br><input name="sssd_bind_dn" value="{{ sssd_bind_dn }}" style="width:100%" required></label>
-        <label>sssd.bind_pw (secret)<br><input type="password" name="sssd_bind_pw" style="width:100%" placeholder="leave blank to keep current"></label>
-        <label>sssd.ldap_search_base (optional override)<br><input name="sssd_search_base" id="sssd_search_base" value="{{ sssd_search_base }}" placeholder="dc=...,dc=..." style="width:100%" {% if !override_sssd_search_base %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_search_base" value="true" {% if override_sssd_search_base %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-        <label>sssd.ldap_user_search_base<br><input name="sssd_user_base" id="sssd_user_base" value="{{ sssd_user_base }}" style="width:100%" {% if !override_sssd_user_base %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_user_base" value="true" {% if override_sssd_user_base %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-        <label>sssd.ldap_group_search_base<br><input name="sssd_group_base" id="sssd_group_base" value="{{ sssd_group_base }}" style="width:100%" {% if !override_sssd_group_base %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_group_base" value="true" {% if override_sssd_group_base %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-    </div>
-    <label style="display:block; margin:4px 0;">
-        <input type="checkbox" name="kllldap_ignored_attributes" value="true" {% if kllldap_ignored_attributes %}checked{% endif %}>
-        kllldap_ignored_attributes (true = emit server-side ignore blocks + use 'member'; uncheck for false)
-    </label>
-    </div>
-
-    <div class="settings-group">
-    <h4 style="margin-top:0.6rem">SSSD TLS / Security</h4>
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-        <label>sssd.ldap_tls_reqcert (e.g. never / demand)<br><input name="sssd_ldap_tls_reqcert" id="sssd_ldap_tls_reqcert" value="{{ sssd_ldap_tls_reqcert }}" placeholder="never" style="width:100%" {% if !override_sssd_ldap_tls_reqcert %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_ldap_tls_reqcert" value="true" {% if override_sssd_ldap_tls_reqcert %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-        <label>sssd.ldap_tls_cacert (optional path)<br><input name="sssd_ldap_tls_cacert" id="sssd_ldap_tls_cacert" value="{{ sssd_ldap_tls_cacert }}" placeholder="/etc/pki/..." style="width:100%" {% if !override_sssd_ldap_tls_cacert %}disabled{% endif %}>
-            <span style="font-size:0.7em; display:block; margin-top:2px;"><input type="checkbox" name="override_sssd_ldap_tls_cacert" value="true" {% if override_sssd_ldap_tls_cacert %}checked{% endif %}> override (persist explicit)</span>
-        </label>
-    </div>
-    <label style="display:block; margin:4px 0;">
-        <input type="checkbox" id="sssd_ldap_id_use_start_tls" name="sssd_ldap_id_use_start_tls" value="true" {% if sssd_ldap_id_use_start_tls %}checked{% endif %} {% if !override_sssd_ldap_id_use_start_tls %}disabled{% endif %}>
-        sssd.ldap_id_use_start_tls (only for plain ldap:// + STARTTLS)
-        <span style="font-size:0.7em; margin-left:8px;"><input type="checkbox" name="override_sssd_ldap_id_use_start_tls" value="true" {% if override_sssd_ldap_id_use_start_tls %}checked{% endif %}> override</span>
-    </label>
-    <label style="display:block; margin:4px 0;">
-        <input type="checkbox" id="sssd_enumerate" name="sssd_enumerate" value="true" {% if sssd_enumerate %}checked{% endif %} {% if !override_sssd_enumerate %}disabled{% endif %}>
-        sssd.enumerate (default false; do NOT enable casually on KLLDAP — high load/attribute noise)
-        <span style="font-size:0.7em; margin-left:8px;"><input type="checkbox" name="override_sssd_enumerate" value="true" {% if override_sssd_enumerate %}checked{% endif %}> override</span>
-    </label>
-    </div>
-
-    <br>
-    <button type="submit" class="btn btn-primary" style="padding:8px 16px;">Save Settings</button>
-</form>
-
-<h4 style="margin-top:1rem">Shares</h4>
-<form method="post" action="/settings/save-shares" style="max-width: 920px;">
-    <div class="settings-group">
-    <!-- Column headings for the dynamic share rows (aligns with the input widths below) -->
-    <div style="display:flex;gap:6px;margin-bottom:1px;font-size:0.62em;color:var(--text-muted);font-weight:600;">
-        <span style="width:115px">Name <span style="color:var(--warning-amber-text)">*</span></span>
-        <span style="flex:1">Host Path <span style="color:var(--warning-amber-text)">*</span></span>
-        <span style="width:130px" title="Export Path (external): client-visible Pseudo / NFS mount path (server:/this). Can be a short/friendly name. The internal container location (Ganesha Path + permission tree) is derived from the first directory component of the share's Host Path (the implicit bind root) + the tail under container_root. This lets export_path be shortened independently.">Export Path</span>
-        <span style="width:90px" title="per-share Kerberos security (leave default to use [ganesha] default_security)">Krb Security</span>
-        <span style="width:65px">Access</span>
-        <span style="width:50px" title="root_squash (instead of no_root_squash)">Root Squash</span>
-        <span style="width:145px" title="Cache Profile — selects Ganesha PrefRead/PrefWrite values for this share (emitted into its Ganesha EXPORT block). See README for the matrix and 'Best For' descriptions.">Cache Profile</span>
-        <span style="width:18px"></span>
-    </div>
-    <div id="shares-container">
-        {% for row in current_shares %}
-        <div class="share-row" style="display:flex;gap:6px;margin-bottom:4px;">
-            <input name="share_name_{{ row.idx }}" value="{{ row.name }}" style="width:115px" placeholder="name">
-            <input name="share_host_{{ row.idx }}" value="{{ row.host_path }}" style="flex:1" placeholder="host_path">
-            <input name="share_export_{{ row.idx }}" value="{{ row.export_path }}" style="width:130px" placeholder="e.g. /HDD-RAID/foo or /short" title="Export Path (external/Pseudo) — short/friendly client name. Internal container location is derived from Host Path first dir + tail (see column header).">
-            <select name="share_security_{{ row.idx }}" style="width:90px">
-                <option value="">default</option>
-                <option value="krb5p" {% if row.security == "krb5p" %}selected{% endif %}>krb5p</option>
-                <option value="krb5i" {% if row.security == "krb5i" %}selected{% endif %}>krb5i</option>
-                <option value="krb5" {% if row.security == "krb5" %}selected{% endif %}>krb5</option>
-            </select>
-            <select name="share_rw_{{ row.idx }}" style="width:65px">
-                <option value="true" {% if row.rw %}selected{% endif %}>RW</option>
-                <option value="false" {% if !row.rw %}selected{% endif %}>RO</option>
-            </select>
-            <input type="checkbox" name="share_root_squash_{{ row.idx }}" {% if row.root_squash %}checked{% endif %} style="width:50px;margin-top:3px;" title="root_squash">
-            <select name="share_cache_profile_{{ row.idx }}" style="width:145px" title="Cache Profile for this share (Ganesha PrefRead/PrefWrite)">
-                <option value="Default" {% if row.cache_profile == "Default" %}selected{% endif %}>Default</option>
-                <option value="Read - Basic" {% if row.cache_profile == "Read - Basic" %}selected{% endif %}>Read - Basic</option>
-                <option value="Read - Heavy" {% if row.cache_profile == "Read - Heavy" %}selected{% endif %}>Read - Heavy</option>
-                <option value="Mixed Use" {% if row.cache_profile == "Mixed Use" %}selected{% endif %}>Mixed Use</option>
-                <option value="Write - Heavy" {% if row.cache_profile == "Write - Heavy" %}selected{% endif %}>Write - Heavy</option>
-            </select>
-            <button type="button" onclick="this.closest('.share-row').remove()">×</button>
-        </div>
-        {% endfor %}
-        {% if current_shares.is_empty() %}
-        <!-- no shares yet; first add will create idx 0 -->
-        {% endif %}
-    </div>
-    <button type="button" onclick="addShareRow()" style="margin:6px 0;">+ Add share</button>
-
-    <br>
-    <button type="submit" class="btn btn-primary" style="padding:8px 16px;">Save Shares</button>
-    </div>
-</form>
 
 <script>
-// nextShareIdx initialized from server (len of rendered current shares) so added rows
-// never collide with existing idx values used for name/host/security fields.
+(function () {
+  const root = document.getElementById('settings-app');
+  if (!root) return;
+  const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
-let nextShareIdx = {{ next_share_idx }};
+  // ---------- pane switching (client-side, no round trip) ----------
+  const rail = root.querySelector('.set-rail');
+  const panes = [].slice.call(root.querySelectorAll('[data-pane-content]'));
+  const saveBtn = document.getElementById('primary-save');
+  const SAVE = {
+    core: ['settings-form', 'Save Settings'], sssd: ['settings-form', 'Save Settings'], tls: ['settings-form', 'Save Settings'],
+    shares: ['shares-form', 'Save Shares'], raw: ['raw-form', 'Save Raw TOML'],
+    admin: ['settings-form', 'Save Settings']
+  };
+  function setPane(name) {
+    panes.forEach(p => { p.hidden = p.dataset.paneContent !== name; });
+    rail.querySelectorAll('[data-pane]').forEach(b => b.classList.toggle('active', b.dataset.pane === name));
+    const cfg = SAVE[name];
+    if (cfg) { saveBtn.style.display = ''; saveBtn.setAttribute('form', cfg[0]); saveBtn.textContent = cfg[1]; }
+    else { saveBtn.style.display = 'none'; }
+    try { localStorage.setItem('settings-pane', name); } catch (e) {}
+  }
+  rail.addEventListener('click', e => { const b = e.target.closest('[data-pane]'); if (b) setPane(b.dataset.pane); });
+  let initial = 'overview';
+  try { initial = localStorage.getItem('settings-pane') || 'overview'; } catch (e) {}
+  if (initial === 'apply') initial = 'admin'; // pane renamed in 0.9.96
+  if (!panes.some(p => p.dataset.paneContent === initial)) initial = 'overview';
+  setPane(initial);
 
-function addShareRow() {
-    const c = document.getElementById('shares-container');
-    const idx = nextShareIdx++;
-    const d = document.createElement('div');
-    d.className = 'share-row';
-    d.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;';
-    d.innerHTML = `<input name="share_name_${idx}" placeholder="name" style="width:115px">
-                   <input name="share_host_${idx}" placeholder="host_path" style="flex:1">
-                   <input name="share_export_${idx}" placeholder="export_path (external/Pseudo)" style="width:130px" title="Export Path (external/Pseudo) — short/friendly client name. Internal container location is derived from Host Path first dir + tail under container_root.">
-                   <select name="share_security_${idx}" style="width:90px">
-                     <option value="">default</option>
-                     <option value="krb5p">krb5p</option>
-                     <option value="krb5i">krb5i</option>
-                     <option value="krb5">krb5</option>
-                   </select>
-                   <select name="share_rw_${idx}" style="width:65px">
-                     <option value="true" selected>RW</option>
-                     <option value="false">RO</option>
-                   </select>
-                   <input type="checkbox" name="share_root_squash_${idx}" style="width:50px;margin-top:3px;" title="root_squash">
-                   <select name="share_cache_profile_${idx}" style="width:145px" title="Cache Profile for this share (Ganesha PrefRead/PrefWrite)">
-                     <option value="Default" selected>Default</option>
-                     <option value="Read - Basic">Read - Basic</option>
-                     <option value="Read - Heavy">Read - Heavy</option>
-                     <option value="Mixed Use">Mixed Use</option>
-                     <option value="Write - Heavy">Write - Heavy</option>
-                   </select>
-                   <button type="button" onclick="this.closest('.share-row').remove()">×</button>`;
-    c.appendChild(d);
-}
-
-// Wire override checkboxes to enable/disable their associated fields.
-// Non-checked override => field is disabled (non-editable).
-// Visual "muted/inactive" look is provided by the global CSS rule for :disabled + --input-bg-disabled
-// (theme-aware; no more hardcoded bright #fafafa in dark mode).
-function wireOverride(overrideSelector, fieldSelector) {
-  const overrideCb = document.querySelector(overrideSelector);
-  const field = document.querySelector(fieldSelector);
-  if (!overrideCb || !field) return;
-
-  function update() {
-    const isOverriding = overrideCb.checked;
-    field.disabled = !isOverriding;
-    // When enabling, clear any stale inline styles that may have come from old server HTML/prior JS.
-    if (isOverriding) {
-      field.style.opacity = '';
-      field.style.backgroundColor = '';
+  // ---------- Auto/Custom toggles (drive the existing override_* checkbox; the probe
+  // seg has no override_* twin — it drives auto_probe_ldap + the two pinned inputs) ----------
+  root.addEventListener('click', e => {
+    const btn = e.target.closest('.seg[data-ac-for] button');
+    if (!btn) return;
+    const key = btn.closest('.seg').dataset.acFor;
+    const custom = btn.dataset.ac === 'custom';
+    btn.closest('.seg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === btn));
+    if (key === 'probe') {
+      ['probe_user_principal', 'probe_client_host'].forEach(id => {
+        const f = document.getElementById(id);
+        if (f) f.disabled = !custom;
+      });
+      const auto = document.getElementById('auto_probe_ldap');
+      if (auto) auto.checked = !custom;
+    } else {
+      const field = document.getElementById(key);
+      const cb = document.getElementById('override_' + key);
+      if (field) field.disabled = !custom;
+      if (cb) cb.checked = custom;
     }
-    // When disabling, just let the disabled attr + CSS rule do the (correctly themed) work.
+    markDirty(paneOf(btn));
+  });
+
+  // ---------- Enabled/Disabled segs (drive a hidden boolean checkbox, id = data-bool-for) ----------
+  root.addEventListener('click', e => {
+    const btn = e.target.closest('.seg[data-bool-for] button');
+    if (!btn) return;
+    const seg = btn.closest('.seg');
+    seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === btn));
+    const cb = document.getElementById(seg.dataset.boolFor);
+    if (cb) cb.checked = btn.dataset.bv === '1';
+    markDirty(paneOf(btn));
+  });
+
+  // ---------- shares: collapse / expand / add / remove ----------
+  const container = document.getElementById('shares-container');
+  let nextShareIdx = {{ next_share_idx }};
+
+  root.addEventListener('click', e => {
+    const hd = e.target.closest('.sc-hd');
+    if (hd && !e.target.closest('input') && !e.target.closest('select') && !e.target.closest('.sc-del')) {
+      hd.closest('.share-card-ed').classList.toggle('open'); return;
+    }
+    const bulk = e.target.closest('[data-shbulk]');
+    if (bulk) {
+      const open = bulk.dataset.shbulk === 'expand';
+      root.querySelectorAll('.share-card-ed').forEach(c => c.classList.toggle('open', open));
+      return;
+    }
+    const del = e.target.closest('.sc-del');
+    if (del) { del.closest('.share-card-ed').remove(); buildToml(); markDirty('shares'); return; }
+    if (e.target.closest('#add-share')) { addShareRow(); markDirty('shares'); return; }
+  });
+
+  // New cards come from the server (share_card.html) so Askama stays the single card source.
+  function addShareRow() {
+    const idx = nextShareIdx++;
+    htmx.ajax('GET', '/settings/share-card?idx=' + idx,
+      { target: '#shares-container', swap: 'beforeend' }).then(() => {
+        const card = container.lastElementChild;
+        if (card) card.classList.add('open');
+        buildToml();
+      });
   }
 
-  overrideCb.addEventListener('change', update);
-  // Run once for initial state (in case disabled attr from server didn't fully apply styles)
-  update();
-}
+  // ---------- live [[shares]] TOML (regenerated from the form; changed lines highlighted) ----------
+  const tomlBox = document.getElementById('shares-toml');
+  let baseCount = null;
+  const q = s => '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  function buildLines() {
+    const out = [];
+    root.querySelectorAll('#shares-container .share-card-ed').forEach(card => {
+      const g = n => { const el = card.querySelector('[data-f="' + n + '"]'); return el ? el.value : ''; };
+      const chk = n => { const el = card.querySelector('[data-f="' + n + '"]'); return el ? el.checked : false; };
+      out.push('');
+      out.push('[[shares]]');
+      out.push('name = ' + q(g('name')));
+      out.push('host_path = ' + q(g('host_path')));
+      out.push('container_path = ' + q(g('container_path')));
+      if (g('pseudo_path')) out.push('pseudo_path = ' + q(g('pseudo_path')));
+      if (g('security')) out.push('security = ' + q(g('security')));
+      out.push('rw = ' + (g('rw') === 'true' ? 'true' : 'false'));
+      out.push('squash = ' + q(chk('root_squash') ? 'root_squash' : 'no_root_squash'));
+      out.push('cache_profile = ' + q(g('cache_profile')));
+      out.push('enable_acl = ' + q(g('enable_acl')));
+      out.push('manage_gids = ' + q(g('manage_gids')));
+      out.push('read_access_policy = ' + q(g('read_access_policy')));
+      if (g('manage_gids_expiration')) out.push('manage_gids_expiration = ' + g('manage_gids_expiration'));
+      if (chk('navahi_insecure')) out.push('navahi_insecure = true');
+    });
+    return out;
+  }
+  function buildToml() {
+    if (!tomlBox) return;
+    const lines = buildLines();
+    if (baseCount === null) { baseCount = {}; lines.forEach(l => { baseCount[l] = (baseCount[l] || 0) + 1; }); }
+    const rem = Object.assign({}, baseCount);
+    tomlBox.innerHTML = lines.map(l => {
+      const known = rem[l] > 0;
+      if (known) rem[l]--;
+      return '<div class="tl' + (known ? '' : ' chg') + '">' + (l ? esc(l) : '&nbsp;') + '</div>';
+    }).join('');
+  }
 
-// Wire all overridable fields. Use name= for overrides (they are checkboxes), id= for the value controls.
-wireOverride('input[name="override_server_hostname"]', '#server_hostname');
-wireOverride('input[name="override_kerberos_realm"]', '#kerberos_realm');
-wireOverride('input[name="override_ganesha_default_security"]', '#ganesha_default_security');
-wireOverride('input[name="override_sssd_search_base"]', '#sssd_search_base');
-wireOverride('input[name="override_sssd_user_base"]', '#sssd_user_base');
-wireOverride('input[name="override_sssd_group_base"]', '#sssd_group_base');
-wireOverride('input[name="override_sssd_ldap_tls_reqcert"]', '#sssd_ldap_tls_reqcert');
-wireOverride('input[name="override_sssd_ldap_tls_cacert"]', '#sssd_ldap_tls_cacert');
-wireOverride('input[name="override_sssd_ldap_id_use_start_tls"]', '#sssd_ldap_id_use_start_tls');
-wireOverride('input[name="override_sssd_enumerate"]', '#sssd_enumerate');
+  // ---------- input / change: live toml, dot + chip sync, dirty ----------
+  root.addEventListener('input', e => {
+    const t = e.target;
+    // Password fields and maintenance buttons never ride a save form.
+    if (t.closest && t.closest('[data-nosave]')) return;
+    if (t.closest && t.closest('#shares-container')) {
+      if (t.dataset.f === 'name') {
+        const card = t.closest('.share-card-ed');
+        const ps = card.querySelector('[data-f="pseudo_path"]');
+        if (ps && !ps.disabled && !ps.value.trim() && t.value.trim()) ps.value = '/' + t.value.trim();
+      }
+      buildToml();
+    }
+    markDirty(paneOf(t));
+  });
+  // Mirrors web/acl_status.rs (share_acl_state_label / effective_acl_capable) —
+  // the single Rust helper behind every surface; keep in lockstep with it. The
+  // write-probe verdict is a property of the filesystem (data-acl-probed),
+  // independent of the enable_acl selection.
+  function aclStateLabel(enableVal, probed) {
+    if (enableVal === 'false') return 'off';
+    if (enableVal === 'true') {
+      if (probed === 'capable') return 'on';
+      if (probed === 'incapable') return 'on (unsupported)';
+      return 'on (unverified)';
+    }
+    return probed === 'capable' ? 'auto (on)' : 'auto (off)';
+  }
+  function aclServes(enableVal, probed) {
+    if (enableVal === 'false') return false;
+    if (enableVal === 'true') return probed !== 'incapable';
+    return probed === 'capable';
+  }
+  function syncAclStatus(card, enableVal) {
+    const probed = card.dataset.aclProbed || 'unverified';
+    const serves = aclServes(enableVal, probed);
+    const label = aclStateLabel(enableVal, probed);
+    const dot = card.querySelector('.share-dot');
+    if (dot) {
+      dot.className = 'share-dot ' + (serves ? 'acl' : 'noacl');
+      dot.title = serves ? 'ACL supported' : 'Non-ACL limited';
+    }
+    const chip = card.querySelector('[data-acl-chip]');
+    if (chip) {
+      chip.className = 'sc-chip' + (serves ? '' : ' noacl');
+      chip.textContent = 'acl ' + label;
+    }
+  }
+  root.addEventListener('change', e => {
+    const t = e.target;
+    if (t.closest && t.closest('[data-nosave]')) return;
+    if (t.closest && t.closest('#shares-container')) {
+      if (t.dataset.f === 'enable_acl') {
+        syncAclStatus(t.closest('.share-card-ed'), t.value);
+      }
+      buildToml();
+    }
+    markDirty(paneOf(t));
+  });
+  buildToml();
+
+  // ---------- dirty hint (savebar text + per-pane rail dot) ----------
+  const saveHint = document.getElementById('save-hint');
+  const paneOf = el => { const sec = el && el.closest ? el.closest('[data-pane-content]') : null; return sec ? sec.dataset.paneContent : null; };
+  function markDirty(pane) {
+    if (saveHint) { saveHint.textContent = 'Unsaved changes'; saveHint.classList.add('dirty'); }
+    if (pane) { const item = rail.querySelector('.rail-item[data-pane="' + pane + '"]'); if (item) item.classList.add('dirty'); }
+  }
+
+  // ---------- diagnostics (independent of Save) ----------
+  function runProbe(url, body, pill, log) {
+    pill.className = 'tpill testing'; pill.textContent = 'testing…';
+    log.textContent = 'Stand-by, running probe…';
+    fetch(url, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body) })
+      .then(r => r.text().then(txt => { if (!r.ok) throw new Error('HTTP ' + r.status); return JSON.parse(txt); }))
+      .then(d => { if (d.log) log.innerHTML = d.log; pill.className = 'tpill ' + (d.ok ? 'pass' : 'fail'); pill.textContent = d.ok ? 'passed' : 'failed'; })
+      .catch(err => { pill.className = 'tpill fail'; pill.textContent = 'error'; log.textContent = 'Test request failed: ' + (err.message || err); });
+  }
+  const ldapBtn = document.getElementById('test-ldap-btn');
+  if (ldapBtn) ldapBtn.addEventListener('click', () => runProbe('/settings/test-ldap',
+    { ldap_uri: document.getElementById('ldap_uri').value },
+    document.getElementById('test-ldap-pill'), document.getElementById('test-ldap-log')));
+  const bindBtn = document.getElementById('test-bind-btn');
+  if (bindBtn) bindBtn.addEventListener('click', () => runProbe('/settings/test-bind',
+    { ldap_default_bind_dn: document.getElementById('sssd_bind_dn').value, ldap_default_authtok: document.getElementById('sssd_bind_pw').value },
+    document.getElementById('test-bind-pill'), document.getElementById('test-bind-log')));
+
+  // ---------- Overview filesystem ACL probe (same JSON contract) ----------
+  const reprobeBtn = document.getElementById('reprobe-fs-btn');
+  if (reprobeBtn) reprobeBtn.addEventListener('click', () => runProbe('/settings/reprobe-filesystems', {},
+    document.getElementById('reprobe-fs-pill'), document.getElementById('reprobe-fs-log')));
+})();
 </script>
-
-<hr>
-
-<h3>Raw TOML Editor (full control + comments preserved)</h3>
-<form method="post" action="/settings/save-raw">
-    <textarea name="raw_content" rows="16" style="width:100%; font-family:monospace;">{{ raw_toml }}</textarea><br>
-    <button type="submit" class="btn btn-primary" style="margin-top:6px;">Save Raw TOML</button>
-</form>
-
-<p style="color: var(--text-light); font-size:0.9em; margin-top:1rem;">
-    The container watches the config file and will regenerate + reload automatically.
-</p>
-
-<hr style="margin: 1.1rem 0 0.6rem;">
-
-<div style="margin-top:0.1rem;">
-    <strong>Restart and apply</strong><br>
-    <span style="font-size:0.82em; color:var(--text-light);">
-        Shares (and some core settings) are loaded at startup of Ganesha and/or the WebUI. This triggers a targeted bounce of Ganesha + SSSD + WebUI (via the supervisor) so the updated config + shares list is fully active. NFS will be briefly unavailable.
-    </span>
-    <form method="post" action="/settings/restart" style="margin-top:0.45rem;">
-        <button type="submit" class="btn btn-danger" style="padding:8px 16px;"
-                onclick="return confirm('Restart services now to apply changes? NFS and the WebUI will be briefly unavailable.');">
-            Restart and apply
-        </button>
-    </form>
-</div>
-
-<p><a href="/">← Back to Share Permissions</a></p>
 {% endblock %}

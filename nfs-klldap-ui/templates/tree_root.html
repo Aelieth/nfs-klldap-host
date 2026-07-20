@@ -1,30 +1,26 @@
 {# Renders a directory as the top-level "root" row in the tree view.
    Used for the initial load of a share so the share root itself is a visible,
-   clickable item for permission management (owners + mode from LLDAP + FS).
+   clickable item. The .dir-label button loads permissions into the detached panel
+   (#perm-panel); the .dir-caret button only expands/collapses children
+   (see the base.html permissions script). The root renders expanded (▼) because
+   its children are pre-rendered visible below.
 #}
 <ul class="tree">
   <li>
-    <span class="dir root-dir"
-          data-path="{{ root.path }}"
-          style="cursor: pointer; user-select: none; font-weight: 600;">
-      ▶ {{ root.name }}
+    <span class="dir root-dir" data-path="{{ root.path }}">
+      <button type="button" class="dir-caret" aria-expanded="true"
+              aria-label="{{ root.name }} subdirectories">&#9660;</button>
+      <button type="button" class="dir-label"><span class="row-ico" aria-hidden="true" title="directory">📁</span>{{ root.name }}</button>
     </span>
-    <!-- Stable placeholder for selected-dir meta on the share root itself. -->
-    <div class="dir-meta" data-path="{{ root.path }}" style="display:none;"></div>
-    <div class="children" style="margin-left: 1.5em;" data-loaded="true">
+    <div class="children" data-loaded="true">
       {# Direct children of the root (pre-rendered for the initial view).
          data-loaded avoids redundant fetch on expand. #}
       <ul class="tree">
+      {% if children.is_empty() %}
+        <li class="tree-empty">(empty)</li>
+      {% endif %}
       {% for child in children %}
-        <li>
-          <span class="dir"
-                data-path="{{ child.path }}"
-                style="cursor: pointer; user-select: none;">
-            ▶ {{ child.name }}
-          </span>
-          <div class="dir-meta" data-path="{{ child.path }}" style="display:none;"></div>
-          <div class="children" style="margin-left: 1.5em;"></div>
-        </li>
+        {% include "tree_entry.html" %}
       {% endfor %}
       </ul>
     </div>

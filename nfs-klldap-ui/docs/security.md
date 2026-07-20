@@ -1,11 +1,28 @@
 # Security Model
 
-The WebUI runs as root inside the container and performs chown/chmod directly on bind-mounted host_path trees via `src/privileged.rs` (safe std APIs).
+**Purpose:** WebUI mutation boundary and container deployment assumptions.
 
-Typical production runs add `SYS_ADMIN` and `DAC_READ_SEARCH` capabilities (see the main project's `examples/docker-compose.yml` and `docs/run/README.md`). These caps are not required for the `chown(2)`/`chmod(2)` syscalls themselves when running as root on a normal bind mount, but they improve reliability for:
-- Ganesha VFS when serving the exported host trees, and
-- the WebUI's recursive WalkDir scanner when the tree contains directories with restrictive permissions for intermediate owners.
+The WebUI runs as **root in the container** and mutates bind-mounted `host_path` trees via `privileged.rs` (std/nix APIs, no shell).
 
-The container must still be started as real root (for 0600 sssd.conf, privileged port 2049, and arbitrary numeric UID/GID mutations). The in-container root model is the supported path. Running the binary on the host is not recommended.
+## Deployment assumptions
 
-All mutations are still gated by the allow-list from configured shares + the WalkDir safety policy (no symlink descent for mutation, no set*id, refuse uid/gid 0). See `fs.rs` and `privileged.rs`.
+- **Host networking** so Ganesha CLIENT records use host-reachable addresses (not Docker bridge).
+- **`uts: host`** for Kerberos NFS principal hostname match.
+- Caps `SYS_ADMIN` + `DAC_READ_SEARCH` (see `examples/docker-compose.yml`, [docs/run/README.md](../../docs/run/README.md)).
+- Real root (0600 sssd.conf, port 2049, arbitrary numeric UIDs). No userns-remap / rootless uid shift — on-disk owners must match LLDAP numbers on the host.
+
+## Mutation gates
+
+| Gate | Rule |
+|------|------|
+| Allow-list | Only under configured share roots (`FsManager`) |
+| Symlinks | No WalkDir descent (`follow_links(false)`); symlink inodes skipped |
+| setuid | Refused; setgid/sticky allowed on directories |
+| uid/gid 0 | First-class owner (nobody/anonymous under root_squash) |
+| Directory mode | Server fuses r→x per dir entry; client may submit x-less |
+| File mode | Explicit triad only; special bits refused |
+| Scope | `ApplyScope` bounds recursive reach |
+| ACL capability | `/acl-apply` and `/apply` with `acl_ops` re-probe the selected node's mount — NOACL/incapable refuse ACL writes |
+| ACL batch | Parse + gate + LDAP-resolve before any mutation; one bad op rejects the whole apply |
+
+See `fs.rs` and `privileged.rs`.

@@ -1,9 +1,11 @@
 #!/bin/bash
-# Ganesha helper (show-exports/reload/remove via inotify + SIGHUP to supervisor).
-# The container provides a system bus (dbus-daemon) for Ganesha's own use, but this
-# helper (and the supervisor) manage exports/reloads via fragments + HUP (no DBUS RPCs to ganesha).
-# See container/README.md. Writes go to exports.d/; supervisor + watcher handle reloads.
-# add-export is deprecated/no-op.
+# Ganesha helper: diagnostics + supervisor-triggered applies. SIGHUP to pid 1 =
+# graceful scoped apply (Ganesha export reread + WebUI in-place refresh;
+# identity changes staged); SIGUSR1 = forced full service recycle. Export
+# fragments are generated from nfs-klldap.conf by nfs-klldap-config; the
+# conf-watcher signals pid 1 (HUP) on TOML changes.
+# The container dbus bus is for Ganesha internals only (no DBUS export RPCs here).
+# See container/README.md.
 #
 
 set -euo pipefail
@@ -14,6 +16,23 @@ log() {
     echo "[ganesha-ctl] $*"
 }
 
+# CONFIG_BIN env, PATH, then container default install path.
+resolve_config_bin() {
+    if [ -n "${CONFIG_BIN:-}" ] && [ -x "$CONFIG_BIN" ]; then
+        echo "$CONFIG_BIN"
+        return 0
+    fi
+    if command -v nfs-klldap-config >/dev/null 2>&1; then
+        command -v nfs-klldap-config
+        return 0
+    fi
+    if [ -x /usr/local/bin/nfs-klldap-config ]; then
+        echo /usr/local/bin/nfs-klldap-config
+        return 0
+    fi
+    return 1
+}
+
 die() {
     echo "[ganesha-ctl] ERROR: $*" >&2
     exit 1
@@ -21,16 +40,50 @@ die() {
 
 usage() {
     cat <<EOF
-ganesha-ctl - NFS-Ganesha helper (inotify + supervisor HUP; container bus is for Ganesha internals)
+ganesha-ctl - NFS-Ganesha helper (supervisor SIGHUP; container bus is for Ganesha internals)
 
 Usage:
-  add-export <file> [name]   # (no-op / deprecated; watcher-driven)
-  remove-export <name>       # delete matching fragment
-  show-exports               # list exports.d
-  reload                     # bounce ganesha via supervisor
+  remove-export <name>       # delete matching fragment + signal supervisor reload
+  show-fragments             # list on-disk exports.d fragments (not live D-Bus state)
+  reload                     # graceful scoped apply (regenerate; Ganesha export reread +
+                             # WebUI in-place refresh; identity changes staged)
+  full-recycle               # forced full recycle: regenerate + restart SSSD/idhelper/
+                             # Ganesha/WebUI (applies staged identity + main-conf changes)
+  refresh-identity [user]    # flush SSSD + idhelper + Ganesha uid2grp caches so an LLDAP group change lands now
+  id-resolve <principal>     # resolve full user@REALM (exercises uid2grp/getent group); surfaces ID MAPPER
+  id-uid <uid>               # replicate Ganesha uid2grp for a numeric uid under the LIVE daemon environ
+  id-check                   # quick health of the idhelper translator + ID MAPPER greps
+  id-map-test [name]         # verify getent + principal mapping parity (testuser1 + host/...) for 9.6 mount stability
+  fs-warnings                # list limited-filesystem share warnings from nfs-klldap.conf
 
-Container watches config/exports.d; supervisor bounces on change.
+The idhelper daemon (nfs-klldap-idhelper) is the authoritative principal
+classifier/resolver. It materializes mappings for Ganesha (via nss_wrapper files
+that Ganesha is launched under). Use id-resolve / id-check for diagnostics.
+Container watches nfs-klldap.conf; supervisor regenerates exports.d on SIGHUP.
 EOF
+}
+
+# Ask the supervisor for the graceful scoped apply: regenerate, Ganesha export
+# reread + WebUI in-place refresh; identity changes are staged (see full-recycle).
+# In-container pid 1 is the supervisor; NFS_KLLDAP_SUPERVISOR_PID overrides for CI/evidence.
+signal_supervisor_reload() {
+    local pid="${NFS_KLLDAP_SUPERVISOR_PID:-1}"
+    if kill -HUP "$pid" 2>/dev/null; then
+        log "Signaled supervisor (pid ${pid}) for privileged regeneration + graceful scoped apply"
+        return 0
+    fi
+    die "Could not signal supervisor (pid ${pid}) — run from inside the container"
+}
+
+# Ask the supervisor for the forced full recycle: regenerate + restart every
+# managed service (applies staged identity and main-conf/WebUI changes).
+signal_supervisor_full_recycle() {
+    local pid="${NFS_KLLDAP_SUPERVISOR_PID:-1}"
+    if kill -USR1 "$pid" 2>/dev/null; then
+        log "Signaled supervisor (pid ${pid}) for forced full service recycle"
+        return 0
+    fi
+    die "Could not signal supervisor (pid ${pid}) — run from inside the container"
 }
 
 # Best-effort mapping from a user-supplied name/id to a fragment filename.
@@ -74,22 +127,6 @@ CMD="${1:-}"
 shift || true
 
 case "$CMD" in
-    add-export)
-        # Deprecated/no-op: write directly to bind-mounted exports.d; watcher + supervisor pick up.
-        FILE="${1:-}"
-        if [ -z "$FILE" ]; then
-            die "Usage: ganesha-ctl add-export <file-in-exports.d> [name]"
-        fi
-        if [ ! -f "$FILE" ]; then
-            if [ -f "${EXPORTS_DIR}/$(basename "$FILE")" ]; then
-                FILE="${EXPORTS_DIR}/$(basename "$FILE")"
-            else
-                die "Fragment file not found: $FILE (write it into ${EXPORTS_DIR})"
-            fi
-        fi
-        log "add-export (no-op): $FILE will be picked up by watcher + HUP"
-        ;;
-
     remove-export)
         # Best effort: delete the fragment file that matches the given name or old ID.
         TARGET="${1:-}"
@@ -110,13 +147,13 @@ case "$CMD" in
         log "Removing fragment: $FRAG"
         rm -f "$FRAG" || die "Failed to remove $FRAG"
 
-        log "Fragment removed. Triggering reload so ganesha drops the export..."
-        pkill -TERM ganesha.nfsd 2>/dev/null || true
-        log "Done. ganesha will restart and the export will be gone."
+        log "Fragment removed. Signaling supervisor reload..."
+        log "NOTE: if the share still exists in nfs-klldap.conf, regeneration will recreate this fragment."
+        signal_supervisor_reload
         ;;
 
-    show-exports)
-        log "Current export fragments in ${EXPORTS_DIR}:"
+    show-fragments)
+        log "Export fragments in ${EXPORTS_DIR} (on-disk; not live D-Bus state):"
 
         shopt -s nullglob
         files=( "${EXPORTS_DIR}"/*.conf "${EXPORTS_DIR}"/*.cfg )
@@ -134,17 +171,276 @@ case "$CMD" in
             cat -n "$f"
         done
         echo ""
-        log "These fragments are the source of truth. Ganesha is (re)started by the internal watcher when they change."
+        log "These are on-disk fragments from nfs-klldap-config. Apply nfs-klldap.conf changes via kill -HUP 1."
         ;;
 
     reload)
-        log "Requesting Ganesha restart (self-contained)..."
-        # Supervisor HUP does pkill + respawn (SSSD/WebUI too for full apply).
-        # (The container now has a system bus; this path does not use DBUS for management.)
-        pkill -TERM ganesha.nfsd 2>/dev/null || true
-        log "Reload triggered (supervisor will respawn)."
+        log "Requesting graceful scoped apply (regenerate; Ganesha export reread + WebUI refresh)..."
+        signal_supervisor_reload
         ;;
 
+    full-recycle)
+        log "Requesting forced full recycle (regenerate + restart SSSD/idhelper/Ganesha/WebUI)..."
+        signal_supervisor_full_recycle
+        ;;
+
+    refresh-identity)
+        # Flush the three server-side identity cache layers so an LLDAP
+        # group/membership change takes effect immediately (instead of within
+        # the ~3-min natural windows). Order: SSSD -> idhelper re-materialize ->
+        # Ganesha uid2grp. Each step degrades to a warning, but any failed
+        # layer fails the COMMAND: "done, exit 0" on a silent miss left the
+        # stale group list in force for the whole validity window while the
+        # operator moved on (B7's exact trap).
+        USER_ARG="${1:-}"
+        FLUSH_FAILED=""
+        log "refresh-identity: flushing identity caches${USER_ARG:+ for ${USER_ARG}}..."
+
+        # 1) SSSD (needs sssd-tools). -u for one user, -E for everything.
+        # sss_cache -u exits nonzero when the user has NO cached object —
+        # the normal state here (idhelper/extrausers answer NSS ahead of
+        # sss, so SSSD's user cache is usually cold) and not a stale-flush
+        # risk: nothing cached means nothing stale. rc alone cannot split
+        # that from a real failure, so degrade to -E (full invalidation,
+        # exits 0 on an empty cache) and fail the layer only when THAT
+        # fails too. 2026-07-18 B7 live finding: the -u path failed every
+        # honest-exit flush on a cold cache.
+        if command -v sss_cache >/dev/null 2>&1; then
+            if [ -n "$USER_ARG" ] && sss_cache -u "$USER_ARG" 2>/dev/null; then
+                log "  sss_cache -u ${USER_ARG}: ok"
+            elif sss_cache -E 2>/dev/null; then
+                if [ -n "$USER_ARG" ]; then
+                    log "  sss_cache -u ${USER_ARG}: no cached object — full flush (-E) took its place"
+                else
+                    log "  sss_cache -E: ok"
+                fi
+            else
+                log "  WARN: sss_cache failed (both -u and -E)"
+                FLUSH_FAILED="${FLUSH_FAILED} sssd"
+            fi
+        else
+            log "  WARN: sss_cache not found (install sssd-tools) — skipping SSSD flush"
+            FLUSH_FAILED="${FLUSH_FAILED} sssd"
+        fi
+
+        # 2) idhelper: re-read LDAP fresh + re-materialize nss_wrapper/extrausers.
+        SOCK="${NFS_KLLDAP_IDHELPER_SOCKET:-/var/run/nfs-klldap/idhelper.sock}"
+        if [ -S "$SOCK" ]; then
+            RESP="$(printf 'REBULK\n' | nc -U "$SOCK" 2>/dev/null || true)"
+            log "  idhelper REBULK: ${RESP:-<no response>}"
+            # The daemon answers "OK <n>" or "ERR rebulk failed" — an ERR
+            # reply is a failed flush, not a flushed layer.
+            case "$RESP" in
+                OK*) : ;;
+                *) FLUSH_FAILED="${FLUSH_FAILED} idhelper" ;;
+            esac
+        else
+            log "  WARN: idhelper socket ${SOCK} missing — skipping rebulk"
+            FLUSH_FAILED="${FLUSH_FAILED} idhelper"
+        fi
+
+        # 3) Ganesha uid2grp cache (the getgrouplist result cache).
+        if dbus-send --system --print-reply --dest=org.ganesha.nfsd \
+            /org/ganesha/nfsd/admin org.ganesha.nfsd.admin.purge_gids >/dev/null 2>&1; then
+            log "  Ganesha purge_gids: ok"
+        else
+            log "  WARN: purge_gids D-Bus call failed (is ganesha.nfsd up on the bus?)"
+            FLUSH_FAILED="${FLUSH_FAILED} ganesha"
+        fi
+
+        # 4) Verify: print the user's freshly-resolved groups.
+        if [ -n "$USER_ARG" ]; then
+            IDHELPER="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
+            [ -x "$IDHELPER" ] && log "  groups now: $("$IDHELPER" grps "$USER_ARG" 2>/dev/null || echo '?')"
+        fi
+        if [ -n "$FLUSH_FAILED" ]; then
+            log "refresh-identity: FAILED — layer(s) not flushed:${FLUSH_FAILED}. The stale identity persists until the natural windows expire (~3 min)."
+            exit 1
+        fi
+        log "refresh-identity: done"
+        ;;
+
+    id-resolve)
+        P="${1:-}"
+        if [ -z "$P" ]; then
+            die "Usage: ganesha-ctl id-resolve <principal>"
+        fi
+        IDHELPER="${IDHELPER_BIN:-/usr/local/bin/nfs-klldap-idhelper}"
+        if [ -x "$IDHELPER" ]; then
+            "$IDHELPER" grps "$P" >/dev/null 2>&1 || true
+            "$IDHELPER" resolve "$P"
+            GID=$( "$IDHELPER" resolve "$P" --json 2>/dev/null | sed -n 's/.*"gid":\([0-9]*\).*/\1/p' | head -1 )
+            [ -n "$GID" ] && getent group "$GID" 2>/dev/null || true
+            NP="${NSS_PASSWD:-/var/lib/nfs-klldap/nss_passwd}"
+            NG="${NSS_GROUP:-/var/lib/nfs-klldap/nss_group}"
+            SO="${NSS_WRAPPER_SO:-}"
+            if [ -z "$SO" ]; then
+                for cand in /usr/lib64/libnss_wrapper.so /usr/lib/x86_64-linux-gnu/libnss_wrapper.so /usr/lib/aarch64-linux-gnu/libnss_wrapper.so /usr/lib/libnss_wrapper.so; do
+                    [ -f "$cand" ] && SO="$cand" && break
+                done
+            fi
+            if [ -n "$SO" ] && [ -f "$NP" ]; then
+                SHORT=$(echo "$P" | sed 's/@.*//; s#.*/##')
+                echo "[ganesha-ctl] nss_wrapper getent passwd $P:"
+                LD_PRELOAD="$SO" NSS_WRAPPER_PASSWD="$NP" NSS_WRAPPER_GROUP="$NG" \
+                    getent passwd "$P" 2>/dev/null || LD_PRELOAD="$SO" NSS_WRAPPER_PASSWD="$NP" NSS_WRAPPER_GROUP="$NG" \
+                    getent passwd "$SHORT" 2>/dev/null || echo "  (nss_wrapper miss)"
+                echo "[ganesha-ctl] nss_wrapper id -G $P:"
+                LD_PRELOAD="$SO" NSS_WRAPPER_PASSWD="$NP" NSS_WRAPPER_GROUP="$NG" \
+                    id -G "$P" 2>/dev/null || LD_PRELOAD="$SO" NSS_WRAPPER_PASSWD="$NP" NSS_WRAPPER_GROUP="$NG" \
+                    id -G "$SHORT" 2>/dev/null || echo "  (nss_wrapper groups miss)"
+            fi
+        else
+            echo "idhelper not found; falling back to getent on short name"
+            SHORT=$(echo "$P" | sed 's/@.*//; s#.*/##')
+            getent passwd "$SHORT" || echo "no NSS entry for $SHORT"
+        fi
+        # surface ID MAPPER from ganesha.log (uid2grp_allocate_by_uid under UseGetpwnam=true)
+        if [ -f /var/log/ganesha.log ]; then
+            echo "[ganesha-ctl] ID MAPPER lines for $P:"
+            grep -iE "ID MAPPER|uid2grp_allocate|getgrouplist|Unsupported code path|Could not map|managed_gids|Attempt to fetch managed|$P" /var/log/ganesha.log | tail -8 || echo "  (no recent ID MAPPER matches)"
+            if grep -q "uid2grp_allocate_by_uid" /var/log/ganesha.log 2>/dev/null; then
+                echo "[ganesha-ctl] ganesha-log:uid2grp-by-uid-present"
+            elif grep -q "uid2grp_allocate_by_principal" /var/log/ganesha.log 2>/dev/null; then
+                echo "[ganesha-ctl] ganesha-log:uid2grp-by-principal-present (legacy/MSPAC risk)"
+            elif grep -q 'UseGetpwnam = true' /etc/ganesha/ganesha.conf 2>/dev/null; then
+                echo "[ganesha-ctl] ganesha-log:uid2grp-awaiting-krb5-mount (UseGetpwnam=true; chain runs on client auth)"
+            else
+                echo "[ganesha-ctl] ganesha-log:no-uid2grp (ganesha.nfsd not exercised)"
+            fi
+            if grep -qE "Unsupported code path for principal ${P}" /var/log/ganesha.log 2>/dev/null; then
+                echo "[ganesha-ctl] WARN: Unsupported principal path for $P — set UseGetpwnam=true (Debian 9.6 _MSPAC_SUPPORT stubs allocate_by_principal)"
+            fi
+        fi
+        ;;
+    id-uid)
+        # Replicate Ganesha's uid2grp exactly: getpwuid(uid) then getgrouplist
+        # (id -G) under the environment of the RUNNING ganesha.nfsd. This is
+        # the path behind "Attempt to fetch managed_gids for uid: N failed".
+        UID_ARG="${1:-}"
+        if [ -z "$UID_ARG" ] || ! [[ "$UID_ARG" =~ ^[0-9]+$ ]]; then
+            die "Usage: ganesha-ctl id-uid <numeric-uid>"
+        fi
+        GPID=""
+        for d in /proc/[0-9]*; do
+            if [ "$(cat "$d/comm" 2>/dev/null)" = "ganesha.nfsd" ]; then
+                GPID="${d#/proc/}"
+                break
+            fi
+        done
+        ENV_ARGS=()
+        if [ -n "$GPID" ] && [ -r "/proc/$GPID/environ" ]; then
+            log "using live ganesha.nfsd pid $GPID environ (LD_PRELOAD/NSS_*)"
+            while IFS= read -r kv; do
+                ENV_ARGS+=("$kv")
+            done < <(tr '\0' '\n' < "/proc/$GPID/environ" | grep -E '^(LD_PRELOAD|NSS_WRAPPER_|NSS_)' || true)
+        else
+            log "no live ganesha.nfsd (or environ unreadable); using default nss_wrapper env"
+            NP="${NSS_PASSWD:-/var/lib/nfs-klldap/nss_passwd}"
+            NG="${NSS_GROUP:-/var/lib/nfs-klldap/nss_group}"
+            SO="${NSS_WRAPPER_SO:-}"
+            if [ -z "$SO" ]; then
+                for cand in /usr/lib64/libnss_wrapper.so /usr/lib/x86_64-linux-gnu/libnss_wrapper.so /usr/lib/aarch64-linux-gnu/libnss_wrapper.so /usr/lib/libnss_wrapper.so; do
+                    [ -f "$cand" ] && SO="$cand" && break
+                done
+            fi
+            if [ -n "$SO" ]; then
+                ENV_ARGS=("LD_PRELOAD=$SO" "NSS_WRAPPER_PASSWD=$NP" "NSS_WRAPPER_GROUP=$NG")
+            fi
+        fi
+        FAILED=0
+        echo "[ganesha-ctl] getpwuid($UID_ARG) under daemon env:"
+        PWROW="$(env "${ENV_ARGS[@]}" getent passwd "$UID_ARG" 2>/dev/null | head -1 || true)"
+        if [ -z "$PWROW" ]; then
+            echo "  FAIL: no passwd row for uid $UID_ARG — this is the uid2grp failure Ganesha sees"
+            FAILED=1
+        else
+            echo "  $PWROW"
+            PWNAME="${PWROW%%:*}"
+            echo "[ganesha-ctl] id -G $PWNAME under daemon env (getgrouplist):"
+            if ! env "${ENV_ARGS[@]}" id -G "$PWNAME"; then
+                echo "  FAIL: getgrouplist for $PWNAME failed"
+                FAILED=1
+            fi
+        fi
+        echo "[ganesha-ctl] raw materialized rows with uid $UID_ARG:"
+        FOUND_ROWS=0
+        for f in "${NSS_PASSWD:-/var/lib/nfs-klldap/nss_passwd}" /var/lib/extrausers/passwd; do
+            [ -f "$f" ] || continue
+            while IFS= read -r row; do
+                echo "  $f: $row"
+                FOUND_ROWS=1
+            done < <(awk -F: -v u="$UID_ARG" '$3==u' "$f")
+        done
+        [ "$FOUND_ROWS" = "1" ] || echo "  (none — idhelper has not materialized this uid)"
+        if [ -f /var/log/ganesha.log ]; then
+            echo "[ganesha-ctl] recent managed_gids failures for uid $UID_ARG in ganesha.log:"
+            grep -E "managed_gids.*uid[:=] ?$UID_ARG" /var/log/ganesha.log | tail -5 || echo "  (none)"
+        fi
+        exit "$FAILED"
+        ;;
+    id-check)
+        if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
+            /usr/local/bin/nfs-klldap-idhelper check
+        else
+            echo "idhelper binary missing"
+            exit 1
+        fi
+        # also exercise the config-level id resolution check (startup/validate path)
+        CONFIG="${NFS_CONFIG:-/config/nfs-klldap.conf}"
+        CONFIG_BIN_PATH="$(resolve_config_bin)" || true
+        if [ -n "$CONFIG_BIN_PATH" ] && [ -f "$CONFIG" ]; then
+            "$CONFIG_BIN_PATH" validate --config "$CONFIG" >/dev/null 2>&1 || true
+        fi
+        # surface exact ID MAPPER warnings
+        if [ -f /var/log/ganesha.log ]; then
+            echo "[ganesha-ctl] recent ID MAPPER from ganesha.log:"
+            grep -iE 'ID MAPPER|uid2grp|Unsupported|managed_gids|Attempt to fetch managed' /var/log/ganesha.log | tail -10 || echo "  (none)"
+        fi
+        ;;
+    fs-warnings)
+        CONFIG="${NFS_CONFIG:-/config/nfs-klldap.conf}"
+        CONFIG_BIN_PATH="$(resolve_config_bin)" || die "nfs-klldap-config not found (set CONFIG_BIN or PATH)"
+        # Validation warnings go to stderr during load; operators want WARN-prefixed lines on stdout.
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            echo "WARN: fs: $line"
+        done < <("$CONFIG_BIN_PATH" fs-warnings --config "$CONFIG" 2>/dev/null || true)
+        ;;
+    id-map-test)
+        # Exercise client-parity lookups: getent short name + idhelper principal resolve.
+        TESTP="${1:-testuser1}"
+        REALM=""
+        if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1; then
+            REALM="$(/usr/local/bin/nfs-klldap-idhelper check 2>/dev/null | sed -n 's/^realm: //p' | head -1)"
+        fi
+        if [ -z "$REALM" ] && [ -f /etc/krb5.conf ]; then
+            REALM="$(awk '/default_realm/{print $3}' /etc/krb5.conf | tr -d '[:space:]' | head -1)"
+        fi
+        echo "[ganesha-ctl] id-map-test for short name: getent passwd $TESTP"
+        getent passwd "$TESTP" || echo "  (getent short name returned non-zero; may be expected pre-user-create)"
+        if command -v /usr/local/bin/nfs-klldap-idhelper >/dev/null 2>&1 && [ -n "$REALM" ]; then
+            echo "[ganesha-ctl] id-map-test for principal form: ${TESTP}@${REALM} (via idhelper)"
+            /usr/local/bin/nfs-klldap-idhelper resolve "${TESTP}@${REALM}" --json 2>/dev/null || true
+            echo "[ganesha-ctl] also testing a host principal form (common for clients):"
+            /usr/local/bin/nfs-klldap-idhelper resolve "host/localhost@${REALM}" 2>/dev/null || true
+        fi
+        echo "[ganesha-ctl] fragment EXPORT Read_Access_Check_Policy check (if exports exist):"
+        if grep -q 'Read_Access_Check_Policy' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
+            if grep -q 'Disable_ACL = true;' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
+                if grep -q 'Read_Access_Check_Policy = pre;' /etc/ganesha/exports.d/*.conf 2>/dev/null; then
+                    echo "  OK: NOACL fragment(s) emit Read_Access_Check_Policy = pre;"
+                else
+                    echo "  NOTE: NOACL fragment Read_Access_Check_Policy present but not = pre (check config)"
+                fi
+            else
+                grep 'Read_Access_Check_Policy' /etc/ganesha/exports.d/*.conf 2>/dev/null | head -3 || true
+                echo "  OK: Read_Access_Check_Policy set on EXPORT (ACL-capable or explicit override)"
+            fi
+        else
+            echo "  OK: Read_Access_Check_Policy omitted (9.6 default pre for ACL-capable auto)"
+        fi
+        ;;
     *)
         usage
         exit 1

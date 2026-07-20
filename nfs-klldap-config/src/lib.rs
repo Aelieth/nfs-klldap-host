@@ -1,640 +1,156 @@
-//! nfs-klldap-config: TOML validation, derivation, and generation of sssd.conf, krb5.conf, ganesha exports.
+#![deny(unsafe_code, dead_code)]
+
+//! Validate/derive nfs-klldap.conf; generate sssd/krb5/idmapd/nfs/ganesha artifacts.
 
 mod config;
+mod constants;
 mod error;
+mod exports_fingerprint;
+mod ganesha_liveness;
+pub mod ganesha_readiness;
+mod recycle_plan;
+
+mod fs_probe;
+pub mod ganesha_log_contract;
+pub mod proc_run;
+mod fs_warnings;
+mod ganesha_identity_pipeline;
+mod ganesha_nss_contract;
 mod generate;
+mod hook;
 mod hostname;
+mod network;
 mod persist;
+mod startup;
 mod template;
-mod uri;
 mod validate;
 
 pub use config::{
-    effective_ldap_search_bases, resolve_cache_profile, resolve_posix_attribute_mapping,
-    CACHE_PROFILES, GaneshaSection, GenerationPaths, KerberosSection, ManagementSection,
-    NfsKlldapConfig, PosixAttributeMapping, ServerSection, Share, SssdSection, StorageSection,
-    WebuiSection,
+    derive_share_pseudo, share_navahi_effective, GenerationPaths, NfsKlldapConfig,
+    PosixAttributeMapping, Share, ShareFieldWarning, SssdSection, StorageSection,
 };
-
+pub use network::{
+    command_with_timeout, container_primary_ipv4, extract_server_addr_from_ganesha_line,
+    is_docker_bridge_ipv4,
+};
 pub mod ignored_attributes;
 pub use error::ConfigError;
-
-pub use generate::generate_all;
-pub use hostname::{
-    format_nfs_principal_list, get_consistent_hostname, looks_like_docker_default_hostname,
-    nfs_keytab_host_matches, nfs_keytab_host_variants, ConsistentHostname, HostnameInconsistency,
-    HostnameObservation, HostnameSource,
+pub use exports_fingerprint::{
+    fingerprint_avahi_dir, fingerprint_exports_dir, fingerprint_identity_artifacts,
+    fingerprint_shares, FNV1A_SEED,
 };
-pub use persist::{is_persistent_config, load_host_paths_only};
-pub use template::{generate_default_template, write_default_config_if_missing};
-pub use uri::{derive_realm_from_uri, extract_host_from_uri};
+pub use ganesha_liveness::{
+    discover_ganesha_daemon_pid, pgrep_running,
+    pkill_binary, pkill_process, process_is_live,
+};
+pub use recycle_plan::{
+    plan_from_changes, plan_full_recycle, ganesha_sighup_failed, GaneshaAction,
+    ServiceRecyclePlan, WebuiAction,
+};
+pub use signals::{
+    install_signal_handlers, reap_children, request_full_recycle, request_sighup,
+    shutdown_requested, signal_process_hup, signal_process_kill, signal_process_term,
+    signal_supervisor_full_recycle, signal_supervisor_hup, take_full_recycle_requested,
+    take_sighup_requested,
+};
+pub use fs_probe::{
+    acl_probe_verdict, compute_effective_flags, compute_effective_flags_probed,
+    compute_read_access_policy_emit, normalize_path, probe_from_mountinfo,
+    probe_fs_capabilities, verdict_from_caps,
+    AclProbeVerdict, EffectiveShareFlags, MountinfoSnapshot,
+    ReadAccessPolicyEmit, FsCapabilities,
+};
+pub use ganesha_log_contract::{
+    classify_notsupp_failure_path, ganesha_96_has_mode_only_access_knob, NotsuppFailurePath,
+};
+pub use ganesha_identity_pipeline::{
+    identity_principals_for_check, probe_client_host, probe_user_principal,
+    run_identity_pipeline, warm_principals_for_startup,
+    warm_principals_nss_ready,
+};
+pub use ganesha_nss_contract::{
+    evaluate_nss_contract, evaluate_short_name_getgrouplist_contract, find_nss_wrapper_so,
+    ld_preload_for_ganesha,
+    probe_nss_groups_exact, probe_nss_passwd_exact, probe_nss_passwd_from_file_exact,
+    GaneshaNssEnv,
+};
+pub use ganesha_readiness::{
+    build_ganesha_envp, check_ganesha_readiness, filter_proc_environ_keys,
+    idhelper_socket_request, proc_environ_map,
+    proc_pid_environ, probe_ganesha_process_groups, probe_id_g_under_env, probe_socket_grps,
+    probe_socket_grouplist, resolve_nss_sss_so, signal_ganesha_reload_idmap,
+    GaneshaReadinessReport, GaneshaSpawnEnv,
+};
 
-/// Returns (no_tls_verify, start_tls) derived from [sssd] TLS fields and ldap_uri scheme.
-pub fn ldap_tls_policy(
-    ldap_uri: &str,
-    reqcert: Option<&str>,
-    cacert: Option<&str>,
-    id_use_start_tls: Option<bool>,
-) -> (bool, bool) {
-    let has_custom = cacert.is_some_and(|s| !s.trim().is_empty());
-    let no_verify = if has_custom {
-        reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
-    } else if ldap_uri.starts_with("ldaps://") {
-        reqcert.is_none_or(|v| v.eq_ignore_ascii_case("never"))
-    } else {
-        reqcert.is_some_and(|v| v.eq_ignore_ascii_case("never"))
-    };
-    (no_verify, id_use_start_tls.unwrap_or(false))
+/// True when LDAP bind DN and password are configured in nfs-klldap.conf.
+pub fn ldap_bind_configured(cfg: &NfsKlldapConfig) -> bool {
+    !cfg.sssd.ldap_default_bind_dn.trim().is_empty()
+        && !cfg.sssd.ldap_default_authtok.trim().is_empty()
 }
+pub use fs_warnings::{
+    any_share_manage_gids_enabled, collect_fs_warnings, limited_fs_warnings_only,
+    share_divergent_submount_warning_snapshot, share_fs_acl_limited_with_mountinfo,
+    share_fs_warning_message_snapshot,
+    share_fs_warning_message_with_mountinfo, FsShareWarning, PosixOnlyPolicy,
+};
+pub use hook::run_post_generate_hooks;
+pub use generate::{generate_all, write_avahi_services};
+
+mod idhelper_check;
+pub use idhelper_check::{
+    check_idhelper_sample_resolutions, emit_idhelper_check_log, idhelper_socket_path,
+};
+
+pub use hostname::{
+    format_nfs_principal_list, get_consistent_hostname, host_nfs_active, host_nfs_from_env,
+    looks_like_docker_default_hostname, nfs_keytab_host_matches, nfs_keytab_host_variants,
+    resolve_host_nfs_mode, resolve_nfs_host_identity, runtime_host_identity, runtime_hostname,
+    runtime_realm, runtime_realm_from_disk, runtime_server_variants_from_disk, webui_tls_disabled,
+    NfsHostIdentity,
+};
+pub use persist::{atomic_write, is_persistent_config};
+pub use startup::{
+    attempt_realm_from_config, check_ldap_bind, check_ldap_reachability, check_persistent_writable,
+    compute_startup_step, compute_wizard_step, config_has_required_startup_fields,
+    default_config_path,
+    effective_startup_step, format_bind_probe, format_reachability_probe, format_volume_probe,
+    is_preconfigured_deployment, is_setup_wizard_complete, resolve_keytab_path,
+    is_step_complete, mark_setup_wizard_complete, should_bring_up_services,
+    supervisor_loop_tick, startup_step_hint, SupervisorLoopAction,
+    setup_wizard_marker_path,
+    webui_setup_url, LdapReachability, StartupStep, DEFAULT_KEYTAB_PATH, SETUP_WIZARD_MARKER,
+};
+pub use template::{generate_default_template, write_default_config_if_missing};
+pub use nfs_klldap_identity::{derive_realm_from_uri, extract_host_from_uri, host_is_ip};
+pub use nfs_klldap_identity::{get_keytab_info, parse_klist_nfs_hosts, KeytabInfo};
+
+// Structured LDAP resolution (IdLdapResolver) shared with Nfs-klldap-identity.
+pub mod idmap;
+pub use idmap::{
+    classify_principal, from_sssd_section,
+    machine_short_name, normalize_principal, parse_getent_passwd,
+    parse_group_row, parse_passwd_row,
+    principal_local_part, sssd_resolver_inputs,
+    IdLdapResolver, IdMapSnapshot, PosixGroupEntry, PosixUserEntry,
+};
+
+// Public Ganesha / idmapd / identity constants used by generate and callers.
+pub use constants::{
+    FALLBACK_NOBODY_GID, FALLBACK_NOBODY_UID,
+    GANESHA_ALLOWED_SECTYPES, GANESHA_ALLOWED_SQUASH, GANESHA_DEFAULT_SECTYPE,
+    GANESHA_DEFAULT_SQUASH, GANESHA_PROTOCOLS, GANESHA_PWNAM_IMPL, GANESHA_ROOT_KRB_PRINCIPALS,
+    IDMAPD_GSS_METHODS, IDMAPD_NOBODY_GROUP, IDMAPD_NOBODY_USER,
+    IDMAPD_TRANSLATION_METHOD, LOG_NOISE_TOKENS, MACHINE_GID, MACHINE_PRINCIPAL_PREFIXES, MACHINE_UID,
+};
+
+// Single TLS policy source of truth lives in nfs-klldap-identity (cacert-aware).
+pub use nfs_klldap_identity::{ldap_conn_settings, ldap_tls_policy};
+
+mod signals;
+
+/// Serializes env-mutating tests across modules. Needed because cargo test --worksp
+#[cfg(test)]
+pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    /// Serializes env-mutating tests under `cargo test --workspace`.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// RAII guard restoring previous env var value on drop.
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let previous = std::env::var(key).ok();
-            std::env::set_var(key, value);
-            Self { key, previous }
-        }
-
-        fn remove(key: &'static str) -> Self {
-            let previous = std::env::var(key).ok();
-            std::env::remove_var(key);
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(v) => std::env::set_var(self.key, v),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
-
-    /// Clear NFS_KLLDAP_* env (test helper); hold guards alive across validate calls under ENV_LOCK.
-    fn clean_core_env() -> Vec<EnvGuard> {
-        let vars = [
-            "NFS_KLLDAP_LDAP_URI",
-            "NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN",
-            "NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK",
-            "NFS_KLLDAP_LLDAP_USER",
-            "NFS_KLLDAP_LLDAP_PW",
-            "NFS_KLLDAP_KERBEROS_REALM",
-            "NFS_KLLDAP_SERVER_HOSTNAME",
-            "NFS_KLLDAP_STORAGE_CONTAINER_ROOT",
-            "NFS_KLLDAP_GANESHA_DEFAULT_SECURITY",
-            "NFS_KLLDAP_MANAGEMENT_WEBUI_ADMIN_GROUP",
-            "NFS_KLLDAP_SSSD_KLLLDAP_IGNORED_ATTRIBUTES",
-            "NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT",
-            "NFS_KLLDAP_SSSD_LDAP_TLS_CACERT",
-            "NFS_KLLDAP_SSSD_LDAP_ID_USE_START_TLS",
-            "NFS_KLLDAP_WEBUI_TLS",
-            "NFS_KLLDAP_WEBUI_TLS_CERT",
-            "NFS_KLLDAP_WEBUI_TLS_KEY",
-            // Debug toggles (bare names, not under the NFS_KLLDAP_ prefix)
-            "GANESHA_DEBUG",
-        ];
-        vars.iter().map(|&k| EnvGuard::remove(k)).collect()
-    }
-
-    fn minimal_cfg() -> NfsKlldapConfig {
-        // Clear at construction time so the internal validate sees a clean env.
-        // Callers that later mutate the returned cfg and re-validate must keep
-        // the result of clean_core_env() alive for the lifetime of the test
-        // (see uses of `let _guards = clean_core_env();` below).
-        let _guards = clean_core_env();
-        let mut c = NfsKlldapConfig {
-            ldap_uri: "ldaps://kllap.test:6360".into(),
-            sssd: SssdSection {
-                ldap_default_bind_dn: "uid=admin,ou=people,dc=test,dc=com".into(),
-                ldap_default_authtok: "sekret".into(),
-                ..Default::default()
-            },
-            shares: vec![
-                Share {
-                    name: "movies".into(),
-                    host_path: "/media/SSD/movies".into(),
-                    ..Default::default()
-                },
-                Share {
-                    name: "data".into(),
-                    host_path: "/media/SSD/data".into(),
-                    security: Some("krb5i".into()),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-        c.validate_and_derive().expect("valid minimal");
-        c
-    }
-
-    #[test]
-    fn load_and_derive_works() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-        let c = minimal_cfg();
-        assert_eq!(c.effective_realm(), "TEST");
-        assert!(c.sssd.port.is_some());
-        assert_eq!(c.shares.len(), 2);
-        assert_eq!(c.container_path_for(&c.shares[0]), "/export/SSD/movies");
-    }
-
-    #[test]
-    fn generate_produces_expected_artifacts() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-        let cfg = minimal_cfg();
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = GenerationPaths {
-            sssd_conf: tmp.path().join("sssd.conf"),
-            krb5_conf: tmp.path().join("krb5.conf"),
-            ganesha_conf: tmp.path().join("ganesha.conf"),
-            exports_dir: tmp.path().join("exports.d"),
-        };
-        generate_all(&cfg, &paths).expect("generate");
-
-        let sssd = fs::read_to_string(&paths.sssd_conf).unwrap();
-        assert!(sssd.contains("GENERATED by nfs-klldap-config"));
-        assert!(sssd.contains("ldap_uri = ldaps://kllap.test:6360"));
-        assert!(sssd.contains("ldap_default_authtok = sekret"));
-        assert_eq!(
-            sssd.matches("ldap_id_mapping = false").count(),
-            1,
-            "ldap_id_mapping must appear exactly once"
-        );
-        assert_eq!(sssd.matches("ldap_pwd_policy = none").count(), 1);
-        assert!(sssd.contains("ignored_user_attributes"));
-
-        let krb = fs::read_to_string(&paths.krb5_conf).unwrap();
-        assert!(krb.contains("default_realm = TEST"));
-        assert!(
-            krb.contains("rdns = false"),
-            "krb5.conf should include rdns=false for improved Kerberos reverse-DNS tolerance"
-        );
-
-        let main = fs::read_to_string(&paths.ganesha_conf).unwrap();
-        assert!(main.contains("%include"));
-        // The include is emitted unquoted (no surrounding double quotes).
-        assert!(!main.contains("%include \""));
-        // Minimal proven-safe NFS_CORE_PARAM block for this Ganesha build.
-        assert!(main.contains("Protocols = 4;"));
-        assert!(main.contains("Enable_UDP = false"));
-        assert!(main.contains("Allow_Set_Io_Flusher_Fail = true"));
-        // These must not appear (rejected by parser in this build)
-        assert!(!main.contains("Transports"));
-        assert!(!main.contains("Mountd_Port"));
-        assert!(!main.contains("NLM_Port"));
-        assert!(!main.contains("Rquota_Port"));
-        // (Enable_UDP / Enable_NLM / Enable_RQUOTA are intentionally emitted as explicit = false
-        //  in the current proven-safe NFS_CORE_PARAM; only the classic port + Transports keys are omitted.)
-
-        // GANESHA_DEBUG not set (clean env) => LOG block must be absent (centralized debug off by default)
-        assert!(
-            !main.contains("LOG {"),
-            "LOG debug block must not be present when GANESHA_DEBUG != TRUE"
-        );
-        assert!(
-            !main.contains("IDMAPPER = FULL_DEBUG"),
-            "component debug must be absent by default"
-        );
-
-        let exports: Vec<_> = fs::read_dir(&paths.exports_dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(exports.len(), 2);
-        let frag =
-            fs::read_to_string(paths.exports_dir.join("11-data.conf")).unwrap_or_else(|_| {
-                let mut s = String::new();
-                for e in fs::read_dir(&paths.exports_dir).unwrap() {
-                    let p = e.unwrap().path();
-                    if p.to_string_lossy().contains("data") {
-                        s = fs::read_to_string(p).unwrap();
-                    }
-                }
-                s
-            });
-        assert!(frag.contains("SecType = krb5i") || frag.contains("data"));
-    }
-
-    #[test]
-    fn ganesha_debug_log_block_emitted_only_when_env_true() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-
-        // 1) Default (no GANESHA_DEBUG) - already covered by generate_produces_expected_artifacts,
-        // but double-check a fresh generation here too for the specific block.
-        let cfg = minimal_cfg();
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = GenerationPaths {
-            sssd_conf: tmp.path().join("sssd.conf"),
-            krb5_conf: tmp.path().join("krb5.conf"),
-            ganesha_conf: tmp.path().join("ganesha.conf"),
-            exports_dir: tmp.path().join("exports.d"),
-        };
-        generate_all(&cfg, &paths).expect("generate default");
-        let main_default = fs::read_to_string(&paths.ganesha_conf).unwrap();
-        assert!(
-            !main_default.contains("LOG {"),
-            "debug LOG must be absent without GANESHA_DEBUG=TRUE"
-        );
-
-        // 2) With GANESHA_DEBUG=TRUE -> block must appear with exact keys
-        let _g = EnvGuard::set("GANESHA_DEBUG", "TRUE");
-        let cfg2 = minimal_cfg();
-        let tmp2 = tempfile::tempdir().unwrap();
-        let paths2 = GenerationPaths {
-            sssd_conf: tmp2.path().join("sssd.conf"),
-            krb5_conf: tmp2.path().join("krb5.conf"),
-            ganesha_conf: tmp2.path().join("ganesha.conf"),
-            exports_dir: tmp2.path().join("exports.d"),
-        };
-        generate_all(&cfg2, &paths2).expect("generate with debug");
-
-        let main_debug = fs::read_to_string(&paths2.ganesha_conf).unwrap();
-        assert!(
-            main_debug.contains("LOG {"),
-            "LOG block must be present when GANESHA_DEBUG=TRUE"
-        );
-        assert!(main_debug.contains("Default_Log_Level = DEBUG;"));
-        assert!(main_debug.contains("IDMAPPER = FULL_DEBUG;"));
-        assert!(main_debug.contains("FSAL = FULL_DEBUG;"));
-        assert!(main_debug.contains("NFS4 = FULL_DEBUG;"));
-        // Sanity: core config still there
-        assert!(main_debug.contains("Protocols = 4;"));
-        assert!(main_debug.contains("%include"));
-    }
-
-    #[test]
-    fn duplicate_names_rejected() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-        let mut c = minimal_cfg();
-        c.shares.push(Share {
-            name: "movies".into(),
-            host_path: "/x".into(),
-            ..Default::default()
-        });
-        assert!(c.validate_and_derive().is_err());
-    }
-
-    #[test]
-    fn invalid_security_rejected() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-        let mut c = minimal_cfg();
-        c.ganesha.default_security = "krb5x".into();
-        assert!(c.validate_and_derive().is_err());
-
-        let mut c2 = minimal_cfg();
-        c2.shares[0].security = Some("aes-256".into());
-        assert!(c2.validate_and_derive().is_err());
-    }
-
-    #[test]
-    fn invalid_pref_read_rejected() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-        let mut c = minimal_cfg();
-        c.shares[0].pref_read = Some(64 * 1024 * 1024 + 1);
-        assert!(c.validate_and_derive().is_err(), "above max must be rejected");
-
-        let mut c2 = minimal_cfg();
-        c2.shares[0].pref_read = Some(1);
-        assert!(c2.validate_and_derive().is_err(), "below min must be rejected");
-
-        let mut c3 = minimal_cfg();
-        c3.shares[0].pref_read = Some(16 * 1024 * 1024);
-        assert!(c3.validate_and_derive().is_ok(), "valid 16M streaming value accepted");
-    }
-
-    #[test]
-    fn invalid_cache_profile_rejected_and_valid_profiles_accepted() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-        let mut c = minimal_cfg();
-        c.shares[0].cache_profile = Some("Turbo".to_string());
-        assert!(c.validate_and_derive().is_err(), "unknown profile must be rejected");
-
-        // All 5 official profiles must pass
-        for prof in crate::CACHE_PROFILES {
-            let mut c_ok = minimal_cfg();
-            c_ok.shares[0].cache_profile = Some((*prof).to_string());
-            assert!(
-                c_ok.validate_and_derive().is_ok(),
-                "profile '{}' should be accepted",
-                prof
-            );
-        }
-    }
-
-    #[test]
-    fn load_host_paths_only_returns_only_host_paths() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("partial.conf");
-
-        // Partial config (missing bind creds) — load_host_paths_only must still succeed.
-        let partial = r#"
-            ldap_uri = "ldaps://kllap.test:6360"
-            [[shares]]
-            name = "movies"
-            host_path = "/media/SSD/movies"
-            [[shares]]
-            name = "backups"
-            host_path = "/media/SSD/backups"
-        "#;
-        fs::write(&path, partial).unwrap();
-
-        let roots = load_host_paths_only(&path).expect("should parse partial config");
-        assert_eq!(roots.len(), 2);
-        assert!(roots.iter().any(|p| p.to_string_lossy().contains("movies")));
-        assert!(roots
-            .iter()
-            .any(|p| p.to_string_lossy().contains("backups")));
-    }
-
-    #[test]
-    fn realm_is_required_no_silent_example() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-        let mut c = NfsKlldapConfig {
-            ldap_uri: "ldaps://kllap.example.com:6360".into(),
-            kerberos: KerberosSection {
-                realm: Some("EXAMPLE.COM".into()),
-            },
-            sssd: SssdSection {
-                ldap_default_bind_dn: "uid=a,ou=people,dc=x,dc=com".into(),
-                ldap_default_authtok: "s".into(),
-                ..Default::default()
-            },
-            shares: vec![Share {
-                name: "t".into(),
-                host_path: "/t".into(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let err = c.validate_and_derive().unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("kerberos.realm is required"));
-        assert!(msg.contains("NFS_KLLDAP_KERBEROS_REALM"));
-
-        // Good realm passes.
-        c.kerberos.realm = Some("MY.REALM".into());
-        assert!(c.validate_and_derive().is_ok());
-        assert_eq!(c.effective_realm(), "MY.REALM");
-    }
-
-    #[test]
-    fn realm_from_env_works() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-        let _guard = EnvGuard::set("NFS_KLLDAP_KERBEROS_REALM", "ENV.REALM");
-
-        let mut c = NfsKlldapConfig {
-            ldap_uri: "ldaps://kllap.test:6360".into(),
-            sssd: SssdSection {
-                ldap_default_bind_dn: "uid=a,ou=people,dc=x,dc=com".into(),
-                ldap_default_authtok: "s".into(),
-                ..Default::default()
-            },
-            shares: vec![Share {
-                name: "t".into(),
-                host_path: "/t".into(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        assert!(c.validate_and_derive().is_ok());
-        assert_eq!(c.effective_realm(), "ENV.REALM");
-    }
-
-    #[test]
-    fn core_env_overrides_for_ldap_uri_bind_and_webui_work() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env(); // clears everything first (under lock)
-        let _g1 = EnvGuard::set("NFS_KLLDAP_LDAP_URI", "ldaps://envhost.testdomain.com:6360");
-        let _g2 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_DEFAULT_BIND_DN", "uid=envadmin,ou=people,dc=example,dc=com");
-        let _g3 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_DEFAULT_AUTHTOK", "env-secret-123");
-        let _g4 = EnvGuard::set("NFS_KLLDAP_WEBUI_TLS", "off");
-        let _g5 = EnvGuard::set("NFS_KLLDAP_SSSD_LDAP_TLS_REQCERT", "never");
-
-        let mut c = NfsKlldapConfig {
-            // intentionally minimal / placeholder to prove env supplies
-            ldap_uri: "ldaps://placeholder:6360".into(),
-            sssd: SssdSection {
-                ldap_default_bind_dn: "uid=placeholder,ou=people,dc=x,dc=com".into(),
-                ldap_default_authtok: "placeholder".into(),
-                ..Default::default()
-            },
-            shares: vec![Share {
-                name: "t".into(),
-                host_path: "/t".into(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        assert!(c.validate_and_derive().is_ok());
-        assert_eq!(c.ldap_uri, "ldaps://envhost.testdomain.com:6360");
-        assert_eq!(c.sssd.ldap_default_bind_dn, "uid=envadmin,ou=people,dc=example,dc=com");
-        assert_eq!(c.sssd.ldap_default_authtok, "env-secret-123");
-        assert_eq!(c.sssd.ldap_tls_reqcert.as_deref(), Some("never"));
-        assert_eq!(c.webui.tls, Some(false)); // off -> disabled
-    }
-
-    #[test]
-    fn display_realm_returns_real_value_after_validation_and_placeholder_otherwise() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-        let mut c = NfsKlldapConfig {
-            ldap_uri: "ldaps://ldap.testdomain.com:6360".into(),
-            sssd: SssdSection {
-                ldap_default_bind_dn: "uid=admin,ou=people,dc=testdomain,dc=com".into(),
-                ldap_default_authtok: "sekret".into(),
-                ..Default::default()
-            },
-            shares: vec![Share {
-                name: "t".into(),
-                host_path: "/t".into(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        assert!(c.validate_and_derive().is_ok());
-        assert_eq!(c.effective_realm(), "TESTDOMAIN.COM");
-        assert_eq!(c.display_realm(), "TESTDOMAIN.COM");
-
-        let mut broken = NfsKlldapConfig {
-            ldap_uri: "ldaps://192.168.1.5:6360".into(),
-            ..Default::default()
-        };
-        assert_eq!(broken.display_realm(), "YOUR.REALM");
-
-        // EXAMPLE.COM treated as missing for display.
-        broken.kerberos.realm = Some("EXAMPLE.COM".into());
-        assert_eq!(broken.display_realm(), "YOUR.REALM");
-    }
-
-    #[test]
-    fn sssd_tls_options_are_emitted_when_set() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-        let mut c = minimal_cfg();
-        c.sssd.ldap_tls_reqcert = Some("never".into());
-        c.sssd.ldap_id_use_start_tls = Some(true);
-        c.sssd.ldap_tls_cacert = Some("/etc/pki/ca.crt".into());
-        c.ldap_uri = "ldap://kllap.test:389".into();
-        let _ = c.validate_and_derive();
-
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = GenerationPaths {
-            sssd_conf: tmp.path().join("sssd.conf"),
-            krb5_conf: tmp.path().join("krb5.conf"),
-            ganesha_conf: tmp.path().join("ganesha.conf"),
-            exports_dir: tmp.path().join("exports.d"),
-        };
-        generate_all(&c, &paths).expect("generate with tls");
-
-        let sssd = fs::read_to_string(&paths.sssd_conf).unwrap();
-        assert!(sssd.contains("ldap_tls_reqcert = never"));
-        assert!(sssd.to_lowercase().contains("ldap_id_use_start_tls = true"));
-        assert!(sssd.contains("ldap_tls_cacert = /etc/pki/ca.crt"));
-        assert!(sssd.contains("ldap_uri = ldap://kllap.test:389"));
-    }
-
-    #[test]
-    fn kllldap_ignored_attributes_false_omits_ignore_blocks() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-        let mut c = minimal_cfg();
-        c.sssd.kllldap_ignored_attributes = Some(false);
-        let _ = c.validate_and_derive();
-
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = GenerationPaths {
-            sssd_conf: tmp.path().join("sssd.conf"),
-            krb5_conf: tmp.path().join("krb5.conf"),
-            ganesha_conf: tmp.path().join("ganesha.conf"),
-            exports_dir: tmp.path().join("exports.d"),
-        };
-        generate_all(&c, &paths).expect("generate with kll=false");
-
-        let sssd = fs::read_to_string(&paths.sssd_conf).unwrap();
-        assert!(
-            !sssd.contains("ignored_user_attributes"),
-            "kll=false must not emit the KLLDAP ignore blocks into sssd.conf"
-        );
-        assert!(
-            !sssd.contains("ignored_group_attributes"),
-            "kll=false must not emit the KLLDAP ignore blocks into sssd.conf"
-        );
-        // Still emits the header note about the setting value
-        assert!(sssd.contains("kllldap_ignored_attributes=false"));
-    }
-
-    #[test]
-    fn ldap_uri_ip_rejected_with_exact_message() {
-        let _env = ENV_LOCK.lock().unwrap();
-        let _guards = clean_core_env();
-
-        fn make_minimal(ip_uri: &str) -> NfsKlldapConfig {
-            NfsKlldapConfig {
-                ldap_uri: ip_uri.into(),
-                sssd: SssdSection {
-                    ldap_default_bind_dn: "uid=admin,ou=people,dc=x,dc=com".into(),
-                    ldap_default_authtok: "s".into(),
-                    ..Default::default()
-                },
-                shares: vec![Share {
-                    name: "t".into(),
-                    host_path: "/t".into(),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }
-        }
-
-        // IPv4
-        let mut c = make_minimal("ldaps://192.168.10.5:6360");
-        let err = c.validate_and_derive().unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains(
-                "LDAP IP addresses are not supported, DNS resolution is required for operation."
-            ),
-            "unexpected error: {}",
-            msg
-        );
-
-        // IPv6 (with brackets in URI)
-        let mut c6 = make_minimal("ldaps://[2001:db8::1]:6360");
-        let err6 = c6.validate_and_derive().unwrap_err();
-        assert!(err6
-            .to_string()
-            .contains("LDAP IP addresses are not supported"));
-
-        // Also bare IPv6 without port etc.
-        let mut c6b = make_minimal("ldap://[::1]");
-        assert!(c6b.validate_and_derive().is_err());
-
-        let mut ch = make_minimal("ldaps://kllap.example.com:6360");
-        let hmsg = ch.validate_and_derive().unwrap_err().to_string();
-        assert!(!hmsg.contains("IP addresses are not supported"));
-        assert!(hmsg.contains("kerberos.realm is required"));
-    }
-
-    #[test]
-    fn nfs_keytab_host_variants_short_and_fqdn() {
-        assert_eq!(
-            nfs_keytab_host_variants("aurora.testdomain.com"),
-            vec!["aurora".to_string(), "aurora.testdomain.com".to_string()]
-        );
-        assert_eq!(nfs_keytab_host_variants("myserver"), vec!["myserver".to_string()]);
-        assert_eq!(nfs_keytab_host_variants(""), Vec::<String>::new());
-    }
-
-    #[test]
-    fn nfs_keytab_host_matches_short_or_fqdn() {
-        assert!(nfs_keytab_host_matches("aurora", "aurora.testdomain.com"));
-        assert!(nfs_keytab_host_matches("aurora.testdomain.com", "aurora"));
-        assert!(!nfs_keytab_host_matches("other", "aurora.testdomain.com"));
-    }
-
-    #[test]
-    fn docker_default_hostname_detection() {
-        assert!(looks_like_docker_default_hostname("3c896c1c2e24"));
-        assert!(looks_like_docker_default_hostname("a1b2c3d4e5f6"));
-        assert!(looks_like_docker_default_hostname("0123456789abcdef"));
-        assert!(!looks_like_docker_default_hostname("myhost.example.com"));
-        assert!(!looks_like_docker_default_hostname("myhost"));
-        assert!(!looks_like_docker_default_hostname("abc"));
-        assert!(!looks_like_docker_default_hostname("3c896c1c2e24-nfs"));
-    }
-
-    #[test]
-    fn derive_realm_from_uri_is_public_and_works() {
-        assert_eq!(
-            derive_realm_from_uri("ldaps://kllap.example.com:6360"),
-            Some("EXAMPLE.COM".into())
-        );
-        assert_eq!(
-            derive_realm_from_uri("ldap://sub.host.testdomain.local"),
-            Some("HOST.TESTDOMAIN.LOCAL".into())
-        );
-        assert_eq!(derive_realm_from_uri(""), None);
-    }
-}
+mod tests;

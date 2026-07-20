@@ -1,0 +1,107 @@
+{# Single source for the Shares-pane card: settings.html includes it per row and
+   GET /settings/share-card renders a blank one for "+ Add share". #}
+<div class="share-card-ed" data-idx="{{ row.idx }}" data-fs-limited="{% if row.fs_warning.is_some() %}1{% else %}0{% endif %}" data-acl-probed="{{ row.acl_probed }}">
+                    <div class="sc-hd">
+                      <button type="button" class="sc-caret">&#9656;</button>
+                      <span class="share-dot {% if row.effective_acl_capable %}acl{% else %}noacl{% endif %}"
+                            title="{% if row.effective_acl_capable %}ACL supported{% else %}Non-ACL limited{% endif %}"></span>
+                      <input class="sc-name" data-f="name" name="share_name_{{ row.idx }}" value="{{ row.name }}" placeholder="name" required>
+                      <span class="sc-sum">
+                        <span class="sc-chip">{% if row.rw %}RW{% else %}RO{% endif %}</span>
+                        <span class="sc-chip {% if !row.effective_acl_capable %}noacl{% endif %}" data-acl-chip>acl {{ row.acl_state_label }}</span>
+                        {# Non-conformity signal: only a security deviating from [ganesha] default_security chips. #}
+                        {% if let Some(sec) = row.security_chip %}<span class="sc-chip">{{ sec }}</span>{% endif %}
+                        {# Exposure signal: this share broadcasts on the LAN and accepts NFSv3/AUTH_SYS. #}
+                        {% if row.navahi_global && row.navahi_insecure %}<span class="sc-chip">navahi</span>{% endif %}
+                      </span>
+                      <button type="button" class="sc-del" title="Remove share">&#10005;</button>
+                    </div>
+                    <div class="sc-body">
+                      {% if let Some(warn) = row.warning %}<div class="alert alert-warning" style="font-size:.75em;padding:6px 8px;margin:0 0 8px">{{ warn }}</div>{% endif %}
+                      {% if let Some(fw) = row.fs_warning %}<div class="alert alert-warning" style="font-size:.75em;padding:6px 8px;margin:0 0 8px">{{ fw }}</div>{% endif %}
+                      <div class="fld-grid">
+                        <div class="fld wide">
+                          <label class="fld-lab" title="Path on the host that backs this share.&#10;&rarr; host_path (required)">host_path <span class="ico">i</span></label>
+                          <input type="text" data-f="host_path" name="share_host_{{ row.idx }}" value="{{ row.host_path }}" placeholder="/srv/nfs/…" required>
+                        </div>
+                        <div class="fld">
+                          <label class="fld-lab" title="Directory in the container Ganesha serves + WebUI edits.&#10;&rarr; container_path / EXPORT Path= (required)">container_path <span class="ico">i</span></label>
+                          <input type="text" data-f="container_path" name="share_container_path_{{ row.idx }}" value="{{ row.container_path }}" placeholder="/export/…" required>
+                        </div>
+                        <div class="fld">
+                          <label class="fld-lab" title="Client-visible NFSv4 mount path (server:/this).&#10;&rarr; pseudo_path / EXPORT Pseudo=">pseudo_path <span class="ico">i</span></label>
+                          <input type="text" data-f="pseudo_path" name="share_pseudo_{{ row.idx }}" value="{{ row.pseudo_path }}" placeholder="/{{ row.name }}" {% if !row.pseudo_editable %}disabled{% endif %}>
+                          {% if !row.pseudo_editable %}<small class="muted" style="font-size:.62em;display:block;margin-top:2px">auto: <code>{{ row.effective_pseudo }}</code> (NOACL export)</small>{% endif %}
+                        </div>
+                      </div>
+                      <div class="sc-optwrap">
+                        <div class="sc-access">
+                          <div class="scf">
+                            <label class="fld-lab" title="Per-share SecType override; blank = default from [ganesha].&#10;&rarr; security / EXPORT SecType">security <span class="ico">i</span></label>
+                            <select data-f="security" name="share_security_{{ row.idx }}">
+                              <option value="">default</option>
+                              <option value="krb5p" {% if row.security == "krb5p" %}selected{% endif %}>krb5p</option>
+                              <option value="krb5i" {% if row.security == "krb5i" %}selected{% endif %}>krb5i</option>
+                              <option value="krb5" {% if row.security == "krb5" %}selected{% endif %}>krb5</option>
+                            </select>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="Read-write or read-only access.&#10;&rarr; rw / CLIENT Access_Type">rw <span class="ico">i</span></label>
+                            <select data-f="rw" name="share_rw_{{ row.idx }}">
+                              <option value="true" {% if row.rw %}selected{% endif %}>RW</option>
+                              <option value="false" {% if !row.rw %}selected{% endif %}>RO</option>
+                            </select>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="On = root_squash; off = no_root_squash.&#10;&rarr; squash / EXPORT Squash">root_squash <span class="ico">i</span></label>
+                            <label class="chkline"><input type="checkbox" data-f="root_squash" name="share_root_squash_{{ row.idx }}" {% if row.root_squash %}checked{% endif %}></label>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="Advertise on the local network (mDNS/Avahi) and allow insecure click-mount: NFSv3 + AUTH_SYS, no Kerberos. Effective only while the Core &quot;Navahi Network Discovery&quot; toggle is on.&#10;&rarr; navahi_insecure">navahi_insecure <span class="ico">i</span></label>
+                            <label class="chkline"><input type="checkbox" data-f="navahi_insecure" name="share_navahi_insecure_{{ row.idx }}" {% if row.navahi_insecure %}checked{% endif %} {% if !row.navahi_global %}disabled{% endif %}></label>
+                            {% if !row.navahi_global %}<small class="muted" style="font-size:.62em;display:block;margin-top:2px">requires Navahi Network Discovery (Core)</small>{% endif %}
+                          </div>
+                        </div>
+                        <div class="sc-grid">
+                          <div class="scf">
+                            <label class="fld-lab" title="Read/write tuning profile.&#10;&rarr; cache_profile / PrefRead/PrefWrite">cache_profile <span class="ico">i</span></label>
+                            <select data-f="cache_profile" name="share_cache_profile_{{ row.idx }}">
+                              <option value="Default" {% if row.cache_profile == "Default" %}selected{% endif %}>Default</option>
+                              <option value="Read - Basic" {% if row.cache_profile == "Read - Basic" %}selected{% endif %}>Read - Basic</option>
+                              <option value="Read - Heavy" {% if row.cache_profile == "Read - Heavy" %}selected{% endif %}>Read - Heavy</option>
+                              <option value="Mixed Use" {% if row.cache_profile == "Mixed Use" %}selected{% endif %}>Mixed Use</option>
+                              <option value="Write - Heavy" {% if row.cache_profile == "Write - Heavy" %}selected{% endif %}>Write - Heavy</option>
+                            </select>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="on = ACLs enforced from on-disk POSIX ACLs (requires an ACL-capable serve path); auto/unset = detect via a live write probe and turn ACLs on only when the filesystem stores POSIX ACLs; off = explicit NOACL.&#10;&rarr; enable_acl">enable_acl <span class="ico">i</span></label>
+                            <select data-f="enable_acl" name="share_enable_acl_{{ row.idx }}">
+                              <option value="auto" {% if row.enable_acl == "auto" %}selected{% endif %}>auto (detect)</option>
+                              <option value="true" {% if row.enable_acl == "true" %}selected{% endif %}>on</option>
+                              <option value="false" {% if row.enable_acl == "false" %}selected{% endif %}>off</option>
+                            </select>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="Resolve supplementary gids server-side (auto defaults on).&#10;&rarr; manage_gids / Manage_Gids">manage_gids <span class="ico">i</span></label>
+                            <select data-f="manage_gids" name="share_manage_gids_{{ row.idx }}">
+                              <option value="auto" {% if row.manage_gids == "auto" %}selected{% endif %}>auto</option>
+                              <option value="true" {% if row.manage_gids == "true" %}selected{% endif %}>on</option>
+                              <option value="false" {% if row.manage_gids == "false" %}selected{% endif %}>off</option>
+                            </select>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="Read_Access_Check_Policy. ACL omits (native pre); NOACL emits pre.&#10;&rarr; read_access_policy">read_access <span class="ico">i</span></label>
+                            <select data-f="read_access_policy" name="share_read_access_policy_{{ row.idx }}">
+                              <option value="auto" {% if row.read_access_policy == "auto" %}selected{% endif %}>auto</option>
+                              <option value="pre" {% if row.read_access_policy == "pre" %}selected{% endif %}>pre</option>
+                              <option value="post" {% if row.read_access_policy == "post" %}selected{% endif %}>post</option>
+                            </select>
+                          </div>
+                          <div class="scf">
+                            <label class="fld-lab" title="Manage_Gids cache lifetime in seconds (ACL exports).&#10;&rarr; manage_gids_expiration">mg_expiration <span class="ico">i</span></label>
+                            <input type="number" data-f="manage_gids_expiration" name="share_manage_gids_expiration_{{ row.idx }}" value="{% if let Some(e) = row.manage_gids_expiration %}{{ e }}{% endif %}" placeholder="600">
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>

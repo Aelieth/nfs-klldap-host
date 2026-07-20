@@ -1,0 +1,98 @@
+#!/bin/bash
+# Client-side id_resolver upcall helper for Fedora Docker NFS tests.
+# request-key invokes this for uid:/gid:/user:/group: descriptors from the kernel.
+set -euo pipefail
+
+key="${1:-}"
+desc="${2:-}"
+[ -n "$key" ] && [ -n "$desc" ] || exit 1
+echo "$(date -u +%FT%TZ) key=$key desc=$desc" >> /tmp/nfsidmap-client-helper.log
+
+# Ganesha Only_Numeric_Owners encodes NSS ids as wire_uid = nss_uid + 524287.
+GANESHA_WIRE_UID_OFFSET=524287
+
+decode_wire_id() {
+    local n="$1"
+    if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge "$GANESHA_WIRE_UID_OFFSET" ] && [ "$n" -lt 4294967295 ]; then
+        echo $((n - GANESHA_WIRE_UID_OFFSET))
+        return 0
+    fi
+    echo "$n"
+}
+
+type="${desc%%:*}"
+value="${desc#*:}"
+value="${value%% *}"
+
+lookup_passwd_name() {
+    local cand="$1"
+    [ -n "$cand" ] || return 1
+    getent passwd "$cand" 2>/dev/null | awk -F: 'NR==1{print $3; exit}'
+}
+
+lookup_group_name() {
+    local cand="$1"
+    [ -n "$cand" ] || return 1
+    getent group "$cand" 2>/dev/null | awk -F: 'NR==1{print $3; exit}'
+}
+
+name_candidates() {
+    local raw="$1"
+    printf '%s\n' "$raw"
+    if [[ "$raw" == *@* ]]; then
+        printf '%s\n' "${raw%%@*}"
+    fi
+    if [[ "$raw" == *\\* ]]; then
+        printf '%s\n' "${raw#*\\}"
+    fi
+}
+
+case "$type" in
+    uid)
+        decoded="$(decode_wire_id "$value")"
+        if [[ "$decoded" =~ ^[0-9]+$ ]]; then
+            name="$(getent passwd "$decoded" 2>/dev/null | awk -F: 'NR==1{print $1; exit}')"
+            if [ -n "$name" ]; then
+                keyctl instantiate "$key" "$name" 2>/dev/null && exit 0
+            fi
+        fi
+        while IFS= read -r cand; do
+            uid="$(lookup_passwd_name "$cand" || true)"
+            if [ -n "$uid" ]; then
+                keyctl instantiate "$key" "$uid" 2>/dev/null && exit 0
+            fi
+        done < <(name_candidates "$value")
+        ;;
+    gid)
+        decoded="$(decode_wire_id "$value")"
+        if [[ "$decoded" =~ ^[0-9]+$ ]]; then
+            name="$(getent group "$decoded" 2>/dev/null | awk -F: 'NR==1{print $1; exit}')"
+            if [ -n "$name" ]; then
+                keyctl instantiate "$key" "$name" 2>/dev/null && exit 0
+            fi
+        fi
+        while IFS= read -r cand; do
+            gid="$(lookup_group_name "$cand" || true)"
+            if [ -n "$gid" ]; then
+                keyctl instantiate "$key" "$gid" 2>/dev/null && exit 0
+            fi
+        done < <(name_candidates "$value")
+        ;;
+    user)
+        name="$(getent passwd "$value" 2>/dev/null | awk -F: 'NR==1{print $1; exit}')"
+        if [ -n "$name" ]; then
+            keyctl instantiate "$key" "$name" 2>/dev/null && exit 0
+        fi
+        ;;
+    group)
+        name="$(getent group "$value" 2>/dev/null | awk -F: 'NR==1{print $1; exit}')"
+        if [ -n "$name" ]; then
+            keyctl instantiate "$key" "$name" 2>/dev/null && exit 0
+        fi
+        ;;
+esac
+
+if [ -x /usr/sbin/nfsidmap.real ]; then
+    exec /usr/sbin/nfsidmap.real "$key" "$desc"
+fi
+exec /usr/sbin/nfsidmap "$key" "$desc"

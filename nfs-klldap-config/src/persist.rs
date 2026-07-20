@@ -1,15 +1,44 @@
-//! is_persistent_config (dev inode diff) + load_host_paths_only (tolerant for UI allow-list).
+//! Persistent config detection is tolerant.
 
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 use crate::ConfigError;
 
-/// Returns true if the given config path is on a persistent volume (i.e. a real
-/// host bind mount) rather than living inside the container's own filesystem layer.
-///
-/// This is used for the guided first-run experience: we refuse to do meaningful
-/// work until the user has mounted a real volume at /config (or wherever
-/// NFS_CONFIG points).
+/// Writes `bytes` to `path` atomically: a same-directory temp file is written,
+/// fsync'd, then renamed over the target so a crash mid-write can never leave a
+/// truncated config behind. The rename is atomic because the temp sits on the
+/// same filesystem as `path`.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let tmp = tmp_sibling(path);
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp)?;
+        f.write_all(bytes)?;
+        f.flush()?;
+        let _ = f.sync_all();
+    }
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// A temp path beside `path` on the same filesystem (keeps the rename atomic).
+fn tmp_sibling(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".klldap-tmp");
+    path.with_file_name(name)
+}
+
+/// True when config path is on a host bind mount, not container rootfs.
 #[cfg(unix)]
 pub fn is_persistent_config(path: &Path) -> bool {
     if !path.exists() {
@@ -27,22 +56,16 @@ pub fn is_persistent_config(path: &Path) -> bool {
         Err(_) => return false,
     };
 
-    // dev != root => host volume (not container rootfs)
     config_meta.dev() != root_meta.dev()
 }
 
 #[cfg(not(unix))]
 pub fn is_persistent_config(_path: &Path) -> bool {
-    // Conservative (assume persistent) on non-Unix.
     true
 }
 
-/// Load only the [[shares]] host_path entries from a config file.
-///
-/// This is intentionally tolerant of missing credentials / incomplete config
-/// so the privileged permission helper can still enforce its allow-list even
-/// if the rest of the TOML is in a transitional state. Only well-formed
-/// absolute host_path values are returned.
+/// Loads [[shares]] host_path entries only and tolerates incomplete config.
+#[cfg(test)]
 pub fn load_host_paths_only(path: &Path) -> Result<Vec<PathBuf>, ConfigError> {
     if !path.exists() {
         return Ok(vec![]);

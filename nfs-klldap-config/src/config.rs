@@ -1,13 +1,19 @@
-//! Data model for nfs-klldap.conf. Validation/derivation/generation in validate.rs + generate.rs.
+//! Data model for nfs-klldap.conf (validate + generate are separate modules).
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Top-level config (nfs-klldap.conf)
+/// Top-level config (nfs-klldap.conf).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NfsKlldapConfig {
     #[serde(default)]
     pub ldap_uri: String,
+
+    /// Navahi Network Discovery: advertise flagged shares over mDNS and open
+    /// their NFSv3/AUTH_SYS click-mount path. Restart-gated — applies on full
+    /// recycle / container start, never on SIGHUP.
+    #[serde(default)]
+    pub navahi_discovery: bool,
 
     #[serde(default)]
     pub storage: StorageSection,
@@ -28,10 +34,83 @@ pub struct NfsKlldapConfig {
     pub management: ManagementSection,
 
     #[serde(default)]
+    pub probe: ProbeSection,
+
+    #[serde(default)]
+    pub host: HostSection,
+
+    #[serde(default)]
     pub webui: WebuiSection,
 
     #[serde(default)]
     pub shares: Vec<Share>,
+
+    /// Populated at load time from raw TOML (not serialized).
+    #[serde(skip)]
+    pub share_warnings: Vec<ShareFieldWarning>,
+}
+
+/// Recognized keys inside each `[[shares]]` table in nfs-klldap.conf.
+pub const SHARE_KNOWN_KEYS: &[&str] = &[
+    "name",
+    "host_path",
+    "pseudo_path",
+    "security",
+    "rw",
+    "squash",
+    "cache_profile",
+    "pref_read",
+    "pref_write",
+    "enable_acl",
+    "manage_gids",
+    "read_access_policy",
+    "manage_gids_expiration",
+    "container_path",
+    "source_path",
+    "umask",
+    "attr_expiration_secs",
+    "navahi_insecure",
+];
+
+/// Warning for unrecognized keys in a `[[shares]]` table (config still loads).
+#[derive(Debug, Clone)]
+pub struct ShareFieldWarning {
+    pub share_index: usize,
+    pub share_name: Option<String>,
+    pub unknown_keys: Vec<String>,
+}
+
+impl ShareFieldWarning {
+    /// Find a warning for a loaded share (match by index, then by name).
+    pub fn for_share<'a>(
+        warnings: &'a [Self],
+        share_index: usize,
+        share_name: &str,
+    ) -> Option<&'a Self> {
+        warnings
+            .iter()
+            .find(|w| w.share_index == share_index || w.share_name.as_deref() == Some(share_name))
+    }
+
+    pub fn display_message(&self) -> String {
+        let label = self
+            .share_name
+            .as_deref()
+            .map(|n| format!("\"{}\"", n))
+            .unwrap_or_else(|| format!("index {}", self.share_index));
+        if self.unknown_keys.iter().any(|k| k == "ganesha_path") {
+            return format!(
+                "share {} (index {}): `ganesha_path` was renamed to required `container_path` — \
+                 set `container_path` to the directory inside the container (maps to Ganesha Path=).",
+                label, self.share_index
+            );
+        }
+        format!(
+            "share {} (index {}): unrecognized [[shares]] key(s) {:?} — ignored by generator. \
+             Remove from nfs-klldap.conf or delete this share and re-add via System Settings → Shares.",
+            label, self.share_index, self.unknown_keys
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -55,7 +134,7 @@ pub struct SssdSection {
     pub ldap_default_bind_dn: String,
     #[serde(default)]
     pub ldap_default_authtok: String,
-    /// Derived 636/389 for reference; SSSD uses ldap_uri (port must be in the URI).
+    /// Derived 636/389 port is reference only because SSSD uses ldap_uri.
     pub port: Option<u16>,
     pub ldap_user_search_base: Option<String>,
     pub ldap_group_search_base: Option<String>,
@@ -69,14 +148,14 @@ pub struct SssdSection {
     pub ldap_tls_cacert: Option<String>,
     pub ldap_id_use_start_tls: Option<bool>,
 
-    // POSIX attribute mapping (excellent LLDAP defaults; override only on schema mismatch)
+    // POSIX attribute mapping uses LLDAP defaults unless overridden here.
     pub enumerate: Option<bool>,
 
-    // Object classes (LLDAP typical: inetOrgPerson + posixAccount aux)
+    // Object classes (LLDAP typical is inetOrgPerson + posixAccount aux).
     pub ldap_user_object_class: Option<String>,
     pub ldap_group_object_class: Option<String>,
 
-    // User attr mappings (for UID/GID + home/shell)
+    // User attr mappings (for UID/GID + home/shell).
     pub ldap_user_name: Option<String>,
     pub ldap_user_uid_number: Option<String>,
     pub ldap_user_gid_number: Option<String>,
@@ -84,7 +163,7 @@ pub struct SssdSection {
     pub ldap_user_shell: Option<String>,
     pub ldap_user_fullname: Option<String>,
 
-    // Group attr mappings
+    // Group attribute mappings override LLDAP defaults when set.
     pub ldap_group_name: Option<String>,
     pub ldap_group_gid_number: Option<String>,
     pub ldap_group_member: Option<String>,
@@ -102,158 +181,14 @@ pub struct SssdSection {
     pub krb5_kpasswd: Option<String>,
     pub krb5_validate: Option<bool>,
     pub krb5_store_password_if_offline: Option<bool>,
+    /// Names the krbPrincipalName LDAP attribute for Kerberos principals.
+    pub ldap_user_principal_name: Option<String>,
+
+    pub entry_cache_timeout: Option<u32>,
+    pub entry_negative_timeout: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PosixAttributeMapping {
-    pub user_object_class: String,
-    pub group_object_class: String,
-    pub user_name: String,
-    pub user_uid_number: String,
-    pub user_gid_number: String,
-    pub user_home_directory: String,
-    pub user_shell: String,
-    pub user_full_name: String,
-    pub group_name: String,
-    pub group_gid_number: String,
-    pub group_member: String,
-}
-
-/// Resolves POSIX attribute names from [sssd] overrides (or built-in defaults).
-pub fn resolve_posix_attribute_mapping(sssd: &SssdSection) -> PosixAttributeMapping {
-    let user_obj = sssd
-        .ldap_user_object_class
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "posixAccount".to_string());
-
-    let group_obj = sssd
-        .ldap_group_object_class
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "posixGroup".to_string());
-
-    let u_name = sssd
-        .ldap_user_name
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "uid".to_string());
-
-    let u_uid = sssd
-        .ldap_user_uid_number
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "uidNumber".to_string());
-
-    let u_gid = sssd
-        .ldap_user_gid_number
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "gidNumber".to_string());
-
-    let u_home = sssd
-        .ldap_user_home_directory
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "homeDirectory".to_string());
-
-    let u_shell = sssd
-        .ldap_user_shell
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "loginShell".to_string());
-
-    let u_full = sssd
-        .ldap_user_fullname
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "displayName".to_string());
-
-    let g_name = sssd
-        .ldap_group_name
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "cn".to_string());
-
-    let g_gid = sssd
-        .ldap_group_gid_number
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "gidNumber".to_string());
-
-    // For KLLDAP (when using the recommended ignored attributes feature, which
-    // is active by default), we prefer the modern "member" attribute (DNs) over
-    // the legacy "memberUid" (which KLLDAP does not synthesize by default).
-    // This works excellently with ldap_schema = rfc2307bis.
-    // Users can still force the old behavior by setting ldap_group_member explicitly
-    // or by disabling kllldap_ignored_attributes.
-    let kllldap_mode = sssd.kllldap_ignored_attributes.unwrap_or(true);
-
-    let g_member = sssd
-        .ldap_group_member
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| {
-            if kllldap_mode {
-                "member".to_string()
-            } else {
-                "memberUid".to_string()
-            }
-        });
-
-    PosixAttributeMapping {
-        user_object_class: user_obj,
-        group_object_class: group_obj,
-        user_name: u_name,
-        user_uid_number: u_uid,
-        user_gid_number: u_gid,
-        user_home_directory: u_home,
-        user_shell: u_shell,
-        user_full_name: u_full,
-        group_name: g_name,
-        group_gid_number: g_gid,
-        group_member: g_member,
-    }
-}
-
-/// Effective user/group search bases (Subtree) from [sssd] overrides or realm-derived defaults.
-pub fn effective_ldap_search_bases(sssd: &SssdSection, realm: &str) -> (String, String) {
-    let search_base = sssd
-        .ldap_search_base
-        .clone()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| format!("dc={}", realm.to_lowercase().replace('.', ",dc=")));
-
-    let default_user_base = format!("ou=people,{}", search_base);
-    let default_group_base = format!("ou=groups,{}", search_base);
-
-    let user_base = sssd
-        .ldap_user_search_base
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or(&default_user_base)
-        .to_string();
-
-    let group_base = sssd
-        .ldap_group_search_base
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or(&default_group_base)
-        .to_string();
-
-    (user_base, group_base)
-}
+pub use nfs_klldap_identity::PosixAttributeMapping;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct KerberosSection {
@@ -264,6 +199,44 @@ pub struct KerberosSection {
 pub struct GaneshaSection {
     #[serde(default = "default_security")]
     pub default_security: String,
+    /// Runs an optional executable after each successful generate pass.
+    pub post_generate_hook: Option<String>,
+    /// Extra krb5 principals to materialize in nss_wrapper before Ganesha accepts clients.
+    #[serde(default)]
+    pub warm_principals: Vec<String>,
+    /// When false, omit enable_rpc_cred_fallback in ganesha.conf (fail closed on uid2grp miss).
+    pub enable_rpc_cred_fallback: Option<bool>,
+    /// Override Idmapped_*_Time_Validity (default 180; also getgroups window on 9.13).
+    /// Wins over manage_gids_expiration_secs and per-share manage_gids_expiration.
+    pub idmapped_validity_secs: Option<u32>,
+    /// Root_Kerberos_Principal tokens (none|nfs|root|host|all). Default "nfs, root".
+    pub root_kerberos_principals: Option<String>,
+    /// Seeds Idmapped_* when idmapped_validity_secs is unset (default 180, max 604800).
+    /// Core Manage_Gids_Expiration is not emitted on 9.13.
+    pub manage_gids_expiration_secs: Option<u64>,
+    /// DIRECTORY_SERVICES Negative_Cache_Time_Validity seconds (default 60):
+    /// how long a failed user/group lookup is remembered.
+    pub negative_cache_validity_secs: Option<u32>,
+    /// NFS_CORE_PARAM Max_Uid_To_Group_Reqs — concurrent uid→groups lookups
+    /// allowed against SSSD/LDAP (default 64; 0 = unlimited).
+    pub max_uid_to_group_reqs: Option<u32>,
+    /// NFS_CORE_PARAM Readdir_Res_Size response bytes (default 32768).
+    pub readdir_res_size: Option<u32>,
+    /// NFS_CORE_PARAM Readdir_Max_Count entries (emitted only when set).
+    pub readdir_max_count: Option<u32>,
+    /// Extra getattr after each READ to revalidate EOF — only ESXi clients
+    /// need it; default false (upstream default is true).
+    pub getattrs_in_complete_read: Option<bool>,
+    /// Enable_malloc_trim for flat long-running memory (default true).
+    pub malloc_trim: Option<bool>,
+    /// Malloc_trim_MinThreshold in MB (default 1024; upstream 15360 never
+    /// fires under the 4 GB container memory limit).
+    pub malloc_trim_min_threshold_mb: Option<u32>,
+    /// EXPORT_DEFAULTS Attr_Expiration_Time seconds (default 60 — Ganesha's
+    /// default made deliberate). Bounds how stale served attributes/ACLs can
+    /// be after out-of-band chown/chmod/setfacl (WebUI edits). 0 disables
+    /// attribute caching entirely: always fresh, one getattr per op.
+    pub attr_expiration_secs: Option<i32>,
 }
 
 fn default_security() -> String {
@@ -275,67 +248,88 @@ pub struct ManagementSection {
     pub webui_admin_group: Option<String>,
 }
 
-/// WebUI runtime options (single-source in nfs-klldap.conf under [webui]).
-/// These align with NFS_KLLDAP_WEBUI_* env vars (env takes precedence at runtime; only prefixed forms supported).
-/// tls=false (or NFS_KLLDAP_WEBUI_TLS=off/false) disables internal TLS for reverse-proxy setups.
+/// Startup identity-probe identities; unset auto-picks from the directory.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProbeSection {
+    /// Sample LDAP user probed at startup (name@REALM or bare name).
+    pub user_principal: Option<String>,
+    /// Enrolled client machine probed as host/<name>@REALM.
+    pub client_host: Option<String>,
+}
+
+/// Host deployment mode runs WebUI and SSSD only when host_nfs is true.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HostSection {
+    /// In sidecar mode the host nfsd reads bind-mounted export fragments.
+    pub host_nfs: Option<bool>,
+}
+
+/// WebUI runtime options come from [webui] but NFS_KLLDAP_WEBUI_* env wins.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebuiSection {
-    /// If Some(false), equivalent to NFS_KLLDAP_WEBUI_TLS=off (reverse proxy mode; plain HTTP + X-Forwarded-Proto).
+    /// Setting tls to false disables TLS for reverse-proxy mode.
     pub tls: Option<bool>,
-    /// Optional path to custom cert PEM (NFS_KLLDAP_WEBUI_TLS_CERT env wins).
+    /// Sets custom cert PEM unless NFS_KLLDAP_WEBUI_TLS_CERT wins.
     pub tls_cert: Option<String>,
-    /// Optional path to custom key PEM (NFS_KLLDAP_WEBUI_TLS_KEY env wins).
+    /// Sets custom key PEM unless NFS_KLLDAP_WEBUI_TLS_KEY wins.
     pub tls_key: Option<String>,
+    /// WebUI auto-logout in minutes (default 720 = 12h, minimum 5). Governs
+    /// sessions created after the next full restart; existing sessions keep
+    /// their stored expiry.
+    pub session_timeout_minutes: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Share {
     pub name: String,
-    /// Absolute path on the Docker host (used for UI allow-list and direct chown/chmod).
-    /// Independent of container bind layout. The WebUI privileged operations (fs.rs/privileged.rs)
-    /// and allow-listing continue to key exclusively off host_path values.
+    /// Host-visible path: UI allow-list and ownership (see architecture docs).
     pub host_path: PathBuf,
-    /// Optional explicit name/subtree used for the *client-visible* NFSv4 Pseudo path
-    /// (what clients put after the server name in mount commands, e.g. server:/movies).
-    ///
-    /// Editable in System Settings → Shares as the "Export Path" field. This is the
-    /// external / shortenable name. It no longer affects the real container location.
-    ///
-    /// The real internal container location (used for Ganesha EXPORT.Path and for the
-    /// WebUI FsManager / permission tree translations) is always derived from the share's
-    /// own host_path + container_root:
-    ///
-    ///   - Take the first directory component of host_path after the leading "/" as the
-    ///     implicit per-share "bind root" (e.g. host_path="/media/NVME-RAID/nvme" → "/media").
-    ///   - Strip that prefix; the remaining tail becomes the subpath under container_root.
-    ///   - Example: host_path="/media/NVME-RAID/nvme" + container_root="/export" →
-    ///     internal = "/export/NVME-RAID/nvme".
-    ///
-    /// This supports multiple different host bind roots naturally (no global host_root
-    /// setting required) while letting export_path be used purely for nice client names.
-    ///
-    /// Defaults (via validation) to "/" + name when absent.
-    pub export_path: Option<String>,
+    /// Client Pseudo path; default `/{name}`. Alias: `export_path`.
+    #[serde(alias = "export_path")]
+    pub pseudo_path: Option<String>,
     pub security: Option<String>,
     pub rw: Option<bool>,
     pub squash: Option<String>,
-    /// Cache profile selector (preferred for UI-driven shares).
-    /// Written as `cache_profile = "..."` inside [[shares]].
-    /// When present and valid, the generator resolves it to Ganesha PrefRead/PrefWrite
-    /// values for the share's EXPORT block.
-    /// This is the mechanism for the "Cache Profile" dropdown in System Settings.
-    ///
-    /// Allowed values (exact): "Default", "Read - Basic", "Read - Heavy", "Mixed Use", "Write - Heavy".
-    /// See README for the matrix and "Best For" descriptions. (Server read_ahead_kb is a
-    /// host-only concern; see the short note in the README.)
+    /// UI profile name → PrefRead/PrefWrite (wins over raw pref_*).
     pub cache_profile: Option<String>,
-    /// Optional PrefRead size in bytes (Ganesha EXPORT.PrefRead). Advanced/raw use.
-    /// When a valid cache_profile is also present it takes precedence for generation.
-    /// (Legacy numeric values in nfs-klldap.conf are still accepted and validated.)
+    /// Raw PrefRead when cache_profile is absent.
     pub pref_read: Option<u64>,
-    /// Optional PrefWrite size in bytes (Ganesha EXPORT.PrefWrite). Advanced/raw use.
-    /// Symmetric to pref_read; usually resolved from cache_profile in normal operation.
+    /// Raw PrefWrite when cache_profile is absent.
     pub pref_write: Option<u64>,
+    /// Tri-state ACL class: true / false / unset=auto (probe-proven).
+    pub enable_acl: Option<bool>,
+    pub manage_gids: Option<bool>,
+    pub read_access_policy: Option<String>,
+    /// Deprecated seed for global Idmapped_* when [ganesha] knobs unset.
+    pub manage_gids_expiration: Option<u64>,
+    /// In-container serve path (Ganesha EXPORT Path=).
+    pub container_path: String,
+    /// Optional staging source; hook syncs source → container_path when set.
+    pub source_path: Option<String>,
+    /// Per-export Attr_Expiration_Time override (0 = always fresh).
+    pub attr_expiration_secs: Option<i32>,
+    /// Advertise over mDNS + NFSv3/AUTH_SYS click-mount; acts only while the
+    /// top-level navahi_discovery toggle is on.
+    pub navahi_insecure: Option<bool>,
+    /// Retired: hard generate error; use Inherit-tab default ACLs + setgid.
+    pub umask: Option<String>,
+}
+
+/// Derive the Ganesha NFSv4 Pseudo path from `pseudo_path`, or `/{name}` when unset.
+pub fn derive_share_pseudo(share: &Share) -> String {
+    let default = format!("/{}", share.name);
+    let raw = share.pseudo_path.as_deref().unwrap_or(&default);
+    if raw.starts_with('/') {
+        raw.to_string()
+    } else {
+        format!("/{}", raw)
+    }
+}
+
+/// Single Navahi gate for every surface (generator, avahi XML set, UI): the
+/// per-share flag acts only while the global toggle is on.
+pub fn share_navahi_effective(cfg: &NfsKlldapConfig, share: &Share) -> bool {
+    cfg.navahi_discovery && share.navahi_insecure == Some(true)
 }
 
 impl Default for Share {
@@ -343,13 +337,22 @@ impl Default for Share {
         Self {
             name: String::new(),
             host_path: PathBuf::new(),
-            export_path: None,
+            pseudo_path: None,
             security: None,
             rw: Some(true),
-            squash: Some("no_root_squash".to_string()),
+            squash: Some("root_squash".to_string()),
             cache_profile: Some("Default".to_string()),
             pref_read: None,
             pref_write: None,
+            enable_acl: None,
+            manage_gids: None,
+            read_access_policy: None,
+            manage_gids_expiration: None,
+            container_path: String::new(),
+            source_path: None,
+            umask: None,
+            attr_expiration_secs: None,
+            navahi_insecure: None,
         }
     }
 }
@@ -361,22 +364,42 @@ pub struct GenerationPaths {
     pub krb5_conf: PathBuf,
     pub ganesha_conf: PathBuf,
     pub exports_dir: PathBuf,
+    /// Holds the output path for generated idmapd.conf.
+    pub idmap_conf: PathBuf,
+    /// Holds the output path for nfs-utils client defaults.
+    pub nfs_conf: PathBuf,
+    /// Navahi mDNS service XMLs; regenerated/pruned per apply.
+    pub avahi_services_dir: PathBuf,
 }
 
 impl Default for GenerationPaths {
     fn default() -> Self {
+        Self::from_env()
+    }
+}
+
+impl GenerationPaths {
+    /// Resolves output paths from env vars or container defaults.
+    pub fn from_env() -> Self {
+        let env_path = |key: &str, default: &str| -> PathBuf {
+            std::env::var(key)
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(default))
+        };
         Self {
-            sssd_conf: PathBuf::from("/etc/sssd/sssd.conf"),
-            krb5_conf: PathBuf::from("/etc/krb5.conf"),
-            ganesha_conf: PathBuf::from("/etc/ganesha/ganesha.conf"),
-            exports_dir: PathBuf::from("/etc/ganesha/exports.d"),
+            sssd_conf: env_path("SSSD_CONF", "/etc/sssd/sssd.conf"),
+            krb5_conf: env_path("KRB5_CONF", "/etc/krb5.conf"),
+            ganesha_conf: env_path("GANESHA_CONF", "/etc/ganesha/ganesha.conf"),
+            exports_dir: env_path("EXPORTS_DIR", "/etc/ganesha/exports.d"),
+            idmap_conf: env_path("IDMAP_CONF", "/etc/idmapd.conf"),
+            nfs_conf: env_path("NFS_CONF", "/etc/nfs.conf"),
+            avahi_services_dir: env_path("AVAHI_SERVICES_DIR", "/etc/avahi/services"),
         }
     }
 }
 
-// Cache Profiles (for [[shares]] dropdown; name stored in TOML, resolved to Pref* at generate)
+// Cache profile names in [[shares]] resolve to Ganesha PrefRead and PrefWrite.
 
-/// The 5 supported values for share.cache_profile (order matches the WebUI dropdown).
 pub const CACHE_PROFILES: &[&str] = &[
     "Default",
     "Read - Basic",
@@ -385,7 +408,7 @@ pub const CACHE_PROFILES: &[&str] = &[
     "Write - Heavy",
 ];
 
-/// Resolve a cache profile name to the Ganesha tunables (PrefRead, PrefWrite in bytes).
+/// Resolves a cache profile to Ganesha PrefRead and PrefWrite byte counts.
 pub fn resolve_cache_profile(profile: &str) -> Option<(u64, u64)> {
     match profile.trim() {
         "Default" => Some((1048576, 1048576)),

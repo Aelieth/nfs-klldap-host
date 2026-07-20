@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Tiny type-safe TOML config loader + generator for nfs-klldap-host (bundled in container)"
+autobins = false
 
 [lib]
 path = "src/lib.rs"
@@ -14,15 +15,34 @@ path = "src/lib.rs"
 name = "nfs-klldap-config"
 path = "src/main.rs"
 
-# Startup/orchestration binary (guided first-run TUI + reachability + diagnostics).
+# Startup/orchestration binary (pid-1 supervise + non-interactive diagnostics).
 [[bin]]
 name = "nfs-klldap-startup"
 path = "src/bin/nfs_klldap_startup.rs"
 
+# Lightweight always-running ID/Kerberos principal helper (daemon + CLI).
+# Classifies machine/root principals vs LDAP user principals, resolves to
+# POSIX uid/gid via NSS, and maintains a fast translation for stable NFS mounts.
+# Designed to be memory-efficient and in the path for every mount (esp. 4K workloads).
+[[bin]]
+name = "nfs-klldap-idhelper"
+path = "src/bin/idhelper/main.rs"
+
 [dependencies]
 serde = { workspace = true }
 toml = { workspace = true }
+tempfile = { workspace = true }
+nfs-klldap-identity = { path = "../nfs-klldap-identity" }
 # thiserror kept out for tiny container binary size; manual error impl below
 
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
+signal-hook = { workspace = true }
+
+[features]
+# Env-driven LDAP stubs (TEST_REBULK_POPULATE) for tests incl. spawned idhelper; off in release.
+test-support = ["nfs-klldap-identity/test-support"]
+
 [dev-dependencies]
-tempfile = { workspace = true }
+# Self dev-dep turns test-support on for cargo test builds (lib + spawned bins).
+nfs-klldap-config = { path = ".", features = ["test-support"] }

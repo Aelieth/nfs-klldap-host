@@ -1,15 +1,8 @@
 <ul class="tree">
+{% if children.is_empty() %}
+    <li class="tree-empty">(empty)</li>
+{% endif %}
 {% for child in children %}
-    <li>
-        <span class="dir" 
-              data-path="{{ child.path }}"
-              style="cursor: pointer; user-select: none;">
-            ▶ {{ child.name }}
-        </span>
-        <!-- Stable placeholder for selected-dir meta (Owner/Group/Perms + Edit controls).
-             Stable placeholder for JS/HTMX expand (no sibling races). -->
-        <div class="dir-meta" data-path="{{ child.path }}" style="display:none;"></div>
-        <div class="children" style="margin-left: 1.5em;"></div>
-    </li>
+    {% include "tree_entry.html" %}
 {% endfor %}
 </ul>

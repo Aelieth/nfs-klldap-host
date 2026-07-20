@@ -1,12 +1,34 @@
 # nfs-klldap-ui
 
-Axum + HTMX WebUI (port 9630 inside the container). Edits `nfs-klldap.conf` and applies direct chown/chmod on bind-mounted host paths.
+Axum + HTMX WebUI (container port **9630**). First-run `/setup/1`…`/setup/3`, then `/login`. Edits `nfs-klldap.conf` and applies chown/chmod/ACL on allow-listed trees.
 
-Build (for development):
+**Create inheritance:** no config `umask` (retired). Use default ACL **Inherit** tab + setgid. See [docs/ganesha-architecture.md](../docs/ganesha-architecture.md).
+
+## Surfaces
+
+| Path | Role |
+|------|------|
+| `/setup/1`…`/3` | Wizard + Test Log |
+| `/` | Tree + detached permission panel (dirs + files) |
+| `/settings` | TOML / shares / Admin (restart, password, maintenance) |
+| `/client-manifest.json` | Public share ACL class list (no session) |
+
+- Tree: one-level lazy `/tree`; dirs first; symlinks excluded.
+- ACL panel only when the share **effectively** serves ACLs (explicit or auto-promoted + capable FS).
+- Shares save → SIGHUP graceful apply (no WebUI bounce). **Restart and apply** → SIGUSR1 full recycle.
+
+## Modules
+
+| Module | Role |
+|--------|------|
+| `ldap.rs` | Directory queries via shared identity resolver |
+| `fs.rs` | Allow-list, listing, POSIX/ACL apply walks |
+| `web/` | Handlers: auth, tree, settings, setup, ACL |
+| `auth.rs` | localhost `webui-password` + LLDAP admin group |
+| `privileged.rs` | chown/chmod/setfacl boundary |
+
 ```bash
 cargo build -p nfs-klldap-ui --release --bin nfs-klldap-ui
 ```
 
-Key modules: `ldap.rs` (SSSD creds, POSIX resolution), `fs.rs` (tree + translation), `web/` (Axum handlers + templates: thin `mod.rs` orchestrator + `auth`, `permission_tree`, `settings`, `keytab`), `auth.rs` (localhost sidecar + LLDAP admin group).
-
-See root README and TESTING.md.
+Further: [docs/security.md](docs/security.md), [docs/ui-design.md](docs/ui-design.md), root [README.md](../README.md), [TESTING.md](../TESTING.md).
